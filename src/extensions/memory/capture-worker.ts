@@ -1511,6 +1511,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 					if (taskScopeEnabled()) {
 						const routed = routeTaskFacts(outcome.facts.task ?? [], plan.project !== null)
 						plan.projectFacts.push(...routed.toProject)
+						plan.personalFacts.push(...routed.toPersonal)
 					}
 				} else if (outcome.kind === "poison") {
 					plan.poisonedWindowCount += 1
@@ -1813,15 +1814,22 @@ function transientJobMaxAttempts(): number {
 /**
  * Task-lane routing (settled): [task] facts are project-anchored by
  * definition — they land in the same project store [project] facts use.
- * With no project context they are DROPPED with a logged reason: never
- * sunk into the personal store, never silently ignored.
+ * With no project context (a cwd with no git root — scratch dirs, ad-hoc
+ * sessions) they fall back to the personal store with a logged reason:
+ * task knowledge is durable regardless of where the session happened to
+ * run, and a drop would silently lose facts the pipeline already judged
+ * durable.
  */
-export function routeTaskFacts(taskFacts: string[], hasProject: boolean): { toProject: string[]; dropped: number } {
-	if (taskFacts.length === 0 || hasProject) return { toProject: taskFacts, dropped: 0 }
+export function routeTaskFacts(
+	taskFacts: string[],
+	hasProject: boolean,
+): { toProject: string[]; toPersonal: string[] } {
+	if (taskFacts.length === 0) return { toProject: [], toPersonal: [] }
+	if (hasProject) return { toProject: taskFacts, toPersonal: [] }
 	console.warn(
-		`[memory-capture] dropped ${taskFacts.length} task-scope fact(s): no project context (task facts are project-anchored)`,
+		`[memory-capture] no project context: routing ${taskFacts.length} task-scope fact(s) into the personal store`,
 	)
-	return { toProject: [], dropped: taskFacts.length }
+	return { toProject: [], toPersonal: taskFacts }
 }
 
 /** Commit one job's extracted facts (phase C): adds per store with the

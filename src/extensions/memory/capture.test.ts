@@ -2554,14 +2554,16 @@ describe("task-scope capture ([task] grammar + routing)", () => {
 	}
 
 	it("routes [task] facts into the project store when a project context exists", () => {
-		expect(routeTaskFacts(["A"], true)).toEqual({ toProject: ["A"], dropped: 0 })
+		expect(routeTaskFacts(["A"], true)).toEqual({ toProject: ["A"], toPersonal: [] })
 	})
 
-	it("drops [task] facts with a logged reason when there is no project context", () => {
+	it("routes [task] facts into the personal store with a logged reason when there is no project context", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
-			expect(routeTaskFacts(["A", "B"], false)).toEqual({ toProject: [], dropped: 2 })
-			expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped 2 task-scope fact(s): no project context"))
+			expect(routeTaskFacts(["A", "B"], false)).toEqual({ toProject: [], toPersonal: ["A", "B"] })
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("no project context: routing 2 task-scope fact(s) into the personal store"),
+			)
 		} finally {
 			warn.mockRestore()
 		}
