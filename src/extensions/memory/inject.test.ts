@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { DIGEST_MAX_FACTS, DIGEST_MAX_TOKENS, TURN_RECALL_MAX_FACT_CHARS, TURN_RECALL_MAX_FACTS } from "./config.js"
-import { buildMemoryDigest, buildTurnRecall, digestCandidateTexts, digestSection, digestSelectionFloor, factKey, MEMORY_ENABLED_NOTICE, MEMORY_ENABLED_NOTICE_AUTHORED, renderFactClasses, shouldRunDigestSelection } from "./inject.js"
+import {
+	buildMemoryDigest,
+	buildTurnRecall,
+	digestCandidateTexts,
+	digestSection,
+	digestSelectionFloor,
+	factKey,
+	MEMORY_ENABLED_NOTICE,
+	MEMORY_ENABLED_NOTICE_AUTHORED,
+	renderFactClasses,
+	shouldRunDigestSelection,
+} from "./inject.js"
 
 describe("buildMemoryDigest", () => {
 	it("returns undefined when nothing clears the value bar — the normal outcome", () => {
@@ -225,11 +236,14 @@ describe("authored-lane notice variant", () => {
 
 describe("renderFactClasses (KIMCHI_MEMORY_FACT_CLASSES)", () => {
 	const FLG = "KIMCHI_MEMORY_FACT_CLASSES"
-	afterEach(() => { delete process.env[FLG] })
+	afterEach(() => {
+		delete process.env[FLG]
+	})
 
 	it("flag OFF + tagged store (mixed state): marker stripped, fact stays trusted", () => {
 		delete process.env[FLG]
-		const body = "- The items table ts column is milliseconds.\n- [derived] Treating main_cat as the top-level category."
+		const body =
+			"- The items table ts column is milliseconds.\n- [derived] Treating main_cat as the top-level category."
 		expect(renderFactClasses(body)).toBe(
 			"- The items table ts column is milliseconds.\n- Treating main_cat as the top-level category.",
 		)
@@ -247,12 +261,12 @@ describe("renderFactClasses (KIMCHI_MEMORY_FACT_CLASSES)", () => {
 			{ memory: "[derived] Treating main_cat as the top-level category for products.", score: 0.8 },
 		])
 		expect(d).toBeDefined()
-		expect(d!.text).toContain("Unverified derivations")
-		expect(d!.text).toContain("Treating main_cat as the top-level category")
-		expect(d!.text).toContain("The items table ts column is milliseconds")
-		expect(d!.text).not.toContain("[derived]")
+		expect(d?.text).toContain("Unverified derivations")
+		expect(d?.text).toContain("Treating main_cat as the top-level category")
+		expect(d?.text).toContain("The items table ts column is milliseconds")
+		expect(d?.text).not.toContain("[derived]")
 		// Trusted block precedes the warning block
-		expect(d!.text.indexOf("milliseconds")).toBeLessThan(d!.text.indexOf("Unverified derivations"))
+		expect(d?.text.indexOf("milliseconds")).toBeLessThan(d?.text.indexOf("Unverified derivations"))
 	})
 
 	it("flag ON with no derived facts → no warning block", () => {
@@ -262,14 +276,16 @@ describe("renderFactClasses (KIMCHI_MEMORY_FACT_CLASSES)", () => {
 			{ memory: "Graded correct answer: Fender, per the user's confirmed answer.", score: 0.85 },
 		])
 		expect(d).toBeDefined()
-		expect(d!.text).not.toContain("Unverified derivations")
+		expect(d?.text).not.toContain("Unverified derivations")
 	})
 
 	it("flag ON with derived-only digest still renders (ledger facts keep their original text for idempotence)", () => {
 		process.env[FLG] = "1"
-		const d = buildMemoryDigest([{ memory: "[derived] Aggregating review scores per item not per review.", score: 0.9 }])
+		const d = buildMemoryDigest([
+			{ memory: "[derived] Aggregating review scores per item not per review.", score: 0.9 },
+		])
 		expect(d).toBeDefined()
-		expect(d!.text).toContain("Unverified derivations")
-		expect(d!.facts[0]).toBe("[derived] Aggregating review scores per item not per review.")
+		expect(d?.text).toContain("Unverified derivations")
+		expect(d?.facts[0]).toBe("[derived] Aggregating review scores per item not per review.")
 	})
 })

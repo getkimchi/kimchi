@@ -37,7 +37,10 @@ export const MEMORY_SAVE_MAX_CHARS = 300
 
 /** Light normalization for dup checks — punctuation/whitespace-insensitive. */
 export function normalizeAuthored(text: string): string {
-	return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+	return text
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim()
 }
 
 export interface MemorySaveDeps {

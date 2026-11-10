@@ -188,10 +188,7 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 			// minutes (v6 crash: lock_held=True at the 900s driver cap). Scope
 			// the bound to embedding requests only: gateway session LLM traffic
 			// on the same origin needs its longer stream budgets.
-			signal = AbortSignal.any([
-				...(init?.signal ? [init.signal] : []),
-				AbortSignal.timeout(MEMORY_REQUEST_TIMEOUT_MS),
-			])
+			signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(MEMORY_REQUEST_TIMEOUT_MS)])
 		}
 		if (url.includes("/embeddings") && init?.body) {
 			try {

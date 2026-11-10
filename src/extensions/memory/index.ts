@@ -87,17 +87,15 @@ import {
 	digestSelectionFloor,
 	factKey,
 	isCovered,
-	shouldRunDigestSelection,
 	MEMORY_ENABLED_NOTICE,
 	MEMORY_ENABLED_NOTICE_AUTHORED,
+	shouldRunDigestSelection,
 } from "./inject.js"
 import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 import { migrateAgentMemory } from "./migrate-agent-memory.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
 import { authoredEnabled, createMemorySaveTool, createMemorySearchTool } from "./tools.js"
-import { memoryDbPath } from "./backend.js"
-import { createMemoryBackend } from "./backend.js"
 
 /** What one search call returns after the value gate. */
 interface DigestState {

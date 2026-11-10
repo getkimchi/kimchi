@@ -62,6 +62,7 @@ import {
 	EXTRACTION_DERIVED_TAG,
 	MEMORY_CAPTURE_WINDOW_CHARS,
 	MEMORY_DRAIN_CONCURRENCY,
+	MEMORY_DRAIN_HARD_TIMEOUT_MS,
 	MEMORY_SUPERSEDE_BATCH_FACTS,
 	MEMORY_USER_ID,
 	PENDING_JOB_MAX_AGE_MS,
@@ -82,7 +83,6 @@ import {
 	valuationQuestion,
 } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
-import { MEMORY_DRAIN_HARD_TIMEOUT_MS } from "./config.js"
 import { createDecisionSupersedeJudge, findSupersededIds, type SupersedeJudge } from "./supersede.js"
 
 export interface CaptureMessage {
@@ -1247,7 +1247,10 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		// At the hard budget the drain aborts, the finally releases the
 		// lock, and the process exits nonzero; job files stay pending for
 		// the next spawn's retry (ledger dedupe makes overlap no-op).
-		const abort = options.abortSignal === undefined ? new AbortController() : { signal: options.abortSignal, abort: () => undefined }
+		const abort =
+			options.abortSignal === undefined
+				? new AbortController()
+				: { signal: options.abortSignal, abort: () => undefined }
 		const budget = options.drainTimeoutMs ?? MEMORY_DRAIN_HARD_TIMEOUT_MS
 		const watchdog = setTimeout(() => abort.abort(new DrainWatchdogError()), budget)
 		try {
@@ -1775,10 +1778,7 @@ function recordPoisonAttempt(plan: JobPlan): boolean {
  * With no project context they are DROPPED with a logged reason: never
  * sunk into the personal store, never silently ignored.
  */
-export function routeTaskFacts(
-	taskFacts: string[],
-	hasProject: boolean,
-): { toProject: string[]; dropped: number } {
+export function routeTaskFacts(taskFacts: string[], hasProject: boolean): { toProject: string[]; dropped: number } {
 	if (taskFacts.length === 0 || hasProject) return { toProject: taskFacts, dropped: 0 }
 	console.warn(
 		`[memory-capture] dropped ${taskFacts.length} task-scope fact(s): no project context (task facts are project-anchored)`,
@@ -1842,10 +1842,7 @@ async function commitPlan(
 				// this addAll — judging new facts against what is already known,
 				// which is exactly the duplicate/paraphrase judgment a blind
 				// per-fact verdict cannot make (KIMCHI_MEMORY_VALUATION_CONTEXT).
-				valuationDiscard = await valueGate(
-					eligible,
-					valuationContextEnabled() ? existing.rawTexts : undefined,
-				)
+				valuationDiscard = await valueGate(eligible, valuationContextEnabled() ? existing.rawTexts : undefined)
 			} catch (err) {
 				console.error("[memory-capture] valuation gate failed, keeping this job's facts (fail-open):", err)
 				valuationDiscard = undefined

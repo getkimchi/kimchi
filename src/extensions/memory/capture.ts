@@ -171,10 +171,10 @@ function extractToolWork(entries: readonly SessionEntry[]): Map<number, CaptureM
 			const args = toolCallArgsText(p.arguments)
 			const call = args ? `${p.name}: ${args.slice(0, MEMORY_CAPTURE_TOOL_CALL_CHARS)}` : p.name
 			// Attempt (assistant) and receipt (user) as separate records: that
-		// is the text-protocol shape (QUERY action text + observation user
-		// message) the extraction contracts were built on — extraction
-		// explicitly excludes assistant-side tool output, so a combined
-		// assistant record would starve itself.
+			// is the text-protocol shape (QUERY action text + observation user
+			// message) the extraction contracts were built on — extraction
+			// explicitly excludes assistant-side tool output, so a combined
+			// assistant record would starve itself.
 			records.push({ role: "assistant", content: `[tool] ${call}` })
 			const result = typeof p.id === "string" ? results.get(p.id) : undefined
 			if (result !== undefined) records.push({ role: "user", content: boundedResult(result) })
