@@ -33,6 +33,8 @@ export function normalizeThinkingLevels(levels: readonly string[]): string[] {
 		})
 }
 
+const EXPLICIT_ONLY_LEVELS = new Set<string>(["xhigh", "max"])
+
 export function deriveThinkingLevelMap(curatedLevels: readonly string[], base: ThinkingLevelMap): ThinkingLevelMap {
 	const curated = normalizeThinkingLevels(curatedLevels)
 	// Curated-none: thinking exists but offers no distinct levels, so only the
@@ -43,6 +45,9 @@ export function deriveThinkingLevelMap(curatedLevels: readonly string[], base: T
 		const translation = base[level]
 		if (!reachable.has(level)) map[level] = null
 		else if (translation !== undefined) map[level] = translation
+		// pi only offers xhigh and max when the map names them, so a curated level
+		// without a base translation is sent verbatim instead of silently dropped.
+		else if (EXPLICIT_ONLY_LEVELS.has(level)) map[level] = level
 	}
 	return map
 }

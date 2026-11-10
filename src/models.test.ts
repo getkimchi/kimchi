@@ -1983,6 +1983,17 @@ describe("curated thinking levels drive the engine thinkingLevelMap", () => {
 		})
 	})
 
+	it("makes curated xhigh selectable without offering it to uncurated models", () => {
+		const [curated] = providerModels([metadata("m", ["high", "xhigh"])])
+		expect(supportedLevels(curated)).toEqual(["high", "xhigh"])
+
+		const [xhighOnly] = providerModels([metadata("m", ["xhigh"])])
+		expect(supportedLevels(xhighOnly)).toEqual(["xhigh"])
+
+		const [uncurated] = providerModels([metadata("m", undefined)])
+		expect(supportedLevels(uncurated)).not.toContain("xhigh")
+	})
+
 	it("cannot disable thinking when the catalog does not curate off", () => {
 		const [model] = providerModels([metadata("m", ["low", "high", "max"])])
 		expect(model.thinkingLevelMap).toEqual({

@@ -87,6 +87,26 @@ describe("deriveThinkingLevelMap", () => {
 		})
 	})
 
+	it("names curated xhigh and max explicitly when the base has no translation", () => {
+		expect(deriveThinkingLevelMap(["high", "xhigh"], GATEWAY_BASE)).toEqual({
+			off: null,
+			minimal: null,
+			low: null,
+			medium: null,
+			xhigh: "xhigh",
+			max: null,
+		})
+		expect(deriveThinkingLevelMap(["max"], {})).toEqual({
+			off: null,
+			minimal: null,
+			low: null,
+			medium: null,
+			high: null,
+			xhigh: null,
+			max: "max",
+		})
+	})
+
 	it("preserves every base translation for a catalog curating all levels", () => {
 		const base: ThinkingLevelMap = {
 			off: "none",
