@@ -133,7 +133,8 @@ export function valuationQuestion(fact: string, index: number): ChoiceQuestion {
 		type: "choice",
 		instructions: `Candidate memory fact ${index + 1}: "${fact}" — should a long-term memory system KEEP this fact?`,
 		criteria: {
-			keep: "Durable from ANY source: user-stated (stable preference, decision with rationale, correction, personal context, possession with purpose, itemized value, dated event/plan) OR assistant-provided fact the user engaged with (asked, accepted, acted on, referred back: schedules, rotations, recipes, numbers, recommendations) OR lasting project convention" +
+			keep:
+				"Durable from ANY source: user-stated (stable preference, decision with rationale, correction, personal context, possession with purpose, itemized value, dated event/plan) OR assistant-provided fact the user engaged with (asked, accepted, acted on, referred back: schedules, rotations, recipes, numbers, recommendations) OR lasting project convention" +
 				(taskLaneEnabled() ? TASK_SCOPE_VALUATION_KEEP_SUFFIX : ""),
 			discard:
 				"Transient: task progress, statuses, work summaries, tool output, or content with no identifiable fact a future session could use" +

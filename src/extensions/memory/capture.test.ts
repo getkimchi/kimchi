@@ -37,23 +37,23 @@ import {
 	isAttributedNearDuplicate,
 	isDurableFact,
 	keepForStore,
-	splitDerivedTag,
 	mapWithConcurrency,
 	messageHash,
 	normalizeFactText,
 	PoisonExtractionError,
-	routeTaskFacts,
 	parseIdArray,
 	parseTaggedFacts,
-	runCaptureWorker,
-	STRICT_NOISE_FACT_PATTERNS,
-	strictNoiseEnabled,
-	taskScopeEnabled,
-	TASK_SCOPE_EXTRACTION_SUFFIX,
 	RECEIPTS_EXTRACTION_SUFFIX,
 	receiptsEnabled,
+	routeTaskFacts,
+	runCaptureWorker,
+	STRICT_NOISE_FACT_PATTERNS,
 	SUPERSEDE_SYSTEM_PROMPT,
+	splitDerivedTag,
+	strictNoiseEnabled,
 	stripAttribution,
+	TASK_SCOPE_EXTRACTION_SUFFIX,
+	taskScopeEnabled,
 	tokenJaccard,
 	windowByBudget,
 } from "./capture-worker.js"
@@ -357,8 +357,10 @@ describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)"
 		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
 		const messages = extractMessages([
 			msgEntry("user", "how many reviews in 2031+?"),
-			msgEntry("assistant", [toolCall("tc1", "bash", { command: "sqlite3 db \".schema\"" })]),
-			msgEntry("toolResult", [{ type: "text", text: "CREATE TABLE items_g1 (ref_id TEXT ...);" }], { toolCallId: "tc1" }),
+			msgEntry("assistant", [toolCall("tc1", "bash", { command: 'sqlite3 db ".schema"' })]),
+			msgEntry("toolResult", [{ type: "text", text: "CREATE TABLE items_g1 (ref_id TEXT ...);" }], {
+				toolCallId: "tc1",
+			}),
 			msgEntry("assistant", [{ type: "text", text: "The table is items_g1 with ref_id as key." }]),
 		])
 		expect(messages).toEqual([
@@ -404,9 +406,7 @@ describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)"
 
 	it("ON: pure-text assistant turns take the text path, not the tool lane", () => {
 		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
-		const messages = extractMessages([
-			msgEntry("assistant", [{ type: "text", text: "The answer is 42." }]),
-		])
+		const messages = extractMessages([msgEntry("assistant", [{ type: "text", text: "The answer is 42." }])])
 		expect(messages).toEqual([{ role: "assistant", content: "The answer is 42." }])
 	})
 })
@@ -2289,16 +2289,22 @@ describe("phase 1 strict-noise capture parity", () => {
 })
 
 describe("task-scope capture ([task] grammar + routing)", () => {
-	const fixture = JSON.parse(
-		readFileSync(join(__dirname, "testdata", "phase1-task-scope.json"), "utf-8"),
-	) as {
+	const fixture = JSON.parse(readFileSync(join(__dirname, "testdata", "phase1-task-scope.json"), "utf-8")) as {
 		shapes: Record<
 			string,
-			{ input: string; defaultScope: "personal" | "project"; expected: { personal: string[]; project: string[]; task: string[] } }
+			{
+				input: string
+				defaultScope: "personal" | "project"
+				expected: { personal: string[]; project: string[]; task: string[] }
+			}
 		>
 		flag_off_parity: Record<
 			string,
-			{ input: string; defaultScope: "personal" | "project"; expected: { personal: string[]; project: string[]; task?: string[] } }
+			{
+				input: string
+				defaultScope: "personal" | "project"
+				expected: { personal: string[]; project: string[]; task?: string[] }
+			}
 		>
 	}
 
@@ -2322,9 +2328,7 @@ describe("task-scope capture ([task] grammar + routing)", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
 			expect(routeTaskFacts(["A", "B"], false)).toEqual({ toProject: [], dropped: 2 })
-			expect(warn).toHaveBeenCalledWith(
-				expect.stringContaining("dropped 2 task-scope fact(s): no project context"),
-			)
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped 2 task-scope fact(s): no project context"))
 		} finally {
 			warn.mockRestore()
 		}
@@ -2352,21 +2356,35 @@ describe("receipts lane (KIMCHI_MEMORY_EXTRACTION_RECEIPTS)", () => {
 		expect(RECEIPTS_EXTRACTION_SUFFIX).toContain("expectation-failure")
 		expect(EXTRACTION_SYSTEM_PROMPT).not.toContain("expectation-failure")
 		// OFF composition must stay byte-identical to the flags-off V2 prompt.
-		const offComposed =
-			EXTRACTION_SYSTEM_PROMPT + (true ? TASK_SCOPE_EXTRACTION_SUFFIX : "") + ""
+		const offComposed = EXTRACTION_SYSTEM_PROMPT + (true ? TASK_SCOPE_EXTRACTION_SUFFIX : "") + ""
 		expect(offComposed).toBe(EXTRACTION_SYSTEM_PROMPT + TASK_SCOPE_EXTRACTION_SUFFIX)
 	})
 
 	it("strict-noise pattern blocks bare corrected-answer receipts when the flag is on", () => {
-		expect(keepForStore("The correct answer to the brand-attribute count question is 1145, not 1153.", { strictNoise: true })).toBe(false)
-		expect(keepForStore("The query on items_g2.prc_v2 returned 'no such column' — the schema dump lists only prc and prc_usd.", { strictNoise: true })).toBe(true)
-		expect(keepForStore("The correct answer to the brand-attribute count question is 1145, not 1153.", { strictNoise: false })).toBe(true)
+		expect(
+			keepForStore("The correct answer to the brand-attribute count question is 1145, not 1153.", {
+				strictNoise: true,
+			}),
+		).toBe(false)
+		expect(
+			keepForStore(
+				"The query on items_g2.prc_v2 returned 'no such column' — the schema dump lists only prc and prc_usd.",
+				{ strictNoise: true },
+			),
+		).toBe(true)
+		expect(
+			keepForStore("The correct answer to the brand-attribute count question is 1145, not 1153.", {
+				strictNoise: false,
+			}),
+		).toBe(true)
 	})
 })
 
 describe("splitDerivedTag (KIMCHI_MEMORY_FACT_CLASSES lane)", () => {
 	const FLG = "KIMCHI_MEMORY_FACT_CLASSES"
-	afterEach(() => { delete process.env[FLG] })
+	afterEach(() => {
+		delete process.env[FLG]
+	})
 
 	it("flag OFF: identity, no parsing (byte-parity)", () => {
 		expect(splitDerivedTag("[derived] Treating main_cat as top-level")).toEqual({
