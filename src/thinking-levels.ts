@@ -11,6 +11,8 @@
  * otherwise (canonical rank order).
  */
 
+import type { ThinkingLevelMap } from "@earendil-works/pi-ai"
+
 /** Canonical level order: `off < minimal < low < medium < high < xhigh < max`. */
 export const CANONICAL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const
 
@@ -29,6 +31,20 @@ export function normalizeThinkingLevels(levels: readonly string[]): string[] {
 			const rankB = LEVEL_RANK.get(b) ?? -1
 			return rankA - rankB
 		})
+}
+
+export function deriveThinkingLevelMap(curatedLevels: readonly string[], base: ThinkingLevelMap): ThinkingLevelMap {
+	const curated = normalizeThinkingLevels(curatedLevels)
+	// Curated-none: thinking exists but offers no distinct levels, so only the
+	// default (off) state stays reachable.
+	const reachable = new Set<string>(curated.length === 0 ? ["off"] : curated)
+	const map: ThinkingLevelMap = {}
+	for (const level of CANONICAL_THINKING_LEVELS) {
+		const translation = base[level]
+		if (!reachable.has(level)) map[level] = null
+		else if (translation !== undefined) map[level] = translation
+	}
+	return map
 }
 
 /**
