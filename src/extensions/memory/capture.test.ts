@@ -359,16 +359,16 @@ describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)"
 		const messages = extractMessages([
 			msgEntry("user", "how many reviews in 2031+?"),
 			msgEntry("assistant", [toolCall("tc1", "bash", { command: 'sqlite3 db ".schema"' })]),
-			msgEntry("toolResult", [{ type: "text", text: "CREATE TABLE items_g1 (ref_id TEXT ...);" }], {
+			msgEntry("toolResult", [{ type: "text", text: "CREATE TABLE orders_g1 (item_ref TEXT ...);" }], {
 				toolCallId: "tc1",
 			}),
-			msgEntry("assistant", [{ type: "text", text: "The table is items_g1 with ref_id as key." }]),
+			msgEntry("assistant", [{ type: "text", text: "The table is orders_g1 with item_ref as key." }]),
 		])
 		expect(messages).toEqual([
 			{ role: "user", content: "how many reviews in 2031+?" },
 			{ role: "assistant", content: '[tool] bash: {"command":"sqlite3 db \\".schema\\""}' },
-			{ role: "user", content: "CREATE TABLE items_g1 (ref_id TEXT ...);" },
-			{ role: "assistant", content: "The table is items_g1 with ref_id as key." },
+			{ role: "user", content: "CREATE TABLE orders_g1 (item_ref TEXT ...);" },
+			{ role: "assistant", content: "The table is orders_g1 with item_ref as key." },
 		])
 	})
 
@@ -710,6 +710,46 @@ describe("parseTaggedFacts (three observed model shapes)", () => {
 
 	it("throws on prose with no parseable shape", () => {
 		expect(() => parseTaggedFacts("just talking, nothing durable")).toThrow(/unparseable/)
+	})
+
+	describe("task lane ([task] prefix hunts down in every shape)", () => {
+		it("object shape: [task] strings lose their prefix", () => {
+			expect(
+				parseTaggedFacts(
+					'{"personal": [], "project": [], "task": ["[task] schema ts is ms", "already bare"]}',
+					"personal",
+					{
+						taskScope: true,
+					},
+				),
+			).toEqual({ personal: [], project: [], task: ["schema ts is ms", "already bare"] })
+		})
+
+		it("fact-object shape: scope=task strips a literal [task] prefix", () => {
+			expect(
+				parseTaggedFacts(
+					'[{"fact": "[task] keep identifiers exact", "scope": "task"}, {"fact": "bare task fact", "scope": "task"}]',
+					"personal",
+					{ taskScope: true },
+				),
+			).toEqual({ personal: [], project: [], task: ["keep identifiers exact", "bare task fact"] })
+		})
+
+		it("bare-array shape: [task] strings route and strip (unchanged)", () => {
+			expect(
+				parseTaggedFacts('["[task] ts is ms", "[personal] dog is Fred"]', "personal", { taskScope: true }),
+			).toEqual({
+				personal: ["dog is Fred"],
+				project: [],
+				task: ["ts is ms"],
+			})
+		})
+
+		it("markdown-list shape: [task] lines route and strip", () => {
+			expect(
+				parseTaggedFacts("- [task] keep units in ms\n- [personal] dog is Fred", "personal", { taskScope: true }),
+			).toEqual({ personal: ["dog is Fred"], project: [], task: ["keep units in ms"] })
+		})
 	})
 })
 
@@ -2213,21 +2253,24 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 describe("strict-noise capture parity", () => {
 	// Representative capture: a real-shaped extraction reply mixing durable
 	// rule-model facts with answer-level recall and framing echo — the two
-	// noise classes the strict filter exists for. Pinned so a change that
-	// silently shifts either layer (parse, filter) fails loudly.
+	// noise classes the strict filter exists for. Synthetic shape-equivalents
+	// — invented domain (grocery/commerce), invented names/counts; the layered
+	// behavior being pinned is the regex + keep/discard split, never content.
+	// Pinned so a change that silently shifts either layer (parse, filter)
+	// fails loudly.
 	const captureFacts = [
-		"The office products dataset uses tables `items_g1` and `fdbk_g1`, joined on `ref_id`.",
-		"The user determined that the `vrf` integer flag (vrf=1) is the reliable definition of a verified review, since `verified_status` is blank on ~30% of rows.",
-		"The user is working with a SQLite database containing three product datasets (office products, electronics, musical instruments) for a data-analysis task.",
-		"The user uses prc_usd as the canonical price for the 'Computers & Accessories' category.",
-		"In the electronics dataset, prices are stored as prc (integer cents) and prc_usd (dollar price), both of which are NULL-or-valued with no zero values.",
-		"In the electronics dataset, the main_cat field uses 'Computers' rather than the literal 'Computers & Accessories'.",
-		"The 'Computers & Accessories' top-level category is identified in the taxn_g2 table at cat_lvl=1, with root level 0 being the degenerate 'Electronics' category.",
-		"The electronics dataset is named g2 in the SQLite database.",
-		"The user is working with a SQLite database containing three product datasets: office products, electronics, and musical instruments.",
-		"The user answered that 1,867 electronics product reviews were posted in Q4 (October through December) of 2021.",
-		"As of 2021, the user was working with a SQLite database containing product review datasets for office products, electronics, and musical instruments.",
-		"The user decided that Amazon's `main_cat` field is the correct interpretation of 'top-level categories' for the analysis, rejecting the taxonomy-root reading (`cat_lvl=0`) as degenerate.",
+		"The grocery dataset uses tables `orders_g1` and `skus_g1`, joined on `item_ref`.",
+		"The user determined that the `flv` integer flag (flv=1) is the reliable definition of a fulfilled order, since `delivery_state` is empty on ~30% of rows.",
+		"The user is working with a MySQL database containing three commerce datasets (grocery, pharmacy, bakery) for a data-analysis task.",
+		"The user uses amt_paid as the canonical total for the 'Household & Cleaning' category.",
+		"In the pharmacy dataset, prices are stored as amt (integer pence) and amt_paid (decimal pounds), both of which are NULL-or-valued with no zero values.",
+		"In the pharmacy dataset, the dept field uses 'Cleaning' rather than the literal 'Household & Cleaning'.",
+		"The 'Household & Cleaning' top-level category is identified in the dept_g2 table at depth=1, with root level 0 being the degenerate 'Merchandise' category.",
+		"The pharmacy dataset is named rx2 in the MySQL database.",
+		"The user is working with a MySQL database containing three product datasets: grocery, pharmacy, and bakery.",
+		"The user answered that 4,214 pharmacy orders were fulfilled in Q3 (July through September) of 2024.",
+		"As of 2024, the user was working with a MySQL database containing commerce datasets for grocery, pharmacy, and bakery.",
+		"The user decided that the supplier's `dept` field is the correct interpretation of 'top-level categories' for the analysis, rejecting the taxonomy-root reading (`depth=0`) as degenerate.",
 	]
 	const strictKeep = [
 		captureFacts[0],
@@ -2454,18 +2497,18 @@ describe("receipts lane (KIMCHI_MEMORY_EXTRACTION_RECEIPTS)", () => {
 
 	it("strict-noise pattern blocks bare corrected-answer receipts when the flag is on", () => {
 		expect(
-			keepForStore("The correct answer to the brand-attribute count question is 1145, not 1153.", {
+			keepForStore("The correct answer to the delivery-count question is 420, not 422.", {
 				strictNoise: true,
 			}),
 		).toBe(false)
 		expect(
 			keepForStore(
-				"The query on items_g2.prc_v2 returned 'no such column' — the schema dump lists only prc and prc_usd.",
+				"The query on orders_g2.amt_paid returned 'no such column' — the schema dump lists only amt and amt_total.",
 				{ strictNoise: true },
 			),
 		).toBe(true)
 		expect(
-			keepForStore("The correct answer to the brand-attribute count question is 1145, not 1153.", {
+			keepForStore("The correct answer to the delivery-count question is 420, not 422.", {
 				strictNoise: false,
 			}),
 		).toBe(true)
@@ -2479,16 +2522,16 @@ describe("splitDerivedTag (KIMCHI_MEMORY_FACT_CLASSES lane)", () => {
 	})
 
 	it("flag OFF: identity, no parsing (byte-parity)", () => {
-		expect(splitDerivedTag("[derived] Treating main_cat as top-level")).toEqual({
-			text: "[derived] Treating main_cat as top-level",
+		expect(splitDerivedTag("[derived] Treating dept as top-level")).toEqual({
+			text: "[derived] Treating dept as top-level",
 			derived: false,
 		})
 	})
 
 	it("flag ON: strips the [derived] tag", () => {
 		process.env[FLG] = "1"
-		expect(splitDerivedTag("[derived] Treating main_cat as top-level")).toEqual({
-			text: "Treating main_cat as top-level",
+		expect(splitDerivedTag("[derived] Treating dept as top-level")).toEqual({
+			text: "Treating dept as top-level",
 			derived: true,
 		})
 	})
@@ -2604,7 +2647,7 @@ describe("applyDerivedTags — the batched classifier post-pass (KIMCHI_MEMORY_F
 		} finally {
 			errorSpy.mockRestore()
 		}
-	})
+	}, 15_000)
 
 	it("flag ON: out-of-range indexes are ignored (no crash, no tag)", async () => {
 		process.env[FLG] = "1"

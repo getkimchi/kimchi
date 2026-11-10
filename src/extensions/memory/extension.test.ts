@@ -1135,6 +1135,63 @@ describe("memory extension — digest selection gate", () => {
 		}
 	})
 
+	it("the digest floor widens the search to floor+1 (topK threads through) and selection runs above the floor", async () => {
+		process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES = "1"
+		const decisionFetch = selectorFetchImpl(["the user's dog is named Freya"])
+		const searchCalls: Array<number | undefined> = []
+		const searcher = {
+			search: vi.fn(async (_q: string, topK?: number) => {
+				searchCalls.push(topK)
+				return searchable()
+			}),
+		}
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => searcher,
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(["digest"]),
+				}),
+			}),
+		)
+		const turn1 = await start(startEvent("digest floor pin"), fakeCtx)
+		// 3 candidates strictly exceed the floor (1): the selection call ran.
+		expect(turn1?.systemPrompt).toContain("the user's dog is named Freya")
+		expect(turn1?.systemPrompt).not.toContain("greplier")
+		// Searched with the widened cap, not the store default (8) nor floor itself.
+		expect(searchCalls[0]).toBe(2)
+		delete process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES
+	})
+
+	it("at/under the floor the selector never runs (small stores keep recall)", async () => {
+		process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES = "3"
+		const decisionFetch = vi.fn(async () => {
+			throw new Error("must not be called")
+		})
+		const searchCalls: Array<number | undefined> = []
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({
+					search: vi.fn(async (_q: string, topK?: number) => {
+						searchCalls.push(topK)
+						return searchable()
+					}),
+				}),
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(["digest"]),
+				}),
+			}),
+		)
+		const turn1 = await start(startEvent("digest floor pin"), fakeCtx)
+		// 3 candidates == floor 3: threshold rule keeps all.
+		expect(turn1?.systemPrompt).toContain("greplier")
+		expect(searchCalls[0]).toBe(4)
+		delete process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES
+	})
+
 	it("the digest gate off (subset env): no selector call, threshold rule applies", async () => {
 		const decisionFetch = vi.fn(async () => {
 			throw new Error("must not be called")

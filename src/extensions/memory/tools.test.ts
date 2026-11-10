@@ -94,10 +94,10 @@ describe("save_memory tool", () => {
 		const { deps, saved } = saveDeps()
 		const result = await call(
 			createMemorySaveTool(deps),
-			"`prc_v2` is the post-migration price column; `prc` and `prc_usd` are stale.",
+			"`amt_total` is the post-migration total column; `amt` and `amt_paid` are stale.",
 		)
 		expect(saved).toEqual([
-			`${AUTHORED_PREFIX}\`prc_v2\` is the post-migration price column; \`prc\` and \`prc_usd\` are stale.`,
+			`${AUTHORED_PREFIX}\`amt_total\` is the post-migration total column; \`amt\` and \`amt_paid\` are stale.`,
 		])
 		expect(textOf(result)).toContain("Saved to memory:")
 	})

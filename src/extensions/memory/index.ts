@@ -876,16 +876,29 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				if (!writer) writer = await createMemoryBackend({ dbPath: memoryDbPath("personal") })
 				return writer
 			}
+			// The dedupe list is fetched once per registration and cached
+			// (invalidated on every write — the cached snapshots then feed
+			// checks inside createMemorySaveTool without an extra full getAll
+			// for every save_memory call).
+			let existingCache: string[] | undefined
 			pi.registerTool(
 				createMemorySaveTool({
 					write: async (text) => {
 						const w = await getWriter()
 						await w.add(text, { userId: MEMORY_USER_ID, infer: false })
+						if (existingCache) {
+							existingCache.push(text)
+						} else {
+							const { results } = await w.getAll({ filters: { user_id: MEMORY_USER_ID }, topK: 100_000 })
+							existingCache = results.map((r) => r.memory ?? "")
+						}
 					},
 					existing: async () => {
+						if (existingCache) return existingCache
 						const w = await getWriter()
 						const { results } = await w.getAll({ filters: { user_id: MEMORY_USER_ID }, topK: 100_000 })
-						return results.map((r) => r.memory ?? "")
+						existingCache = results.map((r) => r.memory ?? "")
+						return existingCache
 					},
 					isEnabled: memoryActive,
 				}),
