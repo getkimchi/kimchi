@@ -10,17 +10,48 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { type SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { invalidateJsonCache } from "../../config/json.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { getResourceSettingsPath, setResourceOverride } from "../../resources/store.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { type AttestEntryData, messageDigest, PII_ATTEST_ENTRY_TYPE } from "./attestation.js"
 import piiRedactionExtension from "./index.js"
 import { PII_REDACTION_EVENTS } from "./redaction-events.js"
-import { resetRedactorEngine } from "./redactor.js"
+import { getRedactionFingerprint, resetRedactorEngine } from "./redactor.js"
 import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
 import { resetTokenVaults, substituteTokens, vaultForSession } from "./vault.js"
+
+// Toggleable engine-analyze override for the attestation failure tests —
+// same pattern as redactor.test.ts: `null` (default) delegates to the real
+// engine, so every other test in this file exercises real redaction.
+const engineScanOverride = vi.hoisted(() => ({
+	scanImpl: null as ((text: string) => Promise<unknown>) | null,
+}))
+
+vi.mock("@bulkhead-ai/core", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@bulkhead-ai/core")>()
+	return {
+		...actual,
+		createEngine: (...args: Parameters<typeof actual.createEngine>) => {
+			const engine = actual.createEngine(...args)
+			if (!engineScanOverride.scanImpl) return engine
+			const overridden = Object.create(engine) as typeof engine
+			overridden.analyze = engineScanOverride.scanImpl as typeof engine.analyze
+			return overridden
+		},
+	}
+})
+
+// Toggleable getVersion override for the unreadable-build-version test:
+// `null` (default) delegates to the real one.
+const versionOverride = vi.hoisted(() => ({ version: null as string | null }))
+vi.mock("../../utils.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../utils.js")>()
+	return { ...actual, getVersion: () => versionOverride.version ?? actual.getVersion() }
+})
 
 // The hook-level contract for a broken settings block: the extension runner
 // (pi-coding-agent) catches handler rejections and DISCARDS their results,
@@ -648,5 +679,497 @@ describe("pii-redaction hooks — token render mode", () => {
 
 		await invoke("session_shutdown", {}, ctxFor("s1"))
 		expect(paint("call [EMAIL_ADDRESS_1]")).toBe("call [EMAIL_ADDRESS_1]")
+	})
+})
+
+// ─── Resume attestation ──────────────────────────────────────────────────────
+// A stored message is skipped by the resume request-walk only when the file
+// carries write-time evidence (clean scan, zero engine failures, under the
+// current detection fingerprint). Every case below fails if the
+// corresponding guard is removed: trust without evidence, fingerprint
+// match, failure handling, healing, seeding, and isolation.
+
+describe("pii-redaction attestation — resume seeding from write-time evidence", () => {
+	let codingAgentDir: string
+
+	// Assembled, not literal (see the fixture-assembly note at the top).
+	const EMAIL = ["attest.user", "example.org"].join("@")
+	const currentFp = () => getRedactionFingerprint()
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "pii-attest-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		writeFileSync(join(codingAgentDir, "settings.json"), "{}")
+		invalidateJsonCache(getResourceSettingsPath())
+		resetOrgPolicyForTests()
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, true)
+		resetRedactorEngine()
+		resetTokenVaults()
+		engineScanOverride.scanImpl = null
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		resetOrgPolicyForTests()
+		resetRedactorEngine()
+		resetTokenVaults()
+		engineScanOverride.scanImpl = null
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	/** A ctx whose sessionManager serves `entries` from getEntries(). */
+	const ctxForEntries = (entries: unknown[]) =>
+		createContext({ sessionManager: { getEntries: () => entries as SessionEntry[] } })
+
+	const messageEntry = (id: string, message: unknown) => ({ type: "message", id, message })
+	const attestEntry = (items: { id: string; message: unknown }[], fp = currentFp()) => ({
+		type: "custom",
+		customType: PII_ATTEST_ENTRY_TYPE,
+		data: { v: 1, fp, ids: items.map(({ id, message }) => ({ id, d: messageDigest(message) })) },
+	})
+
+	it("seeds attested messages — the first resumed request performs no scan", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		// Raw PII in the stored message: a scan would redact it, so the raw
+		// text surviving to the payload is the proof that no scan happened.
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		const tokenized = { role: "assistant", content: "already [REDACTED-EMAIL_ADDRESS] and [EMAIL_ADDRESS_3]" }
+		const entries = [
+			messageEntry("m1", stored),
+			messageEntry("m2", tokenized),
+			attestEntry([
+				{ id: "m1", message: stored },
+				{ id: "m2", message: tokenized },
+			]),
+		]
+		const ctx = ctxForEntries(entries)
+
+		await invoke("session_start", { reason: "resume" }, ctx)
+		emitted.length = 0
+
+		const [result] = (await invoke("before_provider_request", { payload: { messages: [stored, tokenized] } }, ctx)) as [
+			{ messages: unknown[] },
+		]
+		expect(emitted).toEqual([])
+		expect(JSON.stringify(result)).toContain(EMAIL)
+		expect(result.messages[0]).toBe(stored)
+	})
+
+	it("scans and redacts unattested restored messages containing raw secrets", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		// The file DOES carry attestation — for a different, clean message.
+		// m1 itself is unattested and must still be scanned.
+		const cleanMsg = { role: "assistant", content: "clean" }
+		const entries = [
+			messageEntry("m0", cleanMsg),
+			messageEntry("m1", stored),
+			attestEntry([{ id: "m0", message: cleanMsg }]),
+		]
+		const ctx = ctxForEntries(entries)
+
+		await invoke("session_start", { reason: "resume" }, ctx)
+		const [result] = (await invoke("before_provider_request", { payload: { messages: [stored] } }, ctx)) as [
+			{ messages: unknown[] },
+		]
+		const text = JSON.stringify(result)
+		expect(text).not.toContain(EMAIL)
+		expect(text).toContain("EMAIL_ADDRESS")
+		expect(emitted.length).toBeGreaterThan(0)
+	})
+
+	it("does not seed attest entries made under a different detection fingerprint", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		// Evidence from another policy/build: the fingerprint never matches.
+		const entries = [messageEntry("m1", stored), attestEntry([{ id: "m1", message: stored }], "0".repeat(16))]
+		const ctx = ctxForEntries(entries)
+
+		await invoke("session_start", { reason: "resume" }, ctx)
+		const [result] = (await invoke("before_provider_request", { payload: { messages: [stored] } }, ctx)) as [
+			{ messages: unknown[] },
+		]
+		expect(JSON.stringify(result)).not.toContain(EMAIL)
+		expect(emitted.length).toBeGreaterThan(0)
+	})
+
+	it("does not attest a message whose message_end scan failed open", async () => {
+		const h = makePi()
+		piiRedactionExtension(h.api)
+		engineScanOverride.scanImpl = () => Promise.reject(new Error("engine exploded"))
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const stored = { role: "assistant", content: `mail ${EMAIL}` }
+		const entries = [messageEntry("m1", stored)]
+
+		const [replaced] = (await h.invoke("message_end", { message: stored })) as [{ message: typeof stored }]
+		// Fail-open semantics preserved: original text returned.
+		expect(replaced.message.content).toContain(EMAIL)
+
+		await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctxForEntries(entries))
+		expect(h.getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toEqual([])
+		errSpy.mockRestore()
+	})
+
+	it("does not cache a request scan that failed open — the next request rescans (regression)", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+		let scans = 0
+		engineScanOverride.scanImpl = (text) => {
+			// The walker scans every string in the message object (`role`
+			// included) — count only the content string.
+			if (text.includes("@")) scans += 1
+			return Promise.reject(new Error("engine exploded"))
+		}
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		// A fresh payload per request, as the runner builds them: the hook
+		// replaces payload.messages with the redacted array, so reusing one
+		// event object would scan the redacted clone instead of `stored`.
+		const makeEvent = () => ({ payload: { messages: [stored] } })
+
+		await invoke("before_provider_request", makeEvent())
+		expect(scans).toBe(1)
+		await invoke("before_provider_request", makeEvent())
+		// The pre-existing bug cached the fail-open result: the second
+		// request was a cache hit and the raw text kept flowing.
+		expect(scans).toBe(2)
+		errSpy.mockRestore()
+	})
+
+	it("heals an unattested session: one clean scan, attested at turn_end, seeded on the next resume", async () => {
+		const first = makePi()
+		piiRedactionExtension(first.api)
+
+		const stored = { role: "user", content: "nothing sensitive here" }
+		const entries = [messageEntry("m1", stored)]
+		const ctx = ctxForEntries(entries)
+
+		// One clean full scan of previously-unattested history.
+		await first.invoke("before_provider_request", { payload: { messages: [stored] } }, ctx)
+		await first.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)
+		const appended = first.getAppendedEntries<AttestEntryData>(PII_ATTEST_ENTRY_TYPE)
+		expect(appended).toEqual([{ v: 1, fp: currentFp(), ids: [{ id: "m1", d: messageDigest(stored) }] }])
+
+		// Fresh process, fresh objects from the same file: the attest entry
+		// now makes the first request scan-free.
+		const restored = structuredClone(stored)
+		const entries2 = [messageEntry("m1", restored), attestEntry([{ id: "m1", message: restored }])]
+		const second = makePi()
+		piiRedactionExtension(second.api)
+		let scans = 0
+		engineScanOverride.scanImpl = () => {
+			scans += 1
+			return Promise.resolve([])
+		}
+		const ctx2 = ctxForEntries(entries2)
+		await second.invoke("session_start", { reason: "resume" }, ctx2)
+		await second.invoke("before_provider_request", { payload: { messages: [restored] } }, ctx2)
+		expect(scans).toBe(0)
+		expect(second.emitted).toEqual([])
+	})
+
+	it("never attests messages written while redaction is disabled", async () => {
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, false)
+		const h = makePi()
+		piiRedactionExtension(h.api)
+
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		// message_end with the resource off: no redaction, no evidence.
+		await h.invoke("message_end", { message: stored })
+
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, true)
+		const entries = [messageEntry("m1", stored)]
+		await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctxForEntries(entries))
+		expect(h.getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toEqual([])
+	})
+
+	it("seeds only for startup/resume/fork — never reload or new", async () => {
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		for (const [reason, shouldSeed] of [
+			["reload", false],
+			["new", false],
+			["startup", true],
+			["fork", true],
+		] as const) {
+			const h = makePi()
+			piiRedactionExtension(h.api)
+			// Fresh object per iteration: the module-level cache is shared.
+			const msg = structuredClone(stored)
+			const ctx = ctxForEntries([messageEntry("m1", msg), attestEntry([{ id: "m1", message: msg }])])
+			await h.invoke("session_start", { reason }, ctx)
+			h.emitted.length = 0
+			await h.invoke("before_provider_request", { payload: { messages: [msg] } }, ctx)
+			if (shouldSeed) expect(h.emitted).toEqual([])
+			else expect(h.emitted.length).toBeGreaterThan(0)
+		}
+	})
+
+	it("ignores forged or malformed attest entries without throwing", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		const entries = [
+			messageEntry("m1", stored),
+			{ type: "custom", id: "c1", customType: "other", data: {} },
+			// Wrong schema version.
+			{
+				type: "custom",
+				customType: PII_ATTEST_ENTRY_TYPE,
+				data: { v: 2, fp: currentFp(), ids: [{ id: "m1", d: "x" }] },
+			},
+			// ids not an array.
+			{ type: "custom", customType: PII_ATTEST_ENTRY_TYPE, data: { v: 1, fp: currentFp(), ids: "m1" } },
+			// non-string ids.
+			{ type: "custom", customType: PII_ATTEST_ENTRY_TYPE, data: { v: 1, fp: currentFp(), ids: [42] } },
+			// id of a non-message entry.
+			{ type: "custom", customType: PII_ATTEST_ENTRY_TYPE, data: { v: 1, fp: currentFp(), ids: ["c1"] } },
+			// id matching no entry at all.
+			{ type: "custom", customType: PII_ATTEST_ENTRY_TYPE, data: { v: 1, fp: currentFp(), ids: ["nope"] } },
+			// missing data.
+			{ type: "custom", customType: PII_ATTEST_ENTRY_TYPE, data: undefined },
+			// different custom type entirely.
+			{ type: "custom", customType: "something-else", data: { v: 1, fp: currentFp(), ids: ["m1"] } },
+		]
+		const ctx = ctxForEntries(entries)
+
+		await invoke("session_start", { reason: "resume" }, ctx)
+		const [result] = (await invoke("before_provider_request", { payload: { messages: [stored] } }, ctx)) as [
+			{ messages: unknown[] },
+		]
+		expect(JSON.stringify(result)).not.toContain(EMAIL)
+		expect(emitted.length).toBeGreaterThan(0)
+	})
+
+	it("scans a message whose reference did not come from the session entries (identity break)", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		const entries = [messageEntry("m1", stored), attestEntry([{ id: "m1", message: stored }])]
+		const ctx = ctxForEntries(entries)
+
+		await invoke("session_start", { reason: "resume" }, ctx)
+		// Same content, different object: the seeded cache is keyed by
+		// reference, so this is a miss and must be scanned.
+		const clone = structuredClone(stored)
+		const [result] = (await invoke("before_provider_request", { payload: { messages: [clone] } }, ctx)) as [
+			{ messages: unknown[] },
+		]
+		expect(JSON.stringify(result)).not.toContain(EMAIL)
+	})
+
+	it("keeps attestation state isolated between two concurrent sessionManagers", async () => {
+		const h = makePi()
+		const { invoke, emitted, getAppendedEntries } = h
+		piiRedactionExtension(h.api)
+
+		const msgA = { role: "user", content: "clean A" }
+		const msgB = { role: "user", content: `mail ${EMAIL}` }
+		const ctxA = ctxForEntries([messageEntry("a1", msgA)])
+		const ctxB = ctxForEntries([messageEntry("b1", msgB)])
+
+		// Interleaved at the production await points.
+		await invoke("session_start", { reason: "resume" }, ctxA)
+		await invoke("before_provider_request", { payload: { messages: [msgA] } }, ctxA) // heals A
+		await invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctxB) // B has no evidence
+		expect(getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toEqual([])
+
+		await invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctxA) // A attests only its own id
+		expect(getAppendedEntries<AttestEntryData>(PII_ATTEST_ENTRY_TYPE)).toEqual([
+			{ v: 1, fp: currentFp(), ids: [{ id: "a1", d: messageDigest(msgA) }] },
+		])
+
+		// B's message was never seeded by A's evidence: still scanned.
+		await invoke("before_provider_request", { payload: { messages: [msgB] } }, ctxB)
+		expect(emitted.length).toBeGreaterThan(0)
+	})
+
+	it("survives a stale extension context at turn_end — nothing attested, no throw", async () => {
+		const h = makePi()
+		piiRedactionExtension(h.api)
+
+		const stored = { role: "user", content: "clean" }
+		const ctx = ctxForEntries([messageEntry("m1", stored)])
+		await h.invoke("before_provider_request", { payload: { messages: [stored] } }, ctx) // heal
+
+		h.invalidate()
+		await expect(h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)).resolves.toBeDefined()
+		expect(h.getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toEqual([])
+	})
+
+	it("never attests a stored message whose clean scan still redacts something (raw PII on disk)", async () => {
+		const h = makePi()
+		piiRedactionExtension(h.api)
+
+		// A legacy file: the raw email is on disk. The request scan redacts
+		// it for the provider, but the stored object still holds raw text —
+		// so the scan output can never match the stored content, and the
+		// message must never be attested. (Attesting it would seed the raw
+		// stored form on the next resume.)
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		const ctx = ctxForEntries([messageEntry("m1", stored)])
+
+		const [result] = (await h.invoke("before_provider_request", { payload: { messages: [stored] } }, ctx)) as [
+			{ messages: unknown[] },
+		]
+		expect(JSON.stringify(result)).not.toContain(EMAIL)
+		await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)
+		expect(h.getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toEqual([])
+	})
+
+	it("does not seed an attest entry whose recorded digest does not match the stored content", async () => {
+		const h = makePi()
+		piiRedactionExtension(h.api)
+
+		// Forged: right fingerprint, right id, wrong digest. The seed-side
+		// digest verification must fail closed into a rescan.
+		const stored = { role: "user", content: `mail ${EMAIL}` }
+		const entries = [
+			messageEntry("m1", stored),
+			{
+				type: "custom",
+				customType: PII_ATTEST_ENTRY_TYPE,
+				data: { v: 1, fp: currentFp(), ids: [{ id: "m1", d: "0".repeat(64) }] },
+			},
+		]
+		const ctx = ctxForEntries(entries)
+
+		await h.invoke("session_start", { reason: "resume" }, ctx)
+		const [result] = (await h.invoke("before_provider_request", { payload: { messages: [stored] } }, ctx)) as [
+			{ messages: unknown[] },
+		]
+		expect(JSON.stringify(result)).not.toContain(EMAIL)
+	})
+
+	it("appends exactly one attest entry for a second turn_end over unchanged entries", async () => {
+		const h = makePi()
+		piiRedactionExtension(h.api)
+
+		const stored = { role: "assistant", content: "clean text" }
+		const ctx = ctxForEntries([messageEntry("m1", stored)])
+		await h.invoke("message_end", { message: stored })
+		await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)
+		await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)
+		expect(h.getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toHaveLength(1)
+	})
+
+	it("disables attestation when the build version is unreadable", async () => {
+		versionOverride.version = "unknown"
+		resetRedactorEngine()
+		try {
+			// The fingerprint degrades to the disabled sentinel.
+			expect(getRedactionFingerprint()).toBe("")
+
+			const h = makePi()
+			piiRedactionExtension(h.api)
+			const stored = { role: "assistant", content: "clean text" }
+			const ctx = ctxForEntries([messageEntry("m1", stored)])
+			await h.invoke("message_end", { message: stored })
+			await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)
+			// No evidence recorded, nothing attested, nothing seedable.
+			expect(h.getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toEqual([])
+		} finally {
+			versionOverride.version = null
+			resetRedactorEngine()
+		}
+	})
+
+	it("fails safe when an earlier message_end handler returns a fresh replacement object", async () => {
+		const h = makePi()
+		// The runner chains message_end handlers: an earlier handler's
+		// returned replacement becomes the message later handlers receive,
+		// but the ORIGINAL event.message is what gets persisted (in-place).
+		// Simulate that chain manually around pii-redaction's handler.
+		h.api.on("message_end", (event: unknown) => {
+			const msg = (event as { message: { role: string } }).message
+			return { message: { ...msg } } as never
+		})
+		piiRedactionExtension(h.api)
+		const handlers = h.getHandlers("message_end")
+		expect(handlers.length).toBe(2)
+
+		const stored = { role: "assistant", content: "clean text" }
+		const runnerCtx = createContext()
+		const earlier = (await handlers[0]({ message: stored }, runnerCtx)) as unknown as {
+			message: typeof stored
+		}
+		expect(earlier.message).not.toBe(stored) // a fresh replacement object
+
+		// pii-redaction's handler receives the replacement — its evidence
+		// keys the intermediate object, not the one that persists.
+		await handlers[1]({ message: earlier.message }, runnerCtx)
+
+		const ctx = ctxForEntries([messageEntry("m1", stored)])
+		await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)
+		// Fail-safe: no write-time attest happened.
+		expect(h.getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toEqual([])
+
+		// Healing recovers: the next request scans the persisted original,
+		// re-keys the evidence, and the following turn end attests it.
+		await h.invoke("before_provider_request", { payload: { messages: [stored] } }, ctx)
+		await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)
+		expect(h.getAppendedEntries<AttestEntryData>(PII_ATTEST_ENTRY_TYPE)).toHaveLength(1)
+	})
+
+	it("contract: real SessionManager round-trip — attest persists, identity holds, context untouched", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pii-attest-sm-"))
+		const sm = SessionManager.create(dir, dir)
+		const stored = { role: "user", content: [{ type: "text", text: `mail ${EMAIL}` }], timestamp: 1 }
+		const entryId = sm.appendMessage(stored as never)
+		sm.appendCustomEntry(PII_ATTEST_ENTRY_TYPE, {
+			v: 1,
+			fp: currentFp(),
+			ids: [{ id: entryId, d: messageDigest(stored) }],
+		})
+		const file = sm.getSessionFile()
+		if (!file) throw new Error("session file missing")
+
+		const reopened = SessionManager.open(file, dir)
+		const entries = reopened.getEntries() as Array<{
+			type: string
+			id?: string
+			message?: unknown
+			customType?: string
+			data?: unknown
+		}>
+
+		// The identity chain the seeding relies on: context messages ARE the
+		// entry message objects, so seeding keyed on entry.message hits at
+		// request time. Pins the upstream behavior against drift.
+		const ctxMsgs = reopened.buildSessionContext().messages
+		const msgEntries = entries.filter((e) => e.type === "message")
+		expect(msgEntries).toHaveLength(1)
+		expect(ctxMsgs).toHaveLength(1)
+		expect(ctxMsgs[0]).toBe(msgEntries[0].message)
+
+		// The attest entry round-trips as a custom entry and never enters
+		// the LLM context (contextMessages count already proves it).
+		const attest = entries.find((e) => e.type === "custom")
+		expect(attest?.customType).toBe(PII_ATTEST_ENTRY_TYPE)
+
+		// End-to-end over the real file: seed, then a scan-free request.
+		const h = makePi()
+		const { invoke, emitted } = h
+		piiRedactionExtension(h.api)
+		const ctx = ctxForEntries(entries)
+		await invoke("session_start", { reason: "resume" }, ctx)
+		const [result] = (await invoke(
+			"before_provider_request",
+			{ payload: { messages: [msgEntries[0].message] } },
+			ctx,
+		)) as [{ messages: unknown[] }]
+		expect(emitted).toEqual([])
+		expect(JSON.stringify(result)).toContain(EMAIL)
+
+		rmSync(dir, { recursive: true, force: true })
 	})
 })

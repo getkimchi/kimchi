@@ -139,6 +139,54 @@ presentation-only, to the same client that already saw the session's
 originals, and it extends past vault deletion by at most one turn's
 remainder.
 
+## Resume trust (attestation)
+
+Resuming a session used to re-scan the entire restored history through the
+detection engine on the first request — the redaction cache is keyed by
+message object reference and starts cold. Since the write path already
+scrubs every persisted message, that rescan re-proved a property the
+pipeline guarantees. Resume attestation removes that cost without
+weakening the guarantee:
+
+- Every scan that completes with **zero engine failures** records evidence
+  on the message object: the detection fingerprint (policy, built-in and
+  custom patterns, build version) and a digest of the scan output. At each
+  turn end one `pii-redaction/attest` custom entry persists the ids of the
+  turn's clean-scrubbed messages. Custom entries never enter LLM context.
+- On startup, resume, or fork, attested ids under the **current**
+  fingerprint seed the request-walk cache. Seeded history is never
+  rescanned — content-independent, so token-heavy sessions benefit as
+  much as clean ones.
+- Everything else falls back to the full rescan: legacy files with no
+  attest entries, fail-open scans (engine error or settle timeout returns
+  the original text), messages written while redaction was off, a policy/
+  pattern/build change (fingerprint mismatch), content mutated after the
+  scan (digest mismatch), or an unreadable build version (attestation
+  disabled outright).
+- Healing applies once the stored content IS a scan fixed point: a message
+  that already matches what a clean scan produces (written under
+  redaction, or a file whose content was scrubbed before this build) pays
+  one rescan and is attested at the next turn end. A stored message that
+  still contains what the policy redacts — raw PII on disk in a legacy or
+  hand-edited file — is NEVER attested: attesting it would seed its raw
+  stored form on the next resume. It is rescanned on the first request of
+  every resume, by design.
+- Trust boundary: the local session file, the same boundary as the vault
+  seed above. A forged attest entry in a hand-edited or foreign file can
+  only skip scrubbing of that file's own content.
+
+### Perf-gate fixtures
+
+The resume instruction-count gate needs its fixture to carry attestation
+under the same fingerprint the gate run uses. Produce it through the real
+write path: run a session with redaction enabled (and the gate's policy)
+to the target size, quit, and snapshot the file — the turn-end attest
+entries are part of it. A fixture whose messages were already scrubbed
+(token- or marker-shaped content) also heals with one resume-then-turn
+round. A fixture whose
+attest entries were written by a different build or policy stays
+unattested by design and measures the fallback path.
+
 ## Failure modes (all degrade toward the token, never toward PII)
 
 - No vault for a session (unknown id, markers mode, settings typo degrading

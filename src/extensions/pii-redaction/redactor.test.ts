@@ -11,6 +11,7 @@ import { getDefaultExcludedEntities } from "./entity-tiers.js"
 import {
 	applyCustomPatterns,
 	getRedactionConfigError,
+	getRedactionFingerprint,
 	isGenericLocalPart,
 	isNonIdentifyingDetection,
 	isNonIdentifyingEmail,
@@ -1621,5 +1622,124 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
 		expect(errSpy.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(/dropped/)
 		errSpy.mockRestore()
+	})
+})
+
+// ─── Attestation fingerprint ─────────────────────────────────────────────────
+// The fingerprint is the identity of "what a clean scan depends on": an
+// attestation made under one fingerprint must only be trusted when a later
+// scan would find exactly the same things. Render mode is excluded (marker
+// and token outputs are mutually idempotent); policy, built-in patterns, and
+// the build version are not.
+
+describe("getRedactionFingerprint — attestation identity", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-fp-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
+	})
+
+	afterEach(() => {
+		resetOrgPolicyForTests()
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	function writeSettings(redaction: unknown): void {
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
+		invalidateJsonCache(getResourceSettingsPath())
+	}
+
+	it("is stable for a fixed policy and ignores the render mode", () => {
+		writeSettings({})
+		const base = getRedactionFingerprint()
+		expect(getRedactionFingerprint()).toBe(base)
+
+		writeSettings({ renderMode: "markers" })
+		expect(getRedactionFingerprint()).toBe(base)
+		writeSettings({ renderMode: "tokens" })
+		expect(getRedactionFingerprint()).toBe(base)
+	})
+
+	it("changes when excludedEntities change", () => {
+		writeSettings({})
+		const base = getRedactionFingerprint()
+		writeSettings({ excludedEntities: ["GUID"] })
+		const withGuid = getRedactionFingerprint()
+		expect(withGuid).not.toBe(base)
+		writeSettings({ excludedEntities: ["GUID", "LOCAL_PATH"] })
+		expect(getRedactionFingerprint()).not.toBe(withGuid)
+	})
+
+	it("changes with entity/category toggles and with user custom entities", () => {
+		writeSettings({})
+		const base = getRedactionFingerprint()
+
+		// EMAIL_ADDRESS is default-on; turning it off must invalidate.
+		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
+		expect(getRedactionFingerprint()).not.toBe(base)
+
+		// Category toggle — the coarse admin unit.
+		writeSettings({ categories: { emails: "on" } })
+		expect(getRedactionFingerprint()).toBe(base) // on is the default state
+
+		// A user custom entity compiles a new pattern in.
+		writeSettings({ customEntities: [{ name: "ACME_ID", category: "identity_documents", pattern: "ACME-\\d{4,}" }] })
+		const withAcme = getRedactionFingerprint()
+		expect(withAcme).not.toBe(base)
+
+		// Editing the pattern's shape also changes it.
+		writeSettings({
+			customEntities: [{ name: "ACME_ID", category: "identity_documents", pattern: "ACME-\\d{6,}" }],
+		})
+		expect(getRedactionFingerprint()).not.toBe(withAcme)
+
+		// Turning the custom entity off drops the pattern again. This may
+		// still differ from `base` (the OFF state is recorded in the disabled
+		// set) — over-invalidation only costs a rescan, never a leak.
+		writeSettings({
+			customEntities: [{ name: "ACME_ID", category: "identity_documents", pattern: "ACME-\\d{4,}" }],
+			entities: { ACME_ID: "off" },
+		})
+		expect(getRedactionFingerprint()).not.toBe(withAcme)
+	})
+
+	it("changes when the org policy changes", async () => {
+		writeSettings({})
+		const base = getRedactionFingerprint()
+		await setOrgPolicyForTests({ redaction: { categories: { emails: "KIMCHI_REDACTION_STATE_OFF" } } })
+		expect(getRedactionFingerprint()).not.toBe(base)
+	})
+
+	it("a measured pass reports the fingerprint of the snapshot it actually used", async () => {
+		writeSettings({})
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		// analyze() returns a list of { detections } — an empty list is a
+		// valid clean result; only the fingerprint is under test here.
+		engineScanOverride.scanImpl = async () => {
+			await gate
+			return []
+		}
+		const pending = redactObjectStringsMeasured({ text: "nothing sensitive" })
+
+		// Policy changes while the scan is suspended: the in-flight pass
+		// keeps the snapshot it resolved at entry.
+		writeSettings({ excludedEntities: ["GUID"] })
+		const afterChange = getRedactionFingerprint()
+		release()
+		const measurement = await pending
+		expect(measurement.fingerprint).not.toBe(afterChange)
+
+		writeSettings({})
+		expect(measurement.fingerprint).toBe(getRedactionFingerprint())
 	})
 })
