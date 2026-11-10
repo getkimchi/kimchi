@@ -160,7 +160,7 @@ const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((too
  * which users read as a connector/auth failure and start re-authorizing.
  */
 const PLAN_MODE_MCP_NOTE =
-	"\n\nPlan mode is active: the `mcp` gateway and all non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. All of them work again after the user leaves plan mode. If the user's request needs an MCP tool, prefer a read-only one if it does the job; otherwise say it is unavailable in plan mode instead of reporting a connection or login problem."
+	"\n\nPlan mode is active: the `mcp` gateway and all non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Hidden tools work again after the user leaves plan mode. If the user's request needs an MCP tool, prefer a read-only one if it does the job; otherwise say it is unavailable in plan mode instead of reporting a connection or login problem."
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
