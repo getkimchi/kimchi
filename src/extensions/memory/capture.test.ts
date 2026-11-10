@@ -2209,41 +2209,56 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 	})
 })
 
-describe("phase 1 strict-noise capture parity", () => {
-	const fixtureDir = join(__dirname, "testdata")
-	const fixture = JSON.parse(readFileSync(join(fixtureDir, "phase1-capture-parity.json"), "utf-8")) as {
-		facts: string[]
-		strict_keep: string[]
-	}
-	const baseline = JSON.parse(readFileSync(join(fixtureDir, "phase1-baseline-metrics.json"), "utf-8")) as {
-		aggregate: { rule_precision: number }
-	}
+describe("strict-noise capture parity", () => {
+	// Representative capture: a real-shaped extraction reply mixing durable
+	// rule-model facts with answer-level recall and framing echo — the two
+	// noise classes the strict filter exists for. Pinned so a change that
+	// silently shifts either layer (parse, filter) fails loudly.
+	const captureFacts = [
+		"The office products dataset uses tables `items_g1` and `fdbk_g1`, joined on `ref_id`.",
+		"The user determined that the `vrf` integer flag (vrf=1) is the reliable definition of a verified review, since `verified_status` is blank on ~30% of rows.",
+		"The user is working with a SQLite database containing three product datasets (office products, electronics, musical instruments) for a data-analysis task.",
+		"The user uses prc_usd as the canonical price for the 'Computers & Accessories' category.",
+		"In the electronics dataset, prices are stored as prc (integer cents) and prc_usd (dollar price), both of which are NULL-or-valued with no zero values.",
+		"In the electronics dataset, the main_cat field uses 'Computers' rather than the literal 'Computers & Accessories'.",
+		"The 'Computers & Accessories' top-level category is identified in the taxn_g2 table at cat_lvl=1, with root level 0 being the degenerate 'Electronics' category.",
+		"The electronics dataset is named g2 in the SQLite database.",
+		"The user is working with a SQLite database containing three product datasets: office products, electronics, and musical instruments.",
+		"The user answered that 1,867 electronics product reviews were posted in Q4 (October through December) of 2021.",
+		"As of 2021, the user was working with a SQLite database containing product review datasets for office products, electronics, and musical instruments.",
+		"The user decided that Amazon's `main_cat` field is the correct interpretation of 'top-level categories' for the analysis, rejecting the taxonomy-root reading (`cat_lvl=0`) as degenerate.",
+	]
+	const strictKeep = [
+		captureFacts[0],
+		captureFacts[1],
+		captureFacts[3],
+		captureFacts[4],
+		captureFacts[5],
+		captureFacts[6],
+		captureFacts[7],
+		captureFacts[11],
+	]
 
-	it("rubric + baselines stayed frozen (grading floor is reproducible, not remembered)", () => {
-		expect(baseline.aggregate.rule_precision).toBe(0.619)
-		expect(existsSync(join(fixtureDir, "phase1-rubric.md"))).toBe(true)
-	})
-
-	it("layer 1 (extraction output): frozen markdown reply parses to the pinned 12 facts in order", () => {
-		const txt = readFileSync(join(fixtureDir, "phase1-capture-parity.txt"), "utf-8")
+	it("layer 1 (extraction output): markdown reply parses to the fact list in order", () => {
+		const txt = captureFacts.map((f) => `- [personal] ${f}`).join("\n")
 		const parsed = parseTaggedFacts(txt, "personal")
 		expect(parsed.project).toEqual([])
-		expect(parsed.personal).toEqual(fixture.facts)
+		expect(parsed.personal).toEqual(captureFacts)
 	})
 
-	it("layer 2 (post-filter store): flag OFF keeps all 12 Phase 1 facts byte-parity", () => {
+	it("layer 2 (post-filter store): flag OFF keeps every fact (byte-parity)", () => {
 		vi.stubEnv("KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE", "")
 		try {
-			const kept = fixture.facts.filter((f) => keepForStore(f, { strictNoise: false }))
-			expect(kept).toEqual(fixture.facts)
+			const kept = captureFacts.filter((f) => keepForStore(f, { strictNoise: false }))
+			expect(kept).toEqual(captureFacts)
 		} finally {
 			vi.unstubAllEnvs()
 		}
 	})
 
-	it("flag ON rejects the three Phase 1 noise classes and keeps exactly the 8 rule facts", () => {
-		const kept = fixture.facts.filter((f) => keepForStore(f, { strictNoise: true }))
-		expect(kept).toEqual(fixture.strict_keep)
+	it("flag ON rejects the noise classes and keeps exactly the rule facts", () => {
+		const kept = captureFacts.filter((f) => keepForStore(f, { strictNoise: true }))
+		expect(kept).toEqual(strictKeep)
 	})
 
 	it("rejections hit answer-level recall, framing echo, and extractor meta text", () => {
@@ -2289,33 +2304,110 @@ describe("phase 1 strict-noise capture parity", () => {
 })
 
 describe("task-scope capture ([task] grammar + routing)", () => {
-	const fixture = JSON.parse(readFileSync(join(__dirname, "testdata", "phase1-task-scope.json"), "utf-8")) as {
-		shapes: Record<
-			string,
-			{
-				input: string
-				defaultScope: "personal" | "project"
-				expected: { personal: string[]; project: string[]; task: string[] }
-			}
-		>
-		flag_off_parity: Record<
-			string,
-			{
-				input: string
-				defaultScope: "personal" | "project"
-				expected: { personal: string[]; project: string[]; task?: string[] }
-			}
-		>
+	// Synthetic and domain-generic on purpose: the parser contract is grammar
+	// (tag placement, output shape, lane precedence), not content.
+	type Scope = "personal" | "project"
+	const shapes: Record<
+		string,
+		{ input: string; defaultScope: Scope; expected: { personal: string[]; project: string[]; task: string[] } }
+	> = {
+		markdown: {
+			input:
+				"- [personal] The user prefers four-space indentation.\n" +
+				"- [task] In the ledger store, `qty` counts units and `cmp` counts minor currency units.\n" +
+				"- [project] The invoicing service owns the ledger tables.",
+			defaultScope: "personal",
+			expected: {
+				personal: ["The user prefers four-space indentation."],
+				project: ["The invoicing service owns the ledger tables."],
+				task: ["In the ledger store, `qty` counts units and `cmp` counts minor currency units."],
+			},
+		},
+		array_strings_keeps_default_scope: {
+			input: JSON.stringify([
+				"[task] Timestamps in the ledger store are milliseconds since epoch",
+				"[personal] The user keeps notes in Org mode",
+				"The audit ledger uses snake_case column names",
+			]),
+			defaultScope: "project",
+			expected: {
+				personal: ["The user keeps notes in Org mode"],
+				project: ["The audit ledger uses snake_case column names"],
+				task: ["Timestamps in the ledger store are milliseconds since epoch"],
+			},
+		},
+		fact_objects: {
+			input: JSON.stringify([
+				{ fact: "Identifiers in the ledger store use the `entry_` prefix", scope: "task" },
+				{ fact: "The user reviews merges on Fridays", scope: "personal" },
+			]),
+			defaultScope: "project",
+			expected: {
+				personal: ["The user reviews merges on Fridays"],
+				project: [],
+				task: ["Identifiers in the ledger store use the `entry_` prefix"],
+			},
+		},
+		object_shape: {
+			input: JSON.stringify({
+				personal: ["The user drafts specs in English"],
+				project: ["The gateway service owns rate limiting"],
+				task: ["Negative amounts never appear in the ledger store"],
+			}),
+			defaultScope: "personal",
+			expected: {
+				personal: ["The user drafts specs in English"],
+				project: ["The gateway service owns rate limiting"],
+				task: ["Negative amounts never appear in the ledger store"],
+			},
+		},
+		// Leading tag decides the lane (exactly one lane per string); a trailing
+		// tag stays part of the fact text.
+		double_tag_single_lane: {
+			input: JSON.stringify(["[task] [project] The ledger store keys are zero-padded to 12 digits"]),
+			defaultScope: "project",
+			expected: {
+				personal: [],
+				project: [],
+				task: ["[project] The ledger store keys are zero-padded to 12 digits"],
+			},
+		},
 	}
 
-	for (const [name, c] of Object.entries(fixture.shapes)) {
+	for (const [name, c] of Object.entries(shapes)) {
 		it(`parses the ${name} shape with [task] when the flag is on`, () => {
 			expect(parseTaggedFacts(c.input, c.defaultScope, { taskScope: true })).toEqual(c.expected)
 		})
 	}
 
-	for (const [name, c] of Object.entries(fixture.flag_off_parity)) {
-		it(`flag OFF keeps Phase 1 behaviour: ${name}`, () => {
+	const flagOffParity: Record<
+		string,
+		{ input: string; defaultScope: Scope; expected: { personal: string[]; project: string[] } }
+	> = {
+		markdown_ignores_task_lines: {
+			input:
+				"- [task] Timestamps are milliseconds in the ledger store\n" +
+				"- [personal] The user prefers four-space indentation.",
+			defaultScope: "personal",
+			expected: { personal: ["The user prefers four-space indentation."], project: [] },
+		},
+		array_string_keeps_literal_prefix: {
+			input: JSON.stringify(["[task] Timestamps are milliseconds in the ledger store"]),
+			defaultScope: "personal",
+			expected: { personal: ["[task] Timestamps are milliseconds in the ledger store"], project: [] },
+		},
+		object_shape_ignores_task_key: {
+			input: JSON.stringify({
+				personal: ["The user drafts specs in English"],
+				task: ["Negative amounts never appear"],
+			}),
+			defaultScope: "personal",
+			expected: { personal: ["The user drafts specs in English"], project: [] },
+		},
+	}
+
+	for (const [name, c] of Object.entries(flagOffParity)) {
+		it(`flag OFF keeps the pre-flag behaviour: ${name}`, () => {
 			expect(parseTaggedFacts(c.input, c.defaultScope)).toEqual(c.expected)
 		})
 	}
@@ -2355,8 +2447,8 @@ describe("receipts lane (KIMCHI_MEMORY_EXTRACTION_RECEIPTS)", () => {
 	it("suffix is distinct and never in the OFF-composed prompt family", () => {
 		expect(RECEIPTS_EXTRACTION_SUFFIX).toContain("expectation-failure")
 		expect(EXTRACTION_SYSTEM_PROMPT).not.toContain("expectation-failure")
-		// OFF-composition byte-parity to the Phase 1 prompt family is pinned by
-		// the parity fixture + the flagDefaults test above; nothing to re-derive here.
+		// OFF-composition stays byte-identical to the pre-flag prompt family:
+		// the flagDefaults test above asserts the OFF shape end-to-end.
 	})
 
 	it("strict-noise pattern blocks bare corrected-answer receipts when the flag is on", () => {

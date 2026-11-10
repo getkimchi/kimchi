@@ -596,7 +596,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		/** Digest selection floor (settled): the decision-model selection call runs
 		 * only when the candidate count STRICTLY exceeds the floor; at/below the floor
 		 * the pre-gate threshold rule applies untouched (small stores keep recall).
-		 * Env: KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES, default 0 = Phase 1. */
+	 * Env: KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES, default 0 = pre-flag. */
 		const computeDigest = async (query: string): Promise<DigestState | null | typeof DIGEST_SEARCH_FAILED> => {
 			try {
 				const s = await getSearcher()
@@ -1092,7 +1092,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 /** Notice selection: the authored-lane variant ONLY when its flag is on —
  * the flag-OFF default keeps the "no write tool" wording, so the prompt
  * never contradicts the registered tool surface (and stays byte-identical
- * to Phase 1 / V2 runs with flags off). */
+ * to the pre-flag shape). */
 export function memoryEnabledNotice(env: NodeJS.ProcessEnv = process.env): string {
 	return authoredEnabled(env) ? MEMORY_ENABLED_NOTICE_AUTHORED : MEMORY_ENABLED_NOTICE
 }

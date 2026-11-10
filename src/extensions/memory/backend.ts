@@ -185,7 +185,7 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 			// MERGE, don't replace (the bound needs to win over the default,
 			// and replacing would break the SDK's own retry semantics). One
 			// hung gateway socket otherwise parks a capture drain for tens of
-			// minutes (v6 crash: lock_held=True at the 900s driver cap). Scope
+			// minutes — long past any external driver abort point. Scope
 			// the bound to embedding requests only: gateway session LLM traffic
 			// on the same origin needs its longer stream budgets.
 			signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(MEMORY_REQUEST_TIMEOUT_MS)])
@@ -247,8 +247,7 @@ export function projectDbPath(scopeId: string): string {
 /**
  * History DB path: the same .kimchi memory directory as the vector store.
  * mem0's default is a cwd-relative memory.db — unconfigured, concurrent
- * sessions collide on it and local runs litter the cwd (both seen in the
- * benchmark investigation).
+ * sessions collide on it and local runs litter the cwd.
  */
 export function historyDbPath(dbPath: string): string {
 	return dbPath.endsWith(".db") ? `${dbPath.slice(0, -3)}-history.db` : `${dbPath}-history.db`
@@ -267,11 +266,10 @@ export interface EmbeddingEndpointConfig extends MemoryEndpointConfig {
 
 /**
  * Embedding endpoint: the kimchi gateway with the open-weight model
- * (bge-m3 at 1024 dims — the phase-1 embedding study's choice) as the
- * default. The model and dimensions are user-configurable via the config
- * file (memoryEmbedding.model / memoryEmbedding.dims in
- * ~/.config/kimchi/config.json); env-var configuration was deliberately
- * removed after the phase-1 A/B runs. The pair must move together — the
+ * (bge-m3 at 1024 dims) as the default. The model and dimensions are
+ * user-configurable via the config file (memoryEmbedding.model /
+ * memoryEmbedding.dims in ~/.config/kimchi/config.json); env-var
+ * configuration was deliberately removed. The pair must move together — the
  * vector store schema is built from the dims. Programmatic overrides
  * (tests, check scripts) win per-field.
  */

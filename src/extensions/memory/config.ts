@@ -192,9 +192,9 @@ export const EXTRACTION_DERIVED_TAG = "[derived]"
  * mem0 SDK clients (embedder fetch interceptor + OpenAILLM config). The
  * OpenAI SDK default is a ~10-minute per-attempt timeout and mem0's
  * embedder constructor never sets one — one hung socket otherwise parks a
- * capture drain for tens of minutes (v6 crash: lock_held=True at the 900s
- * driver cap). Does NOT govern our own chatJson/fetchWithRetry path, which
- * has its own per-attempt timeout.
+ * capture drain for tens of minutes, well past any external driver abort
+ * point. Does NOT govern our own chatJson/fetchWithRetry path, which has
+ * its own per-attempt timeout.
  */
 export const MEMORY_REQUEST_TIMEOUT_MS = 60_000
 

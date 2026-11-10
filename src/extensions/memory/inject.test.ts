@@ -173,7 +173,7 @@ describe("buildMemoryDigest with a decision selection (E3/E8 shapes)", () => {
 })
 
 describe("digest selection floor (KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES)", () => {
-	it("env parse: absent/blank/garbage/negative all mean 0 = Phase 1 behaviour", () => {
+	it("env parse: absent/blank/garbage/negative all mean 0 = pre-flag behaviour", () => {
 		for (const v of [undefined, "", " ", "abc", "-5", "0"]) {
 			expect(digestSelectionFloor({ KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES: v } as NodeJS.ProcessEnv)).toBe(0)
 		}
@@ -181,13 +181,13 @@ describe("digest selection floor (KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES)
 	})
 
 	it("strict > boundary: selection runs only above the floor", () => {
-		// floor=20 with 3–12-candidate searches (the Phase 1 store sizes)
+		// floor=20 with 3–12-candidate searches (a small store)
 		for (const n of [3, 6, 12, 19, 20]) {
 			expect(shouldRunDigestSelection(n, 20), `${n} candidates at floor 20`).toBe(false)
 		}
 		expect(shouldRunDigestSelection(21, 20)).toBe(true)
 		expect(shouldRunDigestSelection(0, 0)).toBe(false) // no candidates, no call regardless
-		expect(shouldRunDigestSelection(1, 0)).toBe(true) // floor 0 = always run (Phase 1)
+		expect(shouldRunDigestSelection(1, 0)).toBe(true) // floor 0 = always run (pre-flag)
 	})
 })
 
@@ -249,7 +249,7 @@ describe("renderFactClasses (KIMCHI_MEMORY_FACT_CLASSES)", () => {
 		)
 	})
 
-	it("flag OFF + untagged store (Phase 1 stores): byte-identical", () => {
+	it("flag OFF + untagged store: byte-identical", () => {
 		const body = "- The items table ts column is milliseconds.\n- There are 3 item tables."
 		expect(renderFactClasses(body)).toBe(body)
 	})
@@ -266,7 +266,9 @@ describe("renderFactClasses (KIMCHI_MEMORY_FACT_CLASSES)", () => {
 		expect(d?.text).toContain("The items table ts column is milliseconds")
 		expect(d?.text).not.toContain("[derived]")
 		// Trusted block precedes the warning block
-		expect(d?.text.indexOf("milliseconds")).toBeLessThan(d?.text.indexOf("Unverified derivations"))
+		const digestText = d?.text ?? ""
+		expect(digestText.indexOf("milliseconds")).toBeLessThan(digestText.indexOf("Unverified derivations"))
+		expect(digestText.indexOf("milliseconds")).toBeGreaterThanOrEqual(0)
 	})
 
 	it("flag ON with no derived facts → no warning block", () => {
