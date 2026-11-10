@@ -75,7 +75,7 @@ async function waitForListeningEvent(eventsPath: string): Promise<string> {
 	throw new Error(`fixture never reported http_listening (events at ${eventsPath})`)
 }
 
-async function spawnFixture(): Promise<FixtureHandle> {
+async function spawnFixture(behavior?: Record<string, unknown>): Promise<FixtureHandle> {
 	const tmpDir = mkdtempSync(join(tmpdir(), "oauth-rotation-"))
 	const eventsPath = join(tmpDir, "events.jsonl")
 	const child = spawn(process.execPath, [FIXTURE_SCRIPT], {
@@ -85,6 +85,7 @@ async function spawnFixture(): Promise<FixtureHandle> {
 			KIMCHI_MCP_FIXTURE_OAUTH: "1",
 			KIMCHI_MCP_FIXTURE_SCENARIO: "oauth-rotating-refresh",
 			KIMCHI_MCP_FIXTURE_EVENTS: eventsPath,
+			...(behavior === undefined ? {} : { KIMCHI_MCP_FIXTURE_BEHAVIOR: JSON.stringify(behavior) }),
 		},
 		stdio: "ignore",
 	})
@@ -274,6 +275,10 @@ function refreshRejections(eventsPath: string): FixtureEvent[] {
 	return readEvents(eventsPath).filter((event) => event.type === "oauth_refresh_rejected")
 }
 
+function isRotatedGrant(event: FixtureEvent): boolean {
+	return event.type === "oauth_token_issued" && event.grantType === "refresh_token" && event.rotated === true
+}
+
 /**
  * Spawn a child that warms its credential-entry cache with the current token,
  * waits for expiry, and only then refreshes — its in-memory cache holds the
@@ -391,53 +396,75 @@ describe("MCP OAuth refresh-token rotation", () => {
 		expect(refreshRejections(fixture.eventsPath), eventSummary(fixture.eventsPath)).toEqual([])
 	})
 
-	it("recovers a stale-cache session whose grant is rejected after another process rotated", {
+	it("recovers when another session rotates the token during this session's in-flight grant", {
 		timeout: 60_000,
 	}, async () => {
-		fixture = await spawnFixture()
+		// The fixture parks the first refresh grant, so a concurrent session's
+		// grant rotates the token while the parked one is in flight and the
+		// parked grant is then rejected invalid_grant as stale.
+		fixture = await spawnFixture({ delayFirstRefreshGrantMs: 3_000 })
 		const serverName = "oauth-rotation-retry"
 		const envOptions = { agentDir, fileKey }
 		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
+		await waitUntilExpired(serverName, fixture.serverUrl)
 
-		// A child warms its cache with the current token, then sleeps while a
-		// second child rotates it — the first child's refresh grant is then
-		// rejected invalid_grant and it must recover from shared storage. The
-		// fixture's fingerprinted events prove the rejected grant happened
-		// (presented != current) and that a rotated grant follows the retry.
-		await Promise.all([
-			refreshWithStaleCache(serverName, fixture.serverUrl, envOptions, "stale-cache loser"),
-			(async () => {
-				await delay(3200)
-				await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator")
-			})(),
-		])
+		// Both children refresh concurrently. Whichever grant is parked loses
+		// the rotation race and is rejected; it must recover from shared storage
+		// (poll, retry with the rotated token) instead of a full browser re-auth.
+		process.env.CHILD_ROTATE_DELAY_MS = "0"
+		try {
+			await Promise.all([
+				refreshWithStaleCache(serverName, fixture.serverUrl, envOptions, "delayed-grant loser"),
+				(async () => {
+					await delay(600)
+					await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator")
+				})(),
+			])
+		} finally {
+			delete process.env.CHILD_ROTATE_DELAY_MS
+		}
 
-		// The loser recovered: both children exited 0, the rotator's grant
-		// rotated the token, and the shared credential remained usable
-		// (the post-recovery child below adopts or re-grants it).
-		expect(refreshGrants(fixture.eventsPath).length, eventSummary(fixture.eventsPath)).toBeGreaterThanOrEqual(1)
+		const events = readEvents(fixture.eventsPath)
+		const rejectionIndex = events.findIndex((event) => event.type === "oauth_refresh_rejected")
+		expect(rejectionIndex, eventSummary(fixture.eventsPath)).toBeGreaterThanOrEqual(0)
+		const rejection = events[rejectionIndex]
+		// The rejected grant presented a retired token, not a malformed one.
+		expect(rejection.stale, eventSummary(fixture.eventsPath)).toBe(true)
+		expect(rejection.presented, eventSummary(fixture.eventsPath)).not.toBe(rejection.current)
+		// The winning grant rotated the token before the rejection…
+		expect(events.slice(0, rejectionIndex).filter(isRotatedGrant).length, eventSummary(fixture.eventsPath)).toBe(1)
+		// …and the loser's retry landed a rotated grant after it.
+		expect(events.slice(rejectionIndex + 1).filter(isRotatedGrant).length, eventSummary(fixture.eventsPath)).toBe(1)
+		// No session fell back to a full browser re-auth: only the seed
+		// exchanged an authorization code.
+		expect(
+			events.filter((event) => event.type === "oauth_token_issued" && event.grantType === "authorization_code").length,
+			eventSummary(fixture.eventsPath),
+		).toBe(1)
 	})
 
-	it("adopts the token another process rotated while this session's cache was stale", { timeout: 40_000 }, async () => {
+	it("adopts the token another process rotated while this session's cache was stale", { timeout: 60_000 }, async () => {
 		fixture = await spawnFixture()
 		const serverName = "oauth-rotation-race"
 		const envOptions = { agentDir, fileKey }
 		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
 
-		// The entry expires; another session refreshes first and the server rotates.
-		// The rotating child's exit status plus the fixture's rotated refresh grant
-		// are the store-side proof of rotation.
-		await waitUntilExpired(serverName, fixture.serverUrl)
-		await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator")
-		expect(
-			refreshGrants(fixture.eventsPath).some((event) => event.rotated === true),
-			eventSummary(fixture.eventsPath),
-		).toBe(true)
+		// The stale-cache child warms its process cache with the current token,
+		// then sleeps while the rotator refreshes and the server rotates the
+		// token. On wake its cached token is retired: the invalidate-before-read
+		// refresh leg must re-read shared storage, so its grant presents the
+		// rotated token and is accepted — with no stale rejection at all.
+		await Promise.all([
+			refreshWithStaleCache(serverName, fixture.serverUrl, envOptions, "stale-cache adoption"),
+			(async () => {
+				await delay(2_000)
+				await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator")
+			})(),
+		])
 
-		// This session's refresh must pick up the rotated token from shared
-		// storage. Its cached token was retired, so the grant is rejected
-		// invalid_grant first; the retry must recover from shared storage
-		// instead of demanding a full browser re-auth.
-		await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "stale-cache recovery")
+		// A stale presentation would appear as a rejected grant; none may happen.
+		expect(refreshRejections(fixture.eventsPath), eventSummary(fixture.eventsPath)).toEqual([])
+		// Both refreshes were accepted, and each rotated the token.
+		expect(refreshGrants(fixture.eventsPath).filter(isRotatedGrant).length, eventSummary(fixture.eventsPath)).toBe(2)
 	})
 })

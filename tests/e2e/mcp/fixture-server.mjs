@@ -79,6 +79,7 @@ const googleLikeIssuedRefreshTokens = new Set()
 const rotatingRefreshInitial = oauthRefreshToken
 const rotatingRefreshRetired = new Set()
 let rotatingRefreshCurrent = rotatingRefreshInitial
+let rotatingFirstGrantDelayed = false
 // One mint site for rotated refresh tokens so the retired-set bookkeeping
 // cannot drift between mint paths.
 function mintRefreshToken() {
@@ -769,6 +770,13 @@ async function runHttpFixture() {
 					return
 				}
 				if (grantType === "refresh_token" && scenario === "oauth-rotating-refresh") {
+					// Deterministic rotation race: park the first refresh grant so a
+					// concurrent session's grant rotates the token while this one is
+					// in flight, and the parked grant is then rejected as stale.
+					if (fixtureBehavior.delayFirstRefreshGrantMs !== undefined && !rotatingFirstGrantDelayed) {
+						rotatingFirstGrantDelayed = true
+						await delay(fixtureBehavior.delayFirstRefreshGrantMs)
+					}
 					const presented = params.get("refresh_token")
 					if (presented === rotatingRefreshCurrent) {
 						rotatingRefreshRetired.add(presented)
