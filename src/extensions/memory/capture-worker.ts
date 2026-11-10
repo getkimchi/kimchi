@@ -201,14 +201,12 @@ export function parseTaggedFacts(
 
 	const obj = tryParseObject(text, taskScope)
 	if (obj) {
-		const filter = (v: unknown): string[] =>
-			Array.isArray(v)
-				? v.filter((f): f is string => typeof f === "string" && f.trim().length > 0).map(stripPrefix)
-				: []
+		const filter = (v: unknown, strip: (f: string) => string): string[] =>
+			Array.isArray(v) ? v.filter((f): f is string => typeof f === "string" && f.trim().length > 0).map(strip) : []
 		return {
-			personal: filter(obj.personal),
-			project: filter(obj.project),
-			...(taskScope ? { task: filter(obj.task) } : {}),
+			personal: filter(obj.personal, stripPrefix),
+			project: filter(obj.project, stripPrefix),
+			...(taskScope ? { task: filter(obj.task, stripTaskPrefix) } : {}),
 		}
 	}
 
@@ -239,7 +237,7 @@ export function parseTaggedFacts(
 		}
 		for (const o of factObjects) {
 			if (typeof o.fact !== "string" || o.fact.trim().length === 0) continue
-			const fact = stripPrefix(o.fact)
+			const fact = taskScope && o.scope === "task" ? stripTaskPrefix(o.fact) : stripPrefix(o.fact)
 			if (taskScope && o.scope === "task") task.push(fact)
 			else if (o.scope === "project") project.push(fact)
 			else if (o.scope === "personal") personal.push(fact)
@@ -905,8 +903,8 @@ Mark each fact with a class prefix:
 When unsure, skip the prefix — trusted observations stay trusted.
 
 Example of the split, same window:
-- The items table has a prc_usd column in dollar units.
-- [derived] prc_usd is the reliable price column (prc includes extreme outliers the USD column pre-filters).
+- The orders table has an amt_paid column in dollar units.
+- [derived] amt_paid is the reliable total column (amt includes pending refunds the paid column pre-filters).
 The class tag goes at the very start of the fact string, before any "As of" date.`
 
 /**
@@ -1247,7 +1245,7 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 				? new AbortController()
 				: { signal: options.abortSignal, abort: () => undefined }
 		const budget = options.drainTimeoutMs ?? MEMORY_DRAIN_HARD_TIMEOUT_MS
-		const watchdog = setTimeout(() => abort.abort(new DrainWatchdogError()), budget)
+		const watchdog = setTimeout(() => abort.abort(new DrainWatchdogError(budget)), budget)
 		try {
 			return await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal })
 		} finally {
@@ -1261,8 +1259,11 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 /** Raised by the drain hard-timeout watchdog instead of a generic Error so
  * the CLI can exit with a distinct, greppable class. */
 export class DrainWatchdogError extends Error {
-	constructor() {
-		super(`capture drain aborted by hard timeout (${MEMORY_DRAIN_HARD_TIMEOUT_MS / 60_000}min)`)
+	/** Optional budget override — the message always reports the effective
+	 * bound, not the constant, so grepping the abort cause is truthful even
+	 * when a driver or test passed a custom drainTimeoutMs. */
+	constructor(budgetMs: number = MEMORY_DRAIN_HARD_TIMEOUT_MS) {
+		super(`capture drain aborted by hard timeout (${Math.round(budgetMs / 60_000)}min)`)
 		this.name = "DrainWatchdogError"
 	}
 }

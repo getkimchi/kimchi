@@ -251,28 +251,27 @@ describe("renderFactClasses (KIMCHI_MEMORY_FACT_CLASSES)", () => {
 
 	it("flag OFF + tagged store (mixed state): marker stripped, fact stays trusted", () => {
 		delete process.env[FLG]
-		const body =
-			"- The items table ts column is milliseconds.\n- [derived] Treating main_cat as the top-level category."
+		const body = "- The orders table ts column is milliseconds.\n- [derived] Treating dept as the top-level category."
 		expect(renderFactClasses(body)).toBe(
-			"- The items table ts column is milliseconds.\n- Treating main_cat as the top-level category.",
+			"- The orders table ts column is milliseconds.\n- Treating dept as the top-level category.",
 		)
 	})
 
 	it("flag OFF + untagged store: byte-identical", () => {
-		const body = "- The items table ts column is milliseconds.\n- There are 3 item tables."
+		const body = "- The orders table ts column is milliseconds.\n- There are 3 order tables."
 		expect(renderFactClasses(body)).toBe(body)
 	})
 
 	it("flag ON splits derived facts into the re-check block; trusted lines stay self-contained", () => {
 		process.env[FLG] = "1"
 		const d = buildMemoryDigest([
-			{ memory: "The items table ts column is milliseconds.", score: 0.9 },
-			{ memory: "[derived] Treating main_cat as the top-level category for products.", score: 0.8 },
+			{ memory: "The orders table ts column is milliseconds.", score: 0.9 },
+			{ memory: "[derived] Treating dept as the top-level category for products.", score: 0.8 },
 		])
 		expect(d).toBeDefined()
 		expect(d?.text).toContain("Unverified derivations")
-		expect(d?.text).toContain("Treating main_cat as the top-level category")
-		expect(d?.text).toContain("The items table ts column is milliseconds")
+		expect(d?.text).toContain("Treating dept as the top-level category")
+		expect(d?.text).toContain("The orders table ts column is milliseconds")
 		expect(d?.text).not.toContain("[derived]")
 		// Trusted block precedes the warning block
 		const digestText = d?.text ?? ""
@@ -283,7 +282,7 @@ describe("renderFactClasses (KIMCHI_MEMORY_FACT_CLASSES)", () => {
 	it("flag ON with no derived facts → no warning block", () => {
 		process.env[FLG] = "1"
 		const d = buildMemoryDigest([
-			{ memory: "The items table ts column is milliseconds.", score: 0.9 },
+			{ memory: "The orders table ts column is milliseconds.", score: 0.9 },
 			{ memory: "Graded correct answer: Fender, per the user's confirmed answer.", score: 0.85 },
 		])
 		expect(d).toBeDefined()
