@@ -73,7 +73,9 @@ const nestedToolCallsUrl = new URL(
 	"../../../node_modules/@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js",
 	import.meta.url,
 ).href
-const { NestedToolCallRunner } = (await import(nestedToolCallsUrl)) as typeof import("@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js")
+const { NestedToolCallRunner } = (await import(
+	nestedToolCallsUrl
+)) as typeof import("@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js")
 
 beforeEach(() => {
 	vi.mocked(getActiveFerment).mockReset().mockReturnValue(undefined)

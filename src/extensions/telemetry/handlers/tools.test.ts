@@ -1143,7 +1143,7 @@ describe("handlers/tools", () => {
 				toolCallId,
 				isError: true,
 				result: codemodeResult(
-					{ calls: [{ id: "cm-2/1", name: "grep", args: '{}', status: "ok" }] },
+					{ calls: [{ id: "cm-2/1", name: "grep", args: "{}", status: "ok" }] },
 					"partial output\n\nScript error:\nReferenceError: x is not defined",
 					true,
 				),
@@ -1226,7 +1226,10 @@ describe("handlers/tools", () => {
 				toolCallId: "cm-5",
 				isError: false,
 				result: codemodeResult(
-					{ calls: [{ id: "cm-5/1", name: "my_custom_tool", args: '{}', status: "ok" }], fullOutputPath: "/tmp/spill.txt" },
+					{
+						calls: [{ id: "cm-5/1", name: "my_custom_tool", args: "{}", status: "ok" }],
+						fullOutputPath: "/tmp/spill.txt",
+					},
 					truncatedOutput,
 				),
 			})
