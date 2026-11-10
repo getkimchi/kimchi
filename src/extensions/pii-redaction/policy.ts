@@ -88,7 +88,7 @@ export interface CompiledCustomEntity extends RedactionPattern {
  */
 export interface ResolvedRedaction {
 	/** Entities excluded at engine level (sorted). */
-	engineExclusions: string[]
+	engineExclusions: readonly string[]
 	/**
 	 * Entities whose non-engine coverage is suspended: custom-pattern passes
 	 * with this name skip, and SECRET_FIELD JSON-key force-redaction stops.
@@ -260,8 +260,8 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 	}
 	const out: CustomEntityDef[] = []
 	const seen = new Set<string>()
-	for (const entry of raw) {
-		const label = `customEntities[${out.length}]`
+	for (const [index, entry] of raw.entries()) {
+		const label = `customEntities[${index}]`
 		if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
 			invalid(ctx, `${label} is not an object`)
 			continue
@@ -493,7 +493,7 @@ function resolveRedactionPolicyUncached(managed?: RedactionPolicy, local?: Local
 	// The result is memoized in a process-global cache — freeze the one mutable
 	// field so no consumer (TUI or ACP session) can corrupt the shared view.
 	return {
-		engineExclusions: Object.freeze(engineExclusions) as unknown as string[],
+		engineExclusions: Object.freeze(engineExclusions),
 		disabledEntities: disabled,
 		customPatterns,
 		categories,

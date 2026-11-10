@@ -140,15 +140,11 @@ const managedParseMemo = new WeakMap<object, RedactionPolicy | undefined>()
 export function getManagedRedactionPolicy(): RedactionPolicy | undefined {
 	const raw = getOrgPolicy()?.redaction
 	if (raw === undefined) return undefined
-	if (managedParseMemo.has(raw as object)) return managedParseMemo.get(raw as object)
+	if (managedParseMemo.has(raw)) return managedParseMemo.get(raw)
 	const parsed = parseManagedPolicy(raw, (reasons) => {
 		console.error(`[pii-redaction] dropped ${reasons.length} unrecognized org redaction entries: ${reasons.join("; ")}`)
 	})
-	try {
-		managedParseMemo.set(raw as object, parsed)
-	} catch {
-		// Primitive wire values cannot key a WeakMap — rare and bounded; skip.
-	}
+	managedParseMemo.set(raw, parsed)
 	return parsed
 }
 
