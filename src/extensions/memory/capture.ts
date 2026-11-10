@@ -26,6 +26,7 @@ import {
 	MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS,
 	MEMORY_CAPTURE_TOOL_RESULT_TAIL_CHARS,
 } from "./config.js"
+import { parseBooleanFlag } from "./flags.js"
 import { resolveProjectScope } from "./scope.js"
 
 /** `session` — the calling session's capture id (per extension instance,
@@ -116,9 +117,9 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
 			const content = gatedAssistantText(message.content)
 			if (content) messages.push({ role: "assistant", content })
 			else {
-				// Lane 1 (flagged): an omitted text gate returned null only when
-				// the turn carried toolCall blocks — splice its paired
-				// tool work summaries at this exact position instead.
+				// Lane 1 (flagged): gatedAssistantText returned null — the turn
+				// carried toolCall blocks with no text summary — so splice its
+				// paired tool work summaries in at this exact position instead.
 				const work = toolWork.get(i)
 				if (work) messages.push(...work)
 			}
@@ -134,8 +135,8 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
  * (toolResult: what the environment returned). OFF is byte-parity with
  * before: assistant toolCall turns excluded whole, toolResults never read.
  */
-export function toolTurnsEnabled(): boolean {
-	return process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS === "1"
+export function toolTurnsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_CAPTURE_TOOL_TURNS", { strict: true })
 }
 
 /**

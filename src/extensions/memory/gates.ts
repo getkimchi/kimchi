@@ -13,6 +13,7 @@
  * Pure — unit-testable under Node.
  */
 import type { ChoiceQuestion } from "./decision-gate.js"
+import { parseBooleanFlag } from "./flags.js"
 
 /** The gates that exist; each maps to one insertion point in the pipeline. */
 export const DECISION_GATE_KINDS = ["valuation", "triage", "digest", "recall", "supersede"] as const
@@ -69,8 +70,7 @@ const TASK_SCOPE_VALUATION_KEEP_SUFFIX =
 
 /** Task-lane env flag, re-parsed per call — mirrors the other gate env reads. */
 export function taskLaneEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	const v = env.KIMCHI_MEMORY_TASK_SCOPE
-	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_TASK_SCOPE")
 }
 
 /** Window triage: should this window pay extraction at all? (E1/E1b/E5b/E6/E8) */
@@ -101,7 +101,7 @@ export const VALUATION_STATE =
  * self-references. OFF keeps the criteria bit-identical.
  */
 export function gateNoiseClassesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	return env.KIMCHI_MEMORY_GATE_NOISE_CLASSES === "1"
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_GATE_NOISE_CLASSES", { strict: true })
 }
 
 const GATE_NOISE_CLASS_SUFFIX =
@@ -114,7 +114,7 @@ const GATE_NOISE_CLASS_SUFFIX =
  * genuinely-new information with context instead of blind per-fact.
  */
 export function valuationContextEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	return env.KIMCHI_MEMORY_VALUATION_CONTEXT === "1"
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_VALUATION_CONTEXT", { strict: true })
 }
 
 /** Bound on existing-store facts attached to the valuation state. */

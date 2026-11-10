@@ -1,8 +1,11 @@
 /**
  * Memory extension configuration: scope, digest value bar, storage paths.
- * Pure — unit-testable under Node.
+ * Pure — unit-testable under Node. Holds the storage-path helpers so that
+ * backend.ts stays the import leaf (backend imports config, never the
+ * reverse).
  */
-import { memoryDbPath } from "./backend.js"
+import { homedir } from "node:os"
+import { join } from "node:path"
 
 /** The personal scope id — the always-present global store. Project scopes are keyed by owner/name (scope.ts). */
 export const MEMORY_SCOPE_ID = "personal"
@@ -210,4 +213,18 @@ export function tokensEstimated(chars: number): number {
 
 export function digestDbPath(): string {
 	return memoryDbPath(MEMORY_SCOPE_ID)
+}
+
+export function defaultMemoryDir(): string {
+	return join(homedir(), ".config", "kimchi", "memory")
+}
+
+/** Scope ids interpolate into filesystem paths — allowlist strictly. */
+const SCOPE_ID_RE = /^[a-z0-9-]+$/
+
+export function memoryDbPath(scopeId: string): string {
+	if (!SCOPE_ID_RE.test(scopeId)) {
+		throw new Error(`invalid memory scope id: ${JSON.stringify(scopeId)} (allowed: ${SCOPE_ID_RE})`)
+	}
+	return join(defaultMemoryDir(), scopeId, "memory.db")
 }

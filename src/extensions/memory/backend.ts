@@ -14,7 +14,6 @@
  * builders — same pattern as src/integrations/cursor.ts. The Bun-runtime
  * acceptance check is `pnpm run memory:check` (backend.check.ts).
  */
-import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Memory as Mem0Memory, MemoryConfig } from "mem0ai/oss"
 import {
@@ -23,7 +22,7 @@ import {
 	resolveGatewayCredentials,
 } from "../../auth/gateway-credentials.js"
 import { type KimchiConfig, loadConfig } from "../../config.js"
-import { MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
+import { defaultMemoryDir, MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
 import type { SharedEmbedder } from "./embedder.js"
 import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 
@@ -217,19 +216,8 @@ function requestOrigin(url: string): string | undefined {
 	}
 }
 
-export function defaultMemoryDir(): string {
-	return join(homedir(), ".config", "kimchi", "memory")
-}
-
-/** Scope ids interpolate into filesystem paths — allowlist strictly. */
-const SCOPE_ID_RE = /^[a-z0-9-]+$/
-
-export function memoryDbPath(scopeId: string): string {
-	if (!SCOPE_ID_RE.test(scopeId)) {
-		throw new Error(`invalid memory scope id: ${JSON.stringify(scopeId)} (allowed: ${SCOPE_ID_RE})`)
-	}
-	return join(defaultMemoryDir(), scopeId, "memory.db")
-}
+/** Storage paths live in config.ts (config is backend's dependency direction); re-exported for existing importers. */
+export { defaultMemoryDir, memoryDbPath } from "./config.js"
 
 /**
  * Per-project store path: `projects/<owner>/<name>/memory.db` under the
