@@ -11,9 +11,10 @@ import { createCommandContext, createContext, createToolContext } from "../__moc
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
 import { MEMORY_PRE_REQUEST_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
-import { createMemoryExtension, type MemorySearcher } from "./index.js"
+import { createMemoryExtension, type MemorySearcher, memoryEnabledNotice } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
+import { createMemorySaveTool } from "./tools.js"
 
 // The /memory command handler delegates to the admin core; the backend-
 // touching functions are mocked so arg threading, panel mounting, and
@@ -1332,7 +1333,6 @@ describe("memory saved feedback (completion record)", () => {
 		writeRecord(3)
 		await start(startEvent("fourth turn"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
-
 		// Saves never announce — the segment half is the only surface.
 		expect(vi.mocked(ctx.ui.notify).mock.calls.every((call) => !String(call[0]).startsWith("Saved"))).toBe(true)
 	})
@@ -1414,5 +1414,58 @@ describe("memory saved feedback (completion record)", () => {
 		writeRecord(3)
 		await start(startEvent("turn 2"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
+	})
+})
+
+describe("authored lane wiring (KIMCHI_MEMORY_AUTHORED)", () => {
+	afterEach(() => {
+		delete process.env.KIMCHI_MEMORY_AUTHORED
+	})
+
+	it("flag OFF: save_memory is not registered", () => {
+		const { api, getRegisteredTool } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
+		expect(() => getRegisteredTool("save_memory")).toThrow(/not registered/)
+	})
+
+	it("flag ON: save_memory is registered (only then can the model write)", () => {
+		process.env.KIMCHI_MEMORY_AUTHORED = "1"
+		const { api, getRegisteredTool } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
+		expect(getRegisteredTool("save_memory")).toBeDefined()
+		expect(getRegisteredTool("save_memory")?.name).toBe("save_memory")
+	})
+
+	it("the system-prompt notice never contradicts the registered tool surface", () => {
+		process.env.KIMCHI_MEMORY_AUTHORED = "1"
+		expect(memoryEnabledNotice()).toContain("save_memory")
+		expect(memoryEnabledNotice()).not.toContain("there is no write tool")
+		delete process.env.KIMCHI_MEMORY_AUTHORED
+		expect(memoryEnabledNotice()).toContain("there is no write tool to call")
+		expect(memoryEnabledNotice()).not.toContain("save_memory")
+	})
+})
+
+describe("authored lane redaction parity", () => {
+	it("save_memory redacts credential-shaped facts before persisting", async () => {
+		const stored: string[] = []
+		const tool = createMemorySaveTool({
+			write: async (text) => {
+				stored.push(text)
+			},
+			existing: async () => [],
+			isEnabled: () => true,
+		})
+		await tool.execute(
+			"call-1",
+			{ fact: "The gateway key is sk-proj-AbCdEf1234567890GhIjKlMnOpQrStUvWx in the shared config." },
+			undefined,
+			undefined,
+			{} as never,
+		)
+		expect(stored).toHaveLength(1)
+		expect(stored[0]).toContain("[authored]")
+		expect(stored[0]).toContain("[REDACTED-")
+		expect(stored[0]).not.toContain("sk-proj-")
 	})
 })

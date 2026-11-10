@@ -27,6 +27,7 @@ import {
 } from "./capture.js"
 import {
 	ASSISTANT_FACTS_SYSTEM_PROMPT,
+	applyDerivedTags,
 	type CaptureBackend,
 	type CaptureMessage,
 	chatJson,
@@ -36,6 +37,7 @@ import {
 	factTokens,
 	isAttributedNearDuplicate,
 	isDurableFact,
+	type JobPlan,
 	keepForStore,
 	mapWithConcurrency,
 	messageHash,
@@ -52,7 +54,6 @@ import {
 	splitDerivedTag,
 	strictNoiseEnabled,
 	stripAttribution,
-	TASK_SCOPE_EXTRACTION_SUFFIX,
 	taskScopeEnabled,
 	tokenJaccard,
 	windowByBudget,
@@ -386,7 +387,7 @@ describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)"
 
 	it("ON: long tool results bound head+tail with elision marker", () => {
 		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
-		const big = "HEAD:" + "x".repeat(900) + ":TAIL"
+		const big = `HEAD:${"x".repeat(900)}:TAIL`
 		const messages = extractMessages([
 			msgEntry("assistant", [toolCall("tc1", "bash", { command: "big" })]),
 			msgEntry("toolResult", [{ type: "text", text: big }], { toolCallId: "tc1" }),
@@ -2504,5 +2505,387 @@ describe("splitDerivedTag (KIMCHI_MEMORY_FACT_CLASSES lane)", () => {
 		process.env[FLG] = "1"
 		expect(splitDerivedTag("  [derived] Aggregating per item.").derived).toBe(true)
 		expect(splitDerivedTag("Mentions [derived] mid-sentence stay text").derived).toBe(false)
+	})
+})
+
+describe("applyDerivedTags — the batched classifier post-pass (KIMCHI_MEMORY_FACT_CLASSES)", () => {
+	const FLG = "KIMCHI_MEMORY_FACT_CLASSES"
+	afterEach(() => {
+		delete process.env[FLG]
+	})
+
+	/** Minimal plan stub — applyDerivedTags only touches the fact lists. */
+	const plan = (personalFacts: string[], projectFacts: string[] = []): JobPlan => ({
+		jobFile: "job.json",
+		jobObject: { messages: [] },
+		project: null,
+		session: undefined,
+		drainAttempts: 0,
+		windows: [],
+		personalFacts,
+		projectFacts,
+		extractedWindows: [],
+		poisonedWindowCount: 0,
+		transientWindowCount: 0,
+	})
+
+	const classifierLlm = (
+		answers: string[] | Error,
+	): { baseURL: string; apiKey: string; model: string; fetchImpl: typeof fetch } => ({
+		baseURL: "https://gw.test/v1",
+		apiKey: "k",
+		model: "m",
+		fetchImpl: async () => {
+			if (answers instanceof Error) return new Response("boom", { status: 500 })
+			return new Response(JSON.stringify({ choices: [{ message: { content: answers.shift() ?? "{}" } }] }), {
+				status: 200,
+			})
+		},
+	})
+
+	it("flag OFF: no-op — no call, no mutation (byte-parity)", async () => {
+		const p = plan(["The dog is named Freya"])
+		const llm = classifierLlm([])
+		const spy = vi.fn(llm.fetchImpl)
+		await applyDerivedTags([p], { ...llm, fetchImpl: spy })
+		expect(spy).not.toHaveBeenCalled()
+		expect(p.personalFacts).toEqual(["The dog is named Freya"])
+	})
+
+	it("flag ON: classifier indexes get the [derived] prefix, in place", async () => {
+		process.env[FLG] = "1"
+		const p = plan([
+			"The dog is named Freya",
+			"REALTIME.json reports current exposure, not lifecycle",
+			"The user prefers pnpm",
+		])
+		await applyDerivedTags([p], classifierLlm(['{"derived": [1]}']))
+		expect(p.personalFacts).toEqual([
+			"The dog is named Freya",
+			"[derived] REALTIME.json reports current exposure, not lifecycle",
+			"The user prefers pnpm",
+		])
+	})
+
+	it("flag ON: a fact pre-tagged by extraction is stripped for the classifier and re-tagged without doubling", async () => {
+		process.env[FLG] = "1"
+		const p = plan(["[derived] Treating the megapack as portable power"])
+		const llm = classifierLlm(['{"derived": []}'])
+		const seen: string[] = []
+		const orig = llm.fetchImpl
+		llm.fetchImpl = async (input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+			seen.push(body.messages[1]?.content ?? "")
+			return orig(input, init)
+		}
+		await applyDerivedTags([p], llm)
+		expect(p.personalFacts).toEqual(["[derived] Treating the megapack as portable power"])
+		expect(seen[0]).toContain("Treating the megapack as portable power")
+		expect(seen[0]).not.toContain("[derived]")
+	})
+
+	it("flag ON: dedupes identical facts across plans (one classifier index hits both lists)", async () => {
+		process.env[FLG] = "1"
+		const p1 = plan(["Shared derivation"])
+		const p2 = plan([], ["Shared derivation"])
+		await applyDerivedTags([p1, p2], classifierLlm(['{"derived": [0]}']))
+		expect(p1.personalFacts).toEqual(["[derived] Shared derivation"])
+		expect(p2.projectFacts).toEqual(["[derived] Shared derivation"])
+	})
+
+	it("flag ON: classifier failure is fail-open — facts stay trusted, nothing is mutated", async () => {
+		process.env[FLG] = "1"
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const p = plan(["The dog is named Freya"])
+			await applyDerivedTags([p], classifierLlm(new Error("gateway down")))
+			expect(p.personalFacts).toEqual(["The dog is named Freya"])
+			expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("classifier failed"))).toBe(true)
+		} finally {
+			errorSpy.mockRestore()
+		}
+	})
+
+	it("flag ON: out-of-range indexes are ignored (no crash, no tag)", async () => {
+		process.env[FLG] = "1"
+		const p = plan(["Fact A", "Fact B"])
+		await applyDerivedTags([p], classifierLlm(['{"derived": [5, -1]}']))
+		expect(p.personalFacts).toEqual(["Fact A", "Fact B"])
+	})
+})
+
+describe("triage bypass for tool-evidence windows (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)", () => {
+	const realHome = process.env.HOME
+	const realAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	const FLG = "KIMCHI_MEMORY_CAPTURE_TOOL_TURNS"
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-triage-bypass-"))
+		process.env.HOME = home
+		mkdirSync(join(home, ".config", "kimchi", "memory", "pending"), { recursive: true })
+		process.env.KIMCHI_CODING_AGENT_DIR = join(home, "agent-config")
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		if (realAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = realAgentDir
+		delete process.env[FLG]
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	const pendingDir = () => join(home, ".config", "kimchi", "memory", "pending")
+	const dbPath = () => join(home, ".config", "kimchi", "memory", "personal", "memory.db")
+
+	it("flag ON + [tool] window: d3 triage is skipped entirely, extraction still runs", async () => {
+		process.env[FLG] = "1"
+		const stored: string[] = []
+		const backend: CaptureBackend = {
+			add: async (fact) => {
+				stored.push(fact)
+				return `m${stored.length}`
+			},
+			delete: async () => {},
+			getAll: async () => ({ results: [] }),
+			search: async () => ({ results: [] }),
+		}
+		const extractFetch: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [{ message: { content: JSON.stringify({ personal: ["items ts is milliseconds"], project: [] }) } }],
+				}),
+				{ status: 200 },
+			)
+		// The triage stub answers "definitely not durable" — a tool-evidence
+		// window must never reach it.
+		const triageFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						answers: {
+							has_durable_fact: {
+								type: "choice",
+								choice: "no",
+								probabilities: { yes: 0.01, no: 0.99 },
+								confidence: 0.99,
+							},
+						},
+						usage: { input_tokens: 100, output_tokens: 0 },
+					}),
+					{ status: 200 },
+				),
+		)
+		const job = join(pendingDir(), "tooljob.json")
+		writeFileSync(
+			job,
+			JSON.stringify({
+				messages: [
+					msg("assistant", "[tool] sqlite: SELECT typeof(ts) FROM items → integer"),
+					msg("user", "so ts is epoch ms"),
+				],
+				project: null,
+			}),
+		)
+		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
+			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
+		})
+		expect(stored).toEqual(["items ts is milliseconds"])
+		expect(captured).toBe(1)
+		expect(triageFetch).not.toHaveBeenCalled()
+	})
+
+	it("flag ON + plain window: triage still gates (no accidental blanket bypass)", async () => {
+		process.env[FLG] = "1"
+		const stored: string[] = []
+		const backend: CaptureBackend = {
+			add: async (fact) => {
+				stored.push(fact)
+				return `m${stored.length}`
+			},
+			delete: async () => {},
+			getAll: async () => ({ results: [] }),
+			search: async () => ({ results: [] }),
+		}
+		const extractFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						choices: [{ message: { content: JSON.stringify({ personal: ["the dog is named Freya"], project: [] }) } }],
+					}),
+					{ status: 200 },
+				),
+		)
+		const triageFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						answers: {
+							has_durable_fact: {
+								type: "choice",
+								choice: "no",
+								probabilities: { yes: 0.01, no: 0.99 },
+								confidence: 0.99,
+							},
+						},
+						usage: { input_tokens: 100, output_tokens: 0 },
+					}),
+					{ status: 200 },
+				),
+		)
+		const job = join(pendingDir(), "plainjob.json")
+		writeFileSync(job, JSON.stringify({ messages: [msg("user", "ok thanks")], project: null }))
+		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
+			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
+		})
+		expect(triageFetch).toHaveBeenCalled()
+		expect(extractFetch).not.toHaveBeenCalled()
+		expect(stored).toEqual([])
+		expect(captured).toBe(0)
+	})
+
+	it("flag OFF: a [tool] record is an ordinary window — triage does run", async () => {
+		const stored: string[] = []
+		const backend: CaptureBackend = {
+			add: async (fact) => {
+				stored.push(fact)
+				return `m${stored.length}`
+			},
+			delete: async () => {},
+			getAll: async () => ({ results: [] }),
+			search: async () => ({ results: [] }),
+		}
+		const extractFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						choices: [{ message: { content: JSON.stringify({ personal: ["x"], project: [] }) } }],
+					}),
+					{ status: 200 },
+				),
+		)
+		const triageFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						answers: {
+							has_durable_fact: {
+								type: "choice",
+								choice: "no",
+								probabilities: { yes: 0.01, no: 0.99 },
+								confidence: 0.99,
+							},
+						},
+						usage: { input_tokens: 100, output_tokens: 0 },
+					}),
+					{ status: 200 },
+				),
+		)
+		const job = join(pendingDir(), "offjob.json")
+		writeFileSync(
+			job,
+			JSON.stringify({
+				messages: [msg("assistant", "[tool] sqlite: SELECT 1 → 1"), msg("user", "ok")],
+				project: null,
+			}),
+		)
+		await runCaptureWorker(["--job", job, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
+			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
+		})
+		expect(triageFetch).toHaveBeenCalled()
+	})
+})
+
+describe("valuation context threading (KIMCHI_MEMORY_VALUATION_CONTEXT)", () => {
+	const realHome = process.env.HOME
+	const realAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	const FLG = "KIMCHI_MEMORY_VALUATION_CONTEXT"
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-valuation-ctx-"))
+		process.env.HOME = home
+		mkdirSync(join(home, ".config", "kimchi", "memory", "pending"), { recursive: true })
+		process.env.KIMCHI_CODING_AGENT_DIR = join(home, "agent-config")
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		if (realAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = realAgentDir
+		delete process.env[FLG]
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	/** Drain one d3-valuated capture with a pre-seeded store; record the raw valuation request bodies. */
+	async function drainWithSeededStore(flagOn: boolean): Promise<string[]> {
+		if (flagOn) process.env[FLG] = "1"
+		const existing = [{ id: "m1", memory: "The dog is named Freya" }]
+		const backend: CaptureBackend = {
+			add: async (fact) => `m-${existing.length + 1}-${fact.slice(0, 6)}`,
+			delete: async () => {},
+			getAll: async () => ({ results: existing }),
+			search: async () => ({ results: [] }),
+		}
+		const extractFetch: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [{ message: { content: JSON.stringify({ personal: ["Freya is a Labrador"], project: [] }) } }],
+				}),
+				{ status: 200 },
+			)
+		const bodies: string[] = []
+		const gateFetch: typeof fetch = async (_input, init) => {
+			bodies.push(String(init?.body ?? ""))
+			// Answer keep for every fact in the batch (question keys are item_N).
+			const parsed = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const key of Object.keys(parsed.questions)) {
+				answers[key] = {
+					type: "choice",
+					choice: "keep",
+					probabilities: { keep: 0.99, discard: 0.01 },
+					confidence: 0.99,
+				}
+			}
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), { status: 200 })
+		}
+		const job = join(home, ".config", "kimchi", "memory", "pending", "ctx.json")
+		writeFileSync(job, JSON.stringify({ messages: [msg("user", "new fact: Freya is a Labrador")], project: null }))
+		await runCaptureWorker(["--job", job, "--db", join(home, ".config", "kimchi", "memory", "personal", "memory.db")], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
+			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: gateFetch },
+				enabled: new Set(["valuation"]),
+			},
+		})
+		return bodies
+	}
+
+	it("flag ON: the valuation request carries the existing store facts", async () => {
+		const bodies = await drainWithSeededStore(true)
+		expect(bodies.length).toBeGreaterThan(0)
+		expect(bodies[0]).toContain("The dog is named Freya")
+	})
+
+	it("flag OFF: the valuation request never mentions the store contents", async () => {
+		const bodies = await drainWithSeededStore(false)
+		expect(bodies.length).toBeGreaterThan(0)
+		expect(bodies[0]).not.toContain("The dog is named Freya")
+		expect(bodies[0]).not.toContain("already holds these memories")
 	})
 })

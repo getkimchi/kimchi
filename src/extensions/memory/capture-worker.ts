@@ -73,6 +73,7 @@ import {
 	UNKNOWN_CAPTURE_SESSION_ID,
 } from "./config.js"
 import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
+import { factClassesEnabled, parseBooleanFlag } from "./flags.js"
 import type { DecisionGateKind } from "./gates.js"
 import {
 	buildValuationState,
@@ -608,8 +609,6 @@ function saveHashes(hashes: Set<string>): void {
 	renameSync(tmp, path)
 }
 
-}
-
 /** Completion record path — per-session stored-fact counts for in-session
  *  surfacing (the "Saved N memories" announcement and the segment's saved
  *  half). Sibling of the captured-hashes ledger at the memory root. */
@@ -708,8 +707,9 @@ export function normalizeFactText(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Capture quality gates: durability, credential redaction, attributed twins.
-// Deterministic and local — zero extra LLM or embedding calls. The extraction
+// Fact-class classifier (KIMCHI_MEMORY_FACT_CLASSES): an LLM post-pass over
+// the drain's extracted facts — NOT one of the deterministic local quality
+// gates below.
 /**
  * Fact-class classifier prompt (KIMCHI_MEMORY_FACT_CLASSES lane). Runs as
  * ONE call over the drain's extracted facts, AFTER extraction — the
@@ -731,8 +731,8 @@ Respond with ONLY a JSON object {"derived": [indexes]} — 0-based indexes of th
  * call (batched like the supersede judge). Facts the classifier names are
  * prefixed with the [derived] tag IN PLACE on the plan's fact lists so the
  * commit path stores them marked. Fail-open: a classifier error leaves
- * every fact trusted. */
-async function applyDerivedTags(plans: JobPlan[], llm: GatewayLlmOptions): Promise<void> {
+ * every fact trusted. Exported for tests. */
+export async function applyDerivedTags(plans: JobPlan[], llm: GatewayLlmOptions): Promise<void> {
 	if (!factClassesEnabled()) return
 	const all: Array<{ plan: JobPlan; kind: "personal" | "project"; index: number; text: string }> = []
 	const seen = new Map<string, number>()
@@ -874,27 +874,21 @@ export const STRICT_NOISE_FACT_PATTERNS: RegExp[] = [
 
 /** Env-gated strictness — parsed at the call site like KIMCHI_MEMORY_DECISION_GATE. */
 export function strictNoiseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	const v = env.KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE
-	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE")
 }
 
 /** Env-gated task lane ([task] extraction) — parsed at the call site, default OFF. */
 export function taskScopeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	const v = env.KIMCHI_MEMORY_TASK_SCOPE
-	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_TASK_SCOPE")
 }
 
 /** Env-gated expectation-failure receipts extraction — parsed at the call site, default OFF. */
 export function receiptsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	const v = env.KIMCHI_MEMORY_EXTRACTION_RECEIPTS
-	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_EXTRACTION_RECEIPTS")
 }
 
-/** Env-gated derived-fact tagging lane — parsed at the call site, default OFF. */
-export function factClassesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	const v = env.KIMCHI_MEMORY_FACT_CLASSES
-	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
-}
+/** Env-gated derived-fact tagging lane — canonical parse lives in flags.ts; re-exported for call sites + tests. */
+export { factClassesEnabled } from "./flags.js"
 
 /**
  * Derived-fact tagging lane, appended to EXTRACTION_SYSTEM_PROMPT ONLY
@@ -1276,7 +1270,8 @@ export class DrainWatchdogError extends Error {
 /** One job's route through the pipelined drain: the claim phase (A) fixes
  * its fresh windows, the extraction phase (B) fills in the tagged facts, and
  * the commit phase (C) applies them to the stores in job order. */
-interface JobPlan {
+/** One pending job's drain plan: windows to extract plus accumulated fact lists (exported for tests — applyDerivedTags consumes it). */
+export interface JobPlan {
 	jobFile: string
 	/** Raw parsed job JSON — re-serialized with the bumped drainAttempts
 	 * counter when poison bookkeeping persists a failed drain. */
@@ -1614,6 +1609,12 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// real even when some jobs failed.
 	writeCaptureCompletions(savedBySession)
 
+	// Watchdog re-check: the later phases (derived classification, valuation,
+	// supersede) swallow abort errors as fail-open — an abort there must not
+	// surface as a clean drain result.
+	if (options.abortSignal?.aborted) {
+		throw options.abortSignal.reason instanceof Error ? options.abortSignal.reason : new DrainWatchdogError()
+	}
 	if (failed > 0) throw new Error(`${failed} capture job(s) failed (${captured} facts captured)`)
 	return captured
 }

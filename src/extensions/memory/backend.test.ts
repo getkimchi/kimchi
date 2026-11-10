@@ -18,6 +18,7 @@ import {
 	resolveExtractionModel,
 	tagEmbeddingRequests,
 } from "./backend.js"
+import { MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
 import type { SharedEmbedder } from "./embedder.js"
 
 function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
@@ -54,6 +55,11 @@ describe("buildMemoryConfig", () => {
 		expect(config.llm.config.apiKey).toBe("test-key")
 		expect(config.vectorStore.provider).toBe("memory")
 		expect(config.vectorStore.config.dbPath).toBe("/tmp/mem.db")
+	})
+
+	it("caps the mem0 llm request with MEMORY_REQUEST_TIMEOUT_MS", () => {
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+		expect(config.llm.config.timeout).toBe(MEMORY_REQUEST_TIMEOUT_MS)
 	})
 
 	it("uses the user-configured llmEndpoint when set", () => {
@@ -350,6 +356,57 @@ describe("createMemoryBackend", () => {
 				expect(seen[1]?.body.tags).toBeUndefined()
 				// The models request is untouched
 				expect(seen[2]?.body.tags).toBeUndefined()
+			} finally {
+				globalThis.fetch = originalFetch
+			}
+		})
+
+		it("merges a caller-held abort signal with the timeout (AbortSignal.any semantics)", async () => {
+			const originalFetch = globalThis.fetch
+			let captured: RequestInit | undefined
+			globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				captured = init
+				return new Response("{}", { status: 200 })
+			})
+			try {
+				tagEmbeddingRequests("https://gw.test/merge/v1")
+				const caller = new AbortController()
+				await globalThis.fetch("https://gw.test/merge/v1/embeddings", {
+					method: "POST",
+					body: JSON.stringify({ input: ["x"], model: "bge-m3" }),
+					signal: caller.signal,
+				})
+				// (a) an embeddings request gets a merged signal (never undefined)
+				expect(captured?.signal).toBeDefined()
+				// (b) the merged signal is not the bare caller signal
+				expect(captured?.signal === caller.signal).toBe(false)
+				// (c) caller abort propagates through the merge
+				caller.abort()
+				expect(captured?.signal?.aborted).toBe(true)
+			} finally {
+				globalThis.fetch = originalFetch
+			}
+		})
+
+		it("gateway /embeddings gets the merged signal even with no caller signal; non-embeddings keeps init untouched", async () => {
+			const originalFetch = globalThis.fetch
+			const seen: Array<{ url: string; init: RequestInit | undefined }> = []
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				seen.push({ url: String(input), init })
+				return new Response("{}", { status: 200 })
+			})
+			try {
+				tagEmbeddingRequests("https://gw.test/nosig/v1")
+				await globalThis.fetch("https://gw.test/nosig/v1/embeddings", {
+					method: "POST",
+					body: JSON.stringify({ input: ["x"], model: "bge-m3" }),
+				})
+				await globalThis.fetch("https://gw.test/nosig/v1/models")
+				// (d) embeddings without caller signal gets a timeout signal
+				expect(seen[0]?.init?.signal).toBeDefined()
+				expect(seen[0]?.init?.signal?.aborted).toBe(false)
+				// Non-embeddings request passes through with no added signal
+				expect(seen[1]?.init?.signal).toBeUndefined()
 			} finally {
 				globalThis.fetch = originalFetch
 			}

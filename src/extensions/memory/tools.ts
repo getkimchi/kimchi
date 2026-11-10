@@ -5,6 +5,9 @@
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { redactText } from "../pii-redaction/redactor.js"
+
+export { authoredEnabled } from "./flags.js"
 
 export interface MemorySearchDeps {
 	search: (query: string) => Promise<Array<{ memory?: string; score?: number; scope?: "personal" | "project" }>>
@@ -20,12 +23,6 @@ const MemorySearchSchema = Type.Object({
 
 function textResult(text: string): { content: Array<{ type: "text"; text: string }>; details: null } {
 	return { content: [{ type: "text", text }], details: null }
-}
-
-/** Env-gated authored lane (save_memory tool) — parsed at the call site, default OFF. */
-export function authoredEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	const v = env.KIMCHI_MEMORY_AUTHORED
-	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
 }
 
 /** Provenance tag carried in the stored text (visible in digests) so the model
@@ -44,7 +41,7 @@ export function normalizeAuthored(text: string): string {
 }
 
 export interface MemorySaveDeps {
-	/** Persist `text` to the personal store; resolves to the persisted text. */
+	/** Persist `text` to the personal store (void). */
 	write: (text: string) => Promise<void>
 	/** Existing stored texts for the normalized dup check. */
 	existing: () => Promise<string[]>
@@ -79,9 +76,13 @@ export function createMemorySaveTool(deps: MemorySaveDeps): ToolDefinition<typeo
 			if (fact.length > MEMORY_SAVE_MAX_CHARS) {
 				return textResult("Not saved: keep memory entries under 300 characters — split into separate saves if needed.")
 			}
-			const text = `${AUTHORED_PREFIX}${fact}`
+			// Same PII-redaction invariant as the extraction lane: an authored
+			// fact never lands in the store with a credential in plaintext. Done
+			// before the dup check so both sides compare redacted text.
+			const cleaned = await redactText(fact)
+			const text = `${AUTHORED_PREFIX}${cleaned}`
 			const existingTexts = await deps.existing()
-			const wanted = normalizeAuthored(fact)
+			const wanted = normalizeAuthored(cleaned)
 			if (existingTexts.some((t) => normalizeAuthored(t.replace(AUTHORED_PREFIX, "")) === wanted)) {
 				return textResult("Already stored — unchanged.")
 			}
