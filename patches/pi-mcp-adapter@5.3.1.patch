@@ -1115,8 +1115,7 @@ index 247d300..29eae69 100644
        return false;
      }
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..1c775c4085e1dd87e6bfcce47fb6dbecbd122cc2 100644
-index 9ded419..1c775c4 100644
+index 9ded419..5a9174b 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
 @@ -8,6 +8,8 @@ import {
@@ -1137,7 +1136,16 @@ index 9ded419..1c775c4 100644
    getOAuthCallbackPort,
    McpOAuthProvider,
    type McpOAuthConfig,
-@@ -38,6 +42,7 @@ import {
+@@ -26,6 +30,8 @@ import {
+   stopCallbackServer,
+   stopCallbackServerIfIdle,
+   releaseCallbackServer,
++  markAuthStateCompleted,
++  isAuthStateRecentlyCompleted,
+ } from "./mcp-callback-server.ts"
+ import {
+   getAuthForUrl,
+@@ -38,6 +44,7 @@ import {
    getAuthBaseDir,
    beginOAuthRevocation,
    captureOAuthAuthority,
@@ -1145,7 +1153,20 @@ index 9ded419..1c775c4 100644
    OAuthCredentialStoreError,
    type AuthStorageOptions,
    type OAuthAuthority,
-@@ -94,6 +99,12 @@ type PendingAuth = {
+@@ -53,6 +60,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
+ /** Auth status for a server */
+ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
+ 
++// Token exchanges currently in flight, keyed by pending-auth key. Serializes
++// concurrent completions of the same flow (e.g. the callback listener racing
++// a pasted redirect URL) so only one exchange runs and both callers observe
++// the same result.
++const exchangesInFlight = new Map<string, Promise<AuthStatus>>()
++
+ export interface McpOAuthRuntime {
+   readonly signal: AbortSignal
+ }
+@@ -94,6 +107,12 @@ type PendingAuth = {
    authorizationUrl: string
    manualRedirect: boolean
    manualCompletionController?: AbortController
@@ -1158,7 +1179,16 @@ index 9ded419..1c775c4 100644
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -461,7 +472,7 @@ export async function startAuth(
+@@ -344,7 +363,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
+         params: {
+           protocolVersion: LATEST_PROTOCOL_VERSION,
+           capabilities: {},
+-          clientInfo: { name: "pi-mcp-adapter", version: "2.11.0" },
++          clientInfo: { name: "pi-mcp-adapter", version: "5.3.1" },
+         },
+       }),
+       ...(discoverySignal ? { signal: discoverySignal } : {}),
+@@ -461,7 +480,7 @@ export async function startAuth(
    definition?: ServerEntry,
    options: AuthenticateOptions = {},
    operationAuthority?: OAuthAuthority,
@@ -1167,7 +1197,7 @@ index 9ded419..1c775c4 100644
    if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
    const authority = operationAuthority ?? captureOAuthAuthority(serverName)
    authority()
-@@ -512,13 +523,58 @@ export async function startAuth(
+@@ -512,13 +531,58 @@ export async function startAuth(
    const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
    if (existingPendingAuth?.serverUrl === serverUrl) {
      existingPendingAuth.authority()
@@ -1227,7 +1257,7 @@ index 9ded419..1c775c4 100644
    if (!manualRedirect) {
      try {
        await ensureCallbackServer({
-@@ -551,6 +607,18 @@ export async function startAuth(
+@@ -551,6 +615,18 @@ export async function startAuth(
        }
        throw error
      }
@@ -1246,7 +1276,7 @@ index 9ded419..1c775c4 100644
    }
  
    let capturedUrl: URL | undefined
-@@ -612,13 +680,14 @@ export async function startAuth(
+@@ -612,13 +688,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -1262,7 +1292,60 @@ index 9ded419..1c775c4 100644
    } catch (error) {
      authProvider.deactivate()
      try {
-@@ -1045,7 +1114,7 @@ export async function authenticate(
+@@ -901,6 +978,13 @@ export async function completeAuthFromInput(
+     throw new Error("Paste the full OAuth callback URL, including its code and state parameters")
+   }
+   const parsed = parseAuthorizationRedirectInput(input, oauthState)
++  // Paste-after-completion: if the pasted state matches a flow that already
++  // exchanged its code (post-exchange tombstone), report success instead of
++  // failing with "No pending OAuth flow".
++  const pastedState = getSearchParamsFromInput(input.trim())?.get("state")
++  if (pastedState && isAuthStateRecentlyCompleted(pastedState)) {
++    return "authenticated"
++  }
+   return completeAuth(serverName, parsed, options)
+ }
+ 
+@@ -921,6 +1005,13 @@ export async function completeAuth(
+   const signal = combineAbortSignals(runtime.signal, options.signal)
+   throwIfAborted(signal)
+   const key = getPendingAuthKey(serverName, fallbackAuthStorageOptions)
++  // Serialize concurrent exchanges of the same flow (listener vs paste race):
++  // the second caller awaits the first caller's in-flight exchange.
++  const inFlight = exchangesInFlight.get(key)
++  if (inFlight) {
++    return inFlight
++  }
++  const doCompleteAuth = async (): Promise<AuthStatus> => {
+   const pendingAuth = runtimeState.pendingAuths.get(key)
+   const authStorageOptions = pendingAuth?.authStorageOptions ?? fallbackAuthStorageOptions
+   if (!pendingAuth) {
+@@ -965,6 +1056,9 @@ export async function completeAuth(
+     if (result !== "AUTHORIZED") {
+       throw new UnauthorizedError("Failed to authorize")
+     }
++    if (oauthState) {
++      markAuthStateCompleted(oauthState)
++    }
+     return "authenticated"
+   } catch (error) {
+     caughtError = error
+@@ -982,6 +1076,14 @@ export async function completeAuth(
+       if (caughtError === undefined) pendingAuth.authority()
+     }
+   }
++  }
++  const exchange = doCompleteAuth()
++  exchangesInFlight.set(key, exchange)
++  try {
++    return await exchange
++  } finally {
++    exchangesInFlight.delete(key)
++  }
+ }
+ 
+ /**
+@@ -1045,7 +1147,7 @@ export async function authenticate(
        if (!pendingAuth) {
          throw new Error(`No pending OAuth flow for server: ${serverName}`)
        }
@@ -1271,7 +1354,7 @@ index 9ded419..1c775c4 100644
          throw new Error(
            `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
          )
-@@ -1053,7 +1122,7 @@ export async function authenticate(
+@@ -1053,7 +1155,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
        // pre-registered callbacks are completed by pasting their full URL.
@@ -1280,7 +1363,7 @@ index 9ded419..1c775c4 100644
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
-@@ -1155,51 +1224,93 @@ export async function getValidToken(
+@@ -1155,51 +1257,93 @@ export async function getValidToken(
  
    if (expired === true && entry.tokens.refreshToken) {
      console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`)
