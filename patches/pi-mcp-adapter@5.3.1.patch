@@ -1,158 +1,3 @@
-# Patch: Kimchi host integrations for pi-mcp-adapter 5.3.1
-#
-# Tracking:
-#   - Project config directory: https://github.com/nicobailon/pi-mcp-adapter/issues/491
-#     (remove when upstream supports a project config directory independent of
-#     the user config directory)
-#   - Tool-name sanitization and selector matching: getkimchi/kimchi#1168
-#     (remove when upstream sanitizes both name parts and caps wire names at
-#     the 128-char provider limit)
-#   - MCP UI standard disable: no upstream option; remove when the harness
-#     supports MCP Apps or upstream adds a disable option
-#   - OAuth loopback capture: getkimchi/kimchi#1284; upstream tracking issue
-#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
-#     upstream supports an opportunistic loopback listener for manual
-#     redirect flows)
-#   - OAuth metadata Accept header: strict gateways answer 406 when
-#     text/event-stream is missing; upstream issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     sends "Accept: application/json, text/event-stream")
-#   - DCR clientInfo version: still hardcoded "2.11.0" in upstream
-#     mcp-auth-flow; remove when upstream derives it from the package version
-#   - Stored redirect URI reuse: upstream 5.3.1 defaults the loopback host to
-#     127.0.0.1 (PR #712), so re-auth of a pre-registered client (e.g. Google)
-#     whose registration was created with a localhost URI now sends a different
-#     redirect and fails with redirect_uri_mismatch. Fixed-client servers with
-#     no usable stored registration (first auth, or a registration whose
-#     redirectUris were dropped) now default to the localhost callback adapter
-#     2.x sent, since such clients register localhost only; upstream issue
-#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
-#     upstream prefers the stored registration's redirect URIs and defaults
-#     fixed-client servers to the localhost callback)
-#   - Stored redirect URI preservation: mcp-oauth-provider clientInformation()
-#     rewrites the stored clientInfo for config-registered clients (issuer
-#     binding bookkeeping) and drops its redirectUris, destroying the legacy
-#     registration before re-auth can reuse it; same upstream tracking as above
-#   - Authorize-URL hook: upstream has no first-class way for a host to add
-#     offline-access request parameters (OIDC offline_access scope, vendor
-#     params such as Google's access_type=offline) without passing a
-#     programmatic config, which disables the /mcp panel and the config write
-#     flows; upstream issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     supports offline-access defaults or an authorize-URL customization hook)
-#   - Default protocol version: hosts need to opt servers into the MCP
-#     2026-07-28 era (stateless core, MRTR) without mutating user config
-#     files; McpAdapterOptions has no default-era knob and passing programmatic
-#     config would disable configPath write flows; upstream issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream ships
-#     a defaultProtocolVersion option or equivalent per-era default)
-# Changes:
-#   - agent-dir/config (+dist mirrors): resolve the MCP project config
-#     directory via piConfig.mcpProjectConfigDir so project MCP config can
-#     live outside the user config directory; covers both the adapter config
-#     path (mcp-adapter.json) and the legacy pi-mcp compat read (mcp.json).
-#   - types (+dist mirrors): sanitize MCP tool names to ^[a-zA-Z0-9_-]{1,128}$
-#     (truncating with a warning), normalize selector patterns on both sides,
-#     and keep pre-sanitization spellings matching for include/excludeTools.
-#   - metadata-cache/server-manager/tool-metadata (+dist mirrors): do not
-#     advertise the io.modelcontextprotocol/ui extension capability and do
-#     not persist or reconstruct UI resource metadata. (Tool-annotation
-#     caching is native upstream as of 5.x, so the 2.34.0-era hunk that
-#     persisted annotations in the metadata cache was dropped.)
-#   - mcp-auth-flow: manual (remote https) OAuth redirect flows also start an
-#     opportunistic loopback listener on the default callback port/path and
-#     race it against the manual paste prompt; graceful fallback to
-#     paste-only when the listener cannot bind. startAuth reports whether the
-#     capture is armed, and non-interactive callers (no onAuthorizationInput,
-#     e.g. ACP/Studio) may proceed without a manual paste when it is.
-#   - proxy-modes: auth-start registers the background auth watcher for
-#     remote https redirects when the loopback capture is armed, and the
-#     auth-start instructions reflect automatic completion.
-#   - mcp-callback-server (+mcp-auth-flow): callbacks whose oauth state belongs
-#     to a recently completed flow replay the normal success page (HTTP 200)
-#     via a process-level tombstone (10 min TTL, capped at 100, lazily pruned)
-#     recorded only in completeAuth after a successful token exchange (a
-#     failed exchange no longer leaves a success-page tombstone); unknown,
-#     superseded, or expired states get a neutral "Authorization No Longer
-#     Active" error page (HTTP 400) instead of the CSRF error page, with the
-#     heading string unchanged so host branding keeps mapping it.
-#   - mcp-auth-flow: concurrent token exchanges of the same pending flow
-#     (callback listener racing a pasted redirect URL) are serialized via an
-#     in-flight map; the second caller awaits and shares the first result,
-#     and a paste for an already-completed state returns "authenticated"
-#     instead of throwing "No pending OAuth flow".
-#   - proxy-modes: a background auth watcher that fails with the callback
-#     timeout appends the actionable manual-auth instructions (URL and
-#     auth-complete paste command) to the failure status message.
-#   - mcp-auth-flow: when the server is configured with a fixed oauth.clientId
-#     and no explicit redirectUri, startAuth reuses the stored client
-#     registration's first redirect URI (only when the stored registration's
-#     clientId matches the configured one) instead of the current default
-#     host; unreadable or non-matching stored state falls back to
-#     http://localhost:<configured callback port>/callback. Dynamic-registration
-#     servers (no clientId) keep upstream's 127.0.0.1 default.
-#     See the stored-redirect-URI-reuse tracking entry above.
-#   - mcp-oauth-provider: clientInformation() preserves the stored client
-#     registration's redirectUris when it rewrites the entry for a
-#     config-registered client. See the stored-redirect-URI-preservation
-#     tracking entry above.
-#   - mcp-auth-flow: DCR clientInfo version bumped from stale hardcoded
-#     "2.11.0" to "5.3.1".
-#   - mcp-oauth-provider: configured-discovery metadata fetch sends Accept
-#     "application/json, text/event-stream" instead of "application/json".
-#   - project-server-trust: KIMCHI_MANAGES_MCP_PROJECT_TRUST=1 skips the
-#     interactive per-server project approval (host already gates project trust),
-#     avoiding a double prompt in the TUI; no approval-store writes occur.
-#   - config (+dist mirror): the repointed legacy pi-mcp compat layers stay
-#     authoritative and adapter-format in the host topology — the global
-#     mcp.json behaves as the user-scope layer and the project mcp.json as
-#     the top project layer (each reads/writes itself, outranking shared
-#     imports a la 2.34). Pi-style compat parsing (which drops top-level
-#     settings/imports and per-server adapter keys) is disabled for these
-#     paths, and a project entry MERGES field-wise with the global entry
-#     (via mergeServerMaps' credential stripping) instead of replacing it.
-#   - Always register /mcp (index.ts): pi 0.99+/1.2 ships a built-in native
-#     MCP extension; Kimchi's compat layers own these mcp.json files, so
-#     keeping the built-in double-connects servers and its stricter native
-#     auth schema ({provider} bearer) warns on adapter-format configs.
-#     Registering /mcp at load makes pi's loader omit the replaceable
-#     built-in extension (upstream-designed replacement mechanism).
-#   - pi-builtin-mcp: ADAPTER_VERSION read is bundled-runtime-safe: under
-#     Bun single-executable builds import.meta.url has no real package.json
-#     ($bunfs), and the top-level readFileSync threw at import time, so the
-#     built-in MCP was never disabled in compiled binaries (double MCP
-#     stacks, strict-auth-schema warnings). Falls back to "unknown"; the
-#     onboarding-state gate then simply re-checks each start.
-#   - config: writeProjectServerDisabledOverride writes its override through
-#     the server's provenance path (the file it was loaded from), falling
-#     back to the adapter-native project config for unknown servers.
-#   - mcp-output-guard (+dist mirrors): default output budget 50 KB -> 12 KB
-#     (DEFAULT_MCP_OUTPUT_MAX_BYTES) so oversized MCP results no longer blow
-#     the session context on parallel tool results; still overridable via
-#     settings.mcpToolOutputTuning.maxBytes.
-#   - mcp-oauth-provider (+dist mirror), oauth: setAuthorizationUrlTransform()
-#     hook, applied in redirectToAuthorization to the authorize URL (with the
-#     flow's saved discovery state) after the server's own
-#     authorizationParams, so a host only fills in what config left unset; default is identity. The
-#     host (src/extensions/mcp/oauth-offline-access.ts) supplies the policy.
-#   - types/index/init/server-manager (+dist mirrors): new McpAdapterOptions
-#     defaultProtocolVersion ("legacy" | "auto" | "2026-07-28"). The manager
-#     applies it at connection time to entries whose protocolVersion is unset
-#     (explicit per-entry values always win); config entries are never
-#     mutated, so definition hashes, metadata caches, and host-side policy
-#     snapshots stay byte-identical to pre-patch behavior. The host passes
-#     "auto" so Kimchi negotiates the modern era with legacy fallback; the
-#     default is scoped to connectionless (url-based) servers because era
-#     negotiation on stdio costs a sacrificial process spawn - stdio entries
-#     keep the legacy handshake unless they pin a version explicitly.
-#   - Refresh-token rotation across sessions: getValidToken refreshed with the
-#     process-cached entry, so a token another session had already rotated was
-#     rejected invalid_grant ("Unknown or invalid refresh token") and pushed
-#     the session into a full re-auth mid-session; the cache is now dropped
-#     before the refresh so the SDK reads the current token from shared
-#     storage. Upstream issue pending at https://github.com/nicobailon/pi-mcp-adapter
-#     (remove when upstream re-reads shared credentials before refreshing)
-
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -515,12 +360,15 @@ index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edee
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
-index 274849a3a2a60a176db5c16dc003d1aea204e18b..a35e876fc28e2387c6b9108fc67b62f1302b1732 100644
+index 274849a3a2a60a176db5c16dc003d1aea204e18b..677d191182f25333dd30191e62c263d48e02cd42 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
-@@ -5,9 +5,9 @@
+@@ -3,11 +3,11 @@
+  *
+  * High-level OAuth flow management using the MCP SDK's built-in auth functions.
   */
- import { auth as runSdkAuth, extractWWWAuthenticateParams, LATEST_PROTOCOL_VERSION, RegistrationRejectedError, UnauthorizedError, validateClientMetadataUrl, } from "@modelcontextprotocol/client";
+-import { auth as runSdkAuth, extractWWWAuthenticateParams, LATEST_PROTOCOL_VERSION, RegistrationRejectedError, UnauthorizedError, validateClientMetadataUrl, } from "@modelcontextprotocol/client";
++import { auth as runSdkAuth, extractWWWAuthenticateParams, LATEST_PROTOCOL_VERSION, OAuthError, OAuthErrorCode, RegistrationRejectedError, UnauthorizedError, validateClientMetadataUrl, } from "@modelcontextprotocol/client";
  import open from "open";
 -import { getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
 +import { DEFAULT_OAUTH_CALLBACK_PATH, getConfiguredOAuthCallbackPort, getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
@@ -573,19 +421,96 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..a35e876fc28e2387c6b9108fc67b62f1
      const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
      const manualRedirect = redirectTarget?.mode === "manual";
      const oauthState = generateState();
-@@ -956,6 +992,12 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -956,12 +992,19 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
      }
      if (expired === true && entry.tokens.refreshToken) {
          console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`);
+-        try {
+-            const config = options.definition ? extractOAuthConfig(options.definition) : {};
+-            const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal);
+-            authority();
++        const presentedRefreshToken = entry.tokens.refreshToken
 +        // Another session may have rotated the stored refresh token while this
-+        // process held a cached entry. Refreshing with the retired token is
-+        // rejected invalid_grant ("Unknown or invalid refresh token") and
-+        // pushes the session into a needless full re-auth, so re-read shared
-+        // storage before the SDK refresh uses a token from this cache.
++        // process held a cached entry; the SDK must read the current token from
++        // shared storage, not a retired one from this process's cache.
 +        invalidateAuthEntryCache(serverName);
-         try {
-             const config = options.definition ? extractOAuthConfig(options.definition) : {};
-             const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal);
++        const config = options.definition ? extractOAuthConfig(options.definition) : {};
++        const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal);
++        // On invalid_grant the stored token may have been rotated concurrently
++        // after this read; retry once from shared storage before pushing the
++        // session into a needless full re-auth.
++        for (let refreshAttempt = 1; refreshAttempt <= 2; refreshAttempt++) {
+             const authProvider = new McpOAuthProvider(serverName, serverUrl, config, {
+-                onRedirect: async () => { },
++                onRedirect: async () => {},
+             }, authStorageOptions, runtime.signal, undefined, authority);
+             try {
+                 authProvider.setAuthFetch(fetchFn);
+@@ -984,6 +1027,23 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+                 authority();
+                 throwIfAborted(signal);
+                 if (result !== "AUTHORIZED") {
++                    // The SDK falls back to a fresh authorization flow when a refresh grant
++                    // is rejected invalid_grant; a rotated token from another session may
++                    // already be in shared storage — poll for it and retry once.
++                    invalidateAuthEntryCache(serverName);
++                    const pollDeadlineRedirect = Date.now() + 1_500;
++                    let freshAfterRedirect;
++                    while (Date.now() < pollDeadlineRedirect) {
++                        invalidateAuthEntryCache(serverName);
++                        freshAfterRedirect = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
++                        if (freshAfterRedirect?.tokens?.refreshToken !== undefined && freshAfterRedirect.tokens.refreshToken !== presentedRefreshToken) break;
++                        await new Promise((resolvePoll) => setTimeout(resolvePoll, 100));
++                    }
++                    if (refreshAttempt === 1 && freshAfterRedirect?.tokens?.refreshToken !== undefined
++                        && freshAfterRedirect.tokens.refreshToken !== presentedRefreshToken) {
++                        console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
++                        continue;
++                    }
+                     return null;
+                 }
+                 const refreshed = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
+@@ -991,16 +1051,34 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+                 throwIfAborted(signal);
+                 return refreshed?.tokens ?? null;
+             }
++            catch (error) {
++                if (isAbortError(error, signal) || error instanceof OAuthCredentialStoreError)
++                    throw error;
++                if (refreshAttempt === 1) {
++                    // The grant may also throw invalid_grant directly (SDK variant
++                    // dependent); poll shared storage for the rotated token once.
++                    const pollDeadline = Date.now() + 1_500;
++                    let fresh;
++                    while (Date.now() < pollDeadline) {
++                        invalidateAuthEntryCache(serverName);
++                        fresh = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
++                        if (fresh?.tokens?.refreshToken !== undefined && fresh.tokens.refreshToken !== presentedRefreshToken) break;
++                        await new Promise((resolvePoll) => setTimeout(resolvePoll, 100));
++                    }
++                    if (fresh?.tokens?.refreshToken !== undefined && fresh.tokens.refreshToken !== presentedRefreshToken) {
++                        console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
++                        continue;
++                    }
++                }
++                console.error(`MCP Auth: Token refresh failed for ${serverName}`);
++                return null;
++            }
+             finally {
+                 authProvider.deactivate();
+             }
+         }
+-        catch (error) {
+-            if (isAbortError(error, signal) || error instanceof OAuthCredentialStoreError)
+-                throw error;
+-            console.error(`MCP Auth: Token refresh failed for ${serverName}`);
+-            return null;
+-        }
++        console.error(`MCP Auth: Token refresh failed for ${serverName}`);
++        return null;
+     }
+     authority();
+     return null;
 diff --git a/dist/mcp-oauth-provider.js b/dist/mcp-oauth-provider.js
 index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..2bb75716742d2fabbfea59203f571ac74a9f8099 100644
 --- a/dist/mcp-oauth-provider.js
@@ -995,10 +920,10 @@ index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acb
        return false;
      }
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccbab1cc37d 100644
+index 506b513..1c775c4 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
-@@ -15,6 +15,8 @@ import {
+@@ -17,6 +17,8 @@ import {
  } from "@modelcontextprotocol/client"
  import open from "open"
  import {
@@ -1007,29 +932,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
    getOAuthCallbackPort,
    McpOAuthProvider,
    type McpOAuthConfig,
-@@ -26,6 +28,8 @@ import {
-   stopCallbackServer,
-   stopCallbackServerIfIdle,
-   releaseCallbackServer,
-+  markAuthStateCompleted,
-+  isAuthStateRecentlyCompleted,
- } from "./mcp-callback-server.ts"
- import {
-   getAuthForUrl,
-@@ -53,6 +57,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
- /** Auth status for a server */
- export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
- 
-+// Token exchanges currently in flight, keyed by pending-auth key. Serializes
-+// concurrent completions of the same flow (e.g. the callback listener racing
-+// a pasted redirect URL) so only one exchange runs and both callers observe
-+// the same result.
-+const exchangesInFlight = new Map<string, Promise<AuthStatus>>()
-+
- export interface McpOAuthRuntime {
-   readonly signal: AbortSignal
- }
-@@ -94,6 +104,12 @@ type PendingAuth = {
+@@ -97,6 +99,12 @@ type PendingAuth = {
    authorizationUrl: string
    manualRedirect: boolean
    manualCompletionController?: AbortController
@@ -1042,16 +945,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -344,7 +360,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
-         params: {
-           protocolVersion: LATEST_PROTOCOL_VERSION,
-           capabilities: {},
--          clientInfo: { name: "pi-mcp-adapter", version: "2.11.0" },
-+          clientInfo: { name: "pi-mcp-adapter", version: "5.3.1" },
-         },
-       }),
-       ...(discoverySignal ? { signal: discoverySignal } : {}),
-@@ -461,7 +477,7 @@ export async function startAuth(
+@@ -464,7 +472,7 @@ export async function startAuth(
    definition?: ServerEntry,
    options: AuthenticateOptions = {},
    operationAuthority?: OAuthAuthority,
@@ -1060,7 +954,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
    if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
    const authority = operationAuthority ?? captureOAuthAuthority(serverName)
    authority()
-@@ -512,13 +528,58 @@ export async function startAuth(
+@@ -515,13 +523,58 @@ export async function startAuth(
    const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
    if (existingPendingAuth?.serverUrl === serverUrl) {
      existingPendingAuth.authority()
@@ -1120,7 +1014,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
    if (!manualRedirect) {
      try {
        await ensureCallbackServer({
-@@ -551,6 +612,18 @@ export async function startAuth(
+@@ -554,6 +607,18 @@ export async function startAuth(
        }
        throw error
      }
@@ -1139,7 +1033,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
    }
  
    let capturedUrl: URL | undefined
-@@ -612,13 +685,14 @@ export async function startAuth(
+@@ -615,13 +680,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -1155,60 +1049,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
    } catch (error) {
      authProvider.deactivate()
      try {
-@@ -901,6 +975,13 @@ export async function completeAuthFromInput(
-     throw new Error("Paste the full OAuth callback URL, including its code and state parameters")
-   }
-   const parsed = parseAuthorizationRedirectInput(input, oauthState)
-+  // Paste-after-completion: if the pasted state matches a flow that already
-+  // exchanged its code (post-exchange tombstone), report success instead of
-+  // failing with "No pending OAuth flow".
-+  const pastedState = getSearchParamsFromInput(input.trim())?.get("state")
-+  if (pastedState && isAuthStateRecentlyCompleted(pastedState)) {
-+    return "authenticated"
-+  }
-   return completeAuth(serverName, parsed, options)
- }
- 
-@@ -921,6 +1002,13 @@ export async function completeAuth(
-   const signal = combineAbortSignals(runtime.signal, options.signal)
-   throwIfAborted(signal)
-   const key = getPendingAuthKey(serverName, fallbackAuthStorageOptions)
-+  // Serialize concurrent exchanges of the same flow (listener vs paste race):
-+  // the second caller awaits the first caller's in-flight exchange.
-+  const inFlight = exchangesInFlight.get(key)
-+  if (inFlight) {
-+    return inFlight
-+  }
-+  const doCompleteAuth = async (): Promise<AuthStatus> => {
-   const pendingAuth = runtimeState.pendingAuths.get(key)
-   const authStorageOptions = pendingAuth?.authStorageOptions ?? fallbackAuthStorageOptions
-   if (!pendingAuth) {
-@@ -965,6 +1053,9 @@ export async function completeAuth(
-     if (result !== "AUTHORIZED") {
-       throw new UnauthorizedError("Failed to authorize")
-     }
-+    if (oauthState) {
-+      markAuthStateCompleted(oauthState)
-+    }
-     return "authenticated"
-   } catch (error) {
-     caughtError = error
-@@ -982,6 +1073,14 @@ export async function completeAuth(
-       if (caughtError === undefined) pendingAuth.authority()
-     }
-   }
-+  }
-+  const exchange = doCompleteAuth()
-+  exchangesInFlight.set(key, exchange)
-+  try {
-+    return await exchange
-+  } finally {
-+    exchangesInFlight.delete(key)
-+  }
- }
- 
- /**
-@@ -1045,7 +1144,7 @@ export async function authenticate(
+@@ -1048,7 +1114,7 @@ export async function authenticate(
        if (!pendingAuth) {
          throw new Error(`No pending OAuth flow for server: ${serverName}`)
        }
@@ -1217,7 +1058,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
          throw new Error(
            `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
          )
-@@ -1053,7 +1152,7 @@ export async function authenticate(
+@@ -1056,7 +1122,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
        // pre-registered callbacks are completed by pasting their full URL.
@@ -1226,6 +1067,119 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
+@@ -1158,51 +1224,93 @@ export async function getValidToken(
+ 
+   if (expired === true && entry.tokens.refreshToken) {
+     console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`)
+-
+-    try {
+-      const config = options.definition ? extractOAuthConfig(options.definition) : {}
+-      const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal)
+-      authority()
++    const presentedRefreshToken = entry.tokens.refreshToken
++    // Another session may have rotated the stored refresh token while this
++    // process held a cached entry; the SDK must read the current token from
++    // shared storage, not a retired one from this process's cache.
++    invalidateAuthEntryCache(serverName)
++    const config = options.definition ? extractOAuthConfig(options.definition) : {}
++    const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal)
++    // On invalid_grant the stored token may have been rotated concurrently
++    // after this read; retry once from shared storage before pushing the
++    // session into a needless full re-auth.
++    for (let refreshAttempt = 1; refreshAttempt <= 2; refreshAttempt++) {
+       const authProvider = new McpOAuthProvider(serverName, serverUrl, config, {
+         onRedirect: async () => {},
+       }, authStorageOptions, runtime.signal, undefined, authority)
+-
+       try {
+         authProvider.setAuthFetch(fetchFn)
+         const clientInfo = await authProvider.clientInformation()
+         authority()
+         throwIfAborted(signal)
+         if (!clientInfo) {
+-          console.log(`MCP Auth: No client info for refresh for ${serverName}`)
+-          return null
++            console.log(`MCP Auth: No client info for refresh for ${serverName}`)
++            return null
+         }
+-
+         const discovery = applyOAuthConfig(await probeAuthDiscovery(serverUrl, options.definition, signal), config)
+         authority()
+         throwIfAborted(signal)
+         const result = await abortable(runSdkAuth(authProvider, {
+-          serverUrl,
+-          ...discovery,
+-          ...(options.skipIssuerMetadataValidation === true ? { skipIssuerMetadataValidation: true } : {}),
+-          fetchFn,
++            serverUrl,
++            ...discovery,
++            ...(options.skipIssuerMetadataValidation === true ? { skipIssuerMetadataValidation: true } : {}),
++            fetchFn,
+         }), signal)
+         authority()
+         throwIfAborted(signal)
+         if (result !== "AUTHORIZED") {
+-          return null
++            // The SDK falls back to a fresh authorization flow when a refresh grant
++            // is rejected invalid_grant; a rotated token from another session may
++            // already be in shared storage — poll for it and retry once.
++            invalidateAuthEntryCache(serverName)
++            const pollDeadlineRedirect = Date.now() + 1_500
++            let freshAfterRedirect
++            while (Date.now() < pollDeadlineRedirect) {
++                invalidateAuthEntryCache(serverName)
++                freshAfterRedirect = await getAuthForUrl(serverName, serverUrl, authStorageOptions)
++                if (freshAfterRedirect?.tokens?.refreshToken !== undefined && freshAfterRedirect.tokens.refreshToken !== presentedRefreshToken) break
++                await new Promise((resolvePoll) => setTimeout(resolvePoll, 100))
++            }
++            if (refreshAttempt === 1 && freshAfterRedirect?.tokens?.refreshToken !== undefined
++                && freshAfterRedirect.tokens.refreshToken !== presentedRefreshToken) {
++                console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
++                continue
++            }
++            return null
+         }
+         const refreshed = await getAuthForUrl(serverName, serverUrl, authStorageOptions)
+         authority()
+         throwIfAborted(signal)
+         return refreshed?.tokens ?? null
+-      } finally {
++      }
++      catch (error) {
++        if (isAbortError(error, signal) || error instanceof OAuthCredentialStoreError)
++            throw error
++        if (refreshAttempt === 1) {
++            // The grant may also throw invalid_grant directly (SDK variant
++            // dependent); poll shared storage for the rotated token once.
++            const pollDeadline = Date.now() + 1_500
++            let fresh
++            while (Date.now() < pollDeadline) {
++                invalidateAuthEntryCache(serverName)
++                fresh = await getAuthForUrl(serverName, serverUrl, authStorageOptions)
++                if (fresh?.tokens?.refreshToken !== undefined && fresh.tokens.refreshToken !== presentedRefreshToken) break
++                await new Promise((resolvePoll) => setTimeout(resolvePoll, 100))
++            }
++            if (fresh?.tokens?.refreshToken !== undefined && fresh.tokens.refreshToken !== presentedRefreshToken) {
++                console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
++                continue
++            }
++        }
++        console.error(`MCP Auth: Token refresh failed for ${serverName}`)
++        return null
++      }
++      finally {
+         authProvider.deactivate()
+       }
+-    } catch (error) {
+-      if (isAbortError(error, signal) || error instanceof OAuthCredentialStoreError) throw error
+-      console.error(`MCP Auth: Token refresh failed for ${serverName}`)
+-      return null
+     }
++    console.error(`MCP Auth: Token refresh failed for ${serverName}`)
++    return null
+   }
+ 
+   authority()
 diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
 index 32aad31f9fe94cef128de9e1576cbc04d53fa822..b2593924653dda1fe18be16da7e7a90ae8d4cced 100644
 --- a/mcp-callback-server.ts
@@ -1714,7 +1668,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
        serverName,
        async (conn) => {
 diff --git a/server-manager.ts b/server-manager.ts
-index 9fb4f964fc1455666159ed4f1a442bba2ebf7799..484439e2a69d6bc39432c586fc9ae1f2aef007d0 100644
+index 9fb4f964fc1455666159ed4f1a442bba2ebf7799..c6d85aa030564d613c686a134c724fec4bf0947f 100644
 --- a/server-manager.ts
 +++ b/server-manager.ts
 @@ -41,7 +41,6 @@ import {
@@ -1793,6 +1747,18 @@ index 9fb4f964fc1455666159ed4f1a442bba2ebf7799..484439e2a69d6bc39432c586fc9ae1f2
      let client: Client;
      client = new AdapterClient(
        { name: `pi-mcp-${serverName}`, version: "1.0.0" },
+@@ -1714,7 +1727,10 @@ export class McpServerManager {
+     }
+     const hasImplicitStoredTokens = implicitStoredAuth?.status === "present"
+       && implicitStoredAuth.entry.tokens !== undefined;
+-    if (hasImplicitStoredTokens) invalidateAuthEntryCache(serverName);
++    // Explicit-OAuth connections refresh through this provider too; a token
++    // another session rotated must not be served from the stale process cache
++    // at connect time.
++    if (hasImplicitStoredTokens || definition.auth === "oauth") invalidateAuthEntryCache(serverName);
+     let authState: HttpAuthProviderState = supportsOAuth(definition)
+       ? definition.auth === undefined
+         ? hasImplicitStoredTokens
 diff --git a/session-recovery.ts b/session-recovery.ts
 index 286242f0b9fcfbe012000d4a5397c39f2ffff845..7878594af5fe60852f04c7b5cf624a1feabee6e3 100644
 --- a/session-recovery.ts

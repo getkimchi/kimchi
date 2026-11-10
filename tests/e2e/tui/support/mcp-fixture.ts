@@ -54,9 +54,10 @@ interface McpFixtureEventDetails {
 		expiresIn: number
 		pkceVerified?: boolean
 		refreshTokenIssued?: boolean
+		rotated?: boolean
 	}
 	oauth_token_rejected: { grantType?: string }
-	oauth_refresh_rejected: Record<string, never>
+	oauth_refresh_rejected: { stale?: boolean; presentedPrefix?: string }
 	oauth_manual_revoke: Record<string, never>
 	oauth_browser_opened: { target: string }
 	oauth_browser_completed: {

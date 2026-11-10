@@ -76,9 +76,18 @@ const googleLikeIssuedRefreshTokens = new Set()
 // retired token is rejected with the invalid_grant description the production
 // server sends ("Unknown or invalid refresh token"), which reproduces the
 // cross-process refresh race two sessions sharing one stored token can hit.
-const rotatingRefreshInitial = process.env.KIMCHI_MCP_FIXTURE_OAUTH_REFRESH_TOKEN ?? oauthRefreshToken
+const rotatingRefreshInitial = oauthRefreshToken
 const rotatingRefreshRetired = new Set()
 let rotatingRefreshCurrent = rotatingRefreshInitial
+// One mint site for rotated refresh tokens so the retired-set bookkeeping
+// cannot drift between mint paths.
+function mintRefreshToken() {
+	return `kimchi-e2e-rt-${randomUUID()}`
+}
+// Diagnosis-only fingerprint: deterministic, cannot recover the token.
+function tokenFingerprint(token) {
+	return token === undefined ? undefined : createHash("sha256").update(token).digest("hex").slice(0, 8)
+}
 const fixtureBehavior = process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR
 	? JSON.parse(process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR)
 	: {}
@@ -725,11 +734,11 @@ async function runHttpFixture() {
 					let refreshTokenValue = oauthRefreshToken
 					if (scenario === "oauth-rotating-refresh") {
 						rotatingRefreshRetired.add(rotatingRefreshCurrent)
-						rotatingRefreshCurrent = `kimchi-e2e-rt-${randomUUID()}`
+						rotatingRefreshCurrent = mintRefreshToken()
 						refreshTokenValue = rotatingRefreshCurrent
 					}
 					if (googleLike) {
-						refreshTokenValue = authorization.googleLikeGrantRefreshToken ? `kimchi-e2e-rt-${randomUUID()}` : undefined
+						refreshTokenValue = authorization.googleLikeGrantRefreshToken ? mintRefreshToken() : undefined
 						if (refreshTokenValue) googleLikeIssuedRefreshTokens.add(refreshTokenValue)
 					}
 					record("oauth_token_issued", {
@@ -763,8 +772,13 @@ async function runHttpFixture() {
 					const presented = params.get("refresh_token")
 					if (presented === rotatingRefreshCurrent) {
 						rotatingRefreshRetired.add(presented)
-						rotatingRefreshCurrent = `kimchi-e2e-rt-${randomUUID()}`
-						record("oauth_token_issued", { grantType, expiresIn: 1, rotated: true })
+						rotatingRefreshCurrent = mintRefreshToken()
+						record("oauth_token_issued", {
+							grantType,
+							expiresIn: 1,
+							rotated: true,
+							minted: tokenFingerprint(rotatingRefreshCurrent),
+						})
 						oauthAccessTokenExpiresAt = Date.now() + 1_000
 						sendJson(response, 200, {
 							access_token: oauthAccessToken,
@@ -775,7 +789,13 @@ async function runHttpFixture() {
 						})
 						return
 					}
-					record("oauth_refresh_rejected", { stale: rotatingRefreshRetired.has(presented) })
+					// Present only a fingerprint: the event log must never carry
+					// token values, but diagnosis needs to know WHICH token lost.
+					record("oauth_refresh_rejected", {
+						stale: rotatingRefreshRetired.has(presented),
+						presented: tokenFingerprint(presented),
+						current: tokenFingerprint(rotatingRefreshCurrent),
+					})
 					sendJson(response, 400, {
 						error: "invalid_grant",
 						error_description: "Unknown or invalid refresh token",

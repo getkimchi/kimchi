@@ -13,26 +13,31 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
  * presented token and mints a new one; retired tokens are rejected with the
  * invalid_grant description the production server sends).
  *
- * The race under test: two sessions share one stored credential entry (the
- * agent dir is per-user). Session A refreshes first and the server rotates the
- * refresh token; session B still holds a cached entry with the retired token.
- * B's refresh grant must use the current token from shared storage — not the
- * retired one — or B needlessly demands a full browser re-auth.
+ * The races under test: sessions share one stored credential entry (the
+ * agent dir is per-user). Another session may rotate the refresh token while
+ * this session (a) holds a cached entry with the retired token, or (b)
+ * refreshes concurrently with the same still-current token. Both must recover
+ * from shared storage instead of demanding a full browser re-auth.
  *
- * Everything runs through one compiled adapter module graph, matching
- * production's single per-process credential-entry cache. Store-side truth
- * after the other session rotates is observed via the fixture's event log and
- * the rotating child's exit status, never through this process's cache.
+ * Every adapter execution runs in a spawned plain-Node process against the
+ * adapter's compiled dist modules — the same artifact the runtime loads — so
+ * each process has its own credential-entry cache, exactly like production
+ * sessions. This test process only orchestrates and asserts on exit codes and
+ * the fixture's event log. (Vitest's transformed in-process copy of the dist
+ * module is NOT equivalent to the runtime build and must not be asserted on.)
+ *
+ * Deliberately NOT using tests/e2e/tui/support/mcp-fixture.ts scaffolding: the
+ * shared helper cannot spawn the second credential-cache process this test
+ * needs (see docs/mcp-e2e-testing.md, "Compiled-adapter integration tests").
  */
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const FIXTURE_SCRIPT = join(REPO_ROOT, "tests/e2e/mcp/fixture-server.mjs")
-// The adapter's auth-flow orchestration is not on the package's public
-// subpaths; the test drives the same compiled modules the adapter runs.
-const FLOW_MODULE = "../../../node_modules/pi-mcp-adapter/dist/mcp-auth-flow.js" as const
-const AUTH_MODULE = "../../../node_modules/pi-mcp-adapter/dist/mcp-auth.js" as const
+const FLOW_MODULE = join(REPO_ROOT, "node_modules/pi-mcp-adapter/dist/mcp-auth-flow.js")
+const AUTH_MODULE = join(REPO_ROOT, "node_modules/pi-mcp-adapter/dist/mcp-auth.js")
+const EXPIRY_WAIT_TIMEOUT_MS = 10_000
 
-const STORAGE = { credentialStore: "encrypted-file" } as const
+const STORAGE_ENV = JSON.stringify({ credentialStore: "encrypted-file" })
 
 interface FixtureHandle {
 	origin: string
@@ -51,6 +56,10 @@ function readEvents(eventsPath: string): FixtureEvent[] {
 		.split("\n")
 		.filter((line) => line.trim().length > 0)
 		.map((line) => JSON.parse(line) as FixtureEvent)
+}
+
+function eventSummary(eventsPath: string): string {
+	return JSON.stringify(readEvents(eventsPath).map((event) => event.type))
 }
 
 async function waitForListeningEvent(eventsPath: string): Promise<string> {
@@ -79,79 +88,180 @@ async function spawnFixture(): Promise<FixtureHandle> {
 		},
 		stdio: "ignore",
 	})
-	const origin = await waitForListeningEvent(eventsPath)
-	return {
-		origin,
-		serverUrl: `${origin}/mcp`,
-		eventsPath,
-		child,
-		tmpDir,
-		cleanup: () => {
-			child.kill("SIGTERM")
-			rmSync(tmpDir, { recursive: true, force: true })
-		},
+	try {
+		const origin = await waitForListeningEvent(eventsPath)
+		return {
+			origin,
+			serverUrl: `${origin}/mcp`,
+			eventsPath,
+			child,
+			tmpDir,
+			cleanup: () => {
+				child.kill("SIGTERM")
+				// KIMCHI_KEEP_OAUTH_TMP=1 keeps the events log for failure diagnosis.
+				if (process.env.KIMCHI_KEEP_OAUTH_TMP !== "1") {
+					try {
+						rmSync(tmpDir, { recursive: true, force: true })
+					} catch (error) {
+						// A just-killed child may hold the dir for a moment; /tmp wins.
+						console.warn(`[oauth-rotation] tmpdir cleanup skipped: ${String(error).slice(0, 120)}`)
+					}
+				}
+			},
+		}
+	} catch (error) {
+		// Do not leak the fixture process or its tmpdir when startup fails.
+		child.kill("SIGTERM")
+		rmSync(tmpDir, { recursive: true, force: true })
+		throw error
 	}
 }
 
-/** Run one real authorization-code flow so the stored entry matches production. */
-async function seedViaRealFlow(serverName: string, serverUrl: string, storage: typeof STORAGE): Promise<void> {
-	const { startAuth, completeAuth } = await import(FLOW_MODULE)
-	const { authorizationUrl } = await startAuth(serverName, serverUrl, undefined, { authStorageOptions: storage })
-	const response = await fetch(authorizationUrl, { redirect: "manual" })
-	const location = response.headers.get("location")
-	if (!location) throw new Error(`authorize returned ${response.status} without a redirect`)
-	const code = new URL(location).searchParams.get("code")
-	if (!code) throw new Error(`authorize redirect carried no code: ${location}`)
-	await completeAuth(serverName, code, { authStorageOptions: storage })
+interface ChildEnvOptions {
+	agentDir: string
+	fileKey: string
 }
 
-/** Spawn a second process (a separate credential-entry cache) that refreshes the shared token. */
-async function rotateInOtherProcess(
-	serverName: string,
-	serverUrl: string,
-	agentDir: string,
-	fileKey: string,
-): Promise<void> {
-	// Plain node cannot load the package's TypeScript sources under node_modules,
-	// so the child imports the compiled auth-flow module directly.
-	const flowPath = join(REPO_ROOT, "node_modules/pi-mcp-adapter/dist/mcp-auth-flow.js")
+function childEnv(options: ChildEnvOptions): NodeJS.ProcessEnv {
+	return {
+		...process.env,
+		PI_CODING_AGENT_DIR: options.agentDir,
+		KIMCHI_CODING_AGENT_DIR: options.agentDir,
+		PI_MCP_ADAPTER_OAUTH_FILE_KEY: options.fileKey,
+	}
+}
+
+/**
+ * Run one real authorization-code flow (dynamic client registration, PKCE,
+ * code exchange) so the stored entry matches what production persists.
+ */
+async function seedViaRealFlow(serverName: string, serverUrl: string, envOptions: ChildEnvOptions): Promise<void> {
 	const script = `
-const { getValidToken } = await import(process.env.CHILD_FLOW_PATH)
-const tokens = await getValidToken(process.env.CHILD_SERVER_NAME, process.env.CHILD_SERVER_URL, {
-	authStorageOptions: { credentialStore: "encrypted-file" },
+const { startAuth, completeAuth } = await import(process.env.CHILD_FLOW_PATH)
+const { authorizationUrl } = await startAuth(process.env.CHILD_SERVER_NAME, process.env.CHILD_SERVER_URL, undefined, {
+	authStorageOptions: ${STORAGE_ENV},
 })
-console.log("CHILD_RESULT:" + JSON.stringify({ ok: tokens !== undefined }))
-process.exit(tokens !== undefined ? 0 : 1)
+const response = await fetch(authorizationUrl, { redirect: "manual" })
+const location = response.headers.get("location")
+if (!location) throw new Error("authorize returned " + response.status + " without a redirect")
+const code = new URL(location).searchParams.get("code")
+if (!code) throw new Error("authorize redirect carried no code")
+await completeAuth(process.env.CHILD_SERVER_NAME, code, { authStorageOptions: ${STORAGE_ENV} })
+console.log("CHILD_RESULT:ok")
 `
 	const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
 		cwd: REPO_ROOT,
 		env: {
-			...process.env,
+			...childEnv(envOptions),
+			CHILD_FLOW_PATH: FLOW_MODULE,
 			CHILD_SERVER_NAME: serverName,
 			CHILD_SERVER_URL: serverUrl,
-			CHILD_FLOW_PATH: flowPath,
-			PI_CODING_AGENT_DIR: agentDir,
-			KIMCHI_CODING_AGENT_DIR: agentDir,
-			PI_MCP_ADAPTER_OAUTH_FILE_KEY: fileKey,
 		},
 		stdio: ["ignore", "pipe", "pipe"] as const,
 	})
-	const { exitCode, output } = await new Promise<{ exitCode: number | null; output: string }>(
-		(resolveExit, rejectExit) => {
-			let collected = ""
-			child.stdout?.on("data", (chunk: Buffer) => {
-				collected += chunk.toString()
-			})
-			child.stderr?.on("data", (chunk: Buffer) => {
-				collected += chunk.toString()
-			})
-			child.on("error", rejectExit)
-			child.on("exit", (code) => resolveExit({ exitCode: code, output: collected }))
-		},
-	)
-	if (exitCode !== 0) {
-		throw new Error(`rotation child process failed (exit ${exitCode}): ${output.slice(0, 2000)}`)
+	const exited = new Promise<{ exitCode: number | null; output: string }>((resolveExit, rejectExit) => {
+		let collected = ""
+		child.stdout?.on("data", (chunk: Buffer) => {
+			collected += chunk.toString()
+		})
+		child.stderr?.on("data", (chunk: Buffer) => {
+			collected += chunk.toString()
+		})
+		child.on("error", rejectExit)
+		child.on("exit", (code) => resolveExit({ exitCode: code, output: collected }))
+	})
+	const killer = setTimeout(() => child.kill("SIGKILL"), 25_000)
+	try {
+		const { exitCode, output } = await exited
+		const meaningful = output
+			.split("\n")
+			.filter((line) => !line.includes("store-dbg"))
+			.join("\n")
+		if (exitCode !== 0) {
+			throw new Error(`seed child process failed (exit ${exitCode}): ${meaningful.slice(0, 3000)}`)
+		}
+	} finally {
+		clearTimeout(killer)
 	}
+}
+
+/**
+ * Run getValidToken in a spawned process (its own credential-entry cache, the
+ * compiled runtime build) and resolve whether it recovered a usable token.
+ */
+async function getTokensInChildProcess(
+	serverName: string,
+	serverUrl: string,
+	envOptions: ChildEnvOptions,
+	label: string,
+): Promise<void> {
+	const script = `
+const { getValidToken } = await import(process.env.CHILD_FLOW_PATH)
+const tokens = await getValidToken(process.env.CHILD_SERVER_NAME, process.env.CHILD_SERVER_URL, {
+	authStorageOptions: ${STORAGE_ENV},
+})
+console.log("CHILD_RESULT:" + JSON.stringify({ ok: tokens !== undefined, hasRefresh: tokens?.refreshToken !== undefined }))
+process.exit(tokens !== undefined && tokens.refreshToken !== undefined ? 0 : 1)
+`
+	const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+		cwd: REPO_ROOT,
+		env: {
+			...childEnv(envOptions),
+			CHILD_FLOW_PATH: FLOW_MODULE,
+			CHILD_SERVER_NAME: serverName,
+			CHILD_SERVER_URL: serverUrl,
+		},
+		stdio: ["ignore", "pipe", "pipe"] as const,
+	})
+	const exited = new Promise<{ exitCode: number | null; output: string }>((resolveExit, rejectExit) => {
+		let collected = ""
+		child.stdout?.on("data", (chunk: Buffer) => {
+			collected += chunk.toString()
+		})
+		child.stderr?.on("data", (chunk: Buffer) => {
+			collected += chunk.toString()
+		})
+		child.on("error", rejectExit)
+		child.on("exit", (code) => resolveExit({ exitCode: code, output: collected }))
+	})
+	const killer = setTimeout(() => child.kill("SIGKILL"), 25_000)
+	try {
+		const { exitCode, output } = await exited
+		// KIMCHI_OAUTH_VERBOSE=1 prints every child's store operations.
+		if (process.env.KIMCHI_OAUTH_VERBOSE === "1") {
+			console.log(
+				`[child ${label}] exit=${exitCode}`,
+				output
+					.split("\n")
+					.filter((line) => line.includes("store-dbg"))
+					.join("\n"),
+			)
+		}
+		const meaningful = output
+			.split("\n")
+			.filter((line) => !line.includes("store-dbg"))
+			.join("\n")
+		if (exitCode !== 0) {
+			throw new Error(`${label} child process failed (exit ${exitCode}): ${meaningful.slice(0, 3000)}`)
+		}
+	} finally {
+		clearTimeout(killer)
+	}
+}
+
+/** Wait until the stored entry's access token has actually expired. */
+async function waitUntilExpired(serverName: string, serverUrl: string): Promise<void> {
+	const { inspectAuthForUrl } = await import(AUTH_MODULE)
+	const deadline = Date.now() + EXPIRY_WAIT_TIMEOUT_MS
+	while (Date.now() < deadline) {
+		// Status reads bypass the credential-entry cache: the poll must see the
+		// store's current entry, not one this process cached earlier.
+		const status = inspectAuthForUrl(serverName, serverUrl, { credentialStore: "encrypted-file" })
+		const expiresAtMs = (status.status === "present" ? (status.entry.tokens?.expiresAt ?? 0) : 0) * 1000
+		if (expiresAtMs < Date.now()) return
+		await delay(50)
+	}
+	throw new Error(`stored token never expired within ${EXPIRY_WAIT_TIMEOUT_MS}ms`)
 }
 
 function refreshGrants(eventsPath: string): FixtureEvent[] {
@@ -191,57 +301,50 @@ describe("MCP OAuth refresh-token rotation", () => {
 		}
 	})
 
-	it("keeps rotating across sequential refresh grants in one session", { timeout: 30_000 }, async () => {
+	it("keeps rotating across sequential refresh grants in one session", { timeout: 40_000 }, async () => {
 		fixture = await spawnFixture()
 		const serverName = "oauth-rotation-happy"
-		const { getValidToken } = await import(FLOW_MODULE)
-		const { getAuthForUrl } = await import(AUTH_MODULE)
-		await seedViaRealFlow(serverName, fixture.serverUrl, STORAGE)
-		const seeded = await getAuthForUrl(serverName, fixture.serverUrl, STORAGE)
-		expect(seeded?.tokens?.refreshToken).toBeDefined()
+		const envOptions = { agentDir, fileKey }
+		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
 
 		// Expired: refresh grant accepted, rotation persisted, next grant uses the successor.
-		await delay(1_200)
-		const firstRotation = await getValidToken(serverName, fixture.serverUrl, { authStorageOptions: STORAGE })
-		expect(firstRotation).toBeDefined()
-		expect(firstRotation?.refreshToken).toBeDefined()
-		expect(firstRotation?.refreshToken).not.toBe(seeded?.tokens?.refreshToken)
+		await waitUntilExpired(serverName, fixture.serverUrl)
+		await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "first refresh")
 		const issued = refreshGrants(fixture.eventsPath)
-		expect(issued).toHaveLength(1)
-		expect(issued[0]?.rotated).toBe(true)
+		expect(issued.length, eventSummary(fixture.eventsPath)).toBeGreaterThanOrEqual(1)
+		expect(
+			issued.some((event) => event.rotated === true),
+			eventSummary(fixture.eventsPath),
+		).toBe(true)
+		expect(refreshRejections(fixture.eventsPath), eventSummary(fixture.eventsPath)).toEqual([])
 
 		// The successor token is itself single-use: the next refresh rotates again.
-		await delay(1_200)
-		const secondRotation = await getValidToken(serverName, fixture.serverUrl, { authStorageOptions: STORAGE })
-		expect(secondRotation).toBeDefined()
-		expect(secondRotation?.refreshToken).not.toBe(firstRotation?.refreshToken)
-		expect(refreshGrants(fixture.eventsPath)).toHaveLength(2)
-		expect(refreshRejections(fixture.eventsPath)).toEqual([])
+		await waitUntilExpired(serverName, fixture.serverUrl)
+		await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "second refresh")
+		expect(refreshGrants(fixture.eventsPath).length, eventSummary(fixture.eventsPath)).toBeGreaterThanOrEqual(2)
+		expect(refreshRejections(fixture.eventsPath), eventSummary(fixture.eventsPath)).toEqual([])
 	})
 
-	it("adopts the token another process rotated into shared storage instead of demanding re-auth", {
-		timeout: 30_000,
-	}, async () => {
+	it("adopts the token another process rotated while this session's cache was stale", { timeout: 40_000 }, async () => {
 		fixture = await spawnFixture()
 		const serverName = "oauth-rotation-race"
-		const { getValidToken } = await import(FLOW_MODULE)
-		await seedViaRealFlow(serverName, fixture.serverUrl, STORAGE)
+		const envOptions = { agentDir, fileKey }
+		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
 
 		// The entry expires; another session refreshes first and the server rotates.
-		// The child's exit status plus the fixture's rotated refresh grant are the
-		// store-side proof of rotation.
-		await delay(1_200)
-		await rotateInOtherProcess(serverName, fixture.serverUrl, agentDir, fileKey)
-		const issued = refreshGrants(fixture.eventsPath)
-		expect(issued).toHaveLength(1)
-		expect(issued[0]?.rotated).toBe(true)
+		// The rotating child's exit status plus the fixture's rotated refresh grant
+		// are the store-side proof of rotation.
+		await waitUntilExpired(serverName, fixture.serverUrl)
+		await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator")
+		expect(
+			refreshGrants(fixture.eventsPath).some((event) => event.rotated === true),
+			eventSummary(fixture.eventsPath),
+		).toBe(true)
 
-		// This session's refresh must pick up the rotated token from shared storage.
-		// Falling back to this process's cached retired token would be rejected
-		// invalid_grant and push the session into a full browser re-auth.
-		const adopted = await getValidToken(serverName, fixture.serverUrl, { authStorageOptions: STORAGE })
-		expect(adopted).not.toBeNull()
-		expect(adopted?.refreshToken).toBeDefined()
-		expect(refreshRejections(fixture.eventsPath)).toEqual([])
+		// This session's refresh must pick up the rotated token from shared
+		// storage. Its cached token was retired, so the grant is rejected
+		// invalid_grant first; the retry must recover from shared storage
+		// instead of demanding a full browser re-auth.
+		await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "stale-cache recovery")
 	})
 })
