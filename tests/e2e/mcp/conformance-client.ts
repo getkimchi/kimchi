@@ -6,7 +6,7 @@ import { connectMcpServer, gatewayMcpCall, modelReply } from "../tui/support/mcp
 
 const scenario = process.env.MCP_CONFORMANCE_SCENARIO
 const serverUrl = process.argv[2]
-const toolScenarios = new Set(["initialize", "tools_call", "tools-call", "sse-retry"])
+const toolScenarios = new Set(["initialize", "tools_call", "tools-call", "sse-retry", "request-metadata"])
 const authScenarios = new Set(["auth/metadata-default", "auth/pre-registration"])
 const supportedScenarios = new Set([...toolScenarios, ...authScenarios])
 function log(message: string): void {

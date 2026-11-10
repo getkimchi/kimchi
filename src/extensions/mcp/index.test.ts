@@ -89,7 +89,9 @@ vi.mock("../../cli-args.js", async (importOriginal) => ({
 	}),
 }))
 
-vi.mock("./config.js", () => ({
+vi.mock("./config.js", async (importOriginal) => ({
+	// The default-era policy value must survive the mock: the facade reads it.
+	DEFAULT_MCP_PROTOCOL_VERSION: (await importOriginal<typeof import("./config.js")>()).DEFAULT_MCP_PROTOCOL_VERSION,
 	getSharedMcpConfigPath: () => configState.sharedConfigPath,
 	loadKimchiMcpConfig: (options: { includeProjectSources?: boolean }) =>
 		options.includeProjectSources === false
@@ -282,7 +284,7 @@ describe("upstream MCP adapter facade", () => {
 		mcpAdapterExtension(harness.api)
 		await start(harness)
 
-		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json", defaultProtocolVersion: "auto" })
 		expect(upstream.api).toBeDefined()
 	})
 
@@ -292,7 +294,7 @@ describe("upstream MCP adapter facade", () => {
 		mcpAdapterExtension(harness.api)
 		await start(harness)
 
-		expect(upstream.options).toEqual({ configPath: configState.sharedConfigPath })
+		expect(upstream.options).toEqual({ configPath: configState.sharedConfigPath, defaultProtocolVersion: "auto" })
 	})
 
 	it("lets an explicit selected config win over the Studio-shared default", async () => {
@@ -303,7 +305,7 @@ describe("upstream MCP adapter facade", () => {
 		mcpAdapterExtension(harness.api)
 		await start(harness)
 
-		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json", defaultProtocolVersion: "auto" })
 	})
 
 	it("uses the resolved config when selected-file precedence requires an overlay", async () => {
@@ -315,7 +317,7 @@ describe("upstream MCP adapter facade", () => {
 		mcpAdapterExtension(harness.api)
 		await start(harness)
 
-		expect(upstream.options).toEqual({ config: configState.config })
+		expect(upstream.options).toEqual({ config: configState.config, defaultProtocolVersion: "auto" })
 	})
 
 	describe("built-in gateway runtime registration", () => {
@@ -351,7 +353,7 @@ describe("upstream MCP adapter facade", () => {
 			mcpAdapterExtension(harness.api)
 			await start(harness)
 
-			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json", defaultProtocolVersion: "auto" })
 			expect(registrations).toHaveLength(1)
 			expect(registrations[0]?.name).toBe("kimchi-mcp-gateway")
 			expect(registrations[0]?.definition).toEqual(gatewayServer.entry)
@@ -366,7 +368,7 @@ describe("upstream MCP adapter facade", () => {
 			mcpAdapterExtension(harness.api)
 			await start(harness)
 
-			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json", defaultProtocolVersion: "auto" })
 			expect(registrations).toEqual([])
 		})
 
@@ -382,7 +384,7 @@ describe("upstream MCP adapter facade", () => {
 			mcpAdapterExtension(harness.api)
 			await start(harness)
 
-			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json", defaultProtocolVersion: "auto" })
 			expect(registrations).toEqual([])
 		})
 
@@ -396,7 +398,7 @@ describe("upstream MCP adapter facade", () => {
 			mcpAdapterExtension(harness.api)
 			await start(harness)
 
-			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
+			expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json", defaultProtocolVersion: "auto" })
 			expect(registrations).toEqual([])
 		})
 
@@ -429,7 +431,7 @@ describe("upstream MCP adapter facade", () => {
 
 			// Untrusted projects load user config programmatically (pre-existing
 			// behavior); the gateway still registers through the runtime API.
-			expect(upstream.options).toEqual({ config: { mcpServers: {} } })
+			expect(upstream.options).toEqual({ config: { mcpServers: {} }, defaultProtocolVersion: "auto" })
 			expect(registrations).toHaveLength(1)
 			expect(registrations[0]?.definition).toEqual(gatewayServer.entry)
 		})
@@ -447,6 +449,7 @@ describe("upstream MCP adapter facade", () => {
 
 			expect(upstream.options).toEqual({
 				config: { mcpServers: { "kimchi-mcp-gateway": { url: "https://ide.local/mcp" } } },
+				defaultProtocolVersion: "auto",
 			})
 			expect(registrations).toEqual([])
 		})
@@ -799,6 +802,7 @@ describe("upstream MCP adapter facade", () => {
 				},
 				settings: { scriptMode: false },
 			},
+			defaultProtocolVersion: "auto",
 		})
 	})
 
@@ -821,6 +825,7 @@ describe("upstream MCP adapter facade", () => {
 					ide: { command: "ide-server" },
 				},
 			},
+			defaultProtocolVersion: "auto",
 		})
 		expect(ctx.ui.notify).toHaveBeenCalledWith("project MCP config is not trusted", "warning")
 	})
