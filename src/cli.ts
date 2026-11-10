@@ -164,6 +164,7 @@ import statusExtension from "./extensions/status/index.js"
 import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
 import { steerOutcomeWatcherExtension } from "./extensions/steer-outcome-watcher.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import submitTimingExtension from "./extensions/submit-timing.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
 import { buildConfigSnapshot } from "./extensions/telemetry/config-snapshot.js"
@@ -1071,6 +1072,7 @@ async function cliMain(): Promise<void> {
 				// form or that fix is silently defeated.
 				compactionResilienceExtension(),
 				requestTimingExtension,
+				submitTimingExtension,
 				llmResponseLogExtension,
 				activityExtension,
 				infrastructureErrorTracker.extension,

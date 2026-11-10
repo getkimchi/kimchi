@@ -1,6 +1,7 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 1.3.0
 #
-# Tracking: tools/bash.js bounded abort/timeout termination: earendil-works/pi#10929
+# Tracking: optimistic-echo hunks: publication pending (upstream issue + PR
+#   planned). tools/bash.js bounded abort/timeout termination: earendil-works/pi#10929
 #   (upstream issue with a minimal reproduction of the never-settling abort and
 #   the proposed shared termination; an upstream PR submitting the equivalent
 #   source change and regression tests is planned against it). The /model
@@ -218,7 +219,9 @@
 # (dist/core/project-trust.js, dist/modes/interactive/interactive-mode.js)
 # mention those resources and speak as Kimchi, not pi.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
-# Removal: remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove the tools/bash.js bounded-termination hunk when the pinned Pi release ships equivalent bounded abort cleanup (upstream: earendil-works/pi#10929); keep the Kimchi regression tests in src/extensions/bash-background/ after removal. Remove the /settings Install-telemetry-omission hunk when pi hides the toggle itself while install telemetry is force-disabled (or exposes a settings-item filter API). Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
+# Removal: remove the optimistic-echo hunks when the pinned Pi release renders
+#   a submitted user message before its before_agent_start hooks complete.
+#   Remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove the tools/bash.js bounded-termination hunk when the pinned Pi release ships equivalent bounded abort cleanup (upstream: earendil-works/pi#10929); keep the Kimchi regression tests in src/extensions/bash-background/ after removal. Remove the /settings Install-telemetry-omission hunk when pi hides the toggle itself while install telemetry is force-disabled (or exposes a settings-item filter API). Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
 # History: patches/CHANGELOG.md.
 #
 #   - Bug-report zip archives created with mode 0600 (writeZipArchive +
@@ -1933,7 +1936,7 @@ index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc3e4313bd 100644
+index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99086a9810 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -494,7 +494,11 @@ export class InteractiveMode {
@@ -2041,7 +2044,16 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
          };
      }
      /**
-@@ -2791,14 +2862,24 @@ export class InteractiveMode {
+@@ -2727,6 +2798,8 @@ export class InteractiveMode {
+             // Normal message submission
+             // First, move any pending bash components to chat
+             this.flushPendingBashComponents();
++            // Optimistic echo — see showOptimisticEcho below.
++            this.showOptimisticEcho(text);
+             if (this.onInputCallback) {
+                 this.onInputCallback(text);
+             }
+@@ -2791,14 +2864,24 @@ export class InteractiveMode {
                      this.ui.requestRender();
                  }
                  else if (event.entry.type === "compaction") {
@@ -2069,7 +2081,19 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
                      this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
                      this.addMessageToChat(createCompactionSummaryMessage(event.entry.summary, event.entry.tokensBefore, event.entry.timestamp));
                      if (event.entry.usage) {
-@@ -3007,15 +3088,24 @@ export class InteractiveMode {
+@@ -2830,6 +2913,11 @@ export class InteractiveMode {
+                     this.ui.requestRender();
+                 }
+                 else if (event.message.role === "user") {
++                    // Any real user entry render replaces the
++                    // optimistic echo — the session now owns the message,
++                    // expanded or rewritten text included. Identity-based
++                    // removal: only the echo's own components go.
++                    this.clearOptimisticEcho();
+                     this.addMessageToChat(event.message);
+                     this.updatePendingMessagesDisplay();
+                     this.ui.requestRender();
+@@ -3007,15 +3095,24 @@ export class InteractiveMode {
                          throw new Error("Completed compaction is missing from the session context");
                      }
                      this.chatContainer.clear();
@@ -2103,7 +2127,56 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
                      }
                      this.footer.invalidate();
                  }
-@@ -3420,7 +3510,9 @@ export class InteractiveMode {
+@@ -3150,6 +3247,48 @@ export class InteractiveMode {
+         }
+         this.chatContainer.addChild(component);
+     }
++    // Optimistic echo: before_agent_start hooks (e.g. a memory
++    // digest with network calls) run before the session appends — and the
++    // transcript renders — the user's entry, so a normal submit could sit
++    // silent for their whole duration. Render the submitted text only after
++    // the window has visibly stalled (a fast submit reconciles before the
++    // delay fires and never shows the echo); the echo owns its components
++    // by IDENTITY (anything appended during the window survives), and
++    // clearOptimisticEcho() removes exactly those when the real entry
++    // renders, at the next submit, or after a rebuild (indexOf -1 is a
++    // no-op). At most one optimistic echo exists at a time.
++    showOptimisticEcho(text) {
++        this.clearOptimisticEcho();
++        // Plain prompts only: commands (builtin or extension), skill blocks,
++        // and prompt templates are expanded or never append a user entry,
++        // so the echo could never reconcile.
++        if (text.startsWith("/"))
++            return;
++        const timer = setTimeout(() => {
++            if (!this.optimisticEcho || this.optimisticEcho.timer !== timer)
++                return;
++            const before = this.chatContainer.children.length;
++            this.addMessageToChat({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
++            this.optimisticEcho.components = this.chatContainer.children.slice(before);
++            this.ui.requestRender();
++        }, 200);
++        if (timer.unref)
++            timer.unref();
++        this.optimisticEcho = { components: [], timer };
++    }
++    clearOptimisticEcho() {
++        if (!this.optimisticEcho)
++            return;
++        const { components, timer } = this.optimisticEcho;
++        this.optimisticEcho = undefined;
++        if (timer)
++            clearTimeout(timer);
++        for (const component of components) {
++            const index = this.chatContainer.children.indexOf(component);
++            if (index !== -1)
++                this.chatContainer.removeChild(component);
++        }
++    }
+     addMessageToChat(message, options) {
+         switch (message.role) {
+             case "bashExecution": {
+@@ -3420,7 +3559,9 @@ export class InteractiveMode {
          this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `${label}: ${reBilled}`), 1, 0));
      }
      renderInitialMessages() {
@@ -2114,7 +2187,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
          this.renderSessionEntries(entries, {
              updateFooter: true,
              populateHistory: true,
-@@ -3441,7 +3533,7 @@ export class InteractiveMode {
+@@ -3441,7 +3582,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -2123,7 +2196,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -3457,7 +3549,8 @@ export class InteractiveMode {
+@@ -3457,7 +3598,8 @@ export class InteractiveMode {
      }
      rebuildChatFromMessages() {
          this.chatContainer.clear();
@@ -2133,7 +2206,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
      }
      // =========================================================================
      // Key handlers
-@@ -4279,16 +4372,53 @@ export class InteractiveMode {
+@@ -4279,16 +4421,53 @@ export class InteractiveMode {
              return { component: selector, focus: selector.getSettingsList() };
          });
      }
@@ -2189,7 +2262,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
              return;
          }
          this.selectThinkingLevel(level, false);
-@@ -4310,10 +4440,17 @@ export class InteractiveMode {
+@@ -4310,10 +4489,17 @@ export class InteractiveMode {
                  this.selectThinkingLevel(level, persist);
                  done();
              };
@@ -2209,7 +2282,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
              return { component: selector, focus: selector };
          });
      }
-@@ -4322,6 +4459,34 @@ export class InteractiveMode {
+@@ -4322,6 +4508,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -2244,7 +2317,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4453,6 +4618,8 @@ export class InteractiveMode {
+@@ -4453,6 +4667,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -2253,7 +2326,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4470,10 +4637,13 @@ export class InteractiveMode {
+@@ -4470,10 +4686,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -2269,7 +2342,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5446,7 +5616,12 @@ export class InteractiveMode {
+@@ -5446,7 +5665,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {
