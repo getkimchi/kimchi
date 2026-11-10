@@ -157,6 +157,7 @@
 #     keep the legacy handshake unless they pin a version explicitly.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
+index 089da2c..70b62c5 100644
 --- a/agent-dir.ts
 +++ b/agent-dir.ts
 @@ -1,3 +1,5 @@
@@ -197,6 +198,7 @@ index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091fa
 #     drive ui.select/ui.input but not AltScreen overlays)
 diff --git a/commands.ts b/commands.ts
 index 40bb5f9a6c9f10bb45ea466710e181b58857e771..8a336eeacb7574deb0cee67b68fa4b95b3368d2c 100644
+index 40bb5f9..8a336ee 100644
 --- a/commands.ts
 +++ b/commands.ts
 @@ -878,6 +878,47 @@ export async function openMcpPanel(
@@ -259,6 +261,7 @@ index 40bb5f9a6c9f10bb45ea466710e181b58857e771..8a336eeacb7574deb0cee67b68fa4b95
      ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
 diff --git a/config.ts b/config.ts
 index 4c17d57f0275f2b2188dc43f732c5bebfbf76db5..b7091ca6ef9c2da0bed2d888ec008750e3d6c1e3 100644
+index 4c17d57..b7091ca 100644
 --- a/config.ts
 +++ b/config.ts
 @@ -4,7 +4,7 @@ import { homedir } from "node:os";
@@ -331,6 +334,7 @@ index 4c17d57f0275f2b2188dc43f732c5bebfbf76db5..b7091ca6ef9c2da0bed2d888ec008750
    const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
 diff --git a/direct-tools.ts b/direct-tools.ts
 index 8f0c1dfc0779d97928c19ade647d4001e4f37da3..5028ff7be24da05481e9852d580bd5ddd48a1b60 100644
+index 8f0c1df..5028ff7 100644
 --- a/direct-tools.ts
 +++ b/direct-tools.ts
 @@ -11,7 +11,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
@@ -360,6 +364,7 @@ index 8f0c1dfc0779d97928c19ade647d4001e4f37da3..5028ff7be24da05481e9852d580bd5dd
          async (conn) => {
 diff --git a/dist/agent-dir.d.ts b/dist/agent-dir.d.ts
 index b5cea54794703a8f94c84552aea1433cd40bcf6e..1cd442e4396b02e5bbefb8346f35f7e1a228c714 100644
+index b5cea54..1cd442e 100644
 --- a/dist/agent-dir.d.ts
 +++ b/dist/agent-dir.d.ts
 @@ -1,4 +1,5 @@
@@ -370,6 +375,7 @@ index b5cea54794703a8f94c84552aea1433cd40bcf6e..1cd442e4396b02e5bbefb8346f35f7e1
  export declare function getAppName(): string;
 diff --git a/dist/agent-dir.js b/dist/agent-dir.js
 index 5e32b5b5ac21b77f3fe654bf081b296490e38272..c4de0fa818ba6b1dc493d434c10da392a4f58410 100644
+index 5e32b5b..c4de0fa 100644
 --- a/dist/agent-dir.js
 +++ b/dist/agent-dir.js
 @@ -1,3 +1,5 @@
@@ -391,6 +397,7 @@ index 5e32b5b5ac21b77f3fe654bf081b296490e38272..c4de0fa818ba6b1dc493d434c10da392
      const name = piConfig?.name;
 diff --git a/dist/config.d.ts b/dist/config.d.ts
 index ddf4786efa7c6f7808647b78fd55db34cbf9911d..21b1200b44d504ef7b2747e0f41970db097fdd2a 100644
+index ddf4786..21b1200 100644
 --- a/dist/config.d.ts
 +++ b/dist/config.d.ts
 @@ -98,6 +98,10 @@ export declare function getGenericGlobalConfigPath(): string;
@@ -406,6 +413,7 @@ index ddf4786efa7c6f7808647b78fd55db34cbf9911d..21b1200b44d504ef7b2747e0f41970db
  export declare function getConfigDiscoveryPaths(overridePath?: string, cwd?: string): ConfigDiscoveryPath[];
 diff --git a/dist/config.js b/dist/config.js
 index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edeebe513ab0 100644
+index 5e7800b..0f07d5c 100644
 --- a/dist/config.js
 +++ b/dist/config.js
 @@ -4,7 +4,7 @@ import { homedir } from "node:os";
@@ -521,6 +529,7 @@ index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edee
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
 index 274849a3a2a60a176db5c16dc003d1aea204e18b..677d191182f25333dd30191e62c263d48e02cd42 100644
+index 274849a..677d191 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
 @@ -3,11 +3,11 @@
@@ -673,6 +682,7 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..677d191182f25333dd30191e62c263d4
      return null;
 diff --git a/dist/mcp-oauth-provider.js b/dist/mcp-oauth-provider.js
 index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..2bb75716742d2fabbfea59203f571ac74a9f8099 100644
+index 5eeb166..2bb7571 100644
 --- a/dist/mcp-oauth-provider.js
 +++ b/dist/mcp-oauth-provider.js
 @@ -89,6 +89,14 @@ export function getOAuthCallbackPath() {
@@ -713,6 +723,7 @@ index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..2bb75716742d2fabbfea59203f571ac7
       * Save the PKCE code verifier.
 diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
 index c10c5417a7b32388f947c6133811dcf15f67ec19..5405787efe81bfdd05f0741f47291c6cbb8c187b 100644
+index c10c541..5405787 100644
 --- a/dist/metadata-cache.js
 +++ b/dist/metadata-cache.js
 @@ -4,10 +4,9 @@ import { dirname } from "node:path";
@@ -778,7 +789,8 @@ index c10c5417a7b32388f947c6133811dcf15f67ec19..5405787efe81bfdd05f0741f47291c6c
  //# sourceMappingURL=metadata-cache.js.map
 \ No newline at end of file
 diff --git a/dist/server-manager.js b/dist/server-manager.js
-index 45343f8e7ef172cded28b07b6495f99c8c806558..d957b4e62587b8a2d7e3e41a162646f7dd442700 100644
+index 45343f8e7ef172cded28b07b6495f99c8c806558..987f5e7edb4d23ebac622f63933f8a33ac9542e5 100644
+index 45343f8..987f5e7 100644
 --- a/dist/server-manager.js
 +++ b/dist/server-manager.js
 @@ -79,8 +79,15 @@ function shouldFallbackToSse(error, definition) {
@@ -833,8 +845,21 @@ index 45343f8e7ef172cded28b07b6495f99c8c806558..d957b4e62587b8a2d7e3e41a162646f7
          let client;
          client = new AdapterClient({ name: `pi-mcp-${serverName}`, version: "1.0.0" }, {
              jsonSchemaValidator: createJsonSchemaValidator(),
+@@ -1383,7 +1395,10 @@ export class McpServerManager {
+             }
+             const hasImplicitStoredTokens = implicitStoredAuth?.status === "present"
+                 && implicitStoredAuth.entry.tokens !== undefined;
+-            if (hasImplicitStoredTokens)
++            // Explicit-OAuth connections refresh through this provider too; a token
++            // another session rotated must not be served from the stale process cache
++            // at connect time.
++            if (hasImplicitStoredTokens || definition.auth === "oauth")
+                 invalidateAuthEntryCache(serverName);
+             let authState = supportsOAuth(definition)
+                 ? definition.auth === undefined
 diff --git a/dist/types.d.ts b/dist/types.d.ts
 index cd540e229b893f6c9cec107b736dcea22ce4111c..c81f47a123b4f2851022f132e24de554531c5fd2 100644
+index cd540e2..c81f47a 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
 @@ -522,6 +522,15 @@ export interface McpConfig {
@@ -863,6 +888,7 @@ index cd540e229b893f6c9cec107b736dcea22ce4111c..c81f47a123b4f2851022f132e24de554
   * Format a tool name with server prefix.
 diff --git a/dist/types.js b/dist/types.js
 index 298d5f63e404d6743be3cc7d0657ee8191d5bc51..9442387b57d62ed46b7bc1a25869b656ac72e891 100644
+index 298d5f6..9442387 100644
 --- a/dist/types.js
 +++ b/dist/types.js
 @@ -106,33 +106,54 @@ export function describeIgnoredSettings(provenance) {
@@ -984,6 +1010,7 @@ index 298d5f63e404d6743be3cc7d0657ee8191d5bc51..9442387b57d62ed46b7bc1a25869b656
              return true;
 diff --git a/index.ts b/index.ts
 index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c464302cc 100644
+index c07af5a..fee7737 100644
 --- a/index.ts
 +++ b/index.ts
 @@ -210,6 +210,7 @@ function resolveNamespaceEnvOverride(
@@ -1037,6 +1064,7 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
 #     retries needs-auth routes against the store without an interactive flow)
 diff --git a/init.ts b/init.ts
 index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acbb5eab015 100644
+index 247d300..29eae69 100644
 --- a/init.ts
 +++ b/init.ts
 @@ -156,6 +156,9 @@ export async function initializeMcp(
@@ -1087,6 +1115,7 @@ index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acb
        return false;
      }
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
+index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..1c775c4085e1dd87e6bfcce47fb6dbecbd122cc2 100644
 index 9ded419..1c775c4 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
@@ -1366,6 +1395,7 @@ index 9ded419..1c775c4 100644
    authority()
 diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
 index 32aad31f9fe94cef128de9e1576cbc04d53fa822..b2593924653dda1fe18be16da7e7a90ae8d4cced 100644
+index 32aad31..b259392 100644
 --- a/mcp-callback-server.ts
 +++ b/mcp-callback-server.ts
 @@ -163,6 +163,24 @@ function htmlError(error: string): string {
@@ -1480,6 +1510,7 @@ index 32aad31f9fe94cef128de9e1576cbc04d53fa822..b2593924653dda1fe18be16da7e7a90a
    pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
 diff --git a/mcp-oauth-provider.ts b/mcp-oauth-provider.ts
 index b724478bf4036c199d4574c87a200207706ceb29..38cc4edf7c4903b9ce2423517e9d396bd9b1c7a6 100644
+index b724478..38cc4ed 100644
 --- a/mcp-oauth-provider.ts
 +++ b/mcp-oauth-provider.ts
 @@ -127,6 +127,18 @@ export function setOAuthCallbackPath(path: string): void {
@@ -1545,6 +1576,7 @@ index b724478bf4036c199d4574c87a200207706ceb29..38cc4edf7c4903b9ce2423517e9d396b
    /**
 diff --git a/mcp-output-guard.ts b/mcp-output-guard.ts
 index 219c949f5de785a1e8ddc6927fcf366444862527..43ed93c9a86014a14129ca73490bccc09c4f391b 100644
+index 219c949..43ed93c 100644
 --- a/mcp-output-guard.ts
 +++ b/mcp-output-guard.ts
 @@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -1566,6 +1598,7 @@ index 219c949f5de785a1e8ddc6927fcf366444862527..43ed93c9a86014a14129ca73490bccc0
  const SCRIPT_PIPE_HINT_MIN_BYTES = 8 * 1024;
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1d5b3545f 100644
+index 873b82a..cceacbb 100644
 --- a/metadata-cache.ts
 +++ b/metadata-cache.ts
 @@ -4,7 +4,6 @@ import { dirname } from "node:path";
@@ -1633,6 +1666,7 @@ index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1
 -}
 diff --git a/oauth.ts b/oauth.ts
 index 16bde6bf20ef16ecf44a7bcd2edb4a2c56c0db0e..65956bd2d582acbdba35a66c454a8134a360c847 100644
+index 16bde6b..65956bd 100644
 --- a/oauth.ts
 +++ b/oauth.ts
 @@ -8,6 +8,9 @@ import {
@@ -1647,6 +1681,7 @@ index 16bde6bf20ef16ecf44a7bcd2edb4a2c56c0db0e..65956bd2d582acbdba35a66c454a8134
  export interface McpOAuthTokenOptions {
 diff --git a/package.json b/package.json
 index 74e2d870d7fbefba645f7fa500e3b4a5c8ba42a0..8b690411c0a4dee6029c836a074250ec6983e9a6 100644
+index 74e2d87..8b69041 100644
 --- a/package.json
 +++ b/package.json
 @@ -20,6 +20,11 @@
@@ -1663,6 +1698,7 @@ index 74e2d870d7fbefba645f7fa500e3b4a5c8ba42a0..8b690411c0a4dee6029c836a074250ec
        "import": "./host-managed.ts",
 diff --git a/pi-builtin-mcp.ts b/pi-builtin-mcp.ts
 index 4e3f8775e9e4770d776ed8e92eab80edc5f3f8df..5657644bb7c17ac9c0ead1886dcb20ad1bf644ea 100644
+index 4e3f877..5657644 100644
 --- a/pi-builtin-mcp.ts
 +++ b/pi-builtin-mcp.ts
 @@ -4,7 +4,17 @@ import { getAgentDir } from "./agent-dir.ts";
@@ -1686,6 +1722,7 @@ index 4e3f8775e9e4770d776ed8e92eab80edc5f3f8df..5657644bb7c17ac9c0ead1886dcb20ad
   * Once per adapter version, adds `-builtin:mcp` to Pi's user `extensions` unless it already has a
 diff --git a/project-server-trust.ts b/project-server-trust.ts
 index 264573709c2c896fdb88d661fd24cd8f2f4a2327..7620913273acb8cd190bbb992d9e85303b5eabb6 100644
+index 2645737..7620913 100644
 --- a/project-server-trust.ts
 +++ b/project-server-trust.ts
 @@ -200,6 +200,12 @@ export async function applyProjectServerTrust(
@@ -1703,6 +1740,7 @@ index 264573709c2c896fdb88d661fd24cd8f2f4a2327..7620913273acb8cd190bbb992d9e8530
        entry.projectRoot === projectRoot && entry.serverName === name && entry.definitionHash === definitionHash);
 diff --git a/proxy-modes.ts b/proxy-modes.ts
 index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98a070add7 100644
+index 453e728..af02f32 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
 @@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
@@ -1853,6 +1891,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
        async (conn) => {
 diff --git a/server-manager.ts b/server-manager.ts
 index 9fb4f964fc1455666159ed4f1a442bba2ebf7799..c6d85aa030564d613c686a134c724fec4bf0947f 100644
+index 9fb4f96..c6d85aa 100644
 --- a/server-manager.ts
 +++ b/server-manager.ts
 @@ -41,7 +41,6 @@ import {
@@ -1945,6 +1984,7 @@ index 9fb4f964fc1455666159ed4f1a442bba2ebf7799..c6d85aa030564d613c686a134c724fec
          ? hasImplicitStoredTokens
 diff --git a/session-recovery.ts b/session-recovery.ts
 index 286242f0b9fcfbe012000d4a5397c39f2ffff845..7878594af5fe60852f04c7b5cf624a1feabee6e3 100644
+index 286242f..7878594 100644
 --- a/session-recovery.ts
 +++ b/session-recovery.ts
 @@ -77,6 +77,13 @@ export interface SessionRecoveryDeps {
@@ -1986,6 +2026,7 @@ index 286242f0b9fcfbe012000d4a5397c39f2ffff845..7878594af5fe60852f04c7b5cf624a1f
  
 diff --git a/tool-metadata.ts b/tool-metadata.ts
 index 3c4c4b44b3fd4c7012bce98f2abad91e5feba663..15cced2d61dcf40b632699875d24b3d0ae77a1b0 100644
+index 3c4c4b4..15cced2 100644
 --- a/tool-metadata.ts
 +++ b/tool-metadata.ts
 @@ -1,9 +1,8 @@
@@ -2028,6 +2069,7 @@ index 3c4c4b44b3fd4c7012bce98f2abad91e5feba663..15cced2d61dcf40b632699875d24b3d0
    }
 diff --git a/types.ts b/types.ts
 index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..12089e9a604b522e7e03f0ee1ecd15324ab48207 100644
+index 6fdf19b..12089e9 100644
 --- a/types.ts
 +++ b/types.ts
 @@ -732,6 +732,15 @@ export interface McpConfig {
