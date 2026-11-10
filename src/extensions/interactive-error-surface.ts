@@ -8,6 +8,13 @@ import { preserveRawErrorMessage } from "./error-preservation.js"
 interface PendingProviderError {
 	readonly rawMessage: string
 	willRetry: boolean
+	/**
+	 * True once the exhaustion sanitized message was rendered at agent_end, so
+	 * the imminent auto_retry_end → showError interception suppresses the
+	 * duplicate instead of rendering it twice. Never set while retries are
+	 * pending — the entry is overwritten fresh on each subsequent error.
+	 */
+	notified?: boolean
 }
 
 let lastPendingProviderError: PendingProviderError | undefined
@@ -32,8 +39,11 @@ export function interceptShowError(
 	pending: PendingProviderError | undefined,
 ): string | undefined {
 	// The auto_retry_end handler surfaces this final exhaustion message —
-	// sanitize it (strips the raw finalError) and render.
+	// sanitize it (strips the raw finalError) and render. Skipped when the
+	// extension already rendered the exhaustion message at agent_end
+	// (pending.notified): the retry finally ended, but the message is up.
 	if (errorMessage?.startsWith("Retry failed after")) {
+		if (pending?.notified) return undefined
 		// If we have the original raw error stored, use it for a better reason tag.
 		const rawForReason = pending?.rawMessage ?? errorMessage
 		return formatSanitizedErrorMessage(rawForReason, "interactive", { exhausted: true })
@@ -97,7 +107,15 @@ export function applyInteractiveErrorSurfacePatch(): void {
 export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void {
 	pi.on("message_end", (event) => {
 		const message = event.message
-		if (message.role !== "assistant") return
+		if (message.role !== "assistant") {
+			// A user message ends the turn boundaries: any pending provider error
+			// from a previous turn (e.g. a retry the user aborted) is stale now,
+			// and its agent_end already fired. Clear it so a later agent_end
+			// (for a turn that completed or that the user cancelled) cannot
+			// resurrect an old exhaustion render.
+			if (message.role === "user") lastPendingProviderError = undefined
+			return
+		}
 		if (message.stopReason !== "error") {
 			lastPendingProviderError = undefined
 			return
@@ -146,18 +164,30 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 	})
 
 	pi.on("agent_end", (event, ctx) => {
-		const willRetry = (event as { willRetry?: boolean }).willRetry === true
+		const rawWillRetry = (event as { willRetry?: boolean }).willRetry
+		const willRetry = rawWillRetry === true
+		// The extension channel now carries the same willRetry the listener
+		// The extension channel now carries the same willRetry the listener
+		// channel gets (installed by agent-end-will-retry). True → the upstream
+		// retry loop is still going to fire; keep the pending entry and render
+		// nothing. False/undefined (retries disabled, exhausted, or a replay
+		// where the wrapper did not run) → the turn is over: render the
+		// sanitized exhaustion message now.
 		if (!willRetry && lastPendingProviderError) {
-			// Retries exhausted — render the sanitized message directly.
-			// We can't rely on the upstream auto_retry_end → showError path
-			// because the finalError may have been mutated to the placeholder.
+			// Retries exhausted (or never enabled) — render the sanitized message
+			// directly. We can't rely on the upstream auto_retry_end → showError
+			// path because the finalError may have been mutated to the placeholder.
 			// Rendering here ensures the sanitized message reaches the user.
 			const sanitized = formatSanitizedErrorMessage(lastPendingProviderError.rawMessage, "interactive", {
 				exhausted: true,
 			})
 			ctx?.ui?.notify?.(sanitized, "error")
-			lastPendingProviderError = undefined
-		} else if (lastPendingProviderError) {
+			// Keep the raw error until the next non-error message_end: the
+			// imminent auto_retry_end → showError interception (Esc-cancel and
+			// exhausted paths) needs pending.rawMessage for the correct reason
+			// label, and the notified flag suppresses that duplicate render.
+			lastPendingProviderError.notified = true
+		} else if (lastPendingProviderError && willRetry) {
 			lastPendingProviderError.willRetry = willRetry
 		}
 	})

@@ -111,6 +111,16 @@ test("retried vLLM error is suppressed, recovery response renders, no internals 
 
 			assertNoForbiddenLeaks(viewText(terminal))
 			trace.step("no forbidden vLLM internals in terminal")
+
+			// Regression gate: the exhaustion message must NOT appear while the
+			// retry loop is still recovering — the extension only renders it when
+			// retries are truly over. Before the agent-end-will-retry fix the
+			// extension rendered it on the FIRST agent_end, turning every
+			// transient provider hiccup into a terminal-looking failure.
+			const afterRecovery = fullText(terminal)
+			expect(afterRecovery).not.toContain("The model provider is temporarily unavailable")
+			expect(afterRecovery).not.toContain("retries were exhausted")
+			trace.step("no premature exhaustion message in scrollback after recovery")
 		},
 	)
 })

@@ -150,21 +150,88 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		expect(__getPendingProviderError()).toBeUndefined()
 	})
 
-	it("agent_end willRetry:true keeps pending; willRetry:false renders sanitized + clears", () => {
+	it("agent_end willRetry:true keeps pending and renders nothing", () => {
 		const { emitMessageEnd, emitAgentEnd } = createHarness()
 		const notify = vi.fn()
 		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
-		emitAgentEnd({ willRetry: true })
+		emitAgentEnd({ willRetry: true }, { ui: { notify } })
 		expect(__getPendingProviderError()?.willRetry).toBe(true)
+		expect(notify).not.toHaveBeenCalled()
+	})
+
+	it("agent_end willRetry:false renders sanitized once, keeps pending until next success", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		emitAgentEnd({ willRetry: true }, { ui: { notify } })
+		expect(notify).not.toHaveBeenCalled()
 
 		// Exhaustion: agent_end with willRetry:false renders sanitized via notify.
 		emitAgentEnd({ willRetry: false }, { ui: { notify } })
-		expect(__getPendingProviderError()).toBeUndefined()
+		expect(notify).toHaveBeenCalledTimes(1)
 		expect(notify).toHaveBeenCalledWith(
 			expect.stringContaining("The model provider is temporarily unavailable"),
 			"error",
 		)
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Please retry your request."), "error")
+
+		// The raw error is kept (pending.notified) so the imminent auto_retry_end
+		// interception reuses the correct reason label; a later success clears it.
+		expect(__getPendingProviderError()?.notified).toBe(true)
+		emitMessageEnd({ role: "assistant", stopReason: "stop" })
+		expect(__getPendingProviderError()).toBeUndefined()
+	})
+
+	it("suppresses the auto_retry_end duplicate once the exhaustion render already notified", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		emitAgentEnd({ willRetry: true }, { ui: { notify } })
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).toHaveBeenCalledTimes(1)
+
+		// auto_retry_end → showError with the placeholder finalError: pending is
+		// marked notified, so the duplicate is suppressed (no second render).
+		const pending = __getPendingProviderError()
+		expect(pending?.notified).toBe(true)
+		expect(interceptShowError("Retry failed after 3 attempts: Retrying…", pending)).toBeUndefined()
+	})
+
+	it("Esc-cancel path: auto_retry_end via showError renders once with the correct label", () => {
+		// Retry pending (agent_end willRetry:true, no render), then the user
+		// cancels: no exhaustion agent_end fires — the auto_retry_end
+		// interception is the only surface, and must keep the real reason tag.
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		emitAgentEnd({ willRetry: true }, { ui: { notify } })
+		expect(notify).not.toHaveBeenCalled()
+
+		const pending = __getPendingProviderError()
+		expect(pending?.notified).toBeUndefined()
+		const result = interceptShowError("Retry failed after 1 attempts: Retry cancelled", pending)
+		expect(result).toContain("The model provider is temporarily unavailable (provider unavailable)")
+		expect(result).toContain("Please retry your request.")
+	})
+
+	it("retries-disabled turn: first agent_end renders the exhaustion message", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).toHaveBeenCalledTimes(1)
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("after retries were exhausted"), "error")
+	})
+
+	it("user message clears stale pending from an aborted retry turn", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		emitAgentEnd({ willRetry: true }, { ui: { notify } })
+		expect(__getPendingProviderError()).toBeDefined()
+
+		emitMessageEnd({ role: "user", stopReason: "stop" })
+		expect(__getPendingProviderError()).toBeUndefined()
 	})
 
 	it("does NOT set pending state when the rate-limit deadline is past the wait bound", () => {

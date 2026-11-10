@@ -59,6 +59,7 @@ import { isBunBinary } from "./env.js"
 import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
 import idleGcExtension from "./extensions/adaptive-gc.js"
+import { installAgentEndWillRetryPatch } from "./extensions/agent-end-will-retry.js"
 import agentsExtension from "./extensions/agents/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import { artifactRecorderExtension } from "./extensions/artifacts/recorder.js"
@@ -232,6 +233,7 @@ import { resolveExportSystemPrompt } from "./utils/session-system-prompt-store.j
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installAgentEndWillRetryPatch()
 installModelTableRenderer()
 installThinkingLevelAdvisor()
 installCompactionRecoveryPatch()
