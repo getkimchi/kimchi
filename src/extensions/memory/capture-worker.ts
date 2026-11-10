@@ -1540,6 +1540,11 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	let skippedNonDurable = 0
 	let skippedByValuation = 0
 	let redacted = 0
+	// Plans whose COMMIT threw (window extraction succeeded but the store
+	// write — backend.add/supersede — could not complete, e.g. an embedder
+	// 503 storm). Phase-B failure counts are zero for these, so the
+	// bookkeeping below must count them separately.
+	const commitFailed = new Set<JobPlan>()
 	for (const plan of plans) {
 		try {
 			const added = await commitPlan(plan, personalBackend, projectBackends, createBackend, valuationGate)
@@ -1557,6 +1562,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			}
 		} catch (err) {
 			failed += 1
+			commitFailed.add(plan)
 			console.error(
 				`[memory-capture] job ${basename(plan.jobFile)} failed (file left for retry):`,
 				err instanceof Error ? err.message : err,
@@ -1585,7 +1591,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		if (!existsSync(plan.jobFile)) continue
 		if (plan.poisonedWindowCount > 0) {
 			if (recordFailedAttempt(plan, "poison")) quarantined += 1
-		} else if (plan.transientWindowCount > 0) {
+		} else if (plan.transientWindowCount > 0 || commitFailed.has(plan)) {
 			if (recordFailedAttempt(plan, "transient")) quarantined += 1
 		}
 	}

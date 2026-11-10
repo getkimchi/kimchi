@@ -2099,6 +2099,59 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 		}
 	})
 
+	it("a commit-phase failure (store write 503) counts toward the transient cap even with clean windows", async () => {
+		const random = vi.spyOn(Math, "random").mockReturnValue(0)
+		process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS = "2"
+		try {
+			// Extraction succeeds with one real fact, so commitPlan actually
+			// calls backend.add; the add throws 503 — the observed bench storm
+			// where commitPhase failed with all windows clean.
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				return new Response(
+					JSON.stringify({ choices: [{ message: { content: JSON.stringify(["Dog's name is Fred"]) } }] }),
+					{ status: 200 },
+				)
+			}
+			const failingBackend: CaptureBackend = {
+				add: async () => {
+					throw new Error("503 Service Temporarily Unavailable")
+				},
+				delete: async () => ({}),
+				getAll: async () => ({ results: [] }),
+				search: async () => ({ results: [] }),
+			}
+			const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+			const jobFile = writeJob("commit-fail", [msg("user", "my dog's name is Fred")])
+			// First drain: counters bump to 1 even though windows are clean —
+			// without this hook, commit-only failures never reach quarantine.
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(failingBackend),
+				}),
+			).rejects.toThrow()
+			const afterFirst = JSON.parse(readFileSync(jobFile, "utf-8")) as { transientAttempts?: number }
+			expect(afterFirst.transientAttempts).toBe(1)
+			// Second drain: cap hit → quarantined.
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(failingBackend),
+				}),
+			).rejects.toThrow()
+			expect(existsSync(jobFile)).toBe(false)
+			expect(existsSync(join(failedDir(), "commit-fail.json"))).toBe(true)
+		} finally {
+			random.mockRestore()
+			delete process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS
+		}
+	})
+
 	it("sweeps only quarantined jobs older than the failed/ TTL", async () => {
 		mkdirSync(failedDir(), { recursive: true })
 		const oldFile = join(failedDir(), "old.json")
