@@ -11,9 +11,12 @@ name: MCP live
 #
 # lifecycle — credentialed: proves an expired Google-backed MCP access
 # token is renewed silently (tools listed, no browser consent, stored
-# expiry advanced) using a dedicated test account's refresh token. Runs on
-# pull requests labelled `mcp-e2e-live` (labelling re-triggers the workflow)
-# and on manual dispatch.
+# expiry advanced) using a dedicated test account's refresh token,
+# including a third cycle where two concurrent probes renew against the
+# one shared credential store — the cross-session contention the
+# refresh-rotation fix covers. Runs on pull requests labelled
+# `mcp-e2e-live` (labelling re-triggers the workflow) and on manual
+# dispatch.
 #
 # Neither job is a required merge check: a failure shows on the PR but does
 # not gate merging. The provider inventory (MCP_LIVE_PROVIDERS) and the
