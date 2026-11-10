@@ -20,11 +20,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
  * from shared storage instead of demanding a full browser re-auth.
  *
  * Every adapter execution runs in a spawned plain-Node process against the
- * adapter's compiled dist modules — the same artifact the runtime loads — so
- * each process has its own credential-entry cache, exactly like production
- * sessions. This test process only orchestrates and asserts on exit codes and
- * the fixture's event log. (Vitest's transformed in-process copy of the dist
- * module is NOT equivalent to the runtime build and must not be asserted on.)
+ * adapter's compiled dist modules, so each process has its own
+ * credential-entry cache, exactly like production sessions. Note the
+ * artifact nuance: the package's exports resolve "." to the TypeScript
+ * sources, so the runtime loads the .ts files — the dist modules driven here
+ * are mirrors that must be kept behaviorally identical (the patch pipeline
+ * regenerates both; re-verify mirror parity at every patch edit). This test
+ * process only orchestrates and asserts on exit codes and the fixture's
+ * event log. (Vitest's transformed in-process copy of the modules is NOT
+ * equivalent to the compiled dist and must not be asserted on.)
  *
  * Deliberately NOT using tests/e2e/tui/support/mcp-fixture.ts scaffolding: the
  * shared helper cannot spawn the second credential-cache process this test

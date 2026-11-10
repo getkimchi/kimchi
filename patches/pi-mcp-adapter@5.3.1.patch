@@ -520,7 +520,7 @@ index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edee
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
-index 274849a3a2a60a176db5c16dc003d1aea204e18b..b1ecca76343f67829facb19041c7a2a14da7eb6a 100644
+index 274849a3a2a60a176db5c16dc003d1aea204e18b..20be39fac0e4ddb576deb6bfea68123325c708a7 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
 @@ -3,11 +3,11 @@
@@ -538,6 +538,15 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..b1ecca76343f67829facb19041c7a2a1
  import { isServerDisabled } from "./types.js";
  import { formatTerminalError, interpolateEnvVars } from "./utils.js";
  import { createOAuthFetch, oauthHeaderResolver, resolveOAuthHeaders } from "./mcp-auth-fetch.js";
+@@ -254,7 +254,7 @@ async function probeAuthDiscovery(serverUrl, definition, signal) {
+                 params: {
+                     protocolVersion: LATEST_PROTOCOL_VERSION,
+                     capabilities: {},
+-                    clientInfo: { name: "pi-mcp-adapter", version: "2.11.0" },
++                    clientInfo: { name: "pi-mcp-adapter", version: "5.3.1" },
+                 },
+             }),
+             ...(discoverySignal ? { signal: discoverySignal } : {}),
 @@ -400,6 +400,42 @@ export async function startAuth(serverName, serverUrl, definition, options = {},
          existingPendingAuth.authority();
          return { authorizationUrl: existingPendingAuth.authorizationUrl };
@@ -630,22 +639,28 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..b1ecca76343f67829facb19041c7a2a1
              }, authStorageOptions, runtime.signal, undefined, authority);
              try {
                  authProvider.setAuthFetch(fetchFn);
-@@ -984,6 +1044,14 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -984,6 +1044,20 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
                  authority();
                  throwIfAborted(signal);
                  if (result !== "AUTHORIZED") {
 +                    // The SDK falls back to a fresh authorization flow when a refresh grant
 +                    // is rejected invalid_grant; a rotated token from another session may
-+                    // already be in shared storage — poll for it and retry once.
-+                    const freshAfterRedirect = await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions);
-+                    if (refreshAttempt === 1 && freshAfterRedirect !== undefined) {
++                    // already be in shared storage — poll for it and retry once. The same
++                    // rejected-grant signal gates the catch branch: this fallback is also
++                    // reached for network and server errors the SDK swallowed, where no
++                    // rotation can have occurred and the second attempt could never use
++                    // the result — those fail fast instead of paying the poll.
++                    const freshAfterRedirect = refreshAttempt === 1 && authProvider.tokensInvalidatedByRecovery()
++                        ? await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions)
++                        : undefined;
++                    if (freshAfterRedirect !== undefined) {
 +                        console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
 +                        continue;
 +                    }
                      return null;
                  }
                  const refreshed = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
-@@ -991,16 +1059,33 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -991,16 +1065,33 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
                  throwIfAborted(signal);
                  return refreshed?.tokens ?? null;
              }
@@ -1130,7 +1145,7 @@ index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acb
        return false;
      }
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..738e2731a823fc8525b5e6758fdd4da296d49885 100644
+index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe04f18ac2b 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
 @@ -8,6 +8,8 @@ import {
@@ -1408,7 +1423,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..738e2731a823fc8525b5e6758fdd4da2
  /**
   * Get a valid access token for a server, refreshing if necessary.
   * 
-@@ -1155,51 +1280,85 @@ export async function getValidToken(
+@@ -1155,51 +1280,91 @@ export async function getValidToken(
  
    if (expired === true && entry.tokens.refreshToken) {
      console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`)
@@ -1463,9 +1478,15 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..738e2731a823fc8525b5e6758fdd4da2
 -          return null
 +            // The SDK falls back to a fresh authorization flow when a refresh grant
 +            // is rejected invalid_grant; a rotated token from another session may
-+            // already be in shared storage — poll for it and retry once.
-+            const freshAfterRedirect = await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions)
-+            if (refreshAttempt === 1 && freshAfterRedirect !== undefined) {
++            // already be in shared storage — poll for it and retry once. The same
++            // rejected-grant signal gates the catch branch: this fallback is also
++            // reached for network and server errors the SDK swallowed, where no
++            // rotation can have occurred and the second attempt could never use
++            // the result — those fail fast instead of paying the poll.
++            const freshAfterRedirect = refreshAttempt === 1 && authProvider.tokensInvalidatedByRecovery()
++                ? await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions)
++                : undefined
++            if (freshAfterRedirect !== undefined) {
 +                console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
 +                continue
 +            }

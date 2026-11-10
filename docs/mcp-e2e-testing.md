@@ -151,5 +151,8 @@ repository fixture server. Use it when the behavior under test cannot be
 reached through the public subpaths and cannot inject a second concurrent
 credential-cache holder through the TUI surface. This lane couples to the
 adapter's dist file layout — re-verify the imports at every adapter version
-bump. It seeds credentials through the adapter's real
-`startAuth`/`completeAuth` flow so the stored entry matches production.
+bump — and note that the runtime itself loads the package's TypeScript
+sources (the `exports` map resolves `.` to `./index.ts`), so the dist files
+driven here are mirrors that the patch pipeline must keep behaviorally
+identical to the `.ts` sections. It seeds credentials through the adapter's
+real `startAuth`/`completeAuth` flow so the stored entry matches production.
