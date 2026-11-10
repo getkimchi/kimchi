@@ -753,6 +753,84 @@ export async function redactText(text: string): Promise<string> {
 	return redactTextCounted(text, (err) => console.error("PII redaction scan failed, returning original text:", err))
 }
 
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+const IS_BASE64_CHAR = new Uint8Array(128)
+for (let i = 0; i < BASE64_ALPHABET.length; i++) IS_BASE64_CHAR[BASE64_ALPHABET.charCodeAt(i)] = 1
+const LINE_FEED = "\n".charCodeAt(0)
+const CARRIAGE_RETURN = "\r".charCodeAt(0)
+const PADDING = "=".charCodeAt(0)
+
+/**
+ * Whether `text` from `start` on is well-formed padded base64; line breaks are
+ * ignored. A char loop rather than a regex: image payloads run to many MB.
+ */
+function isBase64From(text: string, start: number): boolean {
+	let chars = 0
+	let padding = 0
+	for (let i = start; i < text.length; i++) {
+		const c = text.charCodeAt(i)
+		if (c === LINE_FEED || c === CARRIAGE_RETURN) continue
+		if (c === PADDING) {
+			if (++padding > 2) return false
+			continue
+		}
+		if (padding > 0 || IS_BASE64_CHAR[c] !== 1) return false
+		chars++
+	}
+	return chars > 0 && (chars + padding) % 4 === 0
+}
+
+/** Base64 chars needed to decode the 12 bytes the image signatures below inspect. */
+const IMAGE_SIGNATURE_BASE64_CHARS = 16
+
+/**
+ * Whether base64 at `start` decodes to a PNG, JPEG, GIF or WebP signature —
+ * deliberately just those four: the formats vision providers accept. Other
+ * image/* subtypes keep being scanned (fail-closed), never reaching a
+ * provider as images anyway.
+ */
+function hasImageSignature(text: string, start: number): boolean {
+	// Line breaks are legal base64: collect signature chars past them, else a
+	// break inside the window shrinks it and WebP's 12-byte check falls short.
+	let head = ""
+	for (let i = start; i < text.length && head.length < IMAGE_SIGNATURE_BASE64_CHARS; i++) {
+		const c = text.charCodeAt(i)
+		if (c !== LINE_FEED && c !== CARRIAGE_RETURN) head += text[i]
+	}
+	const decoded = Buffer.from(head, "base64").toString("latin1")
+	return (
+		decoded.startsWith("\x89PNG\r\n\x1a\n") ||
+		decoded.startsWith("\xff\xd8\xff") ||
+		decoded.startsWith("GIF8") ||
+		(decoded.startsWith("RIFF") && decoded.slice(8, 12) === "WEBP")
+	)
+}
+
+function isImageBase64From(text: string, start: number): boolean {
+	return hasImageSignature(text, start) && isBase64From(text, start)
+}
+
+const IMAGE_DATA_URL_PREFIX = /^data:image\/[a-z0-9.+-]+(?:;[^;,]*)*;base64,/i
+const IMAGE_URL_KEYS: ReadonlySet<PropertyKey> = new Set(["image_url", "imageUrl"])
+
+/** A complete image data URL in `image_url`/`imageUrl`, or the `url` nested inside one. */
+function isImageDataUrlField(key: PropertyKey, value: string, parentKey: PropertyKey | undefined): boolean {
+	if (!IMAGE_URL_KEYS.has(key) && !(key === "url" && parentKey !== undefined && IMAGE_URL_KEYS.has(parentKey))) {
+		return false
+	}
+	// The ^ anchor keeps the regex cheap on huge non-URL strings; a match ends
+	// at the first comma, which base64 cannot contain.
+	const prefix = IMAGE_DATA_URL_PREFIX.exec(value)
+	return prefix !== null && isImageBase64From(value, prefix[0].length)
+}
+
+/** The base64 `data` of an image block: internal/Google `mimeType`, Anthropic `media_type`. */
+function isImageBlockData(key: PropertyKey, value: string, block: Record<PropertyKey, unknown>): boolean {
+	if (key !== "data") return false
+	const mime = block.mimeType ?? block.media_type
+	return typeof mime === "string" && mime.toLowerCase().startsWith("image/") && isImageBase64From(value, 0)
+}
+
 /**
  * Deep-walk any JSON-serializable structure and redact all string values.
  *
@@ -760,21 +838,31 @@ export async function redactText(text: string): Promise<string> {
  * semantics: every string walked, trace-ID keys passed through unchanged,
  * sensitive-key string values force-redacted, enumerable symbols preserved.
  * Only the per-string redaction function differs (fail-open vs fail-closed).
+ *
+ * Binary image payloads are the one exception: a secret-shaped run in them is
+ * coincidence, and splicing a marker in corrupts the image. Base64 is exempt
+ * only in image fields, when well-formed and carrying a real image signature;
+ * typed arrays (Bedrock's bytes) hold no strings and pass through intact.
+ * Bytes after the signature are trusted wholesale — plaintext EXIF/tEXt
+ * metadata and anything smuggled past the prefix flow through unredacted —
+ * because scanning inside would corrupt the very payload it means to protect.
  */
 async function redactObjectStringsWith<T>(
 	obj: T,
 	redactString: (text: string) => Promise<string>,
 	snapshot: EngineSnapshot,
 	onScannedPair?: (input: string, output: string) => void,
+	parentKey?: PropertyKey,
 ): Promise<T> {
 	if (typeof obj === "string") {
 		const out = await redactString(obj)
 		onScannedPair?.(obj, out)
 		return out as T
 	}
+	if (ArrayBuffer.isView(obj)) return obj
 	if (Array.isArray(obj)) {
 		return Promise.all(
-			obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair)),
+			obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair, parentKey)),
 		) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
@@ -795,12 +883,18 @@ async function redactObjectStringsWith<T>(
 				if (typeof key === "string" && isPreservedKey(key)) {
 					return Promise.resolve(value)
 				}
+				if (
+					typeof value === "string" &&
+					(isImageBlockData(key, value, source) || isImageDataUrlField(key, value, parentKey))
+				) {
+					return Promise.resolve(value)
+				}
 				// Redact any string value stored under a sensitive key name.
 				if (secretFieldRedacts && typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					onScannedPair?.(value, "[REDACTED-SECRET_FIELD]")
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
-				return redactObjectStringsWith(value, redactString, snapshot, onScannedPair)
+				return redactObjectStringsWith(value, redactString, snapshot, onScannedPair, key)
 			}),
 		)
 		const result: Record<PropertyKey, unknown> = {}

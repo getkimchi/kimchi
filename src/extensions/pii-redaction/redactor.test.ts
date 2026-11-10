@@ -1381,3 +1381,71 @@ describe("token mode — composition and tally parity", () => {
 		expect(result.report.entities).toEqual({})
 	})
 })
+
+describe("redactObjectStrings — image payloads are binary, not text", () => {
+	// Real-session shape: base64 of an ordinary PNG happened to contain a run
+	// matching the crates.io token pattern. Replacing it corrupted the image,
+	// and the provider rejected every later turn with a 400.
+	const tokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
+	const base64 = `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC==`
+	const fromBytes = (head: string) => `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+	// A break inside the first 16 base64 chars shrinks the signature window.
+	const breakInSignature = (head: string) => {
+		const raw = `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+		return `${raw.slice(0, 8)}\n${raw.slice(8)}`
+	}
+
+	it.each([
+		["internal image block", { type: "image", mimeType: "image/png", data: base64 }],
+		["Anthropic source block", { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } }],
+		["Google inlineData part", { inlineData: { mimeType: "image/png", data: base64 } }],
+		["OpenAI image_url part", { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }],
+		["OpenAI Responses input_image part", { type: "input_image", image_url: `data:image/png;base64,${base64}` }],
+		["Mistral imageUrl part", { type: "image_url", imageUrl: `data:image/png;base64,${base64}` }],
+		["base64 with a trailing newline", { mimeType: "image/png", data: `${base64}\n` }],
+		["line-wrapped base64", { mimeType: "image/png", data: `${base64.slice(0, 60)}\r\n${base64.slice(60)}` }],
+		["data URL with parameters", { image_url: { url: `data:image/png;name=a.png;base64,${base64}` } }],
+		["data URL from a parameterised mime type", { image_url: { url: `data:image/png; charset=x;base64,${base64}` } }],
+		["JPEG bytes", { mimeType: "image/jpeg", data: fromBytes("\xff\xd8\xff") }],
+		["GIF bytes", { mimeType: "image/gif", data: fromBytes("GIF89a") }],
+		["WebP bytes", { mimeType: "image/webp", data: fromBytes("RIFF\x10\0\0\0WEBP") }],
+		[
+			"WebP with a break inside its signature",
+			{ mimeType: "image/webp", data: breakInSignature("RIFF\x10\0\0\0WEBP") },
+		],
+		[
+			"data URL with a long name parameter",
+			{ image_url: { url: `data:image/png;name=${"a".repeat(200)};base64,${base64}` } },
+		],
+		["image data URL in an array under image_url", { image_url: [{ url: `data:image/png;base64,${base64}` }] }],
+	])("leaves %s byte-identical", async (_name, block) => {
+		expect(await redactObjectStrings({ role: "user", content: [block] })).toEqual({ role: "user", content: [block] })
+	})
+
+	it.each([
+		["data field without an image mime type", { mimeType: "text/plain", data: tokenShaped }],
+		["image block whose data is not base64", { mimeType: "image/png", data: `note: ${tokenShaped}` }],
+		["data URL with text after the payload", { image_url: { url: `data:image/png;base64,AAAA ${tokenShaped}` } }],
+		["non-image data URL", { image_url: { url: `data:text/plain;base64,${tokenShaped}` } }],
+		["bare secret labelled as an image", { mimeType: "image/png", data: tokenShaped }],
+		["bare secret with an empty image subtype", { mimeType: "image/", data: tokenShaped }],
+		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo${tokenShaped}` }],
+		["image data URL whose bytes are not an image", { image_url: { url: `data:image/png;base64,${tokenShaped}A` } }],
+		["image data URL inside a text block", { type: "text", text: `data:image/png;base64,${base64}` }],
+		["image data URL as a tool argument", { command: `data:image/png;base64,${base64}` }],
+		["image data URL under a generic url key", { url: `data:image/png;base64,${base64}` }],
+	])("still scans %s", async (_name, block) => {
+		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-CRATES_IO_TOKEN]")
+	})
+
+	it("scans a bare top-level image data URL as text", async () => {
+		expect(await redactObjectStrings(`data:image/png;base64,${base64}`)).toContain("[REDACTED-CRATES_IO_TOKEN]")
+	})
+
+	it("keeps Bedrock's binary image bytes as a typed array", async () => {
+		const bytes = new Uint8Array([137, 80, 78, 71])
+		const out = await redactObjectStrings({ image: { format: "png", source: { bytes } } })
+		expect(out.image.source.bytes).toBeInstanceOf(Uint8Array)
+		expect(out.image.source.bytes).toEqual(bytes)
+	})
+})

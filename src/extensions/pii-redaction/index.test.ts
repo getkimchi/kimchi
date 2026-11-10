@@ -122,6 +122,23 @@ describe("pii-redaction extension — event emission wiring", () => {
 		rmSync(codingAgentDir, { recursive: true, force: true })
 	})
 
+	it("keeps image bytes intact through message_end and before_provider_request while still redacting the text", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+		const tokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
+		const image = { type: "image", mimeType: "image/png", data: `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC==` }
+		const message = { role: "user", content: [{ type: "text", text: "mail alice@example.com" }, image] }
+
+		const [stored] = (await invoke("message_end", { message })) as [{ message: typeof message }]
+		expect(stored.message.content[1]).toEqual(image)
+		expect(stored.message.content[0]).toEqual({ type: "text", text: "mail [REDACTED-EMAIL_ADDRESS]" })
+
+		const dataUrl = { type: "image_url", image_url: { url: `data:image/png;base64,${image.data}` } }
+		const payload = { messages: [{ role: "user", content: [dataUrl] }] }
+		const [sent] = (await invoke("before_provider_request", { payload })) as [typeof payload]
+		expect(sent.messages[0].content[0]).toEqual(dataUrl)
+	})
+
 	it("before_provider_request emits one REDACTED event per entity type on cache miss, once per message", async () => {
 		const { api, invoke, emitted } = makePi()
 		piiRedactionExtension(api)
