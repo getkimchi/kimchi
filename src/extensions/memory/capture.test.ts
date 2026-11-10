@@ -2029,7 +2029,7 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 		expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("quarantined poison job after 3 attempts"))
 	})
 
-	it("transient failures never count toward quarantine", async () => {
+	it("transient failures count toward their own cap — below it the job retries", async () => {
 		// Zero-delay backoff: computeRetryDelayMs floors at 100ms with random() = 0.
 		const random = vi.spyOn(Math, "random").mockReturnValue(0)
 		try {
@@ -2048,10 +2048,54 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 			}
 			expect(existsSync(jobFile)).toBe(true)
 			expect(existsSync(join(failedDir(), "flaky.json"))).toBe(false)
-			const job = JSON.parse(readFileSync(jobFile, "utf-8")) as { drainAttempts?: number }
+			const job = JSON.parse(readFileSync(jobFile, "utf-8")) as {
+				drainAttempts?: number
+				transientAttempts?: number
+			}
+			// Three drains → transientAttempts=3 (default cap is 10, far off).
+			// The poison counter is untouched — proven-transient failures are
+			// not counted against the deterministic cap.
+			expect(job.transientAttempts).toBe(3)
 			expect(job.drainAttempts).toBeUndefined()
 		} finally {
 			random.mockRestore()
+		}
+	})
+
+	it("a whole-drain-transient job quarantines at the transient cap", async () => {
+		const random = vi.spyOn(Math, "random").mockReturnValue(0)
+		process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS = "2"
+		try {
+			const fetchImpl: typeof fetch = async () => {
+				throw new TypeError("fetch failed")
+			}
+			const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+			const jobFile = writeJob("storm", [msg("user", "my neighbor's boat sank")])
+			// Drain 1: attempts=1, under the env-lowered cap, file kept.
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(fakeBackend()),
+				}),
+			).resolves.toBe(0)
+			expect(existsSync(jobFile)).toBe(true)
+			// Drain 2: attempts=2 → at the cap → quarantined; drain still clean.
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(fakeBackend()),
+				}),
+			).resolves.toBe(0)
+			expect(existsSync(jobFile)).toBe(false)
+			const quarantined = join(failedDir(), "storm.json")
+			expect(existsSync(quarantined)).toBe(true)
+			expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("quarantined transient job after 2 attempts"))
+			// The moved file carries the counter for a manual requeue.
+			const job = JSON.parse(readFileSync(quarantined, "utf-8")) as { transientAttempts?: number }
+			expect(job.transientAttempts).toBe(2)
+		} finally {
+			random.mockRestore()
+			delete process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS
 		}
 	})
 
@@ -2564,6 +2608,7 @@ describe("applyDerivedTags — the batched classifier post-pass (KIMCHI_MEMORY_F
 		project: null,
 		session: undefined,
 		drainAttempts: 0,
+		transientAttempts: 0,
 		windows: [],
 		personalFacts,
 		projectFacts,

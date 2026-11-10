@@ -55,6 +55,7 @@ import {
 	parseAdminArgs,
 	runAdminCommand,
 } from "./admin.js"
+import { createMemoryBackend, memoryDbPath } from "./backend.js"
 import {
 	createIncrementalCaptureState,
 	incrementalCapture,
