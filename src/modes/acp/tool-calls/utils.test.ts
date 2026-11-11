@@ -623,6 +623,8 @@ describe("resolveBashControlWaitInfo", () => {
 	})
 	afterEach(() => vi.useRealTimers())
 
+	const iso = (ms: number) => new Date(ms).toISOString()
+
 	function snapshot(
 		partial: Partial<ProcessDisplaySnapshot> & { handle: string; command: string },
 	): ProcessDisplaySnapshot {
@@ -639,7 +641,8 @@ describe("resolveBashControlWaitInfo", () => {
 	it("resolves a wait by handle to the command and its elapsed seconds", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "npm test", startedAt: STARTED - 10_000 })])
 		expect(resolveBashControlWaitInfo({ wait: true, handles: ["h1"] }, registry)).toEqual({
-			resolvedCommand: "npm test",
+			commands: [{ command: "npm test", startedAt: iso(STARTED - 10_000) }],
+			overflowCount: 0,
 			elapsedSeconds: 15,
 		})
 	})
@@ -651,7 +654,11 @@ describe("resolveBashControlWaitInfo", () => {
 			snapshot({ handle: "h3", command: "sync", state: "exited" }),
 		])
 		expect(resolveBashControlWaitInfo({ wait: true, waitSeconds: 300 }, registry)).toEqual({
-			resolvedCommand: "npm test · sleep 60 && npm run build",
+			commands: [
+				{ command: "npm test", startedAt: iso(STARTED - 10_000) },
+				{ command: "sleep 60 && npm run build", startedAt: iso(STARTED) },
+			],
+			overflowCount: 0,
 			elapsedSeconds: 15,
 		})
 	})
@@ -683,12 +690,13 @@ describe("resolveBashControlWaitInfo", () => {
 			snapshot({ handle: "h2", command: "vite dev", state: "exited" }),
 		])
 		expect(resolveBashControlWaitInfo({ wait: true, stop_handles: ["typo"] }, registry)).toEqual({
-			resolvedCommand: "npm test",
+			commands: [{ command: "npm test", startedAt: iso(STARTED - 10_000) }],
+			overflowCount: 0,
 			elapsedSeconds: 15,
 		})
 	})
 
-	it("caps a cohort-wide resolvedCommand at the oldest three plus a +N more suffix", () => {
+	it("caps a cohort-wide payload at the oldest three commands plus a structured overflowCount", () => {
 		const registry = fakeRegistry([
 			snapshot({ handle: "h1", command: "cmd-four" }),
 			snapshot({ handle: "h2", command: "cmd-three", startedAt: STARTED - 1_000 }),
@@ -696,7 +704,12 @@ describe("resolveBashControlWaitInfo", () => {
 			snapshot({ handle: "h4", command: "cmd-one", startedAt: STARTED - 3_000 }),
 		])
 		expect(resolveBashControlWaitInfo({ wait: true }, registry)).toEqual({
-			resolvedCommand: "cmd-one · cmd-two · cmd-three · +1 more",
+			commands: [
+				{ command: "cmd-one", startedAt: iso(STARTED - 3_000) },
+				{ command: "cmd-two", startedAt: iso(STARTED - 2_000) },
+				{ command: "cmd-three", startedAt: iso(STARTED - 1_000) },
+			],
+			overflowCount: 1,
 			elapsedSeconds: 8,
 		})
 	})
@@ -706,7 +719,8 @@ describe("resolveBashControlWaitInfo", () => {
 			snapshot({ handle: "h1", command: "npm test", state: "exited", finishedAt: STARTED + 2_000 }),
 		])
 		expect(resolveBashControlWaitInfo({ stop_handles: ["h1"] }, registry)).toEqual({
-			resolvedCommand: "npm test",
+			commands: [{ command: "npm test", startedAt: iso(STARTED) }],
+			overflowCount: 0,
 			elapsedSeconds: 2,
 		})
 	})
@@ -723,7 +737,11 @@ describe("resolveBashControlWaitInfo", () => {
 			snapshot({ handle: "h2", command: "npm test", startedAt: STARTED }),
 		])
 		expect(resolveBashControlWaitInfo({ stop_handles: ["h1", "h2"] }, registry)).toEqual({
-			resolvedCommand: "old job · npm test",
+			commands: [
+				{ command: "old job", startedAt: iso(STARTED - 50_000) },
+				{ command: "npm test", startedAt: iso(STARTED) },
+			],
+			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})
@@ -731,7 +749,8 @@ describe("resolveBashControlWaitInfo", () => {
 	it("resolves stop_handles, dropping unknown handles", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "vite dev" })])
 		expect(resolveBashControlWaitInfo({ stop_handles: ["gone", "h1"] }, registry)).toEqual({
-			resolvedCommand: "vite dev",
+			commands: [{ command: "vite dev", startedAt: iso(STARTED) }],
+			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})
@@ -745,11 +764,13 @@ describe("resolveBashControlWaitInfo", () => {
 	it("resolves a legacy handle arg and inspection handles", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "tail -f log" })])
 		expect(resolveBashControlWaitInfo({ handle: "h1", action: "wait" }, registry)).toEqual({
-			resolvedCommand: "tail -f log",
+			commands: [{ command: "tail -f log", startedAt: iso(STARTED) }],
+			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 		expect(resolveBashControlWaitInfo({ handles: ["h1"] }, registry)).toEqual({
-			resolvedCommand: "tail -f log",
+			commands: [{ command: "tail -f log", startedAt: iso(STARTED) }],
+			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})
@@ -760,7 +781,8 @@ describe("resolveBashControlWaitInfo", () => {
 			snapshot({ handle: "h2", command: "vite dev" }),
 		])
 		expect(resolveBashControlWaitInfo({ wait: true, handles: undefined, stop_handles: ["h1"] }, registry)).toEqual({
-			resolvedCommand: "npm test",
+			commands: [{ command: "npm test", startedAt: iso(STARTED) }],
+			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})
@@ -791,7 +813,13 @@ describe("enrichBashControlRawInput", () => {
 	it("enriches a wait with a known handle, building a new object without mutating the agent's args", () => {
 		const args = { wait: true, handles: ["h1"] }
 		const enriched = enrichBashControlRawInput("bash_control", args, registry)
-		expect(enriched).toEqual({ wait: true, handles: ["h1"], resolvedCommand: "npm run dev", elapsedSeconds: 5 })
+		expect(enriched).toEqual({
+			wait: true,
+			handles: ["h1"],
+			commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
+			overflowCount: 0,
+			elapsedSeconds: 5,
+		})
 		expect(enriched).not.toBe(args)
 		expect(args).toEqual({ wait: true, handles: ["h1"] })
 	})
@@ -855,7 +883,8 @@ describe("describeToolCall bash_control", () => {
 		expect(shape.rawInput).toEqual({
 			handle: "h1",
 			action: "stop",
-			resolvedCommand: "npm run dev",
+			commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
+			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})

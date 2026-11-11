@@ -91,10 +91,15 @@ export function describeToolCall(
  * (unknown or stale handles, empty cohort), so callers keep the plain args
  * untouched.
  */
+
+/** One registry-resolved background process behind a bash_control call;
+ * startedAt is ISO 8601 for readability on the wire. */
+export type BashControlBackgroundCommand = { command: string; startedAt: string }
+
 export function resolveBashControlWaitInfo(
 	args: Record<string, unknown>,
 	registry: ProcessRegistry,
-): { resolvedCommand: string; elapsedSeconds: number } | undefined {
+): { commands: BashControlBackgroundCommand[]; overflowCount: number; elapsedSeconds: number } | undefined {
 	const mentioned = new Set<string>()
 	for (const key of ["stop_handles", "handles"] as const) {
 		const value = args[key]
@@ -120,24 +125,23 @@ export function resolveBashControlWaitInfo(
 	// Earliest-started first: it is the longest-running of the cohort, so its
 	// elapsed seconds headline the wait.
 	const entries = [...snapshots.values()].sort((x, y) => x.startedAt - y.startedAt)
-	// Cap the named entries: one line per running process grows the payload
-	// linearly with the cohort, contradicting the bounded-title rationale of
-	// describeToolCall. The oldest three are the ones the human cares about.
-	const shown = entries.slice(0, RESOLVED_COMMAND_MAX_ENTRIES).map((s) => summarizeCommand(s.command, 48))
-	const hidden = entries.length - shown.length
+	// Cap the named entries so the payload stays bounded as the cohort
+	// grows; overflowCount says how many more the client could not see.
+	const shown = entries.slice(0, BACKGROUND_COMMANDS_MAX_ENTRIES)
 	// Elapsed headlines the longest-running LIVE process; for a terminal-only
 	// set it reports the actual lifetime, never a ticking since-started value
 	// that would read as the uptime of a process that already finished.
 	const runningEntries = entries.filter((s) => s.state === "running")
 	const elapsedHead = runningEntries[0] ?? entries[0]
 	return {
-		resolvedCommand: hidden > 0 ? `${shown.join(" · ")} · +${hidden} more` : shown.join(" · "),
+		commands: shown.map((s) => ({ command: summarizeCommand(s.command, 48), startedAt: new Date(s.startedAt).toISOString() })),
+		overflowCount: entries.length - shown.length,
 		elapsedSeconds: snapshotElapsedSeconds(elapsedHead),
 	}
 }
 
-/** Maximum number of background commands named in a resolvedCommand string. */
-const RESOLVED_COMMAND_MAX_ENTRIES = 3
+/** Maximum number of background commands carried in the resolved payload. */
+const BACKGROUND_COMMANDS_MAX_ENTRIES = 3
 
 /**
  * Seconds a process has been going: elapsed since spawn while it runs, its
