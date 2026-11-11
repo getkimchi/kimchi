@@ -56,10 +56,10 @@ jobs:
       # unit suite off the network: a slow download used to blow the test budget and a
       # failed one failed the test with "fd is not available and could not be downloaded".
       - name: Install search tools
-        timeout-minutes: 3
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install --yes --no-install-recommends ripgrep fd-find
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install --yes --no-install-recommends -o Acquire::Retries=3 ripgrep fd-find
 
       - name: Build proxy-helper
         run: make copy-for-dev # This builds the binary and puts it into a location kimchi can find it
@@ -137,10 +137,10 @@ jobs:
 
       # Same reason as pr-checks: keep fd/rg provisioning out of the test runs.
       - name: Install search tools
-        timeout-minutes: 3
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install --yes --no-install-recommends ripgrep fd-find
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install --yes --no-install-recommends -o Acquire::Retries=3 ripgrep fd-find
 
       - name: Build proxy-helper
         run: make build
