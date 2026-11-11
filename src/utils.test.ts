@@ -256,7 +256,22 @@ describe("refreshGitBranch", () => {
 			execFileSync("git", ["init", "-q", "--ref-format=reftable", main])
 			execFileSync(
 				"git",
-				["-c", "user.email=none", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"],
+				[
+					"-c",
+					"user.email=none",
+					"-c",
+					"user.name=t",
+					// Global gpgsign or hooksPath settings must not leak into the fixture.
+					"-c",
+					"commit.gpgsign=false",
+					"-c",
+					"core.hooksPath=",
+					"commit",
+					"-q",
+					"--allow-empty",
+					"-m",
+					"init",
+				],
 				{ cwd: main },
 			)
 			// The worktree's on-disk HEAD is the `.invalid` stub too, and its git
