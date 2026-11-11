@@ -108,9 +108,11 @@ export function resolveBashControlWaitInfo(
 		const snapshot = registry.displaySnapshot(handle)
 		if (snapshot) snapshots.set(handle, snapshot)
 	}
-	const namedInspectionHandles =
-		Array.isArray(args.handles) && args.handles.some((h) => typeof h === "string" && h.length > 0)
-	if (snapshots.size === 0 && args.wait === true && !namedInspectionHandles) {
+	// The tool rejects `wait: true` whenever `handles` is present (even an
+	// empty or blank-only array), so ANY `handles` key pins this call to what
+	// it names; only a handle-less wait may fall back to the running cohort.
+	const namesInspectionHandles = Array.isArray(args.handles)
+	if (snapshots.size === 0 && args.wait === true && !namesInspectionHandles) {
 		for (const snapshot of registry.listDisplaySnapshots())
 			if (snapshot.state === "running") snapshots.set(snapshot.handle, snapshot)
 	}

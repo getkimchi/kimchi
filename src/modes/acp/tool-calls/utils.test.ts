@@ -667,6 +667,14 @@ describe("resolveBashControlWaitInfo", () => {
 		expect(resolveBashControlWaitInfo({ wait: true, handles: ["typo"] }, registry)).toBeUndefined()
 	})
 
+	it("does not fall back to the cohort when wait carries an empty handles array", () => {
+		// The tool rejects on ANY `handles` array (empty or blank-only), so
+		// the gate keys on the key's presence, not the entries it holds.
+		const registry = fakeRegistry([snapshot({ handle: "h1", command: "vite dev" })])
+		expect(resolveBashControlWaitInfo({ wait: true, handles: [] }, registry)).toBeUndefined()
+		expect(resolveBashControlWaitInfo({ wait: true, handles: [""] }, registry)).toBeUndefined()
+	})
+
 	it("falls back to the cohort for a wait whose unknown stop_handles are reported individually", () => {
 		// Unknown stop handles do not cancel the cohort-wide wait the tool
 		// then performs, so the cohort is what the call waits on.
