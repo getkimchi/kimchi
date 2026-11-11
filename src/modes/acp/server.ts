@@ -603,10 +603,7 @@ export class KimchiAcpAgent implements Agent {
 
 		this.clientCapabilities = request.clientCapabilities
 
-		const modelRuntime = await ModelRuntime.create({
-			authPath: join(this.agentDir, "auth.json"),
-			modelsPath: join(this.agentDir, "models.json"),
-		})
+		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
 		const supportsImages = modelRegistry.getAvailable().some((m) => modelSupportsImages(m))
 
@@ -3890,6 +3887,10 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 		// not KIMCHI_CODING_AGENT_DIR, so default lookups would miss kimchi
 		// sessions stored under the kimchi agent dir.
 		const sessionDir = join(options.agentDir, "sessions", encodeCwdDir(cwd))
+		// One SSO-aware runtime for the whole load: pi's createAgentSession
+		// otherwise builds a bare runtime and restoreModel/findInitialModel
+		// fail hasConfiguredAuth on an SSO-only machine (see the helper).
+		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)
 		// pi writes session files as `<isoTimestamp>_<sessionId>.jsonl` (see
 		// SessionManager.setSessionFile auto-generation). Looking up by bare
 		// `<sessionId>.jsonl` would miss every real session — match the
@@ -3921,7 +3922,6 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				throw RequestError.invalidParams(undefined, `invalid sessionId: ${msg}`)
 			}
 			const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
-			const modelRuntime = await createSsoAwareModelRuntime(options)
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir: options.agentDir,
@@ -3981,6 +3981,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			settingsManager,
 			resourceLoader,
 			sessionManager,
+			modelRuntime,
 		})
 		return session
 	}
@@ -3998,10 +3999,10 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
  * newSession credential gate — an API key works because models.json declares
  * the api-key auth without any extension.
  */
-async function createSsoAwareModelRuntime(options: RunAcpOptions) {
+async function createSsoAwareModelRuntime(agentDir: string) {
 	const modelRuntime = await ModelRuntime.create({
-		authPath: join(options.agentDir, "auth.json"),
-		modelsPath: join(options.agentDir, "models.json"),
+		authPath: join(agentDir, "auth.json"),
+		modelsPath: join(agentDir, "models.json"),
 	})
 	installKimchiOAuth(modelRuntime)
 	return modelRuntime
@@ -4012,7 +4013,7 @@ export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
 		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
-		const modelRuntime = await createSsoAwareModelRuntime(options)
+		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
