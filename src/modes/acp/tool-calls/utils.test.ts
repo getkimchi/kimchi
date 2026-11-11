@@ -59,7 +59,7 @@ describe("buildToolCall", () => {
 			kind: "read",
 			locations: [{ path: "/etc/hosts" }],
 			rawInput: { file_path: "/etc/hosts" },
-			_meta: { piToolCallId: "pi-1" },
+			_meta: { piToolCallId: "pi-1", toolName: "read" },
 		})
 	})
 
@@ -72,7 +72,7 @@ describe("buildToolCall", () => {
 			rawInput: { command: "echo hi" },
 			_meta: { source: "test" },
 		})
-		expect(result._meta).toEqual({ piToolCallId: "pi-2", source: "test" })
+		expect(result._meta).toEqual({ piToolCallId: "pi-2", toolName: "bash", source: "test" })
 	})
 
 	it("builds a bare ToolCall shape without sessionUpdate discriminant", () => {
@@ -90,7 +90,7 @@ describe("buildToolCall", () => {
 			kind: "think",
 			locations: [],
 			rawInput: { prompt: "go" },
-			_meta: { piToolCallId: "pi-3" },
+			_meta: { piToolCallId: "pi-3", toolName: "Agent" },
 		})
 		expect(result).not.toHaveProperty("sessionUpdate")
 	})
@@ -383,7 +383,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "execute",
 				locations: [],
 				rawInput: { command: "pnpm run build", timeout: 120 },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "bash" },
 			},
 		},
 		{
@@ -397,7 +397,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "execute",
 				locations: [],
 				rawInput: { command: "Get-ChildItem" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "powershell" },
 			},
 		},
 		{
@@ -411,7 +411,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "read",
 				locations: [{ path: "/src/main.ts" }],
 				rawInput: { path: "/src/main.ts", offset: 10, limit: 40 },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "read" },
 			},
 		},
 		{
@@ -425,7 +425,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "edit",
 				locations: [{ path: "/src/a.ts" }],
 				rawInput: { path: "/src/a.ts", oldText: "a", newText: "b" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "edit" },
 			},
 		},
 		{
@@ -439,7 +439,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "edit",
 				locations: [{ path: "/tmp/new.ts" }],
 				rawInput: { path: "/tmp/new.ts", content: "export {}" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "write" },
 			},
 		},
 		{
@@ -453,7 +453,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "read",
 				locations: [{ path: "/src" }],
 				rawInput: { path: "/src", limit: 100 },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "ls" },
 			},
 		},
 		{
@@ -467,7 +467,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "search",
 				locations: [{ path: "/src" }],
 				rawInput: { pattern: "foo", path: "/src", glob: "*.ts", context: 2 },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "grep" },
 			},
 		},
 		{
@@ -481,7 +481,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "search",
 				locations: [{ path: "/packages" }],
 				rawInput: { pattern: "*.spec.ts", path: "/packages" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "find" },
 			},
 		},
 		{
@@ -495,7 +495,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "fetch",
 				locations: [],
 				rawInput: { url: "https://example.com/docs", format: "markdown", timeout: 30 },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "web_fetch" },
 			},
 		},
 		{
@@ -509,7 +509,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "search",
 				locations: [],
 				rawInput: { query: "ACP tool call spec", recency: "month", limit: 5 },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "web_search" },
 			},
 		},
 		{
@@ -523,7 +523,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "other",
 				locations: [],
 				rawInput: { query: "preferred editor" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "memory_search" },
 			},
 		},
 		{
@@ -537,7 +537,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "think",
 				locations: [],
 				rawInput: { description: "scan codebase", prompt: "find TODOs", subagent_type: "Explore" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "Agent" },
 			},
 		},
 		{
@@ -551,7 +551,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "other",
 				locations: [],
 				rawInput: { handle: "abc123", action: "stop" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "bash_control" },
 			},
 		},
 		{
@@ -565,7 +565,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "other",
 				locations: [],
 				rawInput: { command: "pnpm dev" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "daemon" },
 			},
 		},
 		{
@@ -579,7 +579,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "other",
 				locations: [{ path: "/src/main.ts" }],
 				rawInput: { file_path: "/src/main.ts", line: 10, character: 5 },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "lsp_definition" },
 			},
 		},
 		{
@@ -593,7 +593,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 				kind: "other",
 				locations: [{ path: "README.md" }],
 				rawInput: { path: "README.md", title: "bug" },
-				_meta: { piToolCallId: "tc-1" },
+				_meta: { piToolCallId: "tc-1", toolName: "mcp__github__create_issue" },
 			},
 		},
 	]

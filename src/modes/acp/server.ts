@@ -2327,6 +2327,7 @@ export class KimchiAcpAgent implements Agent {
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
+						toolName: toolCall.name,
 						title,
 						kind,
 						locations,
@@ -2465,6 +2466,7 @@ export class KimchiAcpAgent implements Agent {
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
+						toolName: event.toolName,
 						title,
 						kind,
 						locations,
