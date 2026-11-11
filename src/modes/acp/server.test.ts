@@ -12971,13 +12971,35 @@ describe("plan-review held prompt", () => {
 		})
 	}
 
+	/** Emit the submit_plan lifecycle for a FAILED submission (empty plan): the
+	 * tool returns an error result and no review ever opens. */
+	function emitFailedSubmitPlan(heldFake: FakeAgentSession): void {
+		heldFake.emit({
+			type: "tool_execution_start",
+			toolCallId: "tc-submit-plan",
+			toolName: "submit_plan",
+			args: { planContent: "" },
+		})
+		heldFake.emit({
+			type: "tool_execution_end",
+			toolCallId: "tc-submit-plan",
+			toolName: "submit_plan",
+			result: { content: [{ type: "text", text: "Error: plan text is empty." }] },
+			isError: true,
+		})
+	}
+
 	/** Start a prompt whose model turn ends in submit_plan; returns the pending
 	 * PromptRequest promise plus a flag flipped when it settles. */
-	async function startHeldPrompt(localAgent: KimchiAcpAgent, heldFake: FakeAgentSession) {
+	async function startHeldPrompt(
+		localAgent: KimchiAcpAgent,
+		heldFake: FakeAgentSession,
+		toolLifecycle: (fake: FakeAgentSession) => void = emitSubmitPlan,
+	) {
 		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
 		heldFake.promptImpl = async () => {
 			heldFake.emit({ type: "agent_start" })
-			emitSubmitPlan(heldFake)
+			toolLifecycle(heldFake)
 			// Turn ends here — session.prompt resolves. The review is pending.
 		}
 		let settled: { ok: boolean; value?: unknown; error?: unknown } | undefined
@@ -13012,6 +13034,17 @@ describe("plan-review held prompt", () => {
 		const settled = isSettled()
 		expect(settled?.ok).toBe(true)
 		expect((settled?.value as { stopReason: string })?.stopReason).toBe("end_turn")
+	})
+
+	it("does not hold a prompt whose submit_plan failed (no review ever opened)", async () => {
+		const { localAgent, heldFake } = makeHeldAgent()
+		const { promptPromise, isSettled } = await startHeldPrompt(localAgent, heldFake, emitFailedSubmitPlan)
+		// The failed submission opens no review window: the prompt must settle
+		// normally right after the model turn ends — no notifyPlanReviewClosed
+		// exists or is needed to release it.
+		await promptPromise
+		expect(isSettled()?.ok).toBe(true)
+		expect((isSettled()?.value as { stopReason: string })?.stopReason).toBe("end_turn")
 	})
 
 	it("streams the execution turn into the held prompt and ends it once, after agent_settled", async () => {
