@@ -157,7 +157,9 @@ describe("help — slash command list", () => {
 			for (const entry of readdirSync(dir, { withFileTypes: true })) {
 				const path = join(dir, entry.name)
 				if (entry.isDirectory()) {
-					if (entry.name !== "node_modules") visit(path)
+					// __mocks__ mirrors production registration API shapes for tests;
+					// its literals are not real registered commands.
+					if (entry.name !== "node_modules" && entry.name !== "__mocks__") visit(path)
 					continue
 				}
 				if (!entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue
