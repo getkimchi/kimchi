@@ -73,7 +73,6 @@ import {
 } from "../../cli-auth/auth-methods.js"
 import { startCallbackServer } from "../../cli-auth/callback-server.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { getSessionState } from "../../extensions/bash-background/session-registry.js"
 import { exchangeAuthorizationCode, type KimchiOrganization, listUserOrganizations } from "../../cli-auth/oauth.js"
 import {
 	clearApiKey,
@@ -3172,7 +3171,7 @@ export class KimchiAcpAgent implements Agent {
 	 * and one final update.
 	 */
 	private watchBackgroundProcessExit(record: SessionRecord, sessionId: string, handle: string): void {
-		const registry = getSessionState(sessionId)?.registry
+		const registry = getBashSessionState(sessionId)?.registry
 		if (!registry) {
 			// No live registry (extension absent or already torn down): drop the
 			// hold — a client reload replays the call terminal from history, and a
@@ -3206,7 +3205,7 @@ export class KimchiAcpAgent implements Agent {
 		const held = record.heldBackgroundToolCalls.get(handle)
 		if (!held) return
 		record.heldBackgroundToolCalls.delete(handle)
-		const registry = getSessionState(sessionId)?.registry
+		const registry = getBashSessionState(sessionId)?.registry
 		const final = registry?.finalSnapshot(handle) ?? registry?.completedSnapshot(handle)?.final
 		const display = registry?.displaySnapshot(handle) ?? registry?.completedSnapshot(handle)?.display
 		const exitCode = final?.exitCode ?? null

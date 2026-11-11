@@ -151,9 +151,11 @@ it(
 			const updates = fixture.client.sessionUpdates.map(({ update }) => update)
 			expect(updates).toEqual(
 				expect.arrayContaining([
+					// LLM-4485: the pre-exit handoff reports in_progress (NOT a terminal
+					// status) — the call stays open until the process exits.
 					expect.objectContaining({
 						sessionUpdate: "tool_call_update",
-						status: "completed",
+						status: "in_progress",
 						rawOutput: expect.objectContaining({ details: expect.objectContaining({ handoff: true, exited: false }) }),
 					}),
 					expect.objectContaining({
