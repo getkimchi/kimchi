@@ -19,6 +19,7 @@
  */
 import { GATEWAY_ORGANIZATION_HEADER } from "../../auth/gateway-credentials.js"
 import { fetchWithRetry, isRetryableStatus } from "../../utils/http.js"
+import { mapWithConcurrency } from "./map-concurrency.js"
 
 /** Usage-tracking tag for billing attribution (matches memory:extraction). */
 export const MEMORY_DECISION_TAG = "memory:decision"
@@ -28,6 +29,14 @@ export const DECISION_QUESTION_CAP = 64
 
 /** Default batch bound — well under the cap, keeps a call's latency in the ~1s band. */
 export const DECISION_BATCH_SIZE = 30
+
+/**
+ * Chunk-call parallelism: d3 chunk calls are independent reads (same state),
+ * so sequential awaiting wasted gateway round trips when a gate had many
+ * items (supersede judges on drain waves hit 5–80s per serialized chunk
+ * chain). 4 stays under the typesafe endpoint's demonstrated burstability.
+ */
+export const DECISION_BATCH_CONCURRENCY = 4
 
 export interface ChoiceQuestion {
 	type: "choice"
@@ -183,8 +192,11 @@ export async function batchChoice(
 	onBatch?: (batchIndex: number, response: DecisionResponse) => void,
 	batchSize = DECISION_BATCH_SIZE,
 ): Promise<ChoiceAnswer[]> {
-	const answers: ChoiceAnswer[] = []
-	for (let start = 0, batchIndex = 0; start < items.length; start += batchSize, batchIndex++) {
+	// Chunk first, then run the independent chunk calls in bounded parallel;
+	// answers stay in item order via the start index, never arrival order.
+	const ranges: Array<{ start: number }> = []
+	for (let start = 0; start < items.length; start += batchSize) ranges.push({ start })
+	const perChunk = await mapWithConcurrency(ranges, DECISION_BATCH_CONCURRENCY, async ({ start }, batchIndex) => {
 		const slice = items.slice(start, start + batchSize)
 		const questions: Record<string, ChoiceQuestion> = {}
 		for (const [i, text] of slice.entries()) {
@@ -192,9 +204,14 @@ export async function batchChoice(
 		}
 		const response = await decide(gate, state, questions)
 		onBatch?.(batchIndex, response)
-		for (let i = 0; i < slice.length; i++) {
+		return { start, response }
+	})
+	const answers: ChoiceAnswer[] = []
+	perChunk.sort((a, b) => a.start - b.start)
+	for (const { start, response } of perChunk) {
+		for (let i = 0; i < Math.min(batchSize, items.length - start); i++) {
 			const answer = response.answers[`item_${start + i + 1}`]
-			// decide() validated every question key — this is a programmer-error
+			// decide() validated every question key — a programmer-error
 			// assertion, not a degrade path.
 			if (!answer) throw new DecisionGateError(`systemone answered the wrong question set (item_${start + i + 1})`)
 			answers.push(answer)

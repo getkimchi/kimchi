@@ -11,6 +11,7 @@
  */
 import { batchChoice, type DecisionGateOptions } from "./decision-gate.js"
 import { supersedeQuestion, supersedeState } from "./gates.js"
+import { mapWithConcurrency } from "./map-concurrency.js"
 
 export interface SupersedeCandidate {
 	id: string
@@ -56,9 +57,14 @@ export async function findSupersededIds(
 	judge: SupersedeJudge,
 ): Promise<string[]> {
 	if (newFacts.length === 0) return []
+	// Candidate searches are independent reads — queue them in bounded
+	// parallel, then merge in fact order so the judge sees the same
+	// deterministic candidate list the sequential loop produced. (Measured
+	// on drain waves: 19 facts × serial topK-8 searches ran 40–70s.)
+	const searches = await mapWithConcurrency(newFacts, 4, (fact) => searchRelated(fact))
 	const byId = new Map<string, SupersedeCandidate>()
-	for (const fact of newFacts) {
-		for (const candidate of await searchRelated(fact)) {
+	for (const candidates of searches) {
+		for (const candidate of candidates) {
 			if (!candidate.memory) continue
 			if (!byId.has(candidate.id)) byId.set(candidate.id, candidate)
 		}
