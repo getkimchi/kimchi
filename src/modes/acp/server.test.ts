@@ -8149,6 +8149,50 @@ describe("run boundary notifications", () => {
 			{ method: RUN_END, params: { sessionId: "session-rb-cancel", state: "idle", outcome: "cancelled" } },
 		])
 	})
+
+	// Regression: a prompt parked behind an unsolicited run that gets cancelled
+	// released the parked wait — and the defensive unsolicitedTurn reset ran
+	// while the run was still streaming, so the aborted run's agent_settled
+	// found no context and skipped run_end. The client anchored on
+	// `state: "running"` saw a permanently-running session.
+	it("a cancel of a prompt parked behind the run still closes the boundary when the run settles", async () => {
+		const fake = new FakeAgentSession("session-rb-parked-cancel")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRunBoundarySession(fake, conn)
+		// The run stays in flight: waitForIdle never resolves on its own — only
+		// cancel's release of the parked wait lets the prompt continue.
+		fake.waitForIdleImpl = () => new Promise<void>(() => {})
+
+		// The unsolicited run starts — no prompt owns it.
+		fake.emit({ type: "agent_start" })
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toEqual([
+			{
+				method: RUN_START,
+				params: { sessionId: "session-rb-parked-cancel", state: "running", reason: "agent-initiated" },
+			},
+		])
+
+		// The prompt parks behind the run and is cancelled before its turn exists.
+		const pending = agent.prompt({
+			sessionId: "session-rb-parked-cancel",
+			prompt: [{ type: "text", text: "next question" }],
+		})
+		await delay(0)
+		await agent.cancel({ sessionId: "session-rb-parked-cancel" })
+
+		// The parked prompt never started its own turn.
+		await expect(pending).resolves.toEqual({ stopReason: "cancelled" })
+		expect(fake.promptCalls).toHaveLength(0)
+
+		// The aborted run settles: the boundary closes exactly once, labelled
+		// cancelled — resetting the unsolicited context on the cancel path would
+		// have skipped this run_end and leaked the run_start.
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
+			{ method: RUN_END, params: { sessionId: "session-rb-parked-cancel", state: "idle", outcome: "cancelled" } },
+		])
+	})
 })
 
 describe("agent activity notifications", () => {

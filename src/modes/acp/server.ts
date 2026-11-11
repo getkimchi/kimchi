@@ -1469,12 +1469,19 @@ export class KimchiAcpAgent implements Agent {
 			// Cancel, close, and shutdown release the wait directly: abort may not
 			// settle waitForIdle() on a session being torn down.
 			await Promise.race([entry.session.waitForIdle(), pending.released])
-			// Defensive reset: agent_settled already clears it after the full run
-			// chain — anything left here is stale state, never this prompt's turn.
+		}
+		// Cancelled before its turn existed: never start it. Do NOT reset the
+		// unsolicited context here: cancel released the wait while the run is
+		// still streaming, so agent_settled must keep the context to close the
+		// run boundary with outcome "cancelled" — resetting it would leak the
+		// run_start with no matching run_end.
+		if (pending.cancelled) return { stopReason: "cancelled" }
+		if (entry.unsolicitedTurn) {
+			// Defensive reset (settled-run path only): agent_settled already
+			// clears it after the full run chain — anything left here is stale
+			// state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
 		}
-		// Cancelled before its turn existed: never start it.
-		if (pending.cancelled) return { stopReason: "cancelled" }
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
