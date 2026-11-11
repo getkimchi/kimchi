@@ -95,6 +95,7 @@ import {
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
+import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
 import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
 import { readE2eSeam } from "../../extensions/e2e-seam.js"
 import { getRawErrorMessage } from "../../extensions/error-preservation.js"
@@ -2252,6 +2253,7 @@ export class KimchiAcpAgent implements Agent {
 							// executing yet, so ACP status is `pending`, not `in_progress`.
 							status: "pending",
 							cwd: entry.cwd,
+							bashControlRegistry: getBashSessionState(sessionId)?.registry,
 						})
 						this.send({ sessionId, update })
 						turn.announcedToolCallIds.add(block.id)
@@ -2316,7 +2318,12 @@ export class KimchiAcpAgent implements Agent {
 					}
 					// Args display mirrors execution (displayArgs).
 					const rawInput = this.displayArgs(sessionId, toolCall.name, toolCall.arguments as Record<string, unknown>)
-					const { title, kind, locations } = describeToolCall(toolCall.name, rawInput, entry.cwd)
+					const { title, kind, locations } = describeToolCall(
+						toolCall.name,
+						rawInput,
+						entry.cwd,
+						getBashSessionState(sessionId)?.registry,
+					)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
@@ -2449,7 +2456,12 @@ export class KimchiAcpAgent implements Agent {
 				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					const { title, kind, locations } = describeToolCall(event.toolName, rawInput, entry.cwd)
+					const { title, kind, locations } = describeToolCall(
+						event.toolName,
+						rawInput,
+						entry.cwd,
+						getBashSessionState(sessionId)?.registry,
+					)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
@@ -2468,6 +2480,7 @@ export class KimchiAcpAgent implements Agent {
 						rawInput,
 						status: "in_progress",
 						cwd: entry.cwd,
+						bashControlRegistry: getBashSessionState(sessionId)?.registry,
 					})
 					// No pending notification was sent (back-compat) → emit tool_call as before
 					this.send({ sessionId, update })

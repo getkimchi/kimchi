@@ -8,6 +8,12 @@ import type {
 	ToolCallStatus,
 	ToolKind,
 } from "@agentclientprotocol/sdk"
+import {
+	elapsedSecondsSince,
+	type ProcessDisplaySnapshot,
+	type ProcessRegistry,
+	summarizeCommand,
+} from "../../../extensions/bash-background/process-registry.js"
 import { asString, truncate } from "../utils.js"
 
 // Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
@@ -53,15 +59,21 @@ export function describeToolCall(
 	toolName: string,
 	args: unknown,
 	cwd?: string,
+	bashControlRegistry?: ProcessRegistry,
 ): { title: string; kind: ToolKind; locations: ToolCallLocation[] } {
 	const a = (args ?? {}) as Record<string, unknown>
 	const titleArgNames = TITLE_ARGS[toolName] ?? []
 	const targeted = asString(a[titleArgNames[0] ?? ""]) ?? asString(a[titleArgNames[1] ?? ""])
+	// bash_control names what it blocks on: resolve its args against the live
+	// process registry. Unknown/stale handles resolve to nothing and keep the
+	// tool-name fallback below.
+	const bashControlTitle =
+		toolName === "bash_control" && bashControlRegistry ? describeBashControlTitle(a, bashControlRegistry) : undefined
 	// title carries the target/argument only; the ACP `kind` field drives the verb
 	// and icon on the client side. Truncate so a long absolute path or regex
 	// doesn't blow up client UIs (locations[].path keeps the full value for
 	// clients that want it).
-	const rawTitle = targeted ?? toolName
+	const rawTitle = bashControlTitle ?? targeted ?? toolName
 	const path = asString(a.file_path) || asString(a.path)
 	// ACP requires locations[].path to be absolute (clients resolve it against
 	// their own view of the filesystem, not our session cwd). Models regularly
@@ -73,6 +85,44 @@ export function describeToolCall(
 		kind: TOOL_KINDS[toolName] ?? "other",
 		locations: resolvedPath ? [{ path: resolvedPath }] : [],
 	}
+}
+
+/**
+ * Human title for a `bash_control` call resolved against the live process
+ * registry: names the command(s) it waits on or stops, with elapsed seconds.
+ * A cohort-wide wait (`wait: true`, no handles) names the running cohort.
+ * Returns undefined when nothing resolves, so callers keep the plain
+ * tool-name fallback for unknown or stale handles.
+ */
+export function describeBashControlTitle(args: Record<string, unknown>, registry: ProcessRegistry): string | undefined {
+	const mentioned = new Set<string>()
+	for (const key of ["stop_handles", "handles"] as const) {
+		const value = args[key]
+		if (Array.isArray(value)) for (const h of value) if (typeof h === "string" && h.length > 0) mentioned.add(h)
+	}
+	// Legacy `{ handle, action }` payloads degrade to an inspection in the
+	// tool, but still name the process they refer to for the title.
+	if (typeof args.handle === "string" && args.handle.length > 0) mentioned.add(args.handle)
+	const snapshots = new Map<string, ProcessDisplaySnapshot>()
+	for (const handle of mentioned) {
+		const snapshot = registry.displaySnapshot(handle)
+		if (snapshot) snapshots.set(handle, snapshot)
+	}
+	if (snapshots.size === 0 && args.wait === true) {
+		for (const snapshot of registry.listDisplaySnapshots())
+			if (snapshot.state === "running") snapshots.set(snapshot.handle, snapshot)
+	}
+	if (snapshots.size === 0) return undefined
+	const verb =
+		args.wait === true
+			? "Waiting for background process"
+			: Array.isArray(args.stop_handles) && args.stop_handles.length > 0
+				? "Stopping background process"
+				: "Checking background process"
+	const entries = [...snapshots.values()]
+		.sort((x, y) => x.startedAt - y.startedAt)
+		.map((s) => `${summarizeCommand(s.command, 48)} · ${elapsedSecondsSince(s.startedAt)}s`)
+	return `${verb}: ${entries.join(", ")}`
 }
 
 export function isHiddenToolCall(toolName: string, args: unknown): boolean {
@@ -92,6 +142,7 @@ type ToolCallFields = {
 	status: ToolCallStatus
 	rawInput: Record<string, unknown>
 	cwd?: string
+	bashControlRegistry?: ProcessRegistry
 	_meta?: Record<string, unknown>
 }
 
@@ -102,8 +153,15 @@ type ToolCallFields = {
  * `sessionUpdate` field — passing a session-notification object there puts an
  * out-of-schema key on the wire.
  */
-export function buildToolCallShape({ toolName, piToolCallId, rawInput, cwd, ...params }: ToolCallFields): ToolCall {
-	const { title, kind, locations } = describeToolCall(toolName, rawInput, cwd)
+export function buildToolCallShape({
+	toolName,
+	piToolCallId,
+	rawInput,
+	cwd,
+	bashControlRegistry,
+	...params
+}: ToolCallFields): ToolCall {
+	const { title, kind, locations } = describeToolCall(toolName, rawInput, cwd, bashControlRegistry)
 	return {
 		title,
 		kind,
