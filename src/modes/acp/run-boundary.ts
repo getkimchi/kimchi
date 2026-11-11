@@ -70,3 +70,17 @@ export function emitRunStart(conn: AgentSideConnection, sessionId: string, reaso
 export function emitRunEnd(conn: AgentSideConnection, sessionId: string, outcome: RunEndOutcome): void {
 	emitExtNotification(conn, RUN_END_METHOD, { sessionId, state: "idle", outcome })
 }
+
+/** Map a turn's end flags to the run-outcome, mirroring finalizeTurn's
+ *  stopReason mapping for prompt-owned turns. Precedence: cancelled > error
+ *  > refusal > end_turn. */
+export function runEndOutcomeFromFlags(flags: {
+	cancelled?: boolean
+	lastAssistantError: unknown
+	refused?: boolean
+}): RunEndOutcome {
+	if (flags.cancelled) return "cancelled"
+	if (flags.lastAssistantError) return "error"
+	if (flags.refused) return "refusal"
+	return "end_turn"
+}

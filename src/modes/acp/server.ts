@@ -193,7 +193,7 @@ import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelM
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
-import { emitRunEnd, emitRunStart, takePendingRunReason } from "./run-boundary.js"
+import { emitRunEnd, emitRunStart, runEndOutcomeFromFlags, takePendingRunReason } from "./run-boundary.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
 import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
 import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
@@ -2268,13 +2268,11 @@ export class KimchiAcpAgent implements Agent {
 					emitRunEnd(
 						this.conn,
 						sessionId,
-						unsolicited.cancelled
-							? "cancelled"
-							: unsolicited.lastAssistantError
-								? "error"
-								: unsolicited.refused
-									? "refusal"
-									: "end_turn",
+						runEndOutcomeFromFlags({
+							cancelled: unsolicited.cancelled,
+							lastAssistantError: unsolicited.lastAssistantError,
+							refused: unsolicited.refused,
+						}),
 					)
 				}
 				return

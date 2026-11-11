@@ -6,6 +6,7 @@ import {
 	RUN_END_METHOD,
 	RUN_START_METHOD,
 	registerUnsolicitedRunReason,
+	runEndOutcomeFromFlags,
 	takePendingRunReason,
 } from "./run-boundary.js"
 
@@ -75,5 +76,19 @@ describe("run-boundary emission", () => {
 			{ method: RUN_END_METHOD, params: { sessionId: "session-1", state: "idle", outcome: "end_turn" } },
 		])
 		expect(sent[0].method).toBe("_kimchi.dev/run_end")
+	})
+})
+
+describe("runEndOutcomeFromFlags", () => {
+	it("precedence: cancelled > error > refusal > end_turn", () => {
+		const base = { cancelled: false, lastAssistantError: undefined, refused: false }
+		expect(runEndOutcomeFromFlags(base)).toBe("end_turn")
+		expect(runEndOutcomeFromFlags({ ...base, refused: true })).toBe("refusal")
+		expect(runEndOutcomeFromFlags({ ...base, refused: true, lastAssistantError: "boom" })).toBe("error")
+		expect(runEndOutcomeFromFlags({ cancelled: true, lastAssistantError: "boom", refused: true })).toBe("cancelled")
+	})
+
+	it("treats missing flags as a clean end_turn", () => {
+		expect(runEndOutcomeFromFlags({})).toBe("end_turn")
 	})
 })
