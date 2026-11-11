@@ -27,6 +27,7 @@ import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import codexCorrelationExtension from "../../login/codex-correlation-extension.js"
+import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -507,6 +508,8 @@ ${skillLines}`
 		costPerPrEnabled: isResourceEnabled(COST_PER_PR_RESOURCE_ID),
 		inheritedWorkId,
 		inheritedSegment,
+		effectiveExtensions,
+		effectiveCwd,
 		buildSystemPrompt,
 		onSystemPrompt: options.onSystemPrompt,
 	})
@@ -877,6 +880,14 @@ export interface InlineExtensionFactoryDeps {
 	inheritedWorkId?: string | null
 	/** Work segment inherited from the parent session. */
 	inheritedSegment?: WorkSegment
+	/**
+	 * Post-workerReport-adjustment extensions gate resolved by the caller
+	 * (`options.workerReport && extensions === false ? [] : extensions`).
+	 * `false` marks an isolated child, which stays bare — no MCP tools.
+	 */
+	effectiveExtensions: true | string[] | false
+	/** Resolved working directory; handed to the MCP adapter for config discovery. */
+	effectiveCwd: string
 	/** Rebuilds the subagent system prompt for an active-tool list / routed model id. */
 	buildSystemPrompt: (activeToolNames: string[], promptModelId?: string) => string
 	/** Notified with each rebuilt prompt (RunOptions.onSystemPrompt). */
@@ -887,11 +898,10 @@ export interface InlineExtensionFactoryDeps {
  * Build the inline extension factory list for one subagent session.
  *
  * Pure composition over `deps`: the caller resolves the gates (resource flags,
- * model, tool allowlist) and this assembles the factories in the canonical
- * order — telemetry, work-attribution, request-timing, auto-model routing +
- * prompt rebuild, bash clamp/default-timeout, infrastructure breaker, DAP,
- * worker-report. The shape is additive: a later chunk can pass an extensions
- * gate and a cwd for further factories without reshaping the signature.
+ * model, tool allowlist, extensions gate) and this assembles the factories in
+ * the canonical order — telemetry, work-attribution, request-timing, auto-model
+ * routing + prompt rebuild, bash clamp/default-timeout, infrastructure breaker,
+ * DAP, worker-report, MCP adapter.
  */
 export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps): InlineExtension[] {
 	// The subagent budget clamp must be wired with the deadline computed
@@ -941,6 +951,15 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 	}
 	if (deps.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(deps.workerReport))
+	}
+	// Non-isolated children get MCP tools (LLM-4465): repo-native extensions are
+	// invisible to a child session's resource loader, so the adapter must be
+	// registered inline. Unconditional within the gate — with zero configured
+	// servers the extension suppresses its own tool surface and connects
+	// nothing. Appended last on purpose; the DAP × MCP ordering interplay is a
+	// separate verification item, not tuned here.
+	if (deps.effectiveExtensions !== false) {
+		extensionFactories.push(createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd }))
 	}
 	return extensionFactories
 }
