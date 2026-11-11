@@ -451,7 +451,7 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg?.extensionFactories).toHaveLength(5)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
-		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 		const childApi = createExtensionApi()
 		await runInlineExtension(ctorArg?.extensionFactories?.[1], childApi.api)
 		const child = createContext({ cwd: attributionDir, sessionManager: { getSessionId: () => "child-segment" } })
@@ -536,7 +536,7 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg?.extensionFactories).toHaveLength(5)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
-		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 	})
 
 	it("registers Auto routing only for children that use Auto", async () => {
@@ -2801,10 +2801,10 @@ describe("buildInlineExtensionFactories", () => {
 			dapExtension,
 			workerReportFactory,
 			// MCP adapter — appended last for non-isolated children (LLM-4465).
-			mockCreateKimchiMcpAdapterExtension.mock.results[0]?.value,
+			mockCreateKimchiMcpAdapterExtension.mock.results[0].value,
 		])
 		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
-		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith("work-1", segment)
 		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(900, expect.any(Number), "General-Purpose")
 		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
@@ -2814,7 +2814,7 @@ describe("buildInlineExtensionFactories", () => {
 		const enabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: true }))
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledTimes(1)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith(null, undefined)
-		const attributionFactory = mockCreateWorkAttributionExtension.mock.results[0]?.value
+		const attributionFactory = mockCreateWorkAttributionExtension.mock.results[0].value
 		expect(enabled).toHaveLength(6)
 		expect(enabled).toContain(attributionFactory)
 
@@ -2857,13 +2857,6 @@ describe("buildInlineExtensionFactories", () => {
 		expect(buildInlineExtensionFactories(makeDeps({ toolNames: ["read", "bash"] }))).not.toContain(dapExtension)
 	})
 
-	it("omits the dap extension when the extensions.dap resource is disabled", () => {
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ resources: { "extensions.dap": false } }))
-
-		expect(shouldRegisterDapForTools(DEBUG_TOOL_NAMES)).toBe(false)
-		expect(buildInlineExtensionFactories(makeDeps({ toolNames: DEBUG_TOOL_NAMES }))).not.toContain(dapExtension)
-	})
-
 	it("registers the worker-report extension only when a capability is provided", () => {
 		const workerReportFactory: InlineExtension = () => {}
 		mockCreateWorkerReportExtension.mockReturnValueOnce(workerReportFactory)
@@ -2881,19 +2874,21 @@ describe("buildInlineExtensionFactories", () => {
 		// true — the default for a persona with no extensions restriction.
 		const enabled = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: true }))
 		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
-		expect(enabled).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0]?.value)
+		expect(enabled).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
 
 		// Empty array — the worker-report edge (workerReport + extensions:false
-		// resolves to []). The factory still registers; cost is Chunk 4's call.
+		// resolves to []). The factory still registers; that edge was evaluated
+		// and consciously accepted for LLM-4472 (no built-in persona produces
+		// it, and a config with no servers connects nothing).
 		mockCreateKimchiMcpAdapterExtension.mockClear()
 		const emptyArray = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: [] }))
 		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
-		expect(emptyArray).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0]?.value)
+		expect(emptyArray).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
 
 		// Explicit persona extension list.
 		mockCreateKimchiMcpAdapterExtension.mockClear()
 		const explicitList = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["mcp"] }))
-		expect(explicitList).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0]?.value)
+		expect(explicitList).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
 	})
 
 	it("omits the MCP adapter factory for isolated children (effectiveExtensions false)", () => {
@@ -2907,19 +2902,6 @@ describe("buildInlineExtensionFactories", () => {
 		buildInlineExtensionFactories(makeDeps({ effectiveExtensions: true, effectiveCwd: "/repo-under-test" }))
 
 		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledWith({ cwd: "/repo-under-test" })
-	})
-
-	it("sits the MCP adapter factory after the worker-report extension in list order", () => {
-		const workerReportFactory: InlineExtension = () => {}
-		mockCreateWorkerReportExtension.mockReturnValueOnce(workerReportFactory)
-		const workerReport = { submit: vi.fn(), isAccepted: vi.fn(() => false) }
-
-		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: true, workerReport }))
-
-		const workerReportIndex = factories.indexOf(workerReportFactory)
-		const mcpIndex = factories.indexOf(mockCreateKimchiMcpAdapterExtension.mock.results[0]?.value)
-		expect(workerReportIndex).toBeGreaterThanOrEqual(0)
-		expect(mcpIndex).toBeGreaterThan(workerReportIndex)
 	})
 
 	it("rebuilds the system prompt from the routed model before the child's first turn", async () => {

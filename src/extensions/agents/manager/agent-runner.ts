@@ -902,11 +902,13 @@ export interface InlineExtensionFactoryDeps {
 /**
  * Build the inline extension factory list for one subagent session.
  *
- * Pure composition over `deps`: the caller resolves the gates (resource flags,
- * model, tool allowlist, extensions gate) and this assembles the factories in
- * the canonical order — telemetry, work-attribution, request-timing, auto-model
- * routing + prompt rebuild, bash clamp/default-timeout, infrastructure breaker,
- * DAP, worker-report, MCP adapter.
+ * Composes the child session's inline extension list from `deps` plus a few
+ * process-level reads: the effective telemetry config, the DAP resource gate
+ * (shouldRegisterDapForTools), and the wall clock (`Date.now()`) feeding the
+ * bash clamp deadline. Assembles the factories in the canonical order —
+ * telemetry, work-attribution, request-timing, auto-model routing + prompt
+ * rebuild, bash clamp/default-timeout, infrastructure breaker, DAP,
+ * worker-report, MCP adapter.
  */
 export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps): InlineExtension[] {
 	// The subagent budget clamp must be wired with the deadline computed
