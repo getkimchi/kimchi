@@ -30,11 +30,13 @@ describe("preserveRawErrorMessage", () => {
 		expect(getRawErrorMessage(message)).toBe("")
 	})
 
-	it("stores the value as non-enumerable (not visible in serialization)", () => {
+	it("stores the value on a symbol (not visible in serialization)", () => {
 		const message = { errorMessage: "secret internal error" }
 		preserveRawErrorMessage(message)
 		message.errorMessage = "Retrying…"
-		// JSON.stringify should not include the preserved value
+		// JSON.stringify should not include the preserved value — the symbol is
+		// enumerable (so spread copies carry it to the retry classifier) but
+		// symbol keys never appear in JSON or Object.keys.
 		expect(JSON.stringify(message)).not.toContain("secret internal error")
 		expect(JSON.stringify(message)).toContain("Retrying…")
 		// Object.keys should not include the symbol

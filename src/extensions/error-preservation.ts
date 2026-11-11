@@ -8,11 +8,21 @@
  * the classifier sees the display placeholder instead of the raw error and
  * fails to identify retryable errors — causing retries to silently stop.
  *
- * The preserved value is stored as a non-enumerable symbol property so it
- * never appears in serialized output or LLM context.
+ * The preserved value is stored as a symbol registered in the GLOBAL symbol
+ * registry (`Symbol.for`) and made ENUMERABLE:
+ * - global registry: the setter (extensions) and the getters (retry/compaction
+ *   patches) must share one symbol even across module instances in the
+ *   bundled binary;
+ * - enumerable: pi spreads messages into copies between `message_end` and the
+ *   run-loop retry classifier, and spread copies carry own enumerable SYMBOL
+ *   properties too — non-enumerable ones are silently dropped, so a
+ *   mid-stream failure would otherwise classify its own display placeholder
+ *   and never retry. Symbols stay invisible to JSON.stringify and Object.keys,
+ *   so the raw error never reaches serialized output or the LLM request
+ *   payload (requests are built from role/content only).
  */
 
-const RAW_ERROR_SYMBOL = Symbol("rawErrorMessage")
+const RAW_ERROR_SYMBOL = Symbol.for("kimchi.rawErrorMessage")
 
 /** Message shape that has an optional `errorMessage` string. */
 interface ErrorMessageHolder {
@@ -29,7 +39,7 @@ export function preserveRawErrorMessage(message: ErrorMessageHolder): void {
 	if (message.errorMessage && !(RAW_ERROR_SYMBOL in message)) {
 		Object.defineProperty(message, RAW_ERROR_SYMBOL, {
 			value: message.errorMessage,
-			enumerable: false,
+			enumerable: true,
 			writable: false,
 			configurable: false,
 		})
