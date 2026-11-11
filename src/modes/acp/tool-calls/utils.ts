@@ -167,11 +167,7 @@ export function buildToolCallShape({
 		kind,
 		locations,
 		rawInput,
-		name: toolName,
 		...params,
-		// kind "other" tools (e.g. bash_control) reuse the title slot for a
-		// human label; the spec-native name field keeps the tool identity
-		// recoverable for clients that key behavior off it.
 		_meta: { piToolCallId, ...params._meta },
 	}
 }
@@ -184,7 +180,6 @@ type ToolCallUpdateFields = {
 	toolCallId: string
 	piToolCallId: string
 	status: ToolCallStatus
-	toolName?: string
 	title?: string
 	kind?: ToolKind
 	locations?: ToolCallLocation[]
@@ -193,11 +188,10 @@ type ToolCallUpdateFields = {
 	rawOutput?: Record<string, unknown>
 	_meta?: Record<string, unknown>
 }
-export function buildToolCallUpdate({ piToolCallId, toolName, ...params }: ToolCallUpdateFields): SessionUpdate {
+export function buildToolCallUpdate({ piToolCallId, ...params }: ToolCallUpdateFields): SessionUpdate {
 	return {
 		sessionUpdate: "tool_call_update",
 		...params,
-		...(toolName ? { name: toolName } : {}),
 		_meta: { piToolCallId, ...(params._meta ?? {}) },
 	}
 }
