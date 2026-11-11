@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
+import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
@@ -170,7 +171,9 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
+	type ExtensionFactory,
 	type InlineExtension,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
@@ -195,6 +198,7 @@ import { buildAgentPrompt } from "../prompt/prompts.js"
 import { createWorkerReportExtension } from "../worker-report.js"
 import {
 	buildInlineExtensionFactories,
+	getActiveSubagentToolNames,
 	type InlineExtensionFactoryDeps,
 	type RunOptions,
 	resumeAgent,
@@ -1468,6 +1472,153 @@ describe("runAgent — profile tool access", () => {
 		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("grep")
 		expect(calledWith).toContain("web_search")
+	})
+})
+
+describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	// Mirrors the real MCP factory's observable contract: when the extension is
+	// bound to a child session it registers one tool named "mcp" (the adapter's
+	// proxy tool). This is the stub whose registration must survive the runner's
+	// active-tool filter for non-isolated children — the direct regression for
+	// LLM-4465, where subagent sessions silently dropped extension tools.
+	const stubMcpExtension = (): ExtensionFactory => (childPi) => {
+		childPi.registerTool({
+			name: "mcp",
+			label: "MCP",
+			description: "stub MCP gateway tool",
+			parameters: Type.Object({}),
+			execute: vi.fn<ToolDefinition["execute"]>(),
+		})
+	}
+
+	// A fake session whose bindExtensions runs the inline extension factories
+	// the runner handed to the resource loader — what a real session does with
+	// them — and reflects extension-registered tools into the registry and the
+	// active tool list, like a real session after binding.
+	function makeExtensionBindFakeSession(): ReturnType<typeof makeFakeSession> {
+		const activeToolNames = ["read", "grep"]
+		const baseRegistered = [...DEFAULT_REGISTERED_TOOL_NAMES, ...activeToolNames]
+		const session = makeFakeSession({ activeToolNames })
+		session.bindExtensions.mockImplementation(async () => {
+			const loaderDeps = mockDefaultResourceLoader.mock.calls.at(-1)?.[0] as
+				| { extensionFactories?: InlineExtension[] }
+				| undefined
+			const childApi = createExtensionApi()
+			for (const extension of loaderDeps?.extensionFactories ?? []) {
+				await runInlineExtension(extension, childApi.api)
+			}
+			const registered = childApi.getRegisteredTools().map((tool) => tool.name)
+			session.getToolDefinition.mockImplementation((name: string) =>
+				[...baseRegistered, ...registered].includes(name) ? { name } : undefined,
+			)
+			session.getActiveToolNames.mockReturnValue([...activeToolNames, ...registered])
+		})
+		return session
+	}
+
+	function createSessionResult(session: ReturnType<typeof makeFakeSession>) {
+		return {
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		}
+	}
+
+	function calledActiveTools(session: ReturnType<typeof makeFakeSession>): string[] {
+		return (session.setActiveToolsByName as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+	}
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Researcher", description: "Research agent" }))
+		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+		// vi.clearAllMocks does not restore implementations: put back the module
+		// mock's defaults so later describes don't inherit this suite's setup
+		// (the leaked MCP stub was registering "mcp" in their sessions).
+		mockGetConfig.mockReturnValue(makeTypeConfig())
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+		mockCreateKimchiMcpAdapterExtension.mockImplementation(() => () => {})
+	})
+
+	it("activates an extension-registered tool on a non-isolated child session", async () => {
+		mockCreateKimchiMcpAdapterExtension.mockImplementation(() => stubMcpExtension())
+		const session = makeExtensionBindFakeSession()
+		mockCreateAgentSession.mockResolvedValue(createSessionResult(session))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalled()
+		expect(session.setActiveToolsByName).toHaveBeenCalled()
+		expect(calledActiveTools(session)).toContain("mcp")
+	})
+
+	it("keeps extension-registered tools off an isolated child session", async () => {
+		mockCreateKimchiMcpAdapterExtension.mockImplementation(() => stubMcpExtension())
+		const session = makeExtensionBindFakeSession()
+		mockCreateAgentSession.mockResolvedValue(createSessionResult(session))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+			isolated: true,
+		})
+
+		// The isolated branch must never receive the MCP stub: neither the
+		// factory list nor the active tools handed to the session may contain it.
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+		expect(calledActiveTools(session)).not.toContain("mcp")
+	})
+})
+
+describe("getActiveSubagentToolNames — persona extension allowlists", () => {
+	const isRegistered = (name: string) =>
+		["read", "grep", "mcp", "mcp__jira__get_issue", "web_search", "Agent"].includes(name)
+
+	it("keeps the MCP gateway tool for a persona allowlisting the mcp extension", () => {
+		expect(getActiveSubagentToolNames(["read", "grep"], ["read", "grep", "mcp"], ["mcp"], isRegistered)).toEqual([
+			"read",
+			"grep",
+			"mcp",
+		])
+	})
+
+	it("admits namespaced MCP tools for an mcp allowlist", () => {
+		expect(getActiveSubagentToolNames(["read"], ["read", "mcp__jira__get_issue"], ["mcp"], isRegistered)).toEqual([
+			"read",
+			"mcp__jira__get_issue",
+		])
+	})
+
+	it("drops extension tools outside the persona's allowlist", () => {
+		expect(getActiveSubagentToolNames(["read", "grep"], ["read", "grep", "mcp"], ["unrelated"], isRegistered)).toEqual([
+			"read",
+			"grep",
+		])
+	})
+
+	it("keeps extension tools when the persona inherits all extensions", () => {
+		expect(getActiveSubagentToolNames(["read", "grep"], ["read", "grep", "mcp"], true, isRegistered)).toEqual([
+			"read",
+			"grep",
+			"mcp",
+		])
+	})
+
+	it("never resurrects excluded tools via the extension allowlist", () => {
+		expect(getActiveSubagentToolNames(["read"], ["read", "Agent"], ["Agent"], isRegistered)).toEqual(["read"])
 	})
 })
 

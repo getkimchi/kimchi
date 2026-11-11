@@ -82,7 +82,13 @@ function getPromptToolNames(toolNames: string[], disallowedSet?: Set<string>): s
 	return toolNames.filter((name) => !isExcludedSubagentToolName(name, disallowedSet))
 }
 
-function getActiveSubagentToolNames(
+/**
+ * Compute the child session's active tool list from the persona's requested
+ * tools, the session's registered/active tools, and the persona's extension
+ * policy. Exported for tests: this filter is the gate that decides whether
+ * extension-registered tools (e.g. MCP) survive onto a subagent session.
+ */
+export function getActiveSubagentToolNames(
 	requestedToolNames: string[],
 	currentActiveToolNames: string[],
 	extensions: true | string[],
