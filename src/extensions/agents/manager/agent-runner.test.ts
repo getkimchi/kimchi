@@ -9,7 +9,7 @@ import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
 import * as diagnostics from "../../work-attribution/diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
-import type { WorkSegment } from "../../work-attribution.js"
+import { createWorkAttributionExtension, type WorkSegment } from "../../work-attribution.js"
 
 let attributionDir: string
 beforeEach(() => {
@@ -141,6 +141,22 @@ vi.mock("../../auto-model/index.js", () => ({
 	createAutoModelRoutingExtension: vi.fn(() => () => {}),
 }))
 
+// Partial mocks: real extension behaviour with an identity spy on top, so the
+// buildInlineExtensionFactories composition tests can assert factory wiring
+// without changing what the factories do.
+vi.mock("../../work-attribution.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../work-attribution.js")>()
+	return { ...actual, createWorkAttributionExtension: vi.fn(actual.createWorkAttributionExtension) }
+})
+vi.mock("../subagent-bash-clamp.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../subagent-bash-clamp.js")>()
+	return { ...actual, createSubagentBashClampExtension: vi.fn(actual.createSubagentBashClampExtension) }
+})
+vi.mock("../worker-report.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../worker-report.js")>()
+	return { ...actual, createWorkerReportExtension: vi.fn(actual.createWorkerReportExtension) }
+})
+
 import {
 	type AgentSession,
 	type BeforeProviderHeadersEvent,
@@ -153,17 +169,31 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
-import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../agents/subagent-bash-clamp.js"
+import {
+	createSubagentBashClampExtension,
+	DEFAULT_BASH_TIMEOUT_SECONDS,
+	subagentBashDefaultTimeoutExtension,
+} from "../../agents/subagent-bash-clamp.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
+import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import requestTimingExtension from "../../request-timing.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
-import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
+import { createWorkerReportExtension } from "../worker-report.js"
+import {
+	buildInlineExtensionFactories,
+	type InlineExtensionFactoryDeps,
+	type RunOptions,
+	resumeAgent,
+	runAgent,
+	shouldRegisterDapForTools,
+} from "./agent-runner.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { formatRunResultText } from "./result-text.js"
 
@@ -181,6 +211,9 @@ const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
 const mockGetCurrentPhase = vi.mocked(getCurrentPhase)
 const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
+const mockCreateWorkAttributionExtension = vi.mocked(createWorkAttributionExtension)
+const mockCreateWorkerReportExtension = vi.mocked(createWorkerReportExtension)
+const mockCreateSubagentBashClampExtension = vi.mocked(createSubagentBashClampExtension)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
@@ -2536,5 +2569,174 @@ describe("formatRunResultText", () => {
 	it("leaves plain responses untouched when nothing was auto-loaded", () => {
 		expect(formatRunResultText("plain", undefined, undefined)).toBe("plain")
 		expect(formatRunResultText("plain", "/plans/x.md", [])).toBe("plain\n\nPlan saved to: /plans/x.md")
+	})
+})
+
+describe("buildInlineExtensionFactories", () => {
+	const DEBUG_TOOL_NAMES = ["read", "grep", "debug_state_at", "debug_launch", "step_in"]
+	const CONCRETE_MODEL: Model<Api> = { ...AUTO_MODEL, provider: "kimchi-dev", id: "gemini-3-pro" }
+	let agentDir: string
+
+	function makeDeps(overrides: Partial<InlineExtensionFactoryDeps> = {}): InlineExtensionFactoryDeps {
+		return {
+			effectiveMaxDuration: 900,
+			type: "General-Purpose",
+			model: undefined,
+			toolNames: ["read", "bash"],
+			workerReport: undefined,
+			costPerPrEnabled: false,
+			inheritedWorkId: undefined,
+			inheritedSegment: undefined,
+			buildSystemPrompt: vi.fn(() => "System prompt text"),
+			onSystemPrompt: undefined,
+			...overrides,
+		}
+	}
+
+	beforeEach(() => {
+		// Deterministic resource gates: a fresh empty agent dir has no
+		// settings.json, so the definitions' defaults apply (dap enabled).
+		agentDir = mkdtempSync(join(tmpdir(), "inline-ext-deps-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+	})
+
+	afterEach(() => {
+		rmSync(agentDir, { recursive: true, force: true })
+		vi.clearAllMocks()
+	})
+
+	it("composes every factory in the canonical order when all gates are on", () => {
+		const telemetryFactory: InlineExtension = () => {}
+		const attributionFactory: InlineExtension = () => {}
+		const autoRoutingFactory: InlineExtension = () => {}
+		const clampFactory: InlineExtension = () => {}
+		const workerReportFactory: InlineExtension = () => {}
+		mockTelemetryExtension.mockReturnValueOnce(telemetryFactory)
+		mockCreateWorkAttributionExtension.mockReturnValueOnce(attributionFactory)
+		mockCreateAutoModelRoutingExtension.mockReturnValueOnce(autoRoutingFactory)
+		mockCreateSubagentBashClampExtension.mockReturnValueOnce(clampFactory)
+		mockCreateWorkerReportExtension.mockReturnValueOnce(workerReportFactory)
+		const segment: WorkSegment = { id: "parent-input", attribution: "unknown", reason: "model-uncertain" }
+		const workerReport = { submit: vi.fn(), isAccepted: vi.fn(() => false) }
+
+		const factories = buildInlineExtensionFactories(
+			makeDeps({
+				costPerPrEnabled: true,
+				inheritedWorkId: "work-1",
+				inheritedSegment: segment,
+				model: AUTO_MODEL,
+				toolNames: DEBUG_TOOL_NAMES,
+				workerReport,
+			}),
+		)
+
+		expect(factories).toEqual([
+			telemetryFactory,
+			attributionFactory,
+			requestTimingExtension,
+			autoRoutingFactory,
+			expect.any(Function), // auto-model prompt rebuild
+			clampFactory,
+			infrastructureBreakerExtension,
+			dapExtension,
+			workerReportFactory,
+		])
+		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
+		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith("work-1", segment)
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(900, expect.any(Number), "General-Purpose")
+		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
+	})
+
+	it("registers work attribution exactly when the cost-per-PR resource is enabled", () => {
+		const enabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: true }))
+		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledTimes(1)
+		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith(null, undefined)
+		const attributionFactory = mockCreateWorkAttributionExtension.mock.results[0]?.value
+		expect(enabled).toHaveLength(5)
+		expect(enabled).toContain(attributionFactory)
+
+		const disabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: false }))
+		expect(disabled).toHaveLength(4)
+		expect(disabled).not.toContain(attributionFactory)
+	})
+
+	it("uses the bash clamp when effectiveMaxDuration is positive and the default timeout when it is 0", () => {
+		const clamped = buildInlineExtensionFactories(makeDeps({ effectiveMaxDuration: 60 }))
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(60, expect.any(Number), "General-Purpose")
+		expect(clamped).not.toContain(subagentBashDefaultTimeoutExtension)
+
+		mockCreateSubagentBashClampExtension.mockClear()
+		const unlimited = buildInlineExtensionFactories(makeDeps({ effectiveMaxDuration: 0 }))
+		expect(mockCreateSubagentBashClampExtension).not.toHaveBeenCalled()
+		expect(unlimited).toContain(subagentBashDefaultTimeoutExtension)
+	})
+
+	it("registers the auto-model factories only for routed models", () => {
+		const autoRoutingFactory: InlineExtension = () => {}
+		mockCreateAutoModelRoutingExtension.mockReturnValueOnce(autoRoutingFactory)
+
+		const routed = buildInlineExtensionFactories(makeDeps({ model: AUTO_MODEL }))
+		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
+		expect(routed).toContain(autoRoutingFactory)
+		expect(routed).toHaveLength(6)
+
+		mockCreateAutoModelRoutingExtension.mockClear()
+		const concrete = buildInlineExtensionFactories(makeDeps({ model: CONCRETE_MODEL }))
+		expect(mockCreateAutoModelRoutingExtension).not.toHaveBeenCalled()
+		expect(concrete).not.toContain(autoRoutingFactory)
+		expect(concrete).toHaveLength(4)
+	})
+
+	it("registers the dap extension exactly when shouldRegisterDapForTools admits the tool names", () => {
+		expect(shouldRegisterDapForTools(DEBUG_TOOL_NAMES)).toBe(true)
+		expect(buildInlineExtensionFactories(makeDeps({ toolNames: DEBUG_TOOL_NAMES }))).toContain(dapExtension)
+		expect(shouldRegisterDapForTools(["read", "bash"])).toBe(false)
+		expect(buildInlineExtensionFactories(makeDeps({ toolNames: ["read", "bash"] }))).not.toContain(dapExtension)
+	})
+
+	it("omits the dap extension when the extensions.dap resource is disabled", () => {
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ resources: { "extensions.dap": false } }))
+
+		expect(shouldRegisterDapForTools(DEBUG_TOOL_NAMES)).toBe(false)
+		expect(buildInlineExtensionFactories(makeDeps({ toolNames: DEBUG_TOOL_NAMES }))).not.toContain(dapExtension)
+	})
+
+	it("registers the worker-report extension only when a capability is provided", () => {
+		const workerReportFactory: InlineExtension = () => {}
+		mockCreateWorkerReportExtension.mockReturnValueOnce(workerReportFactory)
+		const workerReport = { submit: vi.fn(), isAccepted: vi.fn(() => false) }
+
+		expect(buildInlineExtensionFactories(makeDeps({ workerReport }))).toContain(workerReportFactory)
+		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
+
+		mockCreateWorkerReportExtension.mockClear()
+		expect(buildInlineExtensionFactories(makeDeps())).not.toContain(workerReportFactory)
+		expect(mockCreateWorkerReportExtension).not.toHaveBeenCalled()
+	})
+
+	it("rebuilds the system prompt from the routed model before the child's first turn", async () => {
+		const buildSystemPrompt = vi.fn(() => "Rebuilt prompt")
+		const onSystemPrompt = vi.fn()
+		const routed = buildInlineExtensionFactories(makeDeps({ model: AUTO_MODEL, buildSystemPrompt, onSystemPrompt }))
+
+		const childApi = createExtensionApi()
+		childApi.setActiveTools(["tool_a"])
+		for (const factory of routed) {
+			await runInlineExtension(factory, childApi.api)
+		}
+		const beforeAgentStart = childApi.getHandler("before_agent_start") as (
+			event: unknown,
+			ctx: unknown,
+		) => { systemPrompt: string } | undefined
+
+		const result = await beforeAgentStart(
+			{},
+			{ model: CONCRETE_MODEL, sessionManager: { getSessionId: () => "child-1" } },
+		)
+
+		expect(buildSystemPrompt).toHaveBeenCalledWith(["tool_a"], CONCRETE_MODEL.id)
+		expect(onSystemPrompt).toHaveBeenCalledWith("Rebuilt prompt")
+		expect(result).toEqual({ systemPrompt: "Rebuilt prompt" })
 	})
 })
