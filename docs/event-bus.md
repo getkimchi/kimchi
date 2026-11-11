@@ -206,3 +206,22 @@ Emitted by `@kimchi-dev/kimchi-workflows` (external package). This file is a mir
 |---|---|---|
 | `notification` | `{ notification_type: "permission_prompt", tool_name, tool_use_id }` | Permissions extension shows an approval dialog |
 | `notification` | `{ notification_type: "agent_needs_input" }` | Questionnaire tool prompts the user |
+
+---
+
+## 9. PII Redaction Events
+
+**Source:** `src/extensions/pii-redaction/redaction-events.ts`
+
+| Channel | Payload type | When |
+|---|---|---|
+| `pii_redaction:redacted` | `PiiRedactedPayload` | A hook invocation (user input, assistant message, tool result) redacted one or more occurrences of an entity type — one event per (invocation × entity type) |
+| `pii_redaction:engine_degraded` | `PiiEngineDegradedPayload` | A redaction engine scan failed and the text passed through unredacted (fail-open) |
+
+Payloads carry surface, entity_type from the `[REDACTED-TYPE]` marker namespace (engine-owned vocabulary — uppercase, underscore-separated; e.g. EMAIL_ADDRESS, CRYPTO, GITHUB_TOKEN, SECRET_FIELD — reconciled with consumers server-side, not a closed harness enum), category from the redaction catalog (lowercase keys — `secrets`, `emails`, …; `custom` for unattributed markers — see `docs/pii-redaction-policy.md`), counts, strings_scanned (per-emission-group denominator — one hook invocation emitted per message or aggregated per tool-result, so entities from one emission group share the value; do not sum across entities), is_subagent (emitted honestly; today it is always `false` because subagent sessions do not load this extension, and subagent content enters the telemetry path only via the parent's tool_result hook) — never the original text, matched substrings, match offsets, or JSON key names.
+
+Unlike steer/loop-guard payloads, no `interactive` flag is emitted: the redaction hooks do not carry session-mode context.
+
+Kill switch: `KIMCHI_DISABLE_REDACTION_EVENTS=1`.
+
+**Consumers:** `telemetry/index.ts` (forwards as `pii_redaction.redacted` / `pii_redaction.session_affected` / `pii_redaction.engine_degraded` OTLP records; `session_affected` fires once per session on the first redaction).

@@ -23,13 +23,15 @@ export function createExtensionApi(): {
 	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
 	getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1]
 	registerCommand: ReturnType<typeof vi.fn<ExtensionAPI["registerCommand"]>>
-	emitEvent: ReturnType<typeof vi.fn>
+	emitEvent: ReturnType<typeof vi.fn<(channel: string, data: unknown) => void>>
 	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
 	setActiveTools: ReturnType<typeof vi.fn<ExtensionAPI["setActiveTools"]>>
 	getRegisteredTools(): ToolDefinition[]
 	getActiveToolNames(): string[]
 	registerMessageRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerMessageRenderer"]>>
 	getMessageRenderer(customType: string): (...args: never[]) => unknown
+	/** Registered markdown transformers (captures pi.registerMarkdownTransformer). */
+	getMarkdownTransformers(): ReadonlyArray<(markdown: string, context: unknown) => string>
 	getAppendedEntries<T = unknown>(type: string): T[]
 	registerShortcut: ReturnType<typeof vi.fn<ExtensionAPI["registerShortcut"]>>
 	getShortcutHandler(key: string): ((ctx: ExtensionContext) => Promise<void> | void) | undefined
@@ -102,6 +104,10 @@ export function createExtensionApi(): {
 		},
 	)
 	const registerMessageRenderer = vi.fn()
+	const markdownTransformers: Array<(markdown: string, context: unknown) => string> = []
+	const registerMarkdownTransformer = vi.fn((transformer: (markdown: string, context: unknown) => string) => {
+		markdownTransformers.push(transformer)
+	})
 	const getThinkingLevel = vi.fn<ExtensionAPI["getThinkingLevel"]>(() => "off")
 
 	return {
@@ -119,6 +125,7 @@ export function createExtensionApi(): {
 			registerEntryRenderer,
 			registerShortcut,
 			registerMessageRenderer,
+			registerMarkdownTransformer,
 			getCommands,
 			getThinkingLevel,
 			events,
@@ -165,6 +172,8 @@ export function createExtensionApi(): {
 		registerCommand,
 		setActiveTools,
 		getRegisteredTools: () => [...registeredTools.values()],
+		/** Access to the registered markdown transformers (TUI paint path). */
+		getMarkdownTransformers: () => markdownTransformers,
 		getActiveToolNames: () => [...activeToolNames],
 		appendEntry: appendEntry as unknown as ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>,
 		getCommands,

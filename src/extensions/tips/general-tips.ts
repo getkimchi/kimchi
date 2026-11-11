@@ -1,5 +1,10 @@
 import type { Tip, TipProvider } from "./types.js"
 
+// Every tip must describe a feature that ships today: a tip that names a
+// command, flag or key the harness no longer has sends users to a dead end.
+// general-tips.test.ts pins the wording and checks the referenced slash
+// commands exist; retire a tip here when its feature is deprecated (the
+// multi-model tips went with #1357's Auto default).
 export const GENERAL_TIPS = [
 	{
 		id: "permissions-shortcut",
@@ -9,22 +14,17 @@ export const GENERAL_TIPS = [
 	{
 		id: "settings-themes",
 		scope: "general",
-		message: "Run `/settings > Themes` to change colors.",
-	},
-	{
-		id: "multi-model-switch",
-		scope: "general",
-		message: "Use `ctrl+p` or `/model` to select multi-model for auto routing.",
+		message: "Run `/theme` to change colors.",
 	},
 	{
 		id: "single-model-mode",
 		scope: "general",
-		message: "Use `/model` to select single model for entire session",
+		message: "Auto picks a model per request; use `/model` to pin one for the session.",
 	},
 	{
 		id: "agents",
 		scope: "general",
-		message: "Use `/agents` to manage agents or display running agents sessions",
+		message: "Use `/agents` to manage agents or see running agent sessions.",
 	},
 	{
 		id: "todos-overlay",
@@ -65,11 +65,6 @@ export const GENERAL_TIPS = [
 		id: "export-bug-report",
 		scope: "general",
 		message: "Run `/bug` to create GitHub issue with a bug report (PII-scrubbed).",
-	},
-	{
-		id: "multi-model-roles",
-		scope: "general",
-		message: "Run `/multi-model` to assign models to each role.",
 	},
 	{
 		id: "help-command",

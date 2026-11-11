@@ -1,10 +1,13 @@
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "../../modes/acp/state.js"
+import { getAvailableModels } from "../../startup-context.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { getActiveFerment } from "../ferment/index.js"
 import telemetryExtension, {
 	_getTelemetryCtx,
 	trackRemoteExecution,
@@ -17,7 +20,7 @@ import { logEvents } from "./otlp-test-utils.js"
 import { _resetSharedAccumulators } from "./session-context.js"
 
 vi.mock("../ferment/index.js", () => ({
-	getActiveFerment: vi.fn(() => undefined),
+	getActiveFerment: vi.fn(),
 }))
 
 /** Controllable settings-watcher stand-in: counts starts/stops and tracks
@@ -54,12 +57,18 @@ vi.mock("./settings-change-emitter.js", () => ({
 }))
 
 vi.mock("../../startup-context.js", () => ({
-	getAvailableModels: vi.fn(() => []),
+	getAvailableModels: vi.fn(),
 }))
 
 vi.mock("../../api/me.js", () => ({
-	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
+	getMe: vi.fn(),
 }))
+
+beforeEach(() => {
+	vi.mocked(getActiveFerment).mockReset().mockReturnValue(undefined)
+	vi.mocked(getAvailableModels).mockReset().mockReturnValue([])
+	vi.mocked(getMe).mockReset().mockResolvedValue({ id: "test-user", email: "test@example.com" })
+})
 
 const TEST_SURVEY = {
 	id: "019e87cc-5033-0000-d9bd-5e6501640b6e",
@@ -193,9 +202,22 @@ describe("telemetryExtension integration", () => {
 
 		expect(tm?.cumulative.toolUsage).toEqual({ unknown: 2 })
 		expect(Object.keys(tm?.cumulative.toolDurationMs ?? {})).toEqual(["unknown"])
+		// Taxonomy: `Tool X not found` is a recognized model mistake → one
+		// tool_outcome (canonical, with the model-supplied tool name as a bounded
+		// attribute); the malformed name (embedded newline) is unrecognized →
+		// one raw-fallback error. Neither uses the model-generated name as a
+		// telemetry label — tool_name stays "unknown" on both records.
 		expect(logEvents(fetchMock).filter((event) => event.eventName === "error")).toEqual([
 			expect.objectContaining({ attrs: expect.objectContaining({ error_type: "tool_failure", tool_name: "unknown" }) }),
-			expect.objectContaining({ attrs: expect.objectContaining({ error_type: "tool_failure", tool_name: "unknown" }) }),
+		])
+		expect(logEvents(fetchMock).filter((event) => event.eventName === "tool_outcome")).toEqual([
+			expect.objectContaining({
+				attrs: expect.objectContaining({
+					outcome_kind: "model_mistake",
+					tool_name: "unknown",
+					message: "Tool not found",
+				}),
+			}),
 		])
 	})
 
@@ -612,6 +634,32 @@ describe("telemetryExtension integration", () => {
 		getHandler(handlers, "before_provider_headers")(event)
 
 		expect(event.headers["X-Parent-Session-Id"]).toBeUndefined()
+	})
+
+	it("before_provider_headers injects X-Acp-Client-Name from the ACP initialize handshake", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Acp-Client-Name"]).toBe("kimchi-vscode")
+	})
+
+	it("before_provider_headers omits X-Acp-Client-Name when no ACP client has initialized", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// Plain CLI sessions never call setAcpClientInfo — the header must stay
+		// absent so the recording proxy keeps its existing unknown-client path.
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Acp-Client-Name"]).toBeUndefined()
 	})
 
 	it("before_provider_headers injects a fresh per-request W3C traceparent", async () => {

@@ -22,6 +22,7 @@ interface McpFixtureEventBase {
 interface McpFixtureEventDetails {
 	initialized: { clientName?: string; extensionCapabilities: string[] }
 	tools_listed: Record<string, never>
+	tool_list_changed_sent: Record<string, never>
 	resources_listed: Record<string, never>
 	resource_read: { uri: string }
 	tool_called: { name: string; arguments: Record<string, unknown> }
@@ -77,7 +78,12 @@ interface McpFixtureEventDetails {
 	http_session_closed: { sessionId?: string }
 	http_error: { message: string }
 	http_listening: { url: string }
-	process_started: { transport: "stdio" | "http" | "sse" }
+	modern_request: { method?: string; protocolVersion?: string | null; hasInputResponses: boolean }
+	modern_discover_served: Record<string, never>
+	modern_tool_input_required: { name: string }
+	modern_tool_completed: { name: string; requestStateVerified: boolean }
+	modern_initialize_rejected: Record<string, never>
+	process_started: { transport: "stdio" | "http" | "sse" | "modern-http" }
 	process_stopping: { signal: string }
 	process_exited: { code: number }
 	ui_browser_opened: Record<string, never>
@@ -117,6 +123,7 @@ export type McpFixtureScenario =
 	| "oauth-split-issuer-flaky-prm"
 	| "oauth-refresh-revoked"
 	| "oauth-manual-revoke"
+	| "tools-change"
 	| "ui-app"
 
 export type McpFixtureToolResponse =
@@ -151,6 +158,12 @@ export interface McpFixtureBehavior {
 	}>
 	/** MCP resource-read outcomes declared by the test that exercises them. */
 	resources?: McpFixtureResourceBehavior[]
+	/**
+	 * Modern-era (2026-07-28) MRTR tool: calling it returns an `input_required`
+	 * elicitation round; answering the confirm prompt retries with
+	 * `inputResponses` + the echoed `requestState` and completes with `result`.
+	 */
+	mrtr?: { name: string; message: string; result: CallToolResult }
 }
 
 export function mcpToolResult(
@@ -207,7 +220,7 @@ export interface McpServerFixture {
 }
 
 export interface McpFixtureOptions extends McpServerFixtureOptions {
-	transport?: "stdio" | "http" | "oauth" | "sse"
+	transport?: "stdio" | "http" | "oauth" | "sse" | "modern-http"
 	/** Additional stdio servers written into the same production MCP config. */
 	additionalStdioServers?: Record<string, Omit<McpServerFixtureOptions, "serverName">>
 	/** Configure an already-running HTTP server instead of spawning the repository fixture. */
@@ -220,7 +233,7 @@ export interface McpFixtureOptions extends McpServerFixtureOptions {
 }
 
 export interface McpFixture extends McpServerFixture {
-	transport: "stdio" | "http" | "oauth" | "sse"
+	transport: "stdio" | "http" | "oauth" | "sse" | "modern-http"
 	url?: string
 	env: Record<string, string>
 	ui?: McpUiFixture
@@ -403,7 +416,7 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 	const serverName = options.serverName ?? "fixture"
 	const scenario = options.scenario ?? "basic"
 	const oauth = options.transport === "oauth"
-	const transport = options.transport === "sse" ? "sse" : "http"
+	const transport = options.transport === "sse" ? "sse" : options.transport === "modern-http" ? "modern-http" : "http"
 	const eventPath = resolve(agentDir, `mcp-fixture-${serverName}.jsonl`)
 	writeFileSync(eventPath, "", "utf-8")
 

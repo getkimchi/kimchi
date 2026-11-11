@@ -27,8 +27,8 @@
  * instead of breaking the TUI.
  *
  * Tracking: none yet. No upstream issue exists for a split-pane / layout
- * compositor extension API; report it to https://github.com/earendil-works/pi
- * before the side chat leaves the Experimental tab.
+ * compositor extension API; until one exists, the canary test in
+ * harness.test.ts is the tripwire on pinned-version upgrades.
  * Removal: once upstream exposes a way to mount a second pane in the
  * fullscreen layout and to observe frame/mouse/wheel/selection events, delete
  * the prototype patches and bind the host to that API.

@@ -56,6 +56,8 @@ it("keeps tracked GitLab history in /work and shows only the checked-out branch'
 	vi.stubEnv("KIMCHI_TEST_PR_TOKEN", "pr-api-test-token")
 	vi.stubEnv("KIMCHI_TEST_PR_CALLS", callsPath)
 	vi.stubEnv("KIMCHI_TEST_PR_STATE", statePath)
+	// Shorten the 30 s reconciliation tick so the discovered-MR flip arrives in seconds.
+	vi.stubEnv("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS", "1000")
 	fixture = await startAcpFixture({
 		artifactName: "work-pr-discovery",
 		extensionPath: fileURLToPath(new URL("../tui/support/fixtures/pr-api.js", import.meta.url)),
@@ -171,14 +173,17 @@ it("keeps tracked GitLab history in /work and shows only the checked-out branch'
 		.trim()
 		.split("\n")
 		.map((line) => JSON.parse(line))
-	expect(calls.filter((call) => call.kind === "commit")).toEqual([
-		{
+	// Turn completion and each short reconciliation tick can re-check the linked MR:
+	// assert every commit call is the expected one, not that exactly one happened.
+	const commitCalls = calls.filter((call) => call.kind === "commit")
+	expect(commitCalls.length).toBeGreaterThanOrEqual(1)
+	for (const call of commitCalls)
+		expect(call).toEqual({
 			kind: "commit",
 			mode: "open",
 			tokenMatched: true,
 			path: `/api/v4/projects/example%2Fgroup%2Fkimchi-lab/repository/commits/${sha}/merge_requests`,
-		},
-	])
+		})
 	expect(calls.every((call) => call.tokenMatched)).toBe(true)
 	git("switch", "-c", "feature")
 	await expectNotification(

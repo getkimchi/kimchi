@@ -25,35 +25,23 @@ import {
 	scopeFerment,
 } from "./lifecycle.js"
 
-// Stub the journey-grade judge for completeFerment tests. The mock returns a
-// clean A by default; individual cases can vi.mocked(judgeJourneyGrade).mockResolvedValueOnce(...)
-// to exercise the judge-unavailable / unparseable paths.
+// Stub the journey-grade judge for completeFerment tests. beforeEach sets a
+// clean A by default; individual cases can override that result.
 vi.mock("../judge.js", async () => {
 	const actual = await vi.importActual<typeof import("../judge.js")>("../judge.js")
 	return {
 		...actual,
-		judgeApiCall: vi.fn(async () => ({
-			ok: true as const,
-			text: '{"answers":[{"id":"criteria_ok","value":"yes"}],"rationale":"criteria are clear"}',
-		})),
-		judgeJourneyGrade: vi.fn(async () => ({
-			ok: true as const,
-			grade: "A" as const,
-			rationale: "Clean delivery; gates substantiated.",
-			recommendations: [] as string[],
-		})),
-		judgeJourneyGradeViaSubagent: vi.fn(async (_input: unknown, _spawner: unknown) => ({
-			ok: true as const,
-			grade: "A" as const,
-			rationale: "Clean delivery; gates substantiated.",
-			recommendations: [] as string[],
-		})),
+		judgeApiCall: vi.fn(),
+		judgeJourneyGrade: vi.fn(),
+		judgeJourneyGradeViaSubagent: vi.fn(),
 	}
 })
 
-const { judgeApiCall: mockJudgeApiCall, judgeJourneyGradeViaSubagent: mockJudgeJourneyGrade } = await import(
-	"../judge.js"
-)
+const {
+	judgeApiCall: mockJudgeApiCall,
+	judgeJourneyGrade: mockDirectJudgeJourneyGrade,
+	judgeJourneyGradeViaSubagent: mockJudgeJourneyGrade,
+} = await import("../judge.js")
 
 import type { JudgeJourneyGradeInput } from "../judge.js"
 
@@ -169,6 +157,18 @@ afterEach(async () => {
 
 beforeEach(() => {
 	vi.restoreAllMocks()
+	vi.mocked(mockJudgeApiCall).mockReset().mockResolvedValue({
+		ok: true,
+		text: '{"answers":[{"id":"criteria_ok","value":"yes"}],"rationale":"criteria are clear"}',
+	})
+	const grade = {
+		ok: true as const,
+		grade: "A" as const,
+		rationale: "Clean delivery; gates substantiated.",
+		recommendations: [] as string[],
+	}
+	vi.mocked(mockDirectJudgeJourneyGrade).mockReset().mockResolvedValue(grade)
+	vi.mocked(mockJudgeJourneyGrade).mockReset().mockResolvedValue(grade)
 })
 
 describe("buildFreeformScopingFeedbackMessage", () => {

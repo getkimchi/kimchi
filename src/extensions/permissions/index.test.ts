@@ -36,7 +36,6 @@ import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
-import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
@@ -46,6 +45,7 @@ import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
+import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
@@ -92,8 +92,8 @@ vi.mock("./classifier.js", async () => {
 	}
 })
 
-vi.mock("../model-catalog/classifier-models.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../model-catalog/classifier-models.js")>()
+vi.mock("./classifier-models.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./classifier-models.js")>()
 	return {
 		...actual,
 		resolveClassifierCandidates: vi.fn(() => ({
@@ -657,6 +657,105 @@ describe("permissions plan-mode tool visibility", () => {
 		await harness.fire("before_agent_start", {}, createMockContext([]))
 
 		expect(harness.pi.setActiveTools).toHaveBeenCalledTimes(initialApplications + 1)
+	})
+
+	it("appends the plan-mode MCP note when the gateway is hidden by plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools()).not.toContain("mcp")
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({
+			systemPrompt: expect.stringMatching(
+				/^BASE\n\nPlan mode is active: the `mcp` gateway.*are hidden while plan mode is on.*$/,
+			),
+		})
+	})
+
+	it("appends — never replaces — so earlier handlers' sections (e.g. the memory digest) survive", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		// Simulate another before_agent_start handler having appended its
+		// section before permissions ran: the note must land AFTER it.
+		const prior = "BASE\n\n## Memory digest\n- fact one"
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: prior }, createMockContext([]))
+
+		const text = (result as { systemPrompt?: string } | undefined)?.systemPrompt ?? ""
+		expect(text.startsWith(prior)).toBe(true)
+		expect(text).toContain("Plan mode is active: the `mcp` gateway")
+	})
+
+	it("appends the note when a non-read-only MCP direct tool is hidden by plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp__salesforce__update_record"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools()).not.toContain("mcp__salesforce__update_record")
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({ systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway") })
+	})
+
+	it("detects MCP tools registered after session start (the note is computed per request, not from the enter-time snapshot)", async () => {
+		const harness = createPermissionsHarness(["read"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		vi.mocked(harness.pi.getAllTools).mockReturnValue([
+			{ name: "read", description: "read tool" },
+			{ name: "mcp", description: "mcp tool" },
+		] as never)
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({ systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway") })
+	})
+
+	it("adds no note in plan mode when no MCP tools are configured", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toBeUndefined()
+	})
+
+	it("adds no note for a read-only MCP direct tool that plan mode keeps visible", async () => {
+		const harness = createPermissionsHarness(["read", "mcp__atlassian__search"], { plan: true })
+		const unregister = registerReadOnlyToolProvider(harness.pi, () => ["mcp__atlassian__search"])
+		try {
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(harness.activeTools()).toContain("mcp__atlassian__search")
+
+			const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+			expect(result).toBeUndefined()
+		} finally {
+			unregister()
+		}
+	})
+
+	it("adds no note outside plan mode even with MCP tools configured", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"])
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toBeUndefined()
+	})
+
+	it("stops appending the note after the session leaves plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await expect(harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))).resolves.toEqual({
+			systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway"),
+		})
+
+		await harness.commands.get("permissions")?.handler("mode default", createMockContext([]))
+		expect(harness.activeTools()).toContain("mcp")
+
+		await expect(
+			harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([])),
+		).resolves.toBeUndefined()
 	})
 
 	it("keeps annotated MCP tools visible and callable regardless of their name", async () => {
@@ -2672,12 +2771,14 @@ describe("compound bash permission regressions", () => {
 describe("handleCompoundConfirm", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	let promptToolCalls: Map<AbortController, string>
 	let pi: ExtensionAPI
 
 	beforeEach(() => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		promptToolCalls = new Map()
 		pi = createExtensionApi().api
 	})
 
@@ -2690,6 +2791,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2711,6 +2813,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "npm test"],
 			permissionMode: "default",
 		})
@@ -2733,6 +2836,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -2753,6 +2857,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2773,6 +2878,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2797,6 +2903,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [command, "npm install"],
 			permissionMode: "default",
 		})
@@ -2820,6 +2927,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["cd /tmp", "npm install"],
 			permissionMode: "default",
 		})
@@ -2842,6 +2950,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["cd /tmp", "npm install"],
 			permissionMode: "default",
 		})
@@ -2865,6 +2974,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [command, "npm install"],
 			permissionMode: "default",
 		})
@@ -2892,6 +3002,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["git diff", "npm install", "npm publish"],
 			permissionMode: "default",
 		})
@@ -2914,6 +3025,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "whoami"],
 			permissionMode: "default",
 		})
@@ -2932,6 +3044,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			// Non-read-only subcommands: read-only segments skip the per-subcommand
 			// prompt entirely (a standalone call would never ask either).
 			subcommands: ["npm install", "cargo build"],
@@ -2952,6 +3065,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -2976,6 +3090,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -2992,6 +3107,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [],
 			permissionMode: "default",
 		})
@@ -3010,6 +3126,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo hello"],
 			permissionMode: "default",
 		})
@@ -3031,6 +3148,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -3060,6 +3178,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -3079,6 +3198,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -3090,6 +3210,7 @@ describe("handleCompoundConfirm", () => {
 describe("herdr:blocked signaling", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	let promptToolCalls: Map<AbortController, string>
 	let pi: ExtensionAPI
 	let emitEvent: ReturnType<typeof vi.fn>
 
@@ -3103,6 +3224,7 @@ describe("herdr:blocked signaling", () => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		promptToolCalls = new Map()
 		const mock = createExtensionApi()
 		pi = mock.api
 		emitEvent = mock.emitEvent
@@ -3123,6 +3245,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -3151,6 +3274,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			// Non-read-only subcommands so both nested prompts fire.
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
@@ -3182,6 +3306,7 @@ describe("herdr:blocked signaling", () => {
 				pi,
 				session,
 				activeAborts,
+				promptToolCalls,
 				subcommands: ["echo a"],
 				permissionMode: "default",
 			}),
@@ -3201,6 +3326,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -4519,6 +4645,77 @@ describe("permissions:tool_decision emissions", () => {
 				decision: "reject",
 				sourceDetail: "mode_flap",
 			})
+			// No actual mode change fired in this scenario: the flap diagnostics
+			// carry a zero count and an empty source set, not fabricated data.
+			const flap = decisions[decisions.length - 1] as { modeFlap?: { modeChangeCount: number } }
+			expect(flap.modeFlap).toEqual({ modeChangeCount: 0, modeChangeSources: [] })
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("mode-flap diagnostics record per-dismissal sources (repeats counted) and clean up after the call", async () => {
+		// Multi-source flap: while each prompt is open, a REAL mode change fires
+		// (alternating shift+tab and a controller push), flipping default → plan
+		// and back so the call keeps re-prompting until the loop exhausts. The
+		// dismissal is recorded at the flip-away; the flip-back happens with no
+		// open prompt, so it must NOT be counted.
+		let terminalHandler: TerminalInputHandler | undefined
+		const baseCtx = createMockContext([], TEST_SESSION_ID, {
+			uiContext: {
+				onTerminalInput: vi.fn((handler) => {
+					terminalHandler = handler
+					return () => {}
+				}),
+			},
+		})
+		const ctx = { ...baseCtx, mode: "rpc" } as unknown as ExtensionContext
+		let promptCount = 0
+		const request = vi.fn(async () => {
+			promptCount++
+			// Flip away (records one dismissal for THIS call)…
+			if (promptCount % 2 === 1)
+				terminalHandler?.("\x1b[Z") // default → plan, user_shift_tab
+			else setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" }) // controller
+			// …and back so the next attempt prompts again (no open prompt → no record).
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+			return { kind: "aborted" as const }
+		})
+		registerAcpPrompter(TEST_SESSION_ID, { request })
+		try {
+			const harness = createPermissionsHarness(["bash"])
+			const decisions = collectDecisions(harness)
+			await harness.fire("session_start", {}, ctx)
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+			const result = await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+			expect(result).toMatchObject({
+				block: true,
+				reason: "Permission mode changed too many times during prompt",
+			})
+
+			const flap = decisions[decisions.length - 1] as unknown as {
+				sourceDetail: string
+				modeFlap?: { modeChangeCount: number; modeChangeSources: string[] }
+			}
+			expect(flap.sourceDetail).toBe("mode_flap")
+			expect(flap.modeFlap).toEqual({
+				// One dismissal per aborted attempt, sources in dismissal order
+				// (repeats counted; the serialized set is telemetry's job).
+				modeChangeCount: 4,
+				modeChangeSources: ["user_shift_tab", "controller", "user_shift_tab", "controller"],
+			})
+
+			// Cleanup + no cross-call contamination: a subsequent tool call with a
+			// normal prompter decides normally, with no leftover flap diagnostics.
+			unregisterAcpPrompter(TEST_SESSION_ID)
+			registerAcpPrompter(TEST_SESSION_ID, { request: vi.fn(async () => ({ kind: "allow-once" as const })) })
+			decisions.length = 0
+			const second = await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+			expect(second).toBeUndefined()
+			expect(decisions).toEqual([expect.objectContaining({ decision: "accept", sourceDetail: "allow_once" })])
+			const secondFlap = decisions[0] as unknown as { modeFlap?: unknown }
+			expect(secondFlap.modeFlap).toBeUndefined()
 		} finally {
 			unregisterAcpPrompter(TEST_SESSION_ID)
 		}
@@ -4578,12 +4775,14 @@ describe("permissions:tool_decision emissions", () => {
 		const ctx = { ...createMockContext([]), mode: "rpc", hasUI: false } as ExtensionContext
 		const session = new SessionMemory()
 		const activeAborts = new Set<AbortController>()
+		const promptToolCalls = new Map<AbortController, string>()
 
 		const result = await handleCompoundConfirm(createMockEvent(), {
 			ctx,
 			pi: harness.pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})

@@ -171,13 +171,15 @@ describe("ACP integration — todo closure and check-in gate", () => {
 		])
 		expect(result.stopReason).toBe("end_turn")
 		bodies = providerBodies(fixture)
-		// Instruction rode the first request; then confirm, work, final
-		// answer, and one bounded cleanup continuation after the work. The
-		// earlier closure steer persists in history, so assert on the arrival
-		// turn of this request's own closure check.
+		// The gate arms silently at receipt: the prompt's first request
+		// carries the user's direction with no harness reminder riding it;
+		// the scripted confirm (no store write) releases the work tools.
+		// The earlier closure steer persists in history, so assert on the
+		// arrival turn of this request's own closure check.
 		expect(bodies).toHaveLength(11)
 		const confirmTurn = bodies[6]
-		expect(confirmTurn.includes("reconcile")).toBe(true)
+		expect(confirmTurn.includes("the publishing plan is unchanged")).toBe(true)
+		expect(confirmTurn.includes("Todo check-in")).toBe(false)
 		expect(bodies[9]).toContain(CLOSURE_PHRASE)
 
 		// The gate closed after the confirmation: the last plan metadata

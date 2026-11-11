@@ -26,12 +26,18 @@ import {
 	freezeSnapshots,
 	learnedLimits,
 	limitSnapshot,
+	pendingFrozenSnapshots,
 	queueSnapshots,
+	readPendingBody,
 	readReportingState,
+	readReportingStateFresh,
+	reportingOwnWrites,
 	reportingProducer,
+	runWithReportingOwnWrites,
 	setReportingEnabled,
 	takeLimitNotices,
 	takeReportingNotice,
+	trimFrozenSnapshot,
 	trimLegacySnapshot,
 	withReportingConsent,
 } from "./queue.js"
@@ -130,7 +136,82 @@ describe("org usage-reporting policy", () => {
 	})
 })
 
+describe("reconcile pass own-write tracking", () => {
+	it("counts only writes issued from inside the pass's own async context", async () => {
+		await setReportingEnabled(directory, true) // preexisting content: enable=true
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false) // in-pass bookkeeping: true -> false, counted
+			expect(reportingOwnWrites(directory)).toBe(1)
+		})
+		// The /pr-reporting command's handler world: launched outside any tracking context, its
+		// write must never be absorbed into a pass's own-write count — or its content could be
+		// silently slept over once the on-disk version matched the pass stamp.
+		await setReportingEnabled(directory, true)
+		expect(reportingOwnWrites(directory)).toBe(1)
+		// A later pass for the same directory adds its own writes on top; the supervisor
+		// subtracts the pass-start baseline, so the counter is cumulative per directory.
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false)
+			expect(reportingOwnWrites(directory)).toBe(2)
+		})
+		const state = await readReportingState(directory)
+		expect(state.enabled).toBe(false)
+		// An identical-content write bumps nothing — absorption could never hide it anyway.
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false)
+			expect(reportingOwnWrites(directory)).toBe(2)
+		})
+	})
+})
+
 describe("durable reporting queue", () => {
+	describe("readReportingStateFresh", () => {
+		it("returns the same parsed state while the queue file is unchanged", async () => {
+			await setReportingEnabled(directory, true)
+			const first = await readReportingStateFresh(directory, {})
+			expect(first.signature).toBeDefined()
+			const second = await readReportingStateFresh(directory, first)
+			expect(second.state).toBe(first.state)
+			expect(second.signature).toEqual(first.signature)
+		})
+
+		it("re-reads when another writer replaces the queue between calls", async () => {
+			await setReportingEnabled(directory, true)
+			const first = await readReportingStateFresh(directory, {})
+			await setReportingEnabled(directory, false)
+			const second = await readReportingStateFresh(directory, first)
+			expect(second.state).not.toBe(first.state)
+			expect(second.state.enabled).toBe(false)
+			const third = await readReportingStateFresh(directory, second)
+			expect(third.state).toBe(second.state)
+		})
+
+		it("re-reads when the queue file disappears between calls", async () => {
+			await setReportingEnabled(directory, true)
+			const first = await readReportingStateFresh(directory, {})
+			await rm(join(directory, "pr-cost-reporting", "state.json"))
+			const second = await readReportingStateFresh(directory, first)
+			expect(second.signature).toBeUndefined()
+			expect(second.state.enabled).toBe(true)
+		})
+
+		it("re-derives the telemetry toggle on a cache hit for a follows-telemetry queue", async () => {
+			await setReportingEnabled(directory, true)
+			const state = await readReportingState(directory)
+			await writeFile(
+				join(directory, "pr-cost-reporting", "state.json"),
+				JSON.stringify({ ...state, followsTelemetry: true }),
+			)
+			const first = await readReportingStateFresh(directory, {})
+			expect(first.state.enabled).toBe(true)
+			// The telemetry env flips without a state.json write; the hit path must still see it.
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+			const second = await readReportingStateFresh(directory, first)
+			expect(second.state).toBe(first.state)
+			expect(second.state.enabled).toBe(false)
+		})
+	})
+
 	it("trims a legacy pending body over the upload limits before it is frozen", async () => {
 		await setReportingEnabled(directory, true)
 		const requests = Array.from({ length: 33_000 }, (_, index) => ({
@@ -219,7 +300,7 @@ describe("durable reporting queue", () => {
 			expect(pending.length).toBeGreaterThanOrEqual(1)
 			const newest = JSON.parse(pending[pending.length - 1].body)
 			const state = await readReportingState(directory)
-			expect(JSON.stringify(Object.values(state.entries)[0].pending)).toBe(newest.body)
+			expect(JSON.stringify(readPendingBody(directory, Object.values(state.entries)[0]))).toBe(newest.body)
 			// The index matches the surviving notes.
 			const index = JSON.parse(backend.getNote("legacy-pr-cost-pending", await keyOf()) ?? "[]")
 			expect(index.map((entry: { id: string }) => entry.id).sort()).toEqual(pending.map((row) => row.name).sort())
@@ -428,7 +509,7 @@ describe("durable reporting queue", () => {
 			revision: "7",
 			receivedAt: "2026-10-07T12:00:00Z",
 		})
-		expect((await readReportingState(directory)).entries[key].pending?.revision).toBe("8")
+		expect(readPendingBody(directory, (await readReportingState(directory)).entries[key])?.revision).toBe("8")
 	})
 	it("allows deliberate window expiry while still holding a missing source request", async () => {
 		const initial = await queueSnapshots(directory, [snapshot([requestId, otherRequestId])], true)
@@ -444,7 +525,9 @@ describe("durable reporting queue", () => {
 		expired.observedRequestIds = [requestId, otherRequestId]
 		const queued = await queueSnapshots(directory, [expired], true)
 		expect(queued.entries[key].held).toBeUndefined()
-		expect(queued.entries[key].pending?.requests.map((request) => request.requestId)).toEqual([otherRequestId])
+		expect(readPendingBody(directory, queued.entries[key])?.requests.map((request) => request.requestId)).toEqual([
+			otherRequestId,
+		])
 		expect(queued.entries[key].requestHashes).toHaveLength(2)
 		await acknowledgeSnapshot(directory, key, "2", {
 			status: "accepted",
@@ -484,7 +567,7 @@ describe("durable reporting queue", () => {
 		expect((await readReportingState(directory)).enabled).toBe(true)
 		await queueSnapshots(directory, [snapshot([requestId])])
 		const original = await readReportingState(directory)
-		expect(Object.values(original.entries)[0].pending?.requests[0].requestId).toBe(requestId)
+		expect(readPendingBody(directory, Object.values(original.entries)[0])?.requests[0].requestId).toBe(requestId)
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		expect((await readReportingState(directory)).enabled).toBe(false)
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
@@ -518,10 +601,10 @@ describe("durable reporting queue", () => {
 		const moved = snapshot([requestId])
 		moved.content.repository.id = "43"
 		await queueSnapshots(directory, [moved], true)
-		expect((await readReportingState(directory)).entries[key].pending?.requests).toEqual([])
+		expect(readPendingBody(directory, (await readReportingState(directory)).entries[key])?.requests).toEqual([])
 		if (optOut) {
 			const pending = Object.values((await readReportingState(directory)).entries).map((entry) =>
-				JSON.stringify(entry.pending),
+				JSON.stringify(readPendingBody(directory, entry)),
 			)
 			await setReportingEnabled(directory, false)
 			await acknowledgeSnapshot(directory, key, "2", {
@@ -530,7 +613,9 @@ describe("durable reporting queue", () => {
 				receivedAt: new Date().toISOString(),
 			})
 			expect(
-				Object.values((await readReportingState(directory)).entries).map((entry) => JSON.stringify(entry.pending)),
+				Object.values((await readReportingState(directory)).entries).map((entry) =>
+					JSON.stringify(readPendingBody(directory, entry)),
+				),
 			).toEqual(pending)
 			await setReportingEnabled(directory, true)
 		}
@@ -541,12 +626,17 @@ describe("durable reporting queue", () => {
 		const restarted = await readReportingState(directory)
 		expect(restarted.entries[key]).toMatchObject({ held: true, requestHashes: original.requestHashes })
 		expect(Object.values(restarted.entries).find((entry) => entry.repository.id === "43")?.held).toBe(true)
-		expect(Object.values(restarted.entries).find((entry) => entry.repository.id === "44")?.pending).toBeDefined()
+		expect(
+			readPendingBody(
+				directory,
+				Object.values(restarted.entries).find((entry) => entry.repository.id === "44"),
+			),
+		).toBeDefined()
 		// Restoring that same membership permits the correction, then its matching ACK releases the old hashes.
 		await queueSnapshots(directory, [moved, healthy], true)
 		const restored = (await readReportingState(directory)).entries[key]
 		expect(restored.held).toBeUndefined()
-		expect(restored.pending?.requests).toEqual([])
+		expect(readPendingBody(directory, restored)?.requests).toEqual([])
 		await acknowledgeSnapshot(directory, key, restored.revision, {
 			status: acknowledged ? "accepted" : "unchanged",
 			revision: restored.revision,
@@ -570,7 +660,7 @@ describe("durable reporting queue", () => {
 			receivedAt: new Date().toISOString(),
 		})
 		const queued = (await readReportingState(directory)).entries[key]
-		expect(queued.pending?.revision).toBe("3")
+		expect(readPendingBody(directory, queued)?.revision).toBe("3")
 		expect(queued.requestHashes).toHaveLength(2)
 		await queueSnapshots(directory, [], false)
 		expect((await readReportingState(directory)).entries[key].held).toBe(true)
@@ -598,7 +688,10 @@ describe("durable reporting queue", () => {
 			receivedAt: new Date().toISOString(),
 		})
 		const current = (await readReportingState(directory)).entries[key]
-		expect(current.pending).toMatchObject({ revision: "3", requests: [{ allocation: { kind: "unlinked" } }] })
+		expect(readPendingBody(directory, current)).toMatchObject({
+			revision: "3",
+			requests: [{ allocation: { kind: "unlinked" } }],
+		})
 		expect(current.requestHashes).toHaveLength(1)
 	})
 	it("does not shrink membership when a stale acknowledgement only establishes a higher server revision", async () => {
@@ -620,7 +713,7 @@ describe("durable reporting queue", () => {
 			held: true,
 		})
 		await queueSnapshots(directory, [moved], true)
-		expect((await readReportingState(directory)).entries[key].pending?.revision).toBe("9")
+		expect(readPendingBody(directory, (await readReportingState(directory)).entries[key])?.revision).toBe("9")
 	})
 	it("holds an oversized repository without truncating it or blocking an independent snapshot", async () => {
 		await setReportingEnabled(directory, true)
@@ -661,7 +754,7 @@ describe("durable reporting queue", () => {
 		}
 		await queueSnapshots(directory, ["51", "52", "53", "54"].map(full))
 		const state = await readReportingState(directory)
-		expect(Object.values(state.entries).filter((entry) => entry.pending)).toHaveLength(3)
+		expect(Object.values(state.entries).filter((entry) => entry.pending || entry.pendingId)).toHaveLength(3)
 		expect(state.error).toContain("until queued reports leave room in the local queue")
 		expect((await files.stat(join(directory, "pr-cost-reporting", "state.json"))).size).toBeLessThan(24 * 1024 * 1024)
 	}, 60_000)
@@ -731,7 +824,7 @@ describe("durable reporting queue", () => {
 		const moved = structuredClone(original)
 		moved.content.repository.id = "43"
 		await queueSnapshots(directory, [moved], true)
-		expect((await readReportingState(directory)).entries[key].pending).toMatchObject({
+		expect(readPendingBody(directory, (await readReportingState(directory)).entries[key])).toMatchObject({
 			revision: "2",
 			requests: [],
 			pullRequests: [],
@@ -761,13 +854,18 @@ describe("durable reporting queue", () => {
 		await queueSnapshots(directory, [incomplete, healthy])
 		const restarted = await readReportingState(directory)
 		expect(restarted.entries[key]).toMatchObject({ revision: "1", held: true })
-		expect(restarted.entries[key].pending).toBeUndefined()
-		expect(Object.values(restarted.entries).find((entry) => entry.repository.id === "44")?.pending).toBeDefined()
+		expect(readPendingBody(directory, restarted.entries[key])).toBeUndefined()
+		expect(
+			readPendingBody(
+				directory,
+				Object.values(restarted.entries).find((entry) => entry.repository.id === "44"),
+			),
+		).toBeDefined()
 		const corrected = structuredClone(original)
 		corrected.content.requests[0].allocation.kind = "unknown"
 		corrected.content.coverage.historyComplete = false
 		await queueSnapshots(directory, [corrected, healthy])
-		expect((await readReportingState(directory)).entries[key].pending?.revision).toBe("2")
+		expect(readPendingBody(directory, (await readReportingState(directory)).entries[key])?.revision).toBe("2")
 	})
 	it("fails closed on damaged durable state instead of resetting its producer or revisions", async () => {
 		await setReportingEnabled(directory, true)
@@ -781,16 +879,17 @@ describe("durable reporting queue", () => {
 		expect((await readReportingState(directory)).entries).toEqual({})
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
 		await queueSnapshots(directory, [snapshot([requestId])])
-		expect(Object.values((await readReportingState(directory)).entries)[0]?.pending?.requests[0].requestId).toBe(
-			requestId,
-		)
+		expect(
+			readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])?.requests[0]
+				.requestId,
+		).toBe(requestId)
 	})
 	it("replaces pending snapshots, survives restart and ignores a late acknowledgement", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot([requestId])])
 		const before = await readReportingState(directory)
 		const [key, first] = Object.entries(before.entries)[0]
-		expect(first.pending?.revision).toBe("1")
+		expect(readPendingBody(directory, first)?.revision).toBe("1")
 		const next = snapshot([requestId])
 		next.content.coverage.historyComplete = false
 		await queueSnapshots(directory, [next])
@@ -801,11 +900,111 @@ describe("durable reporting queue", () => {
 		})
 		const after = await readReportingState(directory)
 		expect(after.producerId).toBe(before.producerId)
-		expect(after.entries[key].pending?.revision).toBe("2")
-		expect(
-			JSON.parse(await readFile(join(directory, "pr-cost-reporting", "state.json"), "utf8")).entries[key].pending
-				.revision,
-		).toBe("2")
+		expect(readPendingBody(directory, after.entries[key])?.revision).toBe("2")
+		const stored = JSON.parse(await readFile(join(directory, "pr-cost-reporting", "state.json"), "utf8")).entries[key]
+		expect(stored.revision).toBe("2")
+		// A pure queueSnapshots flow never freezes, so the replacement body still rides inline on disk.
+		expect(stored.pending.revision).toBe("2")
+	})
+	it("migrates a legacy inline body to its frozen note and shrinks state.json", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const [key] = Object.keys((await readReportingState(directory)).entries)
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const legacy = JSON.parse(await readFile(path, "utf8"))
+		// A legacy writer left the body inline; the sweep moves it to its note and swaps the
+		// reference in, so state.json stops carrying the bytes.
+		expect(legacy.entries[key].pending).toBeDefined()
+		const bytesBefore = (await files.stat(path)).size
+		const state = await freezeSnapshots(directory, () => {})
+		const entry = state.entries[key]
+		expect(entry.pending).toBeUndefined()
+		expect(entry.pendingId).toMatch(/^[0-9a-f]{64}$/)
+		expect(readPendingBody(directory, entry)?.requests[0].requestId).toBe(requestId)
+		const migrated = JSON.parse(await readFile(path, "utf8"))
+		expect(migrated.entries[key].pending).toBeUndefined()
+		expect(migrated.entries[key].pendingId).toBe(entry.pendingId)
+		expect((await files.stat(path)).size).toBeLessThan(bytesBefore)
+		// The note the body moved to is exactly what delivery walks.
+		const frozen = await pendingFrozenSnapshots(directory, () => {}, Date.now() + 1000)
+		expect(frozen.map((row) => row.entry.pending?.revision)).toEqual(["1"])
+	})
+	it("does not clobber a legacy writer's fresh inline body when trimming its stale frozen row", async () => {
+		await setReportingEnabled(directory, true)
+		// Enough requests for a halving trim to have room above the floor.
+		const many = Array.from({ length: 40 }, (_, index) => `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`)
+		await queueSnapshots(directory, [snapshot(many)])
+		await freezeSnapshots(directory, () => {})
+		const frozen = (await pendingFrozenSnapshots(directory, () => {}, Date.now() + 1000))[0]
+		// Rollback shape: an old build wrote a NEW body inline over the entry whose old body the
+		// freeze had moved to its note, round-tripping the stale pendingId. The trim of the OLD
+		// body must not mistake the entry for still holding it and clobber the replacement.
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		const entryKey = Object.keys(saved.entries)[0]
+		const freshBody = {
+			schemaVersion: 1,
+			producerId: saved.producerId,
+			revision: "9",
+			generatedAt: new Date().toISOString(),
+			...snapshot([`11111111-1111-4111-8111-000000000009`]).content,
+		}
+		saved.entries[entryKey].revision = "9"
+		saved.entries[entryKey].pending = freshBody
+		await writeFile(path, JSON.stringify(saved))
+		expect(await trimFrozenSnapshot(directory, frozen, () => {})).toBe(true)
+		const entry = (await readReportingState(directory)).entries[entryKey]
+		expect(entry.pending).toMatchObject({
+			revision: "9",
+			requests: [{ requestId: `11111111-1111-4111-8111-000000000009` }],
+		})
+	})
+	it("converges when a freeze sweep races an acknowledgement for the same body", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		await freezeSnapshots(directory, () => {})
+		const frozen = (await pendingFrozenSnapshots(directory, () => {}, Date.now() + 1000))[0]
+		const ack = { status: "accepted" as const, revision: "1", receivedAt: new Date().toISOString() }
+		// Actor A re-runs the freeze sweep while actor B acknowledges the same body; the queue
+		// lock serializes them in either order, and both orders must converge on an acknowledged
+		// entry with no dangling reference.
+		await Promise.all([
+			freezeSnapshots(directory, () => {}),
+			acknowledgeFrozenSnapshot(directory, frozen, ack, () => {}),
+		])
+		const settled = await freezeSnapshots(directory, () => {})
+		const entry = Object.values(settled.entries)[0]
+		expect(entry.pendingId).toBeUndefined()
+		expect(entry.lastAcknowledgedAt).toBeDefined()
+		expect(readPendingBody(directory, entry)).toBeUndefined()
+	})
+	it("resyncs an entry whose receipt landed but whose state write was lost", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		await freezeSnapshots(directory, () => {})
+		const frozen = (await pendingFrozenSnapshots(directory, () => {}, Date.now() + 1000))[0]
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const beforeAck = await readFile(path, "utf8")
+		const ack = { status: "accepted" as const, revision: "1", receivedAt: new Date().toISOString() }
+		await acknowledgeFrozenSnapshot(directory, frozen, ack, () => {})
+		// Simulate the ack's state write being lost: the receipt note survived, but state.json is
+		// still the pre-ack picture pointing at it — the exact crash order the resync covers.
+		await writeFile(path, beforeAck)
+		const resynced = await freezeSnapshots(directory, () => {})
+		const entry = Object.values(resynced.entries)[0]
+		expect(entry.pendingId).toBeUndefined()
+		expect(entry.lastAcknowledgedAt).toBe(ack.receivedAt)
+		expect(entry.requestHashes).toHaveLength(1)
+		// The dropped-note order (cap eviction) clears the reference instead of wedging the entry.
+		// Changed content, so the re-queue is not skipped as an acknowledged digest.
+		await queueSnapshots(directory, [snapshot([requestId, otherRequestId])])
+		await freezeSnapshots(directory, () => {})
+		const again = (await pendingFrozenSnapshots(directory, () => {}, Date.now() + 1000))[0]
+		const backend = backendFor(directory)
+		backend.deleteNote("legacy-pr-cost-snapshots", again.id)
+		const dropped = await freezeSnapshots(directory, () => {})
+		expect(Object.values(dropped.entries)[0].pendingId).toBeUndefined()
+		expect(Object.values(dropped.entries)[0].pendingDigest).toBeUndefined()
 	})
 	it("deduplicates concurrent captures and pauses pending payloads without resetting revisions", async () => {
 		await setReportingEnabled(directory, true)
@@ -815,12 +1014,12 @@ describe("durable reporting queue", () => {
 		])
 		const [key] = Object.keys((await readReportingState(directory)).entries)
 		expect((await readReportingState(directory)).entries[key].revision).toBe("1")
-		const pending = JSON.stringify((await readReportingState(directory)).entries[key].pending)
+		const pending = JSON.stringify(readPendingBody(directory, (await readReportingState(directory)).entries[key]))
 		await setReportingEnabled(directory, false)
-		expect(JSON.stringify((await readReportingState(directory)).entries[key].pending)).toBe(pending)
+		expect(JSON.stringify(readPendingBody(directory, (await readReportingState(directory)).entries[key]))).toBe(pending)
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot([requestId])])
-		expect(JSON.stringify((await readReportingState(directory)).entries[key].pending)).toBe(pending)
+		expect(JSON.stringify(readPendingBody(directory, (await readReportingState(directory)).entries[key]))).toBe(pending)
 	})
 	it("separates accounts and advances beyond a server revision without acknowledging newer content", async () => {
 		await setReportingEnabled(directory, true)
@@ -836,7 +1035,7 @@ describe("durable reporting queue", () => {
 		await queueSnapshots(directory, [snapshot([requestId]), other])
 		const state = await readReportingState(directory)
 		expect(Object.keys(state.entries)).toHaveLength(2)
-		expect(state.entries[key].pending?.revision).toBe("9")
+		expect(readPendingBody(directory, state.entries[key])?.revision).toBe("9")
 	})
 })
 
@@ -1070,9 +1269,11 @@ describe("unusable provider metadata for one PR", () => {
 			commit("work-b", "b", [mergeRequest(8, { checkedAt: at(42) })]),
 		])
 		expect(next.entries[key].held).toBeUndefined()
-		expect(next.entries[key].pending?.requests.map((row) => row.requestId).sort()).toEqual(
-			[requestId, otherRequestId].sort(),
-		)
+		expect(
+			readPendingBody(directory, next.entries[key])
+				?.requests.map((row) => row.requestId)
+				.sort(),
+		).toEqual([requestId, otherRequestId].sort())
 	})
 })
 
@@ -1084,7 +1285,9 @@ describe("snapshot size health", () => {
 		other.content.repository = { ...other.content.repository, id: "43" }
 		const state = await queueSnapshots(directory, [snapshot([requestId]), other])
 		const bytes = Math.max(
-			...Object.values(state.entries).map((entry) => Buffer.byteLength(JSON.stringify(entry.pending))),
+			...Object.values(state.entries).map((entry) =>
+				Buffer.byteLength(JSON.stringify(readPendingBody(directory, entry))),
+			),
 		)
 		expect(metric).toHaveBeenCalledWith({ kind: "snapshotRequests", value: 3 })
 		expect(metric).toHaveBeenCalledWith({ kind: "snapshotBytes", value: bytes })
@@ -1164,7 +1367,7 @@ describe("upload window", () => {
 		moved.content.repository = other.content.repository
 		moved.content.requests[1].correction = { id: billing, revision: 1, recordedAt: at, source: "work-command" }
 		const entries = await queue(moved)
-		expect([entries[key].pending?.requests, entries[key].urgent]).toEqual([[], true])
+		expect([readPendingBody(directory, entries[key])?.requests, entries[key].urgent]).toEqual([[], true])
 		expect(entries[otherKey].urgent).toBe(true)
 	})
 	it("does not send an acknowledged withdrawal again when history completeness changes", async () => {
@@ -1178,7 +1381,11 @@ describe("upload window", () => {
 		// A repository lookup that fails and later recovers flips the completeness of the captures in between.
 		for (const complete of [false, true]) await queueSnapshots(directory, [moved], complete)
 		const { entries } = await readReportingState(directory)
-		expect([entries[key].revision, entries[key].requestHashes, entries[key].pending]).toEqual(["2", [], undefined])
+		expect([entries[key].revision, entries[key].requestHashes, readPendingBody(directory, entries[key])]).toEqual([
+			"2",
+			[],
+			undefined,
+		])
 	})
 	it("sends other changed repositories of the account at once only when a correction first appears", async () => {
 		await setReportingEnabled(directory, true)
@@ -1300,7 +1507,7 @@ describe("server limits", () => {
 	it("learns bytes from the server's measure, so a different encoding still converges", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot(requests(4))])
-		const pending = (await readReportingState(directory)).entries[key].pending
+		const pending = readPendingBody(directory, (await readReportingState(directory)).entries[key])
 		const bytes = Buffer.byteLength(JSON.stringify(pending))
 		const state = await limitSnapshot(
 			directory,
@@ -1362,5 +1569,99 @@ describe("server limits", () => {
 		saved.paused = { [accountKey(account)]: { limit: { scope: "organization", at: 1 }, retryAt: "soon" } }
 		await writeFile(path, JSON.stringify(saved))
 		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
+	})
+	it("rejects a settled entry whose recorded reason runs past the validator's cap", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		saved.entries[key].dead = { at: Date.now(), status: 404, reason: "x".repeat(257) }
+		await writeFile(path, JSON.stringify(saved))
+		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
+	})
+	it("reads back a settled entry whose reason was clamped at write time", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		saved.entries[key].dead = { at: Date.now(), status: 404, reason: "x".repeat(256) }
+		await writeFile(path, JSON.stringify(saved))
+		await expect(readReportingState(directory)).resolves.toMatchObject({
+			entries: { [key]: { dead: { status: 404 } } },
+		})
+	})
+	it("backfills a legacy hold's horizon once instead of resetting it every sweep", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		// A hold written before the heldAt clock existed (or by an older build): held=true,
+		// no timestamp. The freeze sweep must stamp the horizon start exactly once.
+		saved.entries[key].held = true
+		saved.entries[key].heldAt = undefined
+		await writeFile(path, JSON.stringify(saved))
+		// Empty sweeps keep the claims current-looking, so the hold survives untouched —
+		// only the freeze sweep's backfill may write the timestamp.
+		await queueSnapshots(directory, [], true, 0, () => {})
+		const first = JSON.parse(await readFile(path, "utf8"))
+		expect(first.entries[key].heldAt).toBeTypeOf("number")
+		await new Promise((resolve) => setTimeout(resolve, 5))
+		await queueSnapshots(directory, [], true, 0, () => {})
+		const second = JSON.parse(await readFile(path, "utf8"))
+		expect(second.entries[key].heldAt).toBe(first.entries[key].heldAt)
+	})
+	it("reads a bare heldAt (an old build's half-release) as un-held instead of failing", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		// An old build clears `held` without knowing `heldAt`, and the unknown field round-trips:
+		// after a rollback-then-upgrade the file holds a bare timestamp. The reader must treat it
+		// as un-held (normalizing it away), not reject the whole state as unreadable.
+		saved.entries[key].heldAt = Date.now() - 1_000
+		saved.entries[key].held = undefined
+		await writeFile(path, JSON.stringify(saved))
+		const state = await readReportingState(directory)
+		expect(state.entries[key].held).toBeUndefined()
+		expect(state.entries[key].heldAt).toBeUndefined()
+		// The normalized picture survives a write cycle: a hold the sweep parks afterwards
+		// stamps a FRESH horizon (or no hold at all), never the stale timestamp.
+		const stale = Date.now() - 1_000
+		await queueSnapshots(directory, [], true, 0, () => {})
+		const after = JSON.parse(await readFile(path, "utf8"))
+		if (after.entries[key].heldAt !== undefined) expect(after.entries[key].heldAt).toBeGreaterThan(stale)
+	})
+	it("counts only consecutive 404 defers toward the spaced-refusal settle rule", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		// Unrelated failures never push a body toward settlement: a 500 between two 404s resets
+		// the count, so the next 404 is that body's first spaced refusal again.
+		await deferSnapshot(directory, key, "1", Date.now() + 60_000, "PR reporting returned HTTP 404", true)
+		await deferSnapshot(directory, key, "1", Date.now() + 60_000, "PR reporting returned HTTP 404", true)
+		await expect(readReportingState(directory)).resolves.toMatchObject({
+			entries: { [key]: { defer404s: 2, attempts: 2 } },
+		})
+		await deferSnapshot(directory, key, "1", Date.now() + 60_000, "PR reporting returned HTTP 500")
+		await expect(readReportingState(directory)).resolves.toMatchObject({
+			entries: { [key]: { defer404s: 0, attempts: 3 } },
+		})
+	})
+	it("never re-parks a settled entry whose evidence gap persists", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		// Settle the entry on disk by hand. Without the dead check in the re-park branch,
+		// the entry's outstanding claims would start a fresh hold from here.
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		saved.entries[key].dead = { at: Date.now(), status: 410, reason: "gone" }
+		expect(saved.entries[key].held).toBeUndefined()
+		expect(saved.entries[key].requestHashes.length).toBeGreaterThan(0)
+		await writeFile(path, JSON.stringify(saved))
+		// Empty capture sweep: evidence for the claims never arrives, no current replacement —
+		// the conditions that re-park a living entry, which a settled entry must dodge.
+		await queueSnapshots(directory, [], true, 0, () => {})
+		const state = JSON.parse(await readFile(path, "utf8"))
+		expect(state.entries[key].held).toBeUndefined()
+		expect(state.entries[key].heldAt).toBeUndefined()
 	})
 })

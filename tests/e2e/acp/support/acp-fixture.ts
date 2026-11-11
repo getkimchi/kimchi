@@ -84,6 +84,12 @@ export interface AcpFixtureOptions {
 	 */
 	clientCapabilities?: acp.ClientCapabilities
 	/**
+	 * ACP client identity sent in the initialize request. Kimchi records it
+	 * via setAcpClientInfo and stamps it on telemetry attributes and LLM
+	 * provider request headers (X-Acp-Client-Name).
+	 */
+	clientInfo?: { name: string; version: string; title?: string }
+	/**
 	 * Override the `_meta` object advertised by the client. Use this to opt
 	 * into the `_kimchi.dev/pi_*` extension namespace via per-method flags.
 	 */
@@ -279,6 +285,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		defaultModel,
 		extraArgs = [],
 		clientCapabilities,
+		clientInfo,
 		clientMeta,
 		extensionPath,
 	} = options
@@ -462,6 +469,10 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// session boots without background HTTP or synchronous tar/exec
 				// work. Keeps the ACP e2e hermetic and deterministic.
 				KIMCHI_NO_UPDATE_CHECK: "1",
+				// Background-bash scenarios script short sleeps (3–6s) that must
+				// hand off; keep the e2e handoff at 2s instead of the 15s product
+				// default (covered by unit tests).
+				KIMCHI_E2E_BASH_HANDOFF_SECONDS: "2",
 				// Keep the /v1/me identity lookup (telemetry pre-session) on the
 				// fake server; otherwise it would reach the real app API.
 				KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
@@ -489,6 +500,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			conn.initialize({
 				protocolVersion: acp.PROTOCOL_VERSION,
 				clientCapabilities: mergeCapabilities(clientCapabilities, clientMeta),
+				...(clientInfo ? { clientInfo } : {}),
 			}),
 			delay(STARTUP_TIMEOUT_MS).then(() => {
 				throw new Error(`initialize did not complete within ${STARTUP_TIMEOUT_MS}ms`)

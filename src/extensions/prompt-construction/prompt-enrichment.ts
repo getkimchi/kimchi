@@ -32,11 +32,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isWithinDeprecationNotifyWindow, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
+import { findModelByRef } from "../../shared/model-ref.js"
 import {
 	collectBundledDisabledSkillNames,
 	resolveSkillPathsForDiscovery,
 } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
+import { markSessionSystemPromptEnded, recordSessionSystemPrompt } from "../../utils/session-system-prompt-store.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
@@ -44,7 +46,6 @@ import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
-import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	ASSISTANT_OUTPUT_WITHHELD,
@@ -76,6 +77,7 @@ import { registerModelRolesCommand } from "../orchestration/model-roles-command.
 import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { applyLanguageHint } from "./language-hint.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import { backgroundNotificationsReachUser, hasUserLoop } from "./session-user-loop.js"
 import {
@@ -271,6 +273,12 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			description: "Print enriched prompts in the UI (default: hidden)",
 			default: process.env.KIMCHI_DEBUG_PROMPTS === "1",
 		})
+
+		// Effective `language` pin, re-read at every run start (before_agent_start)
+		// and consumed by the `context` hooks below to inject the per-request
+		// reminder. Closure state, not config reads, so each LLM request in a
+		// turn sees the same value without touching the config files.
+		let pinnedLanguage: string | undefined
 
 		if (!subagentMode) {
 			registerModelRolesCommand(pi)
@@ -790,6 +798,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
 				messages = stripUiOnlyMessages(messages)
+				messages = applyLanguageHint(messages, pinnedLanguage)
 				// kimi-k2.x stalls on historical tool calls whose IDs are not in
 				// Moonshot's canonical format (issue #1063) — normalize for those
 				// targets only.
@@ -814,6 +823,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				if (isKimiK2Model(effectiveModel?.id)) {
 					messages = normalizeKimiToolCallIds(messages)
 				}
+				messages = applyLanguageHint(messages, pinnedLanguage)
 				messages = brandUnmarkedSteers(messages)
 				if (messages !== event.messages) return { messages }
 			})
@@ -898,6 +908,11 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 
+			// Re-read per build so `/language` and `kimchi config set language`
+			// take effect on the next turn without a restart. Project config
+			// (trusted) wins over global — resolve against the session cwd.
+			pinnedLanguage = loadConfig({ cwd: ctx.cwd }).language
+
 			let systemPrompt = buildSystemPrompt({
 				tools: tools as readonly ToolInfo[],
 				env,
@@ -915,6 +930,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				sessionId,
 				hasUserLoop: hasUserLoop(),
 				backgroundNotificationsReachUser: backgroundNotificationsReachUser(ctx.mode),
+				language: pinnedLanguage,
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would
@@ -949,7 +965,35 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				delete process.env.KIMCHI_DEBUG_SESSION
 			}
 
+			// The pinned per-turn reminder is injected by the `context` hooks
+			// (applyLanguageHint), not returned here: a before_agent_start
+			// message would be persisted into the session once per turn.
 			return { systemPrompt }
+		})
+
+		// Capture the effective prompt for session exports. agent_start fires
+		// after _prepareRun has installed the finalized run options, so
+		// ctx.getSystemPrompt() returns the exact text this run sends — including
+		// appends from later-registered handlers (e.g. the Claude Code hook
+		// adapter's SessionStart delivery), which the before_agent_start return
+		// value alone would miss. pi 1.3.0 never records that text in the
+		// transcript, so without this capture the exported JSONL header and HTML
+		// payload would fall back to pi's base prompt.
+		pi.on("agent_start", async (_event, ctx) => {
+			const prompt = ctx.getSystemPrompt()
+			if (prompt) recordSessionSystemPrompt(ctx.sessionManager.getSessionId(), prompt)
+		})
+
+		// A shut-down session's capture becomes evictable in the bounded store.
+		// Whitelist the ending reasons (quit/new/resume/fork): a resource "reload"
+		// keeps the same session alive, and any unknown future reason must default
+		// to keeping the capture live — the worst case of a missed end is bounded
+		// memory, while wrongly marking a live session evictable reintroduces the
+		// wrong-prompt export bug this module fixes.
+		pi.on("session_shutdown", async (event, ctx) => {
+			if (event.reason === "quit" || event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
+				markSessionSystemPromptEnded(ctx.sessionManager.getSessionId())
+			}
 		})
 	}
 }

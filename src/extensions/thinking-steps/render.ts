@@ -1,11 +1,11 @@
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import { deriveThinkingSteps } from "./parse.js"
-import { getActiveThinkingState, getCurrentThinkingScopeKey, getThinkingStepsMode } from "./state.js"
+import { substituteTokens, vaultForPaint } from "../pii-redaction/vault.js"
+import { getActiveThinkingState, getThinkingStepsMode } from "./state.js"
 import type { DerivedThinkingStep, ThinkingSemanticRole, ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
 
 interface RenderOptions {
-	mode: "collapsed" | "summary" | "expanded" | "none"
+	mode: "collapsed" | "expanded" | "none"
 	steps: DerivedThinkingStep[]
 	blocks: ThinkingSourceBlock[]
 	activeStepId?: string
@@ -62,6 +62,18 @@ function sanitizeThinkingText(text: string): string {
 	)
 }
 
+/**
+ * Presentation-side token substitution for thinking display — the same
+ * contract as the pii-redaction markdown transformer (full text,
+ * stateless, every paint): thinking blocks are NOT part of the markdown
+ * paint path, so their text substitutes here. Unknown tokens pass through
+ * verbatim; no vault (markers mode) → passthrough.
+ */
+function paintText(text: string): string {
+	const vault = vaultForPaint()
+	return vault ? substituteTokens(vault, text) : text
+}
+
 function parseThinkingInlineSegments(text: string): InlineSegment[] {
 	const sanitized = sanitizeThinkingText(text)
 	const segments: InlineSegment[] = []
@@ -89,29 +101,6 @@ function renderThinkingInlineSegment(theme: ThinkingThemeLike, segment: InlineSe
 	if (segment.style === "bold") return theme.bold(theme.fg("thinkingText", segment.text))
 	if (segment.style === "code") return theme.bold(theme.fg("accent", segment.text))
 	return theme.fg("thinkingText", segment.text)
-}
-
-function wrapStepHeader(
-	theme: ThinkingThemeLike,
-	width: number,
-	step: DerivedThinkingStep,
-	active: boolean,
-	connector: string,
-): string[] {
-	const connectorColor = active ? "accent" : "muted"
-	const icon = theme.fg(roleColor(step.role), step.icon)
-	const prefix = `${theme.fg(connectorColor, connector)} ${icon} `
-	const continuationPrefix = " ".repeat(visibleWidth(`${connector} ${step.icon} `))
-	const renderedSummary = renderThinkingInlineMarkup(theme, step.summary)
-	const summaryText = active ? theme.bold(renderedSummary) : renderedSummary
-	const wrappedSummary = wrapTextWithAnsi(summaryText, Math.max(8, width - visibleWidth(prefix)))
-	if (wrappedSummary.length === 0) {
-		return [truncateToWidth(prefix, width, "")]
-	}
-
-	return wrappedSummary.map((line, index) =>
-		truncateToWidth(`${index === 0 ? prefix : continuationPrefix}${line}`, width, ""),
-	)
 }
 
 function pickCollapsedStep(steps: DerivedThinkingStep[], activeStepId?: string): DerivedThinkingStep | undefined {
@@ -232,7 +221,7 @@ export function tailRawLinesFromBlocks(blocks: ThinkingSourceBlock[], maxLines: 
 	let tail = ""
 	for (let index = blocks.length - 1; index >= 0; index -= 1) {
 		const block = blocks[index]
-		const text = block.text
+		const text = paintText(block.text)
 		if (!text || (block.redacted && !text.trim())) continue
 		const separator = tail ? "\n" : ""
 		const remaining = LIVE_PREVIEW_TAIL_CHARS - tail.length - separator.length
@@ -320,83 +309,6 @@ function renderCollapsed(
 			return truncateToWidth(`${continuationPrefix}${line}${activitySuffix}`, width, "")
 		return truncateToWidth(`${continuationPrefix}${line}`, width, "")
 	})
-}
-
-function stepHasEventType(step: DerivedThinkingStep, type: string): boolean {
-	return step.summaryEvents?.some((event) => event.type === type) ?? false
-}
-
-function selectSummarySteps(steps: DerivedThinkingStep[], activeStepId?: string): DerivedThinkingStep[] {
-	if (steps.length <= 5) return steps
-
-	const indexed = steps.map((step, index) => ({ step, index }))
-	const selected = new Set<number>()
-	const activeIndex = activeStepId ? steps.findIndex((step) => step.id === activeStepId) : -1
-	let latestFailureIndex = -1
-	let latestSuccessAfterFailureIndex = -1
-
-	for (let index = 0; index < steps.length; index += 1) {
-		const step = steps[index]
-		if (step.hasExplicitFailure) {
-			latestFailureIndex = index
-			latestSuccessAfterFailureIndex = -1
-		}
-		if (latestFailureIndex !== -1 && step.hasExplicitSuccess && index > latestFailureIndex) {
-			latestSuccessAfterFailureIndex = index
-		}
-	}
-
-	if (activeIndex !== -1) selected.add(activeIndex)
-	if (latestFailureIndex !== -1) selected.add(latestFailureIndex)
-	if (latestSuccessAfterFailureIndex !== -1) selected.add(latestSuccessAfterFailureIndex)
-
-	const scoreEntry = ({ step, index }: { step: DerivedThinkingStep; index: number }): number => {
-		let score = step.collapsedPriority ?? 0
-		const isStaleSuccessBeforeLatestFailure =
-			step.hasExplicitSuccess && latestFailureIndex !== -1 && index < latestFailureIndex
-		if (index === latestFailureIndex && latestSuccessAfterFailureIndex === -1) score += 120
-		if (index === latestSuccessAfterFailureIndex) score += 110
-		if (stepHasEventType(step, "decision") || stepHasEventType(step, "plan_change")) score += 80
-		if (step.hasExplicitFailure) score += 50
-		if (step.hasExplicitSuccess && !isStaleSuccessBeforeLatestFailure) score += 45
-		if (isStaleSuccessBeforeLatestFailure) score -= 200
-		if (
-			stepHasEventType(step, "focus") &&
-			!stepHasEventType(step, "decision") &&
-			!stepHasEventType(step, "plan_change") &&
-			!step.hasExplicitFailure &&
-			!step.hasExplicitSuccess
-		)
-			score -= 15
-		return score + index / 100
-	}
-
-	const targetCount = Math.min(5, steps.length)
-	for (const entry of [...indexed].sort((left, right) => scoreEntry(right) - scoreEntry(left))) {
-		if (selected.size >= targetCount) break
-		selected.add(entry.index)
-	}
-
-	return [...selected]
-		.sort((left, right) => left - right)
-		.map((index) => steps[index])
-		.slice(0, targetCount)
-}
-
-function renderSummary(
-	theme: ThinkingThemeLike,
-	width: number,
-	steps: DerivedThinkingStep[],
-	activeStepId?: string,
-): string[] {
-	const lines = [truncateToWidth(`${theme.fg("muted", "▍")} ${theme.fg("dim", "Thinking Steps · Summary")}`, width)]
-	const visibleSteps = selectSummarySteps(steps, activeStepId)
-	for (let index = 0; index < visibleSteps.length; index++) {
-		const step = visibleSteps[index]
-		const connector = index === visibleSteps.length - 1 ? "└─" : "├─"
-		lines.push(...wrapStepHeader(theme, width, step, step.id === activeStepId, connector))
-	}
-	return lines
 }
 
 function renderThinkingInlineMarkup(theme: ThinkingThemeLike, text: string): string {
@@ -499,22 +411,27 @@ export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number
 	// "none" renders nothing; existing components repaint empty after a
 	// live mode switch without waiting for an updateContent rebuild.
 	if (options.mode === "none") return []
+	// Presentation-side token substitution (see paintText): step text
+	// here, block text inside tailRawLinesFromBlocks — each surface
+	// exactly once, never twice.
+	const steps = options.steps.map((step) => ({
+		...step,
+		summary: paintText(step.summary),
+		body: paintText(step.body),
+	}))
 	if (options.mode === "collapsed") {
 		return renderCollapsed(
 			theme,
 			width,
 			options.blocks,
-			options.steps,
+			steps,
 			options.activeStepId,
 			options.isActive,
 			options.nowMs,
 			options.cacheOwner,
 		)
 	}
-	if (options.mode === "expanded") {
-		return renderExpanded(theme, width, options.steps, options.cacheOwner)
-	}
-	return renderSummary(theme, width, options.steps, options.activeStepId)
+	return renderExpanded(theme, width, steps, options.cacheOwner)
 }
 
 export class ThinkingStepsComponent implements Component {
@@ -529,13 +446,16 @@ export class ThinkingStepsComponent implements Component {
 		private readonly theme: ThinkingThemeLike,
 		private readonly messageTimestamp: number,
 		blocks: ThinkingSourceBlock[],
-		scopeKey?: string,
-		cacheOwner?: object,
+		scopeKey: string,
+		cacheOwner: object,
+		// Shared across every component rendering this message (memoized per
+		// message content) — treat as read-only; never mutate in place.
+		precomputedSteps: DerivedThinkingStep[],
 	) {
 		this.blocks = blocks
-		this.scopeKey = scopeKey ?? getCurrentThinkingScopeKey()
-		this.cacheOwner = cacheOwner ?? this
-		this.steps = deriveThinkingSteps(blocks)
+		this.scopeKey = scopeKey
+		this.cacheOwner = cacheOwner
+		this.steps = precomputedSteps
 	}
 
 	render(width: number): string[] {

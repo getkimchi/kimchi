@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { fullText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { pinStatusLineElements, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -91,7 +91,10 @@ test("pyright serving Python at session start suppresses the AST nudge entirely"
 			artifactName: "lsp-ast-nudge-precedence-a",
 			responses: WRITE_PY_RESPONSES,
 			env: { KIMCHI_LSP_BINARIES: "pyright-langserver" },
-			seedHome: (_homeDir, workDir) => {
+			seedHome: (homeDir, workDir) => {
+				// The lsp segment is opt-in (hidden by default): pin it so the
+				// session-start pyright status renders in the footer.
+				pinStatusLineElements(homeDir, "lsp")
 				seedMarker(workDir)
 			},
 		},

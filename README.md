@@ -448,7 +448,7 @@ Run `kimchi setup` for an interactive first-time configuration.
 
 ### CAST AI SSO login
 
-`kimchi login` offers **Sign in with CAST AI (SSO)** as the recommended login option: a standard OAuth 2.0 Authorization Code + PKCE (S256) browser login against the CAST AI Auth0 tenant of the selected region. The resulting credential (with a refresh token) is stored in the harness `auth.json`, and expired access tokens are refreshed automatically — including in remote/ACP sessions — with no re-login.
+`kimchi login` offers **Sign in with SSO** as the recommended login option: a standard OAuth 2.0 Authorization Code + PKCE (S256) browser login against the CAST AI Auth0 tenant of the selected region. The resulting credential (with a refresh token) is stored in the harness `auth.json`, and expired access tokens are refreshed automatically — including in remote/ACP sessions — with no re-login.
 
 After sign-in, Kimchi lists the organizations available to your CAST AI account and asks you to pick one (a single-organization account is selected automatically; long lists are paged ten at a time). The selected organization is stored with the credential and sent as the `X-CastAi-Organization-Id` header on every gateway request; organization-scoped credentials are refreshed non-interactively, so long-running sessions keep working without re-login.
 
@@ -478,6 +478,10 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ### TUI wheel-scroll speed
 
 Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` (synced to pi's `fullscreenWheelScrollLines` setting) — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
+
+### Reply language
+
+Kimchi answers in the language you write in. To pin it instead (useful when a model drifts in mixed-language sessions), run `kimchi config set language ko` or `/language ko` in a session; `auto` unpins — see [docs/response-language.md](docs/response-language.md).
 
 ### Context files
 

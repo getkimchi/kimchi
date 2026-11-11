@@ -10,6 +10,7 @@
  */
 import type { ProcessRegistry } from "./process-registry.js"
 import type { ReviewCoordinator } from "./review-coordinator.js"
+import type { BashSessionKind } from "./session-policy.js"
 import type { TerminalDelivery } from "./terminal-delivery.js"
 
 /**
@@ -29,6 +30,12 @@ export interface BashSessionState {
 	delivery: TerminalDelivery
 	/** Absolute per-process safety limit in seconds (operator-configured). */
 	limitSeconds: number
+	/**
+	 * Session policy resolved once at install (see ./session-policy.ts):
+	 * user-facing sessions yield waits to queued user input and may settle
+	 * turns with live commands; unattended runs keep the completion guard.
+	 */
+	sessionKind: BashSessionKind
 	/**
 	 * Session working directory. Used to render process cwd facts
 	 * project-relative when a process runs elsewhere.

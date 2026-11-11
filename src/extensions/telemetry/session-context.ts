@@ -2,10 +2,10 @@ import crypto from "node:crypto"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
-import { IS_ACP_MODE } from "../../modes/acp/state.js"
+import { isAcpSessionHost } from "../../modes/acp/state.js"
 import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
-import { getVersion } from "../../utils.js"
+import { getDetectedVersion } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { getActiveFerment } from "../ferment/index.js"
@@ -28,6 +28,12 @@ export const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
 export const METRICS_FLUSH_INTERVAL_MS = 30_000
 export const LOG_BATCH_FLUSH_INTERVAL_MS = 5_000
 export const LOG_BATCH_MAX_SIZE = 20
+// Attributes dropped from AMBIENT events while a ferment v2 is active: the
+// ferment's message content is not exported for v2 sessions. The raw error
+// heads (`error_message`/`error.message`) drop from every event (historical
+// behavior); the tool_outcome `message` (classification-derived, raw on the
+// fallback path) is scoped to that event name only, so a future event using a
+// top-level `message` attribute is not silently stripped.
 const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.message"])
 
 // ---------------------------------------------------------------------------
@@ -131,6 +137,10 @@ export class TelemetryContext {
 	 * session's ferment identity into every other session's records).
 	 */
 	fermentV2Context: TelemetryFermentV2Context | undefined
+	/** Tool call ids whose errored result already produced its `tool_outcome`
+	 *  record via the per-call handler. The run-final path (messages.ts)
+	 *  checks this set so a result that ends the run is not counted twice. */
+	toolOutcomeCallIds = new Set<string>()
 	inFlight = new Set<Promise<void>>()
 	shuttingDown = false
 	flushTimer: NodeJS.Timeout | undefined
@@ -198,6 +208,7 @@ export class TelemetryContext {
 		this.lastRoutedModel = undefined
 		this.steerFiredCount = 0
 		this.lastSteer = undefined
+		this.toolOutcomeCallIds.clear()
 		// Session-scoped tracking state and enrichment context: a session_start
 		// on this instance means a fresh session — ferment maps, guard counters,
 		// and the ferment v2 identity must not carry over.
@@ -303,7 +314,12 @@ export class TelemetryContext {
 		const fermentV2 = this.fermentV2Context
 		const eventAttrs: TelemetryAttributes =
 			fermentV2 && attrs
-				? Object.fromEntries(Object.entries(attrs).filter(([key]) => !V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES.has(key)))
+				? Object.fromEntries(
+						Object.entries(attrs).filter(
+							([key]) =>
+								!V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES.has(key) && !(eventName === "tool_outcome" && key === "message"),
+						),
+					)
 				: { ...(attrs ?? {}) }
 		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
 		const parentAttr = this.getParentSessionAttribute()
@@ -315,7 +331,7 @@ export class TelemetryContext {
 				previous_session_type: this.lastSessionType,
 				source,
 				...fermentTelemetryAttributes(ferment?.id, fermentV2),
-				"telemetry.cli_version": getVersion(),
+				"telemetry.cli_version": getDetectedVersion(),
 				...(parentAttr ?? {}),
 			})
 			this.logBuffer.push(buildLogRecord(this.resolveSessionId(), "session.type_changed", changeAttrs))
@@ -363,10 +379,10 @@ export class TelemetryContext {
 		ctx?: ExtensionContext,
 	): TelemetryAttributes & { session_type: "ferment" | "coding"; source: "cli" | "acp"; model: string } {
 		return {
-			source: IS_ACP_MODE ? "acp" : "cli",
+			source: isAcpSessionHost() ? "acp" : "cli",
 			session_type: getSessionType(this.fermentV2Context),
 			model: this.currentModel,
-			"telemetry.cli_version": getVersion(),
+			"telemetry.cli_version": getDetectedVersion(),
 			...getAcpAttributes(),
 			...(ctx ? getPiSessionAttributes(ctx) : {}),
 		}
@@ -418,6 +434,11 @@ export class TelemetryContext {
 								...m,
 								attrs: {
 									...m.attrs,
+									// Process-level client identity, mirroring the log-record
+									// common attributes so metric aggregations can split by
+									// harness path (cli) or ACP client (acp_client_name).
+									source: isAcpSessionHost() ? "acp" : "cli",
+									...getAcpAttributes(),
 									...(m.scope === "aggregate" ? {} : { "user.account_uuid": this.userId ?? "" }),
 								},
 							})),

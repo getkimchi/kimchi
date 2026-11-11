@@ -30,7 +30,7 @@ afterEach(() => {
 })
 
 describe("upstream compatibility", () => {
-	// Canary for pi upgrades: a missing member disables the side chat at runtime.
+	// Canary for upgrades of the pinned TUI: a missing member disables the side chat at runtime.
 	it("finds every private member it patches in the pinned upstream", () => {
 		expect(missingHarnessMembers()).toEqual([])
 		expect(installSideChatHarnessPatch()).toBe(true)

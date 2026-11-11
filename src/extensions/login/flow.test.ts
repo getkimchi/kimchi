@@ -2,8 +2,19 @@ import { initTheme, LoginDialogComponent } from "@earendil-works/pi-coding-agent
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { REGIONS } from "../../regions.js"
 import { setExperimentalFeaturesEnabled } from "../experimental.js"
-import { createRegionSelector, regionChoiceRequired, SwappableAuthComponent } from "./flow.js"
+import {
+	createRegionSelector,
+	KIMCHI_ACCOUNT_LABEL,
+	KIMCHI_API_KEY_LABEL,
+	KIMCHI_SSO_LABEL,
+	loginMethodChoices,
+	orderedLoginRegions,
+	regionChoiceRequired,
+	SUBSCRIPTION_LABEL,
+	SwappableAuthComponent,
+} from "./flow.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -67,25 +78,25 @@ describe("createRegionSelector", () => {
 		expect(onSelect).not.toHaveBeenCalled()
 	})
 
-	it("hides EU and self-hosted when experimental features are off", () => {
+	it("hides self-hosted when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const us = createRegionSelector({ currentRegion: "us", onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(us)).toEqual(["United States \u2014 current"])
+		expect(optionsOf(us)).toEqual(["United States \u2014 current", "Europe"])
 	})
 
-	it("still lists the configured EU region first when experimental features are off", () => {
+	it("lists the configured EU region first when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const eu = createRegionSelector({ currentRegion: "eu", onSelect: vi.fn(), onBack: vi.fn() })
 		expect(optionsOf(eu)).toEqual(["Europe \u2014 current", "United States"])
 	})
 
-	it("still lists the configured self-hosted region first when experimental features are off", () => {
+	it("lists the configured self-hosted region first when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const selfHosted = createRegionSelector({ currentRegion: "self-hosted", onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(selfHosted)).toEqual(["Self-hosted \u2014 current", "United States"])
+		expect(optionsOf(selfHosted)).toEqual(["Self-hosted \u2014 current", "United States", "Europe"])
 	})
 })
 
@@ -97,19 +108,72 @@ describe("regionChoiceRequired", () => {
 		expect(regionChoiceRequired("us")).toBe(true)
 	})
 
-	it("is false when EU is experimental-gated and the configured region is the default", () => {
-		setExperimentalFeaturesEnabled(false)
-		expect(regionChoiceRequired("us")).toBe(false)
-	})
-
-	it("is true when EU is experimental-gated but already configured (user can switch back)", () => {
-		setExperimentalFeaturesEnabled(false)
+	// EU is no longer experimental-gated, so every configured region has at least
+	// one other selectable region (us or eu) and regionChoiceRequired is true
+	// regardless of the experimental flag.
+	it("is always true because us and eu are always selectable alongside the current region", () => {
+		setExperimentalFeaturesEnabled(true)
+		expect(regionChoiceRequired("us")).toBe(true)
 		expect(regionChoiceRequired("eu")).toBe(true)
+		expect(regionChoiceRequired("self-hosted")).toBe(true)
+
+		setExperimentalFeaturesEnabled(false)
+		expect(regionChoiceRequired("us")).toBe(true)
+		expect(regionChoiceRequired("eu")).toBe(true)
+		expect(regionChoiceRequired("self-hosted")).toBe(true)
+	})
+})
+
+describe("orderedLoginRegions", () => {
+	beforeEach(() => setExperimentalFeaturesEnabled(true))
+	afterEach(() => setExperimentalFeaturesEnabled(false))
+
+	it("lists the current region first, then the remaining selectable regions", () => {
+		expect(orderedLoginRegions("us").map((region) => region.id)).toEqual(["us", "eu", "self-hosted"])
+		expect(orderedLoginRegions("eu").map((region) => region.id)).toEqual(["eu", "us", "self-hosted"])
+		expect(orderedLoginRegions("self-hosted").map((region) => region.id)).toEqual(["self-hosted", "us", "eu"])
 	})
 
-	it("is true when self-hosted is experimental-gated but already configured", () => {
+	it("honours a restricted candidate list (SSO login limits to OAuth-tenant regions)", () => {
+		expect(orderedLoginRegions("eu", [REGIONS.us]).map((region) => region.id)).toEqual(["eu", "us"])
+	})
+
+	it("lists us and eu when experimental features are off (self-hosted is hidden)", () => {
 		setExperimentalFeaturesEnabled(false)
-		expect(regionChoiceRequired("self-hosted")).toBe(true)
+		expect(orderedLoginRegions("us").map((region) => region.id)).toEqual(["us", "eu"])
+	})
+})
+
+describe("loginMethodChoices", () => {
+	it("lists SSO first when available, then account and API key, subscription last", () => {
+		expect(loginMethodChoices({ ssoAvailable: true, includeApiKey: true, includeSubscription: true })).toEqual([
+			{ id: "sso", label: KIMCHI_SSO_LABEL },
+			{ id: "account", label: KIMCHI_ACCOUNT_LABEL },
+			{ id: "api-key", label: KIMCHI_API_KEY_LABEL },
+			{ id: "subscription", label: SUBSCRIPTION_LABEL },
+		])
+	})
+
+	it("omits SSO when the region has no OAuth tenant", () => {
+		expect(
+			loginMethodChoices({ ssoAvailable: false, includeApiKey: true, includeSubscription: true }).map(
+				(choice) => choice.id,
+			),
+		).toEqual(["account", "api-key", "subscription"])
+	})
+
+	it("omits the subscription for the CLI menu", () => {
+		expect(loginMethodChoices({ ssoAvailable: true, includeApiKey: true }).map((choice) => choice.id)).toEqual([
+			"sso",
+			"account",
+			"api-key",
+		])
+	})
+
+	it("omits the API key entry when the surface has no handler", () => {
+		expect(loginMethodChoices({ ssoAvailable: false, includeApiKey: false }).map((choice) => choice.id)).toEqual([
+			"account",
+		])
 	})
 })
 

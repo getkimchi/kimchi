@@ -12,7 +12,7 @@
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createCommandContext, createContext } from "../__mocks__/context.js"
+import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
 import { createFakeOps } from "./__mocks__/fake-bash-ops.js"
@@ -59,6 +59,28 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 
 		expect(observed.publishedDuringDrain).toBeUndefined()
 		expect(getSessionState(sessionId)).toBeUndefined()
+	})
+
+	it("publishes the running-command count to the footer and clears it at zero", async () => {
+		const ctx = createContext({ cwd: "/tmp" })
+		const id = ctx.sessionManager.getSessionId()
+		const { api, emit } = createExtensionApi()
+		bashBackgroundExtension(api)
+		await emit("session_start", {}, ctx)
+		const state = getSessionState(id)
+		if (!state) throw new Error("expected session state")
+		const setStatus = vi.mocked(ctx.ui.setStatus)
+		// A fresh session starts with no lingering count.
+		expect(setStatus).toHaveBeenLastCalledWith("shells", undefined)
+
+		const ops = createFakeOps(0)
+		const handle = state.registry.spawn(ops, "sleep 60", "/tmp", undefined, { limitSeconds: 60 })
+		expect(setStatus).toHaveBeenLastCalledWith("shells", "1")
+		await ops.exit(0)
+		await state.registry.whenExited(handle)
+		expect(setStatus).toHaveBeenLastCalledWith("shells", undefined)
+
+		await emit("session_shutdown", {}, ctx)
 	})
 
 	it("session_start installs fresh state that callers can resolve", async () => {
@@ -119,6 +141,62 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 			await a.emit("session_shutdown", {}, ctxA)
 			await b.emit("session_shutdown", {}, ctxB)
 		}
+	})
+})
+
+describe("bashBackgroundExtension — control-tool availability wiring", () => {
+	afterEach(() => {
+		// Never leave state published after the test session ends.
+		setSessionState(sessionId, undefined)
+		vi.unstubAllEnvs()
+	})
+
+	it("executes the registered bash tool in blocking mode when bash_control is not in the active tool set", async () => {
+		const { api, emit, getRegisteredTool } = createExtensionApi()
+		bashBackgroundExtension(api)
+		await emit("session_start", {}, sessionCtx)
+		// This harness never registered bash_control: the session's active
+		// tool set cannot contain it, mirroring a `--tools` allowlist or
+		// profile that drops the control tool.
+		expect(api.getActiveTools()).not.toContain("bash_control")
+
+		const bash = getRegisteredTool("bash")
+		const result = await bash.execute(
+			"call-1",
+			{ command: "echo blocking-mode" } as never,
+			undefined,
+			undefined,
+			createToolContext(),
+		)
+		const text = (result?.content[0] as { text?: string }).text ?? ""
+		expect(text).toContain("blocking-mode")
+		const details = result?.details as { handoff?: boolean; handle?: string } | undefined
+		expect(details?.handoff).toBeFalsy()
+		expect(details?.handle).toBeUndefined()
+
+		await emit("session_shutdown", {}, sessionCtx)
+	})
+
+	it("hands off to the background cohort when bash_control IS in the active tool set", async () => {
+		vi.stubEnv("KIMCHI_E2E_BASH_HANDOFF_SECONDS", "0.2")
+		const harness = createExtensionApi()
+		bashBackgroundExtension(harness.api)
+		await harness.emit("session_start", {}, sessionCtx)
+		harness.setActiveTools(["bash", "bash_control"])
+
+		const bash = harness.getRegisteredTool("bash")
+		const result = await bash.execute(
+			"call-1",
+			{ command: "sleep 1" } as never,
+			undefined,
+			undefined,
+			createToolContext(),
+		)
+		const details = result?.details as { handoff?: boolean; handle?: string } | undefined
+		expect(details?.handoff).toBe(true)
+		expect(details?.handle).toBeDefined()
+
+		await harness.emit("session_shutdown", {}, sessionCtx)
 	})
 })
 

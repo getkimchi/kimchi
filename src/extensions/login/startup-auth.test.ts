@@ -1,6 +1,6 @@
 import { initTheme, LoginDialogComponent, type Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import { REGIONS, type RegionId, regionEndpoints } from "../../regions.js"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
@@ -67,7 +67,7 @@ function createHarness(
 		availableInitially?: boolean
 		addModelOnAuthSync?: boolean
 		overlayActiveInitially?: boolean
-		onCancel?: ReturnType<typeof vi.fn>
+		onCancel?: Mock
 		afterSessionStart?: SessionStartHandler
 	} = {},
 ) {
@@ -165,7 +165,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-	// EU region selection is gated behind experimental features; most gate
+	// The self-hosted region is gated behind experimental features; most gate
 	// tests exercise the ungated (flag-on) behaviour.
 	setExperimentalFeaturesEnabled(true)
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-startup-auth-test")
@@ -649,15 +649,16 @@ describe("startup auth gate", () => {
 		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token", undefined, { region: "eu" })
 	})
 
-	it("skips the region pick and logs in with the configured region when EU is experimental-gated", async () => {
+	it("offers the region pick without the experimental flag and logs in to the default US region", async () => {
 		setExperimentalFeaturesEnabled(false)
 		const harness = createHarness()
 		const started = harness.start()
 
 		await harness.settle()
 		harness.input("j") // SSO is the first option; account is one down
-		harness.input("\n") // Kimchi account — no region prompt follows
+		harness.input("\n") // Kimchi account — the region picker now follows
 		await harness.waitForCustomPrompts(2)
+		harness.input("\n") // United States, first option
 		await started
 
 		expect(authMock.authenticateViaBrowser).toHaveBeenCalledWith(

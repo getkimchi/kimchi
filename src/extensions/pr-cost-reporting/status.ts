@@ -91,7 +91,8 @@ export function statusText(
 		...outbox.flatMap((status) => (status.retry && status.retry.retryAt > now ? [status.retry.retryAt] : [])),
 	)
 	const entries = Object.values(state.entries)
-	const pending = entries.filter((entry) => entry.pending)
+	// A body frozen into its note keeps no inline bytes: pendingId is the presence signal.
+	const pending = entries.filter((entry) => entry.pending || entry.pendingId)
 	const waiting = pending.filter((entry) => inUploadWindow(entry, now)).length
 	const acknowledged = entries.filter((entry) => entry.lastAcknowledgedAt).length
 	const problems = [

@@ -113,6 +113,15 @@ export interface AuthenticateOptions {
 	 * re-auth of an existing one.
 	 */
 	spec?: WorkspaceSpecConfig
+	/**
+	 * Name of the organization workspace template to base the workspace on.
+	 * The server resolves it to a snapshot of the template's values at
+	 * creation time (workspaces_api.proto: template_name). Create-time-only
+	 * and immutable afterwards; mutually exclusive with `spec` on create —
+	 * the server rejects the conflict. Only pass when minting a new
+	 * workspace.
+	 */
+	templateName?: string
 }
 
 /** Identity resolved by verifying an API key (`workspace-tokens:verifyKey`). */
@@ -140,6 +149,40 @@ export interface ListWorkspacesOptions extends AuthenticateOptions {
 }
 
 export interface GetQuotaUsageOptions extends AuthenticateOptions {
+	signal?: AbortSignal
+	/** Pre-resolved organization id — skips the verifyKey round-trip. */
+	orgId?: string
+}
+
+/**
+ * Preset creation parameters carried by a workspace template (TemplateSpec in
+ * workspacetemplates_api.proto). Surfaced read-only when a template is
+ * selected in the setup dialog; the server expands the full spec (including
+ * initScript/files, not mapped here) at workspace creation time.
+ */
+export interface WorkspaceTemplateSpecPreview {
+	resources?: WorkspaceResourcesConfig
+	dependencies?: string[]
+	egressPolicy?: EgressPolicyConfig
+}
+
+/**
+ * Organization-scoped workspace template (curated preset of workspace
+ * creation parameters). Only the picker-relevant fields are mapped; the
+ * server expands the full TemplateSpec when a workspace references the
+ * template by name at creation time.
+ */
+export interface WorkspaceTemplateSummary {
+	id: string
+	/** Unique within the organization; workspaces reference it by this name. */
+	name: string
+	/** Free-form purpose, shown when listing. */
+	description: string
+	/** The template's preset parameters (catalog content; read on list). */
+	spec?: WorkspaceTemplateSpecPreview
+}
+
+export interface ListWorkspaceTemplatesOptions extends AuthenticateOptions {
 	signal?: AbortSignal
 	/** Pre-resolved organization id — skips the verifyKey round-trip. */
 	orgId?: string

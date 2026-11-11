@@ -205,6 +205,45 @@ describe("initOrgPolicy", () => {
 		expect(readCacheFile(cachePath).policy).toEqual(policy)
 	})
 
+	it("fetches, stores, and caches the redaction policy raw", async () => {
+		const cachePath = cachePathFor({})
+		const policy: OrgPolicy = {
+			redaction: {
+				categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+				entities: { PHONE_NUMBER: "KIMCHI_REDACTION_STATE_ON" },
+			},
+		}
+		resolveWithPolicy("org-1", policy)
+
+		await initOrgPolicy("key-1", { cachePath })
+
+		// The cache round-trips the wire value verbatim; normalization is the
+		// pii-redaction extension's job at read time.
+		expect(getOrgPolicy()).toEqual(policy)
+		expect(readCacheFile(cachePath).policy).toEqual(policy)
+	})
+
+	it("drops a malformed cached redaction value instead of imposing it", async () => {
+		const cachePath = cachePathFor({})
+		const { createHash } = await import("node:crypto")
+		const fingerprint = createHash("sha256").update("key-1").digest("hex")
+		writeFileSync(
+			cachePath,
+			`${JSON.stringify({
+				keyFingerprint: fingerprint,
+				orgId: "org-1",
+				fetchedAt: 1,
+				policy: { redaction: "junk" },
+			})}\n`,
+		)
+
+		mockedFetchOrgPolicy.mockResolvedValue({ kind: "unreachable" })
+
+		await initOrgPolicy("key-1", { cachePath })
+
+		expect(getOrgPolicy()).toBeUndefined()
+	})
+
 	it("drops corrupted cached resource values, keeping valid ones", async () => {
 		const cachePath = cachePathFor({})
 		const { createHash } = await import("node:crypto")

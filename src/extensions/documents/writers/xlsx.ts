@@ -315,6 +315,9 @@ export async function writeXlsx(spec: XlsxSpec, options: { clock?: DocumentClock
 
 	const zip = new JSZip()
 	const date = clock.now()
+	// createFolders: false — jszip would otherwise add the parent folder
+	// entries itself, dated by wall-clock time instead of the clock seam.
+	const entry = { date, createFolders: false }
 	zip.file(
 		"[Content_Types].xml",
 		`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -326,7 +329,7 @@ export async function writeXlsx(spec: XlsxSpec, options: { clock?: DocumentClock
 ${spec.sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("\n")}
 <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
 </Types>`,
-		{ date },
+		entry,
 	)
 	zip.file(
 		"_rels/.rels",
@@ -335,7 +338,7 @@ ${spec.sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xm
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 <Relationship Id="rIdMeta" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
 </Relationships>`,
-		{ date },
+		entry,
 	)
 	zip.file(
 		"docProps/core.xml",
@@ -345,7 +348,7 @@ ${spec.sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xm
 <dcterms:created xsi:type="dcterms:W3CDTF">${date.toISOString()}</dcterms:created>
 <dcterms:modified xsi:type="dcterms:W3CDTF">${date.toISOString()}</dcterms:modified>
 </cp:coreProperties>`,
-		{ date },
+		entry,
 	)
 	zip.file(
 		"xl/_rels/workbook.xml.rels",
@@ -354,11 +357,11 @@ ${spec.sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xm
 ${spec.sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("\n")}
 <Relationship Id="rIdSt" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>`,
-		{ date },
+		entry,
 	)
-	zip.file("xl/workbook.xml", workbookXml, { date })
-	zip.file("xl/styles.xml", styles.stylesXml, { date })
-	for (const [i, xml] of parts.entries()) zip.file(`xl/worksheets/sheet${i + 1}.xml`, xml, { date })
+	zip.file("xl/workbook.xml", workbookXml, entry)
+	zip.file("xl/styles.xml", styles.stylesXml, entry)
+	for (const [i, xml] of parts.entries()) zip.file(`xl/worksheets/sheet${i + 1}.xml`, xml, entry)
 
 	const bytes = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
 	return { bytes, warnings, formulas }

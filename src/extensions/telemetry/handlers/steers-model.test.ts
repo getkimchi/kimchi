@@ -4,7 +4,7 @@
  * backend routing, must not report model="unknown" when a concrete session /
  * selection model exists. Mirrors the messages.ts reproduce environment.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { logEvents, type RecordedEvent } from "../otlp-test-utils.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
@@ -31,7 +31,7 @@ function attrsOf(events: RecordedEvent[], eventName: string): Record<string, unk
 
 describe("handlers/steers — model resolution", () => {
 	let originalFetch: typeof globalThis.fetch
-	let fetchMock: ReturnType<typeof vi.fn>
+	let fetchMock: Mock
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch

@@ -33,6 +33,15 @@ export interface OrgPolicy {
 	 * are kept here but treated as inert by the resources store.
 	 */
 	resources?: Record<string, ResourcePolicy>
+	/**
+	 * The raw kimchiRedaction wire value (category/entity on-off maps and
+	 * user-defined regex entities for the pii-redaction extension). Kept
+	 * unvalidated so the cache round-trips it verbatim; the pii-redaction
+	 * module's tolerant parser owns normalization (unknown entries drop, the
+	 * rest applies) — it knows the entity/category vocabulary, this module
+	 * must not.
+	 */
+	redaction?: Record<string, unknown>
 }
 
 /**
@@ -168,7 +177,17 @@ export function parseOrgPolicy(settings: unknown): OrgPolicy | undefined {
 	const resources = parseResourcePolicies(source.kimchiResources ?? source.kimchi_resources)
 	if (resources) policy.resources = resources
 
-	if (!policy.allowedPermissionModes && policy.usageReporting === undefined && !policy.resources) return undefined
+	// Raw passthrough: shape-checked here, validated on read by the
+	// pii-redaction extension's tolerant parser (see OrgPolicy.redaction).
+	// An empty object carries no policy, so it must not count as present.
+	const redaction = source.kimchiRedaction ?? source.kimchi_redaction
+	if (redaction !== null && typeof redaction === "object" && !Array.isArray(redaction)) {
+		const entries = redaction as Record<string, unknown>
+		if (Object.keys(entries).length > 0) policy.redaction = entries
+	}
+
+	if (!policy.allowedPermissionModes && policy.usageReporting === undefined && !policy.resources && !policy.redaction)
+		return undefined
 	return policy
 }
 

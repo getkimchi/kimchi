@@ -129,9 +129,13 @@ test("check-in gate: changed-direction input reconciles the list before work res
 			await waitForText(terminal, "Verified 42. Should I publish?")
 			await waitForTurnToSettle(fixture.fake.requests)
 			expect(chat()).toHaveLength(5)
-			// The check-in instruction rode the first request of the turn: the
-			// model reconciled the list (mark) before its work tool ran.
-			expect(JSON.stringify(chat()[2].body)).toContain("reconcile")
+			// The gate arms silently at receipt: the turn's first request
+			// carries the user's direction with no harness reminder riding it
+			// (the reminder used to be delivered ahead of the very message it
+			// referred to). Reconciliation-before-work is enforced by the gate:
+			// the list was reconciled (mark) before the work tool ran.
+			expect(JSON.stringify(chat()[2].body)).toContain("Verify the total with printf")
+			expect(JSON.stringify(chat()[2].body)).not.toContain("Todo check-in")
 			trace.step("changed-direction input: mark → work → ask")
 
 			terminal.submit("Just repeat the total; do not call tools or publish.")
@@ -181,12 +185,14 @@ test("check-in gate: unchanged plan confirms without a write, then work proceeds
 			terminal.submit("Check the total, but the publishing plan is unchanged.")
 			await waitForText(terminal, "Cleanup check finished.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
-			// Instruction, confirm, work, answer, cleanup continuation, final
-			// answer — the confirmation matched the unchanged list and released
+			// The gate arms silently at receipt: the turn's first request
+			// carries the user's direction with no harness reminder riding it.
+			// The scripted confirm (exact id+status set, revision 2) released
 			// the work tools without a store write.
 			expect(chat()).toHaveLength(7)
 			const confirmTurn = chat()[2].body as { messages: { role: string; content: unknown }[] }
-			expect(JSON.stringify(confirmTurn.messages)).toContain("input revision 2")
+			expect(JSON.stringify(confirmTurn.messages)).toContain("the publishing plan is unchanged")
+			expect(JSON.stringify(confirmTurn.messages)).not.toContain("Todo check-in")
 			const closureTurn = chat()[5].body as { messages: { role: string; content: unknown }[] }
 			expect(JSON.stringify(closureTurn.messages)).toContain("The turn ended with unfinished todos")
 			expect(viewText(terminal)).toContain("Publish after approval")
@@ -291,7 +297,7 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 			// tool result — so the model knew why the gate was open before its
 			// work tool ran, and the block followed the instruction.
 			const bodies = chat().map((request) => JSON.stringify(request.body))
-			const submissionTurn = bodies.findIndex((body) => body.includes("the plan was submitted for review"))
+			const submissionTurn = bodies.findIndex((body) => body.includes("The plan was submitted for review"))
 			expect(submissionTurn).toBeGreaterThanOrEqual(0)
 			expect(bodies[submissionTurn]).toContain("Plan submitted")
 			expect(bodies.findIndex((body) => body.includes("check-in pending (input revision 1)"))).toBeGreaterThan(
@@ -365,6 +371,77 @@ test("check-in gate: input while gated requires reconciliation against the lates
 			expect(history).not.toContain("check-in pending (input revision 3)")
 			expect(history).toContain("resumed with the new direction")
 			trace.step("superseded input: stale revision rejected, latest direction unlocks work")
+		},
+	)
+})
+
+// The reported bug this gate was reworked for: a user message arriving while
+// the model is parked in a bash_control wait was answered late — the reminder
+// was enqueued during the input event, ahead of the message, and with
+// one-at-a-time steering delivered alone (the model read it as the announced
+// "message from the user").
+test("check-in gate: a mid-run message during a bash_control wait is delivered ahead of any reminder", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-checkin-midrun-wait-release",
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
+			responses: [
+				// Turn 1: list exists; the create write reconciles turn 1's input.
+				tool("create_todos", { todos: [{ content: "Watch the long render", status: "in_progress" }] }),
+				{ stream: ["Watching the render."] },
+				// Turn 2: the input arms the gate (rev 2), so the model
+				// reconciles first (a write closes the check), then spawns a
+				// long background command and parks in a bash_control wait.
+				tool("mark_todo", { id: 1, status: "in_progress", note: "Tracking the render watch" }),
+				{
+					stream: ["Waiting for the render to finish."],
+					toolCalls: [
+						{ id: "call-spawn", function: { name: "bash", arguments: JSON.stringify({ command: "sleep 30" }) } },
+					],
+				},
+				tool("bash_control", { wait: true }),
+				// Turn 3: answer the mid-run message; the text-only run with
+				// an unfinished list gets its one bounded cleanup continuation.
+				{ stream: ["Render watch paused — what should change?"] },
+				tool("mark_todo", { id: 1, status: "pending", note: "Deferred until approval" }),
+				{ stream: ["Cleanup check finished."] },
+				{ stream: ["<done>"] },
+			],
+		},
+		async (fixture, trace) => {
+			const chat = () => fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
+			terminal.submit("Create a todo and watch the long render.")
+			await waitForText(terminal, "Watching the render.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+
+			terminal.submit("Wait for the render in the background.")
+			await waitForText(terminal, "Waiting for the render to finish.", { timeoutMs: STREAM_TIMEOUT_MS })
+			// Park detection: turn 2 is three rounds (reconciling write,
+			// spawn request, wait request); once the wait request has fired,
+			// the tool result is pending and the model is inside bash_control.
+			const parked = Date.now() + STREAM_TIMEOUT_MS
+			while (chat().length < 5 && Date.now() < parked) await new Promise((resolve) => setTimeout(resolve, 100))
+			expect(chat().length).toBe(5)
+			trace.step("model parked inside the bash_control wait")
+
+			terminal.submit("Abort the render watch and summarize instead.")
+			await waitForText(terminal, "Render watch paused", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			await waitForTurnToSettle(fixture.fake.requests)
+
+			// The first request after the wait release carries the user's
+			// message (and the release tool result) with no todo reminder
+			// ahead of it — under the pre-fix ordering the reminder was
+			// enqueued during the input event and delivered alone first.
+			const bodies = chat().map((request) => JSON.stringify(request.body))
+			const releaseIdx = bodies.findIndex((body) => body.includes("Wait released: a message from the user is waiting"))
+			expect(releaseIdx).toBeGreaterThan(0)
+			expect(bodies[releaseIdx]).toContain("Abort the render watch and summarize")
+			expect(bodies[releaseIdx]).not.toContain("Todo check-in")
+			expect(bodies.slice(0, releaseIdx).some((body) => body.includes("Todo check-in"))).toBe(false)
+			trace.step("mid-run message delivered ahead of any todo reminder")
 		},
 	)
 })

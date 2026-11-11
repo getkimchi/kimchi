@@ -77,7 +77,7 @@ describe("openSideChatLog", () => {
 		expect(openSideChatLog(mainSession(sessionDir), "side-1").read()).toEqual(log.read())
 	})
 
-	it("writes a Pi session header and a linear message chain", () => {
+	it("writes a session header and a linear message chain", () => {
 		const sessionDir = tempSessionDir()
 		openSideChatLog(mainSession(sessionDir), "side-1").append([user("a")])
 		openSideChatLog(mainSession(sessionDir), "side-1").append([assistant("b")])

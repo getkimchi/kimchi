@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
@@ -181,6 +181,30 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 	}
 }
 
+/**
+ * The version of the installed files, read fresh from disk. Unlike getVersion(),
+ * which is cached for the process, this sees an install by another session or an
+ * external installer. Null when it can't be determined. Never throws.
+ */
+export function readInstalledVersion(): string | null {
+	try {
+		const shareDir = resolveAuxiliaryFilesDir(process.env, homedir(), resolveExecutablePath())
+		const { version } = JSON.parse(readFileSync(join(shareDir, "package.json"), "utf-8")) as { version?: unknown }
+		return typeof version === "string" && version !== "" ? version : null
+	} catch {
+		return null
+	}
+}
+
+/** True when a restart would move this session onto a newer install, or onto a
+ *  canary the user chose. Unknown or older installed versions don't count. */
+export function isRestartPending(runningVersion: string, installedVersion: string | null): boolean {
+	if (installedVersion === null) return false
+	if (parseCanarySha7(installedVersion) !== null) return installedVersion !== runningVersion
+	const installed = installedVersion.replace(/^v/, "")
+	return compareSemverGte(installed, runningVersion) && !compareSemverGte(runningVersion, installed)
+}
+
 export interface UpdateOptions {
 	repo?: Repo
 	tag: string
@@ -225,8 +249,10 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 		try {
 			const binaryPath = join("bin", binaryFileName(repo))
 			const newBinaryPath = join(extractedRoot, binaryPath)
-			macosCodesignReSign(newBinaryPath)
-			smokeTestBinary(newBinaryPath)
+			await macosCodesignReSign(newBinaryPath)
+			await smokeTestBinary(newBinaryPath)
+			// From here on the install stays synchronous on purpose: yielding would
+			// let the user quit mid-copy, leaving a new binary without its share dir.
 			const { backupPath } = atomicInstall(newBinaryPath, targetPath)
 
 			// Copy supporting files after binary is installed.

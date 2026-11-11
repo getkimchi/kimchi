@@ -21,9 +21,12 @@ vi.mock("../../../sandbox/cloud/readiness.js", () => ({
 }))
 
 vi.mock("../../../sandbox/worker/client.js", () => ({
-	WorkerClient: vi.fn().mockImplementation(() => ({
-		close: vi.fn().mockResolvedValue(undefined),
-	})),
+	// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+	WorkerClient: vi.fn().mockImplementation(function () {
+		return {
+			close: vi.fn().mockResolvedValue(undefined),
+		}
+	}),
 }))
 
 vi.mock("../../../sandbox/worker/sessions.js", () => ({
@@ -72,7 +75,8 @@ vi.mock("../../../sandbox/worker/acp-client.js", async (importOriginal) => {
 		}
 	}
 	return {
-		AcpSessionClient: vi.fn().mockImplementation((options: Record<string, unknown>) => {
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		AcpSessionClient: vi.fn().mockImplementation(function (options: Record<string, unknown>) {
 			capturedOptions = options
 			return {
 				// The replay-recovery client (captureLoadReplay) gets its own
@@ -205,7 +209,8 @@ beforeEach(() => {
 	vi.mocked(appendTranscriptGapMarker).mockResolvedValue(undefined)
 	// Re-establish the AcpSessionClient constructor mock — clearAllMocks
 	// resets the mockImplementation, so new AcpSessionClient() would return undefined.
-	vi.mocked(AcpSessionClient).mockImplementation((options: AcpSessionClientOptions) => {
+	// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+	vi.mocked(AcpSessionClient).mockImplementation(function (options: AcpSessionClientOptions) {
 		capturedOptions = options as unknown as Record<string, unknown>
 		return {
 			// The replay-recovery client (captureLoadReplay) gets its own
@@ -224,15 +229,13 @@ beforeEach(() => {
 			sessionId: "remote-acp-1",
 		} as unknown as AcpSessionClient
 	})
-	vi.mocked(WorkerClient).mockImplementation(
-		() =>
-			({
-				close: vi.fn().mockResolvedValue(undefined),
-				// biome-ignore lint/suspicious/noExplicitAny: mock
-			}) as any,
-	)
-	mockInitialize.mockResolvedValue(undefined)
-	mockPrompt.mockResolvedValue({
+	// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+	vi.mocked(WorkerClient).mockImplementation(function () {
+		// biome-ignore lint/suspicious/noExplicitAny: mock
+		return { close: vi.fn().mockResolvedValue(undefined) } as any
+	})
+	mockInitialize.mockReset().mockResolvedValue(undefined)
+	mockPrompt.mockReset().mockResolvedValue({
 		stopReason: "end_turn",
 		usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
 	})
@@ -385,13 +388,11 @@ describe("runRemoteAgent", () => {
 	it("closes WorkerClient when createSession throws", async () => {
 		vi.mocked(createSession).mockRejectedValue(new Error("create failed"))
 		const mockClientClose = vi.fn().mockResolvedValue(undefined)
-		vi.mocked(WorkerClient).mockImplementation(
-			() =>
-				({
-					close: mockClientClose,
-					// biome-ignore lint/suspicious/noExplicitAny: mock
-				}) as any,
-		)
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		vi.mocked(WorkerClient).mockImplementation(function () {
+			// biome-ignore lint/suspicious/noExplicitAny: mock
+			return { close: mockClientClose } as any
+		})
 
 		await expect(runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())).rejects.toThrow("create failed")
 
@@ -401,13 +402,11 @@ describe("runRemoteAgent", () => {
 
 	it("closes WorkerClient in the finally block", async () => {
 		const mockClientClose = vi.fn().mockResolvedValue(undefined)
-		vi.mocked(WorkerClient).mockImplementation(
-			() =>
-				({
-					close: mockClientClose,
-					// biome-ignore lint/suspicious/noExplicitAny: mock
-				}) as any,
-		)
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		vi.mocked(WorkerClient).mockImplementation(function () {
+			// biome-ignore lint/suspicious/noExplicitAny: mock
+			return { close: mockClientClose } as any
+		})
 
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
 
@@ -1428,7 +1427,8 @@ describe("runRemoteAgent", () => {
 			mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WS closed"))
 			vi.mocked(getSession).mockImplementation(quietRunningFor(1))
 			const closers: Array<ReturnType<typeof vi.fn>> = []
-			vi.mocked(WorkerClient).mockImplementation(() => {
+			// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+			vi.mocked(WorkerClient).mockImplementation(function () {
 				const close = vi.fn().mockResolvedValue(undefined)
 				closers.push(close)
 				return {
@@ -1901,12 +1901,12 @@ describe("continueRemoteAgent", () => {
 
 	it("keeps the session when the steer is killed mid-prompt (retryable)", async () => {
 		const controller = new AbortController()
-		controller.abort()
 		const abortError = new Error("Aborted")
 		abortError.name = "AbortError"
 		mockPrompt.mockRejectedValueOnce(abortError)
 
 		await expect(continueRemoteAgent(makeContinueOptions({ signal: controller.signal }))).rejects.toThrow("Aborted")
+		expect(mockPrompt).toHaveBeenCalledOnce()
 		expect(deleteSession).not.toHaveBeenCalled()
 	})
 

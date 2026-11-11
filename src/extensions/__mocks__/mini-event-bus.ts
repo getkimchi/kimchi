@@ -1,4 +1,4 @@
-import { vi } from "vitest"
+import { type Mock, vi } from "vitest"
 
 /**
  * Creates a mini event-bus mock for `pi.events` that actually delivers
@@ -10,10 +10,10 @@ import { vi } from "vitest"
  */
 export function createMiniEventBus(): {
 	events: {
-		emit: ReturnType<typeof vi.fn>
-		on: ReturnType<typeof vi.fn>
+		emit: Mock
+		on: Mock
 	}
-	emit: ReturnType<typeof vi.fn>
+	emit: Mock
 } {
 	const eventHandlers = new Map<string, ((data: unknown) => unknown)[]>()
 	const emit = vi.fn((channel: string, data: unknown) => {

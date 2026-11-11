@@ -141,6 +141,9 @@ beforeEach(() => {
 	repo = join(root, "repo")
 	mkdirSync(repo)
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
+	// These drives assert the reconciled outcome seconds after session_start; keep
+	// the production 5s first-tick deferral out of them.
+	vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "0")
 	git("init", "-q")
 	git("config", "user.name", "Test")
 	git("config", "user.email", "test@example.test")
@@ -151,6 +154,8 @@ afterEach(async () => {
 	closeBackends()
 	useBackendFactory(null)
 	vi.restoreAllMocks()
+	vi.mocked(childProcess.execFileSync).mockReset()
+	vi.mocked(childProcess.execFile).mockReset()
 	vi.unstubAllEnvs()
 	rmSync(root, { recursive: true, force: true })
 })
@@ -768,6 +773,8 @@ describe("manual commit reconciliation", () => {
 		expect(contributions()).toEqual([])
 
 		vi.restoreAllMocks()
+		vi.mocked(childProcess.execFileSync).mockReset()
+		vi.mocked(childProcess.execFile).mockReset()
 		await reconcileFileTransitions(context("retry"))
 		await reconcileFileTransitions(context("repeat"))
 		expect(contributions()).toEqual([
@@ -811,7 +818,7 @@ describe("manual commit reconciliation", () => {
 
 	it("records native edit evidence without blocking on synchronous Git calls", async () => {
 		baseline()
-		const syncGit = vi.spyOn(childProcess, "execFileSync")
+		const syncGit = vi.spyOn(childProcess, "execFileSync").mockClear()
 		await edit("one", "first")
 		expect(syncGit).not.toHaveBeenCalled()
 		expect(rows().filter((row) => row.type === "file_transition")).toEqual([
@@ -838,7 +845,7 @@ describe("manual commit reconciliation", () => {
 					void gate.then(() => (callback as (...values: unknown[]) => void)(...result))
 			return execute(...args)
 		}) as typeof execute)
-		const syncGit = vi.spyOn(childProcess, "execFileSync")
+		const syncGit = vi.spyOn(childProcess, "execFileSync").mockClear()
 		const child = createExtensionApi()
 		createWorkAttributionExtension(workId)(child.api)
 		try {

@@ -6,6 +6,11 @@
 #   source change and regression tests is planned against it). The /model
 #   selector and remaining runtime/UI hunks are still publication pending; no
 #   upstream issue or PR has been filed for those.
+# mermaid.js pre-check: the mermaid markdown transformer lexes the ENTIRE
+#   text on every Markdown cache-miss render (seconds of CPU on large
+#   transcripts). An upstream issue/PR carrying the cheap `includes`
+#   pre-check is planned; Removal: delete the hunk once upstream ships an
+#   equivalent early-exit (or a memoized lex) in the transformer.
 # Changes:
 #   - Root-index re-exports of getQuickJSWasmPath/setEmbeddedQuickJSWasmPath
 #     (and getThemesDir) from dist/config, so a host's compiled binary entry
@@ -1536,6 +1541,25 @@ index 3d88d9e595c774fe55cb2b991fcc44f0da1716b4..b3476a7e503a6535e7a8ea599ca45486
      }
      dispose() {
          this.countdown?.dispose();
+diff --git a/dist/modes/interactive/components/mermaid.js b/dist/modes/interactive/components/mermaid.js
+index 6015ae42db8b0a3571ac4c7748caa2f715b2ff44..9faf53ae9dd617925e105fbea5912d6eef846e3f 100644
+--- a/dist/modes/interactive/components/mermaid.js
++++ b/dist/modes/interactive/components/mermaid.js
+@@ -51,6 +51,14 @@ export function createMermaidMarkdownTransformer(options) {
+             (context.isStreaming && mode !== "streaming")) {
+             return markdown;
+         }
++        // [kimchi] A full lexer pass over the whole text on every Markdown
++        // cache-miss render costs seconds of CPU on large transcripts when
++        // no mermaid block can exist. Skip the lex unless the word appears.
++        // Case-insensitive: isMermaid lowercases the fence info string, so
++        // a ```MERMAID fence must still reach the lexer to render.
++        if (!/mermaid/i.test(markdown)) {
++            return markdown;
++        }
+         return markdownParser
+             .lexer(markdown)
+             .map((token) => {
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
 index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a30352548b8f55dd 100644
 --- a/dist/modes/interactive/components/model-selector.js

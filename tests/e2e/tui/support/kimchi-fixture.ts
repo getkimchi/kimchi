@@ -39,6 +39,35 @@ export const FAKE_PROVIDER = "fake"
 
 export const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
 export const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
+/** Directory name a `seedHome` hook must use for a private copy of the binary
+ *  (see SeedHomeResult.binaryPath), so teardown recognises it as ours. */
+export const THROWAWAY_INSTALL_DIR = "kimchi-e2e-install"
+
+/** Absolute path of the harness settings.json inside a fixture's isolated HOME. */
+export function harnessSettingsPath(homeDir: string): string {
+	return join(homeDir, ".config", "kimchi", "harness", "settings.json")
+}
+
+/** Pin status line elements in the fixture's isolated harness settings.json.
+ *  Opt-in segments (lsp/dap) are hidden by default, so a test asserting their
+ *  footer text must pin the segment here or it never renders. Call from
+ *  `seedHome` — the fixture writes settings.json (it owns the statusLine.pinned
+ *  schema seeded here) before seedHome runs; calling earlier fails loudly
+ *  instead of with an opaque ENOENT. */
+export function pinStatusLineElements(homeDir: string, ...ids: string[]): void {
+	const settingsPath = harnessSettingsPath(homeDir)
+	if (!existsSync(settingsPath)) {
+		throw new Error(
+			`pinStatusLineElements: ${settingsPath} not found — call from seedHome; the fixture writes harness settings.json before seedHome runs`,
+		)
+	}
+	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+	const statusLine = (settings.statusLine ?? {}) as Record<string, unknown>
+	const pinned = Array.isArray(statusLine.pinned) ? (statusLine.pinned as string[]) : []
+	statusLine.pinned = [...new Set([...pinned, ...ids])]
+	settings.statusLine = statusLine
+	writeFileSync(settingsPath, JSON.stringify(settings, null, "\t"))
+}
 
 // Per-launch pidfile so teardown can kill a kimchi that ignored Ctrl-C/SIGINT
 // (e.g. a process stuck in a synchronous loop, where signal handlers starve).
@@ -58,6 +87,8 @@ export interface KimchiFixture {
 	seedResult?: unknown
 	/** Env vars returned by `seedHome`, merged into the launched process env. */
 	seedEnv: Record<string, string>
+	/** Binary returned by `seedHome`, launched instead of BINARY_PATH. */
+	binaryPath?: string
 	/** The test's trustWorkDir option — consulted by launchKimchi (see CreateKimchiFixtureOptions). */
 	trustWorkDir?: boolean
 	providerId: string
@@ -90,6 +121,9 @@ export interface SeedHomeResult {
 	env?: Record<string, string>
 	/** Exposed on the fixture as `seedResult` for the test body to read. */
 	data?: unknown
+	/** Launch this binary instead of BINARY_PATH. Must live under a
+	 *  THROWAWAY_INSTALL_DIR directory. */
+	binaryPath?: string
 }
 
 export interface CreateKimchiFixtureOptions {
@@ -214,11 +248,16 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		// E2E tests. Without this, readStatusLineConfig() would return DEFAULT_STATUS_LINE_PINNED
 		// (context, agents, phase, usage) and change the terminal layout for every test.
 		writeFileSync(
-			join(agentDir, "settings.json"),
+			harnessSettingsPath(homeDir),
 			JSON.stringify(
 				{
 					statusLine: { pinned: [] },
 					hideThinkingBlock: true,
+					// Keep the suite hermetic: side chat is default-on, and loading it
+					// patches InteractiveMode/TuiAltScreen prototypes and adds /btw +
+					// shortcuts to every session. Side-chat e2e opts in explicitly;
+					// the default-on path has its own test that strips this override.
+					resources: { "extensions.side-chat": false },
 					// Default the hermetic suite to regular mode: pi 1.3's fullscreen
 					// alt-screen keeps the transcript/overlays out of the terminal
 					// scrollback, which most tests read for assertions. Fullscreen
@@ -244,7 +283,9 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		const seedIsResult =
 			rawSeed !== null &&
 			typeof rawSeed === "object" &&
-			("env" in (rawSeed as SeedHomeResult) || "data" in (rawSeed as SeedHomeResult))
+			("env" in (rawSeed as SeedHomeResult) ||
+				"data" in (rawSeed as SeedHomeResult) ||
+				"binaryPath" in (rawSeed as SeedHomeResult))
 		const seedEnv = {
 			// Keep the /v1/me identity lookup (telemetry pre-session) on the fake
 			// server; otherwise it would reach the real app API.
@@ -278,6 +319,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			mcp,
 			seedResult,
 			seedEnv,
+			binaryPath: seedIsResult ? (rawSeed as SeedHomeResult).binaryPath : undefined,
 			trustWorkDir: options.trustWorkDir,
 			providerId,
 			initialModel,
@@ -376,6 +418,10 @@ export function launchKimchi(
 		// Static todo spinner glyph: each animation tick force-renders the
 		// whole TUI, which pushed the suite past its job budget.
 		"KIMCHI_E2E_STATIC_TODO_SPINNER=1",
+		// Background-bash scenarios script short sleeps (3–6s) that must hand
+		// off; keep the e2e handoff at 2s instead of the 15s product default
+		// (covered by unit tests). Tests may override via `env`.
+		"KIMCHI_E2E_BASH_HANDOFF_SECONDS=2",
 		// Forward the test-harness marker: KIMCHI_E2E_* seams (readE2eSeam)
 		// fire only under a harness — production binaries must never see them.
 		// (set by scripts/run-tui-e2e.js for the tui-test runner; smoke harness
@@ -384,7 +430,7 @@ export function launchKimchi(
 		...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 		...envEntries,
 		"TERM=xterm-256color",
-		sh(BINARY_PATH),
+		sh(fixture.binaryPath ?? BINARY_PATH),
 		...(fixture.initialModel === false
 			? []
 			: [`--provider ${sh(fixture.providerId)}`, `--model ${sh(fixture.initialModel)}`]),
@@ -491,7 +537,7 @@ function reapLaunchedKimchi(terminal: Terminal): void {
 			if (alive) {
 				// Guard against PID reuse: only kill when the process is our binary.
 				const line = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8" })
-				if (line.includes(BINARY_PATH)) process.kill(pid, "SIGKILL")
+				if (line.includes(BINARY_PATH) || line.includes(`/${THROWAWAY_INSTALL_DIR}/`)) process.kill(pid, "SIGKILL")
 			}
 		}
 	} catch {

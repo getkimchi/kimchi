@@ -266,6 +266,57 @@ export interface KimchiConfig {
 	memoryEmbedding?: { model?: string; dims?: number }
 	memoryExtraction?: { model?: string }
 	tui?: TuiConfig
+	/**
+	 * Pinned reply language (e.g. "ko", "Korean", "fr"). When set, the system
+	 * prompt tells the model to always answer in this language instead of
+	 * mirroring the user's. Project config wins over global. Unset = mirror
+	 * the user's language (see src/extensions/prompt-construction/system-prompt.ts).
+	 */
+	language?: string
+}
+
+/** Longest accepted `language` value — a name or code, never a paragraph of instructions. */
+export const MAX_LANGUAGE_SETTING_LENGTH = 40
+
+/** Sentinel accepted by `kimchi config set language` and `/language` to unpin (mirror the user). */
+export const LANGUAGE_AUTO = "auto"
+
+/**
+ * Characters a `language` value may contain: letters (any script) with their
+ * combining marks, plain spaces, hyphens, apostrophes and parentheses \u2014 enough
+ * for "ko", "zh-Hant", "pt-BR", "Brazilian Portuguese", "Portugu\u00eas (Brasil)",
+ * "\ud55c\uad6d\uc5b4". Everything else (digits, punctuation, `<`/`>`, control bytes,
+ * Unicode separators, bidi controls) is rejected: the value is interpolated
+ * into the system prompt and the per-request reminder, and a trusted project
+ * config can be attacker-authored, so an allowlist beats a denylist here.
+ */
+const LANGUAGE_SETTING_ALLOWED = /^[\p{L}\p{M} '()-]+$/u
+
+/**
+ * Validate a `language` setting value: trimmed, single-line, non-empty, at most
+ * MAX_LANGUAGE_SETTING_LENGTH chars, drawn from LANGUAGE_SETTING_ALLOWED.
+ * Returns undefined for anything else so an invalid config value falls back
+ * to "mirror the user's language" instead of injecting text into the prompt.
+ */
+export function normalizeLanguageSetting(raw: unknown): string | undefined {
+	if (typeof raw !== "string") return undefined
+	const value = raw.trim().replace(/ {2,}/g, " ")
+	if (value.length === 0 || value.length > MAX_LANGUAGE_SETTING_LENGTH) return undefined
+	if (!LANGUAGE_SETTING_ALLOWED.test(value)) return undefined
+	// "auto" (any case) is the explicit unpin sentinel, on every surface — the
+	// CLI, `/language`, and a hand-edited config file alike.
+	if (value.toLowerCase() === LANGUAGE_AUTO) return LANGUAGE_AUTO
+	return value
+}
+
+/**
+ * Effective pinned language from the project (trusted) and global values.
+ * Project wins, and an explicit project `"auto"` unpins a global pin — the
+ * sentinel is resolved here, after precedence, so it never reaches the prompt.
+ */
+export function resolvePinnedLanguage(project: string | undefined, global: string | undefined): string | undefined {
+	const language = project ?? global
+	return language === LANGUAGE_AUTO ? undefined : language
 }
 
 /**
@@ -322,6 +373,7 @@ function readConfigExtras(configPath: string): {
 	memoryEmbedding?: { model?: string; dims?: number }
 	memoryExtraction?: { model?: string }
 	tui?: TuiConfig
+	language?: string
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -438,6 +490,10 @@ function readConfigExtras(configPath: string): {
 			}
 		}
 
+		// Pinned reply language. Invalid values (non-string, empty, multi-line,
+		// over-long) are ignored so the prompt falls back to mirroring the user.
+		const language = normalizeLanguageSetting(parsed.language)
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -454,6 +510,7 @@ function readConfigExtras(configPath: string): {
 			memoryEmbedding,
 			memoryExtraction,
 			tui,
+			language,
 		}
 	} catch {
 		return {}
@@ -691,6 +748,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
 		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 		tui: projectExtras.tui ?? globalExtras.tui,
+		language: resolvePinnedLanguage(projectExtras.language, globalExtras.language),
 	}
 
 	// Region is account-level, so only the global config may set it.
@@ -723,6 +781,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		memoryEmbedding: extras.memoryEmbedding,
 		memoryExtraction: extras.memoryExtraction,
 		tui: extras.tui,
+		language: extras.language,
 	}
 }
 
@@ -1196,6 +1255,24 @@ export function writeTuiWheelScrollLines(lines: number, configPath?: string): vo
 		const tui = raw.tui && typeof raw.tui === "object" && !Array.isArray(raw.tui) ? { ...raw.tui } : {}
 		;(tui as Record<string, unknown>).wheelScrollLines = lines
 		raw.tui = tui
+	})
+}
+
+/**
+ * Pin (or, with `undefined`, unpin) the reply language in the global config.
+ * The value must already be normalized (see normalizeLanguageSetting); the
+ * `kimchi config set language` and `/language` surfaces validate before
+ * calling this.
+ */
+export function writeLanguage(language: string | undefined, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		if (language === undefined) {
+			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+			delete raw.language
+		} else {
+			raw.language = language
+		}
 	})
 }
 

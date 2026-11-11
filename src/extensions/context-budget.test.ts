@@ -81,7 +81,9 @@ const BUDGET = {
 	/** Total canonical tool surface (18 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
-	 *  Includes the redesigned bash_control schema; ~1% headroom over
+	 *  Includes the redesigned bash_control schema WITH its interactive
+	 *  user-message tail (TUI/ACP sessions — print keeps the base description
+	 *  and is measured by the print slice below); ~1% headroom over
 	 *  measured 6225 after pi 1.3.0 grew the upstream builtin tool
 	 *  definitions again (master measured 5938 on 0.85).
 	 *  Dev

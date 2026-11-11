@@ -43,6 +43,7 @@ describe("oauthConfigForRegion", () => {
 		expect(cfg?.authorizeUrl).toBe("https://login.eu.kimchi.dev/authorize")
 		expect(cfg?.tokenUrl).toBe("https://login.eu.kimchi.dev/oauth/token")
 		expect(cfg?.clientId).toBe("Bw2sA2DJyUAN2wpGiHU72Wh2Xenw6xma")
+		expect(cfg?.audience).toBe("https://app.eu.kimchi.dev")
 		expect(cfg?.organizationsUrl).toBe("https://api.eu.cast.ai/v1/organizations")
 	})
 

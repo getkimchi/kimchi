@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 import { dispatchSubcommand } from "./dispatch.js"
 import { ECHO_MODULE, installFakePackage, setupFakeAgentDir, teardownFakeAgentDir } from "./test-helpers.js"
 
 describe("dispatchSubcommand", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 	let agentDir: string
 
 	// Isolate package-command discovery from the real machine state — this
@@ -63,7 +63,9 @@ describe("dispatchSubcommand", () => {
 		expect(printed).toContain("--provider")
 		expect(printed).toContain("--mode")
 		expect(printed).toContain("Environment variables:")
-		expect(printed).toContain("KIMCHI_API_KEY")
+		expect(printed).toContain("kimchi env")
+		// Env var details are delegated to `kimchi env`, not listed in help.
+		expect(printed).not.toContain("KIMCHI_API_KEY")
 		// Pi-internal commands must NOT leak into kimchi's help (we no longer
 		// delegate to pi.main for the lower section).
 		expect(printed).not.toContain("install <source>")

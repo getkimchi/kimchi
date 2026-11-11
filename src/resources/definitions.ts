@@ -206,11 +206,10 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	{
 		id: SIDE_CHAT_RESOURCE_ID,
 		kind: "extensions",
-		experimental: true,
 		label: "Side chat",
 		description:
 			"Branch a side chat docked to the right of the session (/btw): quote transcript selections, then /wrap a steering prompt back to the main agent. Fullscreen TUI only.",
-		defaultEnabled: false,
+		defaultEnabled: true,
 		restartRequired: true,
 	},
 	{
@@ -218,7 +217,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "PII redaction",
 		description:
-			"Redact emails, phone numbers, financial identifiers, and secrets from prompts, tool results, and stored sessions.",
+			"Redact PII and secrets from prompts, tool results, and stored sessions. Tier policy: checksum-validated and prefixed detectors on; bare-shape detectors (dates, national IDs, unsigned secrets) off unless context-anchored. Tune via settings.json redaction.categories / redaction.entities (docs/pii-redaction-policy.md).",
 		defaultEnabled: false,
 		restartRequired: true,
 	},

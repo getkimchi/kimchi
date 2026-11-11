@@ -925,12 +925,10 @@ export default function (pi: ExtensionAPI) {
 		return new Text(`${theme.fg("error", "✗")} ${theme.bold(entry.data.message)}`, 0, 0)
 	})
 
-	const reloadCustomAgents = (cwd: string = process.cwd()) => {
+	const reloadCustomAgents = (cwd: string) => {
 		const userAgents = loadCustomAgents(cwd)
 		registerAgents(userAgents)
 	}
-
-	reloadCustomAgents()
 
 	const agentActivity = new Map<string, AgentActivity>()
 
@@ -1340,12 +1338,27 @@ export default function (pi: ExtensionAPI) {
 	)
 	activeManager = manager
 
+	// Agents and their settings both live under the session's .kimchi/ — one
+	// helper so no surface can refresh one without the other.
+	const reloadProjectAgentState = (cwd: string) => {
+		reloadCustomAgents(cwd)
+		applyAndEmitLoaded(
+			{
+				setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
+				setDefaultMaxTurns,
+				setGraceTurns,
+				setDefaultJoinMode,
+			},
+			(event, payload) => pi.events.emit(event, payload),
+			cwd,
+		)
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		manager.clearCompleted()
-		// Re-discover custom agents using the new session's cwd, so a session
-		// that started in a different project picks up that project's
-		// .kimchi/agents/ directory and forgets the previous one.
-		reloadCustomAgents(ctx.cwd)
+		// Sessions can live in a different project than the process cwd (ACP,
+		// worktrees) — pick up that project's agents and settings.
+		reloadProjectAgentState(ctx.cwd)
 	})
 
 	pi.on("session_before_switch", () => {
@@ -1666,17 +1679,11 @@ export default function (pi: ExtensionAPI) {
 		return name.replace(/-\d{8}$/, "")
 	}
 
-	const typeListText = buildTypeListText()
+	// Pre-session bootstrap (populates the registry for buildTypeListText);
+	// session_start reloads with ctx.cwd.
+	reloadProjectAgentState(process.cwd())
 
-	applyAndEmitLoaded(
-		{
-			setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
-			setDefaultMaxTurns,
-			setGraceTurns,
-			setDefaultJoinMode,
-		},
-		(event, payload) => pi.events.emit(event, payload),
-	)
+	const typeListText = buildTypeListText()
 
 	// ---- Agent tool ----
 
@@ -1858,7 +1865,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 			execute: async (toolCallId, params, signal, onUpdate, ctx) => {
 				widget.setUICtx(ctx.ui as UICtx)
 
-				reloadCustomAgents()
+				reloadCustomAgents(ctx.cwd)
 
 				// Capture the session facts every post-run path needs BEFORE the
 				// first await: the race below can run for minutes, and a session
@@ -2642,13 +2649,10 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 	// ---- /agents interactive menu ----
 
-	const projectAgentsDir = (cwd = process.cwd()) => join(cwd, ".kimchi", "agents")
+	const projectAgentsDir = (cwd: string) => join(cwd, ".kimchi", "agents")
 	const personalAgentsDir = () => join(getAgentDir(), "agents")
 
-	function findAgentFile(
-		name: string,
-		cwd = process.cwd(),
-	): { path: string; location: "project" | "personal" } | undefined {
+	function findAgentFile(name: string, cwd: string): { path: string; location: "project" | "personal" } | undefined {
 		// The project location is gated on project trust: an untrusted repo's
 		// shipped agent files are only reachable through explicit user action
 		// (naming the agent), but even that must not read untrusted content.
@@ -2682,7 +2686,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 	}
 
 	async function showAgentsMenu(ctx: ExtensionCommandContext) {
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 		const allNames = getAllTypes()
 
 		const options: string[] = []
@@ -2864,7 +2868,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 			if (edited !== undefined && edited !== content) {
 				const { writeFileSync } = await import("node:fs")
 				writeFileSync(file.path, edited, "utf-8")
-				reloadCustomAgents()
+				reloadCustomAgents(ctx.cwd)
 				ctx.ui.notify(`Updated ${file.path}`, "info")
 			}
 		} else if (choice === "Delete") {
@@ -2872,7 +2876,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const confirmed = await ctx.ui.confirm("Delete agent", `Delete ${name} from ${file.location} (${file.path})?`)
 				if (confirmed) {
 					unlinkSync(file.path)
-					reloadCustomAgents()
+					reloadCustomAgents(ctx.cwd)
 					ctx.ui.notify(`Deleted ${file.path}`, "info")
 				}
 			}
@@ -2883,7 +2887,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 			)
 			if (confirmed) {
 				unlinkSync(file.path)
-				reloadCustomAgents()
+				reloadCustomAgents(ctx.cwd)
 				ctx.ui.notify(`Restored default ${name}`, "info")
 			}
 		} else if (choice.startsWith("Eject")) {
@@ -2933,7 +2937,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 		const { writeFileSync } = await import("node:fs")
 		writeFileSync(targetPath, content, "utf-8")
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 		ctx.ui.notify(`Ejected ${name} to ${targetPath}`, "info")
 	}
 
@@ -2948,7 +2952,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 			const updated = content.replace(/^---\n/, "---\nenabled: false\n")
 			const { writeFileSync } = await import("node:fs")
 			writeFileSync(file.path, updated, "utf-8")
-			reloadCustomAgents()
+			reloadCustomAgents(ctx.cwd)
 			ctx.ui.notify(`Disabled ${name} (${file.path})`, "info")
 			return
 		}
@@ -2965,7 +2969,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 		const targetPath = join(targetDir, `${name}.md`)
 		const { writeFileSync } = await import("node:fs")
 		writeFileSync(targetPath, "---\nenabled: false\n---\n", "utf-8")
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 		ctx.ui.notify(`Disabled ${name} (${targetPath})`, "info")
 	}
 
@@ -2979,11 +2983,11 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 		if (updated.trim() === "---\n---" || updated.trim() === "---\n---\n") {
 			unlinkSync(file.path)
-			reloadCustomAgents()
+			reloadCustomAgents(ctx.cwd)
 			ctx.ui.notify(`Enabled ${name} (removed ${file.path})`, "info")
 		} else {
 			writeFileSync(file.path, updated, "utf-8")
-			reloadCustomAgents()
+			reloadCustomAgents(ctx.cwd)
 			ctx.ui.notify(`Enabled ${name} (${file.path})`, "info")
 		}
 	}
@@ -3063,7 +3067,7 @@ Write the file using the write tool. Only write the file, nothing else.`
 			return
 		}
 
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 
 		if (existsSync(targetPath)) {
 			ctx.ui.notify(`Created ${targetPath}`, "info")
@@ -3181,7 +3185,7 @@ ${systemPrompt}
 
 		const { writeFileSync } = await import("node:fs")
 		writeFileSync(targetPath, content, "utf-8")
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 		ctx.ui.notify(`Created ${targetPath}`, "info")
 	}
 
@@ -3257,8 +3261,11 @@ ${systemPrompt}
 	}
 
 	function notifyApplied(ctx: ExtensionCommandContext, successMsg: string) {
-		const { message, level } = saveAndEmitChanged(snapshotSettings(), successMsg, (event, payload) =>
-			pi.events.emit(event, payload),
+		const { message, level } = saveAndEmitChanged(
+			snapshotSettings(),
+			successMsg,
+			(event, payload) => pi.events.emit(event, payload),
+			ctx.cwd,
 		)
 		ctx.ui.notify(message, level)
 	}

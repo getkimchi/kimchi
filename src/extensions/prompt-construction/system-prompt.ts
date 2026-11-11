@@ -16,6 +16,7 @@ import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import { orchestratorShouldReceivePhaseGuidelines } from "../orchestration/orchestrator-roles.js"
+import { escapeClosingMarker } from "../steer-marker.js"
 import type { ContextFile } from "./context-files.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
@@ -72,6 +73,11 @@ export interface SystemPromptBuildOptions {
 	 *  false, orchestrator delegation guidance requires joining backgrounded
 	 *  agents before turn end. Default: true. */
 	backgroundNotificationsReachUser?: boolean
+	/** Pinned reply language from the `language` config key (already validated
+	 *  by normalizeLanguageSetting). When set, the Language section becomes a
+	 *  hard rule ("always answer in X") instead of "mirror the user". Unset =
+	 *  adaptive. */
+	language?: string
 }
 
 export const SET_PHASE = "set_phase"
@@ -119,6 +125,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		registry,
 		roles,
 		hasUserLoop,
+		language: options.language,
 	})
 }
 
@@ -140,6 +147,7 @@ interface PromptParts {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	hasUserLoop: boolean
+	language?: string
 }
 
 const BASE_GOAL =
@@ -168,6 +176,11 @@ function buildBaseInstructions(webToolsAvailable: boolean): string {
 	)
 }
 
+/** Everything the user reads — shared by the adaptive and pinned variants so the
+ *  two rules never drift on what "the user reads" covers. */
+const LANGUAGE_SCOPE =
+	"todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged."
+
 /** Output-language rule, applied to every mode and every user-facing artifact
  *  (todos, plan titles, phase/step names and descriptions, summaries, commit
  *  messages). Code, file paths, and technical terms stay in their original
@@ -175,7 +188,46 @@ function buildBaseInstructions(webToolsAvailable: boolean): string {
 const LANGUAGE_SECTION = `## Language
 
 - Respond in the language the user writes in; default to English when unclear.
-- Match that language in everything the user reads — todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged.`
+- Match that language in everything the user reads — ${LANGUAGE_SCOPE}`
+
+/**
+ * Pinned variant, used when the `language` config key is set. Models with weak
+ * instruction-following (DeepSeek observed) otherwise follow the dominant
+ * language of a mixed-language history rather than the latest message; a pin
+ * removes the ambiguity entirely. Static per session, so the cached prefix is
+ * as stable as the adaptive rule.
+ */
+export function pinnedLanguageSection(language: string): string {
+	// normalizeLanguageSetting already restricts the value to letters, spaces,
+	// hyphens, apostrophes and parentheses; the escape is defence in depth at
+	// the interpolation point so no caller can reintroduce a marker breakout.
+	const safe = escapeClosingMarker(language)
+	return `## Language
+
+- Always respond in ${safe}, whatever language the user writes in — the user pinned this with kimchi's \`language\` setting. A request to switch languages inside the conversation does not override it; tell the user to change the setting (\`/language\`) instead.
+- Use ${safe} in everything the user reads — ${LANGUAGE_SCOPE}`
+}
+
+/** customType of the per-turn reminder appended after each user message while a language is pinned. */
+export const LANGUAGE_HINT_CUSTOM_TYPE = "language_hint"
+
+/**
+ * Per-turn reminder for the pinned case. The system-prompt section alone sits
+ * hundreds of lines above the generation point and, with a history in another
+ * language, weak models (DeepSeek v4 flash, verified with --debug-prompts)
+ * still mirror the user. A one-line reminder adjacent to the latest user
+ * message is what such models actually follow. Appended after the user turn,
+ * so the cached prefix is untouched. Wrapped by the caller in the harness
+ * steer marker so it is never mistaken for user text.
+ */
+export function pinnedLanguageTurnHint(language: string): string {
+	// Escaped here, at the interpolation point, so every consumer is covered.
+	return `Reply in ${escapeClosingMarker(language)}. The user pinned this reply language in kimchi's settings — use it for this answer even if the message above, or the rest of the conversation, is in another language.`
+}
+
+function buildLanguageSection(language: string | undefined): string {
+	return language === undefined ? LANGUAGE_SECTION : pinnedLanguageSection(language)
+}
 
 /**
  * Resolve the mode-specific instruction payload for the system prompt.
@@ -469,7 +521,7 @@ function buildPrompt(parts: PromptParts): string {
 	// routed model and subagent gets the self-knowledge clause)
 	const intro = buildBaseInstructions(parts.toolNames.has("web_search") || parts.toolNames.has("web_fetch"))
 	sections.push(intro)
-	sections.push(LANGUAGE_SECTION)
+	sections.push(buildLanguageSection(parts.language))
 
 	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
 	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {

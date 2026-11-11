@@ -7,11 +7,11 @@ import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { readConfigSetting } from "../../config/settings.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
+import { findModelByRef, refFromModel } from "../../shared/model-ref.js"
 import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
-import { findModelByRef, refFromModel } from "../model-catalog/ref-utils.js"
-import { getRedactionConfig } from "../pii-redaction/config.js"
+import { isRedactionEnabled } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import { backendFor, getNote, hasNote, listWorks, setNote } from "../pr-cost-reporting/ledger/records.js"
 import {
@@ -377,7 +377,7 @@ export async function classifyWorkIntent(
 		): Promise<string | undefined> => {
 			assertAllowed()
 			let content = JSON.stringify(data)
-			if (getRedactionConfig().enabled) content = await redactTextOrThrow(content)
+			if (isRedactionEnabled()) content = await redactTextOrThrow(content)
 			if (content.length > MAX_MATCHING_INPUT_CHARS)
 				throw new WorkMatchingLimit("a saved task and the message exceed 12,000 characters")
 			assertAllowed()

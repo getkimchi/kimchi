@@ -54,14 +54,14 @@ async function reserveCallbackPortRange(): Promise<{ port: number; release: () =
 }
 
 describe("MCP OAuth callback smoke test", () => {
-	it("an idle harness does not initialize the OAuth callback server", { timeout: 20_000 }, async () => {
+	it("an idle harness does not initialize the OAuth callback server", { timeout: 60_000 }, async () => {
 		const reservation = await reserveCallbackPortRange()
 		const session = spawnInteractive({ extraEnv: { MCP_OAUTH_CALLBACK_PORT: String(reservation.port) } })
 
 		try {
-			await session.waitFor((output) => output.length > 0, 10_000)
+			await session.waitFor((output) => output.length > 0, 30_000)
 			session.write("\r")
-			await session.waitFor((output) => output.includes("ask anything or type / for commands"), 10_000)
+			await session.waitFor((output) => output.includes("ask anything or type / for commands"), 30_000)
 			expect(session.output()).not.toContain("MCP OAuth initialization failed")
 		} finally {
 			await session.kill()

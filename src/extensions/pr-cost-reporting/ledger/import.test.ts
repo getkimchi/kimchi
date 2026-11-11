@@ -49,7 +49,7 @@ function agentDir(): string {
 }
 
 function line(record: Record<string, unknown>): string {
-	return JSON.stringify(record) + "\n"
+	return `${JSON.stringify(record)}\n`
 }
 
 function journal(file: string): string {
@@ -411,7 +411,7 @@ describe("import loop over the memory backend", () => {
 		useBackendFactory(() => createMemoryRecords())
 		const folder = journal(dir)
 		const file = join(folder, "parent.jsonl")
-		writeFileSync(file, line(work()) + line(request("req-1")) + "{bad json\n")
+		writeFileSync(file, `${line(work())}${line(request("req-1"))}{bad json\n`)
 		await importJournals(dir)
 		expect(backendFor(dir).getNote("journal-coverage", file)).toBeDefined()
 		// Clean windows before the damage do not retire the note; only the end-reaching read can.
@@ -634,7 +634,7 @@ describe("import loop over the memory backend", () => {
 		useBackendFactory(() => createMemoryRecords())
 		const folder = journal(dir)
 		const file = join(folder, "parent.jsonl")
-		writeFileSync(file, line(work()) + "not json{{{\n")
+		writeFileSync(file, `${line(work())}not json{{{\n`)
 		const first = await importJournals(dir)
 		expect(first.imported).toBe(1)
 		expect(first.problems).toEqual([{ kind: "invalid", path: file, line: 2 }])

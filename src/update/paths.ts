@@ -1,8 +1,22 @@
 import { existsSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
-import { join, normalize } from "node:path"
+import { basename, join, normalize, win32 } from "node:path"
 
 const APP_DIR = "kimchi"
+
+/** The filename a packaged kimchi binary must carry, per platform. */
+export function packagedBinaryName(platform: NodeJS.Platform = process.platform): string {
+	return platform === "win32" ? "kimchi.exe" : "kimchi"
+}
+
+/** True when the executable path names the packaged kimchi binary. Used by
+ *  the launch path and the background-update gate alike: an install would
+ *  overwrite the interpreter in `pnpm dev` or any other renamed binary.
+ *  The basename is platform-aware so the check is testable from any host. */
+export function isPackagedBinaryExecPath(execPath: string, platform: NodeJS.Platform = process.platform): boolean {
+	const base = platform === "win32" ? win32.basename(execPath) : basename(execPath)
+	return base === packagedBinaryName(platform)
+}
 
 /**
  * Cache base, honoring XDG_CACHE_HOME on Linux. Used as the parent of
@@ -14,9 +28,21 @@ export function cacheDir(): string {
 	return join(homedir(), ".cache")
 }
 
-/** State file path: ~/.cache/kimchi/state.json (or under $XDG_CACHE_HOME). */
+/** State file path: ~/.cache/kimchi/state.json (or under $XDG_CACHE_HOME).
+ *  Holds only the per-repo check cache; update diagnostics keep their own
+ *  files below so the cache's unlock-and-save races can't clobber them. */
 export function statePath(): string {
 	return join(cacheDir(), APP_DIR, "state.json")
+}
+
+/** The update result file: ~/.cache/kimchi/update-result.json. */
+export function updateResultPath(): string {
+	return join(cacheDir(), APP_DIR, "update-result.json")
+}
+
+/** The last-installed tag file: ~/.cache/kimchi/last-installed.json. */
+export function lastInstalledPath(): string {
+	return join(cacheDir(), APP_DIR, "last-installed.json")
 }
 
 /** Backups dir: ~/.cache/kimchi/backups/. Created on demand by the installer. */

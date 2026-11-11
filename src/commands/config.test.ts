@@ -5,10 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // ---------------------------------------------------------------------------
 
 // Mock config.js so readTelemetryConfig/writeTelemetryEnabled are no-ops.
-vi.mock("../config.js", () => ({
+vi.mock("../config.js", async (importOriginal) => ({
+	// Keep the real pure helpers (normalizeLanguageSetting, LANGUAGE_AUTO) so the
+	// language key's validation is exercised for real; stub only the writers/readers.
+	...(await importOriginal<typeof import("../config.js")>()),
 	readTelemetryConfig: vi.fn(),
 	writeTelemetryEnabled: vi.fn(),
 	writeTuiWheelScrollLines: vi.fn(),
+	writeLanguage: vi.fn(),
 	loadConfig: vi.fn(),
 }))
 
@@ -25,7 +29,13 @@ vi.mock("../extensions/telemetry/pre-session.js", () => ({
 // implementations, so defaults are restored per test via resetTelemetryPolicyMock.
 vi.mock("../telemetry-policy.js", () => telemetryPolicyMock)
 
-import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
+import {
+	loadConfig,
+	readTelemetryConfig,
+	writeLanguage,
+	writeTelemetryEnabled,
+	writeTuiWheelScrollLines,
+} from "../config.js"
 import {
 	enforceTelemetryPolicyForTests,
 	resetTelemetryPolicyMock,
@@ -290,13 +300,13 @@ describe("kimchi config region", () => {
 		})
 	})
 
-	it("lists only the default region when EU is experimental-gated", async () => {
+	it("lists us and eu without the flag; self-hosted stays experimental-gated", async () => {
 		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
 
 		expect(exit).toBe(0)
-		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States)")
+		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States), eu (Europe)")
 	})
 
 	it("notes the KIMCHI_REGION env override when it is in effect", async () => {
@@ -481,6 +491,85 @@ describe("kimchi config set tui.wheelScrollLines", () => {
 		expect(await runConfig(["set", "tui.wheelScrollLines"])).toBe(2)
 		expect(await runConfig(["set"])).toBe(2)
 		expect(writeTuiWheelScrollLines).not.toHaveBeenCalled()
+	})
+})
+
+describe("kimchi config set/get language", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		// Default: no project override — the effective value is whatever was written.
+		vi.mocked(loadConfig).mockImplementation((() => ({
+			language: vi.mocked(writeLanguage).mock.calls.at(-1)?.[0],
+		})) as unknown as typeof loadConfig)
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("pins a normalized language in the global config", async () => {
+		const exit = await runConfig(["set", "language", " Korean "])
+
+		expect(exit).toBe(0)
+		expect(writeLanguage).toHaveBeenCalledWith("Korean")
+		expect(console.log).toHaveBeenCalledWith("language = Korean (written to global config)")
+		expect(console.error).not.toHaveBeenCalled()
+	})
+
+	it("unpins with auto and says the key was unset, not written", async () => {
+		const exit = await runConfig(["set", "language", "Auto"])
+
+		expect(exit).toBe(0)
+		expect(writeLanguage).toHaveBeenCalledWith(undefined)
+		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("language unset in global config"))
+		expect(console.error).not.toHaveBeenCalled()
+	})
+
+	it("warns when a trusted project config shadows the value just written", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ language: "fr" } as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["set", "language", "ko"])
+
+		expect(exit).toBe(0)
+		expect(writeLanguage).toHaveBeenCalledWith("ko")
+		expect(console.log).toHaveBeenCalledWith("language = ko (written to global config)")
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "fr"'))
+		expect(loadConfig).toHaveBeenCalledWith({ cwd: process.cwd() })
+	})
+
+	it("warns when unpinning while a trusted project config still pins", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ language: "fr" } as ReturnType<typeof loadConfig>)
+
+		expect(await runConfig(["set", "language", "auto"])).toBe(0)
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "fr"'))
+	})
+
+	it('names the project value "auto" when a trusted project config unpins over the global write', async () => {
+		// Project sets "auto" → loadConfig resolves to unset; the warning must not say "undefined".
+		vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>)
+
+		expect(await runConfig(["set", "language", "ko"])).toBe(0)
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "auto"'))
+		expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("undefined"))
+	})
+
+	it.each(["", "   ", "x".repeat(41)])("rejects invalid value %j (exit 2, no write)", async (raw) => {
+		const exit = await runConfig(["set", "language", raw])
+
+		expect(exit).toBe(2)
+		expect(writeLanguage).not.toHaveBeenCalled()
+	})
+
+	it("get shows the effective value or the unset note", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ language: "ko" } as ReturnType<typeof loadConfig>)
+		expect(await runConfig(["get", "language"])).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("language: ko (from config)")
+
+		vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>)
+		expect(await runConfig(["get", "language"])).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("language: unset (replies in the language you write in) (from config)")
 	})
 })
 

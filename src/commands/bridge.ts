@@ -6,15 +6,16 @@ import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { stableExecutablePath } from "../update/paths.js"
 
 /**
- * `kimchi bridge setup|disable|remove|status` — manage the work-reporting
+ * `kimchi bridge setup|enable|disable|remove|status` — manage the work-reporting
  * plugins for Claude Code and Codex (getkimchi/kimchi-bridge) that the
  * installer bundles and, with consent, registers.
  *
  * Routing inference through the Kimchi gateway is opt-in: signing into Kimchi
  * does not enable it. `kimchi bridge setup` is the explicit opt-in — it
- * installs/updates the plugins AND enables gateway routing when a sign-in
- * exists. `disable` pauses recording and turns the gateway off; `remove`
- * uninstalls the plugins from both clients (local records are kept).
+ * installs/updates the plugins, resumes recording AND enables gateway routing
+ * when a sign-in exists. `disable` pauses recording and turns the gateway off;
+ * `enable` undoes it without reinstalling; `remove` uninstalls the plugins
+ * from both clients (local records are kept).
  *
  * Path resolution matches the updater: the bundled package lives in the share
  * dir next to the binary's auxiliary files, and the bridge CLI the installer
@@ -23,10 +24,11 @@ import { stableExecutablePath } from "../update/paths.js"
 export async function runBridge(args: string[]): Promise<number | undefined> {
 	const verb = args[0]
 	if (verb === "setup") return bridgeSetup()
+	if (verb === "enable") return bridgeEnable()
 	if (verb === "disable") return bridgeDisable()
 	if (verb === "remove") return bridgeRemove()
 	if (verb === "status") return bridgeStatus()
-	console.error("Usage: kimchi bridge setup|disable|remove|status")
+	console.error("Usage: kimchi bridge setup|enable|disable|remove|status")
 	return 1
 }
 
@@ -97,12 +99,24 @@ async function bridgeSetup(): Promise<number> {
 	// clients — separate args would feed "codex" into the version slot and
 	// fail with "Requested version differs from this package.".
 	if (!runInstaller("install")) return 1
+	// Setup is the documented opt-in, so it must also undo `kimchi bridge
+	// disable`: otherwise the gateway comes back while recording stays paused
+	// and the bridge silently drops every hook.
+	runBridgeCli(["enable"])
 	console.log("")
 	console.log("Work reporting is installed. Routing inference through the Kimchi gateway is a separate step:")
 	// Best-effort: enable routing only when a sign-in exists; the bridge itself
 	// reports "Gateway not enabled" (no sign-in) when there is none.
 	runBridgeCli(["gateway", "enable"])
 	return 0
+}
+
+/** Inverse of `disable`: resume recording, then route through the gateway. */
+function bridgeEnable(): number {
+	let ok = true
+	ok = runBridgeCli(["enable"]) && ok
+	ok = runBridgeCli(["gateway", "enable"]) && ok
+	return ok ? 0 : 1
 }
 
 function bridgeDisable(): number {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 
 const isHomebrewInstallMock = vi.fn(() => false)
 const checkForUpdateMock = vi.fn()
@@ -14,6 +14,8 @@ const listConfiguredPackagesMock = vi.fn((): ConfiguredPackageFixture[] => [])
 const packageUpdateMock = vi.fn(async (_source?: string): Promise<void> => {})
 const setProgressCallbackMock = vi.fn()
 const settingsManagerCreateMock = vi.fn((_cwd: unknown, _agentDir: unknown) => ({}))
+const acquireUpdaterLockMock = vi.fn((..._args: unknown[]): { release: () => void } | null => ({ release: vi.fn() }))
+const saveLastInstalledMock = vi.fn()
 
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
@@ -23,11 +25,14 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		SettingsManager: {
 			create: (cwd: unknown, agentDir: unknown) => settingsManagerCreateMock(cwd, agentDir),
 		},
-		DefaultPackageManager: vi.fn().mockImplementation(() => ({
-			listConfiguredPackages: listConfiguredPackagesMock,
-			setProgressCallback: setProgressCallbackMock,
-			update: packageUpdateMock,
-		})),
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		DefaultPackageManager: vi.fn().mockImplementation(function () {
+			return {
+				listConfiguredPackages: listConfiguredPackagesMock,
+				setProgressCallback: setProgressCallbackMock,
+				update: packageUpdateMock,
+			}
+		}),
 	}
 })
 
@@ -38,14 +43,20 @@ vi.mock("../update/workflow.js", () => ({
 	checkForUpdate: (...args: unknown[]) => checkForUpdateMock(...args),
 	applyUpdate: (...args: unknown[]) => applyUpdateMock(...args),
 }))
+vi.mock("../update/lock.js", () => ({
+	acquireUpdaterLock: (...args: unknown[]) => acquireUpdaterLockMock(...args),
+}))
+vi.mock("../update/state.js", () => ({
+	saveLastInstalled: (...args: unknown[]) => saveLastInstalledMock(...args),
+}))
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
 }))
 const { runUpdate } = await import("./update.js")
 
 describe("runUpdate flag parsing", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -226,8 +237,8 @@ describe("runUpdate flag parsing", () => {
 })
 
 describe("runUpdate Homebrew branch", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -288,8 +299,8 @@ describe("runUpdate Homebrew branch", () => {
 })
 
 describe("runUpdate non-interactive composition", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -340,8 +351,8 @@ describe("runUpdate non-interactive composition", () => {
 })
 
 describe("runUpdate package targets", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -408,5 +419,72 @@ describe("runUpdate package targets", () => {
 
 		expect(code).toBe(0)
 		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("self-update takes the updater lock", () => {
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
+
+	beforeEach(() => {
+		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		isHomebrewInstallMock.mockReset()
+		isHomebrewInstallMock.mockReturnValue(false)
+		checkForUpdateMock.mockReset()
+		checkForUpdateMock.mockResolvedValue({ hasUpdate: true, latestVersion: "0.0.24", tag: "v0.0.24", releaseUrl: "" })
+		applyUpdateMock.mockReset()
+		applyUpdateMock.mockResolvedValue(undefined)
+		listConfiguredPackagesMock.mockReset()
+		listConfiguredPackagesMock.mockReturnValue([])
+		acquireUpdaterLockMock.mockClear()
+		acquireUpdaterLockMock.mockReturnValue({ release: vi.fn() })
+		saveLastInstalledMock.mockClear()
+	})
+
+	afterEach(() => {
+		logSpy.mockRestore()
+		errSpy.mockRestore()
+	})
+
+	it("refuses when another session holds the updater lock", async () => {
+		acquireUpdaterLockMock.mockReturnValue(null)
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("already in progress")
+		expect(checkForUpdateMock).not.toHaveBeenCalled()
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
+
+	it("--dry-run checks without the updater lock, so it can't make a background tick skip", async () => {
+		acquireUpdaterLockMock.mockReturnValue(null)
+		const code = await runUpdate(["self", "--dry-run"])
+		expect(code).toBe(0)
+		expect(acquireUpdaterLockMock).not.toHaveBeenCalled()
+		expect(checkForUpdateMock).toHaveBeenCalledOnce()
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
+
+	it("does not let an unwritable lock file block a manual update", async () => {
+		await runUpdate(["self", "--force"])
+		expect(acquireUpdaterLockMock).toHaveBeenCalledWith({ allowUnavailable: true })
+	})
+
+	it("records the installed tag after a successful update", async () => {
+		// Otherwise concurrent sessions (and this session's background tick)
+		// reinstall the release the user just installed.
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(0)
+		expect(saveLastInstalledMock).toHaveBeenCalledWith("v0.0.24")
+	})
+
+	it("releases the lock even when the install fails", async () => {
+		const release = vi.fn()
+		acquireUpdaterLockMock.mockReturnValue({ release })
+		applyUpdateMock.mockRejectedValue(new Error("boom"))
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		expect(release).toHaveBeenCalledOnce()
+		expect(saveLastInstalledMock).not.toHaveBeenCalled()
 	})
 })
