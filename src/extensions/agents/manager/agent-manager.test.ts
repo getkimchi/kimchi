@@ -2204,6 +2204,45 @@ describe("AgentManager session hand-off", () => {
 		a.dispose()
 	})
 
+	it("delivers the completion of a run that settles between extract and adoption", async () => {
+		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => runResult.promise)
+
+		const a = new AgentManager()
+		const id = a.spawn(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			isBackground: true,
+		})
+		const { records, queued } = a.extractRunningLocal()
+		a.dispose()
+
+		// The run settles in the staging gap: the outgoing manager's chain
+		// suppresses its completion (disposed) and its finally clears
+		// record.promise, so there is nothing to re-wrap at adoption.
+		runResult.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await new Promise((r) => setTimeout(r, 20))
+		expect(records[0]?.status).toBe("completed")
+		expect(records[0]?.promise).toBeUndefined()
+
+		let completionsInB = 0
+		const b = new AgentManager(() => {
+			completionsInB++
+		})
+		b.adoptRecords(records, queued, fakePi(), fakeCtx())
+
+		// the adoption-side settle fires exactly once
+		expect(completionsInB).toBe(1)
+		expect(b.getRecord(id)?.status).toBe("completed")
+		await new Promise((r) => setTimeout(r, 20))
+		expect(completionsInB).toBe(1)
+		b.dispose()
+	})
+
 	it("ignores adoption into a disposed manager", async () => {
 		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
 		mockRunAgent.mockImplementationOnce(() => runResult.promise)

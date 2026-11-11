@@ -20,7 +20,7 @@
 
 import type { AgentRecord } from "../personas/types.js"
 import type { AgentActivity } from "../ui/agent-widget.js"
-import type { QueuedAgentHandoff, SpawnOptions } from "./agent-manager.js"
+import type { QueuedAgentHandoff } from "./agent-manager.js"
 
 /** Running local agents handed from an outgoing session runtime to its replacement. */
 export interface AgentHandoff {

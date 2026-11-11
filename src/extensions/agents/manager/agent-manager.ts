@@ -1373,7 +1373,17 @@ export class AgentManager {
 	 *  closes over the outgoing (now disposed) manager, so it is re-wired onto
 	 *  this manager: completion fires this manager's onComplete and drains
 	 *  this manager's queue. Queued entries are re-spawned against the new
-	 *  pi/ctx with their original ids. */
+	 *  pi/ctx with their original ids.
+	 *
+	 *  A background record that settled in the staging gap (between
+	 *  extractRunningLocal and this call) gets its completion fired here: the
+	 *  outgoing chain suppressed it (disposed) and its original run promise is
+	 *  gone (the chain's finally cleared record.promise), so there is nothing
+	 *  left to re-wrap. Mid-resume records (record.promise cleared by a prior
+	 *  run, resume in flight on the outgoing manager) are deliberately NOT
+	 *  wired: resumed agents never fired onComplete before session replacement
+	 *  either — the awaiting tool result was their delivery surface — and they
+	 *  remain reachable via get_subagent_result by id. */
 	adoptRecords(records: AgentRecord[], queued: QueuedAgentHandoff[], pi: ExtensionAPI, ctx: ExtensionContext): void {
 		if (this.disposed) return
 		for (const record of records) {
@@ -1392,6 +1402,13 @@ export class AgentManager {
 						return ""
 					},
 				)
+			} else if (record.isBackground && !isActiveStatus(record.status)) {
+				// Settled in the staging gap — fire the adoption-side settle now so
+				// the replacement session still gets the completion notification.
+				// No runningBackground bookkeeping: this record never occupied a
+				// slot under this manager.
+				if (!this.disposed) this.onComplete?.(record)
+				this.drainQueue()
 			}
 		}
 		for (const entry of queued) {
