@@ -58,6 +58,14 @@ jobs:
       - name: Install search tools
         timeout-minutes: 10
         run: |
+          # Route apt through independent mirrors: during the Canonical DNS
+          # outage of 2026-11-11 (actions/runner-images#15296) every *.ubuntu.com
+          # mirror failed to resolve. apt's mirror transport tries these in
+          # order; package integrity stays GPG-verified regardless of source.
+          printf '%s\n' \
+            'http://mirror.math.princeton.edu/pub/ubuntu' \
+            'http://mirror.us.leaseweb.net/ubuntu' \
+            'http://ubuntu.osuosl.org/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install --yes --no-install-recommends -o Acquire::Retries=3 ripgrep fd-find
 
@@ -139,6 +147,12 @@ jobs:
       - name: Install search tools
         timeout-minutes: 10
         run: |
+          # See the comment in the pr-checks job: independent mirrors survive
+          # Canonical-side DNS outages.
+          printf '%s\n' \
+            'http://mirror.math.princeton.edu/pub/ubuntu' \
+            'http://mirror.us.leaseweb.net/ubuntu' \
+            'http://ubuntu.osuosl.org/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install --yes --no-install-recommends -o Acquire::Retries=3 ripgrep fd-find
 
