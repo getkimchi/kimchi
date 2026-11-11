@@ -243,19 +243,22 @@ it(
 				// Turn 1: launch the gated background command, then end the turn.
 				{ toolCalls: [{ id: "spawn", function: { name: "bash", arguments: JSON.stringify({ command: COMMAND }) } }] },
 				{ stream: ["The background command is launched."] },
-				// Turn 2: slow stream keeps the turn live while a steer lands at
-				// the next boundary.
+				// Turn 2: slow stream keeps the turn live while a steer lands. The
+				// stream carries a tool call — the model reuses the SAME upstream
+				// tool call id ("spawn") for an unrelated read — because pi only
+				// injects a queued steer at a real turn boundary; a text-only slow
+				// stream never yields one and the steer would sit queued past turn
+				// end, its answer never streaming.
 				{
 					stream: ["Reading while it runs. ", ...Array.from({ length: 5 }, () => "Still reading. ")],
 					textDelayMs: 300,
-				},
-				// The steered question is answered (text-only response), then the
-				// model reuses the SAME upstream tool call id ("spawn") for an
-				// unrelated read in the next step.
-				{ stream: ["2+2 is 4. "] },
-				{
 					toolCalls: [{ id: "spawn", function: { name: "read", arguments: JSON.stringify({ path: "note.txt" }) } }],
 				},
+				// The steered question is answered (text-only response) at the
+				// injection boundary the recycled-id read created above.
+				{ stream: ["2+2 is 4. "] },
+				// Consumed by the exit wake run, not turn 2 (the steer answer ends
+				// the turn: no tool calls, no queued steers).
 				{ stream: ["Reading complete."] },
 				// Spare: the exit wakes the idle agent.
 				{ stream: ["The background command finished."] },
