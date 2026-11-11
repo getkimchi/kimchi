@@ -100,7 +100,7 @@ interface ClearTodosParams {
 }
 
 /** Real assistant writes reconcile their scope against the input revision
- *  accepted when the call was admitted (captured at the tool_call hook) —
+ *  delivered when the call was admitted (captured at the tool_call hook) —
  *  not the newest revision, which may have arrived while the call was
  *  executing. */
 function toolWriteContext(sessionId: string, toolCallId: string): TodoWriteContext {
