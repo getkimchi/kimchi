@@ -3921,12 +3921,14 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				throw RequestError.invalidParams(undefined, `invalid sessionId: ${msg}`)
 			}
 			const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+			const modelRuntime = await createSsoAwareModelRuntime(options)
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir: options.agentDir,
 				settingsManager,
 				resourceLoader,
 				sessionManager,
+				modelRuntime,
 			})
 			return session
 		}
@@ -3984,16 +3986,39 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	}
 }
 
+/**
+ * Build the model runtime ACP sessions resolve their initial model from.
+ *
+ * Pi's `createAgentSession` otherwise creates a bare runtime internally and
+ * picks the model before the login extension's OAuth registration lands on
+ * it: pi's `checkProviderAuth` activates an OAuth credential only when the
+ * composed provider declares `auth.oauth` (see
+ * extensions/login/flow.ts `installKimchiOAuth`), so an SSO-only machine
+ * (LLM-4134) would resolve the `unknown/unknown` placeholder and trip the
+ * newSession credential gate — an API key works because models.json declares
+ * the api-key auth without any extension.
+ */
+async function createSsoAwareModelRuntime(options: RunAcpOptions) {
+	const modelRuntime = await ModelRuntime.create({
+		authPath: join(options.agentDir, "auth.json"),
+		modelsPath: join(options.agentDir, "models.json"),
+	})
+	installKimchiOAuth(modelRuntime)
+	return modelRuntime
+}
+
 /** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
 export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
 		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+		const modelRuntime = await createSsoAwareModelRuntime(options)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
 			settingsManager,
 			resourceLoader,
+			modelRuntime,
 		})
 		return session
 	}
