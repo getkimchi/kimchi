@@ -14,7 +14,7 @@ import {
 	runAdminCommand,
 	scopeFilterFromParams,
 } from "./admin.js"
-import { captureSessionId } from "./capture.js"
+import { UNKNOWN_CAPTURE_SESSION_ID } from "./config.js"
 
 // --- fixtures -------------------------------------------------------------------
 
@@ -738,9 +738,32 @@ describe("adminOverview", () => {
 			join(h.root, "capture-completions.json"),
 			JSON.stringify({
 				sessions: {
-					// The calling process's own capture session — newer, but excluded.
-					[captureSessionId()]: { factsAdded: 5, updatedAt: Date.now() + 1000 },
+					// The calling session's own capture id — newer, but excluded.
+					"11111111-1111-1111-1111-111111111111": { factsAdded: 5, updatedAt: Date.now() + 1000 },
 					[other]: { factsAdded: 2, updatedAt: 1000 },
+				},
+			}),
+		)
+		const data = await adminOverview(
+			{
+				memoryRoot: h.root,
+				createBackend: (dbPath) => Promise.resolve(h.backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
+				acquireLock: () => Promise.resolve(() => Promise.resolve()),
+			},
+			"11111111-1111-1111-1111-111111111111",
+		)
+		expect(data.lastCapture).toEqual({ factsAdded: 2, updatedAt: 1000 })
+	})
+
+	it("lastCapture skips the pre-upgrade sentinel — it is no session's 'last session'", async () => {
+		const h = trackedHarness({})
+		const real = "99999999-8888-7777-6666-555555555555"
+		writeFileSync(
+			join(h.root, "capture-completions.json"),
+			JSON.stringify({
+				sessions: {
+					[UNKNOWN_CAPTURE_SESSION_ID]: { factsAdded: 9, updatedAt: Date.now() },
+					[real]: { factsAdded: 2, updatedAt: 1000 },
 				},
 			}),
 		)

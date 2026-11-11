@@ -67,6 +67,7 @@ import {
 	POISON_JOB_MAX_ATTEMPTS,
 	POISON_JOB_TTL_MS,
 	SUPERSEDE_SEARCH_TOPK,
+	UNKNOWN_CAPTURE_SESSION_ID,
 } from "./config.js"
 import { batchChoice, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
 import type { DecisionGateKind } from "./gates.js"
@@ -1194,7 +1195,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			skippedByValuation += added.skippedByValuation
 			redacted += added.redacted
 			if (added.captured > 0) {
-				const key = plan.session ?? "(unknown-session)"
+				const key = plan.session ?? UNKNOWN_CAPTURE_SESSION_ID
 				savedBySession.set(key, (savedBySession.get(key) ?? 0) + added.captured)
 			}
 		} catch (err) {

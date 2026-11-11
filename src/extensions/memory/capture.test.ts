@@ -115,7 +115,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("KIMCHI_MEMORY_CAPTURE=off: no handlers registered, no job files, no spawns", () => {
 		process.env.KIMCHI_MEMORY_CAPTURE = "off"
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true)
+		wireMemoryCapture(api, () => true, "capture-sess")
 		// The gate returns before registering: no handlers exist at all.
 		expect(() => getHandler("session_shutdown")).toThrow()
 		expect(() => getHandler("session_before_compact")).toThrow()
@@ -128,7 +128,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("default (unset) keeps normal capture", () => {
 		delete process.env.KIMCHI_MEMORY_CAPTURE
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true)
+		wireMemoryCapture(api, () => true, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -218,7 +218,7 @@ describe("incrementalCapture", () => {
 	it("does not spawn below the threshold", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
-		incrementalCapture([msgEntry("one"), msgEntry("two")], state, "/test/cwd", spawn)
+		incrementalCapture([msgEntry("one"), msgEntry("two")], state, "/test/cwd", "capture-sess", spawn)
 		expect(spawn).not.toHaveBeenCalled()
 		expect(state.spawnedCount).toBe(0)
 	})
@@ -227,12 +227,12 @@ describe("incrementalCapture", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
 		const entries = Array.from({ length: 10 }, (_, i) => msgEntry(`m${i}`))
-		incrementalCapture(entries, state, "/test/cwd", spawn)
+		incrementalCapture(entries, state, "/test/cwd", "capture-sess", spawn)
 		expect(spawn).toHaveBeenCalledTimes(1)
 		expect((spawn.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(10)
 		expect(state.spawnedCount).toBe(10)
 		// Below threshold again until 10 more accumulate.
-		incrementalCapture([...entries, msgEntry("one more")], state, "/test/cwd", spawn)
+		incrementalCapture([...entries, msgEntry("one more")], state, "/test/cwd", "capture-sess", spawn)
 		expect(spawn).toHaveBeenCalledTimes(1)
 	})
 
@@ -240,9 +240,9 @@ describe("incrementalCapture", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
 		const first = Array.from({ length: 10 }, (_, i) => msgEntry(`a${i}`))
-		incrementalCapture(first, state, "/test/cwd", spawn)
+		incrementalCapture(first, state, "/test/cwd", "capture-sess", spawn)
 		const second = [...first, ...Array.from({ length: 12 }, (_, i) => msgEntry(`b${i}`))]
-		incrementalCapture(second, state, "/test/cwd", spawn)
+		incrementalCapture(second, state, "/test/cwd", "capture-sess", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
 		const secondBatch = (spawn.mock.calls[1] as CaptureMessage[][])[0]
 		expect(secondBatch.every((m) => m.content.startsWith("b"))).toBe(true)
@@ -251,8 +251,8 @@ describe("incrementalCapture", () => {
 	it("a fresh state re-derives from zero — the worker ledger dedupes", () => {
 		const spawn = vi.fn()
 		const entries = Array.from({ length: 15 }, (_, i) => msgEntry(`m${i}`))
-		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
-		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
+		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", "capture-sess", spawn)
+		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", "capture-sess", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
 	})
 })
@@ -1627,7 +1627,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("session_shutdown writes a deterministic job file and spawns the worker", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true)
+		wireMemoryCapture(api, () => true, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -1658,7 +1658,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("an isActive gate of false skips capture entirely", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => false)
+		wireMemoryCapture(api, () => false, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -1675,7 +1675,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("an isActive gate of false skips before-compaction capture too", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => false)
+		wireMemoryCapture(api, () => false, "capture-sess")
 		const beforeCompact = getHandler<{ type: "session_before_compact"; branchEntries: SessionEntry[] }>(
 			"session_before_compact",
 		)

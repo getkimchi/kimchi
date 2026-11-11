@@ -39,6 +39,7 @@
  *     session-toggle.ts is the shared channel. The persistent feature switch
  *     stays the extensions.memory resource (/resources, restart required).
  */
+import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { MEMORY_SAVED_STATUS_KEY, MEMORY_STATUS_KEY } from "../../components/status-line.js"
@@ -54,7 +55,6 @@ import {
 	runAdminCommand,
 } from "./admin.js"
 import {
-	captureSessionId,
 	createIncrementalCaptureState,
 	incrementalCapture,
 	messageText,
@@ -112,6 +112,11 @@ export interface MemoryExtensionDeps {
 	/** Decision-gate context — tests inject a stub; default resolves from
 	 * config + KIMCHI_MEMORY_DECISION_GATE once per runtime. */
 	decision?: () => { gate: DecisionGateOptions | null; enabled: ReadonlySet<DecisionGateKind> }
+	/** Per-runtime capture session id — attribution for the "· N saved" half
+	 *  and the "Last session" line. Default: a fresh uuid per extension
+	 *  instance (correct for ACP servers hosting concurrent sessions in one
+	 *  process); tests inject a fixed id. */
+	captureId?: string
 }
 
 /**
@@ -245,7 +250,11 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		const memoryActive = (): boolean =>
 			sessionKey === undefined ? true : (getSessionMemoryOverride(sessionKey) ?? true)
 
-		wireMemoryCapture(pi, memoryActive)
+		// Capture-session attribution: per extension INSTANCE, not module —
+		// an ACP server hosts concurrent sessions in one process, and their
+		// captures must not merge into one record entry.
+		const captureId = deps.captureId ?? randomUUID()
+		wireMemoryCapture(pi, memoryActive, captureId)
 
 		// In-session management — the same grammar as `kimchi memory` (admin.ts).
 		// list|search open the interactive MemoryPanel (page through facts,
@@ -264,6 +273,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				}
 				const result = await runAdminCommand(tokens, {
 					cwd: ctx.cwd,
+					captureSessionId: captureId,
 					confirm: async (message) => ctx.ui.confirm("Memory reset", message),
 					memoryState: {
 						read: () => getSessionMemoryOverride(ctx.sessionManager),
@@ -272,11 +282,24 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						},
 					},
 				})
+				// A successful reset wiped the store (and, for --scope all, the
+				// completion record) — drop the runtime capture state so the segment
+				// cannot keep showing counts for just-deleted facts. The digest
+				// re-derives against the now-empty store on the next agent start.
+				if (parsed.op === "reset" && result.code === 0) {
+					digest = undefined
+					deliveredKeys.clear()
+					deliveredFacts.length = 0
+					incrementalState = createIncrementalCaptureState()
+					clearSavedStatus(ctx)
+					if (ctx.hasUI) ctx.ui.setStatus(MEMORY_STATUS_KEY, undefined)
+				}
 				// /memory disable drops the recall count at once — flip detection
 				// at the next agent start would clear it too, but a stale count
 				// shouldn't linger between management commands.
 				if (ctx.hasUI && getSessionMemoryOverride(ctx.sessionManager) === false) {
 					ctx.ui.setStatus(MEMORY_STATUS_KEY, undefined)
+					clearSavedStatus(ctx)
 				}
 				const output = result.useJson ? result.json : result.text
 				if (!ctx.hasUI) {
@@ -424,10 +447,20 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// later drain dropping our entry (record cap).
 		const updateSavedStatus = (ctx: ExtensionContext): void => {
 			if (!ctx.hasUI) return
-			const recorded = readCaptureSessionSaved(captureSessionId())
+			const recorded = readCaptureSessionSaved(captureId)
 			if (recorded <= savedSeen) return
 			savedSeen = recorded
 			ctx.ui.setStatus(MEMORY_SAVED_STATUS_KEY, String(savedSeen))
+		}
+
+		// Disable/reset paths clear the saved half alongside the recalled one —
+		// a pinned segment must not show a live count for a turned-off (or
+		// reset) feature. savedSeen resets too, so re-enabling restores the
+		// count from the completion record.
+		const clearSavedStatus = (ctx: ExtensionContext): void => {
+			savedSeen = 0
+			if (!ctx.hasUI) return
+			ctx.ui.setStatus(MEMORY_SAVED_STATUS_KEY, undefined)
 		}
 
 		const getSearcher = async (): Promise<MemorySearcher | undefined> => {
@@ -548,6 +581,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					incrementalState = createIncrementalCaptureState()
 					// The flip emptied the ledger — drop any stale count.
 					updateMemoryStatus(ctx)
+					clearSavedStatus(ctx)
 				}
 				lastActive = active
 			}
@@ -567,7 +601,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			}
 			// Lever 3: drain new content as it accumulates (sync, cheap — reads
 			// the in-memory entries and spawns a detached worker past the mark).
-			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState, ctx.cwd)
+			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState, ctx.cwd, captureId)
 
 			// Capture feedback: read the drain's completion record (per-session
 			// counts) — bump the segment's saved half.

@@ -72,6 +72,11 @@ export const SUPERSEDE_SEARCH_TOPK = 8
  */
 export const MEMORY_CAPTURE_INCREMENTAL_MESSAGES = 10
 
+/** Record key for drain-attributed jobs whose job file predates session
+ *  attribution (pre-upgrade pending jobs). Never a live session's id, so
+ *  readers must skip it — it is not "some other session". */
+export const UNKNOWN_CAPTURE_SESSION_ID = "(unknown-session)"
+
 /**
  * Capture drain lock staleness: a held lock whose mtime is older than this
  * is considered compromised and stealable. Must exceed the worst-case

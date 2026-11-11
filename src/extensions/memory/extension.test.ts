@@ -10,7 +10,6 @@ import { createAcpUIContext } from "../../modes/acp/acp-ui-context.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
-import { captureSessionId } from "./capture.js"
 import { MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
@@ -531,7 +530,9 @@ describe("memory extension", () => {
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
 		setSessionMemoryOverride(ctx.sessionManager, false)
 		await start(startEvent("turn 2"), ctx)
-		expect(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)).toEqual([MEMORY_STATUS_KEY, undefined])
+		// Both halves clear — the flip emptied the ledger and the saved watermark.
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, undefined])
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, undefined])
 	})
 
 	it("clears the memory status when compaction resets the delivery ledger", async () => {
@@ -1008,21 +1009,31 @@ describe("memory saved feedback (completion record)", () => {
 		rmSync(home, { recursive: true, force: true })
 	})
 
-	/** Seed the worker's completion record for THIS capture session. */
-	const writeRecord = (factsAdded: number): void => {
+	/** The capture id the extension instance under test runs with. */
+	const CAPTURE_ID = "22222222-3333-4444-5555-666666666666"
+
+	/** Seed the worker's completion record for the given sessions. */
+	const writeRecordEntries = (sessions: Record<string, number>): void => {
 		const dir = join(home, ".config", "kimchi", "memory")
 		mkdirSync(dir, { recursive: true })
-		writeFileSync(
-			join(dir, "capture-completions.json"),
-			JSON.stringify({ sessions: { [captureSessionId()]: { factsAdded, updatedAt: Date.now() } } }),
-		)
+		const now = Date.now()
+		const entries: Record<string, { factsAdded: number; updatedAt: number }> = {}
+		for (const [id, factsAdded] of Object.entries(sessions)) entries[id] = { factsAdded, updatedAt: now }
+		writeFileSync(join(dir, "capture-completions.json"), JSON.stringify({ sessions: entries }))
 	}
+
+	/** Seed the record for THIS extension's capture session. */
+	const writeRecord = (factsAdded: number): void => writeRecordEntries({ [CAPTURE_ID]: factsAdded })
 
 	it("keeps the saved half in the segment without notifications", async () => {
 		const ctx = createContext()
 		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
 		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({ search }),
+				captureId: CAPTURE_ID,
+			}),
 		)
 		// Nothing recorded yet — no saved status.
 		await start(startEvent("set up the repo"), ctx)
@@ -1043,5 +1054,84 @@ describe("memory saved feedback (completion record)", () => {
 
 		// Saves never announce — the segment half is the only surface.
 		expect(vi.mocked(ctx.ui.notify).mock.calls.every((call) => !String(call[0]).startsWith("Saved"))).toBe(true)
+	})
+
+	it("attributes saved counts per capture session (one process, two runtimes)", async () => {
+		const ctx = createContext()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({ search }),
+				captureId: "capture-a",
+			}),
+		)
+		// Two record entries — only this instance's id may show in its segment.
+		writeRecordEntries({ "capture-a": 2, "capture-b": 5 })
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "2"])
+	})
+
+	it("clears the saved half when the session toggle disables memory", async () => {
+		const ctx = createContext()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({ search }),
+				captureId: CAPTURE_ID,
+			}),
+		)
+		writeRecord(2)
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "2"])
+		setSessionMemoryOverride(ctx.sessionManager, false)
+		await start(startEvent("turn 2"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)).toEqual([MEMORY_SAVED_STATUS_KEY, undefined])
+	})
+
+	it("the /memory disable command clears both segment halves at once", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits(), captureId: CAPTURE_ID })(api)
+		const command = getRegisteredCommand("memory")
+		const ctx = createCommandContext()
+		vi.mocked(admin.runAdminCommand).mockImplementation(async (_args, opts) => {
+			opts?.memoryState?.setSession(false)
+			return { text: "Memory disabled for this session — resets on restart.", json: "{}", code: 0, useJson: false }
+		})
+		await command.handler("disable", ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, undefined])
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, undefined])
+	})
+
+	it("a successful /memory reset clears both halves and re-derives from the record", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits(), captureId: CAPTURE_ID })(api)
+		const command = getRegisteredCommand("memory")
+		const ctx = createContext()
+		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+		writeRecord(2)
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "2"])
+
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "All memories deleted.",
+			json: "{}",
+			code: 0,
+			useJson: false,
+		})
+		const cmdCtx = createCommandContext()
+		// reset requires --scope (parseAdminArgs) — the grammar the handler sees.
+		await command.handler("reset --scope all --yes", cmdCtx)
+		expect(vi.mocked(cmdCtx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, undefined])
+		expect(vi.mocked(cmdCtx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, undefined])
+
+		// The watermark reset means a later record read re-surfaces from zero.
+		writeRecord(3)
+		await start(startEvent("turn 2"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
 	})
 })
