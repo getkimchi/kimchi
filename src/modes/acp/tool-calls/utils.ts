@@ -134,7 +134,10 @@ export function resolveBashControlWaitInfo(
 	const runningEntries = entries.filter((s) => s.state === "running")
 	const elapsedHead = runningEntries[0] ?? entries[0]
 	return {
-		commands: shown.map((s) => ({ command: summarizeCommand(s.command, 48), startedAt: new Date(s.startedAt).toISOString() })),
+		commands: shown.map((s) => ({
+			command: summarizeCommand(s.command, 48),
+			startedAt: new Date(s.startedAt).toISOString(),
+		})),
 		overflowCount: entries.length - shown.length,
 		elapsedSeconds: snapshotElapsedSeconds(elapsedHead),
 	}
