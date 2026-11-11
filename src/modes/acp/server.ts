@@ -209,6 +209,11 @@ import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
+	backgroundHandoffHandle,
+	type HeldBackgroundToolCall,
+	watchBackgroundProcessExit,
+} from "./tool-calls/background.js"
+import {
 	BASH_CONTROL_WAIT_META_KEY,
 	BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE,
 	type BashControlBackgroundCommand,
@@ -518,11 +523,11 @@ type SessionRecord = {
 	 * retired at the handoff (the pi id can be recycled by the model without
 	 * colliding with the held ACP id), so no id-collision window opens. Settled
 	 * (deleted + final tool_call_update) by the exit watcher; see
-	 * {@link KimchiAcpAgent.watchBackgroundProcessExit}. Replays reuse the held
+	 * {@link ./tool-calls/background.js#watchBackgroundProcessExit}. Replays reuse the held
 	 * ACP id so a client reload in the same harness process sees the call still
 	 * running under the one identifier it already knows.
 	 */
-	heldBackgroundToolCalls: Map<string, { acpToolCallId: string; piToolCallId: string }>
+	heldBackgroundToolCalls: Map<string, HeldBackgroundToolCall>
 	previousQueue?: {
 		steering: string[]
 		followUp: string[]
@@ -2753,7 +2758,16 @@ export class KimchiAcpAgent implements Agent {
 					// FRESH ACP id, never the held one. Turn-scoped state goes too — the
 					// owning turn may finalize while the process is still running.
 					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
-					this.watchBackgroundProcessExit(entry, sessionId, handoffHandle)
+					watchBackgroundProcessExit(
+						{
+							send: (notification) => this.send(notification),
+							displayText: (sid, text) => this.displayText(sid, text),
+							isCurrent: () => this.sessions.get(sessionId) === entry,
+						},
+						sessionId,
+						entry.heldBackgroundToolCalls,
+						handoffHandle,
+					)
 					return
 				}
 				const update: SessionUpdate = buildToolCallUpdate({
@@ -3161,78 +3175,6 @@ export class KimchiAcpAgent implements Agent {
 		if (opts.removeFromHidden) {
 			turn.hiddenToolCallIds.delete(piToolCallId)
 		}
-	}
-
-	/**
-	 * The bash-background extension → ACP server exit hook (LLM-4485): one
-	 * `whenExited` watcher per held background handle. Exits are already batched
-	 * on the agent side (EXIT_BATCH_WINDOW_MS, 50 ms trailing), so no extra
-	 * debounce is needed on this path — each held call gets exactly one watcher
-	 * and one final update.
-	 */
-	private watchBackgroundProcessExit(record: SessionRecord, sessionId: string, handle: string): void {
-		const registry = getBashSessionState(sessionId)?.registry
-		if (!registry) {
-			// No live registry (extension absent or already torn down): drop the
-			// hold — a client reload replays the call terminal from history, and a
-			// dangling in_progress card would spin forever.
-			record.heldBackgroundToolCalls.delete(handle)
-			return
-		}
-		void registry
-			.whenExited(handle)
-			.then(() => this.settleHeldBackgroundToolCall(sessionId, record, handle))
-			.catch(() => {
-				// Registry teardown (session shutdown) settles whenExited the same
-				// way; the session record is being disposed alongside, so there is
-				// nothing left to publish.
-				record.heldBackgroundToolCalls.delete(handle)
-			})
-	}
-
-	/**
-	 * Flip a held background tool call to its FINAL status when its process
-	 * exits: "completed" on a clean zero exit, "failed" otherwise. The update
-	 * carries the exit outcome in the BackgroundBashToolDetails shape the live
-	 * bash path already publishes, so clients keying UI off rawOutput.details
-	 * see a consistent payload.
-	 */
-	private settleHeldBackgroundToolCall(sessionId: string, record: SessionRecord, handle: string): void {
-		// Only the LIVE record may publish: a disposed/replaced record's exit is
-		// already moot to its (dead) client, and the identity check guards against
-		// a same-id respawn owning the registry slot.
-		if (this.sessions.get(sessionId) !== record) return
-		const held = record.heldBackgroundToolCalls.get(handle)
-		if (!held) return
-		record.heldBackgroundToolCalls.delete(handle)
-		const registry = getBashSessionState(sessionId)?.registry
-		const final = registry?.finalSnapshot(handle) ?? registry?.completedSnapshot(handle)?.final
-		const display = registry?.displaySnapshot(handle) ?? registry?.completedSnapshot(handle)?.display
-		const exitCode = final?.exitCode ?? null
-		const reason = final?.reason ?? null
-		const text = final?.content ?? ""
-		this.send({
-			sessionId,
-			update: buildToolCallUpdate({
-				toolCallId: held.acpToolCallId,
-				piToolCallId: held.piToolCallId,
-				status: exitCode === 0 && reason === null ? "completed" : "failed",
-				content:
-					text.length > 0
-						? [{ type: "content", content: { type: "text", text: this.displayText(sessionId, text) } }]
-						: [],
-				rawOutput: {
-					content: text.length > 0 ? [{ type: "text", text: this.displayText(sessionId, text) }] : [],
-					details: {
-						handle,
-						exited: true,
-						exitCode,
-						reason,
-						...(display ? { display } : {}),
-					},
-				},
-			}),
-		})
 	}
 
 	/**
@@ -4448,21 +4390,6 @@ export function userMessageText(content: unknown): string {
 		}
 	}
 	return parts.join("")
-}
-
-/**
- * Read the process-registry handle off a backgrounded bash result: the
- * pre-exit handoff carries `details.handoff === true` and a live `handle`
- * (see BackgroundBashToolDetails in bash-background/bash-background-tool.ts).
- * Detection is deliberately data-shaped (not toolName-gated) so any tool
- * adopting the same handoff contract composes.
- */
-function backgroundHandoffHandle(result: unknown): string | undefined {
-	const details = (result as { details?: unknown } | null | undefined)?.details
-	if (!details || typeof details !== "object") return undefined
-	const d = details as { handoff?: unknown; handle?: unknown }
-	if (d.handoff !== true || typeof d.handle !== "string" || d.handle.length === 0) return undefined
-	return d.handle
 }
 
 type ReplayToolResult = {
