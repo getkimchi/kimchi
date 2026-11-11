@@ -67,6 +67,7 @@ import { createContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { installKeyringRequireBridge, mcpClient, upstream } from "../../__mocks__/mcp-boundary.js"
 import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
+import { MCP_PROJECT_TRUST_WARNING } from "../../mcp/project-trust.js"
 
 let rootDir: string
 let agentDir: string
@@ -96,7 +97,10 @@ afterEach(() => {
 	rmSync(rootDir, { recursive: true, force: true })
 })
 
-function createChildSessionHarness(cwd: string): {
+function createChildSessionHarness(
+	cwd: string,
+	ctxOverrides?: Parameters<typeof createContext>[0],
+): {
 	harness: ReturnType<typeof createExtensionApi>
 	ctx: ExtensionContext
 } {
@@ -108,12 +112,16 @@ function createChildSessionHarness(cwd: string): {
 		cwd,
 		hasUI: false,
 		sessionManager: { getSessionId: () => "child-session" },
+		...ctxOverrides,
 	})
 	return { harness, ctx }
 }
 
-async function startChildSession(options: { cwd: string }): Promise<ReturnType<typeof createExtensionApi>> {
-	const { harness, ctx } = createChildSessionHarness(options.cwd)
+async function startChildSession(options: {
+	cwd: string
+	ctxOverrides?: Parameters<typeof createContext>[0]
+}): Promise<ReturnType<typeof createExtensionApi>> {
+	const { harness, ctx } = createChildSessionHarness(options.cwd, options.ctxOverrides)
 	// Same call shape as the runner's non-isolated path:
 	// createKimchiMcpAdapterExtension({ cwd: effectiveCwd }).
 	const extension = createKimchiMcpAdapterExtension({ cwd: options.cwd })
@@ -151,6 +159,33 @@ describe("subagent MCP tool inheritance — real extension", () => {
 		const registeredNames = harness.getRegisteredTools().map((tool) => tool.name)
 		expect(registeredNames).toContain("mcp")
 		expect(harness.getActiveToolNames()).toContain("mcp")
+	})
+
+	it("fails closed on an untrusted project in a headless child: no consent prompt, no project servers", async () => {
+		// Project-derived MCP config that an untrusted project must never
+		// reach: user-level config has no servers, so only the project's
+		// entry could ever produce a tool.
+		writeFileSync(
+			join(childCwd, ".mcp.json"),
+			JSON.stringify({ mcpServers: { hostile: { url: "https://attacker.example/mcp" } } }),
+		)
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+		const harness = await startChildSession({
+			cwd: childCwd,
+			ctxOverrides: { isProjectTrusted: vi.fn(() => false) },
+		})
+
+		// No consent path exists in a child session, and none was entered: the
+		// trust decision failed closed to the user-level (empty) config, so the
+		// adapter still installs (file-backed, pointed at the shared user
+		// config) but the empty catalog suppresses the mcp proxy tool, and the
+		// untrusted-project warning surfaces through the headless channel.
+		expect(installKeyringRequireBridge).toHaveBeenCalled()
+		expect(harness.getRegisteredTools().map((tool) => tool.name)).not.toContain("mcp")
+		expect(harness.getActiveToolNames()).not.toContain("mcp")
+		expect(warn).toHaveBeenCalledWith(MCP_PROJECT_TRUST_WARNING)
+		warn.mockRestore()
 	})
 
 	// Isolation is deliberately not exercised here: the runAgent mechanism tests
