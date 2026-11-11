@@ -58,16 +58,20 @@ jobs:
       - name: Install search tools
         timeout-minutes: 3
         run: |
-          # Route apt through independent mirrors: during the Canonical DNS
-          # outage of 2026-11-11 (actions/runner-images#15296) every *.ubuntu.com
-          # mirror failed to resolve. apt's mirror transport tries these in
-          # order; package integrity stays GPG-verified regardless of source.
-          printf '%s\n' \
-            'http://mirror.math.princeton.edu/pub/ubuntu' \
-            'http://mirror.us.leaseweb.net/ubuntu' \
-            'http://ubuntu.osuosl.org/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt
-          sudo apt-get update -qq
-          sudo apt-get install --yes --no-install-recommends ripgrep fd-find
+          # Pinned GitHub-release binaries instead of apt: during the Canonical
+          # DNS outage of 2026-11-11 (actions/runner-images#15296) the
+          # ubuntu.com mirror fleet was unreachable from runners while
+          # github.com stayed healthy. These are the same static musl binaries
+          # the runtime downloads on first use. Hashes are pinned so upgrades
+          # are deliberate, reviewable diffs.
+          curl -fsSL --retry 3 -o /tmp/rg.tgz https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz
+          echo "f84757b07f425fe5cf11d87df6644691c644a5cd2348a2c670894272999d3ba7  /tmp/rg.tgz" | sha256sum -c -
+          tar xzf /tmp/rg.tgz -C /tmp
+          sudo install -m 0755 /tmp/ripgrep-14.1.0-x86_64-unknown-linux-musl/rg /usr/local/bin/rg
+          curl -fsSL --retry 3 -o /tmp/fd.tgz https://github.com/sharkdp/fd/releases/download/v9.0.0/fd-v9.0.0-x86_64-unknown-linux-musl.tar.gz
+          echo "069e2d58127ddd944c03a2684ad79f72e3f9bd3e0d2642c36adc5b367c134592  /tmp/fd.tgz" | sha256sum -c -
+          tar xzf /tmp/fd.tgz -C /tmp
+          sudo install -m 0755 /tmp/fd-v9.0.0-x86_64-unknown-linux-musl/fd /usr/local/bin/fd
 
       - name: Build proxy-helper
         run: make copy-for-dev # This builds the binary and puts it into a location kimchi can find it
@@ -147,14 +151,16 @@ jobs:
       - name: Install search tools
         timeout-minutes: 3
         run: |
-          # See the comment in the pr-checks job: independent mirrors survive
-          # Canonical-side DNS outages.
-          printf '%s\n' \
-            'http://mirror.math.princeton.edu/pub/ubuntu' \
-            'http://mirror.us.leaseweb.net/ubuntu' \
-            'http://ubuntu.osuosl.org/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt
-          sudo apt-get update -qq
-          sudo apt-get install --yes --no-install-recommends ripgrep fd-find
+          # See the comment in the pr-checks job: pinned GitHub-release
+          # binaries, independent of the ubuntu.com mirror fleet.
+          curl -fsSL --retry 3 -o /tmp/rg.tgz https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz
+          echo "f84757b07f425fe5cf11d87df6644691c644a5cd2348a2c670894272999d3ba7  /tmp/rg.tgz" | sha256sum -c -
+          tar xzf /tmp/rg.tgz -C /tmp
+          sudo install -m 0755 /tmp/ripgrep-14.1.0-x86_64-unknown-linux-musl/rg /usr/local/bin/rg
+          curl -fsSL --retry 3 -o /tmp/fd.tgz https://github.com/sharkdp/fd/releases/download/v9.0.0/fd-v9.0.0-x86_64-unknown-linux-musl.tar.gz
+          echo "069e2d58127ddd944c03a2684ad79f72e3f9bd3e0d2642c36adc5b367c134592  /tmp/fd.tgz" | sha256sum -c -
+          tar xzf /tmp/fd.tgz -C /tmp
+          sudo install -m 0755 /tmp/fd-v9.0.0-x86_64-unknown-linux-musl/fd /usr/local/bin/fd
 
       - name: Build proxy-helper
         run: make build
