@@ -153,7 +153,9 @@
 #         registered mid-session (first connect, reconnect, list-changed
 #         refresh) show in the TUI slash dropdown without /reload, including
 #         argument completions resolved from live metadata (the base
-#         provider only knows its one-time snapshot).
+#         provider only knows its one-time snapshot); lookup scans by exact
+#         commandName because promptMetadata is keyed by RAW config server
+#         names while commands embed the sanitized part.
 #         Remove when upstream Pi rebuilds its autocomplete provider on
 #         command registration (or registerCommand emits an event).
 #       * metadata-cache.ts isPrivateScopeEntry, mcp-panel.ts (+McpPanelCallbacks
@@ -1752,10 +1754,10 @@ index 264573709c2c896fdb88d661fd24cd8f2f4a2327..7620913273acb8cd190bbb992d9e8530
        entry.projectRoot === projectRoot && entry.serverName === name && entry.definitionHash === definitionHash);
 diff --git a/prompt-autocomplete.ts b/prompt-autocomplete.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..655b50c093a4f942133ea2658eedda1b19daa685
+index 0000000000000000000000000000000000000000..31663653280d09fddf86613dc5ee8ed7dbc4433f
 --- /dev/null
 +++ b/prompt-autocomplete.ts
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,112 @@
 +// Host integration: live MCP prompt commands in the TUI autocomplete.
 +// Tracking: upstream Pi rebuilds its autocomplete provider from a one-time
 +// snapshot of registered commands. Remove this wrapper when Pi rebuilds the
@@ -1852,14 +1854,21 @@ index 0000000000000000000000000000000000000000..655b50c093a4f942133ea2658eedda1b
 +
 +/** Resolve the live prompt metadata behind an `mcp__<server>__<prompt>`
 + * command name, applying the same provisional-install trust filter as the
-+ * command list so the wrapper never exceeds the command registry. */
++ * command list so the wrapper never exceeds the command registry.
++ *
++ * Scans by exact commandName rather than reverse-parsing the command,
++ * because `state.promptMetadata` is keyed by the RAW config server name
++ * while commands embed its sanitized prefix-part (hyphens become
++ * underscores; `toolPrefix: "mcp"` rewrites the shape) — splitting on
++ * "__" would silently miss every sanitizable name. */
 +function findLivePromptSpec(state: McpExtensionState, commandName: string): PromptMetadata | null {
 +  if (!commandName.startsWith("mcp__")) return null;
-+  const parts = commandName.split("__");
-+  if (parts.length !== 3) return null;
-+  const serverName = parts[1];
-+  if (state.provisionalInstalls?.has(serverName)) return null;
-+  return (state.promptMetadata?.get(serverName) ?? []).find((p) => p.commandName === commandName) ?? null;
++  for (const [serverName, prompts] of state.promptMetadata ?? []) {
++    if (state.provisionalInstalls?.has(serverName)) continue;
++    const spec = prompts.find((p) => p.commandName === commandName);
++    if (spec) return spec;
++  }
++  return null;
 +}
 diff --git a/proxy-modes.ts b/proxy-modes.ts
 index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98a070add7 100644
