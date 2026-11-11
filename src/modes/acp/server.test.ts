@@ -14008,15 +14008,15 @@ describe("bash_control wait info placement", () => {
 		})
 	})
 })
-// Backgrounded bash handoff on the ACP wire (LLM-4485): a backgrounded bash
-// tool result (details.handoff === true + a live process-registry handle)
-// keeps its ACP tool_call `in_progress` — held on the SessionRecord, so it
+// Backgrounded bash handoff on the ACP wire: a backgrounded bash tool
+// result (details.handoff === true + a live process-registry handle) keeps
+// its ACP tool_call `in_progress` — held on the SessionRecord, so it
 // survives across turns — until the process exits, when the exit watcher
 // flips it to the final status carrying the exit outcome (completed on exit
 // 0, failed otherwise). Replays in the same harness process overlay a
 // still-running call under the SAME ACP id; recycled upstream ids get fresh
 // ACP ids so they can never collide with a held call.
-describe("KimchiAcpAgent background bash handoff (LLM-4485)", () => {
+describe("KimchiAcpAgent background bash handoff", () => {
 	let fake: FakeAgentSession
 	let agent: KimchiAcpAgent
 	let sessionId: string
@@ -14136,6 +14136,11 @@ describe("KimchiAcpAgent background bash handoff (LLM-4485)", () => {
 		expect((handoffUpdate?.rawOutput?.details as { handle?: string }).handle).toBe(handle)
 		// No terminal update of any kind: the call stays open until the exit.
 		expect(callUpdates.some(isTerminal)).toBe(false)
+		// A second turn that does NOT touch the background process.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
 		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "and?" }] })).stopReason).toBe("end_turn")
 		// Still open after a second, unrelated turn.
 		expect(updatesFor(acpId).some(isTerminal)).toBe(false)
@@ -14275,8 +14280,11 @@ describe("KimchiAcpAgent background bash handoff (LLM-4485)", () => {
 		await waitFor(() => updatesFor(acpId).some((u) => u.status === "completed"))
 	})
 
-	it("drops the hold cleanly when the session has no live process registry (extension absent or torn down)", async () => {
+	it("publishes the handoff result as a TERMINAL update, never a hold, when the session has no live process registry", async () => {
 		// Simulate the extension being gone: no session state for the session.
+		// Without a registry no exit watcher could ever settle a hold, so the
+		// result must take the normal terminal path — a client must never
+		// receive an in_progress that nothing will settle.
 		setSessionState(sessionId, undefined)
 		const handle = "handle-without-registry"
 
@@ -14285,10 +14293,53 @@ describe("KimchiAcpAgent background bash handoff (LLM-4485)", () => {
 
 		const acpId = toolCalls()[0]?.toolCallId ?? ""
 		const handoffUpdate = updatesFor(acpId).find((u) => u.rawOutput?.details?.handoff === true)
-		expect(handoffUpdate?.status).toBe("in_progress")
-		// No watcher was armed, so nothing resolves later — and teardown is clean.
-		await delay(50)
-		expect(updatesFor(acpId).some(isTerminal)).toBe(false)
+		expect(handoffUpdate?.status).toBe("completed")
+	})
+
+	it("settles the previous hold when the same handle is handed off twice, and the new hold owns the exit", async () => {
+		const handle = spawnBackgroundSleep()
+
+		await promptWithHandoff(handle)
+		const firstAcpId = toolCalls()[0]?.toolCallId ?? ""
+		expect(updatesFor(firstAcpId).some(isTerminal)).toBe(false)
+
+		// A second tool result hands off the SAME registry handle (e.g. a
+		// foreground/re-background cycle re-tracking one process).
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-2",
+				toolName: "bash",
+				args: { command: "sleep 900" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-2",
+				toolName: "bash",
+				result: handoffResult(handle),
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "track it again" }] })).stopReason).toBe(
+			"end_turn",
+		)
+
+		// The superseded hold was settled best-effort — no dangling spinner.
+		const superseded = updatesFor(firstAcpId).find(isTerminal)
+		expect(superseded?.status).toBe("failed")
+		expect(superseded?.rawOutput?.details?.reason).toBe("tracking superseded by a new handoff")
+
+		// The new hold is a live in_progress card under a FRESH ACP id.
+		const secondAcpId = toolCalls()[1]?.toolCallId ?? ""
+		expect(secondAcpId).not.toBe(firstAcpId)
+		expect(updatesFor(secondAcpId).some((u) => u.status === "in_progress")).toBe(true)
+		expect(updatesFor(secondAcpId).some(isTerminal)).toBe(false)
+
+		// … and the exit settles the new hold with the real outcome.
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(secondAcpId).some((u) => u.status === "completed"))
 	})
 
 	it("replays a still-running background call as in_progress under the SAME ACP id on reload in the same harness process, and the exit still settles it afterwards", async () => {
@@ -14390,6 +14441,13 @@ describe("KimchiAcpAgent background bash handoff (LLM-4485)", () => {
 		// … and a TERMINAL status — the recorded result is the handoff, but the
 		// process is no longer held, so replaying in_progress would spin forever.
 		expect(replayCalls[0]?.status).toBe("completed")
-		expect(updatesFor(replayCalls[0]?.toolCallId ?? "").some((u) => u.status === "in_progress")).toBe(false)
+		const replayed = updatesFor(replayCalls[0]?.toolCallId ?? "")
+		expect(replayed.some((u) => u.status === "in_progress")).toBe(false)
+		// The in-flight markers are normalized away so the terminal status and
+		// the details payload cannot contradict each other on the wire.
+		const details = replayed[replayed.length - 1]?.rawOutput?.details
+		expect(details?.handoff).toBeUndefined()
+		expect(details?.exited).toBeUndefined()
+		expect(details?.exitCode).toBeNull()
 	})
 })

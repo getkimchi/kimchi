@@ -211,7 +211,9 @@ import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
 	backgroundHandoffHandle,
 	type HeldBackgroundToolCall,
-	watchBackgroundProcessExit,
+	holdAndWatchBackgroundToolCall,
+	liveBackgroundHandoffHandle,
+	normalizeUnheldHandoffResult,
 } from "./tool-calls/background.js"
 import {
 	BASH_CONTROL_WAIT_META_KEY,
@@ -514,9 +516,9 @@ type SessionRecord = {
 	/**
 	 * Background bash processes still running for this session, keyed by their
 	 * process-registry handle — each mapped to the ACP toolCallId whose
-	 * `tool_call` stays `in_progress` until the process exits (LLM-4485; the
-	 * ACP v2 Background Work RFD's entity model: work that outlives the turn
-	 * stays on the tool call that started it).
+	 * `tool_call` stays `in_progress` until the process exits (the ACP v2
+	 * Background Work RFD's entity model: work that outlives the turn stays on
+	 * the tool call that started it).
 	 *
 	 * SessionRecord scope — NOT TurnContext: a background process outlives the
 	 * turn that launched it. The upstream-id mapping in `toolCallIdMap` IS
@@ -2735,14 +2737,16 @@ export class KimchiAcpAgent implements Agent {
 							return fileChangeToDiffContent({ ...change, path: resolveToolPath(change.path, entry.cwd) })
 						})
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
-				// Backgrounded bash handoff (LLM-4485): the process is still alive —
-				// this tool result is the pre-exit handoff, not the outcome. The ACP
-				// tool_call therefore reports `in_progress` (NOT a terminal status) and
-				// stays open until the exit watcher flips it to its final status with
-				// the exit outcome — mirroring the v2 Background Work RFD's entity
-				// model. Turn accounting is unaffected (finalizeTurn never inspects
-				// open tool calls), so steering and turn end behave unchanged.
-				const handoffHandle = event.isError ? undefined : backgroundHandoffHandle(event.result)
+				// Backgrounded bash handoff: the process is still alive — this tool
+				// result is the pre-exit handoff, not the outcome. The ACP tool_call
+				// therefore reports `in_progress` (NOT a terminal status) and stays open
+				// until the exit watcher flips it to its final status with the exit
+				// outcome — mirroring the v2 Background Work RFD's entity model. Turn
+				// accounting is unaffected (finalizeTurn never inspects open tool
+				// calls), so steering and turn end behave unchanged. Without a live
+				// registry the gate declines the hold and the result takes the normal
+				// terminal path — nothing holds a call it could never settle.
+				const handoffHandle = event.isError ? undefined : liveBackgroundHandoffHandle(sessionId, event.result)
 				if (handoffHandle !== undefined) {
 					const runningUpdate: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
@@ -2752,21 +2756,22 @@ export class KimchiAcpAgent implements Agent {
 						rawOutput: this.displayOptionalRecord(sessionId, wireSafeToolResult(event.result)),
 					})
 					this.send({ sessionId, update: runningUpdate })
-					entry.heldBackgroundToolCalls.set(handoffHandle, { acpToolCallId, piToolCallId: event.toolCallId })
 					// Retire the upstream-id mapping exactly as a completed call would:
 					// the model may recycle the pi id later and a recycled id must get a
 					// FRESH ACP id, never the held one. Turn-scoped state goes too — the
 					// owning turn may finalize while the process is still running.
 					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
-					watchBackgroundProcessExit(
+					holdAndWatchBackgroundToolCall(
 						{
 							send: (notification) => this.send(notification),
-							displayText: (sid, text) => this.displayText(sid, text),
+							displayContent: (sid, content) => this.displayContent(sid, content),
+							displayRecord: (sid, value) => this.displayRecord(sid, value),
 							isCurrent: () => this.sessions.get(sessionId) === entry,
 						},
 						sessionId,
 						entry.heldBackgroundToolCalls,
 						handoffHandle,
+						{ acpToolCallId, piToolCallId: event.toolCallId },
 					)
 					return
 				}
@@ -3041,15 +3046,21 @@ export class KimchiAcpAgent implements Agent {
 				// results) restore the historical cohort as _meta — the recorded
 				// args alone cannot name what a handle-less wait blocked on.
 				const waitTargets = takeReplayWaitTargets(replayWaitTargets, upstreamId)
-				// Background reload overlay (LLM-4485): the recorded result of a
-				// backgrounded bash call is its pre-exit HANDOFF. When the process is
-				// still running in this harness process (registry and held map are
-				// in-process), replay presents the call as STILL RUNNING under the same
-				// ACP id the live flow handed out — the exit watcher flips it to its
-				// final status when the process exits, and the client never sees a
-				// running process flip back and forth across its reload.
+				// Background reload overlay: the recorded result of a backgrounded
+				// bash call is its pre-exit HANDOFF. When the process is still running
+				// in this harness process (registry and held map are in-process), replay
+				// presents the call as STILL RUNNING under the same ACP id the live flow
+				// handed out — the exit watcher flips it to its final status when the
+				// process exits, and the client never sees a running process flip back
+				// and forth across its reload. An UN-held handoff result (cross-process
+				// reload, fresh record) falls back to the recorded terminal status, so
+				// its replayed details are normalized to not contradict that status.
 				const handoffHandle = result ? backgroundHandoffHandle(result) : undefined
 				const heldAcpId = handoffHandle !== undefined ? record?.heldBackgroundToolCalls.get(handoffHandle) : undefined
+				const replayResult =
+					result && handoffHandle !== undefined && heldAcpId === undefined
+						? normalizeUnheldHandoffResult(result)
+						: result
 				const acpToolCallId = heldAcpId
 					? heldAcpId.acpToolCallId
 					: record
@@ -3082,8 +3093,11 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						content: this.displayContent(sessionId, result ? toolResultContent(result) : []),
-						rawOutput: this.displayOptionalRecord(sessionId, result ? wireSafeToolResult(result) : undefined),
+						content: this.displayContent(sessionId, replayResult ? toolResultContent(replayResult) : []),
+						rawOutput: this.displayOptionalRecord(
+							sessionId,
+							replayResult ? wireSafeToolResult(replayResult) : undefined,
+						),
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id

@@ -5,8 +5,8 @@ import { expect, it } from "vitest"
 import { STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitForSessionUpdate } from "./support/scenarios.js"
 
-// LLM-4485: a backgrounded bash tool call (its recorded result is the
-// pre-exit handoff, details.handoff === true + a live handle) stays
+// A backgrounded bash tool call (its recorded result is the pre-exit
+// handoff, details.handoff === true + a live handle) stays
 // `in_progress` on the ACP wire until the process exits, then flips to a
 // FINAL status carrying the exit outcome — completed on exit 0, failed
 // otherwise. The hold is session-scoped, so it survives across turns; a
