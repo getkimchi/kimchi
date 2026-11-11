@@ -109,11 +109,13 @@ function notAuthenticated(message: string): RequestError {
 	return ssoCredentialError("SSO_NOT_AUTHENTICATED", message)
 }
 
-/** Store-level failure (unreadable config.json, missing models.json, broken
- * auth.json, runtime construction): never a raw error — the header contract
+/** Store-level failure (unreadable config.json, corrupt auth.json,
+ * runtime-construction failure): never a raw error — the header contract
  * says clients branch on `data.code`, and this is recoverable differently
  * from both "not SSO-authenticated" (re-login) and "refresh failed"
- * (transient): the store itself is the problem. */
+ * (transient): the store itself is the problem. A MISSING models.json does
+ * not map here — ModelRuntime.create tolerates it absent (the credential
+ * lives in auth.json alone), so the export succeeds without it. */
 function storeUnavailable(context: string, error: unknown): RequestError {
 	const detail = error instanceof Error ? error.message : String(error)
 	return ssoCredentialError("SSO_STORE_UNAVAILABLE", `${context}: ${detail}`, { detail })
