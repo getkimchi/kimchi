@@ -246,9 +246,9 @@ async function main() {
 		const seeded = readStoredCredential(keyringDir)
 		console.log(`seeded credential: server=${serverUrl} expiresAt=${seeded.tokens.expiresAt} (in the past)`)
 
-		const call = { tool: callTool, args: callArgs }
+		const call = callTool ? { tool: callTool, args: callArgs } : null
 		const first = await runProbe({ homeDir, binDir, serverUrl, clientId, clientSecret, call })
-		const firstFailures = assessProbe("cycle-1", first, keyringDir, { expectedScope, callRequested: true })
+		const firstFailures = assessProbe("cycle-1", first, keyringDir, { expectedScope, callRequested: call !== null })
 		if (firstFailures.length > 0 && first.childOutput)
 			console.error(`child output (redacted):\n${redactChildOutput(first.childOutput)}`)
 		if (firstFailures.length > 0) {
@@ -263,7 +263,7 @@ async function main() {
 		console.log("forced the refreshed credential back into the past for the second renewal cycle")
 
 		const second = await runProbe({ homeDir, binDir, serverUrl, clientId, clientSecret, call })
-		const secondFailures = assessProbe("cycle-2", second, keyringDir, { expectedScope, callRequested: true })
+		const secondFailures = assessProbe("cycle-2", second, keyringDir, { expectedScope, callRequested: call !== null })
 		if (secondFailures.length > 0 && second.childOutput)
 			console.error(`child output (redacted):\n${redactChildOutput(second.childOutput)}`)
 		if (secondFailures.length > 0) {
@@ -283,8 +283,8 @@ async function main() {
 			runProbe({ homeDir, binDir: join(homeDir, "browser-bin-race-a"), serverUrl, clientId, clientSecret, call }),
 			runProbe({ homeDir, binDir: join(homeDir, "browser-bin-race-b"), serverUrl, clientId, clientSecret, call }),
 		])
-		const raceAFailures = assessProbe("cycle-3a", raceA, keyringDir, { expectedScope, callRequested: true })
-		const raceBFailures = assessProbe("cycle-3b", raceB, keyringDir, { expectedScope, callRequested: true })
+		const raceAFailures = assessProbe("cycle-3a", raceA, keyringDir, { expectedScope, callRequested: call !== null })
+		const raceBFailures = assessProbe("cycle-3b", raceB, keyringDir, { expectedScope, callRequested: call !== null })
 		for (const [label, probe, failures] of [
 			["cycle-3a", raceA, raceAFailures],
 			["cycle-3b", raceB, raceBFailures],

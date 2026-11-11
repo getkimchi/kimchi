@@ -79,7 +79,9 @@ async function waitForListeningEvent(eventsPath: string): Promise<string> {
 	throw new Error(`fixture never reported http_listening (events at ${eventsPath})`)
 }
 
-async function spawnFixture(behavior?: Record<string, unknown>): Promise<FixtureHandle> {
+async function spawnFixture(
+	options: { scenario?: string; behavior?: Record<string, unknown> } = {},
+): Promise<FixtureHandle> {
 	const tmpDir = mkdtempSync(join(tmpdir(), "oauth-rotation-"))
 	const eventsPath = join(tmpDir, "events.jsonl")
 	const child = spawn(process.execPath, [FIXTURE_SCRIPT], {
@@ -87,9 +89,11 @@ async function spawnFixture(behavior?: Record<string, unknown>): Promise<Fixture
 			...process.env,
 			KIMCHI_MCP_FIXTURE_TRANSPORT: "http",
 			KIMCHI_MCP_FIXTURE_OAUTH: "1",
-			KIMCHI_MCP_FIXTURE_SCENARIO: "oauth-rotating-refresh",
+			KIMCHI_MCP_FIXTURE_SCENARIO: options.scenario ?? "oauth-rotating-refresh",
 			KIMCHI_MCP_FIXTURE_EVENTS: eventsPath,
-			...(behavior === undefined ? {} : { KIMCHI_MCP_FIXTURE_BEHAVIOR: JSON.stringify(behavior) }),
+			...(options.behavior === undefined
+				? {}
+				: { KIMCHI_MCP_FIXTURE_BEHAVIOR: JSON.stringify(options.behavior) }),
 		},
 		stdio: "ignore",
 	})
@@ -406,7 +410,7 @@ describe("MCP OAuth refresh-token rotation", () => {
 		// The fixture parks the first refresh grant, so a concurrent session's
 		// grant rotates the token while the parked one is in flight and the
 		// parked grant is then rejected invalid_grant as stale.
-		fixture = await spawnFixture({ delayFirstRefreshGrantMs: 3_000 })
+		fixture = await spawnFixture({ behavior: { delayFirstRefreshGrantMs: 3_000 } })
 		const serverName = "oauth-rotation-retry"
 		const envOptions = { agentDir, fileKey }
 		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
@@ -469,6 +473,83 @@ describe("MCP OAuth refresh-token rotation", () => {
 		// A stale presentation would appear as a rejected grant; none may happen.
 		expect(refreshRejections(fixture.eventsPath), eventSummary(fixture.eventsPath)).toEqual([])
 		// Both refreshes were accepted, and each rotated the token.
-		expect(refreshGrants(fixture.eventsPath).filter(isRotatedGrant).length, eventSummary(fixture.eventsPath)).toBe(2)
+		expect(
+			refreshGrants(fixture.eventsPath).filter(isRotatedGrant).length,
+			eventSummary(fixture.eventsPath),
+		).toBe(2)
+	})
+
+	it("keeps retrying while the token keeps rotating under the recovering session", { timeout: 90_000 }, async () => {
+		// Parks refresh grants #1 and #3: the loser's initial grant and its
+		// first retry each lose a rotation race to a concurrent session, so
+		// recovery must follow the chain (adopt T2, rejected, adopt T3) instead
+		// of giving up after one retry.
+		fixture = await spawnFixture({ behavior: { delayRefreshGrantsAt: [1, 3], delayRefreshGrantMs: 4_000 } })
+		const serverName = "oauth-rotation-chain"
+		const envOptions = { agentDir, fileKey }
+		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
+		await waitUntilExpired(serverName, fixture.serverUrl)
+
+		process.env.CHILD_ROTATE_DELAY_MS = "0"
+		try {
+			await Promise.all([
+				refreshWithStaleCache(serverName, fixture.serverUrl, envOptions, "chained-rotation loser"),
+				(async () => {
+					await delay(600)
+					await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator-1")
+				})(),
+				(async () => {
+					await delay(5_000)
+					await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator-2")
+				})(),
+			])
+		} finally {
+			delete process.env.CHILD_ROTATE_DELAY_MS
+		}
+
+		const rejections = refreshRejections(fixture.eventsPath)
+		// Both of the loser's grants were rejected as stale.
+		expect(rejections.length, eventSummary(fixture.eventsPath)).toBe(2)
+		expect(rejections[0].stale, eventSummary(fixture.eventsPath)).toBe(true)
+		expect(rejections[1].stale, eventSummary(fixture.eventsPath)).toBe(true)
+		// The chain: the second rejection presented the token the first
+		// rotation minted — the retry used the adopted token, not the original.
+		expect(rejections[1].presented, eventSummary(fixture.eventsPath)).toBe(rejections[0].current)
+		// Three rotations: rotator-1, rotator-2, and the loser's final retry.
+		expect(
+			refreshGrants(fixture.eventsPath).filter(isRotatedGrant).length,
+			eventSummary(fixture.eventsPath),
+		).toBe(3)
+		// No session fell back to a full browser re-auth: only the seed
+		// exchanged an authorization code.
+		expect(
+			readEvents(fixture.eventsPath).filter(
+				(event) => event.type === "oauth_token_issued" && event.grantType === "authorization_code",
+			).length,
+			eventSummary(fixture.eventsPath),
+		).toBe(1)
+	})
+
+	it("logs a distinguishable miss when a rejected grant has no rotation to adopt", { timeout: 60_000 }, async () => {
+		// The revoked scenario rejects every refresh grant and rotates nothing,
+		// so recovery must miss: the child fails, and its output carries the
+		// distinct miss line instead of only a generic refresh failure.
+		fixture = await spawnFixture({ scenario: "oauth-refresh-revoked" })
+		const serverName = "oauth-rotation-miss"
+		const envOptions = { agentDir, fileKey }
+		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
+		await waitUntilExpired(serverName, fixture.serverUrl)
+
+		let failure: Error | undefined
+		try {
+			await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "revoked-refresh child")
+		} catch (error) {
+			failure = error as Error
+		}
+		expect(failure, "the child must fail: the token is revoked").toBeInstanceOf(Error)
+		expect(
+			failure?.message.includes("no rotated token appeared in shared storage; re-auth required"),
+			String(failure?.message).slice(0, 500),
+		).toBe(true)
 	})
 })

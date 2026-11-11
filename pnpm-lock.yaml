@@ -46,7 +46,7 @@ patchedDependencies:
     hash: 9a09dd3d3b9be84def0fadf0dd7057c8f499eb189fb3f3345bd3b09e441b928a
     path: patches/@modelcontextprotocol__client@2.3.1.patch
   pi-mcp-adapter@5.3.1:
-    hash: 2333773cb4f4dd4f08c2da5293656091867b92bd7c122bbca6de76c6bacbc98d
+    hash: b4fc24107d02f530e11c896312a77de52d0341e0ac0770bd9e84f6734cda378c
     path: patches/pi-mcp-adapter@5.3.1.patch
   playwright-core@1.59.1:
     hash: 1f27acbc8250451c9eea2efa9b19956afcb881a2b7a69ad4550cf8e59f15e102
@@ -145,7 +145,7 @@ importers:
         version: 10.2.0
       pi-mcp-adapter:
         specifier: 5.3.1
-        version: 5.3.1(patch_hash=2333773cb4f4dd4f08c2da5293656091867b92bd7c122bbca6de76c6bacbc98d)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.7))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.6.7)
+        version: 5.3.1(patch_hash=b4fc24107d02f530e11c896312a77de52d0341e0ac0770bd9e84f6734cda378c)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.7))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.6.7)
       pptxgenjs:
         specifier: 4.0.1
         version: 4.0.1
@@ -5772,7 +5772,7 @@ snapshots:
     dependencies:
       split2: 4.2.0
 
-  pi-mcp-adapter@5.3.1(patch_hash=2333773cb4f4dd4f08c2da5293656091867b92bd7c122bbca6de76c6bacbc98d)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.7))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.6.7):
+  pi-mcp-adapter@5.3.1(patch_hash=b4fc24107d02f530e11c896312a77de52d0341e0ac0770bd9e84f6734cda378c)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.7))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.6.7):
     dependencies:
       '@earendil-works/pi-tui': 1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937)
       '@modelcontextprotocol/client': 2.3.1(patch_hash=9a09dd3d3b9be84def0fadf0dd7057c8f499eb189fb3f3345bd3b09e441b928a)

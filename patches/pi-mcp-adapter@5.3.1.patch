@@ -520,7 +520,7 @@ index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edee
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
-index 274849a3a2a60a176db5c16dc003d1aea204e18b..20be39fac0e4ddb576deb6bfea68123325c708a7 100644
+index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204bcc336e86 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
 @@ -3,11 +3,11 @@
@@ -590,31 +590,40 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..20be39fac0e4ddb576deb6bfea681233
      const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
      const manualRedirect = redirectTarget?.mode === "manual";
      const oauthState = generateState();
-@@ -927,6 +963,23 @@ export async function authenticate(serverName, serverUrl, definition, options =
+@@ -927,6 +963,32 @@ export async function authenticate(serverName, serverUrl, definition, options =
          }
      }
  }
++/** Upper bound on refresh attempts when the shared store keeps advancing
++ * under this session (chained rotations); each retry is only issued when the
++ * poll found a token different from the last one presented, so a genuinely
++ * revoked token can never loop here. */
++const ROTATION_RECOVERY_MAX_ATTEMPTS = 4;
 +/**
 + * Poll shared credential storage for a refresh token rotated by another
 + * session (single-use refresh tokens retire the presented one on each
 + * grant). Returns the rotated entry, or undefined when nothing changed
-+ * before the deadline.
++ * before the deadline. Always performs at least one read, even when the
++ * deadline has already passed: a winning write that landed just after a
++ * previous poll's window is caught by the next call instead of costing a
++ * re-auth.
 + */
 +async function pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions) {
 +    const pollDeadline = Date.now() + 1_500;
-+    while (Date.now() < pollDeadline) {
++    for (;;) {
 +        invalidateAuthEntryCache(serverName);
 +        const fresh = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
 +        if (fresh?.tokens?.refreshToken !== undefined && fresh.tokens.refreshToken !== presentedRefreshToken)
 +            return fresh;
++        if (Date.now() >= pollDeadline)
++            return undefined;
 +        await new Promise((resolvePoll) => setTimeout(resolvePoll, 100));
 +    }
-+    return undefined;
 +}
  /**
   * Get a valid access token for a server, refreshing if necessary.
   *
-@@ -956,12 +1009,19 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -956,12 +1018,21 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
      }
      if (expired === true && entry.tokens.refreshToken) {
          console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`);
@@ -622,7 +631,9 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..20be39fac0e4ddb576deb6bfea681233
 -            const config = options.definition ? extractOAuthConfig(options.definition) : {};
 -            const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal);
 -            authority();
-+        const presentedRefreshToken = entry.tokens.refreshToken
++        // Updated to each adopted token: the retry only continues while the
++        // shared store keeps advancing past what this session last presented.
++        let presentedRefreshToken = entry.tokens.refreshToken
 +        // Another session may have rotated the stored refresh token while this
 +        // process held a cached entry; the SDK must read the current token from
 +        // shared storage, not a retired one from this process's cache.
@@ -632,35 +643,40 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..20be39fac0e4ddb576deb6bfea681233
 +        // On invalid_grant the stored token may have been rotated concurrently
 +        // after this read; retry once from shared storage before pushing the
 +        // session into a needless full re-auth.
-+        for (let refreshAttempt = 1; refreshAttempt <= 2; refreshAttempt++) {
++        for (let refreshAttempt = 1; refreshAttempt <= ROTATION_RECOVERY_MAX_ATTEMPTS; refreshAttempt++) {
              const authProvider = new McpOAuthProvider(serverName, serverUrl, config, {
 -                onRedirect: async () => { },
 +                onRedirect: async () => {},
              }, authStorageOptions, runtime.signal, undefined, authority);
              try {
                  authProvider.setAuthFetch(fetchFn);
-@@ -984,6 +1044,20 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -984,6 +1055,25 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
                  authority();
                  throwIfAborted(signal);
                  if (result !== "AUTHORIZED") {
 +                    // The SDK falls back to a fresh authorization flow when a refresh grant
 +                    // is rejected invalid_grant; a rotated token from another session may
-+                    // already be in shared storage — poll for it and retry once. The same
-+                    // rejected-grant signal gates the catch branch: this fallback is also
-+                    // reached for network and server errors the SDK swallowed, where no
-+                    // rotation can have occurred and the second attempt could never use
-+                    // the result — those fail fast instead of paying the poll.
-+                    const freshAfterRedirect = refreshAttempt === 1 && authProvider.tokensInvalidatedByRecovery()
-+                        ? await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions)
-+                        : undefined;
-+                    if (freshAfterRedirect !== undefined) {
-+                        console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
-+                        continue;
++                    // already be in shared storage — poll for it and retry while the store
++                    // keeps advancing. The rejected-grant signal gates the poll: this
++                    // fallback is also reached for network and server errors the SDK
++                    // swallowed, where no rotation can have occurred and the poll would
++                    // only delay the failure — those fail fast.
++                    if (authProvider.tokensInvalidatedByRecovery()) {
++                        const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken;
++                        if (adopted !== undefined) {
++                            console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
++                            presentedRefreshToken = adopted;
++                            continue;
++                        }
++                        // Distinguishable on purpose: a rejected grant whose recovery
++                        // missed (no rotated token ever appeared) must be findable in
++                        // user logs, not silent behind a generic re-auth.
++                        console.log(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`);
 +                    }
                      return null;
                  }
                  const refreshed = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
-@@ -991,16 +1065,33 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -991,16 +1081,37 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
                  throwIfAborted(signal);
                  return refreshed?.tokens ?? null;
              }
@@ -673,14 +689,15 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..20be39fac0e4ddb576deb6bfea681233
 +                // surfaced the recovery retry's own failure — the provider records the
 +                // invalidation. Unrelated failures (network, aborts) fail fast instead
 +                // of paying the shared-storage poll.
-+                if (refreshAttempt === 1
-+                    && (error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant
-+                        || authProvider.tokensInvalidatedByRecovery())) {
-+                    const fresh = await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions);
-+                    if (fresh !== undefined) {
++                if (error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant
++                    || authProvider.tokensInvalidatedByRecovery()) {
++                    const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken;
++                    if (adopted !== undefined) {
 +                        console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
++                        presentedRefreshToken = adopted;
 +                        continue;
 +                    }
++                    console.log(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`);
 +                }
 +                console.error(`MCP Auth: Token refresh failed for ${serverName}`);
 +                return null;
@@ -695,7 +712,10 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..20be39fac0e4ddb576deb6bfea681233
 -            console.error(`MCP Auth: Token refresh failed for ${serverName}`);
 -            return null;
 -        }
-+        console.error(`MCP Auth: Token refresh failed for ${serverName}`);
++        // Reachable only when every attempt adopted a newer token and the cap
++        // exhausted: the shared token is rotating faster than this session can
++        // adopt it. Distinguishable in logs on purpose.
++        console.log(`MCP Auth: refresh token for ${serverName} kept rotating under this session; re-auth required after ${ROTATION_RECOVERY_MAX_ATTEMPTS} attempts`);
 +        return null;
      }
      authority();
@@ -1145,7 +1165,7 @@ index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acb
        return false;
      }
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe04f18ac2b 100644
+index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..bfb8dc1005abca08ffdcc54f2e4d96ba38b14873 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
 @@ -8,6 +8,8 @@ import {
@@ -1394,15 +1414,24 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe0
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
-@@ -1121,6 +1224,28 @@ export async function authenticate(
+@@ -1121,6 +1224,37 @@ export async function authenticate(
    }
  }
  
++/** Upper bound on refresh attempts when the shared store keeps advancing
++ * under this session (chained rotations); each retry is only issued when the
++ * poll found a token different from the last one presented, so a genuinely
++ * revoked token can never loop here. */
++const ROTATION_RECOVERY_MAX_ATTEMPTS = 4
++
 +/**
 + * Poll shared credential storage for a refresh token rotated by another
 + * session (single-use refresh tokens retire the presented one on each
 + * grant). Returns the rotated entry, or undefined when nothing changed
-+ * before the deadline.
++ * before the deadline. Always performs at least one read, even when the
++ * deadline has already passed: a winning write that landed just after a
++ * previous poll's window is caught by the next call instead of costing a
++ * re-auth.
 + */
 +async function pollForRotatedToken(
 +  serverName: string,
@@ -1411,19 +1440,19 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe0
 +  authStorageOptions: AuthStorageOptions,
 +): Promise<AuthEntry | undefined> {
 +  const pollDeadline = Date.now() + 1_500
-+  while (Date.now() < pollDeadline) {
++  for (;;) {
 +    invalidateAuthEntryCache(serverName)
 +    const fresh = await getAuthForUrl(serverName, serverUrl, authStorageOptions)
 +    if (fresh?.tokens?.refreshToken !== undefined && fresh.tokens.refreshToken !== presentedRefreshToken) return fresh
++    if (Date.now() >= pollDeadline) return undefined
 +    await new Promise((resolvePoll) => setTimeout(resolvePoll, 100))
 +  }
-+  return undefined
 +}
 +
  /**
   * Get a valid access token for a server, refreshing if necessary.
   * 
-@@ -1155,51 +1280,91 @@ export async function getValidToken(
+@@ -1155,51 +1289,103 @@ export async function getValidToken(
  
    if (expired === true && entry.tokens.refreshToken) {
      console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`)
@@ -1432,7 +1461,9 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe0
 -      const config = options.definition ? extractOAuthConfig(options.definition) : {}
 -      const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal)
 -      authority()
-+    const presentedRefreshToken = entry.tokens.refreshToken
++    // Updated to each adopted token: the retry only continues while the
++    // shared store keeps advancing past what this session last presented.
++    let presentedRefreshToken = entry.tokens.refreshToken
 +    // Another session may have rotated the stored refresh token while this
 +    // process held a cached entry; the SDK must read the current token from
 +    // shared storage, not a retired one from this process's cache.
@@ -1442,7 +1473,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe0
 +    // On invalid_grant the stored token may have been rotated concurrently
 +    // after this read; retry once from shared storage before pushing the
 +    // session into a needless full re-auth.
-+    for (let refreshAttempt = 1; refreshAttempt <= 2; refreshAttempt++) {
++    for (let refreshAttempt = 1; refreshAttempt <= ROTATION_RECOVERY_MAX_ATTEMPTS; refreshAttempt++) {
        const authProvider = new McpOAuthProvider(serverName, serverUrl, config, {
          onRedirect: async () => {},
        }, authStorageOptions, runtime.signal, undefined, authority)
@@ -1478,17 +1509,22 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe0
 -          return null
 +            // The SDK falls back to a fresh authorization flow when a refresh grant
 +            // is rejected invalid_grant; a rotated token from another session may
-+            // already be in shared storage — poll for it and retry once. The same
-+            // rejected-grant signal gates the catch branch: this fallback is also
-+            // reached for network and server errors the SDK swallowed, where no
-+            // rotation can have occurred and the second attempt could never use
-+            // the result — those fail fast instead of paying the poll.
-+            const freshAfterRedirect = refreshAttempt === 1 && authProvider.tokensInvalidatedByRecovery()
-+                ? await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions)
-+                : undefined
-+            if (freshAfterRedirect !== undefined) {
-+                console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
-+                continue
++            // already be in shared storage — poll for it and retry while the store
++            // keeps advancing. The rejected-grant signal gates the poll: this
++            // fallback is also reached for network and server errors the SDK
++            // swallowed, where no rotation can have occurred and the poll would
++            // only delay the failure — those fail fast.
++            if (authProvider.tokensInvalidatedByRecovery()) {
++                const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken
++                if (adopted !== undefined) {
++                    console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
++                    presentedRefreshToken = adopted
++                    continue
++                }
++                // Distinguishable on purpose: a rejected grant whose recovery
++                // missed (no rotated token ever appeared) must be findable in
++                // user logs, not silent behind a generic re-auth.
++                console.log(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`)
 +            }
 +            return null
          }
@@ -1506,17 +1542,19 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe0
 +        // already consumed that error, invalidated the stored tokens, and
 +        // surfaced the recovery retry's own failure — the provider records the
 +        // invalidation. Unrelated failures (network, aborts) fail fast instead
-+        // of paying the shared-storage poll.
++        // of paying the shared-storage poll. A found rotation retries while the
++        // store keeps advancing (cap above).
 +        if (
-+            refreshAttempt === 1
-+            && (error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant
-+                || authProvider.tokensInvalidatedByRecovery())
++            error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant
++            || authProvider.tokensInvalidatedByRecovery()
 +        ) {
-+            const fresh = await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions)
-+            if (fresh !== undefined) {
++            const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken
++            if (adopted !== undefined) {
 +                console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
++                presentedRefreshToken = adopted
 +                continue
 +            }
++            console.log(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`)
 +        }
 +        console.error(`MCP Auth: Token refresh failed for ${serverName}`)
 +        return null
@@ -1529,7 +1567,10 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..2157b85220dfb1f4242d44ae4f668fe0
 -      console.error(`MCP Auth: Token refresh failed for ${serverName}`)
 -      return null
      }
-+    console.error(`MCP Auth: Token refresh failed for ${serverName}`)
++    // Reachable only when every attempt adopted a newer token and the cap
++    // exhausted: the shared token is rotating faster than this session can
++    // adopt it. Distinguishable in logs on purpose.
++    console.log(`MCP Auth: refresh token for ${serverName} kept rotating under this session; re-auth required after ${ROTATION_RECOVERY_MAX_ATTEMPTS} attempts`)
 +    return null
    }
  

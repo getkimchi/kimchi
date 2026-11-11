@@ -71,9 +71,20 @@ node scripts/mcp-live-google-lifecycle.mjs
 
 Locally, the renewal check reads `GOOGLE_MCP_TEST_CLIENT_ID`, `GOOGLE_MCP_TEST_CLIENT_SECRET`, `GOOGLE_MCP_TEST_REFRESH_TOKEN`, and optionally `GOOGLE_MCP_TEST_SERVER`/`GOOGLE_MCP_TEST_ISSUER`. In the workflow, the per-server secrets (`GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL`, `_DRIVE`, `_CALENDAR`) are mapped onto `GOOGLE_MCP_TEST_REFRESH_TOKEN` for the selected server; dispatching Drive or Calendar without its secret fails fast with a clear "not set" error.
 
-Each run performs two renewal cycles: the seeded expired token is renewed, one read-only tool is invoked through the live session (default `list_labels`; override with `GOOGLE_MCP_TEST_CALL_TOOL` and `GOOGLE_MCP_TEST_CALL_ARGS`), and the refreshed token is force-expired and renewed again — proving the renewed credential itself still renews. The stored scope is asserted to be present (and to contain `GOOGLE_MCP_TEST_EXPECTED_SCOPE` when set), so a silently narrowed grant fails the check. The tool call runs through `kimchi mcp probe --call`, which invokes one tool after listing the catalog.
+Each run performs two renewal cycles: the seeded expired token is renewed, one read-only tool is invoked through the live session (default `list_labels`; override with `GOOGLE_MCP_TEST_CALL_TOOL` and `GOOGLE_MCP_TEST_CALL_ARGS`; empty skips the call), and the refreshed token is force-expired and renewed again — proving the renewed credential itself still renews. A third cycle runs two probes concurrently against the one shared credential store: if the provider rotates refresh tokens per grant, the loser's `invalid_grant` must recover from shared storage without a browser consent; if it does not rotate, the cycle still proves concurrent use of one stored credential cannot corrupt it. The stored scope is asserted to be present (and to contain `GOOGLE_MCP_TEST_EXPECTED_SCOPE` when set), so a silently narrowed grant fails the check. The tool call runs through `kimchi mcp probe --call`, which invokes one tool after listing the catalog.
 
 Or run the `MCP live` workflow's lifecycle job: dispatch it (choosing Gmail, Drive, or Calendar — only Gmail is provisioned by default), or add the `mcp-e2e-live` label to a pull request to run it against that PR's build. Labelling re-triggers the workflow; the lifecycle job only runs with the label present on a same-repository pull request.
+
+## castai-mcp rotation check
+
+The `rotation-live` job runs the same lifecycle script against castai-mcp — the provider that rotates refresh tokens per grant, i.e. the production failure mode behind the refresh-rotation fix. For castai-mcp the concurrent cycle is the point: the loser's rejected grant must recover from shared storage with no browser consent, exercising the full poll-and-retry path against a real rotating provider (Gmail, by contrast, keeps its refresh token across concurrent grants, so the Google job proves the contention half only).
+
+Configure once (repository settings):
+
+- Secrets: `CASTAI_MCP_TEST_CLIENT_ID`, `CASTAI_MCP_TEST_CLIENT_SECRET`, `CASTAI_MCP_TEST_REFRESH_TOKEN` — an OAuth client registered with castai-mcp and a refresh token issued to a dedicated test account (same shape as the Google setup above; the seeded redirect URIs `http://localhost:19876/callback` and `http://127.0.0.1:19876/callback` must be registered for that client).
+- Variables: `CASTAI_MCP_TEST_SERVER` (the castai-mcp endpoint), `CASTAI_MCP_TEST_ISSUER` (its OAuth issuer, optional), `CASTAI_MCP_TEST_CALL_TOOL` (a read-only tool to invoke after renewal; empty skips the call).
+
+Until the secrets exist the job skips with a one-line notice and stays green. Once configured it runs under the same `mcp-e2e-live` label as the Google lifecycle job.
 
 ## Triage
 
