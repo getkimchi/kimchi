@@ -279,6 +279,9 @@ const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 			// where git finds external subcommands.
 			if (a === "-c" || a.startsWith("--config-env")) return false
 			if (a === "-p" || a === "--paginate") return false
+			// Attached `-cVALUE` is invalid usage in git but there is no valid
+			// global flag that starts with lowercase -c, so refuse it anyway.
+			if (a.startsWith("-c") && a !== "-C") return false
 			if (a === "--exec-path" || a.startsWith("--exec-path=")) return false
 			if (a === "-C" || GIT_GLOBAL_VALUE_FLAGS.has(a)) i += 2
 			else i++
@@ -795,15 +798,12 @@ export function stripTrailingOutputFilters(command: string): string | null {
 
 // Env keys that can execute code or inject config into an otherwise read-only
 // command (GIT_PAGER spawns a pager, GIT_SSH_COMMAND wraps ssh, GIT_CONFIG_*
-// sets fsmonitor etc., LD_PRELOAD/BASH_ENV run code). Any leading assignment
-// with one of these prefixes/names blocks read-only classification.
-const UNSAFE_ENV_PREFIXES = [
-	"GIT_",
-	"LD_",
-	"DYLD_",
-	"PYTHON",
-	"PERL",
-	"SSH_",
+// sets fsmonitor etc., LD_PRELOAD/BASH_ENV run code, HOME/XDG_* relocate
+// config so an attacker-controlled .gitconfig can inject core.fsmonitor).
+// Any leading assignment with one of these prefixes/names blocks read-only
+// classification.
+const UNSAFE_ENV_NAMES = new Set([
+	"HOME",
 	"NODE_OPTIONS",
 	"LESSOPEN",
 	"LESSCLOSE",
@@ -814,12 +814,13 @@ const UNSAFE_ENV_PREFIXES = [
 	"VISUAL",
 	"ENV",
 	"SHELL",
-]
+])
+const UNSAFE_ENV_PREFIXES = ["GIT_", "LD_", "DYLD_", "XDG_", "SSH_", "PYTHON", "PERL"]
 
 function isUnsafeEnvAssignment(assignment: string): boolean {
 	const eq = assignment.indexOf("=")
 	const key = (eq === -1 ? assignment : assignment.slice(0, eq)).toUpperCase()
-	return UNSAFE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
+	return UNSAFE_ENV_NAMES.has(key) || UNSAFE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
 }
 
 export function isReadOnlyBashCommand(command: string): boolean {

@@ -786,6 +786,10 @@ describe("common read-only command corpus", () => {
 		expect(isReadOnlyBashCommand("git -c core.quotepath=false status")).toBe(false)
 		expect(isReadOnlyBashCommand('git -c "core.fsmonitor=touch /tmp/x" status')).toBe(false)
 		expect(isReadOnlyBashCommand("git --config-env=core.fsmonitor=X status")).toBe(false)
+		expect(isReadOnlyBashCommand("git --config-env core.fsmonitor=X status")).toBe(false)
+		// An attached `-cVALUE` form is invalid git usage, but there is no
+		// legitimate global flag starting with lowercase -c — refuse it too.
+		expect(isReadOnlyBashCommand("git -ccore.fsmonitor=x status")).toBe(false)
 		// Pagers and exec-path relocation run configured commands.
 		expect(isReadOnlyBashCommand("git -p status")).toBe(false)
 		expect(isReadOnlyBashCommand("git --paginate log")).toBe(false)
@@ -868,6 +872,7 @@ describe("common read-only command corpus", () => {
 		// --file/--blob/--default consume a value, not an operand.
 		expect(isReadOnlyBashCommand("git config --file .git/config user.name")).toBe(true)
 		expect(isReadOnlyBashCommand("git config --default v user.name")).toBe(true)
+		expect(isReadOnlyBashCommand("git config user.name --default -")).toBe(true)
 		expect(isReadOnlyBashCommand("git config -- user.name")).toBe(true)
 		expect(isReadOnlyBashCommand("git config user.name John")).toBe(false)
 		expect(isReadOnlyBashCommand("git config --global user.email [REDACTED-EMAIL_ADDRESS]")).toBe(false)
@@ -942,6 +947,10 @@ describe("common read-only command corpus", () => {
 		).toBe(false)
 		expect(isReadOnlyBashCommand("LD_PRELOAD=/tmp/x.so cat foo.txt")).toBe(false)
 		expect(isReadOnlyBashCommand("BASH_ENV=/tmp/x.sh echo hi")).toBe(false)
+		// HOME / XDG_CONFIG_HOME relocate config: an attacker-placed .gitconfig
+		// can then inject core.fsmonitor and execute on plain `git status`.
+		expect(isReadOnlyBashCommand("HOME=/tmp git status")).toBe(false)
+		expect(isReadOnlyBashCommand("XDG_CONFIG_HOME=/tmp git config --list")).toBe(false)
 		// Inert assignments stay transparent.
 		expect(isReadOnlyBashCommand("FOO=bar git status")).toBe(true)
 	})
