@@ -193,6 +193,7 @@ import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelM
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
+import { emitRunEnd, emitRunStart, takePendingRunReason } from "./run-boundary.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
 import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
 import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
@@ -2213,7 +2214,17 @@ export class KimchiAcpAgent implements Agent {
 				// forward exactly like a prompt turn's. agent_start fires per
 				// chained continue within the run, so an existing context is
 				// kept — only the run chain's first start allocates.
-				if (!entry.turn) entry.unsolicitedTurn ??= createTurnContext()
+				// The wake reason is consumed (and cleared) on EVERY agent_start:
+				// for a prompt-owned start the registered reason belonged to a steer
+				// that continued an existing turn, so it is discarded; for the run
+				// chain's first unsolicited start it labels the run boundary.
+				const runStartReason = takePendingRunReason()
+				if (!entry.turn && !entry.unsolicitedTurn) {
+					entry.unsolicitedTurn = createTurnContext()
+					// Announce the agent-initiated run BEFORE its streamed output
+					// (v1 bridge for the v2 Background Work RFD state transition).
+					emitRunStart(this.conn, sessionId, runStartReason)
+				}
 				// A held plan-review turn seeing the follow-up turn begin: pi events
 				// derive "decision applied with work" — no extension notification.
 				if (turn?.planReviewHeld) turn.planReviewExecuting = true
@@ -2252,6 +2263,19 @@ export class KimchiAcpAgent implements Agent {
 						this.send({ sessionId: entry.session.sessionId, update })
 					}
 					this.emitUsageUpdate(entry.session, unsolicited.usage)
+					// Close the run boundary AFTER the last streamed output, mirroring
+					// finalizeTurn's stopReason mapping for prompt-owned turns.
+					emitRunEnd(
+						this.conn,
+						sessionId,
+						unsolicited.cancelled
+							? "cancelled"
+							: unsolicited.lastAssistantError
+								? "error"
+								: unsolicited.refused
+									? "refusal"
+									: "end_turn",
+					)
 				}
 				return
 			}
