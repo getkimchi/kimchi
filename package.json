@@ -61,7 +61,7 @@
 		"@earendil-works/pi-coding-agent": "1.3.0",
 		"@earendil-works/pi-tui": "1.3.0",
 		"@hyzyla/pdfium": "^3.0.0",
-		"@kimchi-dev/kimchi-workflows": "0.0.10",
+		"@kimchi-dev/kimchi-workflows": "0.0.11",
 		"@modelcontextprotocol/client": "2.3.1",
 		"@modelcontextprotocol/ext-apps": "^1.7.1",
 		"@modelcontextprotocol/sdk": "^1.32.0",

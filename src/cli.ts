@@ -266,7 +266,21 @@ function getSubcommand(args: string[]): string {
 		// Checked BEFORE the help/version flags: a known subcommand invocation
 		// (`kimchi env --help`) reports the subcommand, not "help" — the flags
 		// belong to the subcommand, not to the harness.
-		if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory", "env"].includes(sub))
+		if (
+			[
+				"setup",
+				"config",
+				"login",
+				"logout",
+				"doctor",
+				"skills",
+				"telemetry",
+				"mcp",
+				"memory",
+				"env",
+				"workflow",
+			].includes(sub)
+		)
 			return sub
 	}
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -325,6 +339,37 @@ async function cliMain(): Promise<void> {
 		// still lost ~16% of a 3000-line `fields` dump on CI runners (the OS
 		// pipe had not drained when the callback fired). exitCode + return lets
 		// the runtime keep the process alive until stdio has flushed.
+		process.exitCode = code
+		return
+	}
+
+	// Batch workflow host: `kimchi workflow run <name> [--input …] [--result-out …]` runs one
+	// workflow to its terminal state without a chat session; the run's status is the process exit
+	// code (0 completed, 2 blocked, 3 cancelled, 4 crashed/never-started). Routed before
+	// telemetry/session setup and exiting at the dispatch site, exactly like the workers above —
+	// a CI invocation must stay invisible to app_started instrumentation. The extension side of
+	// this package is already bundled (see extensionFactories below); the command is the same
+	// package's headless host, so dispatching on the bundled copy is the coherent choice (no
+	// install surface, no plugin-layout assumptions).
+	if (originalArgs[0] === "workflow") {
+		let code: number
+		try {
+			const workflowCli = await import("@kimchi-dev/kimchi-workflows/cli").catch((error: unknown) => {
+				throw new Error(
+					`kimchi workflow needs @kimchi-dev/kimchi-workflows with the "./cli" headless host` +
+						`(ships in 0.0.11 — bump the pinned dependency): ${error instanceof Error ? error.message : String(error)}`,
+					{ cause: error },
+				)
+			})
+			code = await workflowCli.main(originalArgs.slice(1))
+		} catch (error) {
+			// Batch contract: an unexpected host failure is a crashed run (4), reported as one
+			// clean stderr line — scheduler logs must not carry a raw node stack trace.
+			process.stderr.write(`workflow: ${error instanceof Error ? error.message : String(error)}\n`)
+			code = 4
+		}
+		// exitCode + return, never process.exit(): a batch run's stderr may be piped to a scheduler,
+		// and a hard exit can truncate buffered output (the doc-cli lesson above).
 		process.exitCode = code
 		return
 	}
