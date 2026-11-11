@@ -784,7 +784,7 @@ async function runHttpFixture() {
 						rotatingRefreshGrantCount += 1
 						const parkThis = Array.isArray(fixtureBehavior.delayRefreshGrantsAt)
 							? fixtureBehavior.delayRefreshGrantsAt.includes(rotatingRefreshGrantCount)
-						: rotatingRefreshGrantCount === 1
+							: rotatingRefreshGrantCount === 1
 						if (parkThis) await delay(delayMs)
 					}
 					const presented = params.get("refresh_token")
