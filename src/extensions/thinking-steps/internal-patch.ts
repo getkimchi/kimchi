@@ -372,9 +372,21 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 			for (const content of message.content) {
 				if (content.type === "text" && content.text.trim()) {
 					this.contentContainer.addChild(
-						new Markdown(content.text.trim(), 1, 0, this.markdownTheme as MarkdownTheme, undefined, {
-							transform: applyMarkdownTransformers,
-						}),
+						new Markdown(
+							content.text.trim(),
+							1,
+							0,
+							this.markdownTheme as MarkdownTheme,
+							undefined,
+							// Only opt into the transform path when a transformer is
+							// actually registered — with an empty chain the option
+							// adds per-paint overhead on every assistant block for
+							// nothing (upstream keeps its own transform, but the
+							// patched renderer must not pay for absent extensions).
+							this.markdownTransformers && this.markdownTransformers.length > 0
+								? { transform: applyMarkdownTransformers }
+								: undefined,
+						),
 					)
 					continue
 				}
