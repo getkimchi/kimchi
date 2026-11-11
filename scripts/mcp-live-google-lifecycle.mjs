@@ -11,7 +11,9 @@
  *
  * Provisioned through the environment:
  *   GOOGLE_MCP_TEST_CLIENT_ID       OAuth client id (public)
- *   GOOGLE_MCP_TEST_CLIENT_SECRET   OAuth client secret (secret)
+ *   GOOGLE_MCP_TEST_CLIENT_SECRET   OAuth client secret (secret; optional
+ *                                   for providers that register public
+ *                                   clients, e.g. via dynamic registration)
  *   GOOGLE_MCP_TEST_REFRESH_TOKEN   a refresh token issued to the test
  *                                   account (secret; see
  *                                   docs/mcp-live-testing-setup.md)
@@ -149,7 +151,7 @@ async function runProbe({ homeDir, binDir, serverUrl, clientId, clientSecret, ca
 	child.stdout.on("data", (chunk) => stdout.push(String(chunk)))
 	child.stderr.on("data", (chunk) => stderr.push(String(chunk)))
 	child.stdin.end(
-		`${JSON.stringify({ name: SERVER_NAME, server: { url: serverUrl, auth: "oauth", oauth: { clientId, clientSecret } } })}\n`,
+		`${JSON.stringify({ name: SERVER_NAME, server: { url: serverUrl, auth: "oauth", oauth: { clientId, ...(clientSecret === undefined ? {} : { clientSecret }) } } })}\n`,
 	)
 	const exited = new Promise((resolveExit) => child.once("exit", (code, signal) => resolveExit({ code, signal })))
 	let timedOut = false
@@ -228,7 +230,6 @@ async function main() {
 	}
 	for (const [name, value] of [
 		["GOOGLE_MCP_TEST_CLIENT_ID", clientId],
-		["GOOGLE_MCP_TEST_CLIENT_SECRET", clientSecret],
 		["GOOGLE_MCP_TEST_REFRESH_TOKEN", refreshToken],
 	]) {
 		if (!value) {
