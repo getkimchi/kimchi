@@ -5,7 +5,7 @@
  * list / status / logs / stop round-trip through actual pids so the
  * liveness check and group kill are exercised, with soft-error shapes
  * (NOT thrown tool errors) asserted for unknown ids — that pattern is the
- * mark_todo lesson: hard errors make the model retry-churn.
+ * todo tools lesson: hard errors make the model retry-churn.
  */
 
 import { mkdtempSync, rmSync } from "node:fs"

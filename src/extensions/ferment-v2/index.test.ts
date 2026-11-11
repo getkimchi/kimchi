@@ -29,7 +29,7 @@ import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "../todos/command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
-import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
+import { TODO_TOOL_NAMES, TODOS_TOOL_NAME } from "../todos/tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoItem } from "../todos/types.js"
 import {
 	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
@@ -862,8 +862,8 @@ describe("Ferment V2 extension", () => {
 				{
 					type: "toolCall",
 					id: "reopen-todo",
-					name: MARK_TODO_TOOL_NAME,
-					arguments: { id: 1, status: "in_progress" },
+					name: TODOS_TOOL_NAME,
+					arguments: { todos: [{ id: 1, content: "Validate the implementation", status: "in_progress" }] },
 				},
 			],
 			stopReason: "toolUse",
@@ -997,16 +997,107 @@ describe("Ferment V2 extension", () => {
 		expect(harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)).toHaveLength(1)
 	})
 
-	it.each([
-		{
-			toolName: MARK_TODO_TOOL_NAME,
-			arguments: { id: 1, status: "completed" },
-		},
-		{
-			toolName: UPDATE_TODOS_TOOL_NAME,
+	it("detects completion from an update-mode edit that finishes the list", async () => {
+		// Projection, not args shape: an edit that flips the last open item
+		// counts exactly like a full completed list. The modelTodoResult event
+		// supplies the todo state the candidate detection reads; the projection
+		// reads the store itself, so seed it for real.
+		await harness.command("ship feature A")
+		applyWriteTodos({ todos: [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }] }, TEST_SESSION_ID)
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
+		const candidate = {
+			role: "assistant" as const,
+			content: [
+				{ type: "text" as const, text: "Final edit done." },
+				{
+					type: "toolCall" as const,
+					id: "complete-final-todo",
+					name: "todos",
+					arguments: { update: [{ id: 1, status: "completed" }] },
+				},
+			],
+			stopReason: "toolUse" as const,
+			usage: { input: 0, output: 0 },
+			timestamp: Date.now(),
+		}
+
+		await harness.fire("message_start", { type: "message_start", message: candidate })
+		const candidateEnded = (await harness.fire("message_end", {
+			type: "message_end",
+			message: candidate,
+		})) as { message: typeof candidate }
+		// Withheld candidate: the prose rides the completion path, only the tool
+		// call stays visible.
+		expect(candidateEnded.message.content).toEqual([candidate.content[1]])
+	})
+
+	it("a confirm call never counts as completion, even after finishing edits", async () => {
+		await harness.command("ship feature A")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
+		const candidate = {
+			role: "assistant" as const,
+			content: [
+				{ type: "text" as const, text: "Checked in." },
+				{
+					type: "toolCall" as const,
+					id: "confirm-checkin",
+					name: "todos",
+					arguments: { confirm: 0 },
+				},
+			],
+			stopReason: "toolUse" as const,
+			usage: { input: 0, output: 0 },
+			timestamp: Date.now(),
+		}
+
+		const originalContent = structuredClone(candidate.content)
+		await harness.fire("message_start", { type: "message_start", message: candidate })
+		const candidateEnded = (await harness.fire("message_end", {
+			type: "message_end",
+			message: candidate,
+		})) as { message: typeof candidate }
+		expect(candidateEnded.message.content).toEqual(originalContent)
+	})
+
+	it("does not detect completion from a fresh call to a retired todo verb", async () => {
+		// Retired names classify as writes on the read side, but a fresh call
+		// errors as an unknown tool — its args never landed, so the candidate
+		// text must stay visible and no completion candidate forms.
+		await harness.command("ship feature A")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
+		const candidate = {
+			role: "assistant" as const,
+			content: [
+				{ type: "text" as const, text: "Claimed answer." },
+				{
+					type: "toolCall" as const,
+					id: "complete-final-todo",
+					name: "update_todos",
+					arguments: { todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }] },
+				},
+			],
+			stopReason: "toolUse" as const,
+			usage: { input: 0, output: 0 },
+			timestamp: Date.now(),
+		}
+
+		const originalContent = structuredClone(candidate.content)
+		await harness.fire("message_start", { type: "message_start", message: candidate })
+		const candidateEnded = (await harness.fire("message_end", {
+			type: "message_end",
+			message: candidate,
+		})) as { message: typeof candidate }
+		expect(candidateEnded.message.content).toEqual(originalContent)
+	})
+
+	it("validates before exposing prose emitted with the todos write that completes the list", async () => {
+		const todoCall = {
+			toolName: TODOS_TOOL_NAME,
 			arguments: { todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }] },
-		},
-	])("validates before exposing prose emitted with the $toolName write that completes the list", async (todoCall) => {
+		}
 		await harness.command("ship feature A")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }])
@@ -1094,7 +1185,7 @@ describe("Ferment V2 extension", () => {
 				{ id: 1, content: "Finish the Ferment V2", status: "completed" },
 				{ id: 2, content: "Address evaluator feedback", status: "in_progress" },
 			],
-			{ toolName: "add_todo", updatedAt: "2026-08-03T00:00:03.000Z" },
+			{ toolName: "todos", updatedAt: "2026-08-03T00:00:03.000Z" },
 		)
 		const currentMessage = assistantTextMessage("current visible progress")
 		await harness.fire("message_start", { type: "message_start", message: currentMessage })
@@ -1275,7 +1366,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Finish the Ferment V2", status: "in_progress" }], {
-			toolName: "create_todos",
+			toolName: "todos",
 		})
 		const message = assistantTextMessage("Accepted answer.")
 		await harness.fire("message_start", { type: "message_start", message })
@@ -2001,7 +2092,7 @@ describe("Ferment V2 extension", () => {
 		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
 
 		await modelTodoResult(harness, [{ id: 1, content: "Implement the Ferment V2", status: "in_progress" }], {
-			toolName: "create_todos",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
@@ -2014,7 +2105,7 @@ describe("Ferment V2 extension", () => {
 		).toMatchObject({ block: true, reason: expect.stringContaining("settle every item") })
 
 		await modelTodoResult(harness, [{ id: 1, content: "Implement the Ferment V2", status: "completed" }], {
-			toolName: "mark_todo",
+			toolName: "todos",
 		})
 		expect(
 			await harness.fire("tool_call", {
@@ -2024,7 +2115,7 @@ describe("Ferment V2 extension", () => {
 			}),
 		).toBeUndefined()
 		await modelTodoResult(harness, [], {
-			toolName: "clear_todos",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:03.000Z",
 		})
 		expect(
@@ -2064,7 +2155,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
-			toolName: "create_todos",
+			toolName: "todos",
 			isError: false,
 			result: {
 				details: {
@@ -2089,7 +2180,7 @@ describe("Ferment V2 extension", () => {
 		await expect(
 			harness.fire("tool_execution_end", {
 				type: "tool_execution_end",
-				toolName: "create_todos",
+				toolName: "todos",
 				isError: false,
 				result: { details: { scope: { kind: "unknown" }, todos: [] } },
 			}),
@@ -2278,7 +2369,7 @@ describe("Ferment V2 extension", () => {
 			},
 		]
 		await modelTodoResult(harness, settledTodos, {
-			toolName: "mark_todo",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 
@@ -2293,7 +2384,7 @@ describe("Ferment V2 extension", () => {
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("settle every item") })
 
-		await modelTodoResult(harness, settledTodos, { toolName: "mark_todo" })
+		await modelTodoResult(harness, settledTodos, { toolName: "todos" })
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
@@ -2309,7 +2400,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("edit edited objective")
 
 		await modelTodoResult(harness, [{ id: 1, content: "Stale work", status: "completed", note: "Evidence: stale" }], {
-			toolName: "mark_todo",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 
@@ -2349,7 +2440,7 @@ describe("Ferment V2 extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: "create_todos",
+				toolName: "todos",
 				input: { todos: [{ content: "Stale revision-one work", status: "in_progress" }] },
 			}),
 		).toMatchObject({
@@ -2376,7 +2467,7 @@ describe("Ferment V2 extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: "create_todos",
+				toolName: "todos",
 				input: { todos: [{ content: "Current revision work", status: "in_progress" }] },
 			}),
 		).toBeUndefined()
@@ -3469,7 +3560,7 @@ describe("Ferment V2 extension", () => {
 			{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working", note: "No progress" },
 		]
 		await modelTodoResult(harness, unchangedTodos, {
-			toolName: "create_todos",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 		harness.sendMessage.mockClear()
@@ -3477,7 +3568,7 @@ describe("Ferment V2 extension", () => {
 		for (let turnIndex = 1; turnIndex <= 3; turnIndex += 1) {
 			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
 			await modelTodoResult(harness, unchangedTodos, {
-				toolName: "mark_todo",
+				toolName: "todos",
 				updatedAt: `2026-08-03T00:00:0${turnIndex + 1}.000Z`,
 			})
 			await harness.fire("turn_end", terminalTurn())
@@ -3591,7 +3682,7 @@ describe("Ferment V2 extension", () => {
 					content: `Discovered item ${index + 1}`,
 					status: "pending" as const,
 				})),
-				{ toolName: "add_todo", updatedAt: `2026-08-03T00:00:0${turnIndex}.000Z` },
+				{ toolName: "todos", updatedAt: `2026-08-03T00:00:0${turnIndex}.000Z` },
 			)
 			await harness.fire("turn_end", terminalTurn())
 			await settleFermentV2(harness, "continue")
@@ -3610,7 +3701,7 @@ describe("Ferment V2 extension", () => {
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Discovered item", status: "pending" }], {
-			toolName: "add_todo",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:01.000Z",
 		})
 		await harness.fire("turn_end", terminalTurn())
@@ -3623,7 +3714,7 @@ describe("Ferment V2 extension", () => {
 				{ id: 1, content: "Discovered item", status: "pending" },
 				{ id: 2, content: "Another discovered item", status: "pending" },
 			],
-			{ toolName: "add_todo" },
+			{ toolName: "todos" },
 		)
 		await harness.fire("turn_end", terminalTurn())
 		await settleFermentV2(harness, "continue")
@@ -3637,7 +3728,7 @@ describe("Ferment V2 extension", () => {
 				{ id: 1, content: "Discovered item", status: "in_progress", activeForm: "Working on it" },
 				{ id: 2, content: "Another discovered item", status: "pending" },
 			],
-			{ toolName: "mark_todo", updatedAt: "2026-08-03T00:00:03.000Z" },
+			{ toolName: "todos", updatedAt: "2026-08-03T00:00:03.000Z" },
 		)
 		await harness.fire("turn_end", terminalTurn())
 		await settleFermentV2(harness, "continue")
@@ -3650,7 +3741,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }], {
-			toolName: "create_todos",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:00.000Z",
 		})
 		harness.sendMessage.mockClear()
@@ -3665,7 +3756,7 @@ describe("Ferment V2 extension", () => {
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Do the work", status: "completed" }], {
-			toolName: "mark_todo",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:03.000Z",
 		})
 		await harness.fire("turn_end", terminalTurn())
@@ -3683,7 +3774,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await modelTodoResult(harness, [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }], {
-			toolName: "create_todos",
+			toolName: "todos",
 			updatedAt: "2026-08-03T00:00:00.000Z",
 		})
 
@@ -3717,7 +3808,7 @@ describe("Ferment V2 extension", () => {
 				{ id: 2, content: "First settled item", status: "completed", note: "Evidence: first check passed" },
 				{ id: 3, content: "Second settled item", status: "completed", note: "Evidence: second check passed" },
 			],
-			{ toolName: "create_todos", updatedAt: "2026-08-03T00:00:00.000Z" },
+			{ toolName: "todos", updatedAt: "2026-08-03T00:00:00.000Z" },
 		)
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -3776,8 +3867,8 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "tested" })
 	})
 
-	it("does not start when only part of the Todo toolset is visible", async () => {
-		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES, TODO_TOOL_NAMES[0]])
+	it("does not start when the todos tool is not visible", async () => {
+		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES])
 		await harness.command("keep going")
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()
@@ -4746,7 +4837,7 @@ async function modelTodoResult(
 ): Promise<void> {
 	await harness.fire("tool_execution_end", {
 		type: "tool_execution_end",
-		toolName: options.toolName ?? "update_todos",
+		toolName: options.toolName ?? "todos",
 		isError: false,
 		result: {
 			details: {

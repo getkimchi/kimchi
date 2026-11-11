@@ -78,25 +78,25 @@ const BUDGET = {
 	 *  the #1474 intro plus the bundled pptx, pdf, docx, and xlsx skills —
 	 *  includes the ## Language section). */
 	total: 1860,
-	/** Total canonical tool surface (18 tools after the DAP entry/session and
+	/** Total canonical tool surface (14 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
 	 *  Includes the redesigned bash_control schema WITH its interactive
 	 *  user-message tail (TUI/ACP sessions — print keeps the base description
-	 *  and is measured by the print slice below); ~1% headroom over
-	 *  measured 6225 after pi 1.3.0 grew the upstream builtin tool
-	 *  definitions again (master measured 5938 on 0.85).
+	 *  and is measured by the print slice below); ~1.5% headroom over
+	 *  measured 5240 after the todos surface collapsed six verbs (+the
+	 *  two-tool intermediate) into one edit/full-list/confirm `todos` tool
+	 *  (was 6225 measured on pi 1.3.0).
 	 *  Dev
 	 *  sessions in a repo WITH a detected language server will exceed this by
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */
-	toolSurface: 6350,
-	/** Print-mode slice (17 tools — the canonical surface minus questionnaire
+	toolSurface: 5320,
+	/** Print-mode slice (12 tools — the canonical surface minus questionnaire
 	 *  and set_phase, which the registration gates drop in headless --print
-	 *  runs; includes the redesigned bash_control schema, the confirm_todos
-	 *  check-in tool, and the document-support growth in the checks tool; ~2%
-	 *  headroom over measured 5582 after pi 1.3.0). */
-	printToolSurface: 5700,
+	 *  runs; includes the redesigned bash_control schema and document-support
+	 *  growth in the checks tool; ~1.6% headroom over measured 4497). */
+	printToolSurface: 4570,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
@@ -259,12 +259,7 @@ describe("context budget", () => {
 				"grep",
 				"find",
 				"ls",
-				"create_todos",
-				"update_todos",
-				"mark_todo",
-				"add_todo",
-				"clear_todos",
-				"confirm_todos",
+				"todos",
 				"web_search",
 				"web_fetch",
 				"questionnaire",
@@ -309,11 +304,11 @@ describe("context budget", () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))
-		// The interactive surface is the canonical 18-tool set above; in print
+		// The interactive surface is the canonical 14-tool set above; in print
 		// mode the registration gates must remove exactly these two.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(17)
+		expect(tools.length).toBe(12)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(

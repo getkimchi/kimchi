@@ -4,10 +4,19 @@ import { TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
 
 /** Every tool name whose toolResult counts as a todo write: the registered
- *  write tools plus the legacy upstream write_todos name that older sessions
- *  still carry in their history. Single source of truth — derive name sets
- *  and test arrays from this, never respell the shape. */
-export const TODO_WRITE_TOOL_NAMES = ["write_todos", ...TODO_TOOL_NAMES] as const
+ *  write tool plus the retired names that older sessions still carry in
+ *  their history (the pre-consolidation verb set and the upstream legacy
+ *  write_todos). Single source of truth — derive name sets and test arrays
+ *  from this, never respell the shape. */
+export const RETIRED_TODO_TOOL_NAMES = [
+	"write_todos",
+	"create_todos",
+	"update_todos",
+	"add_todo",
+	"mark_todo",
+	"clear_todos",
+] as const
+export const TODO_WRITE_TOOL_NAMES = [...RETIRED_TODO_TOOL_NAMES, ...TODO_TOOL_NAMES] as const
 
 const TODO_TOOL_NAME_SET = new Set<string>(TODO_WRITE_TOOL_NAMES)
 
@@ -20,7 +29,10 @@ export function isWriteTodosDetails(value: unknown): value is WriteTodosDetails 
 		isRecord(value) &&
 		value.schemaVersion === TODO_TOOL_RESULT_SCHEMA_VERSION &&
 		value.scope !== undefined &&
-		Array.isArray(value.todos)
+		Array.isArray(value.todos) &&
+		// Confirm results carry the same shape but made no store change —
+		// replaying them as a write on restore would be wrong.
+		value.confirm !== true
 	)
 }
 

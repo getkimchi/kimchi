@@ -353,7 +353,7 @@ function handlePhaseStarted(raw: unknown, sessionId: string, appendEntry?: Appen
 }
 
 // ─── Active step tracking for scope provider ────────────────────────────────
-// When a ferment step is running, scope-less todo calls (update_todos, add_todo)
+// When a ferment step is running, scope-less todo calls
 // automatically target the ferment-step scope instead of global.
 //
 // We track steps in a Map keyed by `phaseId/stepId` so parallel siblings don't

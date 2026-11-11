@@ -52,7 +52,7 @@ export interface CheckinPending {
 export type CheckinGateChange =
 	| { kind: "pending" }
 	| { kind: "reconciled"; scope: TodoScope; method: "write" | "confirm"; closed: boolean }
-	| { kind: "confirm_mismatch"; scope: TodoScope; method: "mismatch" | "stale_revision" }
+	| { kind: "confirm_mismatch"; scope: TodoScope; method: "stale_revision" }
 	| { kind: "enforcement"; active: boolean }
 
 interface PendingEntry {
@@ -224,13 +224,10 @@ export function reconcileCheckinScope(
 	return closed
 }
 
-/** Report a failed confirmation attempt (wrong expected set, or a stale
- *  input revision). Checks stay pending. */
-export function reportConfirmMismatch(
-	scope: TodoScope,
-	sessionId: string,
-	method: "mismatch" | "stale_revision",
-): void {
+/** Report a failed confirmation attempt (a stale input revision — the
+ *  confirm payload is revision-only, so a content mismatch cannot exist).
+ *  Checks stay pending. */
+export function reportConfirmMismatch(scope: TodoScope, sessionId: string, method: "stale_revision"): void {
 	notify(sessionId, { kind: "confirm_mismatch", scope, method })
 }
 

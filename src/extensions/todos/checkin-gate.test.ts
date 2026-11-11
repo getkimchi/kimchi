@@ -106,7 +106,7 @@ describe("check-in gate bookkeeping", () => {
 		const changes: string[] = []
 		const unsubscribe = subscribeCheckinGate((_sessionId, change) => changes.push(change.kind))
 		try {
-			reportConfirmMismatch(GLOBAL_TODO_SCOPE, "s", "mismatch")
+			reportConfirmMismatch(GLOBAL_TODO_SCOPE, "s", "stale_revision")
 			reportConfirmMismatch(GLOBAL_TODO_SCOPE, "s", "stale_revision")
 		} finally {
 			unsubscribe()
