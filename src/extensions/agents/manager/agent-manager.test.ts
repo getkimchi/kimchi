@@ -2065,3 +2065,167 @@ describe("AgentManager resumeRemoteRecord", () => {
 		expect(manager.getRecord(prState.id)?.gitWorkflow?.baseSha).toBe("a".repeat(40))
 	})
 })
+
+describe("AgentManager session hand-off", () => {
+	// Sibling of the "AgentManager" describe — its afterEach does not apply here.
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("moves a running background agent A→B: completion lands in B, ids unchanged", async () => {
+		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => runResult.promise)
+
+		let completionsInB = 0
+		const a = new AgentManager()
+		const id = a.spawn(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			isBackground: true,
+		})
+		const recordA = a.getRecord(id)
+
+		const { records, queued } = a.extractRunningLocal()
+		a.dispose()
+		expect(queued).toEqual([])
+		expect(records).toHaveLength(1)
+		expect(records[0]).toBe(recordA)
+		// extraction removes the record without aborting it — and dispose()
+		// afterwards must not have killed its (mock) session
+		expect(a.getRecord(id)).toBeUndefined()
+
+		const b = new AgentManager(() => {
+			completionsInB++
+		})
+		b.adoptRecords(records, queued, fakePi(), fakeCtx())
+		expect(b.getRecord(id)).toBe(recordA)
+		expect(b.getRunningCount()).toBe(1)
+
+		runResult.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await vi.waitFor(() => expect(completionsInB).toBe(1))
+		expect(b.getRecord(id)?.status).toBe("completed")
+		expect(b.getRecord(id)?.result).toBe("done")
+		expect(b.getRunningCount()).toBe(0)
+
+		// exactly one completion — the outgoing manager's settle chain (disposed)
+		// must not produce a second one
+		await new Promise((r) => setTimeout(r, 20))
+		expect(completionsInB).toBe(1)
+		b.dispose()
+	})
+
+	it("re-queues a queued agent under the adopting manager and starts it when a slot frees", async () => {
+		const firstRun = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		let call = 0
+		mockRunAgent.mockImplementation(() =>
+			call++ === 0
+				? firstRun.promise
+				: Promise.resolve({
+						responseText: "second",
+						session: { dispose: vi.fn() } as unknown as AgentSession,
+						aborted: false,
+						steered: false,
+					}),
+		)
+
+		const a = new AgentManager(undefined, 1)
+		const id1 = a.spawn(fakePi(), fakeCtx(), "Explore", "one", { description: "one", isBackground: true })
+		const id2 = a.spawn(fakePi(), fakeCtx(), "Explore", "two", { description: "two", isBackground: true })
+		expect(a.getRecord(id1)?.status).toBe("running")
+		expect(a.getRecord(id2)?.status).toBe("queued")
+
+		const { records, queued } = a.extractRunningLocal()
+		a.dispose()
+		expect(records.map((r) => r.id).sort()).toEqual([id1, id2].sort())
+		expect(queued).toHaveLength(1)
+		expect(queued[0]?.id).toBe(id2)
+		expect(queued[0]?.prompt).toBe("two")
+
+		let completions = 0
+		const b = new AgentManager(() => {
+			completions++
+		}, 1)
+		const ctxB = fakeCtx()
+		b.adoptRecords(records, queued, fakePi(), ctxB)
+		// cap 1: the queued agent must not start while the adopted run holds the slot
+		expect(b.getRecord(id2)?.status).toBe("queued")
+		expect(mockRunAgent).toHaveBeenCalledTimes(1)
+
+		firstRun.resolve({
+			responseText: "first done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await vi.waitFor(() => expect(completions).toBe(2))
+		expect(b.getRecord(id1)?.status).toBe("completed")
+		expect(b.getRecord(id2)?.status).toBe("completed")
+		// the queued agent re-spawned against a pinned copy of B's ctx (not B's raw ctx)
+		expect(mockRunAgent.mock.calls[1]?.[0]).not.toBe(ctxB)
+		b.dispose()
+	})
+
+	it("extracts only running local work: terminal, transient, and remote records stay behind", () => {
+		const a = new AgentManager()
+		const transientId = a.registerTransient("preparing workspace")
+
+		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementation(() => runResult.promise)
+		const runningId = a.spawn(fakePi(), fakeCtx(), "Explore", "running", {
+			description: "running",
+			isBackground: true,
+		})
+		// A remote-looking running record: remote runs survive session
+		// replacement via remote_run:state persistence instead of the hand-off.
+		const remoteId = a.spawn(fakePi(), fakeCtx(), "Explore", "remote", {
+			description: "remote",
+			isBackground: true,
+		})
+		const remoteRecord = a.getRecord(remoteId)
+		if (!remoteRecord) throw new Error("remote record missing")
+		remoteRecord.remote = true
+
+		const { records, queued } = a.extractRunningLocal()
+		expect(records.map((r) => r.id)).toEqual([runningId])
+		expect(queued).toEqual([])
+		// non-extracted records stay owned by the outgoing manager until it disposes
+		expect(a.getRecord(transientId)).toBeDefined()
+		expect(a.getRecord(remoteId)).toBeDefined()
+		runResult.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		a.dispose()
+	})
+
+	it("ignores adoption into a disposed manager", async () => {
+		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => runResult.promise)
+		const a = new AgentManager()
+		const id = a.spawn(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			isBackground: true,
+		})
+		const { records, queued } = a.extractRunningLocal()
+		a.dispose()
+
+		const b = new AgentManager()
+		b.dispose()
+		b.adoptRecords(records, queued, fakePi(), fakeCtx())
+		expect(b.getRecord(id)).toBeUndefined()
+
+		runResult.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await new Promise((r) => setTimeout(r, 20))
+	})
+})
