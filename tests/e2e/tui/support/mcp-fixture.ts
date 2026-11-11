@@ -22,6 +22,8 @@ interface McpFixtureEventBase {
 interface McpFixtureEventDetails {
 	initialized: { clientName?: string; extensionCapabilities: string[] }
 	tools_listed: Record<string, never>
+	prompts_listed: Record<string, never>
+	prompts_get: { name: string | null }
 	tool_list_changed_sent: Record<string, never>
 	resources_listed: Record<string, never>
 	resource_read: { uri: string }
@@ -127,6 +129,7 @@ export type McpFixtureScenario =
 	| "oauth-rotating-refresh"
 	| "oauth-manual-revoke"
 	| "tools-change"
+	| "cache-private-scope"
 	| "ui-app"
 
 export type McpFixtureToolResponse =
