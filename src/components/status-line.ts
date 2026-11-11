@@ -38,6 +38,7 @@ export type SegmentId =
 	| "dap"
 	| "work-pr"
 	| "shells"
+	| "memory"
 	| "work-tree"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
@@ -453,6 +454,7 @@ const SHED_ORDER: SegmentId[] = [
 	"tags",
 	"phase",
 	"usage",
+	"memory",
 	"shells",
 	"agents",
 	"thinking",
@@ -792,6 +794,34 @@ function buildShellsSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	return { id: "shells", text, width: visibleWidth(text) }
 }
 
+/** Extension status key the memory extension sets to the number of recalled
+ *  facts currently in context (cleared when the delivery ledger empties or
+ *  the session toggle disables memory). */
+export const MEMORY_STATUS_KEY = "memory"
+
+/** Extension status key for the session's own stored-fact count (set when
+ *  an incremental capture commits; grows per session). */
+export const MEMORY_SAVED_STATUS_KEY = "memory-saved"
+
+/** Extension-status-driven like shells, but pinned-only (off by default):
+ *  renders the recalled/saved counts after memory first delivers or
+ *  captures something, only when the user pinned the element. Each half
+ *  renders only when its value is present. */
+function buildMemorySegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const statuses = statusLineData.getExtensionStatuses()
+	const recalled = Number(statuses.get(MEMORY_STATUS_KEY))
+	const saved = Number(statuses.get(MEMORY_SAVED_STATUS_KEY))
+	const showRecalled = Number.isInteger(recalled) && recalled > 0
+	const showSaved = Number.isInteger(saved) && saved > 0
+	if (!showRecalled && !showSaved) return null
+	const parts: string[] = []
+	if (showRecalled) parts.push(`${accentText(theme, String(recalled))} ${dimText(theme, "recalled")}`)
+	if (showSaved) parts.push(`${accentText(theme, String(saved))} ${dimText(theme, "saved")}`)
+	const text = `${dimText(theme, "memory:")} ${parts.join(` ${dimText(theme, "·")} `)}`
+	return { id: "memory", text, width: visibleWidth(text) }
+}
+
 function buildFermentSegment(
 	theme: Theme,
 	pinned: boolean,
@@ -871,6 +901,7 @@ export function buildStatusLineSegments(
 		buildDapSegment(theme, statusLineData, pinned.has("dap")),
 		buildWorkTreeSegment(theme, statusLineData),
 		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
+		buildMemorySegment(theme, statusLineData, pinned.has("memory")),
 		buildAgentsSegment(theme, pinned.has("agents")),
 		buildShellsSegment(theme, statusLineData, hidden.has("shells")),
 	].filter((s): s is Segment => s !== null)
