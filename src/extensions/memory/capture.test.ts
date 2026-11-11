@@ -80,7 +80,14 @@ describe("spawnCaptureWorker (error listener)", () => {
 			// An async spawn failure: emitting 'error' with no listener throws
 			// (EventEmitter semantics) and would crash the harness process.
 			expect(() => child.emit("error", new Error("spawn ENOENT"))).not.toThrow()
-			expect(consoleError).toHaveBeenCalledWith("[memory] capture worker spawn failed:", "spawn ENOENT")
+			expect(consoleError).toHaveBeenCalledWith(
+				expect.stringMatching(/^\[memory\] capture worker spawn pid=.*failed:$/),
+				"spawn ENOENT",
+			)
+			// The spawn event itself is now visible in session stderr (attempt
+			// logs): a worker that never starts leaves exactly one evidence line.
+			child.emit("spawn")
+			expect(consoleError).toHaveBeenCalledWith(expect.stringMatching(/^\[memory\] capture worker spawn pid=\? cmd=6$/))
 			expect(unref).toHaveBeenCalled()
 		} finally {
 			consoleError.mockRestore()

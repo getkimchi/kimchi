@@ -10,9 +10,9 @@
  * hash, so overlapping captures are cheap no-ops.
  */
 import { spawn } from "node:child_process"
-import { createHash } from "node:crypto"
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { basename, join } from "node:path"
+import { createHash, randomUUID } from "node:crypto"
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { getEnvironmentApiKey } from "../../config.js"
@@ -308,12 +308,40 @@ export function spawnCaptureWorker(jobFile: string, dbPath: string): void {
 	// worker would start with no API key. Re-inject the retained key.
 	const apiKey = getEnvironmentApiKey()
 	const env = apiKey ? { ...process.env, KIMCHI_API_KEY: apiKey } : process.env
-	const child = spawn(cmd[0], cmd.slice(1), { detached: true, stdio: "ignore", env })
-	// A failed async spawn (e.g. ENOENT) emits 'error' — without a listener
-	// it throws (EventEmitter semantics) and crashes the harness. Log and
-	// move on: memory must never break a session.
+	// Drain visibility: worker output must land somewhere even when the main
+	// session's own logs vanish (bench: runtime-spawned children were never
+	// observable — the only diagnostics came from the worker-logs files we
+	// sprinkled). Append each child's stdout+stderr to per-store files.
+	let outFd: number | undefined
+	try {
+		const logsDir = join(dirname(dbPath), "..", "worker-logs")
+		mkdirSync(logsDir, { recursive: true })
+		outFd = openSync(join(logsDir, `capture-${process.pid}-${Date.now()}.log`), "a")
+	} catch {
+		// visibility must never break the spawn
+	}
+	const child = spawn(cmd[0], cmd.slice(1), {
+		detached: true,
+		stdio: outFd !== undefined ? (["ignore", outFd, outFd] as const) : "ignore",
+		env,
+	})
+	if (outFd !== undefined) {
+		child.on("spawn", () => {
+			try {
+				closeSync(outFd)
+			} catch {
+				// already closed
+			}
+		})
+	}
+	// Spawn visibility: stdio is ignored, so without this line a worker that
+	// never starts leaves zero evidence in the session's own attempt log.
+	const spawnTag = `[memory] capture worker spawn pid=${child.pid ?? "?"} cmd=${cmd.length}`
 	child.on("error", (err) => {
-		console.error("[memory] capture worker spawn failed:", err instanceof Error ? err.message : err)
+		console.error(`${spawnTag} failed:`, err instanceof Error ? err.message : err)
+	})
+	child.on("spawn", () => {
+		console.error(spawnTag)
 	})
 	child.unref()
 }

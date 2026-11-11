@@ -150,23 +150,9 @@ export function windowByBudget(messages: CaptureMessage[], maxChars = MEMORY_CAP
  * Map with bounded concurrency, preserving input order in the results.
  * Worker pulls the next index — no per-item task pre-allocation.
  */
-export async function mapWithConcurrency<T, R>(
-	items: readonly T[],
-	concurrency: number,
-	fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-	const results = new Array<R>(items.length)
-	let next = 0
-	const workers = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
-		while (next < items.length) {
-			const index = next
-			next += 1
-			results[index] = await fn(items[index] as T, index)
-		}
-	})
-	await Promise.all(workers)
-	return results
-}
+export { mapWithConcurrency } from "./map-concurrency.js"
+
+import { mapWithConcurrency } from "./map-concurrency.js"
 
 /** Parsed three-scope extraction: personal vs project vs task facts.
  * The `task` lane is only populated when the parser runs with
@@ -1331,6 +1317,15 @@ const EMPTY_TAGGED: TaggedFacts = { personal: [], project: [] }
  * spawn's retry.
  */
 async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions): Promise<number> {
+	// Drain-span instrumentation: the bench's only cost signal used to be
+	// wall-clock between turns. These checkpoints print one summary line per
+	// drain so slow phases (triage/extraction/commit/supersede) are visible
+	// per wave instead of averaged away.
+	const tStart = Date.now()
+	let tClaim = tStart
+	let tExtract = tStart
+	let tDerived = tStart
+	let tCommit = tStart
 	const pendingDir = join(defaultMemoryDir(), "pending")
 	mkdirSync(pendingDir, { recursive: true })
 	sweepStaleJobs(pendingDir)
@@ -1362,6 +1357,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	}
 
 	const llm = await resolveWorkerLlm(options)
+	tClaim = Date.now()
 	if (options.abortSignal) llm.abortSignal = options.abortSignal
 	const decision = await resolveDecisionContext(options)
 	if (options.abortSignal && decision.gate) decision.gate.abortSignal = options.abortSignal
@@ -1525,11 +1521,23 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// Derived-fact classification (KIMCHI_MEMORY_FACT_CLASSES) — one batched
 	// call over the whole drain's facts, in place, before commit so the
 	// store carries the [derived] tag. Fail-open (facts stay trusted).
+	tExtract = Date.now()
 	await applyDerivedTags(plans, llm)
-
-	// Phase C — sequential commit in job order (chronological). Stores are
-	// created once per drain and reused across jobs; the added facts collect
-	// per store for the batched supersede pass.
+	tDerived = Date.now()
+	// Diagnostic: log the embedder model the runtime actually weaves for
+	// this drain — a config override that IS on disk must be visible here
+	// or its omission is the bug being probed (embedding-model switch).
+	try {
+		const cfg = (await import("../../config.js")).loadConfig()
+		const line = `[memory-capture] commit backend: embedder model=${cfg.memoryEmbedding?.model ?? "(default)"} dims=${cfg.memoryEmbedding?.dims ?? "(default)"} endpoint=${cfg.llmEndpoint}`
+		console.info(line)
+		// Runtime-spawned workers have stdio ignored: drop the same line as
+		// a file so the weave is visible for every spawn path.
+		const bootDir = join(defaultMemoryDir(), "worker-logs")
+		writeFileSync(join(bootDir, `weave-${process.pid}-${Date.now()}.log`), `${line}\n`)
+	} catch {
+		// visibility must never break the worker
+	}
 	const personalBackend = await createBackend(dbPath)
 	const projectBackends = new Map<string, Backend>()
 	const personalAdded: string[] = []
@@ -1599,6 +1607,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	if (quarantined > 0) {
 		console.info(`[memory-capture] ${quarantined} job(s) quarantined to failed/ (requeue: mv back into pending/)`)
 	}
+	tCommit = Date.now()
 
 	// Batched supersede: ONE judge pass per store across the whole drain —
 	// a single chronological view makes cross-session conflicts explicit
@@ -1620,6 +1629,10 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	for (const [projectId, backend] of projectBackends) {
 		await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], supersedeJudge)
 	}
+	// One summary line per drain — the bench's per-wave cost signal.
+	console.info(
+		`[memory-capture] drain span: total=${Date.now() - tStart}ms claim=${tClaim - tStart}ms extract=${tExtract - tClaim}ms derived=${tDerived - tExtract}ms commit=${tCommit - tDerived}ms supersede=${Date.now() - tCommit}ms plans=${plans.length} captured=${captured}`,
+	)
 
 	// Completion record: merge-write per-session counts for in-session
 	// surfacing. Written before any throw — the successful part's counts are
@@ -1995,6 +2008,19 @@ async function runBatchedSupersede(backend: Backend, newFacts: string[], judge: 
  */
 export async function runCaptureWorkerMain(argv: string[]): Promise<number> {
 	try {
+		// Boot marker BEFORE any heavy work: runtime-spawned workers run with
+		// stdio ignored (capture.ts), so a crash before this line is invisible
+		// — the only durable signal a worker ever started is this file.
+		try {
+			const bootDir = join(defaultMemoryDir(), "worker-logs")
+			mkdirSync(bootDir, { recursive: true })
+			writeFileSync(
+				join(bootDir, `boot-${process.pid}-${Date.now()}.log`),
+				`argv=${JSON.stringify(argv)} pid=${process.pid} exec=${process.execPath}\nenv model=${process.env.KIMCHI_MODEL ?? "-"} resources=${process.env.KIMCHI_ENABLE_RESOURCES ?? "-"} capture=${process.env.KIMCHI_MEMORY_CAPTURE ?? "-"} apikey=${process.env.KIMCHI_API_KEY ? "set" : "MISSING"}\n`,
+			)
+		} catch {
+			// visibility must never break the worker
+		}
 		const captured = await runCaptureWorker(argv)
 		console.log(`[memory-capture] captured ${captured} facts`)
 		return 0
