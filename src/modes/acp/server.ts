@@ -193,7 +193,13 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
-import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
+import {
+	buildToolCall,
+	buildToolCallUpdate,
+	describeToolCall,
+	enrichBashControlRawInput,
+	isHiddenToolCall,
+} from "./tool-calls/utils.js"
 import {
 	buildPathTrustInfo,
 	buildProjectTrustUpdate,
@@ -2317,13 +2323,12 @@ export class KimchiAcpAgent implements Agent {
 						return
 					}
 					// Args display mirrors execution (displayArgs).
-					const rawInput = this.displayArgs(sessionId, toolCall.name, toolCall.arguments as Record<string, unknown>)
-					const { title, kind, locations } = describeToolCall(
+					const rawInput = enrichBashControlRawInput(
 						toolCall.name,
-						rawInput,
-						entry.cwd,
+						this.displayArgs(sessionId, toolCall.name, toolCall.arguments as Record<string, unknown>),
 						getBashSessionState(sessionId)?.registry,
 					)
+					const { title, kind, locations } = describeToolCall(toolCall.name, rawInput, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
@@ -2453,15 +2458,15 @@ export class KimchiAcpAgent implements Agent {
 				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
 				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
-				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
+				const registry = getBashSessionState(sessionId)?.registry
+				const rawInput = enrichBashControlRawInput(
+					event.toolName,
+					this.displayArgs(sessionId, event.toolName, event.args),
+					registry,
+				)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					const { title, kind, locations } = describeToolCall(
-						event.toolName,
-						rawInput,
-						entry.cwd,
-						getBashSessionState(sessionId)?.registry,
-					)
+					const { title, kind, locations } = describeToolCall(event.toolName, rawInput, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
@@ -2480,7 +2485,7 @@ export class KimchiAcpAgent implements Agent {
 						rawInput,
 						status: "in_progress",
 						cwd: entry.cwd,
-						bashControlRegistry: getBashSessionState(sessionId)?.registry,
+						bashControlRegistry: registry,
 					})
 					// No pending notification was sent (back-compat) → emit tool_call as before
 					this.send({ sessionId, update })
@@ -2839,7 +2844,11 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						rawInput: this.displayArgs(sessionId, name, args),
+						rawInput: enrichBashControlRawInput(
+							name,
+							this.displayArgs(sessionId, name, args),
+							getBashSessionState(sessionId)?.registry,
+						),
 						cwd: record?.cwd,
 					}),
 				})

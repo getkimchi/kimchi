@@ -4,9 +4,10 @@ import {
 	buildToolCall,
 	buildToolCallShape,
 	buildToolCallUpdate,
-	describeBashControlTitle,
 	describeToolCall,
+	enrichBashControlRawInput,
 	isHiddenToolCall,
+	resolveBashControlWaitInfo,
 } from "./utils.js"
 
 describe("isHiddenToolCall", () => {
@@ -612,7 +613,7 @@ describe("buildToolCall per-tool ACP shape", () => {
 	}
 })
 
-describe("describeBashControlTitle", () => {
+describe("resolveBashControlWaitInfo", () => {
 	const NOW = new Date("2026-11-11T12:00:05Z")
 	const STARTED = NOW.getTime() - 5_000
 
@@ -635,42 +636,54 @@ describe("describeBashControlTitle", () => {
 		} as unknown as ProcessRegistry
 	}
 
-	it("names the running cohort with elapsed seconds for a handle-less wait", () => {
+	it("resolves a wait by handle to the command and its elapsed seconds", () => {
+		const registry = fakeRegistry([snapshot({ handle: "h1", command: "npm test", startedAt: STARTED - 10_000 })])
+		expect(resolveBashControlWaitInfo({ wait: true, handles: ["h1"] }, registry)).toEqual({
+			resolvedCommand: "npm test",
+			elapsedSeconds: 15,
+		})
+	})
+
+	it("names the running cohort for a handle-less wait and headlines the longest-running process", () => {
 		const registry = fakeRegistry([
 			snapshot({ handle: "h1", command: "sleep 60 && npm run build", startedAt: STARTED }),
 			snapshot({ handle: "h2", command: "npm test", startedAt: STARTED - 10_000 }),
 			snapshot({ handle: "h3", command: "sync", state: "exited" }),
 		])
-		expect(describeBashControlTitle({ wait: true, waitSeconds: 300 }, registry)).toBe(
-			"Waiting for background process: npm test · 15s, sleep 60 && npm run build · 5s",
-		)
+		expect(resolveBashControlWaitInfo({ wait: true, waitSeconds: 300 }, registry)).toEqual({
+			resolvedCommand: "npm test · sleep 60 && npm run build",
+			elapsedSeconds: 15,
+		})
 	})
 
-	it("returns undefined for a wait on an empty cohort (caller falls back to tool name)", () => {
-		expect(describeBashControlTitle({ wait: true }, fakeRegistry([]))).toBeUndefined()
+	it("returns undefined for a wait on an empty cohort", () => {
+		expect(resolveBashControlWaitInfo({ wait: true }, fakeRegistry([]))).toBeUndefined()
 	})
 
 	it("resolves stop_handles, dropping unknown handles", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "vite dev" })])
-		expect(describeBashControlTitle({ stop_handles: ["gone", "h1"] }, registry)).toBe(
-			"Stopping background process: vite dev · 5s",
-		)
+		expect(resolveBashControlWaitInfo({ stop_handles: ["gone", "h1"] }, registry)).toEqual({
+			resolvedCommand: "vite dev",
+			elapsedSeconds: 5,
+		})
 	})
 
 	it("returns undefined when every handle is unknown or stale", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "vite dev" })])
-		expect(describeBashControlTitle({ stop_handles: ["gone"] }, registry)).toBeUndefined()
-		expect(describeBashControlTitle({ handle: "gone", action: "stop" }, registry)).toBeUndefined()
+		expect(resolveBashControlWaitInfo({ stop_handles: ["gone"] }, registry)).toBeUndefined()
+		expect(resolveBashControlWaitInfo({ handle: "gone", action: "stop" }, registry)).toBeUndefined()
 	})
 
 	it("resolves a legacy handle arg and inspection handles", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "tail -f log" })])
-		expect(describeBashControlTitle({ handle: "h1", action: "wait" }, registry)).toBe(
-			"Checking background process: tail -f log · 5s",
-		)
-		expect(describeBashControlTitle({ handles: ["h1"] }, registry)).toBe(
-			"Checking background process: tail -f log · 5s",
-		)
+		expect(resolveBashControlWaitInfo({ handle: "h1", action: "wait" }, registry)).toEqual({
+			resolvedCommand: "tail -f log",
+			elapsedSeconds: 5,
+		})
+		expect(resolveBashControlWaitInfo({ handles: ["h1"] }, registry)).toEqual({
+			resolvedCommand: "tail -f log",
+			elapsedSeconds: 5,
+		})
 	})
 
 	it("resolves a wait that mentions a known finished process without leaking the rest of the cohort", () => {
@@ -678,43 +691,90 @@ describe("describeBashControlTitle", () => {
 			snapshot({ handle: "h1", command: "npm test", state: "exited" }),
 			snapshot({ handle: "h2", command: "vite dev" }),
 		])
-		expect(describeBashControlTitle({ wait: true, handles: undefined, stop_handles: ["h1"] }, registry)).toBe(
-			"Waiting for background process: npm test · 5s",
-		)
+		expect(resolveBashControlWaitInfo({ wait: true, handles: undefined, stop_handles: ["h1"] }, registry)).toEqual({
+			resolvedCommand: "npm test",
+			elapsedSeconds: 5,
+		})
 	})
 })
 
-describe("describeToolCall bash_control with registry", () => {
+describe("enrichBashControlRawInput", () => {
+	const NOW = new Date("2026-11-11T12:00:05Z")
+
+	beforeEach(() => {
+		vi.useFakeTimers()
+		vi.setSystemTime(NOW)
+	})
+	afterEach(() => vi.useRealTimers())
+
+	const snapshots: ProcessDisplaySnapshot[] = [
+		{
+			handle: "h1",
+			state: "running",
+			startedAt: Date.parse("2026-11-11T12:00:00Z"),
+			command: "npm run dev",
+		} as ProcessDisplaySnapshot,
+	]
+	const registry = {
+		displaySnapshot: (handle: string) => snapshots.find((s) => s.handle === handle),
+		listDisplaySnapshots: () => snapshots,
+	} as unknown as ProcessRegistry
+
+	it("enriches a wait with a known handle, building a new object without mutating the agent's args", () => {
+		const args = { wait: true, handles: ["h1"] }
+		const enriched = enrichBashControlRawInput("bash_control", args, registry)
+		expect(enriched).toEqual({ wait: true, handles: ["h1"], resolvedCommand: "npm run dev", elapsedSeconds: 5 })
+		expect(enriched).not.toBe(args)
+		expect(args).toEqual({ wait: true, handles: ["h1"] })
+	})
+
+	it("passes a stale handle through unchanged", () => {
+		const args = { handle: "gone", action: "stop" }
+		expect(enrichBashControlRawInput("bash_control", args, registry)).toBe(args)
+	})
+
+	it("leaves non-wait bash_control calls and other tools untouched", () => {
+		const stopFew = { stop_handles: ["gone"] }
+		expect(enrichBashControlRawInput("bash_control", stopFew, registry)).toBe(stopFew)
+		const bash = { command: "echo hi" }
+		expect(enrichBashControlRawInput("bash", bash, registry)).toBe(bash)
+	})
+
+	it("passes args through without a registry", () => {
+		const args = { handles: ["h1"] }
+		expect(enrichBashControlRawInput("bash_control", args)).toBe(args)
+	})
+})
+
+describe("describeToolCall bash_control", () => {
 	beforeEach(() => {
 		vi.useFakeTimers()
 		vi.setSystemTime(new Date("2026-11-11T12:00:05Z"))
 	})
 	afterEach(() => vi.useRealTimers())
 
+	const snapshots: ProcessDisplaySnapshot[] = [
+		{
+			handle: "h1",
+			state: "running",
+			startedAt: Date.parse("2026-11-11T12:00:00Z"),
+			command: "npm run dev",
+		} as ProcessDisplaySnapshot,
+	]
 	const registry = {
-		displaySnapshot: () =>
-			({
-				state: "running",
-				startedAt: Date.parse("2026-11-11T12:00:00Z"),
-				command: "npm run dev",
-			}) as ProcessDisplaySnapshot,
-		listDisplaySnapshots: () => [],
+		displaySnapshot: (handle: string) => snapshots.find((s) => s.handle === handle),
+		listDisplaySnapshots: () => snapshots,
 	} as unknown as ProcessRegistry
 
-	it("uses the resolved title when the registry is provided", () => {
-		expect(describeToolCall("bash_control", { handle: "h1" }, undefined, registry)).toEqual({
-			title: "Checking background process: npm run dev · 5s",
+	it("keeps the plain tool-name title — per-invocation info rides rawInput, never the title", () => {
+		expect(describeToolCall("bash_control", { handle: "h1" })).toEqual({
+			title: "bash_control",
 			kind: "other",
 			locations: [],
 		})
 	})
 
-	it("keeps the tool-name fallback without a registry or when nothing resolves", () => {
-		expect(describeToolCall("bash_control", { handle: "h1" }).title).toBe("bash_control")
-		expect(describeToolCall("bash_control", { wait: false }, undefined, registry).title).toBe("bash_control")
-	})
-
-	it("buildToolCallShape threads the registry to the title", () => {
+	it("buildToolCallShape enriches rawInput and leaves the title unchanged", () => {
 		const shape = buildToolCallShape({
 			toolName: "bash_control",
 			toolCallId: "kt.bash_control.0",
@@ -723,6 +783,29 @@ describe("describeToolCall bash_control with registry", () => {
 			rawInput: { handle: "h1", action: "stop" },
 			bashControlRegistry: registry,
 		})
-		expect(shape.title).toBe("Checking background process: npm run dev · 5s")
+		expect(shape.title).toBe("bash_control")
+		expect(shape.rawInput).toEqual({
+			handle: "h1",
+			action: "stop",
+			resolvedCommand: "npm run dev",
+			elapsedSeconds: 5,
+		})
+	})
+
+	it("buildToolCallShape degrades to the plain args when nothing resolves", () => {
+		const emptyRegistry = {
+			displaySnapshot: () => undefined,
+			listDisplaySnapshots: () => [],
+		} as unknown as ProcessRegistry
+		const shape = buildToolCallShape({
+			toolName: "bash_control",
+			toolCallId: "kt.bash_control.1",
+			piToolCallId: "tc-10",
+			status: "in_progress",
+			rawInput: { handle: "gone", action: "stop" },
+			bashControlRegistry: emptyRegistry,
+		})
+		expect(shape.title).toBe("bash_control")
+		expect(shape.rawInput).toEqual({ handle: "gone", action: "stop" })
 	})
 })

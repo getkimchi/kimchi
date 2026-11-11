@@ -59,21 +59,15 @@ export function describeToolCall(
 	toolName: string,
 	args: unknown,
 	cwd?: string,
-	bashControlRegistry?: ProcessRegistry,
 ): { title: string; kind: ToolKind; locations: ToolCallLocation[] } {
 	const a = (args ?? {}) as Record<string, unknown>
 	const titleArgNames = TITLE_ARGS[toolName] ?? []
 	const targeted = asString(a[titleArgNames[0] ?? ""]) ?? asString(a[titleArgNames[1] ?? ""])
-	// bash_control names what it blocks on: resolve its args against the live
-	// process registry. Unknown/stale handles resolve to nothing and keep the
-	// tool-name fallback below.
-	const bashControlTitle =
-		toolName === "bash_control" && bashControlRegistry ? describeBashControlTitle(a, bashControlRegistry) : undefined
 	// title carries the target/argument only; the ACP `kind` field drives the verb
 	// and icon on the client side. Truncate so a long absolute path or regex
 	// doesn't blow up client UIs (locations[].path keeps the full value for
 	// clients that want it).
-	const rawTitle = bashControlTitle ?? targeted ?? toolName
+	const rawTitle = targeted ?? toolName
 	const path = asString(a.file_path) || asString(a.path)
 	// ACP requires locations[].path to be absolute (clients resolve it against
 	// their own view of the filesystem, not our session cwd). Models regularly
@@ -88,20 +82,24 @@ export function describeToolCall(
 }
 
 /**
- * Human title for a `bash_control` call resolved against the live process
- * registry: names the command(s) it waits on or stops, with elapsed seconds.
- * A cohort-wide wait (`wait: true`, no handles) names the running cohort.
- * Returns undefined when nothing resolves, so callers keep the plain
- * tool-name fallback for unknown or stale handles.
+ * Registry-resolved payload for a `bash_control` call that names the
+ * background process(es) it waits on or stops, plus how long the
+ * longest-running of them has been going. A cohort-wide wait (`wait: true`,
+ * no handles) resolves the running cohort. Returns undefined when nothing
+ * resolves (unknown or stale handles, empty cohort), so callers keep the
+ * plain args untouched.
  */
-export function describeBashControlTitle(args: Record<string, unknown>, registry: ProcessRegistry): string | undefined {
+export function resolveBashControlWaitInfo(
+	args: Record<string, unknown>,
+	registry: ProcessRegistry,
+): { resolvedCommand: string; elapsedSeconds: number } | undefined {
 	const mentioned = new Set<string>()
 	for (const key of ["stop_handles", "handles"] as const) {
 		const value = args[key]
 		if (Array.isArray(value)) for (const h of value) if (typeof h === "string" && h.length > 0) mentioned.add(h)
 	}
 	// Legacy `{ handle, action }` payloads degrade to an inspection in the
-	// tool, but still name the process they refer to for the title.
+	// tool, but still name the process they refer to.
 	if (typeof args.handle === "string" && args.handle.length > 0) mentioned.add(args.handle)
 	const snapshots = new Map<string, ProcessDisplaySnapshot>()
 	for (const handle of mentioned) {
@@ -113,16 +111,32 @@ export function describeBashControlTitle(args: Record<string, unknown>, registry
 			if (snapshot.state === "running") snapshots.set(snapshot.handle, snapshot)
 	}
 	if (snapshots.size === 0) return undefined
-	const verb =
-		args.wait === true
-			? "Waiting for background process"
-			: Array.isArray(args.stop_handles) && args.stop_handles.length > 0
-				? "Stopping background process"
-				: "Checking background process"
-	const entries = [...snapshots.values()]
-		.sort((x, y) => x.startedAt - y.startedAt)
-		.map((s) => `${summarizeCommand(s.command, 48)} · ${elapsedSecondsSince(s.startedAt)}s`)
-	return `${verb}: ${entries.join(", ")}`
+	// Earliest-started first: it is the longest-running of the cohort, so its
+	// elapsed seconds headline the wait.
+	const entries = [...snapshots.values()].sort((x, y) => x.startedAt - y.startedAt)
+	return {
+		resolvedCommand: entries.map((s) => summarizeCommand(s.command, 48)).join(" · "),
+		elapsedSeconds: elapsedSecondsSince(entries[0].startedAt),
+	}
+}
+
+/**
+ * Enrich a `bash_control` rawInput with registry-resolved info so clients
+ * can show which background command a wait blocks on without parsing a
+ * human title. Builds a NEW object — the agent's args are shared with
+ * agent state and must never be mutated. Any other tool, a missing
+ * registry, or handles that resolve to nothing pass the args through
+ * unchanged.
+ */
+export function enrichBashControlRawInput(
+	toolName: string,
+	rawInput: Record<string, unknown>,
+	registry?: ProcessRegistry,
+): Record<string, unknown> {
+	if (toolName !== "bash_control" || !registry) return rawInput
+	const info = resolveBashControlWaitInfo(rawInput, registry)
+	if (!info) return rawInput
+	return { ...rawInput, ...info }
 }
 
 export function isHiddenToolCall(toolName: string, args: unknown): boolean {
@@ -161,12 +175,13 @@ export function buildToolCallShape({
 	bashControlRegistry,
 	...params
 }: ToolCallFields): ToolCall {
-	const { title, kind, locations } = describeToolCall(toolName, rawInput, cwd, bashControlRegistry)
+	const enrichedRawInput = enrichBashControlRawInput(toolName, rawInput, bashControlRegistry)
+	const { title, kind, locations } = describeToolCall(toolName, enrichedRawInput, cwd)
 	return {
 		title,
 		kind,
 		locations,
-		rawInput,
+		rawInput: enrichedRawInput,
 		...params,
 		_meta: { piToolCallId, ...params._meta },
 	}
