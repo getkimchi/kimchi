@@ -46,6 +46,15 @@ test("reconnect surfaces session-scoped prompt commands in autocomplete and the 
 
 			terminal.keyEscape()
 			terminal.write("\b\b\b\b\b\b")
+			// Argument completion for a mid-session command resolves from the
+			// live metadata too (the base provider only knows the snapshot).
+			terminal.write("/mcp__fixture__hello-world t")
+			await waitForText(terminal, "topic=", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("argument autocomplete resolves from live metadata")
+
+			terminal.keyEscape()
+			// 28 chars: "/mcp__fixture__hello-world t"
+			terminal.write("\b".repeat(28))
 			// The command is not cosmetic: running it must reach prompts/get.
 			const execCheckpoint = fixture.mcp.checkpoint()
 			terminal.submit("/mcp__fixture__hello-world")

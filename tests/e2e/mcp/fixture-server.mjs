@@ -216,7 +216,15 @@ function createFixtureServer() {
 		server.setRequestHandler(ListPromptsRequestSchema, async () => {
 			record("prompts_listed")
 			return {
-				prompts: [{ name: "hello-world", description: "Say hello from the fixture", arguments: [] }],
+				prompts: [
+					{
+						name: "hello-world",
+						description: "Say hello from the fixture",
+						// Optional so the command also runs bare; exists to prove
+						// argument completions from the live wrapper.
+						arguments: [{ name: "topic", description: "Topic to greet" }],
+					},
+				],
 			}
 		})
 

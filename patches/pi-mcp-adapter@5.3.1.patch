@@ -151,7 +151,9 @@
 #       * prompt-autocomplete.ts (new) + index.ts: live autocomplete wrapper
 #         stacked via ctx.ui.addAutocompleteProvider so prompt commands
 #         registered mid-session (first connect, reconnect, list-changed
-#         refresh) show in the TUI slash dropdown without /reload.
+#         refresh) show in the TUI slash dropdown without /reload, including
+#         argument completions resolved from live metadata (the base
+#         provider only knows its one-time snapshot).
 #         Remove when upstream Pi rebuilds its autocomplete provider on
 #         command registration (or registerCommand emits an event).
 #       * metadata-cache.ts isPrivateScopeEntry, mcp-panel.ts (+McpPanelCallbacks
@@ -1750,15 +1752,16 @@ index 264573709c2c896fdb88d661fd24cd8f2f4a2327..7620913273acb8cd190bbb992d9e8530
        entry.projectRoot === projectRoot && entry.serverName === name && entry.definitionHash === definitionHash);
 diff --git a/prompt-autocomplete.ts b/prompt-autocomplete.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..01f81cb1b13702b1fbcc23f74071e201111f5ff5
+index 0000000000000000000000000000000000000000..655b50c093a4f942133ea2658eedda1b19daa685
 --- /dev/null
 +++ b/prompt-autocomplete.ts
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,105 @@
 +// Host integration: live MCP prompt commands in the TUI autocomplete.
 +// Tracking: upstream Pi rebuilds its autocomplete provider from a one-time
 +// snapshot of registered commands. Remove this wrapper when Pi rebuilds the
 +// provider on command registration (or registerCommand emits an event).
 +import type { AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
++import { completePromptArgs } from "./prompts.ts";
 +import type { McpExtensionState } from "./state.ts";
 +import type { PromptMetadata } from "./types.ts";
 +import { truncateAtWord } from "./utils.ts";
@@ -1794,7 +1797,23 @@ index 0000000000000000000000000000000000000000..01f81cb1b13702b1fbcc23f74071e201
 +      const currentLine = lines[cursorLine] || "";
 +      const commandText = currentLine.slice(0, cursorCol).trimStart();
 +      if (!commandText.startsWith("/")) return suggestions;
-+      if (commandText.includes(" ")) return suggestions;
++      const spaceIndex = commandText.indexOf(" ");
++      if (spaceIndex !== -1) {
++        // Argument phase. The base provider resolves arguments against
++        // its one-time snapshot, so it can only help commands that were
++        // registered before the provider was built — for those it has
++        // already answered. For mid-session commands the snapshot lookup
++        // fails and the base returns nothing; serve the same completions
++        // from the live metadata instead (mirrors
++        // createPromptCommand.getArgumentCompletions).
++        if (suggestions) return suggestions;
++        const commandName = commandText.slice(1, spaceIndex);
++        const spec = findLivePromptSpec(state, commandName);
++        if (!spec || spec.arguments.length === 0) return suggestions;
++        const argumentText = commandText.slice(spaceIndex + 1);
++        const argItems = completePromptArgs(spec, argumentText);
++        return argItems && argItems.length > 0 ? { items: argItems, prefix: argumentText } : suggestions;
++      }
 +      const prefix = commandText.slice(1);
 +      if (!prefix.startsWith("mcp__")) return suggestions;
 +      const merged = [...(suggestions?.items ?? [])];
@@ -1829,6 +1848,18 @@ index 0000000000000000000000000000000000000000..01f81cb1b13702b1fbcc23f74071e201
 +        }
 +      : {}),
 +  };
++}
++
++/** Resolve the live prompt metadata behind an `mcp__<server>__<prompt>`
++ * command name, applying the same provisional-install trust filter as the
++ * command list so the wrapper never exceeds the command registry. */
++function findLivePromptSpec(state: McpExtensionState, commandName: string): PromptMetadata | null {
++  if (!commandName.startsWith("mcp__")) return null;
++  const parts = commandName.split("__");
++  if (parts.length !== 3) return null;
++  const serverName = parts[1];
++  if (state.provisionalInstalls?.has(serverName)) return null;
++  return (state.promptMetadata?.get(serverName) ?? []).find((p) => p.commandName === commandName) ?? null;
 +}
 diff --git a/proxy-modes.ts b/proxy-modes.ts
 index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98a070add7 100644
