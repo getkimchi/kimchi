@@ -660,6 +660,66 @@ describe("resolveBashControlWaitInfo", () => {
 		expect(resolveBashControlWaitInfo({ wait: true }, fakeRegistry([]))).toBeUndefined()
 	})
 
+	it("does not fall back to the cohort when an invalid wait names inspection handles that resolve to nothing", () => {
+		// The tool rejects `wait: true` + `handles` as invalid-params, so
+		// displaying the whole cohort would mislabel an erroring call.
+		const registry = fakeRegistry([snapshot({ handle: "h1", command: "vite dev" })])
+		expect(resolveBashControlWaitInfo({ wait: true, handles: ["typo"] }, registry)).toBeUndefined()
+	})
+
+	it("falls back to the cohort for a wait whose unknown stop_handles are reported individually", () => {
+		// Unknown stop handles do not cancel the cohort-wide wait the tool
+		// then performs, so the cohort is what the call waits on.
+		const registry = fakeRegistry([
+			snapshot({ handle: "h1", command: "npm test", startedAt: STARTED - 10_000 }),
+			snapshot({ handle: "h2", command: "vite dev", state: "exited" }),
+		])
+		expect(resolveBashControlWaitInfo({ wait: true, stop_handles: ["typo"] }, registry)).toEqual({
+			resolvedCommand: "npm test",
+			elapsedSeconds: 15,
+		})
+	})
+
+	it("caps a cohort-wide resolvedCommand at the oldest three plus a +N more suffix", () => {
+		const registry = fakeRegistry([
+			snapshot({ handle: "h1", command: "cmd-four" }),
+			snapshot({ handle: "h2", command: "cmd-three", startedAt: STARTED - 1_000 }),
+			snapshot({ handle: "h3", command: "cmd-two", startedAt: STARTED - 2_000 }),
+			snapshot({ handle: "h4", command: "cmd-one", startedAt: STARTED - 3_000 }),
+		])
+		expect(resolveBashControlWaitInfo({ wait: true }, registry)).toEqual({
+			resolvedCommand: "cmd-one · cmd-two · cmd-three · +1 more",
+			elapsedSeconds: 8,
+		})
+	})
+
+	it("reports the actual lifetime for a terminal process instead of a ticking since-started value", () => {
+		const registry = fakeRegistry([
+			snapshot({ handle: "h1", command: "npm test", state: "exited", finishedAt: STARTED + 2_000 }),
+		])
+		expect(resolveBashControlWaitInfo({ stop_handles: ["h1"] }, registry)).toEqual({
+			resolvedCommand: "npm test",
+			elapsedSeconds: 2,
+		})
+	})
+
+	it("headlines the longest-running live process when the earliest-started entry is terminal", () => {
+		const registry = fakeRegistry([
+			snapshot({
+				handle: "h1",
+				command: "old job",
+				state: "exited",
+				startedAt: STARTED - 50_000,
+				finishedAt: STARTED - 48_000,
+			}),
+			snapshot({ handle: "h2", command: "npm test", startedAt: STARTED }),
+		])
+		expect(resolveBashControlWaitInfo({ stop_handles: ["h1", "h2"] }, registry)).toEqual({
+			resolvedCommand: "old job · npm test",
+			elapsedSeconds: 5,
+		})
+	})
+
 	it("resolves stop_handles, dropping unknown handles", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "vite dev" })])
 		expect(resolveBashControlWaitInfo({ stop_handles: ["gone", "h1"] }, registry)).toEqual({

@@ -9,7 +9,6 @@ import type {
 	ToolKind,
 } from "@agentclientprotocol/sdk"
 import {
-	elapsedSecondsSince,
 	type ProcessDisplaySnapshot,
 	type ProcessRegistry,
 	summarizeCommand,
@@ -85,9 +84,12 @@ export function describeToolCall(
  * Registry-resolved payload for a `bash_control` call that names the
  * background process(es) it waits on or stops, plus how long the
  * longest-running of them has been going. A cohort-wide wait (`wait: true`,
- * no handles) resolves the running cohort. Returns undefined when nothing
- * resolves (unknown or stale handles, empty cohort), so callers keep the
- * plain args untouched.
+ * no handles) resolves the running cohort — but only when the call did not
+ * name inspection `handles`: the tool rejects `wait: true` + `handles` as
+ * invalid-params, so resolving that call against the whole cohort would
+ * mislabel an erroring call. Returns undefined when nothing resolves
+ * (unknown or stale handles, empty cohort), so callers keep the plain args
+ * untouched.
  */
 export function resolveBashControlWaitInfo(
 	args: Record<string, unknown>,
@@ -106,7 +108,9 @@ export function resolveBashControlWaitInfo(
 		const snapshot = registry.displaySnapshot(handle)
 		if (snapshot) snapshots.set(handle, snapshot)
 	}
-	if (snapshots.size === 0 && args.wait === true) {
+	const namedInspectionHandles =
+		Array.isArray(args.handles) && args.handles.some((h) => typeof h === "string" && h.length > 0)
+	if (snapshots.size === 0 && args.wait === true && !namedInspectionHandles) {
 		for (const snapshot of registry.listDisplaySnapshots())
 			if (snapshot.state === "running") snapshots.set(snapshot.handle, snapshot)
 	}
@@ -114,10 +118,34 @@ export function resolveBashControlWaitInfo(
 	// Earliest-started first: it is the longest-running of the cohort, so its
 	// elapsed seconds headline the wait.
 	const entries = [...snapshots.values()].sort((x, y) => x.startedAt - y.startedAt)
+	// Cap the named entries: one line per running process grows the payload
+	// linearly with the cohort, contradicting the bounded-title rationale of
+	// describeToolCall. The oldest three are the ones the human cares about.
+	const shown = entries.slice(0, RESOLVED_COMMAND_MAX_ENTRIES).map((s) => summarizeCommand(s.command, 48))
+	const hidden = entries.length - shown.length
+	// Elapsed headlines the longest-running LIVE process; for a terminal-only
+	// set it reports the actual lifetime, never a ticking since-started value
+	// that would read as the uptime of a process that already finished.
+	const runningEntries = entries.filter((s) => s.state === "running")
+	const elapsedHead = runningEntries[0] ?? entries[0]
 	return {
-		resolvedCommand: entries.map((s) => summarizeCommand(s.command, 48)).join(" · "),
-		elapsedSeconds: elapsedSecondsSince(entries[0].startedAt),
+		resolvedCommand: hidden > 0 ? `${shown.join(" · ")} · +${hidden} more` : shown.join(" · "),
+		elapsedSeconds: snapshotElapsedSeconds(elapsedHead),
 	}
+}
+
+/** Maximum number of background commands named in a resolvedCommand string. */
+const RESOLVED_COMMAND_MAX_ENTRIES = 3
+
+/**
+ * Seconds a process has been going: elapsed since spawn while it runs, its
+ * actual lifetime (`finishedAt - startedAt`) once it is terminal. Snapshots
+ * without a recorded finish (registry tests, legacy mocks) degrade to the
+ * observation time, mirroring the pre-cap behavior.
+ */
+function snapshotElapsedSeconds(snapshot: ProcessDisplaySnapshot): number {
+	const end = snapshot.state === "running" ? Date.now() : (snapshot.finishedAt ?? snapshot.observedAt ?? Date.now())
+	return Math.max(0, Math.floor((end - snapshot.startedAt) / 1000))
 }
 
 /**
