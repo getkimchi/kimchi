@@ -24,6 +24,7 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { runWorkflowBatch } from "./commands/workflow-batch.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
@@ -350,27 +351,12 @@ async function cliMain(): Promise<void> {
 	// a CI invocation must stay invisible to app_started instrumentation. The extension side of
 	// this package is already bundled (see extensionFactories below); the command is the same
 	// package's headless host, so dispatching on the bundled copy is the coherent choice (no
-	// install surface, no plugin-layout assumptions).
+	// install surface, no plugin-layout assumptions). The route body itself lives in
+	// commands/workflow-batch.ts so the exit-code contract is unit-testable.
 	if (originalArgs[0] === "workflow") {
-		let code: number
-		try {
-			const workflowCli = await import("@kimchi-dev/kimchi-workflows/cli").catch((error: unknown) => {
-				throw new Error(
-					`kimchi workflow needs @kimchi-dev/kimchi-workflows with the "./cli" headless host` +
-						`(ships in 0.0.11 — bump the pinned dependency): ${error instanceof Error ? error.message : String(error)}`,
-					{ cause: error },
-				)
-			})
-			code = await workflowCli.main(originalArgs.slice(1))
-		} catch (error) {
-			// Batch contract: an unexpected host failure is a crashed run (4), reported as one
-			// clean stderr line — scheduler logs must not carry a raw node stack trace.
-			process.stderr.write(`workflow: ${error instanceof Error ? error.message : String(error)}\n`)
-			code = 4
-		}
 		// exitCode + return, never process.exit(): a batch run's stderr may be piped to a scheduler,
 		// and a hard exit can truncate buffered output (the doc-cli lesson above).
-		process.exitCode = code
+		process.exitCode = await runWorkflowBatch(originalArgs.slice(1))
 		return
 	}
 
