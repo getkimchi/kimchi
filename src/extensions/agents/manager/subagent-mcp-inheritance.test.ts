@@ -1,9 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent"
-import type { McpAdapterOptions } from "pi-mcp-adapter/types"
-import { Type } from "typebox"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 /**
@@ -13,87 +11,40 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
  *
  * A child session binds `createKimchiMcpAdapterExtension({ cwd })` exactly like
  * the runner's non-isolated path does, then dispatches `session_start` through
- * the extension's own handler. Network and process boundaries are mocked
- * following `src/extensions/mcp/probe.test.ts`: `pi-mcp-adapter` is a fake
- * adapter that registers the `mcp` proxy tool and lists the server catalog
- * through a mocked `@modelcontextprotocol/client`; config is loaded for real
- * from temp dirs (`PI_CODING_AGENT_DIR` + an `--mcp-config`-style override via
- * the cli-args boundary). No server spawns, no network.
+ * the extension's own handler. Network and process boundaries are mocked via
+ * the shared `src/extensions/__mocks__/mcp-boundary.ts` module (same shape as
+ * `src/extensions/mcp/probe.test.ts`): `pi-mcp-adapter` is a fake adapter that
+ * registers the `mcp` proxy tool and lists the server catalog through a mocked
+ * `@modelcontextprotocol/client`; config is loaded for real from temp dirs
+ * (`PI_CODING_AGENT_DIR` + an `--mcp-config`-style override via the cli-args
+ * boundary). No server spawns, no network.
  */
-
-const upstream = vi.hoisted(() => ({
-	options: undefined as McpAdapterOptions | undefined,
-	installedApis: [] as ExtensionAPI[],
-}))
-
-const mcpClient = vi.hoisted(() => {
-	const state = {
-		tools: [] as Array<Record<string, unknown>>,
-		listToolsCalls: 0,
-	}
-	class Client {
-		async listTools() {
-			state.listToolsCalls += 1
-			return { tools: state.tools }
-		}
-	}
-	return { Client, state }
-})
 
 const cliState = vi.hoisted(() => ({
 	mcpConfig: undefined as string | undefined,
 }))
 
-const installKeyringRequireBridge = vi.hoisted(() => vi.fn())
-
-vi.mock("pi-mcp-adapter", () => ({
-	MCP_STATUS_EVENT: "pi-mcp-adapter/status/v1",
-	MCP_RUNTIME_REGISTER_EVENT: "pi-mcp-adapter:runtime-register:v1",
-	MCP_RUNTIME_REGISTER_VERSION: 1,
-	// Fake adapter: captures the install options, registers the `mcp` proxy tool
-	// through the (real) Kimchi upstream-API proxy — so the extension's tool
-	// surface policy governs whether it lands — and lists the server catalog
-	// through the mocked SDK client on session start, mirroring the real
-	// adapter's startup shape.
-	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
-		upstream.options = options
-		upstream.installedApis.push(api)
-		api.on("session_start", async () => {
-			await new mcpClient.Client().listTools()
-		})
-		api.registerTool({
-			name: "mcp",
-			label: "MCP",
-			description: "MCP gateway (fake adapter surface)",
-			parameters: Type.Record(Type.String(), Type.Unknown()),
-			execute: vi.fn<ToolDefinition["execute"]>(),
-		})
-	}),
-}))
-
-vi.mock("@modelcontextprotocol/client", () => ({
-	Client: mcpClient.Client,
-}))
-
-// Probe-pattern boundary mocks: keep the keychain and legacy-credential
-// migration out of the unit suite (same as src/extensions/mcp/probe.test.ts).
-vi.mock("../../mcp/keyring-require-bridge.js", async () => {
-	const actual = await vi.importActual<typeof import("../../mcp/keyring-require-bridge.js")>(
-		"../../mcp/keyring-require-bridge.js",
-	)
-	return {
-		installKeyringRequireBridge,
-		inspectMcpCredentialAccount: () => ({ status: "absent" }),
-		McpKeychainDeniedError: actual.McpKeychainDeniedError,
-		// Consumed as the default runner by stray-oauth-entry-cleanup (imported via
-		// index.js); a quiet no-op dump keeps cleanup out of these tests.
-		defaultSecurityRunner: () => ({ stdout: "", stderr: "", status: 0, error: undefined }),
-	}
+vi.mock("pi-mcp-adapter", async () => {
+	const { mockPiMcpAdapterModule } = await import("../../__mocks__/mcp-boundary.js")
+	return mockPiMcpAdapterModule()
 })
 
-vi.mock("../../mcp/oauth-migration.js", () => ({
-	migrateLegacyOAuthCredentials: vi.fn(() => ({ migratedServerNames: [], warnings: [] })),
-}))
+vi.mock("@modelcontextprotocol/client", async () => {
+	const { mockMcpClientModule } = await import("../../__mocks__/mcp-boundary.js")
+	return mockMcpClientModule()
+})
+
+// Probe-pattern boundary mocks (shared with src/extensions/mcp/probe.test.ts):
+// keep the keychain and legacy-credential migration out of the unit suite.
+vi.mock("../../mcp/keyring-require-bridge.js", async () => {
+	const { mockKeyringRequireBridgeModule } = await import("../../__mocks__/mcp-boundary.js")
+	return mockKeyringRequireBridgeModule()
+})
+
+vi.mock("../../mcp/oauth-migration.js", async () => {
+	const { mockOauthMigrationModule } = await import("../../__mocks__/mcp-boundary.js")
+	return mockOauthMigrationModule()
+})
 
 // Only the parsed arguments are replaced (same shape as
 // src/extensions/mcp/index.test.ts): the override path both pins the config
@@ -112,7 +63,9 @@ vi.mock("../../../cli-args.js", async (importOriginal) => ({
 	}),
 }))
 
+import { createContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
+import { installKeyringRequireBridge, mcpClient, upstream } from "../../__mocks__/mcp-boundary.js"
 import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 
 let rootDir: string
@@ -150,17 +103,13 @@ function createChildSessionHarness(cwd: string): {
 } {
 	const harness = createExtensionApi()
 	// A subagent child session has no UI: warnings degrade to console output
-	// and no interactive consent path can be entered.
-	const ctx = {
+	// and no interactive consent path can be entered. The shared mock defaults
+	// to a trusted project, so no consent prompt is reachable either.
+	const ctx = createContext({
 		cwd,
 		hasUI: false,
-		mode: "tui",
 		sessionManager: { getSessionId: () => "child-session" },
-		isProjectTrusted: () => true,
-		// The branding layer wraps ctx.ui in a Proxy; a no-op UI keeps that path
-		// well-defined even though a child session never renders one.
-		ui: { notify: () => {} },
-	} as unknown as ExtensionContext
+	})
 	return { harness, ctx }
 }
 

@@ -1530,8 +1530,8 @@ describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
 		}
 	}
 
-	function calledActiveTools(session: ReturnType<typeof makeFakeSession>): string[] {
-		return (session.setActiveToolsByName as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+	function firstActiveToolsCall(session: ReturnType<typeof makeFakeSession>): string[] {
+		return vi.mocked(session.setActiveToolsByName).mock.calls[0][0] as string[]
 	}
 
 	beforeEach(() => {
@@ -1541,6 +1541,7 @@ describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
 		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
 		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Researcher", description: "Research agent" }))
 		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+		mockCreateKimchiMcpAdapterExtension.mockImplementation(() => stubMcpExtension())
 	})
 
 	afterEach(() => {
@@ -1555,7 +1556,6 @@ describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
 	})
 
 	it("activates an extension-registered tool on a non-isolated child session", async () => {
-		mockCreateKimchiMcpAdapterExtension.mockImplementation(() => stubMcpExtension())
 		const session = makeExtensionBindFakeSession()
 		mockCreateAgentSession.mockResolvedValue(createSessionResult(session))
 
@@ -1565,11 +1565,10 @@ describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
 
 		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalled()
 		expect(session.setActiveToolsByName).toHaveBeenCalled()
-		expect(calledActiveTools(session)).toContain("mcp")
+		expect(firstActiveToolsCall(session)).toContain("mcp")
 	})
 
 	it("keeps extension-registered tools off an isolated child session", async () => {
-		mockCreateKimchiMcpAdapterExtension.mockImplementation(() => stubMcpExtension())
 		const session = makeExtensionBindFakeSession()
 		mockCreateAgentSession.mockResolvedValue(createSessionResult(session))
 
@@ -1581,7 +1580,7 @@ describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
 		// The isolated branch must never receive the MCP stub: neither the
 		// factory list nor the active tools handed to the session may contain it.
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(calledActiveTools(session)).not.toContain("mcp")
+		expect(firstActiveToolsCall(session)).not.toContain("mcp")
 	})
 })
 

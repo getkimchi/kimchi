@@ -1,93 +1,25 @@
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
-import type { McpAdapterOptions } from "pi-mcp-adapter/types"
-import { Type } from "typebox"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { credentialAccount, installKeyringRequireBridge, mcpClient, upstream } from "../__mocks__/mcp-boundary.js"
 
-const upstream = vi.hoisted(() => ({
-	options: undefined as McpAdapterOptions | undefined,
-	gatewayExecute: vi.fn<ToolDefinition["execute"]>(),
-	logout: vi.fn(),
-	mcpAuth: vi.fn<(args: string, ctx: unknown) => Promise<void>>(),
-	sessionStart: vi.fn(),
-	sessionShutdown: vi.fn(),
-	// Tests flip this off to simulate pi-mcp-adapter never registering mcp-auth.
-	registerMcpAuthCommand: true,
-}))
-
-const mcpClient = vi.hoisted(() => {
-	const state = {
-		tools: [] as Array<Record<string, unknown>>,
-	}
-	class Client {
-		async listTools() {
-			return { tools: state.tools }
-		}
-	}
-	class RegistrationRejectedError extends Error {}
-	return { Client, RegistrationRejectedError, state }
+vi.mock("pi-mcp-adapter", async () => {
+	const { mockPiMcpAdapterModule } = await import("../__mocks__/mcp-boundary.js")
+	return mockPiMcpAdapterModule()
 })
 
-vi.mock("@modelcontextprotocol/client", () => ({
-	Client: mcpClient.Client,
-	RegistrationRejectedError: mcpClient.RegistrationRejectedError,
-}))
+vi.mock("@modelcontextprotocol/client", async () => {
+	const { mockMcpClientModule } = await import("../__mocks__/mcp-boundary.js")
+	return mockMcpClientModule()
+})
 
-vi.mock("pi-mcp-adapter", () => ({
-	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
-		upstream.options = options
-		api.on("session_start", async () => {
-			await new mcpClient.Client().listTools()
-			await upstream.sessionStart()
-		})
-		api.on("session_shutdown", async () => {
-			await upstream.sessionShutdown()
-		})
-		api.registerCommand("mcp", {
-			description: "MCP",
-			handler: async (args, ctx) => upstream.logout(args, ctx),
-		})
-		if (upstream.registerMcpAuthCommand) {
-			api.registerCommand("mcp-auth", {
-				description: "Authenticate with an MCP server (OAuth)",
-				handler: async (args, ctx) => upstream.mcpAuth(args, ctx),
-			})
-		}
-		api.registerTool({
-			name: "mcp",
-			label: "MCP",
-			description: "MCP gateway",
-			parameters: Type.Record(Type.String(), Type.Unknown()),
-			execute: upstream.gatewayExecute,
-		})
-	}),
-}))
-
-const installKeyringRequireBridge = vi.hoisted(() => vi.fn())
-const credentialAccount = vi.hoisted(() => ({
-	value: { status: "absent" } as
-		| { status: "present"; serverUrl?: string }
-		| { status: "absent" }
-		| { status: "unavailable" },
-	error: undefined as Error | undefined,
-}))
 vi.mock("./keyring-require-bridge.js", async () => {
-	const actual = await vi.importActual<typeof import("./keyring-require-bridge.js")>("./keyring-require-bridge.js")
-	return {
-		installKeyringRequireBridge,
-		inspectMcpCredentialAccount: () => {
-			if (credentialAccount.error) throw credentialAccount.error
-			return credentialAccount.value
-		},
-		McpKeychainDeniedError: actual.McpKeychainDeniedError,
-		// Consumed as the default runner by stray-oauth-entry-cleanup (imported via
-		// probe.js); a quiet no-op dump keeps the cleanup out of probe tests.
-		defaultSecurityRunner: () => ({ stdout: "", stderr: "", status: 0, error: undefined }),
-	}
+	const { mockKeyringRequireBridgeModule } = await import("../__mocks__/mcp-boundary.js")
+	return mockKeyringRequireBridgeModule()
 })
 
-vi.mock("./oauth-migration.js", () => ({
-	migrateLegacyOAuthCredentials: vi.fn(() => ({ migratedServerNames: [], warnings: [] })),
-}))
+vi.mock("./oauth-migration.js", async () => {
+	const { mockOauthMigrationModule } = await import("../__mocks__/mcp-boundary.js")
+	return mockOauthMigrationModule()
+})
 
 const tokensForUrlResult = vi.hoisted(() => ({
 	forced: null as { status: "present" } | { status: "absent" } | { status: "unavailable" } | null,
