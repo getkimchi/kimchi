@@ -75,16 +75,45 @@ Each run performs two renewal cycles: the seeded expired token is renewed, one r
 
 Or run the `MCP live` workflow's lifecycle job: dispatch it (choosing Gmail, Drive, or Calendar — only Gmail is provisioned by default), or add the `mcp-e2e-live` label to a pull request to run it against that PR's build. Labelling re-triggers the workflow; the lifecycle job only runs with the label present on a same-repository pull request.
 
-## castai-mcp rotation check
+## Local rotation check against a per-grant rotating provider
 
-The `rotation-live` job runs the same lifecycle script against castai-mcp — the provider that rotates refresh tokens per grant, i.e. the production failure mode behind the refresh-rotation fix. For castai-mcp the concurrent cycle is the point: the loser's rejected grant must recover from shared storage with no browser consent, exercising the full poll-and-retry path against a real rotating provider (Gmail, by contrast, keeps its refresh token across concurrent grants, so the Google job proves the contention half only).
+castai-mcp (`https://mcp.cast.ai/mcp`) rotates refresh tokens per grant — the production failure mode behind the refresh-rotation fix. The Google job proves the contention half only (Gmail keeps its refresh token across concurrent grants), so this is a one-off local check that the fixture's rotation model is faithful to the real server: the loser's rejected grant must recover from shared storage with no browser consent. It is deliberately not a CI job — each run retires the minted refresh token (per-grant rotation), so it does not repeat without re-minting.
 
-Configure once (repository settings):
+Mint the credentials once, through the harness so the dynamically registered client's redirect URIs match the ones the check seeds:
 
-- Secrets: `CASTAI_MCP_TEST_CLIENT_ID`, `CASTAI_MCP_TEST_CLIENT_SECRET`, `CASTAI_MCP_TEST_REFRESH_TOKEN` — an OAuth client registered with castai-mcp and a refresh token issued to a dedicated test account (same shape as the Google setup above; the seeded redirect URIs `http://localhost:19876/callback` and `http://127.0.0.1:19876/callback` must be registered for that client).
-- Variables: `CASTAI_MCP_TEST_SERVER` (the castai-mcp endpoint), `CASTAI_MCP_TEST_ISSUER` (its OAuth issuer, optional), `CASTAI_MCP_TEST_CALL_TOOL` (a read-only tool to invoke after renewal; empty skips the call).
+1. Use a dedicated Cast AI test account (not the daily one: the run's first renewal retires the token it seeded, and a token minted from the daily credential would force one re-auth in the daily session).
+2. Isolated home with the server pre-configured and a file-backed credential store:
 
-Until the secrets exist the job skips with a one-line notice and stays green. Once configured it runs under the same `mcp-e2e-live` label as the Google lifecycle job.
+   ```sh
+   mkdir -p /tmp/castai-seed/.config/kimchi/harness
+   cat > /tmp/castai-seed/.config/kimchi/harness/mcp.json <<'EOF'
+   {
+     "mcpServers": {
+       "castai-test": {
+         "url": "https://mcp.cast.ai/mcp",
+         "auth": "oauth"
+       }
+     }
+   }
+   EOF
+   HOME=/tmp/castai-seed KIMCHI_MCP_E2E_KEYRING_DIR=/tmp/castai-seed/mcp-keyring dist/bin/kimchi
+   ```
+
+3. In the session: `/mcp-auth castai-test` and complete the login with the test account. castai-mcp supports dynamic client registration, so the client id and secret are created by this flow — no console app to set up.
+4. Extract `clientInfo.clientId`, `clientInfo.clientSecret`, and `tokens.refreshToken` from the stored entry JSON under `$HOME/mcp-keyring/`. Delete the temporary home afterwards (it holds the client secret). The extraction is manual by design: the values pass from your screen to the shell without transiting any log.
+
+Then run the check locally (the lifecycle script's env contract is provider-neutral despite the GOOGLE_ prefix):
+
+```sh
+GOOGLE_MCP_TEST_CLIENT_ID="<client id>" \
+GOOGLE_MCP_TEST_CLIENT_SECRET="<client secret>" \
+GOOGLE_MCP_TEST_REFRESH_TOKEN="<refresh token>" \
+GOOGLE_MCP_TEST_SERVER=https://mcp.cast.ai/mcp \
+GOOGLE_MCP_TEST_ISSUER=https://mcp.cast.ai/mcp \
+node scripts/mcp-live-google-lifecycle.mjs
+```
+
+What to look for in the output: the `concurrent cycle:` line must report that the provider rotated the refresh token during the race (that is the fidelity check — the fixture models exactly this), and the run must end PASS with `browserOpens=0` on every cycle: the loser's `invalid_grant` recovered from shared storage without a consent prompt. Expect one run per minted refresh token; re-mint from step 1 for another run.
 
 ## Triage
 
