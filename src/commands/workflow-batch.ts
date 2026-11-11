@@ -23,12 +23,9 @@ export async function runWorkflowBatch(args: string[], deps: WorkflowBatchDeps =
 			deps.main ??
 			(
 				(await import("@kimchi-dev/kimchi-workflows/cli").catch((error: unknown) => {
-					// Import failure gets the version hint: it means the pinned dependency predates
-					// the "./cli" headless host — actionable for whoever forgot the bump.
-					throw new Error(
-						`kimchi workflow needs @kimchi-dev/kimchi-workflows with the "./cli" headless host (ships in 0.0.11 — bump the pinned dependency): ${describeFailure(error)}`,
-						{ cause: error },
-					)
+					// User-facing line: the packaged layout is OUR problem, not the user's —
+					// no package names, no versions. The technical cause still follows for devs.
+					throw new Error(`workflow host unavailable (${describeFailure(error)})`, { cause: error })
 				})) as { main: WorkflowCliMain }
 			).main
 	} catch (error) {
