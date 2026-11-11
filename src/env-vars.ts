@@ -264,4 +264,8 @@ export const TEST_SUITE_ENV_VARS: string[] = [
 	"KIMCHI_KEEP_OAUTH_TMP",
 	"KIMCHI_OAUTH_VERBOSE",
 	"PI_MCP_ADAPTER_OAUTH_FILE_KEY",
+	// rotation-recovery debug toggle in the patched adapter: silent by default,
+	// set to 1 to capture recovery diagnostics for a bug report (see
+	// docs/mcp-live-testing-setup.md and the adapter patch header)
+	"PI_MCP_ADAPTER_DEBUG_AUTH",
 ]

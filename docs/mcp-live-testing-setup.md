@@ -106,12 +106,14 @@ Then run the check locally (the lifecycle script's env contract is provider-neut
 
 ```sh
 GOOGLE_MCP_TEST_CLIENT_ID="<client id>" \
-GOOGLE_MCP_TEST_CLIENT_SECRET="<client secret>" \
 GOOGLE_MCP_TEST_REFRESH_TOKEN="<refresh token>" \
 GOOGLE_MCP_TEST_SERVER=https://mcp.cast.ai/mcp \
 GOOGLE_MCP_TEST_ISSUER=https://mcp.cast.ai/mcp \
+PI_MCP_ADAPTER_DEBUG_AUTH=1 \
 node scripts/mcp-live-google-lifecycle.mjs
 ```
+
+(The last variable is optional: rotation-recovery diagnostics are silent by default — set `PI_MCP_ADAPTER_DEBUG_AUTH=1` to see each retry, recovery miss, and attempt-cap exhaustion as they happen. Same variable works for any kimchi run when capturing an auth issue for a bug report.)
 
 What to look for in the output: the `concurrent cycle:` line must report that the provider rotated the refresh token during the race (that is the fidelity check — the fixture models exactly this), and the run must end PASS with `browserOpens=0` on every cycle: the loser's `invalid_grant` recovered from shared storage without a consent prompt. Expect one run per minted refresh token; re-mint from step 1 for another run.
 

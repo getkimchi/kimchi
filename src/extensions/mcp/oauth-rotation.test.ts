@@ -524,19 +524,25 @@ describe("MCP OAuth refresh-token rotation", () => {
 
 	it("logs a distinguishable miss when a rejected grant has no rotation to adopt", { timeout: 60_000 }, async () => {
 		// The revoked scenario rejects every refresh grant and rotates nothing,
-		// so recovery must miss: the child fails, and its output carries the
-		// distinct miss line instead of only a generic refresh failure.
+		// so recovery must miss: the child fails. The miss line is debug-only
+		// (PI_MCP_ADAPTER_DEBUG_AUTH), so the child runs with it enabled and the
+		// assertion pins the captured-for-bug-reports output.
 		fixture = await spawnFixture({ scenario: "oauth-refresh-revoked" })
 		const serverName = "oauth-rotation-miss"
 		const envOptions = { agentDir, fileKey }
 		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
 		await waitUntilExpired(serverName, fixture.serverUrl)
 
+		const savedDebug = process.env.PI_MCP_ADAPTER_DEBUG_AUTH
+		process.env.PI_MCP_ADAPTER_DEBUG_AUTH = "1"
 		let failure: Error | undefined
 		try {
 			await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "revoked-refresh child")
 		} catch (error) {
 			failure = error as Error
+		} finally {
+			if (savedDebug === undefined) delete process.env.PI_MCP_ADAPTER_DEBUG_AUTH
+			else process.env.PI_MCP_ADAPTER_DEBUG_AUTH = savedDebug
 		}
 		expect(failure, "the child must fail: the token is revoked").toBeInstanceOf(Error)
 		expect(

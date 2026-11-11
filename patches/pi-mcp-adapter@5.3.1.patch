@@ -520,7 +520,7 @@ index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edee
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
-index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204bcc336e86 100644
+index 274849a3a2a60a176db5c16dc003d1aea204e18b..892e7b6d0412a8cbfc3cfe6be73490985c3f6238 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
 @@ -3,11 +3,11 @@
@@ -590,7 +590,7 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204b
      const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
      const manualRedirect = redirectTarget?.mode === "manual";
      const oauthState = generateState();
-@@ -927,6 +963,32 @@ export async function authenticate(serverName, serverUrl, definition, options =
+@@ -927,6 +963,40 @@ export async function authenticate(serverName, serverUrl, definition, options =
          }
      }
  }
@@ -599,6 +599,14 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204b
 + * poll found a token different from the last one presented, so a genuinely
 + * revoked token can never loop here. */
 +const ROTATION_RECOVERY_MAX_ATTEMPTS = 4;
++/** Rotation-recovery diagnostics are silent by default: recovery is a normal,
++ * silent operation and its rare misses are captured for bug reports by
++ * setting PI_MCP_ADAPTER_DEBUG_AUTH=1 rather than shown to the user. */
++const authRecoveryDebug = process.env.PI_MCP_ADAPTER_DEBUG_AUTH === "1";
++function authRecoveryLog(message) {
++    if (authRecoveryDebug)
++        console.log(message);
++}
 +/**
 + * Poll shared credential storage for a refresh token rotated by another
 + * session (single-use refresh tokens retire the presented one on each
@@ -623,7 +631,7 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204b
  /**
   * Get a valid access token for a server, refreshing if necessary.
   *
-@@ -956,12 +1018,21 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -956,12 +1026,21 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
      }
      if (expired === true && entry.tokens.refreshToken) {
          console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`);
@@ -650,7 +658,7 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204b
              }, authStorageOptions, runtime.signal, undefined, authority);
              try {
                  authProvider.setAuthFetch(fetchFn);
-@@ -984,6 +1055,25 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -984,6 +1063,22 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
                  authority();
                  throwIfAborted(signal);
                  if (result !== "AUTHORIZED") {
@@ -664,19 +672,16 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204b
 +                    if (authProvider.tokensInvalidatedByRecovery()) {
 +                        const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken;
 +                        if (adopted !== undefined) {
-+                            console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
++                            authRecoveryLog(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
 +                            presentedRefreshToken = adopted;
 +                            continue;
 +                        }
-+                        // Distinguishable on purpose: a rejected grant whose recovery
-+                        // missed (no rotated token ever appeared) must be findable in
-+                        // user logs, not silent behind a generic re-auth.
-+                        console.log(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`);
++                        authRecoveryLog(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`);
 +                    }
                      return null;
                  }
                  const refreshed = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
-@@ -991,16 +1081,37 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+@@ -991,16 +1086,37 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
                  throwIfAborted(signal);
                  return refreshed?.tokens ?? null;
              }
@@ -693,11 +698,11 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204b
 +                    || authProvider.tokensInvalidatedByRecovery()) {
 +                    const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken;
 +                    if (adopted !== undefined) {
-+                        console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
++                        authRecoveryLog(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
 +                        presentedRefreshToken = adopted;
 +                        continue;
 +                    }
-+                    console.log(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`);
++                    authRecoveryLog(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`);
 +                }
 +                console.error(`MCP Auth: Token refresh failed for ${serverName}`);
 +                return null;
@@ -714,8 +719,8 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..fb3ce2ccf453a440cd3a6251a988204b
 -        }
 +        // Reachable only when every attempt adopted a newer token and the cap
 +        // exhausted: the shared token is rotating faster than this session can
-+        // adopt it. Distinguishable in logs on purpose.
-+        console.log(`MCP Auth: refresh token for ${serverName} kept rotating under this session; re-auth required after ${ROTATION_RECOVERY_MAX_ATTEMPTS} attempts`);
++        // adopt it. Debug-only like the other recovery diagnostics.
++        authRecoveryLog(`MCP Auth: refresh token for ${serverName} kept rotating under this session; re-auth required after ${ROTATION_RECOVERY_MAX_ATTEMPTS} attempts`);
 +        return null;
      }
      authority();
@@ -1165,7 +1170,7 @@ index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acb
        return false;
      }
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..bfb8dc1005abca08ffdcc54f2e4d96ba38b14873 100644
+index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..475cab47e28a468b9be7eba97290e9a24c6f1841 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
 @@ -8,6 +8,8 @@ import {
@@ -1414,7 +1419,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..bfb8dc1005abca08ffdcc54f2e4d96ba
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
-@@ -1121,6 +1224,37 @@ export async function authenticate(
+@@ -1121,6 +1224,46 @@ export async function authenticate(
    }
  }
  
@@ -1423,6 +1428,15 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..bfb8dc1005abca08ffdcc54f2e4d96ba
 + * poll found a token different from the last one presented, so a genuinely
 + * revoked token can never loop here. */
 +const ROTATION_RECOVERY_MAX_ATTEMPTS = 4
++
++/** Rotation-recovery diagnostics are silent by default: recovery is a normal,
++ * silent operation and its rare misses are captured for bug reports by
++ * setting PI_MCP_ADAPTER_DEBUG_AUTH=1 rather than shown to the user. */
++const authRecoveryDebug = process.env.PI_MCP_ADAPTER_DEBUG_AUTH === "1"
++
++function authRecoveryLog(message: string): void {
++  if (authRecoveryDebug) console.log(message)
++}
 +
 +/**
 + * Poll shared credential storage for a refresh token rotated by another
@@ -1452,7 +1466,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..bfb8dc1005abca08ffdcc54f2e4d96ba
  /**
   * Get a valid access token for a server, refreshing if necessary.
   * 
-@@ -1155,51 +1289,103 @@ export async function getValidToken(
+@@ -1155,51 +1298,100 @@ export async function getValidToken(
  
    if (expired === true && entry.tokens.refreshToken) {
      console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`)
@@ -1517,14 +1531,11 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..bfb8dc1005abca08ffdcc54f2e4d96ba
 +            if (authProvider.tokensInvalidatedByRecovery()) {
 +                const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken
 +                if (adopted !== undefined) {
-+                    console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
++                    authRecoveryLog(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
 +                    presentedRefreshToken = adopted
 +                    continue
 +                }
-+                // Distinguishable on purpose: a rejected grant whose recovery
-+                // missed (no rotated token ever appeared) must be findable in
-+                // user logs, not silent behind a generic re-auth.
-+                console.log(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`)
++                authRecoveryLog(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`)
 +            }
 +            return null
          }
@@ -1550,11 +1561,11 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..bfb8dc1005abca08ffdcc54f2e4d96ba
 +        ) {
 +            const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken
 +            if (adopted !== undefined) {
-+                console.log(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
++                authRecoveryLog(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
 +                presentedRefreshToken = adopted
 +                continue
 +            }
-+            console.log(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`)
++            authRecoveryLog(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`)
 +        }
 +        console.error(`MCP Auth: Token refresh failed for ${serverName}`)
 +        return null
@@ -1569,8 +1580,8 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..bfb8dc1005abca08ffdcc54f2e4d96ba
      }
 +    // Reachable only when every attempt adopted a newer token and the cap
 +    // exhausted: the shared token is rotating faster than this session can
-+    // adopt it. Distinguishable in logs on purpose.
-+    console.log(`MCP Auth: refresh token for ${serverName} kept rotating under this session; re-auth required after ${ROTATION_RECOVERY_MAX_ATTEMPTS} attempts`)
++    // adopt it. Debug-only like the other recovery diagnostics.
++    authRecoveryLog(`MCP Auth: refresh token for ${serverName} kept rotating under this session; re-auth required after ${ROTATION_RECOVERY_MAX_ATTEMPTS} attempts`)
 +    return null
    }
  
