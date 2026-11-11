@@ -893,6 +893,25 @@ describe("plan mode assumption detection", () => {
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
+	it("marks the empty-plan failure isError so it cannot hold the ACP prompt", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const ctx = createMockContext([])
+		const result = (await submitPlan(harness, "", ctx)) as {
+			content: { type: string; text: string }[]
+			details?: { submitted?: boolean }
+			isError?: boolean
+		}
+
+		// The ACP plan-review hold gates on !isError: a failed submission that
+		// omits the flag would strand the prompt on a review that never opened.
+		expect(result.content[0]?.text).toContain("plan text is empty")
+		expect(result.details?.submitted).toBe(false)
+		expect(result.isError).toBe(true)
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
 	it("shows approval menu even when assumptions section is present (agent is trusted)", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
