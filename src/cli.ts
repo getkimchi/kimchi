@@ -219,7 +219,7 @@ import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
-import { runSetupWizard } from "./setup-wizard.js"
+import { runSetupWizard, shouldRunSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { applyTelemetryPolicy } from "./telemetry-policy.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
@@ -567,7 +567,19 @@ async function cliMain(): Promise<void> {
 			let skillPaths = config.skillPaths ?? []
 
 			if (needsSkillsSetup || needsMigrationCheck) {
-				if (!process.stdin.isTTY) {
+				// Only open the wizard in a genuinely interactive session. stdin
+				// being a TTY is not sufficient: subprocesses spawned by harnesses
+				// (bench drivers, tmux panes, editor integrations) inherit the
+				// parent's TTY stdin while their stdout is piped away — the wizard
+				// then waits forever on input that can never arrive. See also
+				// --print / ACP: those are non-interactive even on a full TTY.
+				const interactiveLaunch = shouldRunSetupWizard({
+					stdinIsTTY: process.stdin.isTTY === true,
+					stdoutIsTTY: process.stdout.isTTY === true,
+					acpMode: IS_ACP_MODE,
+					printMode: hasPrintFlag(originalArgs),
+				})
+				if (!interactiveLaunch) {
 					if (needsSkillsSetup) {
 						skillPaths = DEFAULT_SKILL_PATHS
 						writeSkillPaths(skillPaths)

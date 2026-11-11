@@ -341,6 +341,27 @@ function cancelSetup(skillPaths: string[] = []): SetupResult {
 	return { cancelled: true, skillPaths }
 }
 
+export interface SetupWizardLaunch {
+	stdinIsTTY: boolean
+	stdoutIsTTY: boolean
+	acpMode: boolean
+	printMode: boolean
+}
+
+/** True only for a genuinely interactive launch where the wizard can render.
+ * A subprocess spawned with a TTY stdin but piped/redirected stdout (bench
+ * harnesses, tmux panes, editor integrations) would open a clack TUI into the
+ * null-drain and wait forever for input — every turn then times out with no
+ * diagnostic. Mirrors `decideSessionModeOnboarding`'s not-interactive-tty and
+ * automation-mode skips. */
+export function shouldRunSetupWizard(launch: SetupWizardLaunch): boolean {
+	if (!launch.stdinIsTTY) return false
+	if (!launch.stdoutIsTTY) return false
+	if (launch.acpMode) return false
+	if (launch.printMode) return false
+	return true
+}
+
 export async function runSetupWizard(options: {
 	needsSkillsSetup: boolean
 	needsMigrationCheck: boolean
