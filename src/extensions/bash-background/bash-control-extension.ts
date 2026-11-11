@@ -91,7 +91,7 @@
  */
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { registerUnsolicitedRunReason } from "../../modes/acp/run-boundary.js"
+import { registerUnsolicitedRunReason } from "../../shared/run-reason-registry.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { classifyTool } from "../permissions/taxonomy.js"
 import { markHarnessSteer } from "../steer-marker.js"

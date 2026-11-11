@@ -8073,6 +8073,84 @@ describe("routed model notifications", () => {
 	})
 })
 
+// An agent-initiated run (no prompt owns it, e.g. a background-bash exit
+// waking an idle agent) brackets its streamed output with run_start / run_end
+// ext notifications. The boundary must close exactly once per run — also when
+// a client prompt waits the run out and when the client cancels mid-run — so
+// a client anchored on `state: "running"` never sees a permanent-running
+// session.
+describe("run boundary notifications", () => {
+	const RUN_START = "_kimchi.dev/run_start"
+	const RUN_END = "_kimchi.dev/run_end"
+
+	async function startRunBoundarySession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		return agent
+	}
+
+	it("closes the boundary once before a prompt that waited out the run starts", async () => {
+		let releaseIdle!: () => void
+		const fake = new FakeAgentSession("session-rb-wait")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRunBoundarySession(fake, conn)
+		// The wait outlasts the run: real pi-mono notifies agent_settled
+		// listeners BEFORE waitForIdle resolves (_emitAgentSettled), and this
+		// harness mirrors that ordering.
+		fake.waitForIdleImpl = () =>
+			new Promise<void>((resolve) => {
+				releaseIdle = resolve
+			})
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+
+		// The unsolicited run starts — no prompt owns it.
+		fake.emit({ type: "agent_start" })
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toEqual([
+			{ method: RUN_START, params: { sessionId: "session-rb-wait", state: "running", reason: "agent-initiated" } },
+		])
+
+		const pending = agent.prompt({ sessionId: "session-rb-wait", prompt: [{ type: "text", text: "next question" }] })
+		await delay(0)
+		// The run chain drains; the boundary closes while the prompt still waits.
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		releaseIdle()
+
+		await expect(pending).resolves.toEqual({ stopReason: "end_turn" })
+		expect(fake.promptCalls.map((c) => c.prompt)).toEqual(["next question"])
+		// Exactly one boundary for the run — the waiting prompt's own turn
+		// opened no new one.
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
+			{ method: RUN_END, params: { sessionId: "session-rb-wait", state: "idle", outcome: "end_turn" } },
+		])
+	})
+
+	it("a cancel mid-run closes the boundary with outcome cancelled", async () => {
+		const fake = new FakeAgentSession("session-rb-cancel")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRunBoundarySession(fake, conn)
+
+		fake.emit({ type: "agent_start" })
+		await agent.cancel({ sessionId: "session-rb-cancel" })
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+
+		expect(fake.aborted).toBe(true)
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		// cancel() only marks prompt-owned turns, so without flagging the
+		// unsolicited context too this would mislabel the cancel "end_turn".
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
+			{ method: RUN_END, params: { sessionId: "session-rb-cancel", state: "idle", outcome: "cancelled" } },
+		])
+	})
+})
+
 describe("agent activity notifications", () => {
 	function successEvent(): AgentSessionEvent {
 		const message: AssistantMessage = {

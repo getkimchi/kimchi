@@ -156,6 +156,7 @@ import {
 } from "../../sandbox/worker/acp-protocol.js"
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
+import { takePendingRunReason } from "../../shared/run-reason-registry.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -193,7 +194,7 @@ import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelM
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
-import { emitRunEnd, emitRunStart, runEndOutcomeFromFlags, takePendingRunReason } from "./run-boundary.js"
+import { emitRunEnd, emitRunStart, runEndOutcomeFromFlags } from "./run-boundary.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
 import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
 import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
@@ -1546,6 +1547,10 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
+		// An unsolicited run (no prompt owns it) has no turn to mark: flag its
+		// passive context so agent_settled closes the run boundary with outcome
+		// "cancelled" instead of mislabeling the cancel "end_turn".
+		if (entry.unsolicitedTurn) entry.unsolicitedTurn.cancelled = true
 		cancelPendingPrompts(entry)
 		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
 		// chains queued steering messages into the running prompt —

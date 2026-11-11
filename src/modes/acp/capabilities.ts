@@ -24,6 +24,10 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 //   routed-pick entry, on the project_trust_update precedent: not advertised
 //   in _meta, sessionId carried in the payload.
 //
+// run_start / run_end are agent→client extNotifications bracketing an
+//   agent-initiated run (one no client prompt owns), on the same precedent:
+//   not advertised in _meta, sessionId carried in the payload.
+//
 // Capability advertising: every entry here is exposed in
 // `_meta["kimchi.dev"][<key>] === true` so clients can discover the methods
 // the agent supports.
@@ -94,6 +98,8 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 	agent_activity: `_${CAPABILITIES_KEY}/agent_activity`,
 	routed_model: `_${CAPABILITIES_KEY}/routed_model`,
 	skill_autoload: `_${CAPABILITIES_KEY}/skill_autoload`,
+	run_start: `_${CAPABILITIES_KEY}/run_start`,
+	run_end: `_${CAPABILITIES_KEY}/run_end`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS

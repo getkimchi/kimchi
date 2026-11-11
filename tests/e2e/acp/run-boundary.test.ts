@@ -5,7 +5,7 @@ import { newSession, prompt, waitFor, waitForSessionUpdate } from "./support/sce
 const RUN_START_METHOD = "_kimchi.dev/run_start"
 const RUN_END_METHOD = "_kimchi.dev/run_end"
 
-// LLM-4486: an agent-initiated run (a background-bash exit waking the idle
+// An agent-initiated run (a background-bash exit waking the idle
 // agent) announces its boundary over ACP — run_start with the wake reason
 // BEFORE the run's streamed output, run_end with the outcome AFTER it —
 // while prompt-owned turns emit neither.
