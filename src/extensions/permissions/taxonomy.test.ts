@@ -851,6 +851,11 @@ describe("common read-only command corpus", () => {
 		expect(isReadOnlyBashCommand("git diff --ext-diff")).toBe(false)
 		expect(isReadOnlyBashCommand("git show --textconv HEAD")).toBe(false)
 		expect(isReadOnlyBashCommand("git log --filters")).toBe(false)
+		// --upload-pack / --receive-pack spawn the given command for
+		// local-path remotes — verified end-to-end that ls-remote executes it.
+		expect(isReadOnlyBashCommand("git ls-remote --upload-pack=/tmp/up /tmp/repo")).toBe(false)
+		expect(isReadOnlyBashCommand("git ls-remote --upload-pack /tmp/up /tmp/repo")).toBe(false)
+		expect(isReadOnlyBashCommand("git fetch --dry-run --upload-pack=/tmp/up origin")).toBe(false)
 	})
 
 	it("allows git fetch --dry-run but not a real fetch", () => {
@@ -872,13 +877,23 @@ describe("common read-only command corpus", () => {
 		// --file/--blob/--default consume a value, not an operand.
 		expect(isReadOnlyBashCommand("git config --file .git/config user.name")).toBe(true)
 		expect(isReadOnlyBashCommand("git config --default v user.name")).toBe(true)
-		expect(isReadOnlyBashCommand("git config user.name --default -")).toBe(true)
 		expect(isReadOnlyBashCommand("git config -- user.name")).toBe(true)
+		// After the key, git treats everything as the VALUE — no flag
+		// permutation. Empirically `git config alias.a --default l` stores
+		// `a = --default`, and `git config credential.helper -f` writes
+		// `helper = -f`, so these must block. Inert read-show flags still pass.
+		expect(isReadOnlyBashCommand("git config user.name --default -")).toBe(false)
+		expect(isReadOnlyBashCommand("git config credential.helper -f")).toBe(false)
+		expect(isReadOnlyBashCommand("git config user.name --bool")).toBe(true)
+		expect(isReadOnlyBashCommand("git config user.name --show-origin")).toBe(true)
+		expect(isReadOnlyBashCommand("git config user.name --type=bool")).toBe(true)
+		expect(isReadOnlyBashCommand("git config user.email -z")).toBe(true)
 		expect(isReadOnlyBashCommand("git config user.name John")).toBe(false)
 		expect(isReadOnlyBashCommand("git config --global user.email [REDACTED-EMAIL_ADDRESS]")).toBe(false)
 		expect(isReadOnlyBashCommand("git config core.fsmonitor /tmp/evil.sh")).toBe(false)
 		// A lone `-` is a value, not a flag.
 		expect(isReadOnlyBashCommand("git config user.name -")).toBe(false)
+		expect(isReadOnlyBashCommand("git config core.fsmonitor -x")).toBe(false)
 		expect(isReadOnlyBashCommand("git config --unset user.name")).toBe(false)
 		expect(isReadOnlyBashCommand("git config --add user.name John")).toBe(false)
 		expect(isReadOnlyBashCommand("git config -e")).toBe(false)
@@ -936,6 +951,8 @@ describe("common read-only command corpus", () => {
 		expect(isReadOnlyBashCommand("yq '.name' file.yaml")).toBe(true)
 		expect(isReadOnlyBashCommand("yq -i '.name = \"x\"' file.yaml")).toBe(false)
 		expect(isReadOnlyBashCommand("yq --inplace '.name = \"x\"' file.yaml")).toBe(false)
+		// pflag boolean shorthand accepts the value form too.
+		expect(isReadOnlyBashCommand("yq -i=true '.name = \"x\"' file.yaml")).toBe(false)
 		expect(isReadOnlyBashCommand("yq eval --in-place '.x = 1' file.yaml")).toBe(false)
 	})
 
@@ -951,6 +968,15 @@ describe("common read-only command corpus", () => {
 		// can then inject core.fsmonitor and execute on plain `git status`.
 		expect(isReadOnlyBashCommand("HOME=/tmp git status")).toBe(false)
 		expect(isReadOnlyBashCommand("XDG_CONFIG_HOME=/tmp git config --list")).toBe(false)
+		// PATH/IFS hijack resolution; the program option-injection env vars
+		// can each execute code or redirect a client against attacker state.
+		expect(isReadOnlyBashCommand("PATH=/tmp/evil git status")).toBe(false)
+		expect(isReadOnlyBashCommand("IFS=x git status")).toBe(false)
+		expect(isReadOnlyBashCommand("KUBECONFIG=/tmp/evil kubectl get pods")).toBe(false)
+		expect(isReadOnlyBashCommand("RIPGREP_CONFIG_PATH=/tmp/evil.conf rg foo")).toBe(false)
+		expect(isReadOnlyBashCommand("DIFF_OPTIONS=--output=/tmp/x diff a b")).toBe(false)
+		expect(isReadOnlyBashCommand("DOCKER_HOST=tcp://evil:2375 docker ps")).toBe(false)
+		expect(isReadOnlyBashCommand("CLOUDSDK_CONFIG=/tmp/evil gcloud config list")).toBe(false)
 		// Inert assignments stay transparent.
 		expect(isReadOnlyBashCommand("FOO=bar git status")).toBe(true)
 	})

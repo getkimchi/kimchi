@@ -220,6 +220,21 @@ function hasOutputFileFlag(args: string[]): boolean {
 // subcommand (`git -C <dir> status`, `git -c key=val diff`). `=`-attached
 // forms (`--git-dir=<dir>`) are single tokens and need no special handling.
 const GIT_GLOBAL_VALUE_FLAGS = new Set(["--git-dir", "--work-tree", "--namespace", "--super-prefix"])
+// Git-config read flags that may legitimately follow the key (git permutes
+// them before the operand list; verified against git 2.x): they never write.
+// Everything else after the key is positional — see the config gate.
+const GIT_CONFIG_POST_KEY_READ_FLAGS = new Set([
+	"--bool",
+	"--int",
+	"--bool-or-int",
+	"--path",
+	"--null",
+	"--fixed-value",
+	"--show-names",
+	"--show-origin",
+	"--show-scope",
+	"-z",
+])
 
 // git subcommands of the diff/log family that accept `--output=<file>` /
 // `--output <file>` and would write a file while looking like a read.
@@ -255,9 +270,10 @@ const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 				a === "--compress-program" || a.startsWith("--compress-program=") || args[i - 1] === "--compress-program",
 		)
 	},
-	// yq v4 spells it `--inplace`; `-i` and the older `--in-place` are rejected
-	// too so neither spelling slips through.
-	yq: (args) => !args.some((a) => a === "-i" || a.startsWith("--inplace") || a.startsWith("--in-place")),
+	// yq v4 spells it `--inplace`; `-i` (plus pflag's `-i=value`), the older
+	// `--in-place`, and `--inplace` are all rejected.
+	yq: (args) =>
+		!args.some((a) => a === "-i" || a.startsWith("-i=") || a.startsWith("--inplace") || a.startsWith("--in-place")),
 	// git: global options may precede the subcommand (`git -C <dir> status`,
 	// `git --no-pager log`), so they are skipped before the subcommand is
 	// matched against READ_ONLY_SUBCOMMANDS.git. A few subcommands carry write
@@ -301,7 +317,11 @@ const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 					a.startsWith("--open-files-in-pager=") ||
 					a === "--ext-diff" ||
 					a === "--textconv" ||
-					a === "--filters",
+					a === "--filters" ||
+					a === "--upload-pack" ||
+					a.startsWith("--upload-pack=") ||
+					a === "--receive-pack" ||
+					a.startsWith("--receive-pack="),
 			)
 		)
 			return false
@@ -333,6 +353,11 @@ const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 			// Count bare operands: `--` ends flag parsing, a lone `-` IS an
 			// operand (the value in `git config user.name -`), and
 			// --file/--blob/--default consume a value that is not an operand.
+			// Once the key (the first bare operand) has been seen, git treats
+			// everything after it as the value: unknown dash tokens are STORED
+			// (`git config credential.helper -f` writes `helper = -f`), only
+			// known inert read flags still permute. So after the key, skipping
+			// any dash token as a "flag" miscounts a write as a read.
 			let bare = 0
 			for (let j = 0; j < subArgs.length; j++) {
 				const a = subArgs[j]
@@ -341,11 +366,21 @@ const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 					break
 				}
 				if (a === "-f" || a === "--file" || a === "--blob" || a === "--default") {
+					if (bare > 0) {
+						bare++ // after the key, only inert read flags survive — see below
+						continue
+					}
 					j++ // flag value, not an operand
 					continue
 				}
-				if (a.startsWith("--file=") || a.startsWith("--blob=") || a.startsWith("--default=")) continue
-				if (a.startsWith("-") && a !== "-") continue
+				if (a.startsWith("--file=") || a.startsWith("--blob=") || a.startsWith("--default=")) {
+					if (bare > 0) bare++
+					continue
+				}
+				if (a.startsWith("-") && a !== "-") {
+					if (bare > 0 && !GIT_CONFIG_POST_KEY_READ_FLAGS.has(a) && !a.startsWith("--type=")) bare++
+					continue
+				}
 				bare++
 			}
 			return bare <= 1
@@ -804,6 +839,9 @@ export function stripTrailingOutputFilters(command: string): string | null {
 // classification.
 const UNSAFE_ENV_NAMES = new Set([
 	"HOME",
+	// PATH/IFS hijack command resolution and word splitting themselves.
+	"PATH",
+	"IFS",
 	"NODE_OPTIONS",
 	"LESSOPEN",
 	"LESSCLOSE",
@@ -814,6 +852,14 @@ const UNSAFE_ENV_NAMES = new Set([
 	"VISUAL",
 	"ENV",
 	"SHELL",
+	// Program option-injection / config-relocation env vars for tools on the
+	// allowlist (kubeconfig can invoke an exec credential plugin; ripgrep
+	// config can carry --pre; docker host redirects the client).
+	"KUBECONFIG",
+	"RIPGREP_CONFIG_PATH",
+	"DIFF_OPTIONS",
+	"DOCKER_HOST",
+	"CLOUDSDK_CONFIG",
 ])
 const UNSAFE_ENV_PREFIXES = ["GIT_", "LD_", "DYLD_", "XDG_", "SSH_", "PYTHON", "PERL"]
 
