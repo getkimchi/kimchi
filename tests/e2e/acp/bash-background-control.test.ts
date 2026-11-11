@@ -252,8 +252,15 @@ it(
 			await waitForSessionUpdate(
 				fixture,
 				sessionId,
+				// rawInput carries the enrichment the harness adds for cohort waits
+				// (commands/overflowCount/elapsedSeconds), so match the wait flag,
+				// not the exact object.
 				(update) =>
-					update.sessionUpdate === "tool_call" && JSON.stringify(update.rawInput) === JSON.stringify({ wait: true }),
+					update.sessionUpdate === "tool_call" &&
+					typeof update.rawInput === "object" &&
+					update.rawInput !== null &&
+					"wait" in update.rawInput &&
+					update.rawInput.wait === true,
 			)
 			await fixture.conn.cancel({ sessionId })
 			expect((await pending).stopReason).toBe("cancelled")
