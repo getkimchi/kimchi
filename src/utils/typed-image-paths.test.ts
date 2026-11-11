@@ -2,9 +2,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { JPEG_SIGNATURE, PNG_SIGNATURE } from "./image-utils.js"
 import { extractTypedImagePaths } from "./typed-image-paths.js"
 
-const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+// Full 8-byte PNG signature — readImageFileFromDisk validates content, so a
+// truncated magic would be (correctly) rejected as a non-image.
+const PNG_BYTES = Buffer.from(PNG_SIGNATURE)
+// Real JPEG signature — mime is typed from content, so .jpg/.JPG fixtures
+// must match the extension they claim.
+const JPEG_BYTES = Buffer.from(JPEG_SIGNATURE)
 
 describe("extractTypedImagePaths", () => {
 	let tmpDir: string
@@ -44,7 +50,7 @@ describe("extractTypedImagePaths", () => {
 
 	it("attaches quoted paths containing spaces", () => {
 		const spacedPath = join(tmpDir, "my cat.jpg")
-		writeFileSync(spacedPath, PNG_BYTES)
+		writeFileSync(spacedPath, JPEG_BYTES)
 		const matches = extractTypedImagePaths(`"${spacedPath}" what is this?`, tmpDir)
 		expect(matches).toHaveLength(1)
 		expect(matches[0].resolvedPath).toBe(spacedPath)
@@ -138,7 +144,7 @@ describe("extractTypedImagePaths", () => {
 
 	it("matches uppercase extensions", () => {
 		const upperPath = join(tmpDir, "B.JPG")
-		writeFileSync(upperPath, PNG_BYTES)
+		writeFileSync(upperPath, JPEG_BYTES)
 		const matches = extractTypedImagePaths(`open ${upperPath}`, tmpDir)
 		expect(matches).toHaveLength(1)
 		expect(matches[0].image.mimeType).toBe("image/jpeg")
