@@ -91,9 +91,7 @@ async function spawnFixture(
 			KIMCHI_MCP_FIXTURE_OAUTH: "1",
 			KIMCHI_MCP_FIXTURE_SCENARIO: options.scenario ?? "oauth-rotating-refresh",
 			KIMCHI_MCP_FIXTURE_EVENTS: eventsPath,
-			...(options.behavior === undefined
-				? {}
-				: { KIMCHI_MCP_FIXTURE_BEHAVIOR: JSON.stringify(options.behavior) }),
+			...(options.behavior === undefined ? {} : { KIMCHI_MCP_FIXTURE_BEHAVIOR: JSON.stringify(options.behavior) }),
 		},
 		stdio: "ignore",
 	})
@@ -473,10 +471,7 @@ describe("MCP OAuth refresh-token rotation", () => {
 		// A stale presentation would appear as a rejected grant; none may happen.
 		expect(refreshRejections(fixture.eventsPath), eventSummary(fixture.eventsPath)).toEqual([])
 		// Both refreshes were accepted, and each rotated the token.
-		expect(
-			refreshGrants(fixture.eventsPath).filter(isRotatedGrant).length,
-			eventSummary(fixture.eventsPath),
-		).toBe(2)
+		expect(refreshGrants(fixture.eventsPath).filter(isRotatedGrant).length, eventSummary(fixture.eventsPath)).toBe(2)
 	})
 
 	it("keeps retrying while the token keeps rotating under the recovering session", { timeout: 90_000 }, async () => {
@@ -516,10 +511,7 @@ describe("MCP OAuth refresh-token rotation", () => {
 		// rotation minted — the retry used the adopted token, not the original.
 		expect(rejections[1].presented, eventSummary(fixture.eventsPath)).toBe(rejections[0].current)
 		// Three rotations: rotator-1, rotator-2, and the loser's final retry.
-		expect(
-			refreshGrants(fixture.eventsPath).filter(isRotatedGrant).length,
-			eventSummary(fixture.eventsPath),
-		).toBe(3)
+		expect(refreshGrants(fixture.eventsPath).filter(isRotatedGrant).length, eventSummary(fixture.eventsPath)).toBe(3)
 		// No session fell back to a full browser re-auth: only the seed
 		// exchanged an authorization code.
 		expect(
