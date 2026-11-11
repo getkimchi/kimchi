@@ -51,6 +51,13 @@ export const AVAILABLE_EXT_METHODS = {
 	sso_await: `_${CAPABILITIES_KEY}/sso_await`,
 	sso_select_org: `_${CAPABILITIES_KEY}/sso_select_org`,
 	sso_cancel: `_${CAPABILITIES_KEY}/sso_cancel`,
+	// Post-SSO credential export (LLM-4134, ticket #643): returns the current
+	// valid org-scoped OAuth bearer for the canonical kimchi-dev entry — the
+	// same token the harness itself sends as `Authorization: Bearer` (verified
+	// accepted by /v1/me and /v1/organizations; X-API-Key is rejected).
+	// Refreshed with the harness's lazy-refresh discipline;
+	// SSO_NOT_AUTHENTICATED for non-SSO sessions.
+	sso_credential: `_${CAPABILITIES_KEY}/sso_credential`,
 
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
 	import_discover: `_${CAPABILITIES_KEY}/import_discover`,

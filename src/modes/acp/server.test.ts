@@ -1919,6 +1919,111 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 	})
 
+	describe("extMethod sso_credential", () => {
+		// Dispatch tests against the real handler over the real credential
+		// store (handler semantics live in ext-methods/sso-credential.test.ts):
+		// the server must route the method with the production installKimchiOAuth
+		// registration and the shared agentDir paths.
+		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir-sso-credential"
+
+		// Minimal SSO entry: the org-scoped extras are what distinguishes an SSO
+		// credential from a key fan-out (LLM-4134).
+		function ssoCredential(): Record<string, unknown> {
+			return {
+				type: "oauth",
+				access: "sso-bearer",
+				refresh: "refresh",
+				expires: Date.now() + 3600_000,
+				region: "us",
+				useIdToken: true,
+				orgId: "516442fe-054a-49e2-ac2d-9dc9b104c3d2",
+				orgName: "CAST AI",
+			}
+		}
+
+		function makeConfig(apiKey: string): ReturnType<typeof loadConfig> {
+			// Mirrors the auth_status fixture (same required fields).
+			return {
+				apiKey,
+				agentConfigDir: tempAgentDir,
+				region: "us",
+				selfHostedEndpoints: undefined,
+				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+				customLlmEndpoint: undefined,
+				maxToolResultChars: 12000,
+				mcpSearchLimit: 10,
+				mcpSearch: {
+					strategy: "bm25",
+					bm25K1: 1.2,
+					bm25B: 0.75,
+					fieldWeights: { name: 6, description: 2, schemaKey: 1 },
+				},
+				onboarding: {},
+				deviceId: "test-device-id",
+			}
+		}
+
+		function makeTestAgent(): KimchiAcpAgent {
+			return new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+		}
+
+		beforeEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+			mkdirSync(tempAgentDir, { recursive: true })
+			seedModelsJson(tempAgentDir)
+			resetCredentialStalenessForTests()
+		})
+
+		afterEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("advertises sso_credential in the initialize capabilities _meta", async () => {
+			const testAgent = makeTestAgent()
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({
+				sso_credential: true,
+			})
+		})
+
+		it("returns the org-scoped SSO credential from the shared store", async () => {
+			const entry = ssoCredential()
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": entry }))
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+
+			await expect(testExtMethodCredential()).resolves.toEqual({
+				credential: "sso-bearer",
+				orgId: "516442fe-054a-49e2-ac2d-9dc9b104c3d2",
+				orgName: "CAST AI",
+				region: "us",
+				expiry: new Date(entry.expires as number).toISOString(),
+			})
+		})
+
+		it("rejects a key-based session with the typed SSO_NOT_AUTHENTICATED error", async () => {
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_token"))
+
+			const error = await testExtMethodCredential().catch((e) => e as RequestError)
+			expect(error).toBeInstanceOf(RequestError)
+			expect(error.data).toMatchObject({ code: "SSO_NOT_AUTHENTICATED" })
+		})
+
+		/** Shared body of the two dispatch tests: fresh agent, then the
+		 * ext-method call whose outcome varies with the mocked config half. */
+		function testExtMethodCredential(): Promise<Record<string, unknown>> {
+			const testAgent = makeTestAgent()
+			return testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_credential, {})
+		}
+	})
+
 	describe("extMethod set_onboarding_flag", () => {
 		// The shared-config write is mocked (see the config.js mock above) —
 		// handler write semantics (persistence, sibling-key preservation) are
