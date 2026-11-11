@@ -170,7 +170,6 @@ const READ_ONLY_PROGRAMS = new Set([
 	"od",
 	"hexdump",
 	"strings",
-	"base64",
 	// Windows counterpart of grep (no grep.exe on stock Windows).
 	"findstr",
 ])
@@ -178,13 +177,44 @@ const READ_ONLY_PROGRAMS = new Set([
 // Programs that look read-only but accept a flag that executes code or writes
 // files (`-exec`, `--output`, `system()` in awk, etc.). These are allowed only
 // if every argument passes a program-specific safety check.
-// Dashed flags that make any program print its version or usage to stdout
-// and exit: `node --version`, `python3 -V`, `git --version`, `gh --version`,
-// `java -version`. Bare words (`version`, `help`) are NOT covered — for many
-// programs they name a file or a mutating subcommand — only dashed flags.
-// Every non-program token must be such a flag, so `node -v script.js` still
-// falls through to the program tables.
-const VERSION_HELP_FLAGS = new Set(["--version", "-v", "-V", "-version", "--help", "-h"])
+//
+// Dashed flags that make a program print its version or usage and exit:
+// `node --version`, `python3 -V`, `git --version`, `gh --version`,
+// `java -version`. Only exact, non-path-qualified program names count
+// (`./script.sh --help` does not), and only for known programs — `bash -v`
+// is verbose mode, not a version query: the shell reads and executes stdin.
+// Bare words (`version`, `help`) are never covered; for many programs they
+// name a file or a mutating subcommand.
+const VERSION_HELP_FLAGS = new Set(["--version", "-V", "-version", "--help", "-h"])
+// Known programs whose version/help flags print and exit. Interpreters whose
+// `-v` is verbose/REPL mode (bash, sh, python3, lua, …) deliberately stay out.
+const VERSION_QUERY_PROGRAMS = new Set(["node", "bun", "deno", "rustc", "python3", "python", "java", "tsc", "gh"])
+// Programs whose `-v` shorthand is a version query that prints and exits.
+const VERSION_V_SHORTHAND_PROGRAMS = new Set(["node", "bun", "deno"])
+
+function isVersionQuery(program: string, args: string[]): boolean {
+	// Exact names only: path-qualified or relative programs (`./x`,
+	// `/usr/bin/sudo`) never borrow the rule.
+	if (program.includes("/")) return false
+	const known =
+		READ_ONLY_PROGRAMS.has(program) ||
+		Object.hasOwn(READ_ONLY_SUBCOMMANDS, program) ||
+		VERSION_QUERY_PROGRAMS.has(program)
+	if (!known) return false
+	const allowV = VERSION_V_SHORTHAND_PROGRAMS.has(program)
+	return args.every((a) => VERSION_HELP_FLAGS.has(a) || (allowV && a === "-v"))
+}
+
+// `-o` / `--output` in any spelling writes a file: exact (`-o`), attached
+// (`-oFILE`), bundled (`-ro`), or long (`--output`, `--output=FILE`).
+function hasOutputFileFlag(args: string[]): boolean {
+	for (const a of args) {
+		if (a === "--") break
+		if (a === "--output" || a.startsWith("--output=")) return true
+		if (/^-[^-]*o/.test(a)) return true
+	}
+	return false
+}
 
 // Flags that take a separate value token when they appear BEFORE a git
 // subcommand (`git -C <dir> status`, `git -c key=val diff`). `=`-attached
@@ -206,25 +236,28 @@ const GIT_OUTPUT_CAPABLE_SUBCOMMANDS = new Set([
 
 const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 	find: (args) => !args.some((a) => FIND_EXECUTION_FLAGS.has(a)),
-	// `diff --output=FILE` / `-o FILE` writes to FILE.
-	diff: (args) =>
-		!args.some((a, i) => a === "-o" || a === "--output" || a.startsWith("--output=") || args[i - 1] === "-o"),
-	// `hostname <name>` SETS the system hostname; only flag forms are reads.
-	hostname: (args) => args.every((a) => a.startsWith("-")),
-	// `sort -o FILE` writes to FILE and `--compress-program=CMD` executes CMD.
-	sort: (args) =>
-		!args.some(
+	// `diff --output=FILE` / `-o FILE` writes to FILE, in every flag spelling.
+	diff: (args) => !hasOutputFileFlag(args),
+	// BSD/macOS `base64 -o FILE` writes a file (`-D -o ~/.zshrc` overwrites
+	// arbitrary content); GNU flags are stdout-only but the check is shared.
+	base64: (args) => !hasOutputFileFlag(args),
+	// `hostname <name>` SETS the hostname and `-F`/`--file` loads the new name
+	// from a file (attached form included). Only bare flags are reads.
+	hostname: (args) =>
+		args.every((a) => a.startsWith("-")) &&
+		!args.some((a) => /^-[^-]*F/.test(a) || a === "--file" || a.startsWith("--file=")),
+	// `sort -o FILE` / `--output FILE` writes (attached and bundled spellings
+	// included) and `--compress-program=CMD` executes CMD.
+	sort: (args) => {
+		if (hasOutputFileFlag(args)) return false
+		return !args.some(
 			(a, i) =>
-				a === "-o" ||
-				a === "--output" ||
-				a.startsWith("--output=") ||
-				args[i - 1] === "-o" ||
-				a === "--compress-program" ||
-				a.startsWith("--compress-program=") ||
-				args[i - 1] === "--compress-program",
-		),
-	// `yq -i` / `yq --in-place` rewrites the input file.
-	yq: (args) => !args.some((a) => a === "-i" || a.startsWith("--in-place")),
+				a === "--compress-program" || a.startsWith("--compress-program=") || args[i - 1] === "--compress-program",
+		)
+	},
+	// yq v4 spells it `--inplace`; `-i` and the older `--in-place` are rejected
+	// too so neither spelling slips through.
+	yq: (args) => !args.some((a) => a === "-i" || a.startsWith("--inplace") || a.startsWith("--in-place")),
 	// git: global options may precede the subcommand (`git -C <dir> status`,
 	// `git --no-pager log`), so they are skipped before the subcommand is
 	// matched against READ_ONLY_SUBCOMMANDS.git. A few subcommands carry write
@@ -239,12 +272,36 @@ const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 		while (i < args.length) {
 			const a = args[i]
 			if (!a.startsWith("-")) break
-			if (a === "-c" || a === "-C" || GIT_GLOBAL_VALUE_FLAGS.has(a)) i += 2
+			// `-c` / `--config-env` inject config whose values can name a
+			// command git later executes (core.fsmonitor, core.sshCommand,
+			// diff.external, gpg.program, …) — always refused. `-p` /
+			// `--paginate` runs the configured pager, `--exec-path` relocates
+			// where git finds external subcommands.
+			if (a === "-c" || a.startsWith("--config-env")) return false
+			if (a === "-p" || a === "--paginate") return false
+			if (a === "--exec-path" || a.startsWith("--exec-path=")) return false
+			if (a === "-C" || GIT_GLOBAL_VALUE_FLAGS.has(a)) i += 2
 			else i++
 		}
 		const sub = args[i]
 		if (sub === undefined) return true // bare `git` (or only global flags) prints usage
 		const subArgs = args.slice(i + 1)
+
+		// Flags that run an external program or pager in any allowed
+		// subcommand: `git grep -O cmd`, `--open-files-in-pager`,
+		// `--ext-diff`, `--textconv`, `--filters`.
+		if (
+			subArgs.some(
+				(a) =>
+					a.startsWith("-O") ||
+					a === "--open-files-in-pager" ||
+					a.startsWith("--open-files-in-pager=") ||
+					a === "--ext-diff" ||
+					a === "--textconv" ||
+					a === "--filters",
+			)
+		)
+			return false
 
 		if (GIT_OUTPUT_CAPABLE_SUBCOMMANDS.has(sub)) {
 			for (const a of subArgs) {
@@ -270,8 +327,24 @@ const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 				)
 			)
 				return false
+			// Count bare operands: `--` ends flag parsing, a lone `-` IS an
+			// operand (the value in `git config user.name -`), and
+			// --file/--blob/--default consume a value that is not an operand.
 			let bare = 0
-			for (const a of subArgs) if (!a.startsWith("-")) bare++
+			for (let j = 0; j < subArgs.length; j++) {
+				const a = subArgs[j]
+				if (a === "--") {
+					bare += subArgs.length - j - 1
+					break
+				}
+				if (a === "-f" || a === "--file" || a === "--blob" || a === "--default") {
+					j++ // flag value, not an operand
+					continue
+				}
+				if (a.startsWith("--file=") || a.startsWith("--blob=") || a.startsWith("--default=")) continue
+				if (a.startsWith("-") && a !== "-") continue
+				bare++
+			}
 			return bare <= 1
 		}
 		// `git fetch` updates local refs; only --dry-run is a pure read.
@@ -280,12 +353,13 @@ const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 		if (sub === "help") return !subArgs.some((a) => a === "-w" || a === "--web" || a === "-i" || a === "--info")
 		// `git reflog expire/delete` destroys reflog history.
 		if (sub === "reflog") return subArgs[0] !== "expire" && subArgs[0] !== "delete"
-		// Only the listing forms of stash are read-only; pop/apply/drop/clear
-		// mutate the stash and the working tree. Bare `git stash` lists.
-		if (sub === "stash") return subArgs[0] === undefined || subArgs[0] === "list" || subArgs[0] === "show"
+		// Only the listing forms of stash are read-only. Bare `git stash` is
+		// `git stash push` (it stashes and resets the worktree), so only
+		// `list`/`show` pass; pop/apply/drop/clear mutate.
+		if (sub === "stash") return subArgs[0] === "list" || subArgs[0] === "show"
 
 		const allowedSubs = READ_ONLY_SUBCOMMANDS.git
-		const actions = allowedSubs instanceof Set ? undefined : allowedSubs[sub]
+		const actions = allowedSubs instanceof Set || !Object.hasOwn(allowedSubs, sub) ? undefined : allowedSubs[sub]
 		if (actions === undefined) return false
 		if (actions === "*") return true
 		const action = subArgs[0]
@@ -719,6 +793,35 @@ export function stripTrailingOutputFilters(command: string): string | null {
 	return [...env, ...head.tokens].join(" ")
 }
 
+// Env keys that can execute code or inject config into an otherwise read-only
+// command (GIT_PAGER spawns a pager, GIT_SSH_COMMAND wraps ssh, GIT_CONFIG_*
+// sets fsmonitor etc., LD_PRELOAD/BASH_ENV run code). Any leading assignment
+// with one of these prefixes/names blocks read-only classification.
+const UNSAFE_ENV_PREFIXES = [
+	"GIT_",
+	"LD_",
+	"DYLD_",
+	"PYTHON",
+	"PERL",
+	"SSH_",
+	"NODE_OPTIONS",
+	"LESSOPEN",
+	"LESSCLOSE",
+	"BASH_ENV",
+	"MANPAGER",
+	"PAGER",
+	"EDITOR",
+	"VISUAL",
+	"ENV",
+	"SHELL",
+]
+
+function isUnsafeEnvAssignment(assignment: string): boolean {
+	const eq = assignment.indexOf("=")
+	const key = (eq === -1 ? assignment : assignment.slice(0, eq)).toUpperCase()
+	return UNSAFE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
+}
+
 export function isReadOnlyBashCommand(command: string): boolean {
 	if (isHardBlockedBash(command)) return false
 
@@ -726,6 +829,9 @@ export function isReadOnlyBashCommand(command: string): boolean {
 	if (segments.length === 0) return false
 
 	for (const segment of segments) {
+		// Leading env assignments apply at execution even though they are
+		// stripped from the tokens — fail closed on code-executing keys.
+		if (segment.env.some((assignment) => isUnsafeEnvAssignment(assignment))) return false
 		for (const op of segment.ops) {
 			if (!DANGEROUS_OPS.has(op.op)) continue
 			if ((op.op === ">" || op.op === ">>") && op.target && READ_ONLY_REDIRECT_TARGETS.has(op.target)) continue
@@ -743,16 +849,19 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 	const program = tokens[0]
 	if (!program) return false
 
-	// Version/help queries are read-only for any program (see VERSION_HELP_FLAGS).
-	if (tokens.length > 1 && tokens.slice(1).every((t) => VERSION_HELP_FLAGS.has(t))) return true
+	// Version/help queries are read-only for known programs (see
+	// isVersionQuery): exact names only, `-v` only where it means version.
+	if (tokens.length > 1 && isVersionQuery(program, tokens.slice(1))) return true
 
 	// Restricted programs are checked before the subcommand map: their
 	// handlers encode per-subcommand rules the map cannot express (git falls
-	// back to the map itself after its global-flag normalization).
-	const restrictedCheck = RESTRICTED_PROGRAMS[program]
+	// back to the map itself after its global-flag normalization). Lookups
+	// use Object.hasOwn so prototype keys (`toString`, `constructor`) never
+	// match a table.
+	const restrictedCheck = Object.hasOwn(RESTRICTED_PROGRAMS, program) ? RESTRICTED_PROGRAMS[program] : undefined
 	if (restrictedCheck) return restrictedCheck(tokens.slice(1))
 
-	const allowedSubs = READ_ONLY_SUBCOMMANDS[program]
+	const allowedSubs = Object.hasOwn(READ_ONLY_SUBCOMMANDS, program) ? READ_ONLY_SUBCOMMANDS[program] : undefined
 	if (allowedSubs) {
 		const sub = tokens[1]
 		if (sub === undefined) return false
@@ -766,7 +875,7 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 		// Fine-grained: per-sub-sub-command allowlist. Absent sub-sub-command
 		// (e.g. `gh pr` with no third token) is blocked — `gh pr` alone is
 		// useless and treating it as read-only invites confusion.
-		const allowedActions = allowedSubs[sub]
+		const allowedActions = Object.hasOwn(allowedSubs, sub) ? allowedSubs[sub] : undefined
 		if (allowedActions === undefined) return false
 		if (allowedActions === "*") return true
 
@@ -801,6 +910,8 @@ function isDangerousRmSegment(tokens: string[]): boolean {
 interface Segment {
 	tokens: string[]
 	ops: Array<{ op: ShellOp; target?: string }>
+	/** Leading `KEY=value` assignments — stripped from tokens, applied at execution. */
+	env: string[]
 }
 
 // Parse a bash command into top-level segments separated by `|`, `;`, `&&`,
@@ -810,17 +921,20 @@ interface Segment {
 export function parseCommandSegments(command: string): Segment[] {
 	// shell-quote does not recognize legacy backtick substitution; treat any
 	// backtick as a poison pill to avoid silently accepting embedded commands.
-	if (command.includes("`")) return [{ tokens: [], ops: [{ op: "(" }] }]
+	if (command.includes("`")) return [{ tokens: [], ops: [{ op: "(" }], env: [] }]
 
 	const entries = parseShell(command) as ParseEntry[]
 	const segments: Segment[] = []
-	let current: Segment = { tokens: [], ops: [] }
+	let current: Segment = { tokens: [], ops: [], env: [] }
 
 	for (let i = 0; i < entries.length; i++) {
 		const entry = entries[i]
 		if (typeof entry === "string") {
 			if (current.tokens.length === 0 && /^[A-Za-z_][\w]*=/.test(entry)) {
-				continue // strip leading `FOO=bar` assignments
+				// Keep leading `FOO=bar` assignments for the unsafe-env check;
+				// they are not part of the command tokens.
+				current.env.push(entry)
+				continue
 			}
 			current.tokens.push(entry)
 			continue
@@ -834,7 +948,7 @@ export function parseCommandSegments(command: string): Segment[] {
 			const op = entry.op
 			if (op === "|" || op === "|&" || op === "||" || op === "&&" || op === ";") {
 				segments.push(current)
-				current = { tokens: [], ops: [] }
+				current = { tokens: [], ops: [], env: [] }
 				continue
 			}
 			if (
