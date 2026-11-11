@@ -642,7 +642,6 @@ describe("resolveBashControlWaitInfo", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "npm test", startedAt: STARTED - 10_000 })])
 		expect(resolveBashControlWaitInfo({ wait: true, handles: ["h1"] }, registry)).toEqual({
 			commands: [{ command: "npm test", startedAt: iso(STARTED - 10_000) }],
-			overflowCount: 0,
 			elapsedSeconds: 15,
 		})
 	})
@@ -658,7 +657,6 @@ describe("resolveBashControlWaitInfo", () => {
 				{ command: "npm test", startedAt: iso(STARTED - 10_000) },
 				{ command: "sleep 60 && npm run build", startedAt: iso(STARTED) },
 			],
-			overflowCount: 0,
 			elapsedSeconds: 15,
 		})
 	})
@@ -691,12 +689,11 @@ describe("resolveBashControlWaitInfo", () => {
 		])
 		expect(resolveBashControlWaitInfo({ wait: true, stop_handles: ["typo"] }, registry)).toEqual({
 			commands: [{ command: "npm test", startedAt: iso(STARTED - 10_000) }],
-			overflowCount: 0,
 			elapsedSeconds: 15,
 		})
 	})
 
-	it("caps a cohort-wide payload at the oldest three commands plus a structured overflowCount", () => {
+	it("returns the full cohort oldest-first regardless of size", () => {
 		const registry = fakeRegistry([
 			snapshot({ handle: "h1", command: "cmd-four" }),
 			snapshot({ handle: "h2", command: "cmd-three", startedAt: STARTED - 1_000 }),
@@ -708,8 +705,8 @@ describe("resolveBashControlWaitInfo", () => {
 				{ command: "cmd-one", startedAt: iso(STARTED - 3_000) },
 				{ command: "cmd-two", startedAt: iso(STARTED - 2_000) },
 				{ command: "cmd-three", startedAt: iso(STARTED - 1_000) },
+				{ command: "cmd-four", startedAt: iso(STARTED) },
 			],
-			overflowCount: 1,
 			elapsedSeconds: 8,
 		})
 	})
@@ -720,7 +717,6 @@ describe("resolveBashControlWaitInfo", () => {
 		])
 		expect(resolveBashControlWaitInfo({ stop_handles: ["h1"] }, registry)).toEqual({
 			commands: [{ command: "npm test", startedAt: iso(STARTED) }],
-			overflowCount: 0,
 			elapsedSeconds: 2,
 		})
 	})
@@ -741,7 +737,6 @@ describe("resolveBashControlWaitInfo", () => {
 				{ command: "old job", startedAt: iso(STARTED - 50_000) },
 				{ command: "npm test", startedAt: iso(STARTED) },
 			],
-			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})
@@ -750,7 +745,6 @@ describe("resolveBashControlWaitInfo", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "vite dev" })])
 		expect(resolveBashControlWaitInfo({ stop_handles: ["gone", "h1"] }, registry)).toEqual({
 			commands: [{ command: "vite dev", startedAt: iso(STARTED) }],
-			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})
@@ -765,12 +759,10 @@ describe("resolveBashControlWaitInfo", () => {
 		const registry = fakeRegistry([snapshot({ handle: "h1", command: "tail -f log" })])
 		expect(resolveBashControlWaitInfo({ handle: "h1", action: "wait" }, registry)).toEqual({
 			commands: [{ command: "tail -f log", startedAt: iso(STARTED) }],
-			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 		expect(resolveBashControlWaitInfo({ handles: ["h1"] }, registry)).toEqual({
 			commands: [{ command: "tail -f log", startedAt: iso(STARTED) }],
-			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})
@@ -782,7 +774,6 @@ describe("resolveBashControlWaitInfo", () => {
 		])
 		expect(resolveBashControlWaitInfo({ wait: true, handles: undefined, stop_handles: ["h1"] }, registry)).toEqual({
 			commands: [{ command: "npm test", startedAt: iso(STARTED) }],
-			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})
@@ -817,7 +808,6 @@ describe("enrichBashControlRawInput", () => {
 			wait: true,
 			handles: ["h1"],
 			commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
-			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 		expect(enriched).not.toBe(args)
@@ -884,7 +874,6 @@ describe("describeToolCall bash_control", () => {
 			handle: "h1",
 			action: "stop",
 			commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
-			overflowCount: 0,
 			elapsedSeconds: 5,
 		})
 	})

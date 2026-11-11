@@ -99,7 +99,7 @@ export type BashControlBackgroundCommand = { command: string; startedAt: string 
 export function resolveBashControlWaitInfo(
 	args: Record<string, unknown>,
 	registry: ProcessRegistry,
-): { commands: BashControlBackgroundCommand[]; overflowCount: number; elapsedSeconds: number } | undefined {
+): { commands: BashControlBackgroundCommand[]; elapsedSeconds: number } | undefined {
 	const mentioned = new Set<string>()
 	for (const key of ["stop_handles", "handles"] as const) {
 		const value = args[key]
@@ -125,26 +125,19 @@ export function resolveBashControlWaitInfo(
 	// Earliest-started first: it is the longest-running of the cohort, so its
 	// elapsed seconds headline the wait.
 	const entries = [...snapshots.values()].sort((x, y) => x.startedAt - y.startedAt)
-	// Cap the named entries so the payload stays bounded as the cohort
-	// grows; overflowCount says how many more the client could not see.
-	const shown = entries.slice(0, BACKGROUND_COMMANDS_MAX_ENTRIES)
 	// Elapsed headlines the longest-running LIVE process; for a terminal-only
 	// set it reports the actual lifetime, never a ticking since-started value
 	// that would read as the uptime of a process that already finished.
 	const runningEntries = entries.filter((s) => s.state === "running")
 	const elapsedHead = runningEntries[0] ?? entries[0]
 	return {
-		commands: shown.map((s) => ({
+		commands: entries.map((s) => ({
 			command: summarizeCommand(s.command, 48),
 			startedAt: new Date(s.startedAt).toISOString(),
 		})),
-		overflowCount: entries.length - shown.length,
 		elapsedSeconds: snapshotElapsedSeconds(elapsedHead),
 	}
 }
-
-/** Maximum number of background commands carried in the resolved payload. */
-const BACKGROUND_COMMANDS_MAX_ENTRIES = 3
 
 /**
  * Seconds a process has been going: elapsed since spawn while it runs, its
