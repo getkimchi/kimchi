@@ -86,7 +86,6 @@ beforeEach(() => {
 	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 	vi.stubEnv("HOME", rootDir)
 	upstream.options = undefined
-	upstream.installedApis = []
 	mcpClient.state.tools = []
 	mcpClient.state.listToolsCalls = 0
 	cliState.mcpConfig = undefined
@@ -137,13 +136,12 @@ describe("subagent MCP tool inheritance — real extension", () => {
 
 		const harness = await startChildSession({ cwd: childCwd })
 
-		// The real extension's config load resolved the fake server: the adapter
-		// was installed either with a programmatic config containing it or (when
-		// the upstream loader discovers the override file itself) with that file
-		// as its configPath.
-		expect(
-			Object.keys(upstream.options?.config?.mcpServers ?? {}).length > 0 || upstream.options?.configPath !== undefined,
-		).toBe(true)
+		// The real extension's config load resolved the override file in
+		// file-backed mode: the adapter is pointed at the override file itself
+		// (the upstream loader discovers it as a global layer, so no programmatic
+		// config is passed). If the server config never loaded, the surface
+		// policy suppresses the proxy tool and the assertions below fail.
+		expect(upstream.options).toEqual({ configPath: mcpConfigPath, defaultProtocolVersion: "auto" })
 		expect(installKeyringRequireBridge).toHaveBeenCalled()
 		// The fake adapter's startup listed the server catalog through the
 		// mocked SDK client.
@@ -155,19 +153,10 @@ describe("subagent MCP tool inheritance — real extension", () => {
 		expect(harness.getActiveToolNames()).toContain("mcp")
 	})
 
-	it("keeps the MCP gateway tool off an isolated child session", async () => {
-		// Isolated children install no MCP factory at all (covered at the runner
-		// level in agent-runner.test.ts). The extension-level analogue: with no
-		// configured servers — the only state an isolated child could reach the
-		// extension through — the real surface policy must suppress the proxy
-		// tool instead of registering it.
-		const harness = await startChildSession({ cwd: childCwd })
-
-		const registeredNames = harness.getRegisteredTools().map((tool) => tool.name)
-		expect(registeredNames).not.toContain("mcp")
-		expect(harness.getActiveToolNames()).not.toContain("mcp")
-		// Zero servers: the adapter was still installed (it self-suppresses), so
-		// the empty-config decision happened inside the extension.
-		expect(upstream.options).toBeDefined()
-	})
+	// Isolation is deliberately not exercised here: the runAgent mechanism tests
+	// in agent-runner.test.ts ("keeps extension-registered tools off an isolated
+	// child session", "omits the MCP adapter factory for isolated children") pin
+	// that isolated children install no MCP factory, and the factory-gate unit
+	// tests in src/extensions/mcp/index.test.ts ("suppresses all model-facing
+	// MCP tools for an empty configuration") pin the extension-level analogue.
 })

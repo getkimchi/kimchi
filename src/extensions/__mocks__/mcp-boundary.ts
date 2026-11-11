@@ -30,11 +30,9 @@ import { vi } from "vitest"
  * ```
  */
 
-/** The fake adapter's captured install options, installed APIs, and spies. */
+/** The fake adapter's captured install options and spies. */
 export const upstream = {
 	options: undefined as McpAdapterOptions | undefined,
-	/** Every ExtensionAPI the fake adapter was installed on, in install order. */
-	installedApis: [] as ExtensionAPI[],
 	gatewayExecute: vi.fn<ToolDefinition["execute"]>(),
 	logout: vi.fn(),
 	mcpAuth: vi.fn<(args: string, ctx: unknown) => Promise<void>>(),
@@ -83,7 +81,6 @@ export function mockPiMcpAdapterModule() {
 		// client on session start, mirroring the real adapter's startup shape.
 		createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
 			upstream.options = options
-			upstream.installedApis.push(api)
 			api.on("session_start", async () => {
 				await new mcpClient.Client().listTools()
 				await upstream.sessionStart()
