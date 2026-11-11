@@ -160,7 +160,12 @@ import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { emitAgentActivityUpdate } from "./activity-updates.js"
 import { TurnArtifactBuffer } from "./artifact-links.js"
-import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, kimchiDevMetaOf } from "./capabilities.js"
+import {
+	ADVERTISED_CAPABILITIES,
+	AVAILABLE_EXT_METHODS,
+	getClientSupportsMethod,
+	kimchiDevMetaOf,
+} from "./capabilities.js"
 import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleCompact } from "./ext-methods/compact.js"
@@ -1587,18 +1592,35 @@ export class KimchiAcpAgent implements Agent {
 			case AVAILABLE_EXT_METHODS.sso_cancel:
 				return this.sso.cancel(params)
 			case AVAILABLE_EXT_METHODS.sso_credential:
-				// Sessionless credential export for the client's own users-API calls
-				// (LLM-4134): the org-scoped OAuth bearer of the canonical kimchi-dev
-				// entry, refreshed through the shared lazy-refresh discipline
-				// (installKimchiOAuth registers the real refresh handler on the
-				// throwaway runtime; getAuth reuses it). See ext-methods/sso-credential.ts.
-				return handleSsoCredential(
-					{ installOAuth: installKimchiOAuth },
-					{
-						authPath: join(this.agentDir, "auth.json"),
-						modelsPath: join(this.agentDir, "models.json"),
-					},
-				)
+				// SECURITY (native-review finding on PR #1722): this export hands out a
+				// LIVE org-scoped bearer, and unlike the sso_* login flow it needs no
+				// user interaction. Serve it ONLY to clients that explicitly opted in
+				// by declaring `sso_credential: true` in their initialize
+				// `_meta["kimchi.dev"]` capabilities: an ACP transport exposed over a
+				// socket, port-forward, or remote container must not become a
+				// credential-harvest endpoint by default, and the opt-in keeps the
+				// trust assumption on one greppable seam (see capabilities.ts).
+				if (!getClientSupportsMethod(this.clientCapabilities, "sso_credential")) {
+					throw RequestError.methodNotFound(AVAILABLE_EXT_METHODS.sso_credential)
+				}
+				{
+					// Sessionless credential export for the client's own users-API calls
+					// (LLM-4134): the org-scoped OAuth bearer of the canonical kimchi-dev
+					// entry, refreshed through the shared lazy-refresh discipline
+					// (installKimchiOAuth registers the real refresh handler on the
+					// throwaway runtime; getAuth reuses it). See ext-methods/sso-credential.ts.
+					const response = await handleSsoCredential(
+						{ installOAuth: installKimchiOAuth },
+						{
+							authPath: join(this.agentDir, "auth.json"),
+							modelsPath: join(this.agentDir, "models.json"),
+						},
+					)
+					// Audit trail for every export — org + expiry only, NEVER the token
+					// (same stderr channel as the [acp-usage] logs).
+					console.warn(`[sso-credential] exported credential for org ${response.orgId} (expires ${response.expiry})`)
+					return response
+				}
 			case AVAILABLE_EXT_METHODS.set_onboarding_flag:
 				// Write the shared config per call through the harness's
 				// read-modify-write helper so sibling onboarding keys set by other

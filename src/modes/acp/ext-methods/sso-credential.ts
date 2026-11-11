@@ -40,7 +40,7 @@ import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 const SSO_CREDENTIAL_JSON_RPC_ERROR_CODE = -32000
 
 /** Machine codes carried in `data.code` of the JSON-RPC error object. */
-export type SsoCredentialErrorCode = "SSO_NOT_AUTHENTICATED" | "SSO_REFRESH_FAILED"
+export type SsoCredentialErrorCode = "SSO_NOT_AUTHENTICATED" | "SSO_REFRESH_FAILED" | "SSO_STORE_UNAVAILABLE"
 
 export function ssoCredentialError(
 	code: SsoCredentialErrorCode,
@@ -109,6 +109,16 @@ function notAuthenticated(message: string): RequestError {
 	return ssoCredentialError("SSO_NOT_AUTHENTICATED", message)
 }
 
+/** Store-level failure (unreadable config.json, missing models.json, broken
+ * auth.json, runtime construction): never a raw error — the header contract
+ * says clients branch on `data.code`, and this is recoverable differently
+ * from both "not SSO-authenticated" (re-login) and "refresh failed"
+ * (transient): the store itself is the problem. */
+function storeUnavailable(context: string, error: unknown): RequestError {
+	const detail = error instanceof Error ? error.message : String(error)
+	return ssoCredentialError("SSO_STORE_UNAVAILABLE", `${context}: ${detail}`, { detail })
+}
+
 /**
  * Handler for `_kimchi.dev/sso_credential`.
  *
@@ -125,20 +135,31 @@ export async function handleSsoCredential(
 	deps: SsoCredentialDeps,
 	paths: SsoCredentialPaths,
 ): Promise<SsoCredentialResponse> {
+	// Setup phase — every failure maps to a typed code; none may escape raw.
 	// A live config.json apiKey means a key-based login: the startup sync
 	// mirrors it into auth.json as type "api_key" entries, so there is no
 	// OAuth credential to export. (After an SSO login the harness clears the
 	// config key — see settleSsoCredential — so the two shapes don't coexist.)
-	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
+	let apiKey: string | undefined
+	try {
+		apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
+	} catch (error) {
+		throw storeUnavailable("Reading the Kimchi config failed", error)
+	}
 	if (apiKey && !isCredentialStale(apiKey, KIMCHI_PROVIDER_ID)) {
 		throw notAuthenticated("The current Kimchi session is API-key based; no SSO credential is available")
 	}
 
-	const modelRuntime = await ModelRuntime.create({
-		authPath: paths.authPath,
-		modelsPath: paths.modelsPath,
-		refreshOnCreate: false,
-	})
+	let modelRuntime: ModelRuntime
+	try {
+		modelRuntime = await ModelRuntime.create({
+			authPath: paths.authPath,
+			modelsPath: paths.modelsPath,
+			refreshOnCreate: false,
+		})
+	} catch (error) {
+		throw storeUnavailable("Reading the Kimchi credential store failed", error)
+	}
 	deps.installOAuth(modelRuntime)
 
 	let auth: Awaited<ReturnType<ModelRuntime["getAuth"]>>
@@ -148,34 +169,37 @@ export async function handleSsoCredential(
 		// before release — the exact discipline every harness request uses.
 		auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
 	} catch (error) {
-		// refreshStoredOAuthCredential wraps refresh failures in a ModelsError
-		// with code "oauth" (invalid_grant = dead refresh token → re-login;
-		// anything else is transient).
-		const detail =
-			error instanceof ModelsError && error.cause instanceof Error
-				? error.cause.message
-				: error instanceof Error
-					? error.message
-					: String(error)
-		throw ssoCredentialError("SSO_REFRESH_FAILED", `Refreshing the Kimchi SSO credential failed: ${detail}`, {
-			detail,
-		})
+		// Distinguish the failure classes: refreshStoredOAuthCredential wraps
+		// refresh failures in a ModelsError with code "oauth" (invalid_grant =
+		// dead refresh token → re-login; anything else transient). Store
+		// read/modify failures arrive as ModelsError("auth") and non-ModelsError
+		// errors — mapping those to SSO_REFRESH_FAILED would send clients into a
+		// refresh-retry loop against a store that can no longer be read.
+		if (error instanceof ModelsError && error.code === "oauth") {
+			const detail = error.cause instanceof Error ? error.cause.message : error.message
+			throw ssoCredentialError("SSO_REFRESH_FAILED", `Refreshing the Kimchi SSO credential failed: ${detail}`, {
+				detail,
+			})
+		}
+		throw storeUnavailable("Resolving the Kimchi credential failed", error)
 	}
 	if (auth?.source !== "OAuth") {
 		throw notAuthenticated("No SSO credential is stored for Kimchi")
 	}
-	// toAuth (kimchiOauthApiKey → credential.access) produces the bearer the
-	// harness itself sends as `Authorization: Bearer`; a non-string there means
-	// the OAuth resolution did not produce a usable credential.
-	const credential = auth.auth.apiKey
-	if (typeof credential !== "string" || credential.length === 0) {
-		throw notAuthenticated("No SSO credential is stored for Kimchi")
-	}
 
-	// Read AFTER getAuth: a triggered refresh persists before releasing the
-	// store lock, so this sees the post-refresh token and expiry.
+	// Single snapshot: every returned field comes from ONE read of the store,
+	// taken AFTER any triggered refresh has persisted. Deriving `credential`
+	// from the getAuth result and the extras from a later read could pair a
+	// pre-refresh bearer with a post-refresh expiry when another Kimchi
+	// surface (TUI, second ACP client) refreshes or logs out in between —
+	// the client would then cache a dead token until a bogus deadline.
 	const stored = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
-	if (stored?.type !== "oauth" || typeof stored.access !== "string" || !Number.isFinite(stored.expires)) {
+	if (
+		stored?.type !== "oauth" ||
+		typeof stored.access !== "string" ||
+		stored.access.length === 0 ||
+		!Number.isFinite(stored.expires)
+	) {
 		throw notAuthenticated("No SSO credential is stored for Kimchi")
 	}
 	const extras = stored as StoredCredential & KimchiSsoCredentialExtras
@@ -184,7 +208,10 @@ export async function handleSsoCredential(
 	}
 
 	return {
-		credential,
+		// stored.access is the bearer the harness's own users-API calls send as
+		// `Authorization: Bearer` (kimchiOauthApiKey → credential.access; the
+		// registered getApiKey reads credentials.access).
+		credential: stored.access,
 		orgId: extras.orgId,
 		...(typeof extras.orgName === "string" && extras.orgName ? { orgName: extras.orgName } : {}),
 		...(typeof extras.region === "string" && extras.region ? { region: extras.region } : {}),

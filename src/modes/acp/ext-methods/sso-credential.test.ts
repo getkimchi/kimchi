@@ -173,4 +173,27 @@ describe("handleSsoCredential", () => {
 		const error = await errorFrom(() => handleSsoCredential(deps, paths))
 		expect(error.data).toMatchObject({ code: "SSO_REFRESH_FAILED", detail: "invalid_grant" })
 	})
+
+	// Store failures must never escape as raw errors — the typed contract says
+	// clients branch on data.code. Corrupt auth.json surfaces through getAuth
+	// as ModelsError("auth") ("Credential store read failed"), which maps to
+	// SSO_STORE_UNAVAILABLE — NOT SSO_REFRESH_FAILED, which would send the
+	// client into a refresh-retry loop against an unreadable store.
+	it("maps a corrupt auth.json to SSO_STORE_UNAVAILABLE", async () => {
+		writeFileSync(paths.authPath, "{corrupt")
+		const error = await errorFrom(() => handleSsoCredential(fakeOAuthDeps(), paths))
+		expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE" })
+	})
+
+	// The store is intentionally tolerant: a missing models.json does not break
+	// the export (ModelRuntime.create accepts it absent) — the credential comes
+	// from auth.json alone.
+	it("tolerates a missing models.json and still returns the credential", async () => {
+		const entry = writeSsoEntry()
+		rmSync(paths.modelsPath)
+		await expect(handleSsoCredential(fakeOAuthDeps(), paths)).resolves.toMatchObject({
+			credential: "id-token",
+			orgId: entry.orgId,
+		})
+	})
 })

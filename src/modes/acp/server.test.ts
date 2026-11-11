@@ -1994,6 +1994,20 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 		})
 
+		// SECURITY (native-review finding on PR #1722): the export hands out a
+		// live org-scoped bearer with no user interaction, so the client must
+		// OPT IN via its initialize capabilities — an un opted-in client gets
+		// methodNotFound, not a credential.
+		it("refuses with methodNotFound when the client did not opt in via its capabilities", async () => {
+			const testAgent = makeTestAgent()
+			await testAgent.initialize({ protocolVersion: 1 })
+
+			const error = await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_credential, {}).catch((e) => e as RequestError)
+			expect(error).toBeInstanceOf(RequestError)
+			expect(error.code).toBe(-32601)
+			expect(error.message).toContain(AVAILABLE_EXT_METHODS.sso_credential)
+		})
+
 		it("returns the org-scoped SSO credential from the shared store", async () => {
 			const entry = ssoCredential()
 			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": entry }))
@@ -2016,11 +2030,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(error.data).toMatchObject({ code: "SSO_NOT_AUTHENTICATED" })
 		})
 
-		/** Shared body of the two dispatch tests: fresh agent, then the
-		 * ext-method call whose outcome varies with the mocked config half. */
+		/** Shared body of the opt-in dispatch tests: fresh agent, initialized
+		 * with the client-side opt-in capability, then the ext-method call whose
+		 * outcome varies with the mocked config half. */
 		function testExtMethodCredential(): Promise<Record<string, unknown>> {
 			const testAgent = makeTestAgent()
-			return testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_credential, {})
+			return testAgent
+				.initialize({
+					protocolVersion: 1,
+					clientCapabilities: { _meta: { [CAPABILITIES_KEY]: { sso_credential: true } } },
+				})
+				.then(() => testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_credential, {}))
 		}
 	})
 

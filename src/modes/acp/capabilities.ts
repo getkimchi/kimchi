@@ -57,6 +57,15 @@ export const AVAILABLE_EXT_METHODS = {
 	// accepted by /v1/me and /v1/organizations; X-API-Key is rejected).
 	// Refreshed with the harness's lazy-refresh discipline;
 	// SSO_NOT_AUTHENTICATED for non-SSO sessions.
+	// SECURITY: this hands out a LIVE bearer with no user interaction, unlike
+	// the sso_* login flow. Clients must OPT IN by declaring `sso_credential:
+	// true` in their initialize `_meta["kimchi.dev"]` capabilities — the agent
+	// refuses the method (methodNotFound) otherwise, so a network-exposed ACP
+	// transport (socket, port-forward, remote container) is not a
+	// credential-harvest endpoint by default. Every export is logged
+	// server-side (org + expiry only, never the token). If the ACP server ever
+	// gains a non-local transport, this opt-in seam must trip a security
+	// review before the method stays servable.
 	sso_credential: `_${CAPABILITIES_KEY}/sso_credential`,
 
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
