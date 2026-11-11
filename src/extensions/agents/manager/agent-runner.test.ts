@@ -2870,25 +2870,32 @@ describe("buildInlineExtensionFactories", () => {
 		expect(mockCreateWorkerReportExtension).not.toHaveBeenCalled()
 	})
 
-	it("appends the MCP adapter factory whenever effectiveExtensions is not false", () => {
+	it("appends the MCP adapter factory only when the persona asks for MCP", () => {
 		// true — the default for a persona with no extensions restriction.
 		const enabled = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: true }))
 		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
 		expect(enabled).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
 
-		// Empty array — the worker-report edge (workerReport + extensions:false
-		// resolves to []). The factory still registers; that edge was evaluated
-		// and consciously accepted for LLM-4472 (no built-in persona produces
-		// it, and a config with no servers connects nothing).
-		mockCreateKimchiMcpAdapterExtension.mockClear()
-		const emptyArray = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: [] }))
-		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
-		expect(emptyArray).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
-
-		// Explicit persona extension list.
+		// Explicit persona extension list that includes MCP.
 		mockCreateKimchiMcpAdapterExtension.mockClear()
 		const explicitList = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["mcp"] }))
+		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
 		expect(explicitList).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
+	})
+
+	it("omits the MCP adapter factory for allowlists that exclude MCP", () => {
+		// An allowlist without "mcp" must not start the adapter (or spawn
+		// servers) only to filter its tool out afterwards.
+		const unrelated = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["unrelated"] }))
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+		expect(unrelated).toHaveLength(4) // telemetry, request-timing, bash default timeout, infrastructure breaker
+
+		// The worker-report edge: workerReport + extensions:false resolves to
+		// [], which no longer registers the adapter either.
+		mockCreateKimchiMcpAdapterExtension.mockClear()
+		const emptyArray = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: [] }))
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+		expect(emptyArray).toHaveLength(4)
 	})
 
 	it("omits the MCP adapter factory for isolated children (effectiveExtensions false)", () => {

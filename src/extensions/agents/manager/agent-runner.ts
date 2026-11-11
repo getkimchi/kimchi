@@ -888,7 +888,9 @@ export interface InlineExtensionFactoryDeps {
 	/**
 	 * Post-workerReport-adjustment extensions gate resolved by the caller
 	 * (`options.workerReport && extensions === false ? [] : extensions`).
-	 * `false` marks an isolated child, which stays bare — no MCP tools.
+	 * `false` marks an isolated child, which stays bare — no MCP tools. The
+	 * MCP adapter registers only for `true` or an allowlist containing "mcp";
+	 * allowlists without "mcp" (including the worker-report `[]` edge) skip it.
 	 */
 	effectiveExtensions: true | string[] | false
 	/** Resolved working directory; handed to the MCP adapter for config discovery. */
@@ -960,11 +962,16 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 	}
 	// Non-isolated children get MCP tools (LLM-4465): repo-native extensions are
 	// invisible to a child session's resource loader, so the adapter must be
-	// registered inline. Unconditional within the gate — with zero configured
-	// servers the extension suppresses its own tool surface and connects
-	// nothing. Appended last on purpose; the DAP × MCP ordering interplay is a
-	// separate verification item, not tuned here.
-	if (deps.effectiveExtensions !== false) {
+	// registered inline. Gated on the persona asking for MCP — `true` (inherit
+	// everything) or an allowlist containing "mcp" — so an allowlist that
+	// excludes MCP (and the worker-report `[]` edge) never starts the adapter
+	// or spawns servers merely to filter its tool out afterwards. Appended
+	// last on purpose; the DAP × MCP ordering was verified safe for LLM-4472
+	// (per-session profile state, no ordering interaction).
+	if (
+		deps.effectiveExtensions === true ||
+		(deps.effectiveExtensions !== false && deps.effectiveExtensions.includes("mcp"))
+	) {
 		extensionFactories.push(createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd }))
 	}
 	return extensionFactories
