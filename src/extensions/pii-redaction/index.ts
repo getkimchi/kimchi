@@ -85,15 +85,7 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	// tokens (never allocated, foreign-session, post-restart) pass through
 	// verbatim — substitution must never be a wrong transformation. The
 	// stored message never changes.
-	// Register only when the paint vault can exist (feature on, tokens mode)
-	// — an unconditionally registered transformer runs its vault lookup on
-	// every assistant-text transform even with redaction off, where it can
-	// never substitute anything.
-	if (
-		typeof pi.registerMarkdownTransformer === "function" &&
-		isRedactionEnabled() &&
-		getRedactionRenderMode() === "tokens"
-	) {
+	if (typeof pi.registerMarkdownTransformer === "function") {
 		pi.registerMarkdownTransformer((markdown: string) => {
 			const vault = vaultForPaint()
 			if (!vault) return markdown

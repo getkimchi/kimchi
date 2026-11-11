@@ -1542,17 +1542,19 @@ index 3d88d9e595c774fe55cb2b991fcc44f0da1716b4..b3476a7e503a6535e7a8ea599ca45486
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/mermaid.js b/dist/modes/interactive/components/mermaid.js
-index 6015ae42db8b0a3571ac4c7748caa2f715b2ff44..9340282320f29003c76f6d4069cc8e011ede02b6 100644
+index 6015ae42db8b0a3571ac4c7748caa2f715b2ff44..9faf53ae9dd617925e105fbea5912d6eef846e3f 100644
 --- a/dist/modes/interactive/components/mermaid.js
 +++ b/dist/modes/interactive/components/mermaid.js
-@@ -51,6 +51,12 @@ export function createMermaidMarkdownTransformer(options) {
+@@ -51,6 +51,14 @@ export function createMermaidMarkdownTransformer(options) {
              (context.isStreaming && mode !== "streaming")) {
              return markdown;
          }
 +        // [kimchi] A full lexer pass over the whole text on every Markdown
 +        // cache-miss render costs seconds of CPU on large transcripts when
 +        // no mermaid block can exist. Skip the lex unless the word appears.
-+        if (!markdown.includes("mermaid")) {
++        // Case-insensitive: isMermaid lowercases the fence info string, so
++        // a ```MERMAID fence must still reach the lexer to render.
++        if (!/mermaid/i.test(markdown)) {
 +            return markdown;
 +        }
          return markdownParser
