@@ -244,7 +244,7 @@ import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { RemoteAgentSession } from "./manager/remote-agent-session.js"
-import { clearHandoff, peekHandoff } from "./manager/subagent-handoff.js"
+import { clearHandoff, peekHandoff, stageHandoff } from "./manager/subagent-handoff.js"
 import type { RemoteRunState } from "./remote-run-persistence.js"
 import type { Theme } from "./ui/agent-widget.js"
 
@@ -2267,6 +2267,45 @@ describe("local agents survive session replacement (fork/new)", () => {
 		expect(manager2.adoptRecords).toHaveBeenCalledTimes(1)
 	})
 
+	it("hands off on reason new (plain /new) the same as fork", async () => {
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+		})
+		agentsExtension(pi1.api)
+		const manager1 = latestManagerInstance()
+		const id = manager1.spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "new", targetSessionFile: "/tmp/new-session.json" },
+			live1.ctx,
+		)
+		expect(manager1.abortAll).not.toHaveBeenCalled()
+		expect(peekHandoff()?.records.map((r) => r.id)).toEqual([id])
+
+		const pi2 = createExtensionApi()
+		const live2 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/new-session.json" },
+		})
+		agentsExtension(pi2.api)
+		const manager2 = latestManagerInstance()
+		await pi2.emit(
+			"session_start",
+			{ type: "session_start", reason: "new", previousSessionFile: "/tmp/old-session.json" },
+			live2.ctx,
+		)
+
+		expect(manager2.adoptRecords).toHaveBeenCalledTimes(1)
+		expect(manager2.getRecord(id)).toMatchObject({ id, status: "running" })
+		expect(peekHandoff()).toBeUndefined()
+	})
+
 	it("keeps the terminal path for quit: abortAll + dispose, nothing staged", async () => {
 		const pi = createExtensionApi()
 		const live = createLiveContext({ mode: "tui" })
@@ -2342,6 +2381,27 @@ describe("local agents survive session replacement (fork/new)", () => {
 		expect(manager2.adoptRecords).not.toHaveBeenCalled()
 		// the slot survives for a real main-session replacement
 		expect(peekHandoff()).toBeDefined()
+	})
+
+	it("aborts a never-claimed staged handoff on the terminal path", async () => {
+		const pi = createExtensionApi()
+		const live = createLiveContext({ mode: "tui" })
+		agentsExtension(pi.api)
+
+		// a stale handoff staged by an earlier runtime that no replacement
+		// ever claimed — its records must not keep running headless
+		const abort = vi.fn()
+		stageHandoff({
+			fromSessionFile: "/tmp/gone-session.json",
+			records: [makeRunningRecord({ abortController: { abort } }) as never],
+			queued: [],
+			activity: [],
+		})
+
+		await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, live.ctx)
+
+		expect(abort).toHaveBeenCalledTimes(1)
+		expect(peekHandoff()).toBeUndefined()
 	})
 
 	it("retains the staged handoff when the replacement's lineage does not match", async () => {

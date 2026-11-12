@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { AgentRecord } from "../personas/types.js"
 import type { AgentHandoff } from "./subagent-handoff.js"
-import { clearHandoff, peekHandoff, stageHandoff, takeHandoffFor } from "./subagent-handoff.js"
+import { abortStagedHandoff, clearHandoff, peekHandoff, stageHandoff, takeHandoffFor } from "./subagent-handoff.js"
 
 function makeHandoff(fromSessionFile: string | undefined): AgentHandoff {
 	const record = {
@@ -81,5 +81,36 @@ describe("subagent handoff slot", () => {
 		clearHandoff()
 		expect(peekHandoff()).toBeUndefined()
 		expect(takeHandoffFor("/old/session.jsonl")).toBeUndefined()
+	})
+
+	it("aborts the evicted handoff's records when staging a new one", () => {
+		const evicted = makeHandoff("/old/session.jsonl")
+		const abortA = vi.fn()
+		const abortB = vi.fn()
+		evicted.records = [
+			{ ...evicted.records[0]!, id: "r1", abortController: { abort: abortA, signal: undefined } as never },
+			{ ...evicted.records[0]!, id: "r2", abortController: { abort: abortB, signal: undefined } as never },
+		]
+		stageHandoff(evicted)
+
+		// A slot being replaced can never be claimed — the runtime that would
+		// match its lineage is gone.
+		stageHandoff(makeHandoff("/other/session.jsonl"))
+
+		expect(abortA).toHaveBeenCalledTimes(1)
+		expect(abortB).toHaveBeenCalledTimes(1)
+		expect(peekHandoff()?.fromSessionFile).toBe("/other/session.jsonl")
+	})
+
+	it("abortStagedHandoff aborts and clears whatever is staged", () => {
+		const handoff = makeHandoff("/old/session.jsonl")
+		const abort = vi.fn()
+		handoff.records = [{ ...handoff.records[0]!, abortController: { abort, signal: undefined } as never }]
+		stageHandoff(handoff)
+
+		abortStagedHandoff()
+
+		expect(abort).toHaveBeenCalledTimes(1)
+		expect(peekHandoff()).toBeUndefined()
 	})
 })

@@ -73,7 +73,7 @@ import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./m
 import { deleteRemoteSession, type RemoteSessionMeta } from "./manager/remote-agent-runner.js"
 import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
-import { stageHandoff, takeHandoffFor } from "./manager/subagent-handoff.js"
+import { abortStagedHandoff, stageHandoff, takeHandoffFor } from "./manager/subagent-handoff.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
 import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
@@ -1577,6 +1577,10 @@ export default function (pi: ExtensionAPI) {
 		// Remote runs survive the process — they are owned by the worker and
 		// resumable via kimchi --session (remote-run-persistence.ts).
 		const aborted = manager.abortAll({ skipRemote: true })
+		// A handoff staged by an earlier runtime that was never claimed can no
+		// longer be claimed by anyone — abort its records instead of letting
+		// them run headless.
+		abortStagedHandoff()
 		if (event.reason === "resume" && aborted > 0) {
 			// Switching to an unrelated session stops local agents — but say so,
 			// instead of killing them silently.
