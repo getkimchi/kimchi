@@ -27,6 +27,7 @@ import { Type } from "typebox"
 import { readConfigSetting } from "../config/settings.js"
 import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
 import { isResourceEnabled } from "../resources/store.js"
+import { notifyUser } from "../utils/notify-user.js"
 import { getEffectiveModel } from "./auto-model/state.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
@@ -300,8 +301,7 @@ async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, ta
 	// Direct switch via /phase <name>.
 	if (!isValidPhase(trimmed)) {
 		const msg = `Invalid phase "${args.trim()}". Valid: ${VALID_PHASES.join(", ")}, none`
-		if (ctx.hasUI) ctx.ui.notify(msg, "error")
-		else console.error(msg)
+		notifyUser(ctx, msg, "error")
 		return
 	}
 
