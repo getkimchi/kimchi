@@ -345,12 +345,17 @@ describe("extractMessages (user + gated assistant)", () => {
 		expect(extractMessages([entry])).toEqual([{ role: "user", content: "blocky plain" }])
 	})
 
-	it("excludes thinking blocks from the extracted text", () => {
+	it("includes thinking blocks under the [internal reasoning] marker", () => {
 		const entry = msgEntry("assistant", [
 			{ type: "thinking", text: "internal reasoning about the approach" },
 			{ type: "text", text: "The recipe uses 3 eggs." },
 		])
-		expect(extractMessages([entry])).toEqual([{ role: "assistant", content: "The recipe uses 3 eggs." }])
+		expect(extractMessages([entry])).toEqual([
+			{
+				role: "assistant",
+				content: "The recipe uses 3 eggs.\n\n[internal reasoning]: internal reasoning about the approach",
+			},
+		])
 	})
 
 	it("excludes assistant turns containing tool-call blocks (work product)", () => {
@@ -369,9 +374,9 @@ describe("extractMessages (user + gated assistant)", () => {
 		expect(messages[0]?.content.startsWith("The answer is 3 eggs.")).toBe(true)
 	})
 
-	it("excludes thinking-only assistant turns", () => {
+	it("captures thinking-only assistant turns as their own reasoning record", () => {
 		const entry = msgEntry("assistant", [{ type: "thinking", text: "only reasoning" }])
-		expect(extractMessages([entry])).toEqual([])
+		expect(extractMessages([entry])).toEqual([{ role: "assistant", content: "[internal reasoning]: only reasoning" }])
 	})
 })
 
@@ -407,12 +412,12 @@ describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)"
 		expect(messages).toEqual([
 			{ role: "user", content: "how many reviews in 2031+?" },
 			{ role: "assistant", content: '[tool] bash: {"command":"sqlite3 db \\".schema\\""}' },
-			{ role: "user", content: "CREATE TABLE orders_g1 (item_ref TEXT ...);" },
+			{ role: "env", content: "CREATE TABLE orders_g1 (item_ref TEXT ...);" },
 			{ role: "assistant", content: "The table is orders_g1 with item_ref as key." },
 		])
 	})
 
-	it("ON: thinking blocks inside tool turns stay excluded (no reasoning in facts)", () => {
+	it("ON: thinking rides alongside the spliced tool-work records", () => {
 		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
 		const messages = extractMessages([
 			msgEntry("assistant", [
@@ -420,9 +425,10 @@ describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)"
 				toolCall("tc1", "bash", { command: "select length(ts)" }),
 			]),
 		])
-		expect(messages).toHaveLength(1)
-		expect(messages[0]?.content).not.toContain("thinking")
-		expect(messages[0]?.content).not.toContain("ms not seconds")
+		expect(messages).toEqual([
+			{ role: "assistant", content: "[internal reasoning]: the ts column must be ms not seconds" },
+			{ role: "assistant", content: '[tool] bash: {"command":"select length(ts)"}' },
+		])
 	})
 
 	it("ON: long tool results bound head+tail with elision marker", () => {
@@ -432,7 +438,7 @@ describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)"
 			msgEntry("assistant", [toolCall("tc1", "bash", { command: "big" })]),
 			msgEntry("toolResult", [{ type: "text", text: big }], { toolCallId: "tc1" }),
 		])
-		const receipt = messages.find((m) => m.role === "user")?.content ?? ""
+		const receipt = messages.find((m) => m.role === "env")?.content ?? ""
 		expect(receipt).toContain("HEAD:")
 		expect(receipt).toContain(":TAIL")
 		expect(receipt).toContain("chars elided")
