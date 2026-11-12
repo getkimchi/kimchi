@@ -77,6 +77,9 @@ importers:
       '@earendil-works/pi-tui':
         specifier: 1.3.0
         version: 1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937)
+      '@getkimchi/kimchi-bridge':
+        specifier: link:../../../../kimchi-bridge/pr-cost
+        version: link:../../../../kimchi-bridge/pr-cost
       '@hyzyla/pdfium':
         specifier: ^3.0.0
         version: 3.0.0
