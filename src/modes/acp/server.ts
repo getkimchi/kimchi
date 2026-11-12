@@ -158,6 +158,10 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
+} from "../../shared/bash-background-settle.js"
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
@@ -209,8 +213,6 @@ import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
-	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
-	type BashBackgroundSettleData,
 	backgroundHandoffHandle,
 	type HeldBackgroundToolCall,
 	holdAndWatchBackgroundToolCall,

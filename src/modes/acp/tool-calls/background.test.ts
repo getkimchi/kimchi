@@ -7,9 +7,9 @@ import type { SessionNotification } from "@agentclientprotocol/sdk"
 import { afterEach, describe, expect, it } from "vitest"
 import type { ProcessRegistry } from "../../../extensions/bash-background/process-registry.js"
 import { type BashSessionState, setSessionState } from "../../../extensions/bash-background/session-registry.js"
+import type { BashBackgroundSettleOutcome } from "../../../shared/bash-background-settle.js"
 import {
 	type BackgroundToolCallContext,
-	type BashBackgroundSettleOutcome,
 	type HeldBackgroundToolCall,
 	holdAndWatchBackgroundToolCall,
 } from "./background.js"

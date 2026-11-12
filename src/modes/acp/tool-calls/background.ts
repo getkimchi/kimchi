@@ -13,6 +13,10 @@
 import type { SessionNotification, ToolCallContent } from "@agentclientprotocol/sdk"
 import type { BackgroundBashToolDetails } from "../../../extensions/bash-background/bash-background-tool.js"
 import { getSessionState } from "../../../extensions/bash-background/session-registry.js"
+import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleOutcome,
+} from "../../../shared/bash-background-settle.js"
 import { buildToolCallUpdate } from "./utils.js"
 
 /** One held background tool call: its live ACP id + the originating pi id. */
@@ -35,29 +39,6 @@ export type BackgroundToolCallContext = {
 	 * "completed" — because nothing in history knows the exit happened.
 	 */
 	persistSettle: (piToolCallId: string, outcome: BashBackgroundSettleOutcome) => void
-}
-
-/** Terminal settle fact persisted to the transcript as a metadata-only
- *  CustomEntry (`type: "custom"` under BASH_BACKGROUND_SETTLE_MESSAGE_TYPE):
- *  a recorded FACT for future replays — it never enters model context and
- *  never triggers or steers a turn. */
-export type BashBackgroundSettleOutcome = {
-	/** exitCode 0 with no stop reason reads as success; anything else failed. */
-	isError: boolean
-	/** Captured final output (empty when the process produced none). */
-	text: string
-	/** Terminal BackgroundBashToolDetails — the same shape the wire flip sends. */
-	details: BackgroundBashToolDetails
-}
-
-/** Custom transcript message type carrying a held call's settle outcome. */
-export const BASH_BACKGROUND_SETTLE_MESSAGE_TYPE = "bash-background-settle"
-
-/** Persisted payload of a settle CustomEntry: the outcome plus the pi
- *  toolCallId of the held call it settles (write site: persistSettle in
- *  server.ts's watch context). */
-export interface BashBackgroundSettleData extends BashBackgroundSettleOutcome {
-	toolCallId: string
 }
 
 /**
