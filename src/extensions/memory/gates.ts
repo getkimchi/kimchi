@@ -209,12 +209,43 @@ export function valuationContextEnabled(env: NodeJS.ProcessEnv = process.env): b
 /** Bound on existing-store facts attached to the valuation state. */
 export const VALUATION_CONTEXT_MAX_FACTS = 100
 
+/** Bound on source-window text attached to the valuation state, so a large
+ * drain cannot push the state beyond what the decision gateway accepts
+ * comfortably. */
+export const VALUATION_SOURCE_MAX_CHARS = 20000
+
 /** Build the valuation state: the static prompt, plus (flagged) the store's
- * existing fact texts so discards/keeps can reference the live context. */
-export function buildValuationState(existing?: string[]): string {
-	if (!valuationContextEnabled() || !existing || existing.length === 0) return VALUATION_STATE
+ * existing fact texts so discards/keeps can reference the live context, and
+ * (when supplied) the source windows the candidate facts were extracted
+ * from so the judge can reject contradictions or inventions instead of
+ * scoring blind plausibility. */
+export function buildValuationState(existing?: string[], sources?: string[]): string {
+	let state = VALUATION_STATE
+	if (sources && sources.length > 0) {
+		// Two bounds, both enforced: (a) per-window, so every window keeps a
+		// marker of its presence (a vanished tail window would make
+		// "unsupported by the source" a false-negative for the facts that
+		// window produced), and (b) aggregate, so a 60-window drain cannot
+		// blow the state past the gateway's input comfort.
+		const perWindowCap = Math.max(500, Math.floor(VALUATION_SOURCE_MAX_CHARS / sources.length))
+		let used = 0
+		let truncated = 0
+		const kept: string[] = []
+		for (const source of sources) {
+			if (used >= VALUATION_SOURCE_MAX_CHARS) {
+				truncated += 1
+				continue
+			}
+			const cap = Math.min(perWindowCap, VALUATION_SOURCE_MAX_CHARS - used)
+			kept.push(source.length > cap ? source.slice(0, cap) + "\n[truncated]" : source)
+			used += Math.min(source.length, cap)
+		}
+		if (truncated > 0) kept.push(`[${truncated} further window(s) omitted]`)
+		state = `${state}\n\nThe facts were extracted from these conversation windows \u2014 reject any fact that contradicts or invents details absent from them, and treat truncated or omitted windows as partial:\n\n${kept.map((s) => `---\n${s}`).join("\n")}`
+	}
+	if (!valuationContextEnabled() || !existing || existing.length === 0) return state
 	const head = existing.slice(0, VALUATION_CONTEXT_MAX_FACTS)
-	return `${VALUATION_STATE}\n\nThe store already holds these memories (use them to spot duplicates, conflicts, and genuinely-new information):\n${head.map((f) => `- ${f}`).join("\n")}`
+	return `${state}\n\nThe store already holds these memories (use them to spot duplicates, conflicts, and genuinely-new information):\n${head.map((f) => `- ${f}`).join("\n")}`
 }
 
 export function valuationQuestion(fact: string, index: number): ChoiceQuestion {

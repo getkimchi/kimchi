@@ -1663,17 +1663,20 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const valuationGate = (() => {
 		if (!decision.enabled.has("valuation") || !decision.gate) return undefined
 		const gate = decision.gate
-		return async (facts: string[], existing?: string[], job?: string): Promise<Set<string>> => {
+		return async (facts: string[], existing?: string[], job?: string, sources?: string[]): Promise<Set<string>> => {
 			const discard = new Set<string>()
 			if (facts.length === 0) return discard
 			// KIMCHI_MEMORY_VALUATION_CONTEXT: with the store's fact list in the
 			// state, the same keep/discard contract runs WITH context — the
 			// batch sees what a dup would duplicate and what a conflict would
 			// contradict (paraphrase dups being the measured failure class).
+			// Source windows ride along unconditionally: the judge checks each
+			// candidate against the conversation that produced it, so fabricated
+			// or contradicted facts score low instead of passing on plausibility.
 			const gateTraced = trace !== null && job !== undefined ? withGateApiHook(gate, "valuation", { job }, trace) : gate
 			const answers = await batchChoice(
 				gateTraced,
-				buildValuationState(existing),
+				buildValuationState(existing, sources),
 				facts,
 				valuationQuestion,
 				undefined,
@@ -2392,7 +2395,7 @@ async function commitPlan(
 	personalBackend: Backend,
 	projectBackends: Map<string, Backend>,
 	createBackend: (dbPath: string) => Promise<CaptureBackend>,
-	valueGate?: (facts: string[], existing?: string[], job?: string) => Promise<Set<string>>,
+	valueGate?: (facts: string[], existing?: string[], job?: string, sources?: string[]) => Promise<Set<string>>,
 	trace?: TraceRecorder | null,
 ): Promise<{
 	captured: number
@@ -2465,7 +2468,16 @@ async function commitPlan(
 				// this addAll — judging new facts against what is already known,
 				// which is exactly the duplicate/paraphrase judgment a blind
 				// per-fact verdict cannot make (KIMCHI_MEMORY_VALUATION_CONTEXT).
-				valuationDiscard = await valueGate(eligible, valuationContextEnabled() ? existing.rawTexts : undefined, jobName)
+				/* The source windows the candidates were extracted from ride with
+				 * every valuation batch — the gate checks each fact against the
+				 * conversation that produced it (blind judging scored fabricated
+				 * facts ~0.75 keep — the "mash A" inversion). */
+				valuationDiscard = await valueGate(
+					eligible,
+					valuationContextEnabled() ? existing.rawTexts : undefined,
+					jobName,
+					plan.windows.map(renderWindow),
+				)
 			} catch (err) {
 				console.error("[memory-capture] valuation gate failed, keeping this job's facts (fail-open):", err)
 				valuationDiscard = undefined

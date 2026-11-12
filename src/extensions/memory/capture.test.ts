@@ -60,7 +60,7 @@ import {
 } from "./capture-worker.js"
 import { ADD_FAILURE_MAX_ATTEMPTS, MEMORY_CAPTURE_WINDOW_CHARS, MEMORY_FACT_MAX_CHARS } from "./config.js"
 import type { DecisionGateOptions } from "./decision-gate.js"
-import { TRIAGE_QUESTION_NAMES, VALUATION_STATE } from "./gates.js"
+import { TRIAGE_QUESTION_NAMES, buildValuationState } from "./gates.js"
 import { readTraceEvents, tracesDir } from "./trace.js"
 import { usageLedgerPath } from "./usage-ledger.js"
 
@@ -1286,7 +1286,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 				state: string
 				questions: Record<string, { instructions: string; criteria: Record<string, string> }>
 			}
-			expect(vRequest.state).toBe(VALUATION_STATE)
+			expect(vRequest.state).toBe(buildValuationState(undefined, ["user: two facts"]))
 			expect(Object.keys(vRequest.questions)).toEqual(["item_1", "item_2"])
 			expect(vRequest.questions.item_1?.instructions).toContain("fact alpha")
 			expect(vRequest.questions.item_1?.criteria).toHaveProperty("keep")
