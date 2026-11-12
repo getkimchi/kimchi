@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { setImmediate } from "node:timers/promises"
+import type { OutboxBatch, OutboxEvent } from "@getkimchi/kimchi-bridge/work/outbox"
 import {
 	COLLECTIONS,
 	type Collection,
@@ -49,27 +50,6 @@ export interface JournalCursor {
 	offset: number
 	boundaryHash: string
 	updatedAt: number
-}
-
-export interface OutboxEvent {
-	id: string
-	accountKey: string
-	entityId: string
-	kind: string
-	body: Uint8Array
-	hash: string
-	createdAt: number
-	ackedAt: number | null
-	blocked: string
-}
-
-export interface OutboxBatch {
-	id: string
-	accountKey: string
-	body: Uint8Array
-	eventIds: string[]
-	createdAt: number
-	orderKey: string
 }
 
 export interface OutboxAccountStatus {

@@ -324,7 +324,8 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		const { backendFor, readStoredRecordsAsync } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 		)
-		const { effectiveClaim, observeEvents, pendingBatch } = await import(
+		const { effectiveClaim } = await import("@getkimchi/kimchi-bridge/work/outbox")
+		const { observeEvents, pendingBatch } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
 		)
 		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")

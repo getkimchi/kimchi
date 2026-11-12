@@ -644,7 +644,8 @@ it.each([
 					`
 import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.url).href)};
 import {capture,readStoredRecordsAsync,closeBackends,backendFor} from ${JSON.stringify(new URL("./ledger/records.ts", import.meta.url).href)};
-import {observeEvents,pendingBatch,effectiveClaim} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
+import {observeEvents,pendingBatch} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
+import {effectiveClaim} from "@getkimchi/kimchi-bridge/work/outbox";
 import {accountKey} from ${JSON.stringify(new URL("./snapshot.ts", import.meta.url).href)};
 const input=await Bun.stdin.json();
 for(const row of input.records)capture(input.agent,row,input.agent+"/native-observations.jsonl");
@@ -698,7 +699,8 @@ function withLedger(rows: unknown[], steps: string, extra: object = {}) {
 					`
 import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.url).href)};
 import {capture,readStoredRecordsAsync,closeBackends,backendFor} from ${JSON.stringify(new URL("./ledger/records.ts", import.meta.url).href)};
-import {observeEvents,effectiveClaim} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
+import {observeEvents} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
+import {effectiveClaim} from "@getkimchi/kimchi-bridge/work/outbox";
 import {accountKey} from ${JSON.stringify(new URL("./snapshot.ts", import.meta.url).href)};
 import {calculatePullRequestCosts} from ${JSON.stringify(new URL("../work-attribution/costs.ts", import.meta.url).href)};
 const input=await Bun.stdin.json();

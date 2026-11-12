@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { setImmediate } from "node:timers/promises"
+import { effectiveClaim, type Fact, type OutboxBatch } from "@getkimchi/kimchi-bridge/work/outbox"
 import type { Acknowledgement } from "@getkimchi/kimchi-bridge/work/protocol"
 import { verifyApiKey } from "../../api/organizations.js"
 import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
@@ -19,16 +20,8 @@ import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"
 import { legacyInputSignature } from "./ledger/import.js"
-import {
-	acknowledgeBatch,
-	deliveryRetry,
-	effectiveClaim,
-	type Fact,
-	observeEvents,
-	pendingBatch,
-	readOutboxStatus,
-} from "./ledger/outbox.js"
-import { backendFor, type OutboxBatch, type RecordBackend } from "./ledger/records.js"
+import { acknowledgeBatch, deliveryRetry, observeEvents, pendingBatch, readOutboxStatus } from "./ledger/outbox.js"
+import { backendFor, type RecordBackend } from "./ledger/records.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,

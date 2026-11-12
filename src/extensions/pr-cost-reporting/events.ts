@@ -1,3 +1,4 @@
+import { type Fact, validateClaimUpdate } from "@getkimchi/kimchi-bridge/work/outbox"
 import {
 	encodeEvent,
 	gitId,
@@ -20,7 +21,6 @@ import {
 	type WorkScope,
 } from "../work-attribution/scope.js"
 import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary.js"
-import { type Fact, validateClaimUpdate } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
 import { nativeObservations } from "./native.js"
 import {
