@@ -141,6 +141,8 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_HOOK_EVENT",
 	"KIMCHI_TOOL_NAME",
 	"KIMCHI_TOOL_INPUT_COMMAND",
+	// diagnostics: submit-path timing marks (src/extensions/submit-timing.ts)
+	"KIMCHI_SUBMIT_TIMING",
 	// dev/staging endpoint overrides (same category as the OAuth overrides below)
 	"KIMCHI_REMOTE_ENDPOINT",
 	"KIMCHI_WEB_APP_URL",

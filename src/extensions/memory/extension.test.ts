@@ -10,7 +10,7 @@ import { createAcpUIContext } from "../../modes/acp/acp-ui-context.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
-import { MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
+import { MEMORY_PRE_REQUEST_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
@@ -52,6 +52,29 @@ const fakeCtx = createContext()
 
 function hits(...items: Array<{ memory: string; score: number }>): MemorySearcher {
 	return { search: vi.fn(async () => items) }
+}
+
+// The drift recall runs detached from its turn start (the submit-latency
+// fix) — settle its gate/search/delivery/refire before asserting on it.
+// Positive outcomes poll (vi.waitFor) instead of draining a fixed number of
+// macrotasks: a hop on the recall path that gains a real async boundary
+// (retry backoff, a timer in the gate) would break any fixed count and let
+// assertions run before the chain settles.
+async function flushRecall(settled: () => void): Promise<void> {
+	await vi.waitFor(settled, { interval: 10, timeout: 2_000 })
+}
+
+// Absence checks cannot poll — drain the pending chain with a few macrotask
+// turns (each timer callback runs only after the microtask queue empties,
+// and a timer scheduled during the first drain gets its own hop before the
+// assertion runs), then assert that nothing fired.
+async function settle(): Promise<void> {
+	for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/** Last recorded call for one status/widget key — the settle signal the recall chain leaves behind. */
+function lastCallFor(calls: ReadonlyArray<readonly [string, ...unknown[]]>, key: string) {
+	return calls.filter((call) => call[0] === key).at(-1)
 }
 
 function startEvent(prompt: string): BeforeAgentStartEvent {
@@ -246,6 +269,7 @@ describe("memory extension", () => {
 		)
 		for (let turn = 0; turn < 3; turn++) {
 			const result = await start(startEvent(`turn ${turn}`), fakeCtx)
+			await flushRecall(() => expect(search).toHaveBeenCalledTimes(turn + 1))
 			// The model must know capture is automatic even with no digest, and
 			// where the user manages what is stored.
 			expect(result?.systemPrompt).toContain("captured automatically")
@@ -276,6 +300,7 @@ describe("memory extension", () => {
 		// ledger) — search count: digest, post-compact recompute, drift recall.
 		const later = await start(startEvent("turn 3"), fakeCtx)
 		expect(later?.systemPrompt).toBe(afterCompact?.systemPrompt)
+		await flushRecall(() => expect(searcher.search).toHaveBeenCalledTimes(3))
 		expect(searcher.search).toHaveBeenCalledTimes(3)
 	})
 
@@ -301,29 +326,160 @@ describe("memory extension", () => {
 		}
 	})
 
-	it("degrades to no-memory when the digest search hangs (bounded timeout)", async () => {
+	it("degrades to no-memory when the digest search hangs — and retries the digest next turn", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
-			const { start } = await setup(
-				createMemoryExtension({
-					isEnabled: () => true,
-					// A hung gateway call — never resolves.
-					createSearcher: async () => ({
-						search: () => new Promise<Array<{ memory?: string }>>(() => {}),
-					}),
-				}),
+			// Only the first search hangs; later calls resolve. A timeout must
+			// NOT cache the failure: the next turn recomputes the digest.
+			const search = vi.fn((query: string) => {
+				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
+				return Promise.resolve([{ memory: `fact for ${query.length}`, score: 0.7 }])
+			})
+			const { sendMessage, start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
 			const pending = start(startEvent("turn 1"), fakeCtx)
-			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
 			const result = await pending
 			// Degraded to no facts — the notice is still present.
 			expect(result?.systemPrompt).toContain("captured automatically")
+			expect(result?.systemPrompt).not.toContain("fact for")
 			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
+			// Retry: turn 2 recomputes the digest into the prefix (no recall —
+			// the digest search already used this prompt).
+			const turn2 = await start(startEvent("turn 2"), fakeCtx)
+			expect(turn2?.systemPrompt).toContain("fact for")
+			expect(search).toHaveBeenCalledTimes(2)
+			// The recall valve is untouched: turn 3's drift fires and delivers.
+			await start(startEvent("turn 3 - fresh territory"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS)
+			expect(search).toHaveBeenCalledTimes(3)
+			expect(sendMessage).toHaveBeenCalledTimes(1)
 		} finally {
 			vi.useRealTimers()
 			consoleError.mockRestore()
 		}
+	})
+
+	it("the recall gate is bounded by the pre-request timeout — it falls open to searching", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			// The drift search must surface something NEW — the digest already
+			// delivered its own fact, and recall delivery is dedupe-gated.
+			let call = 0
+			const indexedSearch = vi.fn(async () => {
+				call += 1
+				return [{ memory: call === 1 ? "digest fact" : "drift fact", score: 0.7 }]
+			})
+			// A gateway that accepts the connection and never answers.
+			const hung = async () => new Promise<Response>(() => {})
+			const { sendMessage, start } = await setup(
+				createMemoryExtension({
+					isEnabled: () => true,
+					createSearcher: async () => ({ search: indexedSearch }),
+					decision: () => ({
+						gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: hung, maxRetries: 0 },
+						enabled: new Set(["recall"]),
+					}),
+				}),
+			)
+			await start(startEvent("turn 1"), fakeCtx)
+			await start(startEvent("turn 2 - fresh territory"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			// The gate timed out at the pre-request bound, logged it, and the
+			// pre-gate behavior took over — the drift search still ran and
+			// delivered.
+			expect(
+				consoleError.mock.calls.some(([m]) => String(m).includes("recall gating") && String(m).includes("timed out")),
+			).toBe(true)
+			expect(indexedSearch).toHaveBeenCalledTimes(2)
+			expect(sendMessage).toHaveBeenCalledTimes(1)
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a hung searcher factory degrades per turn and never wedges the session — the next turn retries", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			let createCalls = 0
+			const search = vi.fn(async () => [{ memory: "late-blooming fact", score: 0.8 }])
+			const { sendMessage, start } = await setup(
+				createMemoryExtension({
+					isEnabled: () => true,
+					createSearcher: () => {
+						createCalls += 1
+						// First factory call never settles (wedged backend); the
+						// second one succeeds.
+						return createCalls === 1 ? new Promise(() => {}) : Promise.resolve({ search })
+					},
+				}),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			const result = await pending
+			// Bounded: the turn degrades to the bare notice instead of hanging.
+			expect(result?.systemPrompt).toContain("captured automatically")
+			expect(result?.systemPrompt).not.toContain("late-blooming")
+			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
+			// The wedged factory call did not wedge the session: turn 2 retries
+			// with a FRESH factory call and the digest lands in the prefix.
+			const turn2 = await start(startEvent("turn 2"), fakeCtx)
+			expect(createCalls).toBe(2)
+			expect(turn2?.systemPrompt).toContain("late-blooming fact")
+			expect(sendMessage).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a mid-recall toggle-off suppresses delivery and ledger mutation — the valve still releases", async () => {
+		let releaseSearch: (() => void) | undefined
+		const search = vi
+			.fn()
+			.mockResolvedValueOnce([{ memory: "digest fact", score: 0.7 }])
+			.mockImplementationOnce(
+				() =>
+					new Promise<Array<{ memory: string; score: number }>>((resolve) => {
+						releaseSearch = () => resolve([{ memory: "suppressed fact", score: 0.7 }])
+					}),
+			)
+			.mockResolvedValueOnce([{ memory: "post-reenable fact", score: 0.7 }])
+			.mockResolvedValue([{ memory: "fresh delivered fact", score: 0.7 }])
+		const { sendMessage, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("turn 1"), fakeCtx)
+		await start(startEvent("turn 2 - fresh territory"), fakeCtx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
+		// The drift recall is in flight (its search unreleased).
+		expect(search).toHaveBeenCalledTimes(2)
+		// Flip the toggle OFF while it is pending, then let the search resolve.
+		setSessionMemoryOverride(fakeCtx.sessionManager, false)
+		releaseSearch?.()
+		await settle()
+		// The mid-recall guard: no delivery, no ledger mutation.
+		expect(sendMessage).not.toHaveBeenCalled()
+		// While disabled: no memory contribution at all.
+		const off = await start(startEvent("turn 3"), fakeCtx)
+		expect(off).toBeUndefined()
+		// Re-enable: the flip resets and recomputes the digest (search 3), and
+		// the released valve lets a later drift deliver (search 4 + steer).
+		setSessionMemoryOverride(fakeCtx.sessionManager, true)
+		const back = await start(startEvent("turn 4"), fakeCtx)
+		expect(back?.systemPrompt).toContain("post-reenable fact")
+		await start(startEvent("turn 5 - brand new territory"), fakeCtx)
+		await flushRecall(() => {
+			expect(search).toHaveBeenCalledTimes(4)
+			expect(sendMessage).toHaveBeenCalledTimes(1)
+		})
+		const [message] = sendMessage.mock.calls[0] as [{ content: Array<{ type: string; text: string }> }, ...unknown[]]
+		expect(message.content[0]?.text).toContain("fresh delivered fact")
 	})
 
 	it("honors the --memory CLI flag via getParsedCliArgs", async () => {
@@ -353,20 +509,23 @@ describe("memory extension", () => {
 		// Topic drift: the new prompt is uncovered territory — a steer with
 		// ONLY the new fact goes out (hidden, deliverAs steer).
 		const turn2 = await start(startEvent("what do I bake?"), fakeCtx)
+		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(1))
 		expect(turn2?.systemPrompt).toBe(turn1?.systemPrompt)
 		expect(sendMessage).toHaveBeenCalledTimes(1)
 		const [message, options] = sendMessage.mock.calls[0] as [
 			{ customType: string; content: Array<{ type: string; text: string }>; display: boolean },
-			{ deliverAs: string },
+			{ deliverAs: string; triggerTurn?: boolean },
 		]
 		expect(message.customType).toBe("memory-recall")
 		expect(message.display).toBe(false)
 		expect(options.deliverAs).toBe("steer")
 		expect(message.content[0]?.text).toContain("user bakes chocolate cakes")
 		expect(message.content[0]?.text).not.toContain("pnpm")
+		expect(options.triggerTurn).toBe(false)
 
 		// Same territory again: the fact is already delivered — no second steer.
 		await start(startEvent("more about baking?"), fakeCtx)
+		await settle()
 		expect(sendMessage).toHaveBeenCalledTimes(1)
 	})
 
@@ -391,6 +550,7 @@ describe("memory extension", () => {
 		)
 		await start(startEvent("first prompt"), fakeCtx)
 		await start(startEvent("second prompt"), ctx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
 		// Turn 1 embedded the prompt alone; turn 2's drift query carries the
 		// prompt plus only the TAIL of the last assistant response — the
 		// 2000-char body stays out of the embedding payload.
@@ -419,11 +579,13 @@ describe("memory extension", () => {
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 		)
 		await start(startEvent("first prompt"), fakeCtx)
+		await settle()
 		// A prompt longer than the total cap (e.g. a stack trace or spec
 		// paste) — the old post-join slice let it push the response tail out
 		// entirely; each half is capped separately now, so both contribute.
 		const longPrompt = `PROMPT_HEAD${"y".repeat(TURN_RECALL_QUERY_MAX_CHARS)}PROMPT_TAIL`
 		await start(startEvent(longPrompt), ctx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
 		const driftQuery = search.mock.calls[1]?.[0]
 		expect(typeof driftQuery).toBe("string")
 		expect(driftQuery).toContain("PROMPT_HEAD")
@@ -515,9 +677,13 @@ describe("memory extension", () => {
 		const ctx = createContext()
 		await start(startEvent("drift topic 1"), ctx)
 		await start(startEvent("drift topic 2"), ctx)
+		// Recall delivery is detached from the turn start — settle it before
+		// asserting on the status segment.
+		await flushRecall(() =>
+			expect(lastCallFor(vi.mocked(ctx.ui.setStatus).mock.calls, MEMORY_STATUS_KEY)).toEqual([MEMORY_STATUS_KEY, "2"]),
+		)
 		const calls = vi.mocked(ctx.ui.setStatus).mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
 		expect(calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
-		expect(calls.at(-1)).toEqual([MEMORY_STATUS_KEY, "2"])
 	})
 
 	it("clears the memory status when the session toggle disables memory", async () => {
@@ -567,6 +733,9 @@ describe("memory extension", () => {
 		const ctx = createContext()
 		await start(startEvent("drift topic 1"), ctx)
 		await start(startEvent("drift topic 2"), ctx)
+		await flushRecall(() =>
+			expect(lastCallFor(vi.mocked(ctx.ui.setStatus).mock.calls, MEMORY_STATUS_KEY)).toEqual([MEMORY_STATUS_KEY, "2"]),
+		)
 		// The first delivery announced itself — exactly once, pluralized.
 		expect(vi.mocked(ctx.ui.notify).mock.calls.filter((call) => String(call[0]).startsWith("Recalled"))).toEqual([
 			["Recalled 1 memory", "info"],
@@ -599,12 +768,23 @@ describe("memory extension", () => {
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 		)
 		await start(startEvent("set up the repo"), ctx)
+		// Only the detached recall's widget calls count from here — turn 1's
+		// digest indicator must not satisfy the "was set" assertion.
+		const callsBeforeTurn2 = vi.mocked(ctx.ui.setWidget).mock.calls.length
 		// Turn 2 drifts into uncovered territory and the search throws — the
 		// finally guard must still clear the indicator.
 		await start(startEvent("what do I bake?"), ctx)
-		const recallCalls = vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")
+		await flushRecall(() =>
+			expect(lastCallFor(vi.mocked(ctx.ui.setWidget).mock.calls.slice(callsBeforeTurn2), "memory-recall")).toEqual([
+				"memory-recall",
+				undefined,
+			]),
+		)
+		const recallCalls = vi
+			.mocked(ctx.ui.setWidget)
+			.mock.calls.slice(callsBeforeTurn2)
+			.filter((call) => call[0] === "memory-recall")
 		expect(recallCalls.some((call) => call[1] !== undefined)).toBe(true)
-		expect(recallCalls.at(-1)).toEqual(["memory-recall", undefined])
 	})
 
 	it("never touches the widget API without a UI (headless / ACP)", async () => {
@@ -640,11 +820,111 @@ describe("memory extension", () => {
 		)
 		for (let turn = 0; turn < 8; turn++) {
 			await start(startEvent(`drift topic ${turn}`), fakeCtx)
+			await flushRecall(() => expect(search).toHaveBeenCalledTimes(turn + 1))
 		}
 		// Turn 1 (digest) + one drift retrieval per follow-up turn — every user
 		// message is fresh signal, so recall keeps running for the whole session.
 		expect(search).toHaveBeenCalledTimes(8)
 		expect(sendMessage).toHaveBeenCalledTimes(7)
+	})
+
+	it("the drift recall runs detached — the turn never waits on retrieval", async () => {
+		let releaseSearch: (() => void) | undefined
+		const search = vi
+			.fn()
+			.mockResolvedValueOnce([{ memory: "seed fact", score: 0.6 }])
+			.mockImplementationOnce(
+				() =>
+					new Promise<Array<{ memory: string; score: number }>>((resolve) => {
+						releaseSearch = () => resolve([{ memory: "late fact", score: 0.6 }])
+					}),
+			)
+		const { sendMessage, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("turn 1"), fakeCtx)
+		const turn2 = await start(startEvent("turn 2 - fresh territory"), fakeCtx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
+		// The handler returned (system prompt intact) with the drift search
+		// still pending — nothing between Enter and the turn's request.
+		expect(turn2?.systemPrompt).toContain("seed fact")
+		expect(sendMessage).not.toHaveBeenCalled()
+		releaseSearch?.()
+		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+		const call = sendMessage.mock.calls[0]
+		expect(call?.[0].customType).toBe("memory-recall")
+		expect(call?.[1]?.triggerTurn).toBe(false)
+	})
+
+	it("a drift skipped while a recall is in flight coalesces and refires on settle", async () => {
+		let releaseSearch: (() => void) | undefined
+		const search = vi
+			.fn()
+			.mockResolvedValueOnce([{ memory: "seed fact", score: 0.6 }])
+			.mockImplementation(
+				() =>
+					new Promise<Array<{ memory: string; score: number }>>((resolve) => {
+						releaseSearch = () => resolve([{ memory: "in-flight fact", score: 0.6 }])
+					}),
+			)
+		const { sendMessage, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("turn 1"), fakeCtx)
+		await start(startEvent("turn 2 - fresh territory"), fakeCtx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
+		// Turn 3 drifts while turn 2's recall is still pending — no stacked
+		// search, but the skipped drift is queued, not dropped.
+		await start(startEvent("turn 3 - more fresh territory"), fakeCtx)
+		expect(search).toHaveBeenCalledTimes(2)
+		releaseSearch?.()
+		await flushRecall(() => {
+			expect(sendMessage).toHaveBeenCalledTimes(1)
+			expect(search).toHaveBeenCalledTimes(3)
+		})
+		// Settle → turn-2 delivery went out, and the coalesced turn-3 drift
+		// fired its OWN search (its prompt, which the earlier query never saw).
+		expect(String(search.mock.calls[2]?.[0])).toContain("turn 3 - more fresh territory")
+		// Release the coalesced recall too — the valve opens again, and turn
+		// 4's drift fires its own recall.
+		releaseSearch?.()
+		await settle()
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+		await start(startEvent("turn 4 - yet more territory"), fakeCtx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(4))
+	})
+
+	it("compaction during a pending recall doesn't break delivery", async () => {
+		let releaseSearch: (() => void) | undefined
+		const search = vi
+			.fn()
+			.mockResolvedValueOnce([{ memory: "seed fact", score: 0.6 }])
+			.mockImplementationOnce(
+				() =>
+					new Promise<Array<{ memory: string; score: number }>>((resolve) => {
+						releaseSearch = () => resolve([{ memory: "post-compact recall fact", score: 0.6 }])
+					}),
+			)
+			.mockResolvedValue([{ memory: "recomputed fact", score: 0.6 }])
+		const { sendMessage, start, getHandler } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const compact = getHandler("session_compact")
+		await start(startEvent("turn 1"), fakeCtx)
+		await start(startEvent("turn 2 - fresh territory"), fakeCtx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
+		compact({ type: "session_compact" }, fakeCtx)
+		releaseSearch?.()
+		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+
+		// Post-interleaving state: the reset is respected — turn 3 recomputes
+		// the digest against the post-compaction store (a fresh search), the
+		// in-flight valve is released, and a later drifted turn fires recall
+		// again.
+		const turn3 = await start(startEvent("turn 3"), fakeCtx)
+		expect(turn3?.systemPrompt).toContain("recomputed fact")
+		await start(startEvent("turn 4 - fresh territory again"), fakeCtx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(4))
 	})
 
 	it("the session toggle gates memory: disabled drops it, re-enable recomputes", async () => {
@@ -917,12 +1197,13 @@ describe("memory extension — digest selection gate", () => {
 		expect(search).toHaveBeenCalledTimes(1) // the digest search
 		// Turn 2 drifts out of (empty) delivered territory; the gate says skip.
 		await start(startEvent("turn 2 - new topic about latency"), fakeCtx)
+		await settle()
 		expect(search).toHaveBeenCalledTimes(1)
 		expect(gate.calls).toHaveLength(1)
 		expect(gate.calls[0]).toContain("(none injected)")
 		// Turn 3: the gate says search — retrieval pays despite prior skip.
 		await start(startEvent("turn 3 - another fresh topic"), fakeCtx)
-		expect(search).toHaveBeenCalledTimes(2)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
 	})
 
 	it("a recall-gate failure falls back to searching (fail-open)", async () => {
@@ -942,7 +1223,7 @@ describe("memory extension — digest selection gate", () => {
 			)
 			await start(startEvent("turn 1"), fakeCtx)
 			await start(startEvent("turn 2 - drift"), fakeCtx)
-			expect(search).toHaveBeenCalledTimes(2)
+			await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
 			expect(consoleError.mock.calls.some((call) => String(call[0]).includes("recall gating failed"))).toBe(true)
 		} finally {
 			consoleError.mockRestore()

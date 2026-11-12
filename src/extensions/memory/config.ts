@@ -139,11 +139,22 @@ export const TURN_RECALL_RESPONSE_CHARS = 400
 export const TURN_RECALL_QUERY_MAX_CHARS = 1000
 
 /**
- * Bounded wait for memory searches on the user-visible critical path (the
- * turn-1 digest and drift recalls) — a hung gateway call degrades to
- * no-memory instead of stalling the first prompt.
+ * Bounded wait for each detached drift search — background work that runs
+ * alongside the turn's request, so it never blocks the user, but a hung
+ * call must not hold the in-flight recall valve (or the indicator) forever.
  */
 export const MEMORY_SEARCH_TIMEOUT_MS = 10_000
+
+/**
+ * Bound for memory work that gates the turn's start: the turn-1 digest
+ * (which sits in front of the user's message echoing) and the detached
+ * recall's quick legs (decision gate, searcher init) whose settling releases
+ * the in-flight valve. Healthy runs measure ~1 s (digest) and ~0.25 s (gate),
+ * so this is ~2× headroom: a slow gateway degrades to skip-within-this-budget
+ * instead of freezing the screen — or wedging the valve — for the search
+ * timeout.
+ */
+export const MEMORY_PRE_REQUEST_TIMEOUT_MS = 2_000
 
 /** Gate condition A: skip retrieval when this fraction of the recent
  * conversation's content words are already covered by delivered facts. */
