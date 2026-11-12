@@ -102,14 +102,23 @@ The harness ships two user-facing surfaces: the interactive TUI (upstream `Inter
 **Whenever you change the harness, check whether ACP needs a parallel change — before you consider the task done.** A change is ACP-relevant until proven otherwise if it touches:
 
 - slash commands or the available-commands palette
-- tool-call presentation (titles, `rawInput`, in-progress/complete state)
-- permission/approval prompts or project-trust decisions
+- tool-call presentation: `title`/`name`/`kind`, `rawInput`/`rawOutput`, status transitions, locations
+- tool and turn lifecycle: a turn's beginning and end, backgrounded calls, run boundaries, cancel handling, agent-initiated turns or wakes, idle-key work
+- permission/approval prompts, elicitation dialogs, or project-trust decisions
+- checkpoints, replay, `session/load`, or anything that attaches to historical entries on reload
+- context content: system-prompt assembly, `sendMessage`/`sendCustomMessage` projections, compaction and its updates
+- artifacts and artifact links
+- todos and plan updates
+- usage/progress reporting (`usage_update`, context-window display, cost)
 - model selection/routing and advertised model lists
-- session listing, resume, or visibility
+- session listing, resume, modes, config options, or visibility
 - skills (discovery, reload, advertised skill commands)
-- streamed text the user sees: steering, `<done>`/recovery markers, usage/progress output
+- streamed text the user sees: steering, `<done>`/recovery markers, status output
 - MCP servers, probing, or OAuth flows
-- image/content forwarding
+- image/content forwarding, or any new content-block type
+- anything that reaches a client by a new notification, `_meta` key, or ext-method (walk the full surface checklist in [docs/acp-compat.md](docs/acp-compat.md) rule 3)
+
+This list is what has bitten us so far, not a taxonomy — feature categories keep being added, and there is no way to enumerate the ACP surface in advance. Treat **anything an ACP client could observe** as in scope by default.
 
 If the change is ACP-relevant:
 
@@ -118,6 +127,8 @@ If the change is ACP-relevant:
 - Run `pnpm run test:e2e:acp` when the change crosses the ACP boundary.
 
 If the change is genuinely TUI-only, say so explicitly in the PR summary. A silent skip is the failure mode this rule exists to catch.
+
+Parity answers "does the feature exist on both surfaces a client already sees?". The adjacent question — "does a client that opted into nothing see anything change?" — is wire compatibility, in the [ACP wire compatibility](#acp-wire-compatibility) section below. A perfectly mirrored feature can still break the second one; check both.
 
 ## ACP wire compatibility
 
