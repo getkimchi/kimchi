@@ -115,11 +115,23 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
 			if (content.trim()) messages.push({ role: "user", content })
 		} else if (message.role === "assistant") {
 			const content = gatedAssistantText(message.content)
-			if (content) messages.push({ role: "assistant", content })
-			else {
+			const thinking = thinkingText(message.content)
+			if (content) {
+				// Engaged/notes/e conclusions all ride in the visible text; the
+				// model's own reasoning rides alongside — the "valuable insight"
+				// class lives there for tool-driving agents (notes-to-self).
+				messages.push({
+					role: "assistant",
+					content: thinking ? `${content}\n\n[internal reasoning]: ${thinking}` : content,
+				})
+			} else {
+				// Pure-reasoning turns (text gated out by a toolCall block): the
+				// reasoning is the only capture material this turn carries.
+				if (thinking) messages.push({ role: "assistant", content: `[internal reasoning]: ${thinking}` })
 				// Lane 1 (flagged): gatedAssistantText returned null — the turn
 				// carried toolCall blocks with no text summary — so splice its
-				// paired tool work summaries in at this exact position instead.
+				// paired tool work summaries in at this exact position instead,
+				// alongside any reasoning the turn carried.
 				const work = toolWork.get(i)
 				if (work) messages.push(...work)
 			}
@@ -178,7 +190,7 @@ function extractToolWork(entries: readonly SessionEntry[]): Map<number, CaptureM
 			// assistant record would starve itself.
 			records.push({ role: "assistant", content: `[tool] ${call}` })
 			const result = typeof p.id === "string" ? results.get(p.id) : undefined
-			if (result !== undefined) records.push({ role: "user", content: boundedResult(result) })
+			if (result !== undefined) records.push({ role: "env", content: boundedResult(result) })
 			if (typeof p.id === "string") results.delete(p.id)
 		}
 		if (records.length > 0) out.set(i, records)
@@ -233,7 +245,9 @@ export function messageText(content: unknown): string {
 	if (typeof content === "string") return content
 	if (Array.isArray(content)) {
 		// Text blocks only: thinking blocks (type "thinking") are the model's
-		// internal reasoning and never enter capture jobs or drift signals.
+		// internal reasoning and live in their own capture lane (thinkingText
+		// below) so cross-cutting readers (drift signals, job text builders)
+		// stay reasoning-free.
 		return content
 			.map((part) =>
 				typeof part === "string"
@@ -266,6 +280,36 @@ export function readCaptureSessionSaved(sessionId: string): number {
 	} catch {
 		return 0
 	}
+}
+
+/**
+ * Assistant internal-reasoning lane: thinking blocks concatenated and
+ * bounded. Reasoning is the model's own process voice — for an
+ * agent driving an environment ("buttons are batches of ~12 ticks, so
+ * stagger one action per batch") it is often the ONLY place durable
+ * tactical insight appears, so capture-time extraction sees it under an
+ * explicit [internal reasoning]: marker the extraction prompt can lean
+ * on. Kept out of messageText deliberately: broadcast readers (drift
+ * signals, recall queries) must stay reasoning-free.
+ */
+export function thinkingText(content: unknown): string {
+	if (!Array.isArray(content)) return ""
+	const parts: string[] = []
+	for (const part of content) {
+		if (typeof part !== "object" || part === null) continue
+		if ((part as { type?: string }).type !== "thinking") continue
+		const text = (part as { text?: string }).text ?? ""
+		if (text.trim()) parts.push(text)
+	}
+	return parts.join("\n\n").slice(0, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS)
+}
+
+/** The session id for the current process — scoping job ids and hashes.
+ * A uuid, not a timestamp: recording time never enters LLM input. */
+const CAPTURE_SESSION_ID = randomUUID()
+
+function captureSessionId(): string {
+	return CAPTURE_SESSION_ID
 }
 
 function captureMessages(messages: CaptureMessage[], cwd: string, session: string): void {

@@ -100,7 +100,13 @@ import { createTraceRecorder, type OnExchange, pruneTraces, type TraceRecorder }
 import { recordUsage, type UsageKind } from "./usage-ledger.js"
 
 export interface CaptureMessage {
-	role: "user" | "assistant"
+	/**
+	 * - `user`: human/operator speech (drives the user-extraction lane)
+	 * - `assistant`: the agent's visible text and its internal reasoning
+	 * - `env`: environment receipts (tool results) — the observed-outcome
+	 *   half of evidence-grounded conclusions; never user speech
+	 */
+	role: "user" | "assistant" | "env"
 	content: string
 }
 
@@ -666,7 +672,11 @@ async function extractUserFacts(
 	scopeContextLine: string | null | undefined,
 	traceCtx?: TraceCtx,
 ): Promise<TaggedFacts> {
-	const transcript = renderWindow(window)
+	// Pure agent-work windows (no human voice) run no user pass at all —
+	// the measured bench pattern where the only "user" text was tool
+	// result receipts rendered as user-role.
+	if (!window.some((m) => m.role === "user")) return { personal: [], project: [] }
+	const transcript = renderWindow(window, "user")
 	const taskScope = taskScopeEnabled()
 	const system = scopedPrompt(
 		EXTRACTION_SYSTEM_PROMPT +
@@ -696,7 +706,7 @@ async function extractUserFacts(
 
 export const ASSISTANT_FACTS_SYSTEM_PROMPT = `You maintain the user's memory store, extracting durable knowledge carried by ASSISTANT messages.
 
-Messages marked "assistant" were produced by an AI agent. Capture assistant content in these three classes, each as a short self-contained sentence:
+Messages marked "assistant" were produced by an AI agent. Lines prefixed "[internal reasoning]:" are that agent's own chain-of-thought from the same turn — treat them with the same class rules, capturing only durable, evidence-backed conclusions; never the deliberation trail itself. Capture assistant content in these three classes, each as a short self-contained sentence:
 (1) ENGAGED CONTENT — an answer or fact the USER actively engaged with: the user asked a question it directly answers, or accepted, thanked, acted on, or referred back to it (schedules, recipes, recommendations, numbers). Write it with natural attribution to the conversation (e.g. "the user's classic omelette recipe uses 3 eggs, per the assistant's answer the user accepted").
 (2) NOTES TO FUTURE SELF — a tactical note, lesson, identified failure pattern, or verified rule of the environment being operated: this IS the memory content — distill each into one self-contained sentence in the operative wording used ("retrying with backoff recovered the upload — the direct call stalls past 60s").
 (3) EVIDENCE-GROUNDED CONCLUSIONS — a rule or mechanic verified by an observed outcome IN the conversation (including narrative operation logs describing an action and its observed result), anchored to its evidence ("the endpoint rejects payloads above 8KB — five oversized salts errored while the batched 4KB ones passed").
@@ -751,7 +761,19 @@ export async function extractAssistantFacts(
  * [YYYY-MM-DD] line prefix let "currently" anchor to the 2026 wall clock
  * and beat the true 2023 conversation dates.
  */
-function renderWindow(window: CaptureMessage[]): string {
+function renderWindow(window: CaptureMessage[], lane: "user" | "assistant" | "mixed" = "mixed"): string {
+	if (lane === "user") {
+		// The user lane judges USER-STATED content — assistant/env turns
+		// would only be noise (tool results tagged role "user" were the
+		// measured contamination: "pressed: a,a,a | step N" read as speech).
+		return window
+			.filter((m) => m.role === "user")
+			.map((m) => `${m.role}: ${m.content}`)
+			.join("\n\n")
+	}
+	// The assistant lane gets the whole window: its engaged-content class
+	// needs user turns (proof the user asked/accepted) and env receipts
+	// (evidence anchors for conclusions). Mixed is the triage/valuation view.
 	return window.map((m) => `${m.role}: ${m.content}`).join("\n\n")
 }
 
@@ -2476,7 +2498,7 @@ async function commitPlan(
 					eligible,
 					valuationContextEnabled() ? existing.rawTexts : undefined,
 					jobName,
-					plan.windows.map(renderWindow),
+					plan.windows.map((w) => renderWindow(w)),
 				)
 			} catch (err) {
 				console.error("[memory-capture] valuation gate failed, keeping this job's facts (fail-open):", err)
