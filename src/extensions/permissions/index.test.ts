@@ -23,6 +23,7 @@ import {
 	resetPlanReviewClosedListenersForTests,
 	subscribePlanReviewClosed,
 } from "../../shared/planning/plan-review-bus.js"
+import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/tool-profile-manager.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -574,6 +575,75 @@ describe("permissions plan-mode tool visibility", () => {
 			to: { mode: "auto", initiatedBy: "user", source: "runtime" },
 			reason: "controller",
 		})
+	})
+
+	it("leaving plan mode forgets the profile snapshot so keep-alive resyncs cannot re-impose the plan surface", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		// Entering plan mode records the read-only planning profile.
+		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBe("planning-adhoc")
+
+		setPermissionMode(TEST_SESSION_ID, { mode: "auto", initiatedBy: "user", source: "runtime" })
+
+		// The exit restores the surface through cooperative votes and must not
+		// leave the stale planning profile behind: the MCP adapter's
+		// reapplyCurrentProfile (its keep-alive/tool-metadata resyncs) re-applies
+		// the recorded profile, which used to strip edit/write/Agent/MCP from
+		// the executing session within a minute of the approval.
+		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBeUndefined()
+		expect(ToolProfileManager.reapplyCurrentProfile(harness.pi)).toBe(false)
+		// The surface must survive a resync attempt intact, not merely contain
+		// write (the vote restore alone would pass that weaker check).
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read", "write"])
+	})
+
+	it("session_start self-heals a stale plan surface and profile recorded by a session that ended in plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"])
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Enter plan mode for real — recording, vote disable, and the restricted
+		// active surface — then let the session die mid-plan: no exit transition
+		// ever runs.
+		setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "ferment", source: "runtime" })
+		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBe("planning-adhoc")
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+
+		// A new session starts in default mode on the same process (same pi,
+		// same profile scope — the in-process session-reuse carry-over). A fresh
+		// session id means a fresh runtime mode, so it resolves default.
+		await harness.fire("session_start", {}, createMockContext([], "session-two"))
+
+		// The self-heal mirrors the exit transition: the vote restore brings the
+		// pre-plan surface back AND the recording is forgotten, so no resync can
+		// re-impose the read-only surface on this session.
+		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBeUndefined()
+		expect(ToolProfileManager.reapplyCurrentProfile(harness.pi)).toBe(false)
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read", "write"])
+	})
+
+	it("session_start keeps the plan recording for a session that legitimately starts in plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBe("planning-adhoc")
+
+		// A later session on the same scope, still starting in plan mode: the
+		// self-heal must not over-clear a recording that matches the live mode.
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBe("planning-adhoc")
+	})
+
+	it("session_start self-heals a stale planning-ferment profile when no ferment is active", async () => {
+		notifyFermentActive(false)
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"])
+		// Simulate a prior session that ended during ferment planning.
+		ToolProfileManager.apply("planning-ferment", "ferment", harness.pi)
+		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBe("planning-ferment")
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// No active ferment and not starting in plan mode: the ferment planning
+		// recording is stale and must be dropped, not re-imposed by resyncs.
+		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBeUndefined()
 	})
 
 	it("plan-mode bash block states the session state and tells the model not to retry", async () => {
