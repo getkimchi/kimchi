@@ -8,7 +8,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { MemorySearchHit } from "./inject.js"
-import { type RecallRunArgs, runRecall } from "./recall.js"
+import { type RecallRunArgs, runRecall, stateFingerprint } from "./recall.js"
 
 const hit = (text: string, score = 0.9): MemorySearchHit => ({ memory: text, score }) as MemorySearchHit
 
@@ -162,5 +162,30 @@ describe("runRecall", () => {
 		expect(rig.sent).toHaveLength(1) // only the first
 		expect(rig.emitted[0].trigger).toBe("step-budget")
 		expect(rig.emitted[0].injected).toEqual([])
+	})
+})
+
+describe("stateFingerprint", () => {
+	it("two passes through the same state at different depths hash equal", () => {
+		const a = stateFingerprint("step 3\nroom: grey hall\ninventory: key")
+		const b = stateFingerprint("step 8\nroom: grey hall\ninventory: key")
+		expect(a).toBeDefined()
+		expect(a).toBe(b)
+	})
+
+	it("volatile-labelled lines keep equal hashes; content lines do not", () => {
+		expect(stateFingerprint("attempt 1 of 4\nwest wing")).toBe(stateFingerprint("attempt 3 of 4\nwest wing"))
+		expect(stateFingerprint("step 1\nwest wing")).not.toBe(stateFingerprint("step 1\neast wing"))
+	})
+
+	it("blank and whitespace-only content yields no fingerprint", () => {
+		expect(stateFingerprint("")).toBeUndefined()
+		expect(stateFingerprint("  \n \t\n")).toBeUndefined()
+	})
+
+	it("digits on non-volatile lines are part of the state", () => {
+		expect(stateFingerprint("gps 51.5007, -0.1246\nsky grey")).not.toBe(
+			stateFingerprint("gps 48.8566, 2.3522\nsky grey"),
+		)
 	})
 })
