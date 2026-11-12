@@ -9,7 +9,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import {
 	CallToolRequestSchema,
+	GetPromptRequestSchema,
 	isInitializeRequest,
+	ListPromptsRequestSchema,
 	ListResourcesRequestSchema,
 	ListToolsRequestSchema,
 	ReadResourceRequestSchema,
@@ -121,9 +123,10 @@ function record(type, details = {}) {
 }
 
 function createFixtureServer() {
+	const hasPrompts = scenario === "cache-private-scope"
 	const server = new Server(
 		{ name: "kimchi-mcp-e2e-fixture", version: "1.0.0" },
-		{ capabilities: { tools: {}, resources: {} } },
+		{ capabilities: { tools: {}, resources: {}, ...(hasPrompts ? { prompts: {} } : {}) } },
 	)
 	// tools-change: the catalog grows only after rotate_tools runs, and the
 	// change notification is sent WITHOUT advertising tools.listChanged - the
@@ -205,8 +208,37 @@ function createFixtureServer() {
 						]
 					: []),
 			],
+			...(hasPrompts ? { cacheScope: "private" } : {}),
 		}
 	})
+
+	if (hasPrompts) {
+		server.setRequestHandler(ListPromptsRequestSchema, async () => {
+			record("prompts_listed")
+			return {
+				prompts: [
+					{
+						name: "hello-world",
+						description: "Say hello from the fixture",
+						// Optional so the command also runs bare; exists to prove
+						// argument completions from the live wrapper.
+						arguments: [{ name: "topic", description: "Topic to greet" }],
+					},
+				],
+			}
+		})
+
+		server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+			record("prompts_get", { name: request.params.name })
+			if (request.params.name !== "hello-world") {
+				throw new Error(`Unknown prompt: ${request.params.name}`)
+			}
+			return {
+				description: "Say hello from the fixture",
+				messages: [{ role: "user", content: { type: "text", text: "Reply with exactly: HELLO FROM FIXTURE" } }],
+			}
+		})
+	}
 
 	server.setRequestHandler(ListResourcesRequestSchema, async () => {
 		record("resources_listed")

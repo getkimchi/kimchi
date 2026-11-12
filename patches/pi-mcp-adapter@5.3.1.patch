@@ -145,6 +145,26 @@
 #     default is scoped to connectionless (url-based) servers because era
 #     negotiation on stdio costs a sacrificial process spawn - stdio entries
 #     keep the legacy handshake unless they pin a version explicitly.
+#   - Session-scoped private listings (2026-11). MCP servers that mark their
+#     listings identity-scoped (tools/list cacheScope: "private") broke two
+#     user surfaces after /mcp reconnect:
+#       * prompt-autocomplete.ts (new) + index.ts: live autocomplete wrapper
+#         stacked via ctx.ui.addAutocompleteProvider so prompt commands
+#         registered mid-session (first connect, reconnect, list-changed
+#         refresh) show in the TUI slash dropdown without /reload, including
+#         argument completions resolved from live metadata (the base
+#         provider only knows its one-time snapshot); lookup scans by exact
+#         commandName because promptMetadata is keyed by RAW config server
+#         names while commands embed the sanitized part.
+#         Remove when upstream Pi rebuilds its autocomplete provider on
+#         command registration (or registerCommand emits an event).
+#       * metadata-cache.ts isPrivateScopeEntry, mcp-panel.ts (+McpPanelCallbacks
+#         getSessionCacheEntry in types.ts, wired in commands.ts, dist mirrors
+#         for the public "./types" and "./metadata-cache" exports): the panel
+#         falls back to this session's own captured metadata and labels the
+#         row "(session scope)" instead of "(not cached)". Remove when
+#         upstream exposes a session-consistent path for rendering private
+#         listings.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -182,14 +202,19 @@ index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091fa
      }
      return manifest.piConfig
    } catch {
-#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
-#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
-#     drive ui.select/ui.input but not AltScreen overlays)
 diff --git a/commands.ts b/commands.ts
-index 40bb5f9a6c9f10bb45ea466710e181b58857e771..8a336eeacb7574deb0cee67b68fa4b95b3368d2c 100644
+index 40bb5f9a6c9f10bb45ea466710e181b58857e771..2699745906cf7033980925e29be32565fa851260 100644
 --- a/commands.ts
 +++ b/commands.ts
-@@ -878,6 +878,47 @@ export async function openMcpPanel(
+@@ -765,6 +765,7 @@ function buildMcpPanelCallbacks(
+       const freshCache = loadMetadataCache();
+       return freshCache?.servers?.[serverName] ?? null;
+     },
++    getSessionCacheEntry: (serverName: string) => state.sessionMetadata?.get(serverName) ?? null,
+   };
+ }
+ 
+@@ -878,6 +879,47 @@ export async function openMcpPanel(
    return { configChanged };
  }
  
@@ -237,7 +262,7 @@ index 40bb5f9a6c9f10bb45ea466710e181b58857e771..8a336eeacb7574deb0cee67b68fa4b95
  export async function openMcpAuthPanel(
    state: McpExtensionState,
    pi: ExtensionAPI,
-@@ -886,8 +927,7 @@ export async function openMcpAuthPanel(
+@@ -886,8 +928,7 @@ export async function openMcpAuthPanel(
  ): Promise<PanelFlowResult> {
    if (!ctx.hasUI) return { configChanged: false };
    if (!canRenderPanel(ctx)) {
@@ -247,6 +272,11 @@ index 40bb5f9a6c9f10bb45ea466710e181b58857e771..8a336eeacb7574deb0cee67b68fa4b95
    }
    if (state.programmaticConfig) {
      ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
+@@ -933,3 +974,4 @@ export async function openMcpAuthPanel(
+ 
+   return { configChanged: false };
+ }
++
 diff --git a/config.ts b/config.ts
 index 4c17d57f0275f2b2188dc43f732c5bebfbf76db5..b7091ca6ef9c2da0bed2d888ec008750e3d6c1e3 100644
 --- a/config.ts
@@ -605,8 +635,21 @@ index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..2bb75716742d2fabbfea59203f571ac7
      }
      /**
       * Save the PKCE code verifier.
+diff --git a/dist/metadata-cache.d.ts b/dist/metadata-cache.d.ts
+index 9d111062a647e4084b593a23f536b5db234c7086..992f77db228a26b2149e691e81880a1c4ccede77 100644
+--- a/dist/metadata-cache.d.ts
++++ b/dist/metadata-cache.d.ts
+@@ -19,6 +19,8 @@ export declare function outputShapeKey(tool: Pick<CachedTool, "description" | "i
+ export declare function saveObservedOutput(serverName: string, definition: ServerEntry, toolName: string, toolKey: string, output: NonNullable<ServerCacheEntry["outputShapes"]>[string]): void;
+ /** Output shapes to carry into a rewritten cache entry: same config, not private, and only tools whose definition kept its shape key. */
+ export declare function keepOutputShapes(previous: ServerCacheEntry | undefined, configHash: string, tools: CachedTool[]): ServerCacheEntry["outputShapes"];
++/** Kimchi host: identity-scoped listings never validate the persistent cache. */
++export declare function isPrivateScopeEntry(entry: Pick<ServerCacheEntry, "cacheScope"> | null | undefined): boolean;
+ export declare function isServerCacheValid(entry: ServerCacheEntry, definition: ServerEntry, maxAgeMs?: number, environment?: NodeJS.ProcessEnv): boolean;
+ export declare function parseDirectToolSelectors(selectors: string[]): {
+     servers: Set<string>;
 diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
-index c10c5417a7b32388f947c6133811dcf15f67ec19..5405787efe81bfdd05f0741f47291c6cbb8c187b 100644
+index c10c5417a7b32388f947c6133811dcf15f67ec19..99b539411d734158261b0e9a69537d44cf89c5a2 100644
 --- a/dist/metadata-cache.js
 +++ b/dist/metadata-cache.js
 @@ -4,10 +4,9 @@ import { dirname } from "node:path";
@@ -621,7 +664,18 @@ index c10c5417a7b32388f947c6133811dcf15f67ec19..5405787efe81bfdd05f0741f47291c6c
  import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.js";
  const CACHE_VERSION = 1;
  export function getMetadataCachePath() {
-@@ -252,9 +251,9 @@ export function reconstructToolMetadata(serverName, entry, prefix, definition, c
+@@ -151,6 +150,10 @@ export function keepOutputShapes(previous, configHash, tools) {
+     });
+     return kept.length > 0 ? Object.fromEntries(kept) : undefined;
+ }
++/** Kimchi host: identity-scoped listings never validate the persistent cache. */
++export function isPrivateScopeEntry(entry) {
++    return !!entry && entry.cacheScope === "private";
++}
+ export function isServerCacheValid(entry, definition, 
+ // 0 means no age limit: without a server-declared TTL, an entry stays valid until the next connect refreshes it.
+ maxAgeMs = 0, environment = process.env) {
+@@ -252,9 +255,9 @@ export function reconstructToolMetadata(serverName, entry, prefix, definition, c
              description: tool.description ?? "",
              ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
              ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
@@ -633,7 +687,7 @@ index c10c5417a7b32388f947c6133811dcf15f67ec19..5405787efe81bfdd05f0741f47291c6c
              ...(annotations !== undefined ? { annotations } : {}),
          });
      }
-@@ -301,21 +300,19 @@ export function createCachedToolSelectorCandidateIndex(configuredServers, cache,
+@@ -301,21 +304,19 @@ export function createCachedToolSelectorCandidateIndex(configuredServers, cache,
      return createToolSelectorCandidateIndex(candidates);
  }
  export function serializeTools(tools) {
@@ -657,7 +711,7 @@ index c10c5417a7b32388f947c6133811dcf15f67ec19..5405787efe81bfdd05f0741f47291c6c
              ...(annotations !== undefined ? { annotations } : {}),
          };
      });
-@@ -367,12 +364,4 @@ export function reconstructPromptMetadata(serverName, prompts, prefix, definitio
+@@ -367,12 +368,4 @@ export function reconstructPromptMetadata(serverName, prompts, prefix, definitio
          };
      });
  }
@@ -728,7 +782,7 @@ index 45343f8e7ef172cded28b07b6495f99c8c806558..d957b4e62587b8a2d7e3e41a162646f7
          client = new AdapterClient({ name: `pi-mcp-${serverName}`, version: "1.0.0" }, {
              jsonSchemaValidator: createJsonSchemaValidator(),
 diff --git a/dist/types.d.ts b/dist/types.d.ts
-index cd540e229b893f6c9cec107b736dcea22ce4111c..c81f47a123b4f2851022f132e24de554531c5fd2 100644
+index cd540e229b893f6c9cec107b736dcea22ce4111c..4f969408f7f67651862e07adcff9383b2f0f4363 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
 @@ -522,6 +522,15 @@ export interface McpConfig {
@@ -747,7 +801,21 @@ index cd540e229b893f6c9cec107b736dcea22ce4111c..c81f47a123b4f2851022f132e24de554
  }
  export type ServerDefinition = ServerEntry;
  export interface ToolMetadata {
-@@ -651,6 +660,7 @@ export interface McpPanelResult {
+@@ -636,6 +645,13 @@ export interface McpPanelCallbacks {
+     getConnectionStatus: (serverName: string) => "connected" | "idle" | "failed" | "needs-auth" | "blocked" | "disabled";
+     getFailureMessage?: (serverName: string) => string | null;
+     refreshCacheAfterReconnect: (serverName: string) => ServerCacheEntry | null;
++    /**
++     * Kimchi host integration: same-session captured metadata for a server,
++     * regardless of the persistent cache posture. Lets the panel render
++     * identity-scoped (private) listings captured during this session's own
++     * connect instead of "(not cached)".
++     */
++    getSessionCacheEntry?: (serverName: string) => ServerCacheEntry | null;
+     /** Present when Pi's built-in MCP has sign-ins the adapter can import. */
+     importPiSignIns?: () => {
+         imported: string[];
+@@ -651,6 +667,7 @@ export interface McpPanelResult {
      disabledChanges: Map<string, boolean>;
      cancelled: boolean;
  }
@@ -877,10 +945,18 @@ index 298d5f63e404d6743be3cc7d0657ee8191d5bc51..9442387b57d62ed46b7bc1a25869b656
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/index.ts b/index.ts
-index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c464302cc 100644
+index c07af5aaca2ff5a871b7f1be4652a5c384185264..417d22298ced5eb3b2ee807a4427f8fce9f3595b 100644
 --- a/index.ts
 +++ b/index.ts
-@@ -210,6 +210,7 @@ function resolveNamespaceEnvOverride(
+@@ -15,6 +15,7 @@ import { buildProxyDescription, getLargeDirectToolsAdvisory, getMissingConfigure
+ import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
+ import { computeServerHash, isServerCacheValid, loadMetadataCache, parseDirectToolSelectors, type MetadataCache } from "./metadata-cache.ts";
+ import { createPromptCommand, resolveCachedPrompts } from "./prompts.ts";
++import { createMcpPromptAutocompleteProvider } from "./prompt-autocomplete.ts";
+ import { logger } from "./logger.ts";
+ import { formatMcpFooterStatus, formatTerminalError, getConfigPathFromArgv, normalizeDirectToolInputSchema, truncateAtWord } from "./utils.ts";
+ import { createMcpDirectToolCallRenderer, createMcpProxyToolCallRenderer, createMcpScriptToolCallRenderer, createMcpToolResultRenderer, resolveMcpToolRenderOptions } from "./tool-result-renderer.ts";
+@@ -210,10 +211,27 @@ function resolveNamespaceEnvOverride(
  
  function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
    const sessionConfig = options.config !== undefined ? cloneMcpConfig(options.config) : undefined;
@@ -888,7 +964,27 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
    const programmaticConfig = sessionConfig !== undefined;
    // Before the first config load, so every load in this process agrees.
    if (!programmaticConfig) setPiMcpConfigEnabled(piSupportsMcp(pi));
-@@ -1114,6 +1115,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   let state: McpExtensionState | null = null;
++
++  // Kimchi host: one-time registration of the live prompt-command autocomplete
++  // wrapper. The wrapper closes over `state` via a getter, so owner handoffs
++  // and hands-off state resets need no re-registration. Registration is
++  // interactive-only: outside the TUI broker the call is a documented no-op.
++  let promptAutocompleteWrapperRegistered = false;
++  const registerPromptAutocompleteWrapper = (ctx: ExtensionContext): void => {
++    if (promptAutocompleteWrapperRegistered) return;
++    if (!ctx.hasUI || ctx.mode !== "tui") return;
++    try {
++      ctx.ui.addAutocompleteProvider((base) => createMcpPromptAutocompleteProvider(() => state, base));
++      promptAutocompleteWrapperRegistered = true;
++    } catch (error) {
++      logger.debug(`MCP: prompt autocomplete wrapper registration failed: ${error instanceof Error ? error.message : String(error)}`);
++    }
++  };
+   let sessionCtx: ExtensionContext | null = null;
+   let initPromise: Promise<McpExtensionState> | null = null;
+   let initStartedPromise: Promise<void> | null = null;
+@@ -1114,6 +1132,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
                ...(sessionConfig !== undefined ? { config: sessionConfig } : {}),
              }
            : {}),
@@ -896,7 +992,21 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
          oauthRuntime,
          excludeProjectServers,
          // Pi awaits session_start handlers in order. Returning before the approval
-@@ -1721,8 +1723,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+@@ -1179,6 +1198,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+           syncToolSurface(ctx);
+         };
+         guard();
++        // Kimchi host: the TUI autocomplete provider snapshots the registered
++        // command list once. A live wrapper over it surfaces prompt commands
++        // registered later in the session. One registration per process — the
++        // wrapper reads state at keystroke time, so owner handoffs need no
++        // re-registration. ctx.ui is a no-op broker outside interactive mode.
++        registerPromptAutocompleteWrapper(ctx);
++        guard();
+         syncPromptCommands();
+         guard();
+         syncToolSurface(ctx);
+@@ -1721,8 +1747,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
      },
    });
    registerMcpCommand("mcp-adapter");
@@ -912,7 +1022,7 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
    // Opt-in `mcp.panel.open` keys open the panel without touching the editor draft.
    // Shortcut handlers get no reload(), so dispatch the command: its context has one.
    if (!programmaticConfig) {
-@@ -2370,6 +2377,9 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
+@@ -2370,6 +2401,9 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
      installMcpAdapter(pi, {
        ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
        ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
@@ -922,13 +1032,6 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
      });
    };
  }
-#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
-#     the call-path readiness gates never re-read the shared credential store
-#     for a plain OAuth server in needs-auth, so a live session stayed broken
-#     after re-authentication elsewhere (settings probe, another chat) wrote a
-#     fresh credential; upstream tracking issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     retries needs-auth routes against the store without an interactive flow)
 diff --git a/init.ts b/init.ts
 index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acbb5eab015 100644
 --- a/init.ts
@@ -1412,8 +1515,82 @@ index 219c949f5de785a1e8ddc6927fcf366444862527..43ed93c9a86014a14129ca73490bccc0
  export const DEFAULT_MCP_OUTPUT_MAX_LINES = DEFAULT_MAX_LINES;
  export const DEFAULT_MCP_DETAILS_MAX_BYTES = 16 * 1024;
  const SCRIPT_PIPE_HINT_MIN_BYTES = 8 * 1024;
+diff --git a/mcp-panel.ts b/mcp-panel.ts
+index b2a4afe62d5c131224e86b1e1fa18b0886f96e8a..a49adf9a7ea69d45e6356b93a7098ddca83383c5 100644
+--- a/mcp-panel.ts
++++ b/mcp-panel.ts
+@@ -6,7 +6,7 @@ import { describeIgnoredSettings, getToolNameCandidates, isServerDisabled, isToo
+ import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerEntry, ServerProvenance, ToolPrefix } from "./types.ts";
+ import { resourceNameToToolName } from "./resource-tools.ts";
+ import { sanitizeTerminalText, stripOscSequences } from "./utils.ts";
+-import { isServerCacheValid, type MetadataCache, type ServerCacheEntry, type CachedTool } from "./metadata-cache.ts";
++import { computeServerHash, isPrivateScopeEntry, isServerCacheValid, type MetadataCache, type ServerCacheEntry, type CachedTool } from "./metadata-cache.ts";
+ import { isUiToolVisibleToModel } from "./ui-tool-visibility.ts";
+ 
+ function fuzzyScore(query: string, text: string): number {
+@@ -99,6 +99,8 @@ interface ServerState {
+   directCount: number;
+   directTokens: number;
+   hasCachedData: boolean;
++  /** Kimchi host: the rendered catalog comes from this session's connect (identity-scoped listing). */
++  sessionScoped?: boolean;
+ }
+ 
+ interface VisibleItem {
+@@ -375,8 +377,12 @@ class McpPanelView implements Component {
+       if (directCount > 0) toolInfo += `  ~${server.directTokens.toLocaleString()}`;
+       toolInfo = this.theme.description(toolInfo);
+     }
++    // Kimchi host: identity-scoped catalog from this session's connect, not
++    // from the cross-session cache. Label it so "(not cached)" stops reading
++    // as a breakage.
++    const scopeLabel = server.sessionScoped ? `  ${this.theme.description("(session scope)")}` : "";
+ 
+-    return `${prefix} ${toggleIcon} ${name}${importLabel}  ${toolInfo}${statusLabel}`;
++    return `${prefix} ${toggleIcon} ${name}${importLabel}  ${toolInfo}${scopeLabel}${statusLabel}`;
+   }
+ 
+   private selectedServerHasFailureMessage(state: McpPanelViewState): boolean {
+@@ -494,7 +500,20 @@ class McpPanel {
+       if (this.authOnly && !callbacks.canAuthenticate(serverName)) continue;
+       const prov = provenance.get(serverName);
+       const cachedEntry = this.cache?.servers?.[serverName];
+-      const serverCache = cachedEntry && isServerCacheValid(cachedEntry, definition) ? cachedEntry : undefined;
++      let serverCache = cachedEntry && isServerCacheValid(cachedEntry, definition) ? cachedEntry : undefined;
++      // Kimchi host: a private-scope listing never validates the persistent
++      // cache (its catalog is authorization-scoped), but THIS session's own
++      // connect captured the same listing in identity-correct form. Render it
++      // instead of an alarming "(not cached)".
++      const sessionEntry = callbacks.getSessionCacheEntry?.(serverName) ?? undefined;
++      // Same staleness gate the persistent cache applies: a private listing only
++      // describes THIS server definition, not a mid-session config mutation.
++      const sessionScoped = !serverCache && isPrivateScopeEntry(sessionEntry)
++        && !!definition && !!sessionEntry
++        && sessionEntry.configHash === computeServerHash(definition)
++        && !isServerDisabled(definition)
++        && callbacks.getConnectionStatus(serverName) === "connected";
++      if (sessionScoped) serverCache = sessionEntry;
+ 
+       const isConfiguredDirect = this.configuredDirectSelector(definition);
+ 
+@@ -567,6 +586,7 @@ class McpPanel {
+         directCount,
+         directTokens,
+         hasCachedData: !!serverCache,
++        ...(sessionScoped ? { sessionScoped } : {}),
+       });
+     }
+ 
+@@ -924,6 +944,7 @@ class McpPanel {
+           server.summary = serverDescription(this.config.mcpServers[server.name], entry);
+           this.rebuildServerTools(server, entry);
+           server.hasCachedData = true;
++          server.sessionScoped = isPrivateScopeEntry(entry);
+         }
+       }
+       if (options.afterAuth) {
 diff --git a/metadata-cache.ts b/metadata-cache.ts
-index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1d5b3545f 100644
+index 873b82a4ace4a614ca41a1c9031585b9acac62a9..84f0bbd10f91d291ba1d138fcab61ce4b344f864 100644
 --- a/metadata-cache.ts
 +++ b/metadata-cache.ts
 @@ -4,7 +4,6 @@ import { dirname } from "node:path";
@@ -1432,7 +1609,24 @@ index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1
    interpolateEnvRecord,
    interpolateEnvVars,
    resolveBearerToken,
-@@ -306,9 +304,9 @@ export function reconstructToolMetadata(
+@@ -215,6 +213,16 @@ export function isServerCacheValid(
+   return true;
+ }
+ 
++/**
++ * Host integration (kimchi): the server marked this listing as tied to the
++ * authorization context (new-era tools/list cache hint). Verified semantics:
++ * such entries never qualify the persistent cache (isServerCacheValid), but
++ * same-session capture may still drive UI affordances.
++ */
++export function isPrivateScopeEntry(entry: Pick<ServerCacheEntry, "cacheScope"> | null | undefined): boolean {
++  return entry?.cacheScope === "private";
++}
++
+ export function parseDirectToolSelectors(selectors: string[]): {
+   servers: Set<string>;
+   tools: Map<string, Set<string>>;
+@@ -306,9 +314,9 @@ export function reconstructToolMetadata(
        description: tool.description ?? "",
        ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
        ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
@@ -1444,7 +1638,7 @@ index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1
        ...(annotations !== undefined ? { annotations } : {}),
      });
    }
-@@ -359,21 +357,19 @@ export function createCachedToolSelectorCandidateIndex(
+@@ -359,21 +367,19 @@ export function createCachedToolSelectorCandidateIndex(
  }
  
  export function serializeTools(tools: McpTool[]): CachedTool[] {
@@ -1468,7 +1662,7 @@ index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1
          ...(annotations !== undefined ? { annotations } : {}),
        };
      });
-@@ -434,10 +430,3 @@ export function reconstructPromptMetadata(
+@@ -434,10 +440,3 @@ export function reconstructPromptMetadata(
    });
  }
  
@@ -1494,7 +1688,7 @@ index 16bde6bf20ef16ecf44a7bcd2edb4a2c56c0db0e..65956bd2d582acbdba35a66c454a8134
  export type McpOAuthStorageOptions = AuthStorageOptions;
  export interface McpOAuthTokenOptions {
 diff --git a/package.json b/package.json
-index 74e2d870d7fbefba645f7fa500e3b4a5c8ba42a0..8b690411c0a4dee6029c836a074250ec6983e9a6 100644
+index 74e2d870d7fbefba645f7fa500e3b4a5c8ba42a0..e5aa1542da461aa16a0bb5a94ebd5476a240f102 100644
 --- a/package.json
 +++ b/package.json
 @@ -20,6 +20,11 @@
@@ -1509,6 +1703,15 @@ index 74e2d870d7fbefba645f7fa500e3b4a5c8ba42a0..8b690411c0a4dee6029c836a074250ec
      "./host-managed": {
        "types": "./host-managed.ts",
        "import": "./host-managed.ts",
+@@ -107,7 +112,7 @@
+     "namespace-tools.ts",
+     "mcp-references.ts",
+     "commands.ts",
+-    "prompts.ts",
++    "prompts.ts", "prompt-autocomplete.ts",
+     "onboarding-state.ts",
+     "pi-signin-import.ts",
+     "pi-builtin-mcp.ts",
 diff --git a/pi-builtin-mcp.ts b/pi-builtin-mcp.ts
 index 4e3f8775e9e4770d776ed8e92eab80edc5f3f8df..5657644bb7c17ac9c0ead1886dcb20ad1bf644ea 100644
 --- a/pi-builtin-mcp.ts
@@ -1549,6 +1752,124 @@ index 264573709c2c896fdb88d661fd24cd8f2f4a2327..7620913273acb8cd190bbb992d9e8530
      const definitionHash = hashProjectServerDefinition(definition);
      const approved = approvals.approvals.some(entry =>
        entry.projectRoot === projectRoot && entry.serverName === name && entry.definitionHash === definitionHash);
+diff --git a/prompt-autocomplete.ts b/prompt-autocomplete.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..31663653280d09fddf86613dc5ee8ed7dbc4433f
+--- /dev/null
++++ b/prompt-autocomplete.ts
+@@ -0,0 +1,112 @@
++// Host integration: live MCP prompt commands in the TUI autocomplete.
++// Tracking: upstream Pi rebuilds its autocomplete provider from a one-time
++// snapshot of registered commands. Remove this wrapper when Pi rebuilds the
++// provider on command registration (or registerCommand emits an event).
++import type { AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
++import { completePromptArgs } from "./prompts.ts";
++import type { McpExtensionState } from "./state.ts";
++import type { PromptMetadata } from "./types.ts";
++import { truncateAtWord } from "./utils.ts";
++
++/**
++ * Kimchi host integration — live MCP prompt-command autocomplete.
++ *
++ * Upstream Pi builds its autocomplete provider once from a snapshot of the
++ * extension-runner command registry, and `pi.registerCommand` emits no event,
++ * so prompt commands registered mid-session (first connect, /mcp reconnect,
++ * list-changed refresh) never appear in the TUI dropdown until /reload — even
++ * though the command already executes. This wrapper reads the adapter's live
++ * prompt metadata at keystroke time and merges matching `mcp__*` prompt
++ * commands into the base provider's answer. Dedupe by value keeps commands
++ * that already made the snapshot single-listed.
++ *
++ * Kept in its own module so index.ts can register the wrapper without
++ * statically importing commands.ts (which is intentionally lazy-loaded).
++ * Remove when Pi rebuilds its autocomplete provider on command registration.
++ */
++export function createMcpPromptAutocompleteProvider(
++  getState: () => McpExtensionState | null,
++  base: AutocompleteProvider,
++): AutocompleteProvider {
++  return {
++    ...(base.triggerCharacters !== undefined ? { triggerCharacters: base.triggerCharacters } : {}),
++    async getSuggestions(lines, cursorLine, cursorCol, options) {
++      const suggestions = await base.getSuggestions(lines, cursorLine, cursorCol, options);
++      const state = getState();
++      if (!state || options.signal.aborted) return suggestions;
++      // Mirror CombinedAutocompleteProvider's slash context: text before the
++      // cursor (trimmed) is a single "/" token with no space.
++      const currentLine = lines[cursorLine] || "";
++      const commandText = currentLine.slice(0, cursorCol).trimStart();
++      if (!commandText.startsWith("/")) return suggestions;
++      const spaceIndex = commandText.indexOf(" ");
++      if (spaceIndex !== -1) {
++        // Argument phase. The base provider resolves arguments against
++        // its one-time snapshot, so it can only help commands that were
++        // registered before the provider was built — for those it has
++        // already answered. For mid-session commands the snapshot lookup
++        // fails and the base returns nothing; serve the same completions
++        // from the live metadata instead (mirrors
++        // createPromptCommand.getArgumentCompletions).
++        if (suggestions) return suggestions;
++        const commandName = commandText.slice(1, spaceIndex);
++        const spec = findLivePromptSpec(state, commandName);
++        if (!spec || spec.arguments.length === 0) return suggestions;
++        const argumentText = commandText.slice(spaceIndex + 1);
++        const argItems = completePromptArgs(spec, argumentText);
++        return argItems && argItems.length > 0 ? { items: argItems, prefix: argumentText } : suggestions;
++      }
++      const prefix = commandText.slice(1);
++      if (!prefix.startsWith("mcp__")) return suggestions;
++      const merged = [...(suggestions?.items ?? [])];
++      const seen = new Set(merged.map((item) => item.value));
++      // Trust + rendering parity with syncPromptCommands: provisional
++      // installs never surface, and descriptions are truncated the same way
++      // the registered command builds them.
++      for (const [serverName, prompts] of state.promptMetadata ?? new Map<string, PromptMetadata[]>()) {
++        if (state.provisionalInstalls?.has(serverName)) continue;
++        for (const spec of prompts) {
++          if (!spec.commandName.startsWith(prefix)) continue;
++          if (seen.has(spec.commandName)) continue;
++          seen.add(spec.commandName);
++          const base = spec.description || spec.title || `MCP prompt from ${spec.serverName}`;
++          merged.push({
++            value: spec.commandName,
++            label: spec.commandName,
++            description: truncateAtWord(`MCP: ${base}`, 120) || `MCP prompt from ${spec.serverName}`,
++          });
++        }
++      }
++      if (merged.length === 0 || merged.length === (suggestions?.items.length ?? 0)) return suggestions;
++      return { items: merged, prefix: suggestions?.prefix ?? commandText } satisfies AutocompleteSuggestions;
++    },
++    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
++      return base.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
++    },
++    ...(base.shouldTriggerFileCompletion
++      ? {
++          shouldTriggerFileCompletion: (lines: string[], cursorLine: number, cursorCol: number) =>
++            base.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? false,
++        }
++      : {}),
++  };
++}
++
++/** Resolve the live prompt metadata behind an `mcp__<server>__<prompt>`
++ * command name, applying the same provisional-install trust filter as the
++ * command list so the wrapper never exceeds the command registry.
++ *
++ * Scans by exact commandName rather than reverse-parsing the command,
++ * because `state.promptMetadata` is keyed by the RAW config server name
++ * while commands embed its sanitized prefix-part (hyphens become
++ * underscores; `toolPrefix: "mcp"` rewrites the shape) — splitting on
++ * "__" would silently miss every sanitizable name. */
++function findLivePromptSpec(state: McpExtensionState, commandName: string): PromptMetadata | null {
++  if (!commandName.startsWith("mcp__")) return null;
++  for (const [serverName, prompts] of state.promptMetadata ?? []) {
++    if (state.provisionalInstalls?.has(serverName)) continue;
++    const spec = prompts.find((p) => p.commandName === commandName);
++    if (spec) return spec;
++  }
++  return null;
++}
 diff --git a/proxy-modes.ts b/proxy-modes.ts
 index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98a070add7 100644
 --- a/proxy-modes.ts
@@ -1863,7 +2184,7 @@ index 3c4c4b44b3fd4c7012bce98f2abad91e5feba663..15cced2d61dcf40b632699875d24b3d0
      });
    }
 diff --git a/types.ts b/types.ts
-index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..12089e9a604b522e7e03f0ee1ecd15324ab48207 100644
+index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..a77fdd12e5cc7e737f38a48887af58e4be24dedb 100644
 --- a/types.ts
 +++ b/types.ts
 @@ -732,6 +732,15 @@ export interface McpConfig {
@@ -1882,7 +2203,23 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..12089e9a604b522e7e03f0ee1ecd1532
  }
  
  // Alias for clarity
-@@ -869,14 +878,22 @@ export interface McpPanelResult {
+@@ -858,6 +867,15 @@ export interface McpPanelCallbacks {
+   getConnectionStatus: (serverName: string) => "connected" | "idle" | "failed" | "needs-auth" | "blocked" | "disabled";
+   getFailureMessage?: (serverName: string) => string | null;
+   refreshCacheAfterReconnect: (serverName: string) => ServerCacheEntry | null;
++  /**
++   * Host integration (kimchi): same-session capture of a server's catalog,
++   * including entries whose tools/list declared cacheScope "private". Private
++   * listings are identity-scoped, so the persistent cache must not serve them
++   * across sessions — but in-process capture from THIS session's connect is
++   * identity-correct by construction and lets the panel show a connected
++   * session-scoped server instead of "(not cached)".
++   */
++  getSessionCacheEntry?: (serverName: string) => ServerCacheEntry | null;
+   /** Present when Pi's built-in MCP has sign-ins the adapter can import. */
+   importPiSignIns?: () => { imported: string[]; failed: { server: string; error: string }[] };
+ }
+@@ -869,14 +887,22 @@ export interface McpPanelResult {
    cancelled: boolean;
  }
  
@@ -1910,7 +2247,7 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..12089e9a604b522e7e03f0ee1ecd1532
  }
  
  export function getServerPrefix(
-@@ -885,28 +902,51 @@ export function getServerPrefix(
+@@ -885,28 +911,51 @@ export function getServerPrefix(
  ): string {
    if (mode === "none") return "";
    if (mode === "short") {
@@ -1971,7 +2308,7 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..12089e9a604b522e7e03f0ee1ecd1532
  }
  
  export function resolveToolPrefix(
-@@ -990,10 +1030,14 @@ export function formatPromptCommandName(
+@@ -990,10 +1039,14 @@ export function formatPromptCommandName(
  }
  
  function getLegacyServerPrefix(serverName: string, mode: ToolPrefix): string {
@@ -1989,7 +2326,7 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..12089e9a604b522e7e03f0ee1ecd1532
  }
  
  function formatLegacyToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
-@@ -1053,13 +1097,25 @@ export function createToolSelectorCandidateIndex(
+@@ -1053,13 +1106,25 @@ export function createToolSelectorCandidateIndex(
    };
  }
  

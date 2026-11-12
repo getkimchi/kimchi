@@ -106,3 +106,6 @@ vendor/superpowers/
 /live-acp-*.log
 # Live MCP provider check output matrix (scripts/mcp-live-probe.mjs)
 /mcp-live-probe-matrix.json
+
+# pnpm patch edit-dirs
+.kimchi-worktrees/
