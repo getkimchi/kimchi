@@ -30,6 +30,7 @@ import {
 	listRecallFiles,
 	listTraceFiles,
 	readTraceEvents,
+	resolvePendingJobFile,
 	resolveRecallFile,
 	resolveTraceFile,
 	traceFileMtime,
@@ -236,6 +237,8 @@ interface RecallSummary {
 	name: string
 	mtimeMs: number
 	kind: string | null
+	/** What fired the recall: "user-turn" | "step-budget" | "state-revisit" (absent on pre-trigger traces — renders blank). */
+	trigger: string | null
 	queryPreview: string
 	hits: number
 	injected: number
@@ -248,6 +251,7 @@ function summarizeRecall(memoryRoot: string, name: string): RecallSummary {
 	const file = join(tracesDir(memoryRoot), name)
 	const events = readTraceEvents(file)
 	let kind: string | null = null
+	let trigger: string | null = null
 	let queryPreview = ""
 	let hits = 0
 	let injected = 0
@@ -257,6 +261,7 @@ function summarizeRecall(memoryRoot: string, name: string): RecallSummary {
 	for (const event of events) {
 		if (event.type !== "recall") continue
 		if (typeof event.kind === "string") kind = event.kind
+		if (typeof event.trigger === "string") trigger = event.trigger
 		if (typeof event.query === "string") queryPreview = event.query.slice(0, 80)
 		if (Array.isArray(event.hits)) hits = event.hits.length
 		if (Array.isArray(event.injected)) injected = event.injected.length
@@ -265,7 +270,18 @@ function summarizeRecall(memoryRoot: string, name: string): RecallSummary {
 		if (typeof event.durationMs === "number") durationMs = event.durationMs
 		if (typeof event.error === "string") error = event.error
 	}
-	return { name, mtimeMs: traceFileMtime(file), kind, queryPreview, hits, injected, gateSkip, durationMs, error }
+	return {
+		name,
+		mtimeMs: traceFileMtime(file),
+		kind,
+		trigger,
+		queryPreview,
+		hits,
+		injected,
+		gateSkip,
+		durationMs,
+		error,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +344,27 @@ export function startMemoryDashboard(options: MemoryDashboardOptions = {}): Prom
 						return
 					}
 					sendJson(response, 200, { name, events: readTraceEvents(file) })
+					return
+				}
+				// Raw pending-job drill-down — name resolution through the shared
+				// traversal-defended resolver (basename + listing match, no path
+				// joins on untrusted input). Parsed when valid JSON; the page falls
+				// back to the raw string for unparseable job files.
+				if (url.pathname === "/api/job") {
+					const name = url.searchParams.get("name") ?? ""
+					const file = resolvePendingJobFile(name, memoryRoot)
+					if (!file) {
+						sendJson(response, 400, { error: "not a pending job file" })
+						return
+					}
+					const raw = readFileSync(file, "utf8")
+					let job: unknown = raw
+					try {
+						job = JSON.parse(raw)
+					} catch {
+						// Unparseable job — the caller renders the raw text.
+					}
+					sendJson(response, 200, { name, job })
 					return
 				}
 				sendJson(response, 404, { error: "not found" })
@@ -475,7 +512,9 @@ async function renderQueue() {
       for (const h of ["job", "age", "scope", "msgs", "staged", "attempts"]) el("th", head, "", h);
       for (const j of q.pending) {
         const tr = el("tr", t);
-        el("td", tr, j.unparseable ? "bad" : "", j.name + (j.unparseable ? " (unparseable)" : ""));
+        const nameCell = el("td", tr, j.unparseable ? "bad" : "");
+        const link = el("span", nameCell, "link", j.name + (j.unparseable ? " (unparseable)" : ""));
+        link.onclick = () => openJob(j.name);
         el("td", tr, "", fmtAge(j.ageMs));
         el("td", tr, "", j.project || "personal");
         el("td", tr, "", j.messages);
@@ -674,13 +713,14 @@ async function renderRecalls() {
     }
     const t = el("table", root);
     const head = el("tr", t);
-    for (const h of ["recall", "kind", "hits", "injected", "gate", "ms", "error", "query"]) el("th", head, "", h);
+    for (const h of ["recall", "kind", "trigger", "hits", "injected", "gate", "ms", "error", "query"]) el("th", head, "", h);
     for (const r of recalls) {
       const tr = el("tr", t);
       const td = el("td", tr);
       const link = el("span", td, "link", r.name.replace("recall-", "").replace(".jsonl", ""));
       link.onclick = () => openRecall(r.name);
       el("td", tr, "muted", r.kind || "?");
+      el("td", tr, "muted", r.trigger || "");
       el("td", tr, "", r.hits);
       el("td", tr, r.injected ? "ok" : "", r.injected);
       el("td", tr, r.gateSkip ? "warn" : "muted", r.gateSkip ? "skip" : "");
@@ -691,6 +731,23 @@ async function renderRecalls() {
   } catch (e) {
     document.getElementById("recalls").textContent = "recalls unavailable: " + e.message;
   }
+}
+
+async function openJob(name) {
+  const detail = document.getElementById("detail");
+  detail.textContent = "";
+  let data;
+  try {
+    data = await get("/api/job?name=" + encodeURIComponent(name));
+  } catch (e) {
+    el("div", detail, "bad", "job unavailable: " + e.message);
+    window.scrollTo(0, 0);
+    return;
+  }
+  el("h2", detail, "", "Job " + data.name);
+  const sec = el("div", detail, "section");
+  el("pre", sec, "", typeof data.job === "string" ? data.job : JSON.stringify(data.job, null, 2));
+  window.scrollTo(0, 0);
 }
 
 async function openRecall(name) {
@@ -711,7 +768,7 @@ async function openRecall(name) {
   }
   for (const ev of events) {
     const sec = el("div", detail, "section");
-    el("div", sec, "", (ev.kind || "?") + " — " + (ev.hits ? ev.hits.length : 0) + " hits · " + (ev.injected ? ev.injected.length : 0) + " injected" + (ev.durationMs !== undefined ? " · " + ev.durationMs + "ms" : ""));
+    el("div", sec, "", (ev.kind || "?") + (ev.trigger ? " · " + ev.trigger : "") + " — " + (ev.hits ? ev.hits.length : 0) + " hits · " + (ev.injected ? ev.injected.length : 0) + " injected" + (ev.durationMs !== undefined ? " · " + ev.durationMs + "ms" : ""));
     if (ev.error) el("pre", sec, "bad", "error: " + ev.error);
     if (ev.query !== undefined) {
       const dq = el("details", sec);

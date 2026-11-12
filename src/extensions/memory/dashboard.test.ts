@@ -237,4 +237,54 @@ describe("memory dashboard — recall (retrieval) endpoints", () => {
 			expect((await get(url, `/api/recall?name=${encodeURIComponent(name)}`)).status).toBe(400)
 		}
 	})
+
+	it("/api/recalls surfaces the trigger for loop recalls and tolerates pre-trigger files", async () => {
+		writeDrain("recall-2026-11-12T09-10-00-111-0.jsonl", [
+			drainEvent({
+				type: "recall",
+				kind: "digest-progressive",
+				trigger: "state-revisit",
+				query: "same room again",
+				hits: [],
+				injected: [],
+			}),
+		])
+		writeDrain("recall-2026-11-11T09-10-00-222-0.jsonl", [
+			drainEvent({ type: "recall", kind: "digest-progressive", query: "older", hits: [], injected: [] }),
+		])
+		const { url } = await serve()
+		const recalls = (await (await get(url, "/api/recalls")).json()) as Array<{ name: string; trigger: string | null }>
+		expect(recalls[0].trigger).toBe("state-revisit")
+		expect(recalls[1].trigger).toBeNull()
+	})
+})
+
+describe("memory dashboard — pending-job drill-down", () => {
+	it("/api/job serves the pending job by exact basename (parsed JSON)", async () => {
+		writeJob("job-a1.json", { messages: [{ role: "user", content: "x" }], session: "s1" })
+		const { url } = await serve()
+		const ok = await get(url, "/api/job?name=job-a1.json")
+		expect(ok.status).toBe(200)
+		const body = (await ok.json()) as { name: string; job: unknown }
+		expect(body.name).toBe("job-a1.json")
+		expect(body.job).toMatchObject({ session: "s1" })
+	})
+
+	it("/api/job falls back to the raw string for unparseable job files", async () => {
+		mkdirSync(join(memoryRoot, "pending"), { recursive: true })
+		writeFileSync(join(memoryRoot, "pending", "broken.json"), "{not json", "utf-8")
+		const { url } = await serve()
+		const body = (await (await get(url, "/api/job?name=broken.json")).json()) as { job: unknown }
+		expect(body.job).toBe("{not json")
+	})
+
+	it("/api/job rejects traversal, non-json names, non-pending files, and unknown names", async () => {
+		writeJob("job-b2.json", { messages: [] })
+		mkdirSync(join(memoryRoot, "failed"), { recursive: true })
+		writeFileSync(join(memoryRoot, "failed", "dead.json"), "{}", "utf-8")
+		const { url } = await serve()
+		for (const name of ["../x.json", "job-missing.json", "dead.json", "..win.json", "job b3.json"]) {
+			expect((await get(url, `/api/job?name=${encodeURIComponent(name)}`)).status).toBe(400)
+		}
+	})
 })
