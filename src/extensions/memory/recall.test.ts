@@ -1,0 +1,166 @@
+/**
+ * Unit tests for the shared recall pipeline (recall.ts): gate outcomes,
+ * failure-valve classification, steer injection, and the cross-path
+ * delivered-ledger bookkeeping. Mocks replace the searcher and the d3
+ * gate; no network.
+ */
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { MemorySearchHit } from "./inject.js"
+import { type RecallRunArgs, runRecall } from "./recall.js"
+
+const hit = (text: string, score = 0.9): MemorySearchHit => ({ memory: text, score }) as MemorySearchHit
+
+interface Rig {
+	pi: ExtensionAPI
+	ctx: ExtensionContext
+	sent: unknown[]
+	emitted: Array<Record<string, unknown>>
+	deliveredFacts: string[]
+	deliveredKeys: Set<string>
+}
+
+function makeRig(): Rig {
+	const sent: unknown[] = []
+	const emitted: Array<Record<string, unknown>> = []
+	const pi = { sendMessage: (m: unknown) => sent.push(m) } as unknown as ExtensionAPI
+	const ctx = { hasUI: false } as unknown as ExtensionContext
+	return { pi, ctx, sent, emitted, deliveredFacts: [], deliveredKeys: new Set() }
+}
+
+function baseArgs(rig: Rig, overrides: Partial<RecallRunArgs> = {}): RecallRunArgs {
+	return {
+		trigger: "user-turn",
+		query: "a distinctly uncovered topic",
+		pi: rig.pi,
+		ctx: rig.ctx,
+		search: async () => [],
+		decideGate: null,
+		deliveredFacts: rig.deliveredFacts,
+		deliveredKeys: rig.deliveredKeys,
+		emit: (partial) => rig.emitted.push(partial),
+		...overrides,
+	}
+}
+
+describe("runRecall", () => {
+	beforeEach(() => vi.spyOn(console, "info").mockImplementation(() => {}))
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("returns covered and skips gate+search when the conversation is covered", async () => {
+		const rig = makeRig()
+		rig.deliveredFacts.push("a distinctly uncovered topic") // exact containment path
+		let searched = 0
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				search: async () => {
+					searched++
+					return []
+				},
+			}),
+		)
+		expect(outcome).toBe("covered")
+		expect(searched).toBe(0)
+		expect(rig.emitted).toHaveLength(0)
+		expect(rig.sent).toHaveLength(0)
+	})
+
+	it("returns gate-skip and traces the trigger when the gate says skip", async () => {
+		const rig = makeRig()
+		let searched = 0
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				decideGate: async () => true,
+				search: async () => {
+					searched++
+					return []
+				},
+			}),
+		)
+		expect(outcome).toBe("gate-skip")
+		expect(searched).toBe(0)
+		expect(rig.emitted).toEqual([{ trigger: "user-turn", gate: { lookup: "skip" }, hits: [], injected: [] }])
+	})
+
+	it("a throwing gate falls back to search (pre-gate behavior)", async () => {
+		const rig = makeRig()
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				decideGate: async () => {
+					throw new Error("gate down")
+				},
+				search: async () => [hit("fresh fact one")],
+			}),
+		)
+		expect(outcome).toBe("injected")
+		expect(rig.deliveredFacts).toContain("fresh fact one")
+	})
+
+	it("a throwing search returns failed and traces the error with trigger", async () => {
+		const rig = makeRig()
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				trigger: "step-budget",
+				search: async () => {
+					throw new Error("store unreachable")
+				},
+			}),
+		)
+		expect(outcome).toBe("failed")
+		expect(rig.emitted).toHaveLength(1)
+		expect(rig.emitted[0].trigger).toBe("step-budget")
+		expect(rig.emitted[0].error).toBe("store unreachable")
+		expect(rig.sent).toHaveLength(0)
+		expect(rig.deliveredFacts).toEqual([])
+	})
+
+	it("null search result is a traced no-hits, not a silent skip", async () => {
+		const rig = makeRig()
+		const outcome = await runRecall(baseArgs(rig, { search: async () => null }))
+		expect(outcome).toBe("no-hits")
+		expect(rig.emitted).toHaveLength(1)
+		expect(rig.emitted[0].hits).toEqual([])
+		expect(rig.sent).toHaveLength(0)
+	})
+
+	it("undefined search returns no-searcher with no trace", async () => {
+		const rig = makeRig()
+		const outcome = await runRecall(baseArgs(rig, { search: async () => undefined }))
+		expect(outcome).toBe("no-searcher")
+		expect(rig.emitted).toHaveLength(0)
+	})
+
+	it("injects a steer, seeds the shared ledger, and traces hits/composition", async () => {
+		const rig = makeRig()
+		const outcome = await runRecall(baseArgs(rig, { search: async () => [hit("a durable preference")] }))
+		expect(outcome).toBe("injected")
+		expect(rig.sent).toHaveLength(1)
+		const msg = rig.sent[0] as { customType: string; content: Array<{ text: string }>; display: boolean }
+		expect(msg.customType).toBe("memory-recall")
+		expect(msg.display).toBe(false)
+		expect(msg.content[0].text).toContain("[User memory — recalled from previous sessions]")
+		expect(rig.deliveredFacts).toContain("a durable preference")
+		expect(rig.deliveredKeys.size).toBe(1)
+		expect(rig.emitted).toHaveLength(1)
+		expect(rig.emitted[0].trigger).toBe("user-turn")
+		expect((rig.emitted[0].hits as Array<{ text: string }>)[0].text).toBe("a durable preference")
+		expect(rig.emitted[0].injected).toEqual(["a durable preference"])
+	})
+
+	it("a second recall with only already-delivered facts returns no-hits (cross-path dedupe)", async () => {
+		const rig = makeRig()
+		await runRecall(baseArgs(rig, { trigger: "user-turn", search: async () => [hit("repurposed fact")] }))
+		rig.emitted.length = 0
+		const outcome = await runRecall(
+			baseArgs(rig, { trigger: "step-budget", search: async () => [hit("repurposed fact")] }),
+		)
+		expect(outcome).toBe("no-hits")
+		expect(rig.sent).toHaveLength(1) // only the first
+		expect(rig.emitted[0].trigger).toBe("step-budget")
+		expect(rig.emitted[0].injected).toEqual([])
+	})
+})
