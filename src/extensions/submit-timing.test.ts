@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -15,10 +15,13 @@ afterEach(() => {
 
 describe("submit-timing marks", () => {
 	it("is a no-op without KIMCHI_SUBMIT_TIMING", () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-submit-timing-test-"))
+		const file = join(dir, "marks.jsonl")
+		process.env.KIMCHI_SUBMIT_TIMING = file
 		delete process.env.KIMCHI_SUBMIT_TIMING
 		expect(() => submitTimingMark("test.event", { some: "detail" })).not.toThrow()
-		// No file materialized anywhere we would have pointed at.
-		expect(process.env.KIMCHI_SUBMIT_TIMING).toBeUndefined()
+		// The no-op that matters: no file materialized at the would-be path.
+		expect(existsSync(file)).toBe(false)
 	})
 
 	it("appends one JSONL line per mark, in order, with the detail merged", () => {
@@ -65,12 +68,16 @@ describe("submit-timing marks", () => {
 		}
 	})
 
-	it("never throws when the sink path is unwritable", () => {
+	it("never throws when the sink path is unwritable — warns once, then stays silent", () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
 			process.env.KIMCHI_SUBMIT_TIMING = join(tmpdir(), "kimchi-submit-timing-test", "missing-dir", "marks.jsonl")
 			expect(() => submitTimingMark("boom")).not.toThrow()
-			expect(consoleError).not.toHaveBeenCalled()
+			submitTimingMark("boom-again")
+			// Loud once — an empty marks file with zero feedback would silently
+			// defeat the investigation the marks exist for.
+			expect(consoleError).toHaveBeenCalledTimes(1)
+			expect(String(consoleError.mock.calls[0]?.[0])).toContain("cannot write marks")
 		} finally {
 			consoleError.mockRestore()
 		}
@@ -106,5 +113,34 @@ describe("submit-timing marks", () => {
 		process.env.KIMCHI_SUBMIT_TIMING = file
 		submitTimingMark("submit.input", { prompt: "secret-ish" })
 		expect(statSync(file).mode & 0o777).toBe(0o600)
+	})
+
+	it("keeps reserved envelope keys over detail keys of the same name", () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-submit-timing-test-"))
+		const file = join(dir, "marks.jsonl")
+		process.env.KIMCHI_SUBMIT_TIMING = file
+		submitTimingMark("real.event", { event: "shadow", seq: 999, t: 0, perf: 0, session: "shadow" })
+		const [line] = readFileSync(file, "utf-8").split("\n")
+		const mark = JSON.parse(line ?? "") as Record<string, unknown>
+		expect(mark.event).toBe("real.event")
+		expect(mark.seq).not.toBe(999)
+		expect(mark.t).not.toBe(0)
+		expect(mark.session).not.toBe("shadow")
+		expect(typeof mark.session).toBe("string")
+	})
+
+	it("stamps marks with the session id captured at session_start", async () => {
+		const { api, emit } = createExtensionApi()
+		submitTimingExtension(api)
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-submit-timing-test-"))
+		const file = join(dir, "marks.jsonl")
+		process.env.KIMCHI_SUBMIT_TIMING = file
+		await emit("session_start", { type: "session_start" }, {
+			sessionManager: { getSessionId: () => "sess-42" },
+		} as Parameters<typeof emit>[2])
+		const [line] = readFileSync(file, "utf-8").split("\n")
+		const mark = JSON.parse(line ?? "") as Record<string, unknown>
+		expect(mark.event).toBe("session.start")
+		expect(mark.session).toBe("sess-42")
 	})
 })
