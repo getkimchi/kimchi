@@ -45,13 +45,14 @@ export async function runWorkflowBatch(args: string[], deps: WorkflowBatchDeps =
 	try {
 		main =
 			deps.main ??
+			// "./cli" ships its own declarations, so the imported main infers directly — no cast.
 			(
-				(await import("@kimchi-dev/kimchi-workflows/cli").catch((error: unknown) => {
+				await import("@kimchi-dev/kimchi-workflows/cli").catch((error: unknown) => {
 					// The stable user line stays free of packaging internals (Node's error
 					// text embeds the module subpath and a local absolute path); the raw
 					// chain survives on the dev-oriented detail line below.
 					throw new Error("workflow host unavailable", { cause: error })
-				})) as { main: WorkflowCliMain }
+				})
 			).main
 	} catch (error) {
 		reportCrash(error)
