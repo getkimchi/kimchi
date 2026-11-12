@@ -156,12 +156,20 @@ describe("installAgentEndWillRetryPatch", () => {
 	})
 
 	it("is a no-op when the session lacks _emitExtensionEvent (guard)", async () => {
-		const proto = { _kimchiAgentEndWillRetryPatch: undefined } as {
-			_emitExtensionEvent?: unknown
-			_kimchiAgentEndWillRetryPatch?: boolean
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const proto = { _kimchiAgentEndWillRetryPatch: undefined } as {
+				_emitExtensionEvent?: unknown
+				_kimchiAgentEndWillRetryPatch?: boolean
+			}
+			installAgentEndWillRetryPatch({ prototype: proto } as never)
+			expect(proto).toEqual({})
+			expect(warn).toHaveBeenCalledWith(
+				"agent-end-will-retry patch: AgentSession.prototype._emitExtensionEvent not found, willRetry signal inactive",
+			)
+		} finally {
+			warn.mockRestore()
 		}
-		installAgentEndWillRetryPatch({ prototype: proto } as never)
-		expect(proto).toEqual({})
 	})
 })
 

@@ -16,19 +16,21 @@ const VLLM_RAW =
 
 const FORBIDDEN = ["vllm", ".svc.cluster.local", "SSLContext", "0x", "Traceback", "10.30.0.226", "11434"]
 
+type HarnessContext = { sessionManager?: object; ui?: { notify: ReturnType<typeof vi.fn> } }
+
 function createHarness() {
-	const handlers: Record<string, (event: unknown, ctx?: unknown) => void | Promise<void>> = {}
+	const handlers: Record<string, (event: unknown, ctx?: HarnessContext) => void | Promise<void>> = {}
 	const pi = {
-		on(event: string, handler: (event: unknown, ctx?: unknown) => void | Promise<void>) {
+		on(event: string, handler: (event: unknown, ctx?: HarnessContext) => void | Promise<void>) {
 			handlers[event] = handler
 		},
 	} as unknown as ExtensionAPI
 	interactiveErrorSurfaceExtension(pi)
 	return {
-		emitMessageEnd(message: Record<string, unknown>) {
-			handlers.message_end?.({ type: "message_end", message })
+		emitMessageEnd(message: Record<string, unknown>, ctx?: HarnessContext) {
+			handlers.message_end?.({ type: "message_end", message }, ctx)
 		},
-		emitAgentEnd(payload: Record<string, unknown>, ctx?: { ui?: { notify: ReturnType<typeof vi.fn> } }) {
+		emitAgentEnd(payload: Record<string, unknown>, ctx?: HarnessContext) {
 			handlers.agent_end?.({ type: "agent_end", ...payload }, ctx)
 		},
 	}
@@ -285,6 +287,32 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		expect(__getPendingProviderError()).toBeUndefined()
 	})
 
+	it("a throwing sessionManager getter (deactivated runner) touches no pending state", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		const deactivated = (extra: Partial<HarnessContext> = {}): HarnessContext => ({
+			get sessionManager(): object {
+				throw new Error("runner deactivated")
+			},
+			...extra,
+		})
+
+		// A deactivated replay's message_end must not write the unscoped slot.
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW }, deactivated())
+		expect(__getPendingProviderError()).toBeUndefined()
+
+		// Nor can it clear or render anyone's state: a legit unscoped entry
+		// survives a deactivated user-message clear that would have deleted it.
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		expect(__getPendingProviderError()).toBeDefined()
+		emitMessageEnd({ role: "user", stopReason: "stop" }, deactivated())
+		expect(__getPendingProviderError()).toBeDefined()
+
+		// And a deactivated agent_end renders nothing.
+		emitAgentEnd({ willRetry: false }, deactivated({ ui: { notify } }))
+		expect(notify).not.toHaveBeenCalled()
+	})
+
 	it("does NOT set pending state when the rate-limit deadline is past the wait bound", () => {
 		// The rate-limit notice already renders the "not retrying" guidance on the message;
 		// an agent_end exhaustion notification would duplicate it.
@@ -349,5 +377,82 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		expect(refused.errorMessage).toBe("kimchi:refusal")
 		expect(refused.stopReason).toBe("stop")
 		expect(__getPendingProviderError()).toBeUndefined()
+	})
+
+	// A retryable attempt followed by a final error that is not retryable: the
+	// turn ends on the second error, which message_end already rendered. The
+	// earlier attempt's raw error must not come back as an exhaustion notice.
+	it("clears a retryable attempt's pending when a non-retryable error ends the turn", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: "BadRequestError: bad request, code 400" })
+
+		expect(__getPendingProviderError()).toBeUndefined()
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).not.toHaveBeenCalled()
+	})
+
+	it("clears a retryable attempt's pending when an unrecognized error ends the turn", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: "Something unprecedented" })
+
+		expect(__getPendingProviderError()).toBeUndefined()
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).not.toHaveBeenCalled()
+	})
+
+	// The ACP server hosts concurrent sessions in one process: a module-wide
+	// slot would let one session's agent_end render and consume another's error.
+	it("scopes pending per session: another session neither renders nor clears it", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const sessionA = { id: "A" }
+		const sessionB = { id: "B" }
+		const notifyA = vi.fn()
+		const notifyB = vi.fn()
+
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW }, { sessionManager: sessionA })
+		emitAgentEnd({ willRetry: false }, { sessionManager: sessionB, ui: { notify: notifyB } })
+
+		expect(notifyB).not.toHaveBeenCalled()
+		expect(__getPendingProviderError(sessionA)).toBeDefined()
+
+		emitAgentEnd({ willRetry: false }, { sessionManager: sessionA, ui: { notify: notifyA } })
+
+		expect(notifyA).toHaveBeenCalledTimes(1)
+		expect(notifyA).toHaveBeenCalledWith(expect.stringContaining("temporarily unavailable"), "error")
+	})
+
+	it("renders each session's own exhaustion message", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const sessionA = { id: "A" }
+		const sessionB = { id: "B" }
+		const notifyA = vi.fn()
+		const notifyB = vi.fn()
+
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW }, { sessionManager: sessionA })
+		emitMessageEnd(
+			{ role: "assistant", stopReason: "error", errorMessage: "Stream ended without finish_reason" },
+			{ sessionManager: sessionB },
+		)
+		emitAgentEnd({ willRetry: false }, { sessionManager: sessionA, ui: { notify: notifyA } })
+		emitAgentEnd({ willRetry: false }, { sessionManager: sessionB, ui: { notify: notifyB } })
+
+		expect(notifyA).toHaveBeenCalledTimes(1)
+		expect(notifyB).toHaveBeenCalledTimes(1)
+		expect(notifyB.mock.calls[0]?.[0]).toContain("(stream interrupted)")
+	})
+
+	it("leaves the entry un-notified when the surface has no notify, so showError renders it", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+
+		emitAgentEnd({ willRetry: false }, {})
+
+		const pending = __getPendingProviderError()
+		expect(pending?.notified).toBeUndefined()
+		expect(interceptShowError("Retry failed after 3 attempts: Retrying…", pending)).toContain("temporarily unavailable")
 	})
 })

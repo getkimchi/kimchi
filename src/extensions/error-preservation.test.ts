@@ -1,5 +1,8 @@
+import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import { getRawErrorMessage, hasPreservedRawErrorMessage, preserveRawErrorMessage } from "./error-preservation.js"
+import interactiveErrorSurfaceExtension from "./interactive-error-surface.js"
+import rateLimitNoticeExtension from "./rate-limit-notice.js"
 
 describe("preserveRawErrorMessage", () => {
 	it("preserves the original errorMessage before mutation", () => {
@@ -69,5 +72,53 @@ describe("hasPreservedRawErrorMessage", () => {
 
 	it("returns false when errorMessage was empty (nothing preserved)", () => {
 		expect(hasPreservedRawErrorMessage({ errorMessage: "" })).toBe(false)
+	})
+})
+
+type MessageEndHandler = (event: { type: "message_end"; message: Record<string, unknown> }) => unknown
+
+/** Registers extensions the way cli.ts does and returns their message_end handlers in order. */
+function messageEndHandlers(extensions: Array<(pi: ExtensionAPI) => void>): MessageEndHandler[] {
+	const handlers: MessageEndHandler[] = []
+	const pi = {
+		on(event: string, handler: MessageEndHandler) {
+			if (event === "message_end") handlers.push(handler)
+			return () => {}
+		},
+	} as unknown as ExtensionAPI
+	for (const extension of extensions) extension(pi)
+	return handlers
+}
+
+// pi applies a replacement returned by a message_end handler in place, onto the
+// object that already carries the preserved raw error: AgentSession replaces
+// the string keys with Object.assign. A marker that cannot be assigned turns a
+// handled provider error into an uncaught TypeError, so this runs the real
+// upstream function on the real handler chain rather than a copy of it.
+describe("pi replacing the message in place after message_end", () => {
+	it("survives the rate-limit notice replacement", () => {
+		const handlers = messageEndHandlers([interactiveErrorSurfaceExtension, rateLimitNoticeExtension])
+		const raw = `kimi-k2.5 is rate limited until ${new Date(Date.now() + 30 * 60_000).toISOString()}`
+		const message: Record<string, unknown> = {
+			role: "assistant",
+			model: "kimi-k2.5",
+			stopReason: "error",
+			errorMessage: raw,
+		}
+
+		let replacement: Record<string, unknown> | undefined
+		for (const handler of handlers) {
+			const result = handler({ type: "message_end", message }) as { message?: Record<string, unknown> } | undefined
+			if (result?.message) replacement = result.message
+		}
+		expect(replacement?.errorMessage).toContain("not retrying")
+
+		const session = Object.create(AgentSession.prototype) as unknown as {
+			_replaceMessageInPlace(target: Record<string, unknown>, replacement: Record<string, unknown>): void
+		}
+		expect(() => session._replaceMessageInPlace(message, replacement as Record<string, unknown>)).not.toThrow()
+
+		expect(message.errorMessage).toBe(replacement?.errorMessage)
+		expect(getRawErrorMessage(message)).toBe(raw)
 	})
 })

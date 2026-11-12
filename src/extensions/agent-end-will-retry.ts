@@ -14,12 +14,14 @@ import { AgentSession } from "@earendil-works/pi-coding-agent"
  * provider error while retries were still in flight).
  *
  * The decision is NOT taken from pi's own `_willRetryAfterAgentEnd(event)`:
- * that scans `event.messages`, and those entries can be copies that lose the
- * preserved raw provider error (error-preservation stores it as a
- * non-enumerable symbol on the live message object). With the display
- * placeholder ("Retrying…") in place of the raw text the classifier says
- * "not retryable" and the retry looks exhausted while it is about to fire.
- * Instead we compute from the SAME source the retry loop uses —
+ * that scans `event.messages`, whose entries are not necessarily the object
+ * the retry loop classifies. A copy that drops own symbol keys — a
+ * `structuredClone` of the transcript, a message rebuilt by another handler,
+ * a serialized round-trip — no longer carries the preserved raw provider
+ * error (error-preservation marks the live message with a symbol). With the
+ * display placeholder ("Retrying…") left as the only text, the classifier
+ * says "not retryable" and the retry looks exhausted while it is about to
+ * fire. Instead we compute from the SAME source the retry loop uses —
  * `_lastAssistantMessage` (the object message_end handed to
  * `_handlePostAgentRun` → `_prepareRetry`) — so the extension channel agrees
  * with what will actually happen.
@@ -28,7 +30,7 @@ import { AgentSession } from "@earendil-works/pi-coding-agent"
  * REMOVAL: drop this wrap once a pi release includes #6827 AND its willRetry
  * accounts for message-copy identity (or the copies stop losing the preserved
  * raw error); the suppress-retried-errors e2e gates the visible regression.
- * If pi renames/moves the targets, this silently no-ops — the extension's
+ * If pi renames/moves the targets, this warns and no-ops — the extension's
  * `undefined` default keeps the old behavior rather than breaking.
  */
 export function installAgentEndWillRetryPatch(
@@ -37,7 +39,12 @@ export function installAgentEndWillRetryPatch(
 	const proto = sessionClass.prototype
 	if (proto._kimchiAgentEndWillRetryPatch) return
 	const originalEmitExtensionEvent = proto._emitExtensionEvent
-	if (!originalEmitExtensionEvent) return
+	if (!originalEmitExtensionEvent) {
+		console.warn(
+			"agent-end-will-retry patch: AgentSession.prototype._emitExtensionEvent not found, willRetry signal inactive",
+		)
+		return
+	}
 
 	proto._emitExtensionEvent = async function patchedEmitExtensionEvent(
 		this: unknown,
@@ -73,7 +80,7 @@ export function computeAgentEndWillRetry(this: unknown): boolean {
 	if (!settings?.enabled) return false
 	if ((session._retryAttempt ?? 0) >= settings.maxRetries) return false
 	const message = session._lastAssistantMessage
-	if (!message || message.role !== "assistant") return false
+	if (message?.role !== "assistant") return false
 	const classifier = session._isRetryableError
 	if (typeof classifier !== "function") return false
 	return classifier.call(session, message) === true

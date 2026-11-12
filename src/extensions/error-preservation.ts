@@ -20,6 +20,13 @@
  *   and never retry. Symbols stay invisible to JSON.stringify and Object.keys,
  *   so the raw error never reaches serialized output or the LLM request
  *   payload (requests are built from role/content only).
+ *
+ * Writable and configurable: pi replaces a message in place after
+ * `message_end` (`AgentSession._replaceMessageInPlace` deletes every string
+ * key, then `Object.assign`s the replacement onto the same object). Writing
+ * onto a read-only own property throws, so a later handler that returns a
+ * replacement message — the rate-limit notice does, for any gateway deadline
+ * — would turn a handled provider error into an unhandled TypeError.
  */
 
 const RAW_ERROR_SYMBOL = Symbol.for("kimchi.rawErrorMessage")
@@ -40,8 +47,8 @@ export function preserveRawErrorMessage(message: ErrorMessageHolder): void {
 		Object.defineProperty(message, RAW_ERROR_SYMBOL, {
 			value: message.errorMessage,
 			enumerable: true,
-			writable: false,
-			configurable: false,
+			writable: true,
+			configurable: true,
 		})
 	}
 }

@@ -329,13 +329,13 @@ describe("isInfrastructureErrorRetryable", () => {
 	// becomes "Retrying…") and the run-loop retry classifier
 	// (AgentSession._handlePostAgentRun). Enumerable symbols survive the
 	// spread — the classifier must recover the raw from the copy.
-	it("classifies retryable from a spread copy that lost the preserved raw symbol", () => {
+	it("classifies retryable from a spread copy that carries the preserved raw symbol", () => {
 		const raw = "Stream ended without finish_reason"
 		const message = { stopReason: "error" as const, errorMessage: raw }
 		preserveRawErrorMessage(message)
 		message.errorMessage = "Retrying…"
 
-		const copy = { ...message } // symbol lost, errorMessage placeholder kept
+		const copy = { ...message } // the enumerable symbol survives the spread
 
 		expect(isInfrastructureErrorRetryable(copy)).toBe(true)
 	})

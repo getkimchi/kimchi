@@ -9,15 +9,58 @@ interface PendingProviderError {
 	readonly rawMessage: string
 	willRetry: boolean
 	/**
-	 * True once the exhaustion sanitized message was rendered at agent_end, so
-	 * the imminent auto_retry_end → showError interception suppresses the
-	 * duplicate instead of rendering it twice. Never set while retries are
-	 * pending — the entry is overwritten fresh on each subsequent error.
+	 * True once the exhaustion sanitized message was actually rendered at
+	 * agent_end, so the imminent auto_retry_end → showError interception
+	 * suppresses the duplicate instead of rendering it twice. Never set while
+	 * retries are pending — the entry is replaced fresh on each subsequent
+	 * error. Set only when a notification really happened: a surface with no
+	 * notify leaves it unset so showError remains the render path.
 	 */
 	notified?: boolean
 }
 
-let lastPendingProviderError: PendingProviderError | undefined
+/**
+ * Pending entry per session. The ACP server hosts concurrent sessions in one
+ * process, so one module-level slot lets a session's turn end render another
+ * session's error and leaves the owner with nothing to render. Keyed by the
+ * session's SessionManager — the object the extension context carries and the
+ * one InteractiveMode exposes to showError.
+ */
+let pendingBySession = new WeakMap<object, PendingProviderError>()
+
+/** Key for calls that carry no session (headless renderers, unit tests). */
+const UNSCOPED_SESSION: object = {}
+
+function sessionKey(source: unknown): object {
+	if (source && typeof source === "object") {
+		try {
+			const manager = (source as { sessionManager?: unknown }).sessionManager
+			if (manager && typeof manager === "object") return manager
+		} catch {
+			// InteractiveMode's getter throws while no session is bound.
+		}
+	}
+	return UNSCOPED_SESSION
+}
+
+/**
+ * Write-side key. Unlike sessionKey, a throwing sessionManager getter (a
+ * runner that has been deactivated — e.g. an event replayed after teardown)
+ * returns null instead of the unscoped key: writing there would let a bound
+ * session's showError read an entry it does not own. A null key makes every
+ * pending-state touch in the handlers a no-op.
+ */
+function writeKey(source: unknown): object | null {
+	if (source && typeof source === "object") {
+		try {
+			const manager = (source as { sessionManager?: unknown }).sessionManager
+			if (manager && typeof manager === "object") return manager
+		} catch {
+			return null
+		}
+	}
+	return UNSCOPED_SESSION
+}
 
 /** Placeholder used when mutating errorMessage for retryable per-attempt errors. */
 const RETRYING_PLACEHOLDER = "Retrying…"
@@ -84,7 +127,7 @@ export function applyInteractiveErrorSurfacePatch(): void {
 
 	const originalShowError = imProto.showError
 	imProto.showError = function patchedShowError(errorMessage: string): void {
-		const result = interceptShowError(errorMessage, lastPendingProviderError)
+		const result = interceptShowError(errorMessage, pendingBySession.get(sessionKey(this)))
 		if (result === undefined) return // suppress
 		originalShowError.call(this, result)
 	}
@@ -105,7 +148,8 @@ export function applyInteractiveErrorSurfacePatch(): void {
  * state.
  */
 export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void {
-	pi.on("message_end", (event) => {
+	pi.on("message_end", (event, ctx) => {
+		const key = writeKey(ctx)
 		const message = event.message
 		if (message.role !== "assistant") {
 			// A user message ends the turn boundaries: any pending provider error
@@ -113,13 +157,18 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 			// and its agent_end already fired. Clear it so a later agent_end
 			// (for a turn that completed or that the user cancelled) cannot
 			// resurrect an old exhaustion render.
-			if (message.role === "user") lastPendingProviderError = undefined
+			if (message.role === "user" && key) pendingBySession.delete(key)
 			return
 		}
 		if (message.stopReason !== "error") {
-			lastPendingProviderError = undefined
+			if (key) pendingBySession.delete(key)
 			return
 		}
+		// The error that ends the turn decides its outcome: drop the entry from
+		// an earlier attempt so agent_end cannot render an error the run already
+		// moved past. A retryable attempt re-creates it below; a non-retryable or
+		// unrecognized one leaves nothing behind.
+		if (key) pendingBySession.delete(key)
 		if (typeof message.errorMessage !== "string") return
 		const classified = classifyLLMGatewayError(message.errorMessage)
 		if (!classified) return
@@ -136,8 +185,8 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 			const noticeOwnsMessaging = waitMs !== undefined && waitMs > RATE_LIMIT_MAX_WAIT_MS
 			// Track only retryable errors — agent_end renders the sanitized
 			// exhaustion message when retries are exhausted.
-			if (!noticeOwnsMessaging) {
-				lastPendingProviderError = { rawMessage: message.errorMessage, willRetry: true }
+			if (!noticeOwnsMessaging && key) {
+				pendingBySession.set(key, { rawMessage: message.errorMessage, willRetry: true })
 			}
 			// Preserve the original error for the retry classifier, which runs
 			// in _handlePostAgentRun AFTER this mutation. Without this, the
@@ -164,7 +213,9 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 	})
 
 	pi.on("agent_end", (event, ctx) => {
-		if (!lastPendingProviderError) return
+		const key = writeKey(ctx)
+		const pending = key ? pendingBySession.get(key) : undefined
+		if (!pending) return
 		const rawWillRetry = (event as { willRetry?: boolean }).willRetry
 		// The extension channel now carries the same willRetry the listener
 		// channel gets (installed by agent-end-will-retry). True → the upstream
@@ -173,35 +224,38 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 		// where the wrapper did not run) → the turn is over: render the
 		// sanitized exhaustion message now.
 		if (rawWillRetry === true) {
-			lastPendingProviderError.willRetry = true
+			pending.willRetry = true
 			return
 		}
 		// Already rendered at a previous agent_end (e.g. a replay re-emitting
 		// events without an intervening message_end): stay inert until a
 		// message_end boundary clears the entry.
-		if (lastPendingProviderError.notified) return
+		if (pending.notified) return
 		// Retries exhausted (or never enabled) — render the sanitized message
 		// directly. We can't rely on the upstream auto_retry_end → showError
 		// path because the finalError may have been mutated to the placeholder.
 		// Rendering here ensures the sanitized message reaches the user.
-		const sanitized = formatSanitizedErrorMessage(lastPendingProviderError.rawMessage, "interactive", {
+		const sanitized = formatSanitizedErrorMessage(pending.rawMessage, "interactive", {
 			exhausted: true,
 		})
-		ctx?.ui?.notify?.(sanitized, "error")
+		// No notify on this surface: leave the entry unmarked so the imminent
+		// auto_retry_end → showError interception still renders it once.
+		if (!ctx?.ui?.notify) return
+		ctx.ui.notify(sanitized, "error")
 		// Keep the raw error until the next non-error message_end: the
 		// imminent auto_retry_end → showError interception (Esc-cancel and
 		// exhausted paths) needs pending.rawMessage for the correct reason
 		// label, and the notified flag suppresses that duplicate render.
-		lastPendingProviderError.notified = true
+		pending.notified = true
 	})
 }
 
 /** Test-only: reset pending-error state between tests. */
 export function __resetInteractiveErrorSurfaceState(): void {
-	lastPendingProviderError = undefined
+	pendingBySession = new WeakMap()
 }
 
-/** Test-only: inspect the pending provider error. */
-export function __getPendingProviderError(): PendingProviderError | undefined {
-	return lastPendingProviderError
+/** Test-only: inspect the pending provider error for a session (or the unscoped slot). */
+export function __getPendingProviderError(session?: object): PendingProviderError | undefined {
+	return pendingBySession.get(session ?? UNSCOPED_SESSION)
 }
