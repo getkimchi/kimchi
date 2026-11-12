@@ -168,73 +168,71 @@ describe("runAgent — real child session with scripted model", () => {
 		for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 	})
 
-	it(
-		"spawns the REAL Researcher into a real session whose active tools include web_search/web_fetch",
-		{ timeout: 60_000 },
-		async () => {
-			// Isolated agent dir so resource gating reads test defaults, not the
-			// developer machine's settings.
-			process.env.KIMCHI_CODING_AGENT_DIR = makeTmp("kimchi-runagent-agentdir-")
-			registerAgents(new Map()) // embedded defaults only — the real personas
+	it("spawns the REAL Researcher into a real session whose active tools include web_search/web_fetch", {
+		timeout: 60_000,
+	}, async () => {
+		// Isolated agent dir so resource gating reads test defaults, not the
+		// developer machine's settings.
+		process.env.KIMCHI_CODING_AGENT_DIR = makeTmp("kimchi-runagent-agentdir-")
+		registerAgents(new Map()) // embedded defaults only — the real personas
 
-			// Capture the tool set of every provider request. pi 2.x folds the
-			// active tools into the transcript's system messages (toolsAdded /
-			// toolsRemoved), so replay them: the final set IS the child session's
-			// active-tool list — the observable endpoint of the wiring this PR fixes.
-			const requestedToolNames: string[][] = []
-			const streamSimple = (_m: Model<Api>, context: TranscriptContext) => {
-				let active: string[] = []
-				for (const msg of context.messages as Array<{
-					toolsAdded?: { name: string }[]
-					toolsRemoved?: { name: string }[]
-				}>) {
-					if (msg.toolsAdded) active.push(...msg.toolsAdded.map((t) => t.name))
-					if (msg.toolsRemoved) active = active.filter((n) => !msg.toolsRemoved?.some((r) => r.name === n))
-				}
-				requestedToolNames.push(active)
-				return textStream(FINAL_ANSWER)
+		// Capture the tool set of every provider request. pi 2.x folds the
+		// active tools into the transcript's system messages (toolsAdded /
+		// toolsRemoved), so replay them: the final set IS the child session's
+		// active-tool list — the observable endpoint of the wiring this PR fixes.
+		const requestedToolNames: string[][] = []
+		const streamSimple = (_m: Model<Api>, context: TranscriptContext) => {
+			let active: string[] = []
+			for (const msg of context.messages as Array<{
+				toolsAdded?: { name: string }[]
+				toolsRemoved?: { name: string }[]
+			}>) {
+				if (msg.toolsAdded) active.push(...msg.toolsAdded.map((t) => t.name))
+				if (msg.toolsRemoved) active = active.filter((n) => !msg.toolsRemoved?.some((r) => r.name === n))
 			}
-			const modelRuntime = await ModelRuntime.create({
-				authPath: join(makeTmp("kimchi-runagent-auth-"), "auth.json"),
-				modelsPath: null,
-			})
-			modelRuntime.registerProvider("runagent-stub", {
-				name: "RunAgent Stub",
-				baseUrl: model.baseUrl,
-				apiKey: "stub",
-				api: "openai-completions",
-				streamSimple,
-			})
+			requestedToolNames.push(active)
+			return textStream(FINAL_ANSWER)
+		}
+		const modelRuntime = await ModelRuntime.create({
+			authPath: join(makeTmp("kimchi-runagent-auth-"), "auth.json"),
+			modelsPath: null,
+		})
+		modelRuntime.registerProvider("runagent-stub", {
+			name: "RunAgent Stub",
+			baseUrl: model.baseUrl,
+			apiKey: "stub",
+			api: "openai-completions",
+			streamSimple,
+		})
 
-			const cwd = makeTmp("kimchi-runagent-cwd-")
-			const ctx = {
-				cwd,
-				model,
-				modelRegistry: {
-					find: vi.fn().mockReturnValue(undefined),
-					getAvailable: vi.fn().mockReturnValue([model]),
-					runtime: modelRuntime,
-				},
-				getSystemPrompt: vi.fn().mockReturnValue(""),
-				sessionManager: {
-					getSessionId: vi.fn().mockReturnValue("parent-session-1"),
-					getSessionDir: vi.fn().mockReturnValue(undefined),
-					getSessionFile: vi.fn().mockReturnValue(undefined),
-				},
-			}
+		const cwd = makeTmp("kimchi-runagent-cwd-")
+		const ctx = {
+			cwd,
+			model,
+			modelRegistry: {
+				find: vi.fn().mockReturnValue(undefined),
+				getAvailable: vi.fn().mockReturnValue([model]),
+				runtime: modelRuntime,
+			},
+			getSystemPrompt: vi.fn().mockReturnValue(""),
+			sessionManager: {
+				getSessionId: vi.fn().mockReturnValue("parent-session-1"),
+				getSessionDir: vi.fn().mockReturnValue(undefined),
+				getSessionFile: vi.fn().mockReturnValue(undefined),
+			},
+		}
 
-			const result = await runAgent(
-				ctx as unknown as Parameters<typeof runAgent>[0],
-				AGENT_RESEARCHER,
-				"research the thing",
-				{ pi: { exec: vi.fn() } as unknown as RunOptions["pi"] },
-			)
+		const result = await runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			AGENT_RESEARCHER,
+			"research the thing",
+			{ pi: { exec: vi.fn() } as unknown as RunOptions["pi"] },
+		)
 
-			expect(result.responseText).toContain("INTEGRATION-FINAL")
-			expect(result.droppedToolNames).toBeUndefined()
-			expect(requestedToolNames.length).toBeGreaterThan(0)
-			expect(requestedToolNames[0]).toContain("web_search")
-			expect(requestedToolNames[0]).toContain("web_fetch")
-		},
-	)
+		expect(result.responseText).toContain("INTEGRATION-FINAL")
+		expect(result.droppedToolNames).toBeUndefined()
+		expect(requestedToolNames.length).toBeGreaterThan(0)
+		expect(requestedToolNames[0]).toContain("web_search")
+		expect(requestedToolNames[0]).toContain("web_fetch")
+	})
 })
