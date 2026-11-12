@@ -10,7 +10,6 @@ import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
 	getParsedCliArgs,
-	hasBackgroundRunsFlag,
 	hasFermentOneshotArg,
 	hasPrintFlag,
 	isCliAtFileArg,
@@ -70,7 +69,6 @@ import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import backgroundUpdateExtension from "./extensions/background-update.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
-import { setBackgroundRunsPermitted } from "./extensions/bash-background/session-policy.js"
 import { coupleBashControlToolArg } from "./extensions/bash-background/tool-coupling.js"
 import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
@@ -899,10 +897,6 @@ async function cliMain(): Promise<void> {
 			const mcpAdapterExtensions = enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[])
-			// The embedding host declares background-run wiring with
-			// --background-runs (see extensions/bash-background/session-policy.ts).
-			// Only the rpc branch of the session classification reads the lever.
-			if (hasBackgroundRunsFlag()) setBackgroundRunsPermitted(true)
 			const extensionFactories = [
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
