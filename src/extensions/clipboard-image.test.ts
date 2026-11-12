@@ -66,7 +66,7 @@ const registryStore = new Map<number, ImageContent>()
 
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, InputEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
-import { PNG_SIGNATURE } from "../utils/image-utils.js"
+import { PNG_SIGNATURE, RIFF_SIGNATURE, WEBP_SIGNATURE } from "../utils/image-utils.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import clipboardImageExtension, { __resetClipboardImageForTest } from "./clipboard-image.js"
@@ -496,7 +496,9 @@ describe("clipboard-image extension", () => {
 	})
 
 	describe("image file drops (inline [Image #N] markers)", () => {
-		const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+		// Content sniffing requires the full magic — a truncated signature is rejected.
+		const PNG_BYTES = Buffer.from(PNG_SIGNATURE)
+		const WEBP_BYTES = Buffer.from([...RIFF_SIGNATURE, 0, 0, 0, 0, ...WEBP_SIGNATURE])
 		let tmpDir: string
 
 		beforeEach(() => {
@@ -836,7 +838,7 @@ describe("clipboard-image extension", () => {
 			await settle()
 			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #1]")
 			const p = join(tmpDir, "shot.webp")
-			writeFileSync(p, PNG_BYTES)
+			writeFileSync(p, WEBP_BYTES)
 			drop(p)
 			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
 

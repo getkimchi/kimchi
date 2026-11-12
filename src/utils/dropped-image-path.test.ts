@@ -3,8 +3,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { droppedImagePathCandidate } from "./dropped-image-path.js"
+import { JPEG_SIGNATURE, PNG_SIGNATURE } from "./image-utils.js"
 
-const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+// Content sniffing requires the full magic — a truncated signature is rejected.
+const PNG_BYTES = new Uint8Array(PNG_SIGNATURE)
+const JPEG_BYTES = new Uint8Array(JPEG_SIGNATURE)
 
 let dir: string
 
@@ -12,7 +15,7 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "dropped-image-path-"))
 	writeFileSync(join(dir, "cat.png"), PNG_BYTES)
 	writeFileSync(join(dir, "notes.txt"), "hello")
-	writeFileSync(join(dir, "my cat.jpg"), PNG_BYTES)
+	writeFileSync(join(dir, "my cat.jpg"), JPEG_BYTES)
 })
 
 afterEach(() => {
