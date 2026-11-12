@@ -156,15 +156,14 @@ export function watchBackgroundProcessExit(
 	}
 	void registry
 		.whenExited(handle)
-		.then(() => settleHeldBackgroundToolCall(ctx, sessionId, held, handle))
 		.catch(() => {
 			// whenExited resolves for unknown handles and the registry's
 			// execPromise converts exec failures to { exitCode: null }, so a
-			// rejection here means teardown or contract drift. Settle
-			// best-effort — a no-op once the record is disposed — so a live
-			// client never keeps a spinner on a call nothing else will settle.
-			settleHeldBackgroundToolCall(ctx, sessionId, held, handle)
+			// rejection here means teardown or contract drift — swallow and
+			// fall through to finally; the settle itself is a no-op once the
+			// record is disposed.
 		})
+		.finally(() => settleHeldBackgroundToolCall(ctx, sessionId, held, handle))
 }
 
 /**
