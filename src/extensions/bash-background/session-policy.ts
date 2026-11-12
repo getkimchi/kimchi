@@ -44,28 +44,32 @@ export interface BashSessionKindInputs {
 }
 
 /**
- * Whether this process's client can track agent-initiated runs such that
- * a turn may END while managed commands keep running: it renders run
- * start/end and offers its own stop. Default true — the historical rpc
- * premise (a conversational frontend with a human driving it); hosts add
- * the wiring deliberately. Only consulted for rpc-mode sessions; the TUI
- * never reads it and print/json never reach it.
+ * Whether this process's embedding host permits background runs: rpc-mode
+ * turns may END while managed commands keep running, with run start/end
+ * surfaced to a client that can stop them itself. Default false — the
+ * lever is opt-in until someone declares the intent. Two explicit
+ * writes: cli.ts sets it true for native `--mode rpc` (background runs
+ * are standard on that protocol: every effect is a native event, and
+ * the rpc abort command stops the wake turn), and the ACP server maps
+ * its `backgroundRuns` client capability onto the lever at initialize
+ * — false for clients without support. Only consulted for rpc-mode
+ * sessions; the TUI never reads it and print/json never reach it.
  */
-let backgroundRunsPermitted = true
+let backgroundRunsPermitted = false
 
-/** Called once per embedding host (e.g. the ACP server at initialize). */
+/** Called once per embedding host (cli.ts for native rpc mode, the ACP server at initialize). */
 export function setBackgroundRunsPermitted(permitted: boolean): void {
 	backgroundRunsPermitted = permitted
 }
 
-/** Whether rpc-mode sessions may end turns while background runs continue (default true). */
+/** Whether rpc-mode sessions may end turns while background runs continue (default false). */
 export function getBackgroundRunsPermitted(): boolean {
 	return backgroundRunsPermitted
 }
 
-/** Test hook: restore the historical default between cases. */
+/** Test hook: restore the default between cases. */
 export function resetBackgroundRunsPermittedForTest(): void {
-	backgroundRunsPermitted = true
+	backgroundRunsPermitted = false
 }
 
 /** Resolve the session kind for one session, once. */
@@ -76,14 +80,13 @@ export function resolveBashSessionKind(inputs: BashSessionKindInputs): BashSessi
 	// "tui": interactive terminal — a human is always present.
 	if (inputs.mode === "tui") return "user-facing"
 	// "rpc": conversational protocol sessions (ACP installs "rpc"; bare
-	// `--mode rpc` is the embedding channel for frontends with a human
-	// driving them). A turn may END while background commands keep running
-	// only when the client permits background runs — rendering run
-	// start/end and wiring its own stop. Hosts that never declare the
-	// wiring (bare RPC: nothing mutates the flag) keep the historical
-	// user-facing contract. Everyone else keeps the completion guard: a
-	// turn waits out its background commands and the client's existing
-	// stop button covers everything.
+	// `--mode rpc` is the embedding channel for host integrations). A
+	// turn may END while background commands keep running only when the
+	// lever is on — cli.ts switches it on for native rpc mode, and the
+	// ACP server follows its client's backgroundRuns capability. Anything
+	// else on this channel (a host that never declared support) keeps the
+	// completion guard: a turn waits out its background commands and the
+	// client's existing stop button covers everything.
 	if (inputs.mode === "rpc") return getBackgroundRunsPermitted() ? "user-facing" : "unattended"
 	// "print"/"json": one-shot headless output — never user-facing.
 	return "unattended"
