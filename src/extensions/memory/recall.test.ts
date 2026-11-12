@@ -8,7 +8,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { MemorySearchHit } from "./inject.js"
-import { type RecallRunArgs, runRecall, stateFingerprint } from "./recall.js"
+import { buildLoopRecallQuery, type RecallRunArgs, runRecall, stateFingerprint } from "./recall.js"
 
 const hit = (text: string, score = 0.9): MemorySearchHit => ({ memory: text, score }) as MemorySearchHit
 
@@ -187,5 +187,30 @@ describe("stateFingerprint", () => {
 		expect(stateFingerprint("gps 51.5007, -0.1246\nsky grey")).not.toBe(
 			stateFingerprint("gps 48.8566, 2.3522\nsky grey"),
 		)
+	})
+})
+
+describe("buildLoopRecallQuery", () => {
+	it("keeps both ends of a long receipt — state head AND echo tail survive", () => {
+		const receipt = `badges=0 party=0 level=12\n${"map-row ".repeat(120)}\npressed: down,down,down`
+		const query = buildLoopRecallQuery("aim: leave the room", [receipt])
+		expect(query).toContain("aim: leave the room")
+		expect(query).toContain("badges=0 party=0 level=12")
+		expect(query).toContain("pressed: down,down,down")
+		expect(query).toContain("…")
+	})
+
+	it("a short receipt passes through uncut; the reasoning head stays first", () => {
+		const query = buildLoopRecallQuery("plan sentence", ["state: room A"])
+		expect(query).toBe("plan sentence\nstate: room A")
+	})
+
+	it("with no receipts the reasoning head alone fills the query", () => {
+		expect(buildLoopRecallQuery("just the plan", [])).toBe("just the plan")
+	})
+
+	it("the query respects the total budget with a wide head and two receipts", () => {
+		const query = buildLoopRecallQuery("h".repeat(900), [`${"a".repeat(900)}\n${"z".repeat(900)}`])
+		expect(query.length).toBeLessThanOrEqual(2000)
 	})
 })

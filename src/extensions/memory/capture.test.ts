@@ -3709,7 +3709,7 @@ describe("mid-loop recall producer wiring", () => {
 		isError: false,
 	})
 
-	it("delivers the result-text tail to the callback per received tool_result", () => {
+	it("delivers the full result text to the callback per received tool_result", () => {
 		const { api, getHandler } = createExtensionApi()
 		const tails: string[] = []
 		const ctx = createContext()
@@ -3719,12 +3719,10 @@ describe("mid-loop recall producer wiring", () => {
 			(tail) => tails.push(tail),
 		)
 		const tri = getHandler("tool_result")
-		tri(toolResultEvent(`head-${"x".repeat(700)}-END`) as never, ctx)
+		const long = `head-${"x".repeat(700)}-END`
+		tri(toolResultEvent(long) as never, ctx)
 		tri(toolResultEvent("plain text") as never, ctx)
-		expect(tails).toHaveLength(2)
-		expect(tails[0].endsWith("-END")).toBe(true)
-		expect(tails[0].length).toBeLessThanOrEqual(700) // tail-capped, head dropped
-		expect(tails[1]).toBe("plain text")
+		expect(tails).toEqual([long, "plain text"]) // full text: per-use slicing lives downstream
 	})
 
 	it("swallows producer errors — capture keeps working", () => {

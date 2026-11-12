@@ -26,7 +26,6 @@ import {
 	MEMORY_CAPTURE_TOOL_CALL_CHARS,
 	MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS,
 	MEMORY_CAPTURE_TOOL_RESULT_TAIL_CHARS,
-	MEMORY_STEP_ENV_TAIL_CHARS,
 } from "./config.js"
 import { parseBooleanFlag } from "./flags.js"
 import { resolveProjectScope } from "./scope.js"
@@ -46,10 +45,11 @@ export interface MemoryCaptureWiring {
 
 type LoopStepCallback = (toolResultText: string, ctx: ExtensionContext) => void
 
-/** Deliver one received tool result's visible-text tail to the mid-loop
- * recall producer. Swallows producer errors — capture and the agent loop
- * outrank a recall. Used by both the capture-enabled and capture-disabled
- * handler registrations. */
+/** Deliver one received tool result's full visible text to the mid-loop
+ * recall producer (per-use slicing — fingerprint vs query — lives in the
+ * producer's consumer). Swallows producer errors — capture and the agent
+ * loop outrank a recall. Used by both the capture-enabled and
+ * capture-disabled handler registrations. */
 function deliverLoopStepCallback(
 	event: unknown,
 	ctx: ExtensionContext,
@@ -62,7 +62,7 @@ function deliverLoopStepCallback(
 			.filter((c) => c.type === "text")
 			.map((c) => (c.type === "text" ? c.text : ""))
 			.join("\n")
-		onLoopStep(text.slice(-MEMORY_STEP_ENV_TAIL_CHARS), ctx)
+		onLoopStep(text, ctx)
 	} catch (err) {
 		console.error("[memory] loop-step recall producer failed (continuing):", err instanceof Error ? err.message : err)
 	}
