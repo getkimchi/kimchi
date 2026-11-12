@@ -1202,7 +1202,7 @@ describe("memory extension — digest selection gate", () => {
 				createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
 				decision: () => ({
 					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
-					enabled: new Set(["triage"]), // digest NOT enabled
+					enabled: new Set(["valuation"]), // digest NOT enabled
 				}),
 			}),
 		)

@@ -608,13 +608,7 @@ function traceEventContext(ctx: TraceCtx): Record<string, unknown> {
 	return { job: ctx.job, window: ctx.window }
 }
 
-type TraceApiKind =
-	| "extraction-user"
-	| "extraction-assistant"
-	| "supersede-chat"
-	| "triage"
-	| "valuation"
-	| "supersede-d3"
+type TraceApiKind = "extraction-user" | "extraction-assistant" | "supersede-chat" | "valuation" | "supersede-d3"
 
 /** Clone llm options with the exchange hook bound to an api event
  * carrying the given kind + event context (job/window or store). */

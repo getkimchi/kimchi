@@ -16,7 +16,7 @@ import type { ChoiceAnswer, ChoiceQuestion } from "./decision-gate.js"
 import { parseBooleanFlag } from "./flags.js"
 
 /** The gates that exist; each maps to one insertion point in the pipeline. */
-export const DECISION_GATE_KINDS = ["valuation", "triage", "digest", "recall", "supersede"] as const
+export const DECISION_GATE_KINDS = ["valuation", "digest", "recall", "supersede"] as const
 export type DecisionGateKind = (typeof DECISION_GATE_KINDS)[number]
 
 export interface ParsedGateFlags {
