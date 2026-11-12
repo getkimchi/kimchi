@@ -1,8 +1,8 @@
+import { type RawUsage, timeNanos, validateAccountingRaw } from "@getkimchi/kimchi-bridge/work/protocol"
 import { isWorkId } from "../../shared/work-id.js"
 import { isWorkScope, sameWorkScope, type WorkScope } from "../work-attribution/scope.js"
 import { object, type WorkRecord } from "../work-attribution/summary.js"
 import type { StoredRecord } from "./ledger/records.js"
-import { type RawUsage, timeNanos, validateAccountingRaw } from "./protocol.js"
 
 export interface NativeObservation {
 	requestId: string

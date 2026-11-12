@@ -1,26 +1,26 @@
 import { createHash, randomUUID } from "node:crypto"
-import { isWorkId } from "../../../shared/work-id.js"
-import { object } from "../../work-attribution/summary.js"
 import {
 	type Acknowledgement,
-	type Batch,
-	type Event,
 	encodeBatch,
 	encodeEvent,
 	eventHash,
 	eventKind,
+	type IngestBatch,
+	type IngestEvent,
 	normalizeIngestTimes,
-	stableID,
+	protocolVersion,
+	stableId,
 	timeNanos,
-	Version,
 	validateIngestBatch,
 	validateIngestEvent,
-} from "../protocol.js"
+} from "@getkimchi/kimchi-bridge/work/protocol"
+import { isWorkId } from "../../../shared/work-id.js"
+import { object } from "../../work-attribution/summary.js"
 import { backendFor, type OutboxBatch, type OutboxEvent, type RecordBackend } from "./records.js"
 
 const BATCH_EVENTS = 100
 const BATCH_BYTES = 1 << 20
-export type Fact = Omit<Event, "id" | "revision" | "baseRevision" | "baseEventId">
+export type Fact = Omit<IngestEvent, "id" | "revision" | "baseRevision" | "baseEventId">
 
 export interface DeliveryRetry {
 	/** The frozen batch this schedule delays; null while the account's events wait before any batch exists. */
@@ -66,7 +66,7 @@ export function readOutboxStatus(agentDir: string) {
 	)
 }
 
-function isClaim(event: Event): boolean {
+function isClaim(event: IngestEvent): boolean {
 	return (
 		event.source === "kimchi" &&
 		event.usage?.counterScope === "request" &&
@@ -74,7 +74,7 @@ function isClaim(event: Event): boolean {
 	)
 }
 
-function projectClaim(raw: Event, previous?: Event): Event {
+function projectClaim(raw: IngestEvent, previous?: IngestEvent): IngestEvent {
 	const effective = { ...raw }
 	if (isClaim(raw) && raw.startedAt === undefined) effective.startedAt = raw.observeTime
 	if (raw.source === "kimchi" && previous?.source === "kimchi") {
@@ -86,13 +86,13 @@ function projectClaim(raw: Event, previous?: Event): Event {
 	return effective
 }
 
-export function validateClaimUpdate(next: Event, previous?: Event): void {
+export function validateClaimUpdate(next: IngestEvent, previous?: IngestEvent): void {
 	if (!isClaim(next) && (!previous || !isClaim(previous))) return
 	if (next.source !== "kimchi" || next.usage?.counterScope !== "request")
 		throw new Error("Claim source and request scope are immutable")
 	if (previous) {
 		if (!isClaim(previous)) throw new Error("Native request identity cannot become a claim")
-		const repository = (value: Event["repository"]) => (value ? [value.provider, value.host, value.id] : null)
+		const repository = (value: IngestEvent["repository"]) => (value ? [value.provider, value.host, value.id] : null)
 		if (
 			next.usage.requestId?.toLowerCase() !== previous.usage?.requestId?.toLowerCase() ||
 			next.deviceId !== previous.deviceId ||
@@ -110,7 +110,7 @@ export function validateClaimUpdate(next: Event, previous?: Event): void {
 				timeNanos(candidate.recordedAt) === timeNanos(old.recordedAt) &&
 				candidate.source === old.source
 			if (same) {
-				const allocation = (event: Event) =>
+				const allocation = (event: IngestEvent) =>
 					event.allocation
 						? [
 								event.allocation.kind,
@@ -145,17 +145,17 @@ export function validateClaimUpdate(next: Event, previous?: Event): void {
  * Rebuild only this entity's effective claim facts; raw bytes remain the CAS and upload authority. An event the server
  * refused as a conflict never became part of the claim.
  */
-export function effectiveClaim(backend: RecordBackend, accountKey: string, entityId: string): Event | undefined {
-	let effective: Event | undefined
+export function effectiveClaim(backend: RecordBackend, accountKey: string, entityId: string): IngestEvent | undefined {
+	let effective: IngestEvent | undefined
 	for (const row of backend.outboxEntityEvents(accountKey, entityId))
 		if (!row.blocked) effective = projectClaim(unpack(row), effective)
 	return effective
 }
 
-function unpack(row: OutboxEvent): Event {
+function unpack(row: OutboxEvent): IngestEvent {
 	const body = Buffer.from(row.body)
 	if (createHash("sha256").update(body).digest("hex") !== row.hash) throw new Error("Outbox event hash mismatch")
-	const event: Event = JSON.parse(body.toString("utf8"))
+	const event: IngestEvent = JSON.parse(body.toString("utf8"))
 	validateIngestEvent(event)
 	if (event.id !== row.id || event.entityId !== row.entityId || eventKind(event) !== row.kind)
 		throw new Error("Outbox event identity mismatch")
@@ -164,7 +164,7 @@ function unpack(row: OutboxEvent): Event {
 	return event
 }
 
-function neutral(event: Event): Event {
+function neutral(event: IngestEvent): IngestEvent {
 	return { ...event, id: "", revision: "0", baseRevision: "0", baseEventId: "", observeTime: "0001-01-01T00:00:00Z" }
 }
 
@@ -183,18 +183,18 @@ export function observeEvents(
 		assertCurrent()
 		for (const fact of facts) {
 			const event = normalizeIngestTimes({ ...fact, id: "", revision: "1", baseRevision: "0", baseEventId: "" })
-			event.id = stableID(accountKey, event.entityId, eventHash(event))
+			event.id = stableId(accountKey, event.entityId, eventHash(event))
 			validateIngestEvent(event)
 			// The entity's last event the server may hold; one it refused as a conflict is set aside.
 			const previous = backend.latestOutboxEvent(accountKey, event.entityId)
-			let old: Event | undefined
+			let old: IngestEvent | undefined
 			if (previous) {
 				old = unpack(previous)
 				if (eventKind(old) !== eventKind(event)) throw new Error("Outbox entity kind is immutable")
 				// The stored revision already passed every check below.
 				if (eventHash(neutral(old)) === eventHash(neutral(event))) continue
 			}
-			const raw: Event = JSON.parse(encodeEvent(event))
+			const raw: IngestEvent = JSON.parse(encodeEvent(event))
 			validateClaimUpdate(
 				raw,
 				old && (old.source === "kimchi" || raw.source === "kimchi")
@@ -207,7 +207,7 @@ export function observeEvents(
 				event.baseEventId = previous.id
 			}
 			event.id = ""
-			event.id = stableID(accountKey, event.entityId, eventHash(event))
+			event.id = stableId(accountKey, event.entityId, eventHash(event))
 			// The server refused this exact event once; it is never sent again.
 			if (backend.getOutboxEvent(accountKey, event.id)) continue
 			validateIngestEvent(event)
@@ -229,9 +229,9 @@ export function observeEvents(
 	})
 }
 
-function unpackBatch(row: OutboxBatch, backend: RecordBackend): { batch: Batch; events: OutboxEvent[] } {
+function unpackBatch(row: OutboxBatch, backend: RecordBackend): { batch: IngestBatch; events: OutboxEvent[] } {
 	const body = Buffer.from(row.body)
-	const batch: Batch = JSON.parse(body.toString("utf8")).batch
+	const batch: IngestBatch = JSON.parse(body.toString("utf8")).batch
 	validateIngestBatch(batch)
 	if (
 		batch.id !== row.id ||
@@ -256,7 +256,7 @@ function unpackBatch(row: OutboxBatch, backend: RecordBackend): { batch: Batch; 
 
 /** Splice stored event bodies verbatim so fields from newer builds survive delivery. */
 function wireBody(id: string, bodies: readonly Uint8Array[]): Buffer {
-	const head = encodeBatch({ version: Version, id, events: [] }).slice(0, -2)
+	const head = encodeBatch({ version: protocolVersion, id, events: [] }).slice(0, -2)
 	const events = bodies.map((bytes) => Buffer.from(bytes).toString("utf8")).join(",")
 	return Buffer.from(`{"batch":${head}${events}]}}`)
 }
@@ -272,7 +272,7 @@ export function pendingBatch(agentDir: string, accountKey: string, assertCurrent
 			unpackBatch(existing, backend)
 			return existing
 		}
-		const batch: Batch = { version: Version, id: randomUUID(), events: [] }
+		const batch: IngestBatch = { version: protocolVersion, id: randomUUID(), events: [] }
 		const bodies: Uint8Array[] = []
 		for (const row of backend.pendingOutboxEvents(accountKey, BATCH_EVENTS)) {
 			batch.events.push(unpack(row))

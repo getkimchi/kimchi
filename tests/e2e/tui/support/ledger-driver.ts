@@ -825,7 +825,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 	)
 	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
-	const { encodeBatch } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
+	const { encodeBatch } = await import("@getkimchi/kimchi-bridge/work/protocol")
 	const { createHash } = await import("node:crypto")
 	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
 	const backend = backendFor(agent)

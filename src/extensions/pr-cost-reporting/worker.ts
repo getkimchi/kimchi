@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { setImmediate } from "node:timers/promises"
+import type { Acknowledgement } from "@getkimchi/kimchi-bridge/work/protocol"
 import { verifyApiKey } from "../../api/organizations.js"
 import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
@@ -28,7 +29,6 @@ import {
 	readOutboxStatus,
 } from "./ledger/outbox.js"
 import { backendFor, type OutboxBatch, type RecordBackend } from "./ledger/records.js"
-import type { Acknowledgement } from "./protocol.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,

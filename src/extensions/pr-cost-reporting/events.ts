@@ -1,3 +1,14 @@
+import {
+	encodeEvent,
+	gitId,
+	type IngestEvent,
+	type IssueKey,
+	normalizeIngestTimes,
+	stableId,
+	timeNanos,
+	type Usage,
+	validateIngestEvent,
+} from "@getkimchi/kimchi-bridge/work/protocol"
 import { isWorkId } from "../../shared/work-id.js"
 import { pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
@@ -12,17 +23,6 @@ import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary
 import { type Fact, validateClaimUpdate } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
 import { nativeObservations } from "./native.js"
-import {
-	type Event,
-	encodeEvent,
-	gitID,
-	type IssueKey,
-	normalizeIngestTimes,
-	stableID,
-	timeNanos,
-	type Usage,
-	validateIngestEvent,
-} from "./protocol.js"
 import {
 	accountKey,
 	allocationFor,
@@ -59,7 +59,7 @@ export function buildEvents(
 	repositories: Map<string, RepositoryIdentity>,
 	producerId: string,
 	check: () => void,
-	existingClaim: (account: string, entity: string) => Event | undefined,
+	existingClaim: (account: string, entity: string) => IngestEvent | undefined,
 	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
 ): CommonEvents {
 	const records = stored.map((row) => {
@@ -83,7 +83,7 @@ export function buildEvents(
 	const accounts = new Map<string, { account: WorkAccount; facts: Map<string, Fact>; recordHashes: Set<string> }>()
 	const owners = new Map<string, RequestOwner>()
 	// The claims the outbox holds for the requests this pass translates, by account and entity.
-	const claims = new Map<string, Event | undefined>()
+	const claims = new Map<string, IngestEvent | undefined>()
 	const unresolved: CommonEvents["unresolved"] = []
 	const units: EventUnit[] = []
 	for (const [requestId, evidence] of attribution) {
@@ -137,7 +137,7 @@ export function buildEvents(
 			const identity = repositories.get(scope.repository)
 			if (!identity) throw new Error("repository_unresolved")
 			const key = accountKey(scope.account)
-			const entityId = stableID("kimchi", "request", key, producerId, requestId.toLowerCase())
+			const entityId = stableId("kimchi", "request", key, producerId, requestId.toLowerCase())
 			const previous = included ? existingClaim(key, entityId) : undefined
 			if (included) claims.set(`${key}\u0000${entityId}`, previous)
 			const entities = [entityId]
@@ -197,7 +197,7 @@ export function buildEvents(
 					incomplete = true
 				} else {
 					usage.iterations = observed.iterations.map((iteration, index) => ({
-						id: stableID(entityId, "iteration", String(index)),
+						id: stableId(entityId, "iteration", String(index)),
 						schema: ["message", "fallback_message", "advisor_message", "compaction"].includes(iteration.type ?? "")
 							? observed.schema
 							: "unknown",
@@ -260,7 +260,7 @@ export function buildEvents(
 						},
 				...(evidence.correction ? { correction: evidence.correction } : {}),
 			})
-			const workEntity = stableID("kimchi", "work", key, producerId, row.workId)
+			const workEntity = stableId("kimchi", "work", key, producerId, row.workId)
 			entities.push(workEntity)
 			const previousWork = group.facts.get(workEntity)?.work
 			const workKeys = new Set([...(previousWork?.issueKeys ?? []).map(({ key }) => key), ...evidence.workIssueKeys])
@@ -283,7 +283,7 @@ export function buildEvents(
 				const pr = candidate.pullRequest
 				if (!pr?.id || !pr.repositoryId || !validTime(pr.checkedAt)) continue
 				const repo = { provider: pr.provider ?? "github", host: pr.host, id: pr.repositoryId, name: pr.repository }
-				const prEntity = stableID("kimchi", "pull_request", key, producerId, repositoryKey(repo), pr.id)
+				const prEntity = stableId("kimchi", "pull_request", key, producerId, repositoryKey(repo), pr.id)
 				entities.push(prEntity)
 				const previous = group.facts.get(prEntity)?.pullRequest
 				const keys = new Map<string, IssueKey>()
@@ -314,7 +314,7 @@ export function buildEvents(
 							.slice(0, 20),
 					},
 				})
-				const link = stableID("kimchi", "work_pr", key, producerId, row.workId, repositoryKey(repo), pr.id)
+				const link = stableId("kimchi", "work_pr", key, producerId, row.workId, repositoryKey(repo), pr.id)
 				entities.push(link)
 				group.facts.set(link, {
 					...common,
@@ -410,9 +410,9 @@ export function buildEvents(
 				observeTime: row.recordedAt,
 				repository: identity === "unsupported" ? undefined : identity,
 			}
-			const id = (...parts: string[]) => stableID("kimchi", key, producerId, row.workId, row.sessionId, ...parts)
+			const id = (...parts: string[]) => stableId("kimchi", key, producerId, row.workId, row.sessionId, ...parts)
 			const toolId = (call: string, request: string) =>
-				stableID("kimchi", "tool_call", key, producerId, row.sessionId, request.toLowerCase(), call)
+				stableId("kimchi", "tool_call", key, producerId, row.sessionId, request.toLowerCase(), call)
 			const facts: Fact[] = []
 			const coverage = (code: string, count = 1, suffix = "") =>
 				facts.push({
@@ -432,12 +432,12 @@ export function buildEvents(
 					if (
 						!object(state) ||
 						typeof state.blob !== "string" ||
-						!gitID(state.blob.toLowerCase()) ||
+						!gitId(state.blob.toLowerCase()) ||
 						typeof state.mode !== "string" ||
 						!["100644", "100755", "120000", "160000"].includes(state.mode)
 					)
 						throw new Error("invalid_file_revision")
-					return stableID(key, producerId, owner.scope.repository, path, state.blob.toLowerCase(), state.mode)
+					return stableId(key, producerId, owner.scope.repository, path, state.blob.toLowerCase(), state.mode)
 				}
 				const previous = revision(before),
 					current = revision(after)
@@ -446,7 +446,7 @@ export function buildEvents(
 					...common,
 					entityId: id(row.type, entity, path),
 					file: {
-						fileId: stableID(key, producerId, owner.scope.repository, path),
+						fileId: stableId(key, producerId, owner.scope.repository, path),
 						toolCallId:
 							typeof row.toolCallId === "string" && typeof row.requestId === "string"
 								? toolId(row.toolCallId, row.requestId)
@@ -490,7 +490,7 @@ export function buildEvents(
 						tool: {
 							callId: toolId(row.toolCallId, row.requestId),
 							name: row.toolName,
-							requestEntityId: stableID("kimchi", "request", key, producerId, row.requestId.toLowerCase()),
+							requestEntityId: stableId("kimchi", "request", key, producerId, row.requestId.toLowerCase()),
 							category:
 								row.toolName === "read"
 									? "read"
@@ -546,9 +546,9 @@ export function buildEvents(
 						repository: undefined,
 						entityId: id("plan", row.path, String(row.contentHash ?? row.recordedAt)),
 						work: {
-							planId: stableID(key, producerId, owner.scope.repository, row.path),
+							planId: stableId(key, producerId, owner.scope.repository, row.path),
 							...(typeof row.contentHash === "string"
-								? { planRevision: stableID(key, producerId, row.contentHash) }
+								? { planRevision: stableId(key, producerId, row.contentHash) }
 								: {}),
 							reason: "saved_plan",
 							quality: "observed",
@@ -568,7 +568,7 @@ export function buildEvents(
 			if (!facts.length) continue
 			for (const fact of facts) {
 				check()
-				validateIngestEvent({ ...fact, id: stableID(fact.entityId), revision: "1" })
+				validateIngestEvent({ ...fact, id: stableId(fact.entityId), revision: "1" })
 			}
 			const group = accounts.get(key) ?? { account, facts: new Map<string, Fact>(), recordHashes: new Set<string>() }
 			for (const fact of facts) group.facts.set(fact.entityId, fact)
@@ -598,7 +598,7 @@ export function buildEvents(
 				let accepted = !!fact
 				try {
 					if (fact) {
-						const event = normalizeIngestTimes({ ...fact, id: stableID(fact.entityId), revision: "1" })
+						const event = normalizeIngestTimes({ ...fact, id: stableId(fact.entityId), revision: "1" })
 						validateIngestEvent(event)
 						// The outbox would refuse this claim update, and with it every event of the pass.
 						if (fact.usage) validateClaimUpdate(JSON.parse(encodeEvent(event)), claims.get(id))
