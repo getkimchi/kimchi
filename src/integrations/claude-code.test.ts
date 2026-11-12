@@ -36,6 +36,21 @@ describe("claudeCodeEnv", () => {
 		})
 	})
 
+	it("keeps a CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS value the user already set", () => {
+		const env = claudeCodeEnv("k", undefined, { userEnv: { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "0" } })
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+	})
+
+	it("passes an empty CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS through, which Claude Code reads as not disabled", () => {
+		const env = claudeCodeEnv("k", undefined, { userEnv: { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "" } })
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("")
+	})
+
+	it("defaults CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS to 1 when the user env does not set it", () => {
+		const env = claudeCodeEnv("k", undefined, { userEnv: { FOO: "bar" } })
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+	})
+
 	it("accepts a custom base URL for testing", () => {
 		const env = claudeCodeEnv("k", "https://example.com/anthropic")
 		expect(env.ANTHROPIC_BASE_URL).toBe("https://example.com/anthropic")
@@ -84,6 +99,15 @@ describe("claudeCodeEnv", () => {
 })
 
 describe("injectClaudeCodeEnv", () => {
+	beforeEach(() => {
+		// The writer reads the shell value; keep the developer's own env out of these tests.
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", undefined)
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+	})
+
 	it("merges into an existing env block without removing unrelated keys", () => {
 		const env: Record<string, unknown> = { FOO: "bar" }
 		injectClaudeCodeEnv(env, "https://b", "k")
@@ -97,6 +121,62 @@ describe("injectClaudeCodeEnv", () => {
 		injectClaudeCodeEnv(env, "https://b", "new")
 		expect(env.ANTHROPIC_API_KEY).toBe("")
 		expect(env.ANTHROPIC_AUTH_TOKEN).toBe("new")
+	})
+
+	it("keeps a CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS value already in settings.json", () => {
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "0" }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+	})
+
+	it("keeps a JSON number or boolean CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS untouched", () => {
+		const zero: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 0 }
+		injectClaudeCodeEnv(zero, "https://b", "k")
+		expect(zero.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe(0)
+
+		const off: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: false }
+		injectClaudeCodeEnv(off, "https://b", "k")
+		expect(off.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe(false)
+	})
+
+	it("keeps an empty CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS, which Claude Code reads as not disabled", () => {
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "" }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("")
+	})
+
+	it("treats a null CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS in settings.json as unset", () => {
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: null }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+	})
+
+	it("sets CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS to 1 when neither settings.json nor the shell has it", () => {
+		const env: Record<string, unknown> = {}
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+	})
+
+	it("writes the shell CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS when settings.json does not have it", () => {
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
+		const env: Record<string, unknown> = {}
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+	})
+
+	it("replaces a settings.json CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS when the shell sets a different one", () => {
+		// The "1" an earlier setup-tools wrote is replaced by CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0 kimchi setup-tools.
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1" }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+	})
+
+	it("keeps the settings.json JSON type when the shell sets the same value", () => {
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 0 }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe(0)
 	})
 
 	it("adds OTEL env vars when telemetryEnabled is true", () => {
@@ -229,6 +309,8 @@ describe("claude-code tool registration", () => {
 		scratchHome = mkdtempSync(join(tmpdir(), "kimchi-claude-test-"))
 		prevHome = process.env.HOME
 		process.env.HOME = scratchHome
+		// write() reads the shell's betas value; keep the developer's shell out of it.
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", undefined)
 		// Default: findBinary returns a valid path so existing tests pass
 		const { findBinary } = await import("../integrations/detect.js")
 		vi.mocked(findBinary).mockReturnValue(join(scratchHome, "bin", "claude"))
@@ -238,6 +320,7 @@ describe("claude-code tool registration", () => {
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
 		rmSync(scratchHome, { recursive: true, force: true })
+		vi.unstubAllEnvs()
 	})
 
 	it("registers itself with the integrations registry on import", () => {
@@ -274,6 +357,14 @@ describe("claude-code tool registration", () => {
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
 		expect(written.env.ANTHROPIC_AUTH_TOKEN).toBe("fresh-key")
 		expect(written.env.OTEL_LOGS_EXPORTER).toBeUndefined()
+	})
+
+	it("write() records a shell CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0 in a fresh settings.json", async () => {
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
+		await byId("claudecode")?.write("global", "k", TEST_MODELS)
+
+		const written = JSON.parse(readFileSync(join(scratchHome, ".claude", "settings.json"), "utf-8"))
+		expect(written.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
 	})
 
 	it("write() includes OTEL env vars when telemetryEnabled is true", async () => {

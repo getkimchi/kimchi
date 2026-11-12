@@ -26,6 +26,7 @@ import {
 	resetRedactorEngine,
 } from "./redactor.js"
 import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
+import { createTokenVault, resetTokenVaults, substituteTokens } from "./vault.js"
 
 // ─── Fixture assembly ────────────────────────────────────────────────────────
 // Fixture VALUES are assembled at runtime, never written as literals: this
@@ -571,17 +572,18 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 		invalidateJsonCache(getResourceSettingsPath())
 	}
 
-	it("absent key → tier-registry defaults, empty user list", () => {
+	it("absent key → tier-registry defaults, nothing disabled", () => {
 		const config = getRedactionConfig()
-		expect(config.excludedEntities).toEqual(getDefaultExcludedEntities())
-		expect(config.userExcludedEntities).toEqual([])
+		expect(config.resolved.engineExclusions).toEqual(getDefaultExcludedEntities())
+		expect(config.resolved.disabledEntities.size).toBe(0)
+		expect(config.resolved.customPatterns).toEqual([])
 	})
 
-	it("a present array replaces the defaults wholesale (raw list exposed)", () => {
+	it("a present array replaces the defaults wholesale (raw list preserved)", () => {
 		writeSettings({ excludedEntities: ["GUID"] })
 		const config = getRedactionConfig()
-		expect(config.excludedEntities).toEqual(["GUID"])
-		expect(config.userExcludedEntities).toEqual(["GUID"])
+		expect(config.resolved.engineExclusions).toEqual(["GUID"])
+		expect(config.resolved.disabledEntities).toEqual(new Set(["GUID"]))
 	})
 
 	it("unknown entity names throw (fail-visible)", () => {
@@ -599,7 +601,7 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 		await setOrgPolicyForTests({ resources: { [PII_REDACTION_RESOURCE_ID]: "FORCE_ON" } })
 		const config = getRedactionConfig()
 		expect(config.enabled).toBe(true)
-		expect(config.excludedEntities).toEqual(getDefaultExcludedEntities())
+		expect(config.resolved.engineExclusions).toEqual(getDefaultExcludedEntities())
 	})
 
 	it("user-replaced exclusions re-enable bare-shape detection (replace semantics)", async () => {
@@ -764,6 +766,17 @@ describe("settings validation failure — degrade, never silently bypass", () =>
 		// NOT swallow the config error into a full bypass.
 		const result = await redactText(`mail ${fx.email} key ${["sk-", "liveTe".repeat(4), "9z"].join("")}`)
 		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(getRedactionConfigError()).toBeDefined()
+	})
+
+	it("a broken local settings file does not knock out the org's own rules", async () => {
+		await setOrgPolicyForTests({ redaction: { categories: { emails: "KIMCHI_REDACTION_STATE_OFF" } } })
+		writeSettings({ excludedEntities: ["SSN"] }) // unknown: real name is US_SSN
+		resetRedactorEngine()
+		const result = await redactText(`mail ${fx.email}`)
+		// The org said emails pass through; a local typo it did not write
+		// must not silently re-enable them in the degraded snapshot.
+		expect(result).toContain(fx.email)
 		expect(getRedactionConfigError()).toBeDefined()
 	})
 
@@ -1190,5 +1203,423 @@ describe("precision defaults — scope guards", () => {
 	it("treats Unicode and punycode TLDs as real", () => {
 		expect(isTechnicalEmailDomain("пример.рф")).toBe(false)
 		expect(isTechnicalEmailDomain("example.xn--p1ai")).toBe(false)
+	})
+})
+
+describe("getRedactionConfig — redaction.renderMode settings", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-render-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
+	})
+
+	afterEach(() => {
+		resetRedactorEngine()
+		resetOrgPolicyForTests()
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	function writeSettings(redaction: unknown): void {
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
+		invalidateJsonCache(getResourceSettingsPath())
+	}
+
+	it("absent key → tokens", () => {
+		expect(getRedactionConfig().renderMode).toBe("tokens")
+	})
+
+	it('"tokens" parses', () => {
+		writeSettings({ renderMode: "tokens" })
+		expect(getRedactionConfig().renderMode).toBe("tokens")
+	})
+
+	it('"markers" parses explicitly', () => {
+		writeSettings({ renderMode: "markers" })
+		expect(getRedactionConfig().renderMode).toBe("markers")
+	})
+
+	it("invalid values throw (fail-visible)", () => {
+		writeSettings({ renderMode: "cloaked" })
+		expect(() => getRedactionConfig()).toThrow(/renderMode/)
+	})
+
+	it("non-string values throw", () => {
+		writeSettings({ renderMode: 2 })
+		expect(() => getRedactionConfig()).toThrow(/renderMode/)
+	})
+
+	it("FORCE locks follow the tokens default — the org lock pins the resource, not the presentation", async () => {
+		// A local settings override (including markers) is never read under a
+		// lock: the deployment renders the default in every case.
+		writeSettings({ renderMode: "markers" })
+		await setOrgPolicyForTests({ resources: { [PII_REDACTION_RESOURCE_ID]: "FORCE_ON" } })
+		expect(getRedactionConfig().renderMode).toBe("tokens")
+	})
+})
+
+describe("token mode — composition and tally parity", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-token-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
+		resetTokenVaults()
+	})
+
+	afterEach(() => {
+		resetRedactorEngine()
+		resetOrgPolicyForTests()
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	function writeSettings(redaction: unknown): void {
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
+		invalidateJsonCache(getResourceSettingsPath())
+	}
+
+	it("identifier entities render as stable tokens; secret classes stay markers", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const vault = createTokenVault()
+		const first = await redactObjectStringsMeasured(
+			{ a: `mail ${fx.email}`, b: `host ${fx.ipAddress}`, c: `bearer ${fx.bearerValue}` },
+			vault,
+		)
+		const out = JSON.stringify(first.redacted)
+		expect(out).toContain("[EMAIL_ADDRESS_1]")
+		expect(out).toContain("[IP_ADDRESS_1]")
+		expect(out).toContain("[REDACTED-BEARER_TOKEN]")
+		expect(out).not.toContain(fx.email)
+		expect(out).not.toContain(fx.ipAddress)
+		expect(out).not.toContain(fx.bearerValue)
+		// Stability: the same address in a second pass reuses the token.
+		const second = await redactObjectStringsMeasured({ d: `again ${fx.email}` }, vault)
+		expect(JSON.stringify(second.redacted)).toContain("[EMAIL_ADDRESS_1]")
+		// A distinct address allocates the next counter.
+		const other = await redactObjectStringsMeasured({ e: `ping ${["robin.hood", "corp-mail.io"].join("@")}` }, vault)
+		expect(JSON.stringify(other.redacted)).toContain("[EMAIL_ADDRESS_2]")
+		// Round-trip: presentation-side substitution recovers the originals
+		// from tokens; markers are untouched by substitution.
+		expect(substituteTokens(vault, JSON.stringify(first.redacted))).toContain(fx.email)
+		expect(substituteTokens(vault, "[REDACTED-BEARER_TOKEN]")).toBe("[REDACTED-BEARER_TOKEN]")
+	})
+
+	it("engine detections outside the token set stay marker-shaped in token mode", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const result = await redactObjectStringsMeasured({ cc: `card ${fx.creditCard}` }, createTokenVault())
+		expect(JSON.stringify(result.redacted)).toContain("[REDACTED-CREDIT_CARD]")
+	})
+
+	it("a missing vault under token settings falls back to markers", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const result = await redactObjectStringsMeasured({ a: `mail ${fx.email}` })
+		expect(JSON.stringify(result.redacted)).toContain("[REDACTED-EMAIL_ADDRESS]")
+	})
+
+	it("tokens are the default mode (no renderMode key)", async () => {
+		const result = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, createTokenVault())
+		expect(JSON.stringify(result.redacted)).toContain("[EMAIL_ADDRESS_1]")
+	})
+
+	it("tally parity: identical input reports identical entities in both modes", async () => {
+		const input = {
+			a: `mail ${fx.email}`,
+			b: `second ${["robin.hood", "corp-mail.io"].join("@")} host ${fx.ipAddress}`,
+		}
+		writeSettings({ renderMode: "markers" })
+		const markerRun = await redactObjectStringsMeasured(structuredClone(input))
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const tokenRun = await redactObjectStringsMeasured(structuredClone(input), createTokenVault())
+		expect(tokenRun.report.entities).toEqual(markerRun.report.entities)
+		expect(Object.keys(tokenRun.report.entities).length).toBeGreaterThan(0)
+	})
+
+	it("a re-scan of already-tokenized text nets to zero introduced redactions", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const vault = createTokenVault()
+		const first = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, vault)
+		const second = await redactObjectStringsMeasured(first.redacted, vault)
+		expect(second.report.entities).toEqual({})
+	})
+
+	it("a token in the input can never be re-consumed by the custom-pattern pass", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const vault = createTokenVault()
+		// GENERIC_SECRET's value charset excludes `[`/`]`, so the composed
+		// token must survive the second pass verbatim.
+		const result = await redactObjectStringsMeasured(
+			{ a: `password: somelongsecretvalue123 and mail ${fx.email}` },
+			vault,
+		)
+		expect(JSON.stringify(result.redacted)).toContain("[EMAIL_ADDRESS_1]")
+	})
+
+	it("strict export stays markers under token-mode settings", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const result = await redactObjectStringsStrict({ a: `mail ${fx.email}` })
+		expect(JSON.stringify(result)).toContain("[REDACTED-EMAIL_ADDRESS]")
+	})
+
+	it("strict export converts tokens already stored in the input to markers (exports leak nothing reversible)", async () => {
+		// The export walk starts from STORED session entries, which token mode
+		// keeps tokenized — a strict pass over those strings used to ship the
+		// token (and implicitly the vault-resolvable original) out the door.
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const vault = createTokenVault()
+		const stored = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, vault)
+		expect(JSON.stringify(stored.redacted)).toContain("[EMAIL_ADDRESS_1]")
+		const exported = await redactObjectStringsStrict(stored.redacted)
+		expect(JSON.stringify(exported)).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(JSON.stringify(exported)).not.toContain("[EMAIL_ADDRESS_1]")
+	})
+
+	it("excluded entities drop detections in token mode exactly as in marker mode", async () => {
+		writeSettings({ renderMode: "tokens", excludedEntities: [...getDefaultExcludedEntities(), "EMAIL_ADDRESS"] })
+		resetRedactorEngine()
+		const result = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, createTokenVault())
+		expect(JSON.stringify(result.redacted)).toContain(fx.email)
+		expect(result.report.entities).toEqual({})
+	})
+})
+
+describe("redactObjectStrings — image payloads are binary, not text", () => {
+	// Real-session shape: base64 of an ordinary PNG happened to contain a run
+	// matching the crates.io token pattern. Replacing it corrupted the image,
+	// and the provider rejected every later turn with a 400.
+	const tokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
+	const base64 = `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC==`
+	const fromBytes = (head: string) => `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+	// A break inside the first 16 base64 chars shrinks the signature window.
+	const breakInSignature = (head: string) => {
+		const raw = `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+		return `${raw.slice(0, 8)}\n${raw.slice(8)}`
+	}
+
+	it.each([
+		["internal image block", { type: "image", mimeType: "image/png", data: base64 }],
+		["Anthropic source block", { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } }],
+		["Google inlineData part", { inlineData: { mimeType: "image/png", data: base64 } }],
+		["OpenAI image_url part", { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }],
+		["OpenAI Responses input_image part", { type: "input_image", image_url: `data:image/png;base64,${base64}` }],
+		["Mistral imageUrl part", { type: "image_url", imageUrl: `data:image/png;base64,${base64}` }],
+		["base64 with a trailing newline", { mimeType: "image/png", data: `${base64}\n` }],
+		["line-wrapped base64", { mimeType: "image/png", data: `${base64.slice(0, 60)}\r\n${base64.slice(60)}` }],
+		["data URL with parameters", { image_url: { url: `data:image/png;name=a.png;base64,${base64}` } }],
+		["data URL from a parameterised mime type", { image_url: { url: `data:image/png; charset=x;base64,${base64}` } }],
+		["JPEG bytes", { mimeType: "image/jpeg", data: fromBytes("\xff\xd8\xff") }],
+		["GIF bytes", { mimeType: "image/gif", data: fromBytes("GIF89a") }],
+		["WebP bytes", { mimeType: "image/webp", data: fromBytes("RIFF\x10\0\0\0WEBP") }],
+		[
+			"WebP with a break inside its signature",
+			{ mimeType: "image/webp", data: breakInSignature("RIFF\x10\0\0\0WEBP") },
+		],
+		[
+			"data URL with a long name parameter",
+			{ image_url: { url: `data:image/png;name=${"a".repeat(200)};base64,${base64}` } },
+		],
+		["image data URL in an array under image_url", { image_url: [{ url: `data:image/png;base64,${base64}` }] }],
+	])("leaves %s byte-identical", async (_name, block) => {
+		expect(await redactObjectStrings({ role: "user", content: [block] })).toEqual({ role: "user", content: [block] })
+	})
+
+	it.each([
+		["data field without an image mime type", { mimeType: "text/plain", data: tokenShaped }],
+		["image block whose data is not base64", { mimeType: "image/png", data: `note: ${tokenShaped}` }],
+		["data URL with text after the payload", { image_url: { url: `data:image/png;base64,AAAA ${tokenShaped}` } }],
+		["non-image data URL", { image_url: { url: `data:text/plain;base64,${tokenShaped}` } }],
+		["bare secret labelled as an image", { mimeType: "image/png", data: tokenShaped }],
+		["bare secret with an empty image subtype", { mimeType: "image/", data: tokenShaped }],
+		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo${tokenShaped}` }],
+		["image data URL whose bytes are not an image", { image_url: { url: `data:image/png;base64,${tokenShaped}A` } }],
+		["image data URL inside a text block", { type: "text", text: `data:image/png;base64,${base64}` }],
+		["image data URL as a tool argument", { command: `data:image/png;base64,${base64}` }],
+		["image data URL under a generic url key", { url: `data:image/png;base64,${base64}` }],
+	])("still scans %s", async (_name, block) => {
+		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-CRATES_IO_TOKEN]")
+	})
+
+	it("scans a bare top-level image data URL as text", async () => {
+		expect(await redactObjectStrings(`data:image/png;base64,${base64}`)).toContain("[REDACTED-CRATES_IO_TOKEN]")
+	})
+
+	it("keeps Bedrock's binary image bytes as a typed array", async () => {
+		const bytes = new Uint8Array([137, 80, 78, 71])
+		const out = await redactObjectStrings({ image: { format: "png", source: { bytes } } })
+		expect(out.image.source.bytes).toBeInstanceOf(Uint8Array)
+		expect(out.image.source.bytes).toEqual(bytes)
+	})
+})
+
+describe("redaction policy — categories/entities/customEntities settings", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-policy-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
+		resetRedactorEngine()
+	})
+
+	afterEach(() => {
+		resetRedactorEngine()
+		resetOrgPolicyForTests()
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	function writeSettings(redaction: unknown): void {
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
+		invalidateJsonCache(getResourceSettingsPath())
+	}
+
+	it("unknown key inside the redaction section throws (fail-visible)", () => {
+		writeSettings({ categoriis: { secrets: "off" } })
+		expect(() => getRedactionConfig()).toThrow(/unknown property/)
+	})
+
+	it("entity OFF passes that type through; other types still redact", async () => {
+		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
+		resetRedactorEngine()
+		const result = await redactTextOrThrow(`Contact ${fx.email} CC: ${fx.creditCard}`)
+		expect(result).toContain(fx.email)
+		expect(result).not.toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result).toContain("[REDACTED-CREDIT_CARD]")
+	})
+
+	it("category OFF secrets passes tokens, anchored secrets, and SECRET_FIELD through", async () => {
+		const secret = ["opaque-prox", "y-token-99"].join("")
+		writeSettings({ categories: { secrets: "off" } })
+		resetRedactorEngine()
+
+		for (const input of [
+			`Token ${fx.ghpToken} leaked`,
+			`key ${fx.castaiKey} here`,
+			["the api_secret: ", secret].join(""),
+		]) {
+			expect(await redactTextOrThrow(input)).toBe(input)
+		}
+		// SECRET_FIELD is a secrets member: the JSON-key force-redaction stops.
+		expect(await redactObjectStrings({ password: "abc" + "123" })).toEqual({ password: "abc123" })
+		// Other categories untouched.
+		const other = await redactTextOrThrow(`CC: ${fx.creditCard} config at ${fx.localPath}`)
+		expect(other).toContain("[REDACTED-CREDIT_CARD]")
+		expect(other).toContain("[REDACTED-LOCAL_PATH]")
+	})
+
+	it("entity ON redacts a bare-shape type (PHONE_NUMBER)", async () => {
+		writeSettings({ entities: { PHONE_NUMBER: "on" } })
+		resetRedactorEngine()
+		const result = await redactTextOrThrow(`Call ${fx.phone} to reach support`)
+		expectRedacted(result, fx.phone, "PHONE_NUMBER")
+	})
+
+	it("entity ON keeps an anchor-required bare shape off, anchored forms covered", async () => {
+		writeSettings({ entities: { AWS_SECRET_KEY: "on" } })
+		resetRedactorEngine()
+		const bare = `replica sharer ${fx.awsSecret} tail`
+		expect(await redactTextOrThrow(bare)).toBe(bare)
+		const anchored = await redactTextOrThrow(`aws_secret_access_key= "${fx.awsSecret}"`)
+		expectRedacted(anchored, fx.awsSecret, "AWS_SECRET_KEY")
+	})
+
+	it("custom entities redact their capture group and attribute their category", async () => {
+		writeSettings({
+			customEntities: [
+				{
+					name: "ACME_EMPLOYEE_ID",
+					category: "identity_documents",
+					pattern: "(emp[-_ ]?id\\s*[:=]\\s*)(E\\d{6})",
+					flags: "i",
+					secretGroup: 2,
+				},
+			],
+		})
+		resetRedactorEngine()
+		const { redacted, report } = await redactObjectStringsMeasured({ note: "assigned to emp id: E123456 today" })
+		expect(redacted).toEqual({ note: "assigned to emp id: [REDACTED-ACME_EMPLOYEE_ID] today" })
+		expect(report.entities).toEqual({ ACME_EMPLOYEE_ID: 1 })
+		expect(report.categories).toEqual({ ACME_EMPLOYEE_ID: "identity_documents" })
+	})
+
+	it("custom entities honor the OFF state (entity and category level)", async () => {
+		writeSettings({
+			customEntities: [{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}" }],
+			entities: { ACME_EMPLOYEE_ID: "off" },
+		})
+		resetRedactorEngine()
+		const input = "assigned to E123456"
+		expect(await redactTextOrThrow(input)).toBe(input)
+	})
+
+	it("mixing legacy excludedEntities with the policy keys throws (fail-visible)", () => {
+		writeSettings({ excludedEntities: ["GUID"], categories: { secrets: "off" } })
+		expect(() => getRedactionConfig()).toThrow(/cannot be combined/)
+	})
+
+	it("mid-session edits rebuild the engine without restart", async () => {
+		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
+		resetRedactorEngine()
+		const nowOff = await redactTextOrThrow(fx.email)
+		expect(nowOff).toBe(fx.email)
+
+		writeSettings({ entities: { PHONE_NUMBER: "on" } })
+		// No resetRedactorEngine: the config signature change must rebuild.
+		const result = await redactTextOrThrow(`Call ${fx.phone}; mail ${fx.email}`)
+		expect(result).toContain("[REDACTED-PHONE_NUMBER]")
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result).not.toContain(fx.email)
+	})
+
+	it("the org-managed policy applies per key above local settings", async () => {
+		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
+		await setOrgPolicyForTests({
+			redaction: {
+				categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+				entities: { EMAIL_ADDRESS: "KIMCHI_REDACTION_STATE_ON" },
+			},
+		})
+		resetRedactorEngine()
+		// Managed entity state wins over the local OFF; managed category
+		// fills the IP key the local file never set.
+		const result = await redactTextOrThrow(`mail ${fx.email} bind ${fx.ipAddress}`)
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result).toContain(fx.ipAddress)
+	})
+
+	it("a local entity toggle can name a managed custom entity", async () => {
+		writeSettings({ entities: { ACME_EMPLOYEE_ID: "off" } })
+		await setOrgPolicyForTests({
+			redaction: {
+				customEntities: [{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}" }],
+			},
+		})
+		resetRedactorEngine()
+		const input = "assigned to E123456"
+		// Local OFF governs the org-defined entity; no parse throw, no redaction.
+		expect(await redactTextOrThrow(input)).toBe(input)
+	})
+
+	it("an unrecognized managed entry drops with a log instead of breaking the pipeline", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		await setOrgPolicyForTests({
+			redaction: { categories: { future_category: "KIMCHI_REDACTION_STATE_OFF" } },
+		})
+		resetRedactorEngine()
+		const result = await redactTextOrThrow(`mail ${fx.email}`)
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(errSpy.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(/dropped/)
+		errSpy.mockRestore()
 	})
 })

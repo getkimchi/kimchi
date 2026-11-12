@@ -38,7 +38,15 @@
  */
 
 import { isFermentToolName } from "../../ferment/tool-names.js"
+import { TODO_CHECKIN_BLOCK_PREFIX } from "../../todos/checkin-gate.js"
 import { hashFilePath } from "../helpers.js"
+
+/** The gate's block reason carries its prefix (shared constant) plus the
+ *  pending input revision; derive the match so this classifier cannot
+ *  silently drift from the gate's text contract. */
+const TODO_CHECKIN_GATE_RE = new RegExp(
+	`^${TODO_CHECKIN_BLOCK_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\d+)\\)\\.`,
+)
 
 export type ToolErrorKind = "failure" | "command_outcome" | "model_mistake" | "blocked" | "declined" | "aborted"
 
@@ -356,7 +364,7 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 	}
 
 	// Cross-tool harness gates.
-	const todo = msg.match(/^⏸ Todo check-in pending \(input revision (\d+)\)\./)
+	const todo = msg.match(TODO_CHECKIN_GATE_RE)
 	if (todo) return { kind: "blocked", message: "Todo check-in gate", attrs: { revision: Number(todo[1]) } }
 
 	if (msg.startsWith("Blocked: the session is in plan mode ") || msg.startsWith("Plan mode: ")) {

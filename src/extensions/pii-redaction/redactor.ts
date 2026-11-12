@@ -20,12 +20,13 @@
  */
 
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
-import { getRedactionConfig } from "./config.js"
-import { getDefaultExcludedEntities } from "./entity-tiers.js"
+import { getManagedRedactionPolicy, getRedactionConfig, type RedactionRenderMode } from "./config.js"
+import { type RedactionPattern, resolveRedactionPolicy } from "./policy.js"
+import { TOKENIZED_ENTITIES, type TokenVault, tokenFor, tokensToMarkers } from "./vault.js"
 
 /**
- * One atomic view of the redaction policy: the engine, the engine-level
- * exclusion set, and the raw user exclusion list, resolved together.
+ * One atomic view of the redaction policy: the engine, the resolved
+ * policy, and the render mode, resolved together.
  *
  * A mid-flight settings edit rebuilds `current` wholesale; in-flight callers
  * keep the snapshot they resolved at pass entry, so a single redaction pass
@@ -37,8 +38,14 @@ import { getDefaultExcludedEntities } from "./entity-tiers.js"
 interface EngineSnapshot {
 	engine: GuardrailsEngine
 	exclusions: ReadonlySet<string>
-	userExclusions: ReadonlySet<string>
-	/** Joined exclusion signature the snapshot was built from. */
+	renderMode: RedactionRenderMode
+	/** Entities whose non-engine coverage is suspended (custom patterns, SECRET_FIELD). */
+	disabled: ReadonlySet<string>
+	/** Built-in customs plus any user-defined patterns, joined once at build time. */
+	patterns: readonly RedactionPattern[]
+	/** Universe entity → category, for telemetry attribution. */
+	categories: ReadonlyMap<string, string>
+	/** Joined policy signature the snapshot was built from. */
 	signature: string
 }
 
@@ -83,12 +90,12 @@ export function createRedactionEngine(excludedEntities: readonly string[]): Guar
  * restart. The comparison is a joined-string signature — O(list), no
  * per-call engine construction.
  *
- * A broken `redaction.excludedEntities` settings block must not turn
- * redaction off: the lenient paths (hooks, bug report) would silently pass
- * text through and the operator's only signal would be a per-event log.
- * Instead the snapshot degrades to the registry defaults, the error is
- * remembered for the strict export path (which fails closed on it), and it
- * is logged once here, loudly.
+ * A broken `redaction` settings block must not turn redaction off: the
+ * lenient paths (hooks, bug report) would silently pass text through and
+ * the operator's only signal would be a per-event log. Instead the snapshot
+ * degrades to the registry defaults, the error is remembered for the strict
+ * export path (which fails closed on it), and it is logged once here,
+ * loudly.
  */
 function resolveSnapshot(): EngineSnapshot {
 	let config: ReturnType<typeof getRedactionConfig>
@@ -99,18 +106,24 @@ function resolveSnapshot(): EngineSnapshot {
 		const error = err instanceof Error ? err : new Error(String(err))
 		if (configError?.message !== error.message) {
 			console.error(
-				`[pii-redaction] ${error.message} — using default exclusions; exports will fail until settings.json is fixed.`,
+				`[pii-redaction] ${error.message} — using default redaction policy; exports will fail until settings.json is fixed.`,
 			)
 		}
 		configError = error
-		config = { enabled: true, excludedEntities: getDefaultExcludedEntities(), userExcludedEntities: [] }
+		// Keep the org's own rules live — its policy parses independently and
+		// must not fall off because of a local settings typo it did not write.
+		config = { enabled: true, renderMode: "markers", resolved: resolveRedactionPolicy(getManagedRedactionPolicy()) }
 	}
-	const signature = [config.excludedEntities.join("\u0001"), config.userExcludedEntities.join("\u0001")].join("\u0002")
+	const signature = [config.resolved.signature, config.renderMode].join("\u0002")
 	if (current && signature === current.signature) return current
 	current = {
-		engine: createRedactionEngine(config.excludedEntities),
-		exclusions: new Set(config.excludedEntities),
-		userExclusions: new Set(config.userExcludedEntities),
+		engine: createRedactionEngine(config.resolved.engineExclusions),
+		exclusions: new Set(config.resolved.engineExclusions),
+		renderMode: config.renderMode,
+		disabled: config.resolved.disabledEntities,
+		// Joined once here — the per-scan loop must not re-allocate on every string.
+		patterns: [...CUSTOM_PATTERNS, ...config.resolved.customPatterns],
+		categories: config.resolved.categories,
 		signature,
 	}
 	return current
@@ -397,6 +410,26 @@ export function composeRedactedText(text: string, kept: EngineDetection[]): stri
 }
 
 /**
+ * Token-mode counterpart of {@link composeRedactedText}: identifier-class
+ * detections (TOKENIZED_ENTITIES) are spliced as stable per-session tokens
+ * recorded in `vault`; every other detection keeps its marker — secret
+ * classes stay marker-shaped in every mode (a vault of live credentials is
+ * strictly more dangerous than a vault of identities). Same right-to-left
+ * splice; the vault's token map is the ONLY place the token→original
+ * mapping exists.
+ */
+export function composeTokenizedText(text: string, kept: EngineDetection[], vault: TokenVault): string {
+	let out = text
+	for (const d of [...kept].sort((a, b) => b.start - a.start)) {
+		const replacement = TOKENIZED_ENTITIES.has(d.entityType)
+			? tokenFor(vault, d.entityType, text.slice(d.start, d.end))
+			: `[REDACTED-${d.entityType}]`
+		out = `${out.slice(0, d.start)}${replacement}${out.slice(d.end)}`
+	}
+	return out
+}
+
+/**
  * Run the engine's detection pass and return composed, exclusion-filtered
  * text. Exported for the shadow-mode analysis script and tier tests —
  * passing `engine` explicitly avoids the process-wide singleton.
@@ -409,23 +442,29 @@ export async function detectAndCompose(
 	return composeRedactedText(text, await collectDetections(text, engine, excluded))
 }
 
+/** Token-mode variant of {@link detectAndCompose} — used by the session hooks. */
+export async function detectAndComposeTokenized(
+	text: string,
+	engine: GuardrailsEngine,
+	excluded: ReadonlySet<string>,
+	vault: TokenVault,
+): Promise<string> {
+	return composeTokenizedText(text, await collectDetections(text, engine, excluded), vault)
+}
+
 // ---------------------------------------------------------------------------
 // Custom redaction patterns not covered by @bulkhead-ai/core
 // ---------------------------------------------------------------------------
 
-interface CustomPattern {
-	name: string
-	regex: RegExp
-	/**
-	 * When set, only this capture group is replaced by the marker; the rest
-	 * of the match (the anchoring context) survives. Group 1 must be the
-	 * anchor, group 2 the secret. Bare patterns (no secretGroup) replace the
-	 * whole match, which is correct for prefixed shapes.
-	 */
-	secretGroup?: number
-}
-
-const CUSTOM_PATTERNS: CustomPattern[] = [
+/**
+ * secretGroup semantics shared with user-defined entities
+ * (policy.ts `RedactionPattern`): when set, only this capture group is
+ * replaced by the marker; the rest of the match (the anchoring context)
+ * survives. Group 1 is the anchor, group 2 the secret. Bare patterns (no
+ * secretGroup) replace the whole match, which is correct for prefixed
+ * shapes.
+ */
+const CUSTOM_PATTERNS: RedactionPattern[] = [
 	// CastAI API keys
 	{ name: "CASTAI_API_KEY", regex: /castai_v1_[A-Za-z0-9_-]{8,}/g },
 	// Bearer tokens (Authorization header or standalone). Anchor is captured
@@ -587,20 +626,28 @@ function isPreservedKey(key: string): boolean {
  * Apply custom regex patterns that the bulkhead engine does not cover.
  * This runs as a second pass after `engine.scan()`.
  *
- * Patterns whose name is in the USER-supplied exclusion list are skipped —
- * the user's `redaction.excludedEntities` governs kimchi-owned markers
- * (e.g. LOCAL_PATH). Registry defaults never filter customs: they exclude
- * anchor-required entities at the ENGINE so their anchored re-additions
- * here can fire (see config.ts / entity-tiers.ts).
+ * Patterns whose name is in the disabled set are skipped — the resolved
+ * policy's disabledEntities governs kimchi-owned markers (e.g. LOCAL_PATH):
+ * an entity/category OFF, or the legacy excludedEntities list. Registry
+ * defaults never filter customs: they exclude anchor-required entities at
+ * the ENGINE so their anchored re-additions here can fire (see config.ts /
+ * entity-tiers.ts).
+ *
+ * User-defined patterns (from redaction.customEntities) run after the
+ * built-ins — the snapshot passes the joined array via `patterns`. A user
+ * pattern can match an earlier marker's text — the same caveat the built-in
+ * GENERIC_SECRET documents; user regexes are the operator's responsibility.
  */
 export function applyCustomPatterns(
 	text: string,
-	excluded: ReadonlySet<string>,
+	disabled: ReadonlySet<string>,
 	onMatch?: (match: { name: string; secret: string }) => void,
+	patterns?: readonly RedactionPattern[],
 ): string {
 	let result = text
-	for (const { name, regex, secretGroup } of CUSTOM_PATTERNS) {
-		if (excluded.has(name)) continue
+	const all = patterns ?? CUSTOM_PATTERNS
+	for (const { name, regex, secretGroup } of all) {
+		if (disabled.has(name)) continue
 		const marker = `[REDACTED-${name}]`
 		result = result.replace(regex, (match, ...args: unknown[]) => {
 			if (secretGroup !== undefined) {
@@ -643,9 +690,17 @@ export function applyCustomPatterns(
  * Bearer tokens, OAuth tokens) as a second pass. Fail-open behavior lives in
  * `redactTextCounted`; this function propagates scan failures.
  */
-async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot): Promise<string> {
-	const afterEngine = await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
-	return applyCustomPatterns(afterEngine, snapshot.userExclusions)
+async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot, vault?: TokenVault): Promise<string> {
+	// Token composition only engages when BOTH the snapshot says token mode
+	// and a session vault exists. A missing vault (unknown/restarted
+	// session, non-hook callers) falls back to markers — markers decay
+	// gracefully in every downstream surface; a token without its vault
+	// renders as dead text.
+	const afterEngine =
+		snapshot.renderMode === "tokens" && vault
+			? await detectAndComposeTokenized(text, snapshot.engine, snapshot.exclusions, vault)
+			: await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
+	return applyCustomPatterns(afterEngine, snapshot.disabled, undefined, snapshot.patterns)
 }
 
 export async function redactTextOrThrow(text: string): Promise<string> {
@@ -687,11 +742,12 @@ async function redactTextCounted(
 	text: string,
 	onFailure?: (err: unknown) => void,
 	snapshot?: EngineSnapshot,
+	vault?: TokenVault,
 ): Promise<string> {
 	try {
 		// A caller-supplied snapshot carries the pass's atomic policy view;
 		// otherwise resolve the current one.
-		return await settleBoundScan(() => redactTextWithSnapshot(text, snapshot ?? resolveSnapshot()))
+		return await settleBoundScan(() => redactTextWithSnapshot(text, snapshot ?? resolveSnapshot(), vault))
 	} catch (err) {
 		onFailure?.(err)
 		return text
@@ -702,6 +758,84 @@ export async function redactText(text: string): Promise<string> {
 	return redactTextCounted(text, (err) => console.error("PII redaction scan failed, returning original text:", err))
 }
 
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+const IS_BASE64_CHAR = new Uint8Array(128)
+for (let i = 0; i < BASE64_ALPHABET.length; i++) IS_BASE64_CHAR[BASE64_ALPHABET.charCodeAt(i)] = 1
+const LINE_FEED = "\n".charCodeAt(0)
+const CARRIAGE_RETURN = "\r".charCodeAt(0)
+const PADDING = "=".charCodeAt(0)
+
+/**
+ * Whether `text` from `start` on is well-formed padded base64; line breaks are
+ * ignored. A char loop rather than a regex: image payloads run to many MB.
+ */
+function isBase64From(text: string, start: number): boolean {
+	let chars = 0
+	let padding = 0
+	for (let i = start; i < text.length; i++) {
+		const c = text.charCodeAt(i)
+		if (c === LINE_FEED || c === CARRIAGE_RETURN) continue
+		if (c === PADDING) {
+			if (++padding > 2) return false
+			continue
+		}
+		if (padding > 0 || IS_BASE64_CHAR[c] !== 1) return false
+		chars++
+	}
+	return chars > 0 && (chars + padding) % 4 === 0
+}
+
+/** Base64 chars needed to decode the 12 bytes the image signatures below inspect. */
+const IMAGE_SIGNATURE_BASE64_CHARS = 16
+
+/**
+ * Whether base64 at `start` decodes to a PNG, JPEG, GIF or WebP signature —
+ * deliberately just those four: the formats vision providers accept. Other
+ * image/* subtypes keep being scanned (fail-closed), never reaching a
+ * provider as images anyway.
+ */
+function hasImageSignature(text: string, start: number): boolean {
+	// Line breaks are legal base64: collect signature chars past them, else a
+	// break inside the window shrinks it and WebP's 12-byte check falls short.
+	let head = ""
+	for (let i = start; i < text.length && head.length < IMAGE_SIGNATURE_BASE64_CHARS; i++) {
+		const c = text.charCodeAt(i)
+		if (c !== LINE_FEED && c !== CARRIAGE_RETURN) head += text[i]
+	}
+	const decoded = Buffer.from(head, "base64").toString("latin1")
+	return (
+		decoded.startsWith("\x89PNG\r\n\x1a\n") ||
+		decoded.startsWith("\xff\xd8\xff") ||
+		decoded.startsWith("GIF8") ||
+		(decoded.startsWith("RIFF") && decoded.slice(8, 12) === "WEBP")
+	)
+}
+
+function isImageBase64From(text: string, start: number): boolean {
+	return hasImageSignature(text, start) && isBase64From(text, start)
+}
+
+const IMAGE_DATA_URL_PREFIX = /^data:image\/[a-z0-9.+-]+(?:;[^;,]*)*;base64,/i
+const IMAGE_URL_KEYS: ReadonlySet<PropertyKey> = new Set(["image_url", "imageUrl"])
+
+/** A complete image data URL in `image_url`/`imageUrl`, or the `url` nested inside one. */
+function isImageDataUrlField(key: PropertyKey, value: string, parentKey: PropertyKey | undefined): boolean {
+	if (!IMAGE_URL_KEYS.has(key) && !(key === "url" && parentKey !== undefined && IMAGE_URL_KEYS.has(parentKey))) {
+		return false
+	}
+	// The ^ anchor keeps the regex cheap on huge non-URL strings; a match ends
+	// at the first comma, which base64 cannot contain.
+	const prefix = IMAGE_DATA_URL_PREFIX.exec(value)
+	return prefix !== null && isImageBase64From(value, prefix[0].length)
+}
+
+/** The base64 `data` of an image block: internal/Google `mimeType`, Anthropic `media_type`. */
+function isImageBlockData(key: PropertyKey, value: string, block: Record<PropertyKey, unknown>): boolean {
+	if (key !== "data") return false
+	const mime = block.mimeType ?? block.media_type
+	return typeof mime === "string" && mime.toLowerCase().startsWith("image/") && isImageBase64From(value, 0)
+}
+
 /**
  * Deep-walk any JSON-serializable structure and redact all string values.
  *
@@ -709,28 +843,38 @@ export async function redactText(text: string): Promise<string> {
  * semantics: every string walked, trace-ID keys passed through unchanged,
  * sensitive-key string values force-redacted, enumerable symbols preserved.
  * Only the per-string redaction function differs (fail-open vs fail-closed).
+ *
+ * Binary image payloads are the one exception: a secret-shaped run in them is
+ * coincidence, and splicing a marker in corrupts the image. Base64 is exempt
+ * only in image fields, when well-formed and carrying a real image signature;
+ * typed arrays (Bedrock's bytes) hold no strings and pass through intact.
+ * Bytes after the signature are trusted wholesale — plaintext EXIF/tEXt
+ * metadata and anything smuggled past the prefix flow through unredacted —
+ * because scanning inside would corrupt the very payload it means to protect.
  */
 async function redactObjectStringsWith<T>(
 	obj: T,
 	redactString: (text: string) => Promise<string>,
 	snapshot: EngineSnapshot,
 	onScannedPair?: (input: string, output: string) => void,
+	parentKey?: PropertyKey,
 ): Promise<T> {
 	if (typeof obj === "string") {
 		const out = await redactString(obj)
 		onScannedPair?.(obj, out)
 		return out as T
 	}
+	if (ArrayBuffer.isView(obj)) return obj
 	if (Array.isArray(obj)) {
 		return Promise.all(
-			obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair)),
+			obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair, parentKey)),
 		) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
 		// The snapshot was resolved once at the pass entry — the sensitive-key
 		// policy below is the same atomic view the string scans use, even if a
 		// concurrent settings edit rebuilds the engine mid-walk.
-		const secretFieldRedacts = !snapshot.userExclusions.has("SECRET_FIELD")
+		const secretFieldRedacts = !snapshot.disabled.has("SECRET_FIELD")
 		const source = obj as Record<PropertyKey, unknown>
 		const keys: PropertyKey[] = [
 			...Object.keys(source),
@@ -744,12 +888,18 @@ async function redactObjectStringsWith<T>(
 				if (typeof key === "string" && isPreservedKey(key)) {
 					return Promise.resolve(value)
 				}
+				if (
+					typeof value === "string" &&
+					(isImageBlockData(key, value, source) || isImageDataUrlField(key, value, parentKey))
+				) {
+					return Promise.resolve(value)
+				}
 				// Redact any string value stored under a sensitive key name.
 				if (secretFieldRedacts && typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					onScannedPair?.(value, "[REDACTED-SECRET_FIELD]")
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
-				return redactObjectStringsWith(value, redactString, snapshot, onScannedPair)
+				return redactObjectStringsWith(value, redactString, snapshot, onScannedPair, key)
 			}),
 		)
 		const result: Record<PropertyKey, unknown> = {}
@@ -802,8 +952,16 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 // Measured variant — redaction + a privacy-safe report stub
 // ---------------------------------------------------------------------------
 
-/** Marker every redaction pass converges on: `[REDACTED-<ENTITY_TYPE>]`. */
-const REDACTION_MARKER_RE = /\[REDACTED-([A-Z0-9_]+)\]/g
+/**
+ * Marker and token shapes a redaction pass can produce: `[REDACTED-<ENTITY>]`
+ * and (token mode) `[<ENTITY>_N]`. The entity group is lazily captured with
+ * an optional trailing counter so both shapes tally under the same entity
+ * key — marker and token modes produce identical tallies for identical
+ * input. A composite token like `[EMAIL_ADDRESS_12]` groups as
+ * EMAIL_ADDRESS (lazy growth stops at the first `]`-terminated suffix), not
+ * `EMAIL_ADDRESS_1`.
+ */
+const REDACTION_SHAPE_RE = /\[(?:REDACTED-)?([A-Z0-9_]+?)(?:_\d+)?\]/g
 
 /**
  * Tally markers INTRODUCED by a single string's redaction pass. Markers
@@ -816,10 +974,10 @@ const REDACTION_MARKER_RE = /\[REDACTED-([A-Z0-9_]+)\]/g
 function tallyMarkersNet(input: string, output: string, entities: Record<string, number>): void {
 	// Cheap path first: most strings contain no markers at all — one output
 	// sweep, and only when markers exist do we pay for the input multiset.
-	const outMarkers = [...output.matchAll(REDACTION_MARKER_RE)]
+	const outMarkers = [...output.matchAll(REDACTION_SHAPE_RE)]
 	if (outMarkers.length === 0) return
 	const available = new Map<string, number>()
-	for (const match of input.matchAll(REDACTION_MARKER_RE)) {
+	for (const match of input.matchAll(REDACTION_SHAPE_RE)) {
 		available.set(match[1], (available.get(match[1]) ?? 0) + 1)
 	}
 	for (const match of outMarkers) {
@@ -843,6 +1001,12 @@ export interface RedactionReport {
 	 * redacted text reports no new redactions.
 	 */
 	entities: Record<string, number>
+	/**
+	 * Category attribution for the tallied entities (entity → category key,
+	 * e.g. EMAIL_ADDRESS → "emails"), resolved from the pass's policy view.
+	 *
+	 */
+	categories: Record<string, string>
 	/** Non-empty strings scanned (values force-redacted via a sensitive key name are not scanned). */
 	stringsScanned: number
 	/** Engine scans that failed open (original text returned). */
@@ -866,8 +1030,14 @@ export interface RedactionMeasurement<T> {
  * over already-redacted text (message_end → before_provider_request) do
  * not double-count.
  */
-export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionMeasurement<T>> {
-	const report: RedactionReport = { entities: {}, stringsScanned: 0, engineFailures: 0 }
+/**
+ * @param vault  Optional session token vault. When the resolved policy is
+ *   token mode and a vault is supplied, identifier detections render as
+ *   `[<ENTITY>_N]` tokens recorded in the vault (presentation-side
+ *   retrieval). Omitted by exports and non-hook callers → markers always.
+ */
+export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault): Promise<RedactionMeasurement<T>> {
+	const report: RedactionReport = { entities: {}, categories: {}, stringsScanned: 0, engineFailures: 0 }
 	let failureLogged = false
 	// One snapshot per measured pass — the SECRET_FIELD gate in the walker and
 	// every settle-bounded string scan see the same atomic policy view.
@@ -879,6 +1049,7 @@ export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionM
 			text,
 			(err) => {
 				report.engineFailures += 1
+
 				// One log per invocation: a persistently degraded engine would
 				// otherwise print a stack trace per scanned string per hook.
 				if (!failureLogged) {
@@ -888,17 +1059,24 @@ export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionM
 				return text
 			},
 			snapshot,
+			vault,
 		)
 	}
 	const redacted = await redactObjectStringsWith(obj, redactStringMeasured, snapshot, (input, output) =>
 		tallyMarkersNet(input, output, report.entities),
 	)
+	// Attribute the tallied entities to categories from this pass's policy
+	// view, so the emitted facts can be grouped by the same unit admins
+	// toggle. A marker typesafe-unknown to the pass's map reports "custom".
+	for (const entity of Object.keys(report.entities)) {
+		report.categories[entity] = snapshot.categories.get(entity) ?? "custom"
+	}
 	return { redacted, report }
 }
 
 /** An empty report — the starting point for cross-invocation aggregation. */
 export function emptyRedactionReport(): RedactionReport {
-	return { entities: {}, stringsScanned: 0, engineFailures: 0 }
+	return { entities: {}, categories: {}, stringsScanned: 0, engineFailures: 0 }
 }
 
 /** Merge `source` into `target` in place (both shaped as {@link RedactionReport}). */
@@ -907,6 +1085,12 @@ export function mergeReports(target: RedactionReport, source: RedactionReport): 
 	target.engineFailures += source.engineFailures
 	for (const [entity, count] of Object.entries(source.entities)) {
 		target.entities[entity] = (target.entities[entity] ?? 0) + count
+	}
+	for (const [entity, category] of Object.entries(source.categories)) {
+		// First attribution wins within one invocation (content before details).
+		// A custom entity whose category the operator redefines mid-session may
+		// attribute its tail to the earlier category — telemetry-only ambiguity.
+		target.categories[entity] ??= category
 	}
 }
 
@@ -918,6 +1102,12 @@ export function mergeReports(target: RedactionReport, source: RedactionReport): 
  * engine/scan failure **propagates** instead of silently returning the
  * original text. Exports fail closed — an unredacted transcript must never
  * be published.
+ *
+ * Reversible tokens already stored in the export input (token mode keeps
+ * session files tokenized) are converted to markers with `tokensToMarkers`:
+ * an export contains no recoverable form of any original. That conversion
+ * is vault-independent and lossy — the right shape for data leaving the
+ * machine.
  *
  * Returns a **new** structure; callers must assign the result.
  */
@@ -932,7 +1122,11 @@ export async function redactObjectStringsStrict<T>(obj: T): Promise<T> {
 	if (settingsError) {
 		throw new Error(`redaction settings invalid: ${settingsError.message}`)
 	}
-	return redactObjectStringsWith(obj, (text) => redactTextWithSnapshot(text, snapshot), snapshot)
+	return redactObjectStringsWith(
+		obj,
+		async (text) => tokensToMarkers(await redactTextWithSnapshot(text, snapshot)),
+		snapshot,
+	)
 }
 
 /** A pi-ai message with optional role/content fields. */

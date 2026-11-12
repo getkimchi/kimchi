@@ -34,6 +34,8 @@ const {
 	buildChangedFilesListMock,
 	sumIncludeListBytesMock,
 	loadWorkspaceFileMock,
+	openWorkspaceSetupMock,
+	listWorkspaceTemplatesMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
@@ -72,6 +74,8 @@ const {
 	buildChangedFilesListMock: vi.fn(),
 	sumIncludeListBytesMock: vi.fn(),
 	loadWorkspaceFileMock: vi.fn(),
+	openWorkspaceSetupMock: vi.fn(),
+	listWorkspaceTemplatesMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
@@ -94,6 +98,10 @@ vi.mock("../../../sandbox/worker/sessions.js", () => ({
 }))
 vi.mock("../overlay/overlay-component.js", () => ({ createTabsOverlay: overlayMock }))
 vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }))
+vi.mock("../ui/workspace-setup.js", () => ({ openWorkspaceSetup: openWorkspaceSetupMock }))
+vi.mock("../../../sandbox/cloud/workspace-templates.js", () => ({
+	listWorkspaceTemplates: listWorkspaceTemplatesMock,
+}))
 vi.mock("../../../sandbox/git-credentials.js", () => ({
 	getGitRemoteHost: getGitRemoteHostMock,
 	parseHostFromRemoteUrl: parseHostMock,
@@ -241,6 +249,8 @@ beforeEach(() => {
 	listSessionsMock.mockReset().mockResolvedValue([])
 	createSessionMock.mockReset().mockResolvedValue({ freshClone: true })
 	pickWorkspaceMock.mockReset()
+	openWorkspaceSetupMock.mockReset().mockResolvedValue({ action: "create", name: "proj", spec: undefined })
+	listWorkspaceTemplatesMock.mockReset().mockResolvedValue([])
 	overlayMock.mockReset().mockReturnValue(() => ({
 		render: () => [],
 		invalidate: () => {},
@@ -349,6 +359,107 @@ describe("runTeleport", () => {
 			},
 		})
 		expect(authMock.mock.calls[0][3]).not.toHaveProperty("resources")
+	})
+
+	it("picker 'new' sends the setup dialog's spec and name — the file is never read", async () => {
+		listWorkspacesMock.mockResolvedValue([
+			{
+				id: "11111111-1111-4111-8111-111111111111",
+				name: "one",
+				createdAt: new Date(),
+				lastActivityAt: new Date(),
+				status: "active",
+			},
+		])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		openWorkspaceSetupMock.mockResolvedValue({
+			action: "create",
+			name: "my-box",
+			spec: { resources: { cpu: "250m" } },
+		})
+		// A kimchi_workspace.yaml present must be ignored — the dialog owns
+		// the configuration once it ran.
+		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: "9Ti" } })
+		const { ctx } = makeCtx()
+
+		await runTeleport("mysession", ctx)
+
+		expect(openWorkspaceSetupMock).toHaveBeenCalledOnce()
+		expect(openWorkspaceSetupMock.mock.calls[0][1]).toMatchObject({ name: "proj" })
+		// The file is read exactly once — as the dialog's prefill — and its
+		// values never leak into the PUT spec (dialog wins).
+		expect(loadWorkspaceFileMock).toHaveBeenCalledTimes(1)
+		expect(authMock).toHaveBeenCalledOnce()
+		expect(authMock.mock.calls[0][2]).toBe("my-box")
+		expect(authMock.mock.calls[0][3]).toMatchObject({ spec: { resources: { cpu: "250m" } } })
+	})
+
+	it("a fully cleared setup dialog sends no spec and skips the file (org defaults)", async () => {
+		listWorkspacesMock.mockResolvedValue([
+			{
+				id: "11111111-1111-4111-8111-111111111111",
+				name: "one",
+				createdAt: new Date(),
+				lastActivityAt: new Date(),
+				status: "active",
+			},
+		])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		openWorkspaceSetupMock.mockResolvedValue({ action: "create", name: undefined, spec: undefined })
+		loadWorkspaceFileMock.mockReturnValue({ resources: { cpu: "9Ti" } })
+		const { ctx } = makeCtx()
+
+		await runTeleport("mysession", ctx)
+
+		expect(authMock).toHaveBeenCalledOnce()
+		// Cleared name falls back to the cwd basename; no spec rides the PUT.
+		expect(authMock.mock.calls[0][2]).toBe("proj")
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("spec")
+		// Read once for the dialog prefill only — never re-read for the spec.
+		expect(loadWorkspaceFileMock).toHaveBeenCalledTimes(1)
+	})
+
+	it("cancelling the setup dialog refuses without notifying", async () => {
+		listWorkspacesMock.mockResolvedValue([
+			{
+				id: "11111111-1111-4111-8111-111111111111",
+				name: "one",
+				createdAt: new Date(),
+				lastActivityAt: new Date(),
+				status: "active",
+			},
+		])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		openWorkspaceSetupMock.mockResolvedValue(undefined)
+		const { ctx, ui } = makeCtx()
+
+		await expect(runTeleport("mysession", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
+		expect(authMock).not.toHaveBeenCalled()
+		expect(ui.notify).not.toHaveBeenCalled()
+	})
+
+	it("a template selection sends templateName instead of a spec", async () => {
+		listWorkspacesMock.mockResolvedValue([
+			{
+				id: "11111111-1111-4111-8111-111111111111",
+				name: "one",
+				createdAt: new Date(),
+				lastActivityAt: new Date(),
+				status: "active",
+			},
+		])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		openWorkspaceSetupMock.mockResolvedValue({ action: "create", name: "my-box", templateName: "team-stack" })
+		const { ctx } = makeCtx()
+
+		await runTeleport("mysession", ctx)
+
+		expect(authMock).toHaveBeenCalledOnce()
+		expect(authMock.mock.calls[0][2]).toBe("my-box")
+		// The server expands the template at creation; spec and templateName
+		// never ride the same PUT.
+		expect(authMock.mock.calls[0][3]).toMatchObject({ templateName: "team-stack" })
+		expect(authMock.mock.calls[0][3]).not.toHaveProperty("spec")
 	})
 
 	it("does not send a spec when attaching to an existing workspace — the file is never read", async () => {

@@ -19,10 +19,13 @@ export const SYSTEM_REMINDER_OPEN = "<system-reminder>\n"
 /** Closing tag used for all harness-injected steer/nudge messages. */
 export const SYSTEM_REMINDER_CLOSE = "\n</system-reminder>"
 
-/** Mark a message as coming from the harness, not the user. Idempotent. */
+/** Mark a message as coming from the harness, not the user. Idempotent.
+ *  Payloads are neutralized against closing-marker near-misses first — todo
+ *  content and other model-authored text must not be able to close the
+ *  envelope early (see {@link escapeClosingMarker}). */
 export function markHarnessSteer(text: string): string {
 	if (isHarnessSteer(text)) return text
-	return `${SYSTEM_REMINDER_OPEN}${text}${SYSTEM_REMINDER_CLOSE}`
+	return `${SYSTEM_REMINDER_OPEN}${escapeClosingMarker(text)}${SYSTEM_REMINDER_CLOSE}`
 }
 
 /** Same marker as {@link markHarnessSteer}, exported under an orchestrator-specific name for call-site clarity. */
@@ -36,7 +39,11 @@ export function isHarnessSteer(text: string): boolean {
 
 /** Neutralize literal closing markers inside content about to be wrapped by
  *  {@link markHarnessSteer}: a `</system-reminder>` in the payload would close
- *  the wrapper early, letting trailing text read as a genuine user prompt. */
+ *  the wrapper early, letting trailing text read as a genuine user prompt.
+ *  Tolerates case and internal-whitespace near-misses (`</SYSTEM-REMINDER>`,
+ *  `</system-reminder >`) plus plural, self-closing, and unterminated forms —
+ *  models treat those as envelope closes even when a strict string match
+ *  would not. Idempotent: the escaped form does not match again. */
 export function escapeClosingMarker(text: string): string {
-	return text.replaceAll("</system-reminder>", "< /system-reminder>")
+	return text.replaceAll(/<\/\s*system-reminders?(?:\s*\/?>)?/gi, "< /system-reminder>")
 }

@@ -1,5 +1,13 @@
+import type { ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
-import { CANONICAL_THINKING_LEVELS, normalizeThinkingLevels, thinkingColumnValue } from "./thinking-levels.js"
+import {
+	CANONICAL_THINKING_LEVELS,
+	deriveThinkingLevelMap,
+	normalizeThinkingLevels,
+	thinkingColumnValue,
+} from "./thinking-levels.js"
+
+const GATEWAY_BASE: ThinkingLevelMap = { off: "none", max: "max" }
 
 describe("normalizeThinkingLevels", () => {
 	it("sorts unsorted input into canonical rank order", () => {
@@ -21,6 +29,95 @@ describe("normalizeThinkingLevels", () => {
 	it("deduplicates and preserves every canonical level", () => {
 		expect(normalizeThinkingLevels(["low", "low", "max"])).toEqual(["low", "max"])
 		expect(normalizeThinkingLevels([...CANONICAL_THINKING_LEVELS])).toEqual([...CANONICAL_THINKING_LEVELS])
+	})
+})
+
+describe("deriveThinkingLevelMap", () => {
+	it("nulls the canonical levels the catalog omits and keeps base translations", () => {
+		expect(deriveThinkingLevelMap(["off", "low", "high", "max"], GATEWAY_BASE)).toEqual({
+			off: "none",
+			max: "max",
+			minimal: null,
+			medium: null,
+			xhigh: null,
+		})
+	})
+
+	it("makes off unsupported when the catalog does not curate it", () => {
+		expect(deriveThinkingLevelMap(["low", "high", "max"], GATEWAY_BASE)).toEqual({
+			off: null,
+			minimal: null,
+			medium: null,
+			xhigh: null,
+			max: "max",
+		})
+	})
+
+	it("leaves curated levels without a base translation absent (sent verbatim)", () => {
+		expect(deriveThinkingLevelMap(["off", "medium", "high"], GATEWAY_BASE)).toEqual({
+			off: "none",
+			minimal: null,
+			low: null,
+			xhigh: null,
+			max: null,
+		})
+	})
+
+	it("leaves only off reachable for the curated empty array", () => {
+		expect(deriveThinkingLevelMap([], GATEWAY_BASE)).toEqual({
+			off: "none",
+			minimal: null,
+			low: null,
+			medium: null,
+			high: null,
+			xhigh: null,
+			max: null,
+		})
+	})
+
+	it("normalizes scrambled and unknown catalog levels before deriving", () => {
+		expect(deriveThinkingLevelMap(["max", "turbo", "off"], GATEWAY_BASE)).toEqual({
+			off: "none",
+			max: "max",
+			minimal: null,
+			low: null,
+			medium: null,
+			high: null,
+			xhigh: null,
+		})
+	})
+
+	it("names curated xhigh and max explicitly when the base has no translation", () => {
+		expect(deriveThinkingLevelMap(["high", "xhigh"], GATEWAY_BASE)).toEqual({
+			off: null,
+			minimal: null,
+			low: null,
+			medium: null,
+			xhigh: "xhigh",
+			max: null,
+		})
+		expect(deriveThinkingLevelMap(["max"], {})).toEqual({
+			off: null,
+			minimal: null,
+			low: null,
+			medium: null,
+			high: null,
+			xhigh: null,
+			max: "max",
+		})
+	})
+
+	it("preserves every base translation for a catalog curating all levels", () => {
+		const base: ThinkingLevelMap = {
+			off: "none",
+			minimal: "min",
+			low: "low",
+			medium: "med",
+			high: "high",
+			xhigh: "xhigh",
+			max: "max",
+		}
+		expect(deriveThinkingLevelMap([...CANONICAL_THINKING_LEVELS], base)).toEqual(base)
 	})
 })
 

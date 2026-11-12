@@ -70,7 +70,9 @@ function requestModel(body: unknown): string | undefined {
 	return body && typeof body === "object" && "model" in body && typeof body.model === "string" ? body.model : undefined
 }
 
-function chatRequests(fixture: { fake: { requests: { url: string; body: unknown }[] } }) {
+function chatRequests(fixture: {
+	fake: { requests: { url: string; body: unknown; headers: Record<string, string | string[] | undefined> }[] }
+}) {
 	return requestsTo(fixture, "/openai/v1/chat/completions")
 }
 
@@ -505,6 +507,64 @@ test("a child that inherits auto requests the same virtual id", async ({ termina
 			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
 			expect(chatRequests.length).toBeGreaterThanOrEqual(3)
 			expect(chatRequests.every((request) => requestModel(request.body) === "auto")).toBe(true)
+		},
+	)
+})
+
+test("auto requests go out without the provider-pinning headers", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-unpinned-requests",
+			providerId: "kimchi-dev",
+			initialModel: "auto",
+			models: MODELS,
+			responses: [
+				{ stream: ["Auto unpinned reply."], responseModel: "routed" },
+				{ stream: ["Concrete pinned reply."] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Route this prompt")
+			await waitForText(terminal, "Auto unpinned reply.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("auto round completed")
+
+			// Premise: the startup refresh regenerates models.json through the
+			// production path, so the kimchi-dev block carries the pinning stamps
+			// (X-Provider-Type: ai-enabler). Without this, the wire assertions below
+			// would pass vacuously — nothing would pin the concrete requests either.
+			const modelsJson = JSON.parse(readFileSync(join(fixture.agentDir, "models.json"), "utf-8")) as {
+				providers: Record<string, { headers: Record<string, string> }>
+			}
+			expect(modelsJson.providers["kimchi-dev"]?.headers["X-Provider-Type"]).toBe("ai-enabler")
+			trace.step("block-level pinning stamps present in models.json")
+
+			// The auto request asks for the virtual id but goes out WITHOUT the
+			// pinning headers — the gateway must resolve it unscoped, not against
+			// ai-enabler integrations only. Recorded header names are lowercased.
+			const autoRequests = chatRequests(fixture).filter((request) => requestModel(request.body) === "auto")
+			expect(autoRequests.length).toBeGreaterThanOrEqual(1)
+			for (const request of autoRequests) {
+				expect(request.headers["x-provider-type"]).toBeUndefined()
+				expect(request.headers["x-provider-name"]).toBeUndefined()
+				expect(request.headers["user-agent"]).toBeTruthy()
+			}
+			trace.step("auto request went out unpinned")
+
+			// A concrete request from the same block keeps its pin — the strip is
+			// per-request for auto-routed models only, not a block-level config change.
+			terminal.submit("/model kimchi-dev/routed")
+			await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.submit("Now use the concrete model")
+			await waitForText(terminal, "Concrete pinned reply.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			const concreteRequests = chatRequests(fixture).filter((request) => requestModel(request.body) === "routed")
+			expect(concreteRequests.length).toBeGreaterThanOrEqual(1)
+			for (const request of concreteRequests) {
+				expect(request.headers["x-provider-type"]).toBe("ai-enabler")
+			}
+			trace.step("concrete request kept its block-level pin")
 		},
 	)
 })

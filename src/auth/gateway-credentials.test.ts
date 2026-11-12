@@ -41,6 +41,19 @@ describe("resolveGatewayCredentials", () => {
 		expect(creds).toEqual({ token: "oauth-access", organizationId: undefined, source: "oauth" })
 	})
 
+	it("exposes the organization name stamped on the OAuth credential at login", () => {
+		seedAuth({
+			"kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: "org-1", orgName: "My organization" },
+		})
+		const creds = resolveGatewayCredentials({ apiKey: "" })
+		expect(creds).toEqual({
+			token: "oauth-access",
+			organizationId: "org-1",
+			organizationName: "My organization",
+			source: "oauth",
+		})
+	})
+
 	it("reads an api_key credential entry (syncPiAuth fan-out shape)", () => {
 		seedAuth({ "kimchi-dev": { type: "api_key", key: "stored-key" } })
 		const creds = resolveGatewayCredentials({ apiKey: "" })

@@ -77,6 +77,14 @@ describe("handleProbeMcpServer", () => {
 		await expect(handleProbeMcpServer(createProbe(result), {})).rejects.toMatchObject({ code: -32602 })
 	})
 
+	it("rejects server names with traversal, separators, or control characters before probing", async () => {
+		const probe = createProbe(result)
+		for (const bad of ["../secrets", "a/b", "a\\b", "line one\nline two"]) {
+			await expect(handleProbeMcpServer(probe, { server, serverName: bad })).rejects.toMatchObject({ code: -32602 })
+		}
+		expect(probe.probeTools).not.toHaveBeenCalled()
+	})
+
 	it("serializes concurrent calls FIFO with no overlap", async () => {
 		let active = 0
 		let maxActive = 0

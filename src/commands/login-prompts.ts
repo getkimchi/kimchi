@@ -22,7 +22,7 @@ import type { fetchSelfHostedEndpoints } from "../self-hosted-discovery.js"
 import { type Outcome, password, select, text } from "../setup-wizard/prompt.js"
 
 /**
- * The auth-method menu: CAST AI SSO first (the recommended login) when the
+ * The auth-method menu: Kimchi SSO first (the recommended login) when the
  * region has an OAuth tenant, then Kimchi account and API key. Subscription
  * login stays TUI-only — it needs the live-session OAuth dialogs of `/login`.
  */
@@ -107,7 +107,7 @@ export async function promptKimchiEndpoint(defaultEndpoint: string): Promise<Out
 }
 
 /**
- * OAuth callbacks driving loginWithCastAiOauth (CAST AI SSO) in a terminal:
+ * OAuth callbacks driving loginWithKimchiOauth (Kimchi SSO) in a terminal:
  * prints and opens the authorize URL, prompts for the manual redirect
  * paste-back, and renders organization selection as a clack select.
  *

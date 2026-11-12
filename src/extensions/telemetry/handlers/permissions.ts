@@ -25,6 +25,7 @@ type DecisionSource = "config" | "hook" | "user_permanent" | "user_temporary" | 
 
 const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = {
 	yolo_bypass: "config",
+	yolo_hard_block: "config",
 	plan_readonly: "config",
 	plan_gate: "config",
 	builtin_safe: "config",

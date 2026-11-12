@@ -18,17 +18,26 @@ const CLAUDE_CONFIG_PATH = "~/.claude/settings.json"
  * `env` block. Setting ANTHROPIC_API_KEY to "" is important — Claude Code
  * picks the first non-empty of (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN)
  * and we want it to use AUTH_TOKEN with our key.
+ *
+ * CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS defaults to "1", which also turns
+ * off Claude Code's MCP tool search. A value set in `userEnv` wins, so
+ * `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0` turns tool search back on (#1507).
+ * Callers pass `process.env` as `userEnv`; without it the default always
+ * applies. Claude Code 2.1.319 reads "1" and "true" as disabled, and "0",
+ * "false" and "" as not disabled. It also applies the settings.json `env`
+ * block over the process env, which is why `kimchi claude` also passes a
+ * shell-set value through `--settings`.
  */
 export function claudeCodeEnv(
 	apiKey: string,
 	baseUrl: string = resolveEndpoints().anthropicBaseUrl,
-	options?: { telemetryEnabled?: boolean },
+	options?: { telemetryEnabled?: boolean; userEnv?: Record<string, string | undefined> },
 ): Record<string, string> {
 	const env: Record<string, string> = {
 		ANTHROPIC_BASE_URL: baseUrl,
 		ANTHROPIC_API_KEY: "",
 		ANTHROPIC_AUTH_TOKEN: apiKey,
-		CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
+		CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: options?.userEnv?.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS ?? "1",
 	}
 	if (options?.telemetryEnabled) {
 		env.CLAUDE_CODE_ENABLE_TELEMETRY = "1"
@@ -70,8 +79,19 @@ export function injectClaudeCodeEnv(
 	apiKey: string,
 	options?: { telemetryEnabled?: boolean },
 ): void {
-	const pairs = claudeCodeEnv(apiKey, baseUrl, options)
+	const pairs = claudeCodeEnv(apiKey, baseUrl, { ...options, userEnv: process.env })
+	const shellBetas = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
 	for (const [k, v] of Object.entries(pairs)) {
+		// A betas value already in settings.json is kept as written (JSON type included),
+		// unless the shell sets a different one: that is how a "1" written by an earlier
+		// setup-tools gets replaced (`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0 kimchi setup-tools`).
+		if (
+			k === "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS" &&
+			env[k] != null &&
+			(shellBetas === undefined || String(env[k]) === shellBetas)
+		) {
+			continue
+		}
 		env[k] = v
 	}
 	if (!options?.telemetryEnabled) {

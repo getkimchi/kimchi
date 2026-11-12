@@ -10,6 +10,7 @@ import * as continuations from "./links.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	requestWorkReconciliation,
+	resolveFirstTickDelayMs,
 	resolveReconciliationIntervalMs,
 	subscribeCostReconciliation,
 	subscribeFileReconciliation,
@@ -30,6 +31,12 @@ vi.mock("./cost-sync.js", () => ({ reconcileWorkCosts: vi.fn() }))
 vi.mock("./links.js", () => ({ reconcileWorkContinuations: vi.fn() }))
 
 let directory: string
+/**
+ * `vi.waitFor` defaults to a 1 s budget on real timers. A reconciliation tick takes a real
+ * `proper-lockfile` lock and runs async work, which a loaded CI runner can outlast — the
+ * "stops only PR network work" case failed that way (spy called 2 times, expected 4).
+ */
+const RECONCILIATION_WAIT_TIMEOUT_MS = 10_000
 const stops: (() => Promise<void>)[] = []
 function subscribe() {
 	const stop = subscribeFileReconciliation()
@@ -44,6 +51,8 @@ function subscribePr() {
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-reconcile-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", directory)
+	// Existing behaviour tests subscribe and expect a pass immediately.
+	vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "0")
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 	vi.spyOn(transitions, "knownTransitionRepositories").mockReset().mockResolvedValue(["/repository-a", "/repository-b"])
 	vi.spyOn(transitions, "reconcileRepositoryTransitions").mockReset().mockResolvedValue()
@@ -85,6 +94,116 @@ describe("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS seam", () => {
 		} finally {
 			vi.resetModules()
 		}
+	})
+})
+
+describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
+	it("returns the 5 s default when the seam is unset", () => {
+		vi.unstubAllEnvs()
+		expect(resolveFirstTickDelayMs()).toBe(5000)
+	})
+
+	it("honors zero and positive integer overrides", () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "200")
+		expect(resolveFirstTickDelayMs()).toBe(200)
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "0")
+		expect(resolveFirstTickDelayMs()).toBe(0)
+	})
+
+	it.each(["-5", "1.5", "abc"])("falls back to 5 s for %s", (value) => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", value)
+		expect(resolveFirstTickDelayMs()).toBe(5000)
+	})
+
+	it("treats a present-but-blank seam value as unset, not as zero", () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "")
+		expect(resolveFirstTickDelayMs()).toBe(5000)
+	})
+
+	it("defers the first pass until the delay elapses (real short delay; interval stays faked)", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
+		const report = vi.fn(async () => {})
+		stops.push(subscribeReportingReconciliation(report))
+		await Promise.resolve()
+		expect(report).not.toHaveBeenCalled()
+		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+	})
+
+	it("an explicit request inside the window runs the pass once without a duplicate first tick", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
+		const report = vi.fn(async () => {})
+		stops.push(subscribeReportingReconciliation(report))
+		requestWorkReconciliation()
+		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+		// Well past the window: the delayed first tick must not re-run a pass.
+		await new Promise((resolve) => setTimeout(resolve, 250))
+		expect(report).toHaveBeenCalledOnce()
+	})
+
+	it("a subscriber joining after the window's first pass ticks a fresh pass, not the interval", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
+		const report = vi.fn(async () => {})
+		stops.push(subscribeReportingReconciliation(report))
+		// An explicit request runs the window's first pass while the delayed tick is pending.
+		requestWorkReconciliation()
+		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+		// Let that pass finish before a second view mounts.
+		await new Promise((resolve) => setTimeout(resolve, 30))
+		// The joiner ticks at once — the startup window is over in substance once a pass has run —
+		// and the fresh pass serves the reporting channel again instead of waiting for the interval.
+		stops.push(subscribeCostReconciliation())
+		await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(2))
+		// The cleared delayed tick never adds a third pass.
+		await new Promise((resolve) => setTimeout(resolve, 250))
+		expect(report).toHaveBeenCalledTimes(2)
+	})
+
+	it("unsubscribing the last subscriber before the delay cancels the first pass", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
+		const report = vi.fn(async () => {})
+		const stop = subscribeReportingReconciliation(report)
+		await stop()
+		await new Promise((resolve) => setTimeout(resolve, 250))
+		expect(report).not.toHaveBeenCalled()
+	})
+
+	it("a subscriber joining inside the window drains durable updates without kicking off the scan", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "150")
+		const first = vi.fn()
+		const second = vi.fn()
+		vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([
+			{
+				workId: "11111111-1111-4111-8111-111111111111",
+				sessionId: "session-1",
+				cwd: "/repository-a",
+				repository: "/repository-a/.git",
+				worktree: "/repository-a",
+				sha: "a".repeat(40),
+				pullRequests: [],
+			},
+		])
+		stops.push(subscribePullRequestReconciliation({ onPullRequest: first }))
+		await new Promise((resolve) => setTimeout(resolve, 20))
+		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+		expect(first).toHaveBeenCalledOnce()
+		// Joining mid-window: still no scan, but the durable drain broadcasts to
+		// every current subscriber — the first hears the update again.
+		stops.push(subscribePullRequestReconciliation({ onPullRequest: second }))
+		await Promise.resolve()
+		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+		expect(second).toHaveBeenCalledOnce()
+		expect(first).toHaveBeenCalledTimes(2)
+	})
+
+	it("a subscriber joining after the window still gets an immediate tick", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "60")
+		const report = vi.fn(async () => {})
+		stops.push(subscribeReportingReconciliation(report))
+		await new Promise((resolve) => setTimeout(resolve, 120))
+		expect(report).toHaveBeenCalled()
+		vi.clearAllMocks()
+		stops.push(subscribeReportingReconciliation(report))
+		await vi.waitFor(() => expect(report).toHaveBeenCalled())
 	})
 })
 
@@ -261,13 +380,17 @@ describe("shared file reconciliation", () => {
 		const error = Object.assign(new Error("Git timed out"), { code: null, killed: true, signal: "SIGTERM" })
 		vi.mocked(transitions.reconcileRepositoryTransitions).mockRejectedValueOnce(error)
 		subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		await vi.waitFor(async () => {
 			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
 			await release()
 		})
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		expect(vi.mocked(transitions.reconcileRepositoryTransitions).mock.calls.map(([repository]) => repository)).toEqual([
 			"/repository-a",
 			"/repository-b",
@@ -287,7 +410,9 @@ describe("shared file reconciliation", () => {
 			await release()
 		})
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		expect(warn).not.toHaveBeenCalled()
 	})
 
@@ -308,12 +433,16 @@ describe("shared file reconciliation", () => {
 			await release()
 		})
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		expect(costs.reconcileWorkCosts).toHaveBeenCalledOnce()
 	})
 	it("does not read PR records or call GitHub when only file reconciliation is enabled", async () => {
 		subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		expect(pullRequests.readWorkPullRequestUpdates).not.toHaveBeenCalled()
 		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
 	})
@@ -333,7 +462,9 @@ describe("shared file reconciliation", () => {
 			await release()
 		})
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledOnce()
 	})
 	it("shows another process's saved results while that process owns the lookup lease", async () => {
@@ -393,24 +524,32 @@ describe("shared file reconciliation", () => {
 	})
 	it("starts a new scan when another top-level session subscribes after the owner became idle", async () => {
 		subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		await vi.waitFor(async () => {
 			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
 			await release()
 		})
 		subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		expect(transitions.knownTransitionRepositories).toHaveBeenCalledTimes(2)
 	})
 
 	it("uses one owner for startup and periodic scans and releases it after the last subscriber", async () => {
 		const first = subscribe()
 		const second = subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		expect(transitions.knownTransitionRepositories).toHaveBeenCalledTimes(1)
 		await first()
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		await second()
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
 		expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4)
@@ -464,7 +603,9 @@ describe("shared file reconciliation", () => {
 			await release()
 		}
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 	})
 
 	it("moves a slow repository behind the other repositories on the next bounded pass", async () => {
@@ -478,10 +619,14 @@ describe("shared file reconciliation", () => {
 		)
 		subscribe()
 		subscribePr()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(1))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(1), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(1))
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(3))
+		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(3), {
+			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
+		})
 		expect(vi.mocked(transitions.reconcileRepositoryTransitions).mock.calls.map(([repository]) => repository)).toEqual([
 			"/repository-a",
 			"/repository-b",

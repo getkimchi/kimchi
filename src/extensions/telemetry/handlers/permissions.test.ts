@@ -58,6 +58,7 @@ describe("handleToolDecision", () => {
 		const ctx = new TelemetryContext(makeConfig())
 		const cases = [
 			["yolo_bypass", "config"],
+			["yolo_hard_block", "config"],
 			["no_ui", "config"],
 			["bundled_skill_cli", "config"],
 			["bundled_skill_dir_deny", "config"],

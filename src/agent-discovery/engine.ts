@@ -192,28 +192,45 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 	let skillCount = 0
 	let skills: DiscoveredSkill[] = []
 	let skillsDir: string | undefined
+	// mergeAllSkillsDirs: an agent (Claude Desktop) may materialize skills in
+	// several disjoint roots (account-skills bundle + installed plugins), so
+	// every existing candidate contributes instead of first-wins. Dedupe by
+	// invocation name, first-writer-wins, mirroring the MCP ingest rules.
+	const mergeMode = def.mergeAllSkillsDirs === true
 	for (const dir of skillsDirs) {
+		if (!existsSync(dir) && mergeMode) continue
 		if (existsSync(dir)) {
-			skillsDir = dir
+			skillsDir ??= dir
 			let readable = true
 			try {
-				skillCount = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length
+				skillCount += readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length
 			} catch (err) {
 				console.warn(`Failed to read ${def.displayName} skills directory at ${dir}: ${msg(err)}`)
 				// The directory exists but could not be read (e.g. EACCES). -1 is
 				// distinct from 0 ("empty") so import_discover keeps the app row —
 				// the client must be able to tell "nothing here" from "couldn't
-				// read what is here".
-				skillCount = -1
+				// read what is here". In merge mode partial counts still convey
+				// the directories that did read, so the sentinel applies only to
+				// the single-winner behaviour.
+				if (!mergeMode) skillCount = -1
 				readable = false
 			}
 			// Skip enumeration when the listing already failed — loadSkillsFromDir
 			// would hit the same EACCES and emit a second, redundant warning for
 			// one root cause. Also skipped when the caller only needs counts.
 			if (readable && (options?.enumerateSkills ?? true)) {
-				skills = enumerateSkills(dir)
+				if (mergeMode) {
+					const seen = new Set(skills.map((s) => s.name))
+					for (const skill of enumerateSkills(dir)) {
+						if (seen.has(skill.name)) continue
+						seen.add(skill.name)
+						skills.push(skill)
+					}
+				} else {
+					skills = enumerateSkills(dir)
+				}
 			}
-			break
+			if (!mergeMode) break
 		}
 	}
 

@@ -10,8 +10,8 @@
  * hash, so overlapping captures are cheap no-ops.
  */
 import { spawn } from "node:child_process"
-import { createHash, randomUUID } from "node:crypto"
-import { mkdirSync, renameSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
@@ -21,15 +21,18 @@ import type { CaptureMessage } from "./capture-worker.js"
 import { digestDbPath, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS, MEMORY_CAPTURE_INCREMENTAL_MESSAGES } from "./config.js"
 import { resolveProjectScope } from "./scope.js"
 
-export function wireMemoryCapture(pi: ExtensionAPI, isActive: () => boolean): void {
+/** `session` — the calling session's capture id (per extension instance,
+ *  NOT module-level: an ACP server hosts concurrent sessions in one
+ *  process and their captures must not merge into one record entry). */
+export function wireMemoryCapture(pi: ExtensionAPI, isActive: () => boolean, session: string): void {
 	if (captureDisabled()) return
 	pi.on("session_before_compact", (event, ctx) => {
 		if (!isActive()) return
-		captureMessages(extractMessages(event.branchEntries), ctx.cwd)
+		captureMessages(extractMessages(event.branchEntries), ctx.cwd, session)
 	})
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (!isActive()) return
-		captureMessages(extractMessages(ctx.sessionManager.getEntries()), ctx.cwd)
+		captureMessages(extractMessages(ctx.sessionManager.getEntries()), ctx.cwd, session)
 	})
 }
 
@@ -73,7 +76,9 @@ export function incrementalCapture(
 	entries: readonly SessionEntry[],
 	state: IncrementalCaptureState,
 	cwd: string,
-	spawn: (messages: CaptureMessage[], cwd: string) => void = captureMessages,
+	session: string,
+	spawn: (messages: CaptureMessage[], cwd: string) => void = (messages, jobCwd) =>
+		captureMessages(messages, jobCwd, session),
 ): void {
 	const messages = extractMessages(entries)
 	if (messages.length - state.spawnedCount < MEMORY_CAPTURE_INCREMENTAL_MESSAGES) return
@@ -145,15 +150,28 @@ export function messageText(content: unknown): string {
 	return ""
 }
 
-/** The session id for the current process — scoping job ids and hashes.
- * A uuid, not a timestamp: recording time never enters LLM input. */
-const CAPTURE_SESSION_ID = randomUUID()
-
-function captureSessionId(): string {
-	return CAPTURE_SESSION_ID
+/** Read one capture session's cumulative stored-facts count from the
+ *  worker's completion record (capture-completions.json — per-session
+ *  counts, merge-written by each drain under the capture lock). Degrades
+ *  to 0: surfacing is best-effort and must never break a session. */
+export function readCaptureSessionSaved(sessionId: string): number {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(defaultMemoryDir(), "capture-completions.json"), "utf-8"))
+		const sessions =
+			parsed && typeof parsed === "object" && !Array.isArray(parsed)
+				? (parsed as { sessions?: unknown }).sessions
+				: undefined
+		if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) return 0
+		const entry = (sessions as Record<string, unknown>)[sessionId]
+		if (!entry || typeof entry !== "object") return 0
+		const factsAdded = (entry as { factsAdded?: unknown }).factsAdded
+		return typeof factsAdded === "number" && factsAdded > 0 ? factsAdded : 0
+	} catch {
+		return 0
+	}
 }
 
-function captureMessages(messages: CaptureMessage[], cwd: string): void {
+function captureMessages(messages: CaptureMessage[], cwd: string, session: string): void {
 	if (captureDisabled() || messages.length === 0) return
 	try {
 		const dbPath = digestDbPath()
@@ -163,12 +181,12 @@ function captureMessages(messages: CaptureMessage[], cwd: string): void {
 		// Deterministic job id: identical content in the same scope overwrites
 		// the same job file instead of queueing duplicates.
 		const id = createHash("sha1")
-			.update(JSON.stringify({ messages, project: project?.id ?? null, session: captureSessionId() }))
+			.update(JSON.stringify({ messages, project: project?.id ?? null, session }))
 			.digest("hex")
 			.slice(0, 16)
 		const jobFile = join(pendingDir, `${id}.json`)
 		const tmp = `${jobFile}.${process.pid}.tmp`
-		writeFileSync(tmp, JSON.stringify({ messages, project, session: captureSessionId() }))
+		writeFileSync(tmp, JSON.stringify({ messages, project, session }))
 		renameSync(tmp, jobFile)
 		spawnCaptureWorker(jobFile, dbPath)
 	} catch (err) {

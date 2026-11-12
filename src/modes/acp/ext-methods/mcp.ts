@@ -7,7 +7,7 @@
 
 import { RequestError } from "@agentclientprotocol/sdk"
 import type { ServerEntry } from "pi-mcp-adapter/types"
-import type { McpProbe, ProbeResult } from "../../../extensions/mcp/probe.js"
+import { type McpProbe, type ProbeResult, SERVER_NAME_PATTERN } from "../../../extensions/mcp/probe.js"
 
 /**
  * Runtime validation for ServerEntry received over the ACP wire.
@@ -115,6 +115,18 @@ export async function handleProbeMcpServer(
 		throw RequestError.invalidParams(undefined, "MCP probe is not available")
 	}
 	const server = validateServerEntry(params.server)
+	if (params.serverName !== undefined && typeof params.serverName !== "string") {
+		throw RequestError.invalidParams("serverName must be a string")
+	}
 	const serverName = (params.serverName as string | undefined) ?? "probe"
+	// The name flows into keychain lookups and recovery messages shown to the
+	// user: apply the same validation as the CLI before it can steer a durable
+	// credential account.
+	if (!SERVER_NAME_PATTERN.test(serverName)) {
+		throw RequestError.invalidParams(
+			undefined,
+			"Invalid MCP server name: expected a name without path separators, '..', or control characters",
+		)
+	}
 	return runSerializedProbe(() => mcpProbe.probeTools(serverName, server, { authenticate: params.skipAuth !== true }))
 }

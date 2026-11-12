@@ -10,9 +10,9 @@ import {
 	generateCodeVerifier,
 	generateOAuthState,
 	isInvalidGrantError,
-	loginWithCastAiOauth,
+	loginWithKimchiOauth,
 	OAuthTokenError,
-	refreshCastAiOauth,
+	refreshKimchiOauth,
 } from "./oauth.js"
 
 // ---------------------------------------------------------------------------
@@ -30,9 +30,13 @@ interface MockTokenServer {
 	respond: (params: URLSearchParams) => { status: number; body: unknown }
 	setResponder(fn: (params: URLSearchParams) => { status: number; body: unknown }): void
 	/** Organizations served on GET /v1/organizations. */
-	organizations: Array<{ id: string; name: string }>
-	setOrganizations: (orgs: Array<{ id: string; name: string }>) => void
+	organizations: Array<{ id: string; name?: string }>
+	setOrganizations: (orgs: Array<{ id: string; name?: string }>) => void
 	orgRequests: Array<{ authorization: string | null }>
+	/** Names served on GET /v1/organizations/{id} (404 when unset). */
+	organizationDetails: Record<string, string>
+	setOrganizationDetails: (details: Record<string, string>) => void
+	orgDetailRequests: Array<{ id: string; authorization: string | null }>
 	close(): Promise<void>
 }
 
@@ -41,6 +45,8 @@ function startMockTokenServer(): Promise<MockTokenServer> {
 		requests: [],
 		organizations: [{ id: "org-default", name: "Default Org" }],
 		orgRequests: [],
+		organizationDetails: {},
+		orgDetailRequests: [],
 	}
 	mock.respond = (params) => {
 		expect(params.get("refresh_token")).toBe("rt-1")
@@ -55,9 +61,25 @@ function startMockTokenServer(): Promise<MockTokenServer> {
 	mock.setOrganizations = (orgs) => {
 		mock.organizations = orgs
 	}
+	mock.setOrganizationDetails = (details) => {
+		mock.organizationDetails = details
+	}
 	return new Promise<MockTokenServer>((resolve, reject) => {
 		const server = createServer((req, res) => {
-			if (req.method === "GET" && req.url?.split("?")[0] === "/v1/organizations") {
+			const path = req.url?.split("?")[0]
+			if (req.method === "GET" && path?.startsWith("/v1/organizations/")) {
+				const id = decodeURIComponent(path.slice("/v1/organizations/".length))
+				mock.orgDetailRequests?.push({ id, authorization: req.headers.authorization ?? null })
+				const name = mock.organizationDetails?.[id]
+				if (name === undefined) {
+					res.writeHead(404).end()
+					return
+				}
+				res.writeHead(200, { "content-type": "application/json" })
+				res.end(JSON.stringify({ id, name }))
+				return
+			}
+			if (req.method === "GET" && path === "/v1/organizations") {
 				mock.orgRequests?.push({ authorization: req.headers.authorization ?? null })
 				res.writeHead(200, { "content-type": "application/json" })
 				res.end(JSON.stringify({ organizations: mock.organizations }))
@@ -90,9 +112,12 @@ function startMockTokenServer(): Promise<MockTokenServer> {
 				requests: mock.requests as RecordedTokenRequest[],
 				respond: mock.respond as MockTokenServer["respond"],
 				setResponder: mock.setResponder as MockTokenServer["setResponder"],
-				organizations: mock.organizations as Array<{ id: string; name: string }>,
+				organizations: mock.organizations as Array<{ id: string; name?: string }>,
 				setOrganizations: mock.setOrganizations as MockTokenServer["setOrganizations"],
 				orgRequests: mock.orgRequests as Array<{ authorization: string | null }>,
+				organizationDetails: mock.organizationDetails as Record<string, string>,
+				setOrganizationDetails: mock.setOrganizationDetails as MockTokenServer["setOrganizationDetails"],
+				orgDetailRequests: mock.orgDetailRequests as Array<{ id: string; authorization: string | null }>,
 				close: () =>
 					new Promise<void>((done) => {
 						server.closeAllConnections?.()
@@ -121,7 +146,7 @@ function configFor(tokenUrl: string, overrides: Partial<KimchiOAuthConfig> = {})
  * port instead (callbackPort: 0) — the redirect URI is read back from the
  * bound server, so the flow is identical apart from the port. */
 function login(config: KimchiOAuthConfig, callbacks: OAuthLoginCallbacks) {
-	return loginWithCastAiOauth(config, callbacks, { callbackPort: 0 })
+	return loginWithKimchiOauth(config, callbacks, { callbackPort: 0 })
 }
 
 function makeCallbacks(overrides: Partial<OAuthLoginCallbacks> = {}) {
@@ -257,7 +282,7 @@ describe("authorizationCodeFromManualInput", () => {
 	})
 })
 
-describe("loginWithCastAiOauth", () => {
+describe("loginWithKimchiOauth", () => {
 	it("fails with guidance when the chosen callback port is already in use", async () => {
 		// Bind a server on an ephemeral port, then point the login at that exact
 		// port so its callback server hits EADDRINUSE (the fixed production
@@ -268,7 +293,7 @@ describe("loginWithCastAiOauth", () => {
 		)
 		try {
 			const { callbacks } = makeCallbacks()
-			await expect(loginWithCastAiOauth(configFor(mock.url), callbacks, { callbackPort: blockerPort })).rejects.toThrow(
+			await expect(loginWithKimchiOauth(configFor(mock.url), callbacks, { callbackPort: blockerPort })).rejects.toThrow(
 				new RegExp(`${blockerPort} is in use, probably by an unfinished CAST AI sign-in`),
 			)
 		} finally {
@@ -365,6 +390,85 @@ describe("loginWithCastAiOauth", () => {
 		])
 		expect(credential.orgId).toBe("org-b")
 		expect(credential.orgName).toBe("Beta Org")
+	})
+
+	it("resolves a blank-listed organization name through the detail endpoint before storing it", async () => {
+		// The users-API listing ships no name for some organizations (e.g. the
+		// personal one) — the picker must not render an empty label for them.
+		mock.setOrganizations([{ id: "org-a", name: "Alpha Org" }, { id: "org-personal" }])
+		mock.setOrganizationDetails({ "org-personal": "My organization" })
+		mock.setResponder(() => ({
+			status: 200,
+			body: { access_token: "at-1", id_token: "id-1", refresh_token: "rt-1", expires_in: 3600 },
+		}))
+		const selections: Array<{ message: string; options: Array<{ id: string; label: string }> }> = []
+		const { callbacks, authUrls } = makeCallbacks({
+			onSelect: async (prompt) => {
+				selections.push({ message: prompt.message, options: prompt.options })
+				return "org-personal"
+			},
+		})
+		const loginPromise = login(configFor(mock.url), callbacks)
+		await vi.waitFor(() => expect(authUrls).toHaveLength(1))
+		const { state, redirectUri } = authorizeUrlParts(authUrls[0])
+		await driveBrowserCallback(redirectUri, { code: "c", state })
+		const credential = await loginPromise
+		expect(selections[0]?.options).toEqual([
+			{ id: "org-a", label: "Alpha Org" },
+			{ id: "org-personal", label: "My organization" },
+		])
+		// The detail lookup wore the same bearer as the listing.
+		expect(mock.orgDetailRequests).toEqual([{ id: "org-personal", authorization: "Bearer id-1" }])
+		expect(credential.orgId).toBe("org-personal")
+		expect(credential.orgName).toBe("My organization")
+	})
+
+	it("labels a nameless organization as My organization when no name can be loaded", async () => {
+		// Personal organizations ship without a name on both the listing and
+		// the detail endpoint — the picker still needs a label.
+		mock.setOrganizations([{ id: "org-blank", name: "" }]) // no detail entry → 404
+		mock.setResponder(() => ({
+			status: 200,
+			body: { access_token: "at-1", id_token: "id-1", refresh_token: "rt-1", expires_in: 3600 },
+		}))
+		const { callbacks, authUrls } = makeCallbacks()
+		const loginPromise = login(configFor(mock.url), callbacks)
+		await vi.waitFor(() => expect(authUrls).toHaveLength(1))
+		const { state, redirectUri } = authorizeUrlParts(authUrls[0])
+		await driveBrowserCallback(redirectUri, { code: "c", state })
+		const credential = await loginPromise
+		// A single organization is auto-selected without prompting.
+		expect(credential.orgId).toBe("org-blank")
+		expect(credential.orgName).toBe("My organization")
+		expect(mock.orgDetailRequests).toEqual([{ id: "org-blank", authorization: "Bearer id-1" }])
+	})
+
+	it("disambiguates several nameless organizations with id prefixes in the picker", async () => {
+		mock.setOrganizations([
+			{ id: "aaaaaaaa-0000-0000-0000-000000000001" },
+			{ id: "bbbbbbbb-0000-0000-0000-000000000002" },
+		])
+		mock.setResponder(() => ({
+			status: 200,
+			body: { access_token: "at-1", id_token: "id-1", refresh_token: "rt-1", expires_in: 3600 },
+		}))
+		const selections: Array<{ message: string; options: Array<{ id: string; label: string }> }> = []
+		const { callbacks, authUrls } = makeCallbacks({
+			onSelect: async (prompt) => {
+				selections.push({ message: prompt.message, options: prompt.options })
+				return "bbbbbbbb-0000-0000-0000-000000000002"
+			},
+		})
+		const loginPromise = login(configFor(mock.url), callbacks)
+		await vi.waitFor(() => expect(authUrls).toHaveLength(1))
+		const { state, redirectUri } = authorizeUrlParts(authUrls[0])
+		await driveBrowserCallback(redirectUri, { code: "c", state })
+		const credential = await loginPromise
+		expect(selections[0]?.options).toEqual([
+			{ id: "aaaaaaaa-0000-0000-0000-000000000001", label: "My organization (aaaaaaaa)" },
+			{ id: "bbbbbbbb-0000-0000-0000-000000000002", label: "My organization (bbbbbbbb)" },
+		])
+		expect(credential.orgName).toBe("My organization (bbbbbbbb)")
 	})
 
 	it("pages long organization lists through the selector instead of overflowing it", async () => {
@@ -526,7 +630,7 @@ describe("loginWithCastAiOauth", () => {
 	})
 })
 
-describe("refreshCastAiOauth", () => {
+describe("refreshKimchiOauth", () => {
 	const storedCredential = {
 		type: "oauth" as const,
 		access: "id-1",
@@ -545,7 +649,7 @@ describe("refreshCastAiOauth", () => {
 	it("renews with grant_type=refresh_token and rotates the refresh token", async () => {
 		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
 		const before = Date.now() - 1000
-		const next = await refreshCastAiOauth(credential, new AbortController().signal)
+		const next = await refreshKimchiOauth(credential, new AbortController().signal)
 		expect(mock.requests).toHaveLength(1)
 		expect(mock.requests[0].params.get("grant_type")).toBe("refresh_token")
 		expect(mock.requests[0].params.get("refresh_token")).toBe("rt-1")
@@ -563,7 +667,7 @@ describe("refreshCastAiOauth", () => {
 			body: { access_token: "at-3", id_token: "id-3", expires_in: 3600 },
 		}))
 		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
-		const next = await refreshCastAiOauth(credential, new AbortController().signal)
+		const next = await refreshKimchiOauth(credential, new AbortController().signal)
 		expect(next.refresh).toBe("rt-1")
 	})
 
@@ -573,7 +677,7 @@ describe("refreshCastAiOauth", () => {
 			body: { error: "invalid_grant", error_description: "refresh token revoked" },
 		}))
 		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
-		const error = await refreshCastAiOauth(credential, new AbortController().signal).catch((err: unknown) => err)
+		const error = await refreshKimchiOauth(credential, new AbortController().signal).catch((err: unknown) => err)
 		expect(isInvalidGrantError(error)).toBe(true)
 		expect((error as OAuthTokenError).message).toContain("refresh token revoked")
 	})
@@ -581,13 +685,13 @@ describe("refreshCastAiOauth", () => {
 	it("passes transient failures through without the invalid_grant classification", async () => {
 		mock.setResponder(() => ({ status: 500, body: { error: "server_error" } }))
 		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
-		const error = await refreshCastAiOauth(credential, new AbortController().signal).catch((err: unknown) => err)
+		const error = await refreshKimchiOauth(credential, new AbortController().signal).catch((err: unknown) => err)
 		expect(isInvalidGrantError(error)).toBe(false)
 		expect((error as OAuthTokenError).status).toBe(500)
 	})
 
 	it("fails with a re-login guidance error when stored extras are incomplete", async () => {
 		const credential = { type: "oauth" as const, access: "x", refresh: "r", expires: 0 }
-		await expect(refreshCastAiOauth(credential, new AbortController().signal)).rejects.toThrow(/sign in again/)
+		await expect(refreshKimchiOauth(credential, new AbortController().signal)).rejects.toThrow(/sign in again/)
 	})
 })

@@ -36,6 +36,8 @@ export function applyLanguageHint(messages: OrchestratorMessages, language: stri
 	const hint = {
 		role: "custom",
 		customType: LANGUAGE_HINT_CUSTOM_TYPE,
+		// pinnedLanguageTurnHint escapes the config value at the interpolation
+		// point, so the wrapper cannot be closed early by the value.
 		content: [{ type: "text", text: markHarnessSteer(pinnedLanguageTurnHint(language)) }],
 		display: false,
 		timestamp: stripped[lastUserIdx].timestamp,

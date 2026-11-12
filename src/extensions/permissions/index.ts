@@ -31,6 +31,7 @@ import * as PromptSupplementRegistry from "../../shared/planning/prompt-suppleme
 import { getToolsForProfile, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import { isInSandboxCluster } from "../../utils/sandbox.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -154,6 +155,14 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 // exceptions such as read-only bash and debugger tools.
 const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((tool) => tool.name))
 
+/**
+ * Appended to the system prompt on each plan-mode agent run when MCP tools
+ * are hidden. Without it the model reports "no MCP tools are accessible",
+ * which users read as a connector/auth failure and start re-authorizing.
+ */
+const PLAN_MODE_MCP_NOTE =
+	"\n\nPlan mode is active: the `mcp` gateway and all non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Hidden tools work again after the user leaves plan mode. If the user's request needs an MCP tool, prefer a read-only one if it does the job; otherwise say it is unavailable in plan mode instead of reporting a connection or login problem."
+
 // Tools that auto-approve in headless/auto modes without LLM classification.
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
 // are the agents-extension surface — `agent` is the canonical delegation tool,
@@ -223,7 +232,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		default: false,
 	})
 	pi.registerFlag("yolo", {
-		description: "Alias for --auto. Start in autonomous mode (YOLO with classifier).",
+		description: "Start in YOLO mode (auto-approve everything, no classifier — your deny rules still apply).",
 		type: "boolean",
 		default: false,
 	})
@@ -397,9 +406,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return
 		const { mode, initiatedBy } = getRuntimePermissionMode()
 		if (mode === "yolo" && initiatedBy === "user") {
+			// The DANGER flag keeps the full bypass (deny rules included) — say so
+			// instead of the yolo-mode wording, which is only true without it.
+			// LENGTH CONSTRAINT: the yolo wording shares the TUI info line with
+			// the update-restart notice ("Update installed · Restart to update");
+			// the e2e test renders both at 160 columns, so keep this string short
+			// enough for the notice to fit beside it (see
+			// tests/e2e/tui/update-restart-notice.test.ts).
+			const dangerBypass = pi.getFlag(DANGEROUS_BYPASS_FLAG) === true || isInSandboxCluster()
 			ctx.ui.setStatus(
 				"permissions-warning",
-				"WARNING: all permission checks disabled. Recommended for sandbox environments only.",
+				dangerBypass
+					? "WARNING: ALL permission checks disabled, including your deny rules. Use only in throwaway/sandbox environments."
+					: "WARNING: prompts and classifier disabled in yolo mode. Your deny rules still apply. For sandbox use only.",
 			)
 		} else if (!hasExecutableMode()) {
 			// Org policy is plan-only: no approved plan can ever proceed to
@@ -782,14 +801,24 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	// Initial modes and temporary Ferment elevation are recorded when work starts.
 	// User-owned changes are also persisted immediately by their transition paths.
-	pi.on("before_agent_start", (_event, ctx) => {
+	pi.on("before_agent_start", (event, ctx) => {
 		maybePersistPermissionMode(ctx)
-		if (getRuntimePermissionMode().mode === "plan") {
-			// MCP direct tools can finish registering after session_start. Rebuild
-			// the snapshot immediately before every model request so late
-			// registration cannot widen the restricted tool surface.
-			ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
-		}
+		if (getRuntimePermissionMode().mode !== "plan") return undefined
+		// MCP direct tools can finish registering after session_start. Rebuild
+		// the snapshot immediately before every model request so late
+		// registration cannot widen the restricted tool surface.
+		ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
+		// Every MCP tool plan mode hides (the gateway and direct server tools).
+		// Read-only MCP tools stay usable, so they must not fire the note.
+		// Computed fresh per request because late-registered direct tools are
+		// absent from the enter-time planModeHiddenTools snapshot. The gateway
+		// only registers when at least one server is configured (mcp/index.ts),
+		// so "mcp" alone guarantees a real MCP setup.
+		const hidesMcpTools = pi
+			.getAllTools()
+			.some((tool) => (tool.name === "mcp" || tool.name.startsWith("mcp__")) && !isPlanModeTool(tool.name))
+		if (!hidesMcpTools) return undefined
+		return { systemPrompt: `${event.systemPrompt}${PLAN_MODE_MCP_NOTE}` }
 	})
 
 	// Plan-mode stall recovery: when the model made tool calls in plan mode and
@@ -1441,8 +1470,38 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			for (let attempt = 0; attempt < MODES.length; attempt++) {
 				const { mode } = getRuntimePermissionMode()
 
-				// YOLO mode: bypass ALL permission checks including rules, denylist, and classifier
+				// YOLO mode: skip approval prompts and the classifier — but the user's
+				// blocklist still wins. Deny rules (and the allow rules that can override
+				// builtin denies) are evaluated first, then the hard-block net for bash
+				// commands no rule matched. Only --dangerously-skip-permissions — or a
+				// session inside the sandbox cluster (ephemeral throwaway machines are
+				// that flag's documented use case, and those sessions enter yolo via
+				// the ACP client with no flag of their own) — keeps the full bypass.
 				if (mode === "yolo") {
+					if (pi.getFlag(DANGEROUS_BYPASS_FLAG) !== true && !isInSandboxCluster()) {
+						const match = evaluateRules(allRules(), toolName, input)
+						if (match.decision === "deny") {
+							emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))
+							return {
+								block: true,
+								reason: `Denied by rule ${formatRule(match.rule)}`,
+							}
+						}
+						if (match.decision === "allow") {
+							emitToolDecision(pi, event, mode, "accept", ruleSourceDetail(match.rule))
+							return undefined
+						}
+						if (toolName === "bash") {
+							const command = typeof input.command === "string" ? input.command : ""
+							if (isHardBlockedBash(command)) {
+								emitToolDecision(pi, event, mode, "reject", "yolo_hard_block")
+								return {
+									block: true,
+									reason: `Blocked in yolo mode (hard-blocked command): ${command}`,
+								}
+							}
+						}
+					}
 					emitToolDecision(pi, event, mode, "accept", "yolo_bypass")
 					return undefined
 				}

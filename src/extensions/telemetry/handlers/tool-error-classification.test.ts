@@ -87,6 +87,17 @@ describe("classifyToolError — fixture replay (real export messages)", () => {
 		}
 	})
 
+	it("classifies the todo check-in gate block with its parsed revision", () => {
+		// Consumer-side pin of the derived TODO_CHECKIN_GATE_RE: the producer
+		// literal is pinned in todos/index.test.ts, but a mangled escape or
+		// suffix in the regex construction itself would only fail here.
+		const c = classifyToolError(
+			"bash",
+			"⏸ Todo check-in pending (input revision 7). Reconcile the todo list with the user's latest direction and the work already done before starting the next tool call.",
+		)
+		expect(c).toEqual({ kind: "blocked", message: "Todo check-in gate", attrs: { revision: 7 } })
+	})
+
 	it("maps classifier timeout and budget exhaustion to bounded failure codes", () => {
 		const timeout = classifyToolError(
 			"bash",

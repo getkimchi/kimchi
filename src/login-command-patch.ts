@@ -25,7 +25,6 @@ import {
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
 	promptSelfHostedEndpoints,
-	regionChoiceRequired,
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
@@ -228,8 +227,7 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): P
 async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
 	const currentRegion = loadConfig().region
-	// Skip the selector when gating leaves no choice (e.g. EU experimental-off).
-	if (!modeLike.showSelector || !regionChoiceRequired(currentRegion)) {
+	if (!modeLike.showSelector) {
 		await startKimchiBrowserLogin(im, currentRegion)
 		return
 	}
@@ -252,10 +250,10 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 
 async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
-	// Mirror the account login: region first when selector support exists and
-	// gating leaves an actual choice, then the key/endpoint inputs.
+	// Mirror the account login: region first when selector support exists, then
+	// the key/endpoint inputs.
 	const currentRegion = loadConfig().region
-	if (!modeLike.showSelector || !regionChoiceRequired(currentRegion)) {
+	if (!modeLike.showSelector) {
 		await runKimchiApiKeyLogin(im, currentRegion)
 		return
 	}
@@ -442,7 +440,7 @@ function showLoginChoiceSelector(im: InteractiveMode): void {
 	})
 }
 
-/** CAST AI SSO: region (with OAuth tenant) first, then the upstream login
+/** Kimchi SSO: region (with OAuth tenant) first, then the upstream login
  * dialog driving the provider's OAuth login. */
 async function handleKimchiSsoLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as LoginModeLike
@@ -477,18 +475,18 @@ async function runKimchiSsoLogin(im: InteractiveMode, region: RegionId): Promise
 	const session = modeLike.session
 	const runtime = session?.modelRuntime
 	if (!runtime) {
-		showError("CAST AI SSO login failed: model registry is unavailable")
+		showError("Kimchi SSO login failed: model registry is unavailable")
 		return
 	}
 	if (!modeLike.showLoginDialog) {
-		showError("CAST AI SSO login failed: the login dialog is unavailable on this surface")
+		showError("Kimchi SSO login failed: the login dialog is unavailable on this surface")
 		return
 	}
 
 	// The dialog drives the provider's registered OAuth login; the region the
 	// user just picked is handed over through the pending-region slot.
 	setPendingOAuthRegion(region)
-	await modeLike.showLoginDialog(KIMCHI_PROVIDER_ID, "CAST AI", () => showLoginChoiceSelector(im))
+	await modeLike.showLoginDialog(KIMCHI_PROVIDER_ID, "Kimchi", () => showLoginChoiceSelector(im))
 
 	// The dialog returns after login completes (or is cancelled — then
 	// completeKimchiSsoLogin finds no OAuth credential and no-ops).

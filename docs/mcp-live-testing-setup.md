@@ -71,9 +71,51 @@ node scripts/mcp-live-google-lifecycle.mjs
 
 Locally, the renewal check reads `GOOGLE_MCP_TEST_CLIENT_ID`, `GOOGLE_MCP_TEST_CLIENT_SECRET`, `GOOGLE_MCP_TEST_REFRESH_TOKEN`, and optionally `GOOGLE_MCP_TEST_SERVER`/`GOOGLE_MCP_TEST_ISSUER`. In the workflow, the per-server secrets (`GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL`, `_DRIVE`, `_CALENDAR`) are mapped onto `GOOGLE_MCP_TEST_REFRESH_TOKEN` for the selected server; dispatching Drive or Calendar without its secret fails fast with a clear "not set" error.
 
-Each run performs two renewal cycles: the seeded expired token is renewed, one read-only tool is invoked through the live session (default `list_labels`; override with `GOOGLE_MCP_TEST_CALL_TOOL` and `GOOGLE_MCP_TEST_CALL_ARGS`), and the refreshed token is force-expired and renewed again — proving the renewed credential itself still renews. The stored scope is asserted to be present (and to contain `GOOGLE_MCP_TEST_EXPECTED_SCOPE` when set), so a silently narrowed grant fails the check. The tool call runs through `kimchi mcp probe --call`, which invokes one tool after listing the catalog.
+Each run performs two renewal cycles: the seeded expired token is renewed, one read-only tool is invoked through the live session (default `list_labels`; override with `GOOGLE_MCP_TEST_CALL_TOOL` and `GOOGLE_MCP_TEST_CALL_ARGS`; empty skips the call), and the refreshed token is force-expired and renewed again — proving the renewed credential itself still renews. A third cycle runs two probes concurrently against the one shared credential store: if the provider rotates refresh tokens per grant, the loser's `invalid_grant` must recover from shared storage without a browser consent; if it does not rotate, the cycle still proves concurrent use of one stored credential cannot corrupt it. The stored scope is asserted to be present (and to contain `GOOGLE_MCP_TEST_EXPECTED_SCOPE` when set), so a silently narrowed grant fails the check. The tool call runs through `kimchi mcp probe --call`, which invokes one tool after listing the catalog.
 
 Or run the `MCP live` workflow's lifecycle job: dispatch it (choosing Gmail, Drive, or Calendar — only Gmail is provisioned by default), or add the `mcp-e2e-live` label to a pull request to run it against that PR's build. Labelling re-triggers the workflow; the lifecycle job only runs with the label present on a same-repository pull request.
+
+## Local rotation check against a per-grant rotating provider
+
+castai-mcp (`https://mcp.cast.ai/mcp`) rotates refresh tokens per grant — the production failure mode behind the refresh-rotation fix. The Google job proves the contention half only (Gmail keeps its refresh token across concurrent grants), so this is a one-off local check that the fixture's rotation model is faithful to the real server: the loser's rejected grant must recover from shared storage with no browser consent. It is deliberately not a CI job — each run retires the minted refresh token (per-grant rotation), so it does not repeat without re-minting.
+
+Mint the credentials once, through the harness so the dynamically registered client's redirect URIs match the ones the check seeds:
+
+1. Use a dedicated Cast AI test account (not the daily one: the run's first renewal retires the token it seeded, and a token minted from the daily credential would force one re-auth in the daily session).
+2. Isolated home with the server pre-configured and a file-backed credential store:
+
+   ```sh
+   mkdir -p /tmp/castai-seed/.config/kimchi/harness
+   cat > /tmp/castai-seed/.config/kimchi/harness/mcp.json <<'EOF'
+   {
+     "mcpServers": {
+       "castai-test": {
+         "url": "https://mcp.cast.ai/mcp",
+         "auth": "oauth"
+       }
+     }
+   }
+   EOF
+   HOME=/tmp/castai-seed KIMCHI_MCP_E2E_KEYRING_DIR=/tmp/castai-seed/mcp-keyring dist/bin/kimchi
+   ```
+
+3. In the session: `/mcp-auth castai-test` and complete the login with the test account. castai-mcp supports dynamic client registration, so the client id and secret are created by this flow — no console app to set up.
+4. Extract `clientInfo.clientId`, `clientInfo.clientSecret`, and `tokens.refreshToken` from the stored entry JSON under `$HOME/mcp-keyring/`. Delete the temporary home afterwards (it holds the client secret). The extraction is manual by design: the values pass from your screen to the shell without transiting any log.
+
+Then run the check locally (the lifecycle script's env contract is provider-neutral despite the GOOGLE_ prefix):
+
+```sh
+GOOGLE_MCP_TEST_CLIENT_ID="<client id>" \
+GOOGLE_MCP_TEST_REFRESH_TOKEN="<refresh token>" \
+GOOGLE_MCP_TEST_SERVER=https://mcp.cast.ai/mcp \
+GOOGLE_MCP_TEST_ISSUER=https://mcp.cast.ai/mcp \
+PI_MCP_ADAPTER_DEBUG_AUTH=1 \
+node scripts/mcp-live-google-lifecycle.mjs
+```
+
+(The last variable is optional: rotation-recovery diagnostics are silent by default — set `PI_MCP_ADAPTER_DEBUG_AUTH=1` to see each retry, recovery miss, and attempt-cap exhaustion as they happen. Same variable works for any kimchi run when capturing an auth issue for a bug report.)
+
+What to look for in the output: the `concurrent cycle:` line must report that the provider rotated the refresh token during the race (that is the fidelity check — the fixture models exactly this), and the run must end PASS with `browserOpens=0` on every cycle: the loser's `invalid_grant` recovered from shared storage without a consent prompt. Expect one run per minted refresh token; re-mint from step 1 for another run.
 
 ## Triage
 

@@ -1,0 +1,124 @@
+name: Perf gate
+
+on:
+  pull_request:
+    # The gate measures the built binary; skip docs-only and pure-test changes.
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'kimchi.png'
+      - 'benchmark/**'
+      - 'docker/**'
+      - 'test-cases/**'
+      - 'src/**/*.test.ts'
+      - 'tests/**'
+  workflow_dispatch:
+    inputs:
+      calibrate:
+        description: Regenerate budgets.json from this run (uploaded as an artifact for review + commit)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.ref (not head_ref) so workflow_dispatch runs on master keep a stable
+  # group too; same-ref PR pushes cancel superseded runs.
+  group: perf-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  perf-gate:
+    # Linux arm64: the pool is one SoC (Neoverse-N2), the VM exposes the
+    # hardware counters (after the sysctl below), and it measures the
+    # linux-arm64 binary kimchi ships. Budgets in tools/perf/budgets.json
+    # are calibrated per runner class and record their class in _meta;
+    # recalibrate via the calibrate dispatch when this label moves.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make copy-for-dev # Builds the binary and copies it to bin/ where copy-resources expects it
+        working-directory: tools/proxy-helper
+
+      - name: Enable hardware counters
+        # The runner blocks perf by policy (paranoid=4); one sysctl lifts it.
+        # 0 (not 1) because the sampler's per-CPU cgroup counters are classed
+        # as CPU monitoring by the kernel, which requires <= 0. Safe here
+        # because the job runs on an ephemeral single-tenant GitHub-hosted
+        # runner VM that is destroyed afterwards; it must not be copied to
+        # shared or self-hosted multi-tenant runners. If this ever stops
+        # working, the gate fails closed on the counter tier instead of
+        # silently comparing CPU time to instruction budgets.
+        run: |
+          sudo sysctl -w kernel.perf_event_paranoid=0
+          cat /proc/sys/kernel/perf_event_paranoid
+
+      - name: Build binary
+        run: pnpm run build:binary
+
+      - name: Calibration context
+        run: |
+          uname -m
+          grep -m1 "model name" /proc/cpuinfo || grep -m1 -iE "implementer|part" /proc/cpuinfo || true
+          git --version
+
+      - name: Harness selfcheck (fixtures, validators, scenarios)
+        # REQUIRE_EXACT makes the selfcheck fail if the exact cgroup backend
+        # cannot be created here, catching runner/kernel backend drift before
+        # it degrades the gate to the sampling tier (which the tier check
+        # would then refuse to compare against cgroup-calibrated budgets).
+        run: pnpm run perf:selfcheck
+        env:
+          KIMCHI_PERF_REQUIRE_EXACT: "1"
+
+      - name: Gate classifier selfcheck
+        # Contract-tests gate.py's fail-closed decision logic on synthetic
+        # records — the gate has no other unit tests, so a classifier
+        # regression (silently passing breaches) would ship unnoticed.
+        run: python3 tools/perf/gate.py --selfcheck
+
+      - name: Run perf gate
+        env:
+          # Never interpolate workflow inputs directly into run: blocks.
+          CALIBRATE: ${{ github.event.inputs.calibrate }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "$CALIBRATE" = "true" ]; then
+            pnpm run perf:budgets --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION"
+          else
+            pnpm run perf:gate --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION"
+          fi
+
+      - name: Upload recalibrated budgets
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.calibrate == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: recalibrated-budgets
+          path: tools/perf/budgets.json
+
+      - name: Upload run records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-runs
+          path: ${{ runner.temp }}/perf-gate-runs/*.jsonl
+          if-no-files-found: ignore

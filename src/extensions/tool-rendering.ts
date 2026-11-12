@@ -44,10 +44,28 @@ import {
 import * as Diff from "diff"
 import type { BundledLanguage, BundledTheme } from "shiki"
 import type { TSchema } from "typebox"
+import { liveTheme } from "../components/live-theme.js"
 import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import {
+	dereferenceToolArgs,
+	derefToolArgsForExecution,
+	substituteTokens,
+	vaultForPaint,
+	vaultForSession,
+} from "./pii-redaction/vault.js"
+
+/**
+ * The shape of a redaction span the model can carry: an irreversible marker
+ * or a reversible token. Used to recognize when an edit's "Could not find"
+ * outcome is about a redacted span (F2's residual: markers mode, dead
+ * vaults, and confabulated tokens never dereference).
+ */
+const REDACTED_SPAN_RE = /\[REDACTED-[A-Z0-9_]+\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\]/
+
+import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 
@@ -70,15 +88,6 @@ const MESSAGE_RENDER_CACHE = Symbol.for("pi-claude-style-tools:message-render-ca
 // Bumped whenever a style input shared by all cached renders changes (new
 // theme instance applied, palette reset). Compared inside cached entries.
 let renderStyleGeneration = 0
-/** The live pi theme instance (swapped on globalThis by every theme
- *  switch, including in-memory previews and setThemeInstance paths that
- *  never write settings). Compared by reference inside the render caches —
- *  renderStyleGeneration alone misses those paths, with the next turn_start
- *  palette apply as the slower backstop. */
-const PI_THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
-function currentThemeInstance(): unknown {
-	return (globalThis as Record<symbol, unknown>)[PI_THEME_KEY]
-}
 let themeChangeListenerRegistered = false
 const HIDDEN_TOOL_BLOCK_NAMES = new Set<string>([...TODO_WRITE_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES])
 const WRAP_MARK = "\uE000"
@@ -553,10 +562,13 @@ export function patchAssistantMessageRender(): void {
 		) {
 			const durationMs = message[WORKED_DURATION_KEY]
 			const cached = component[MESSAGE_RENDER_CACHE]
+			// The live theme is compared by reference: renderStyleGeneration alone
+			// misses switches that never write settings (in-memory previews,
+			// setThemeInstance), with the next turn_start palette apply as backstop.
 			if (
 				cached?.width === width &&
 				cached?.style === renderStyleGeneration &&
-				cached?.theme === currentThemeInstance() &&
+				cached?.theme === liveTheme() &&
 				cached?.durationMs === durationMs &&
 				cached?.children === component.contentContainer.children &&
 				cached?.content === message.content &&
@@ -573,7 +585,7 @@ export function patchAssistantMessageRender(): void {
 			component[MESSAGE_RENDER_CACHE] = {
 				width,
 				style: renderStyleGeneration,
-				theme: currentThemeInstance(),
+				theme: liveTheme(),
 				durationMs,
 				children: component.contentContainer.children,
 				content: message.content,
@@ -621,7 +633,7 @@ export function patchUserMessageRender(): void {
 		if (
 			cached?.width === width &&
 			cached?.style === renderStyleGeneration &&
-			cached?.theme === currentThemeInstance() &&
+			cached?.theme === liveTheme() &&
 			cached?.text === component.text &&
 			cached?.children === component.children
 		) {
@@ -665,7 +677,7 @@ export function patchUserMessageRender(): void {
 		component[MESSAGE_RENDER_CACHE] = {
 			width,
 			style: renderStyleGeneration,
-			theme: currentThemeInstance(),
+			theme: liveTheme(),
 			text: component.text,
 			children: component.children,
 			lines,
@@ -832,10 +844,11 @@ function patchToolExecutionRenderers(): void {
 		if (!renderer && typeof originalGetResultRenderer === "function") {
 			renderer = originalGetResultRenderer.call(this)
 		}
-		// Every renderer (upstream and ours) renders through this wrapper so
+		// Every renderer (upstream and ours) renders through these wrappers so
 		// externalized tool results never show their raw markers in the
-		// transcript — resolved from the mirror transiently, per render.
-		return renderer ? withMarkerResolution(renderer) : undefined
+		// transcript — resolved from the mirror transiently, per render — and
+		// check-in-gate blocks render collapsed into one line.
+		return renderer ? withCheckinGateCollapse(withMarkerResolution(renderer)) : undefined
 	}
 
 	proto[TOOL_EXECUTION_PATCH_FLAG] = true
@@ -896,6 +909,56 @@ export function withMarkerResolution(renderer: UpstreamResultRenderer): Upstream
 }
 
 /**
+ * Wraps any result renderer so a tool call the todo check-in gate blocked
+ * renders as one quiet transcript line instead of the gate's full block
+ * reason. The reason is written for the model — it must reach the
+ * conversation untouched (the model reconciles from it) — so the collapse
+ * is display-only, and the expanded view (ctrl+o) defers to the underlying
+ * renderer, mirroring the validation-dump truncation UX.
+ *
+ * Detection is provenance-based, not content-based: the gate records the
+ * blocked call's id at block time (checkin-gate.ts), which tool output
+ * cannot forge — a text-prefix match on result content would let
+ * attacker-influenced output hide its own transcript rendering. Gate state
+ *  is volatile, so resumed sessions render historical gate rows uncollapsed.
+ *  The returned component follows the validation-dump truncation wrapper's
+ *  `lastComponent` reuse contract (never handed back to upstream).
+ */
+export function withCheckinGateCollapse(renderer: UpstreamResultRenderer): UpstreamResultRenderer {
+	return (result, options, theme, ctx) => {
+		// Keep ours for reuse below, but never hand it to the underlying
+		// renderer: a shape mismatch (our ToolText vs their Container) would
+		// make it throw or lose content — the truncation wrapper's exact
+		// hazard documented at createErrorTruncatingResultRenderer.
+		const ours = ctx.lastComponent && checkinGateComponents.has(ctx.lastComponent) ? ctx.lastComponent : undefined
+		if (ours) ctx.lastComponent = undefined
+		if (options.expanded || !isGateBlockedToolCall(ctx.toolCallId)) return renderer(result, options, theme, ctx)
+		// When taking over, the underlying renderer is still invoked
+		// (best-effort, result discarded) — same contract as the truncation
+		// wrapper: the edit/write renderResult performs call-header side effects
+		// (settledError styling), and the blocked card must not lose them.
+		try {
+			renderer(result, options, theme, ctx)
+		} catch {
+			/* noop — side effects only */
+		}
+		const component = makeText(ours, withBranch(theme.fg("muted", CHECKIN_GATE_DISPLAY_LINE), theme))
+		checkinGateComponents.add(component)
+		return component
+	}
+}
+
+/** Collapsed components we returned, keyed for reuse and never handed to
+ *  the underlying renderer as `lastComponent` (see above). Tracked on the
+ *  component, not per wrapper instance: upstream resolves a fresh renderer
+ *  on every render. */
+const checkinGateComponents = new WeakSet<Component>()
+
+/** Single transcript line shown for a check-in-gated tool result. */
+const CHECKIN_GATE_DISPLAY_LINE =
+	"⏸ todo check-in pending — model asked to reconcile its task list · ctrl+o for full text"
+
+/**
  * Components rendered by the truncation wrapper. Ownership is tracked on the
  * component itself (not per wrapper instance) because upstream calls
  * `getResultRenderer()` on every render, creating a fresh wrapper each time.
@@ -949,11 +1012,25 @@ function shortPath(cwd: string, filePath: string): string {
 // Status dot — flickers green/gray while pending
 // ---------------------------------------------------------------------------
 
-export function toolHeader(tool: string, summary: string, theme: Theme, prefix = "", timer?: string): string {
+export function toolHeader(
+	tool: string,
+	summary: string,
+	theme: Theme,
+	prefix = "",
+	timer?: string,
+	mirrorExecution = false,
+): string {
 	applyThemePaletteIfNeeded(theme)
 	const label = theme.fg("toolTitle", theme.bold(tool))
 	let result = `${prefix}${label}`
-	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", summary)}`
+	// By default the summary stays tokenized: it shows WHAT THE TOOL DID,
+	// and a byte-faithful tool (bash, grep…) ran the literal token
+	// (message_end tokenizes toolCall.arguments before execution). Only
+	// read-or-said surfaces (message text, thinking, tool RESULT panes)
+	// substitute. mirrorExecution is set by edit/write — those dereference
+	// vault tokens at execute time (EXEC_DEREF_TOOLS), so for them the
+	// originals ARE what runs and the header shows exactly that.
+	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", mirrorExecution ? paintText(summary) : summary)}`
 	if (timer) result += ` ${theme.fg("dim", timer)}`
 	return result
 }
@@ -1274,6 +1351,48 @@ export function wrapMarkedLine(line: string, width: number): string[] {
 	return wrapped.map((part, index) => (index === 0 ? `${prefix}${part}` : `${continuation}${part}`))
 }
 
+/**
+ * Presentation-side token substitution for tool panes — the same
+ * contract as the pii-redaction markdown transformer (full text,
+ * stateless, every paint): tool result/input panes are NOT part of the
+ * markdown paint path. Unknown tokens pass through verbatim; no vault
+ * (markers mode) → passthrough. Display only — never applied to executed
+ * payloads or to the result text logic (sentinel comparison, error
+ * classification) that runs before this layer.
+ */
+function paintText(text: string): string {
+	const vault = vaultForPaint()
+	return vault ? substituteTokens(vault, text) : text
+}
+
+/**
+ * F2 residual: when an edit's "Could not find" spans args carrying a
+ * redaction shape that execution could NOT dereference (markers mode, a
+ * dead vault, or a confabulated token), append guidance pointing at the
+ * real cause and its escape hatch instead of leaving the model to retry
+ * an unmatchable exact-match. Successful derefs that still miss mean the
+ * file changed — nothing added. The stored assistant message args stay
+ * tokenized; this text goes only into the tool RESULT (redacted on the
+ * way into storage like any other result content).
+ */
+export function explainRedactedEditFailure<T>(result: T, originalParams: unknown, substituted: boolean): T {
+	if (substituted || !result || typeof result !== "object") return result
+	const r = result as { isError?: boolean; content?: Array<{ type?: string; text?: string }> }
+	if (r.isError !== true) return result
+	const text = (r.content ?? [])
+		.filter((c) => c.type === "text" && typeof c.text === "string")
+		.map((c) => c.text)
+		.join("\n")
+	if (!text.includes("Could not find")) return result
+	if (!REDACTED_SPAN_RE.test(JSON.stringify(originalParams))) return result
+	const guidance =
+		"NOTE: the searched text contains a redacted span ([REDACTED-<TYPE>] marker or [<TYPE>_N] token). " +
+		"These are placeholders; the file holds the original value, which is never exposed to the model. " +
+		"To edit this file, exclude the entity type via redaction.excludedEntities in settings.json or disable PII redaction for the session."
+	r.content = [...(r.content ?? []), { type: "text", text: guidance }]
+	return result
+}
+
 export class ToolText extends Text {
 	private value = ""
 	private toolCachedValue?: string
@@ -1282,12 +1401,13 @@ export class ToolText extends Text {
 
 	constructor(text = "") {
 		super("", 0, 0)
-		this.value = text
+		this.value = paintText(text)
 	}
 
 	setText(text: string): void {
-		if (this.value === text) return
-		this.value = text
+		const substituted = paintText(text)
+		if (this.value === substituted) return
+		this.value = substituted
 		this.invalidate()
 	}
 
@@ -4626,7 +4746,13 @@ export default function (pi: ExtensionAPI) {
 			parameters: writeTool.parameters,
 			promptGuidelines: writeTool.promptGuidelines,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+				// Execution-side deref (see vault.ts EXEC_DEREF_TOOLS): the model
+				// issued tokens; the file gets the user's real values. params stay
+				// tokenized in the stored assistant message; everything below runs
+				// on the dereferenced execution copy — including the result diff,
+				// which therefore shows what actually landed.
+				const execParams = derefToolArgsForExecution(ctx.sessionManager?.getSessionId?.(), "write", params)
+				const fp = execParams.path ?? (execParams as { file_path?: string }).file_path ?? ""
 				const sessionCwd = ctx.cwd
 				const fullPath = fp ? resolve(sessionCwd, fp) : ""
 				const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
@@ -4637,8 +4763,8 @@ export default function (pi: ExtensionAPI) {
 				} catch {
 					old = null
 				}
-				const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
-				const content = params.content ?? ""
+				const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, execParams, signal, onUpdate)
+				const content = execParams.content ?? ""
 				if (old !== null && old !== content) {
 					const diff = parseDiff(old, content)
 					result.details = {
@@ -4671,7 +4797,8 @@ export default function (pi: ExtensionAPI) {
 					revealSummary,
 				)
 				const timer = formatToolTimer(getToolElapsedMs(ctx))
-				const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer)
+				// write is in EXEC_DEREF_TOOLS: the header mirrors what lands.
+				const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer, true)
 				return makeText(ctx.lastComponent, hdr)
 			},
 			renderResult(result, { isPartial }, theme, ctx) {
@@ -4760,12 +4887,21 @@ export default function (pi: ExtensionAPI) {
 			parameters: editTool.parameters,
 			promptGuidelines: editTool.promptGuidelines,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+				// Execution-side deref (see vault.ts EXEC_DEREF_TOOLS): a model-issued
+				// token in oldText no longer beats the exact-match gate — ops run on
+				// the dereferenced execution copy, which is also what the result
+				// details (and so the diff preview) describe.
+				const { args: execParams, substituted } = dereferenceToolArgs(
+					vaultForSession(ctx.sessionManager?.getSessionId?.()),
+					params,
+				)
+				const fp = execParams.path ?? (execParams as { file_path?: string }).file_path ?? ""
 				const trackedTool = createTrackedEditTool(ctx, toolCallId)
-				const operations = getEditOperations(params)
+				const operations = getEditOperations(execParams)
 				const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, ctx.cwd) : null
-				const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
-				if (operations.length === 0) return result
+				const result = await trackedTool.execute(toolCallId, execParams, signal, onUpdate)
+				const explained = explainRedactedEditFailure(result, params, substituted)
+				if (operations.length === 0) return explained
 				const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)
 				const baseDetails = (result as AgentEditResult | AgentMultiEditToolResult).details ?? {}
 				if (operations.length === 1) {
@@ -4810,7 +4946,8 @@ export default function (pi: ExtensionAPI) {
 					revealSummary,
 				)
 				const timer = formatToolTimer(getToolElapsedMs(ctx))
-				const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer)
+				// edit is in EXEC_DEREF_TOOLS: the header mirrors what lands.
+				const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer, true)
 				if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr)
 				const diffWidth = branchDiffWidth()
 				const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`
@@ -4843,6 +4980,10 @@ export default function (pi: ExtensionAPI) {
 						})
 				}
 				const body = ctx.state._ptDisplay as string | undefined
+				// The preview mirrors execution: edit/write dereference vault tokens
+				// at execute time (EXEC_DEREF_TOOLS), so showing the originals IS
+				// showing what lands on disk. A dead/absent vault paints verbatim —
+				// exactly what execution would do then.
 				return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
 			},
 			renderResult(result, { isPartial }, theme, ctx) {

@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import {
 	chmodSync,
 	closeSync,
@@ -17,15 +17,54 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { backupDir } from "./paths.js"
 
+/** Generous: a first run of a freshly signed binary can be slow on macOS. */
+const BINARY_CHECK_TIMEOUT_MS = 60_000
+
+interface ProcessResult {
+	status: number | null
+	stdout: string
+	stderr: string
+	error?: NodeJS.ErrnoException
+}
+
+/**
+ * Run a command without blocking the event loop. Background updates run these
+ * checks mid-session, where a synchronous spawn would freeze the TUI — and with
+ * no timeout, a hung binary would freeze it for good. Never rejects.
+ */
+function runProcess(command: string, args: string[], timeoutMs: number): Promise<ProcessResult> {
+	return new Promise((resolve) => {
+		let stdout = ""
+		let stderr = ""
+		const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] })
+		const finish = (result: Pick<ProcessResult, "status" | "error">): void => {
+			clearTimeout(timer)
+			resolve({ ...result, stdout, stderr })
+		}
+		const timer = setTimeout(() => {
+			child.kill("SIGKILL")
+			finish({ status: null, error: new Error(`${command} did not exit within ${timeoutMs}ms`) })
+		}, timeoutMs)
+		child.stdout.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString()
+		})
+		child.stderr.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString()
+		})
+		child.on("error", (error) => finish({ status: null, error }))
+		child.on("close", (status) => finish({ status }))
+	})
+}
+
 /**
  * Run `<newPath> --version` and assert it exits 0. Catches a corrupt
  * release before the rename swaps it into place. We swallow stdout but
  * surface the exit code so any post-mortem can see what went wrong.
  */
-export function smokeTestBinary(newPath: string): void {
-	const result = spawnSync(newPath, ["--version"], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] })
+export async function smokeTestBinary(newPath: string, timeoutMs = BINARY_CHECK_TIMEOUT_MS): Promise<void> {
+	const result = await runProcess(newPath, ["--version"], timeoutMs)
 	if (result.status !== 0) {
-		const detail = (result.stderr || result.stdout || "").trim()
+		const detail = (result.stderr || result.stdout || result.error?.message || "").trim()
 		throw new Error(`new binary failed --version smoke test: ${detail || `exit ${result.status}`}`)
 	}
 }
@@ -40,21 +79,15 @@ export function smokeTestBinary(newPath: string): void {
  * somehow unavailable, the user can still use the new binary by clicking
  * through the first-run Gatekeeper dialog.
  */
-export function macosCodesignReSign(newPath: string): void {
+export async function macosCodesignReSign(newPath: string): Promise<void> {
 	if (process.platform !== "darwin") return
 
-	const remove = spawnSync("codesign", ["--remove-signature", newPath], {
-		stdio: ["ignore", "pipe", "pipe"],
-		encoding: "utf-8",
-	})
-	if (remove.status !== 0 && (remove.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+	const remove = await runProcess("codesign", ["--remove-signature", newPath], BINARY_CHECK_TIMEOUT_MS)
+	if (remove.status !== 0 && remove.error?.code !== "ENOENT") {
 		console.error(`kimchi update: codesign --remove-signature failed: ${remove.stderr.trim()}`)
 	}
 
-	const sign = spawnSync("codesign", ["--sign", "-", "--force", newPath], {
-		stdio: ["ignore", "pipe", "pipe"],
-		encoding: "utf-8",
-	})
+	const sign = await runProcess("codesign", ["--sign", "-", "--force", newPath], BINARY_CHECK_TIMEOUT_MS)
 	if (sign.status !== 0) {
 		const detail = sign.stderr.trim() || sign.error?.message || `exit ${sign.status}`
 		throw new Error(`codesign re-sign failed: ${detail}`)

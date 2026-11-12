@@ -26,10 +26,12 @@ import {
 	markCheckinPending,
 	markStalenessGateOpened,
 	reconcileCheckinScope,
+	recordGateBlockedToolCall,
 	recordStalenessOpening,
 	resetScopeEpoch,
 	setCheckinEnforcementActive,
 	subscribeCheckinGate,
+	TODO_CHECKIN_BLOCK_PREFIX,
 } from "./checkin-gate.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -213,26 +215,12 @@ function checkinListBlocks(scopes: readonly TodoScope[], sessionId: string, revi
 	return lines
 }
 
-/** Hidden-steer instruction sent once per accepted input revision when
- *  checks are pending — before the model's first work tool of the new
- *  request, so reconciliation can share the next turn. */
-function checkinInstructionText(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
-	return [
-		`Todo check-in (input revision ${revision}): the user's latest input may change the plan. Before starting further work tools, reconcile each list below — add newly requested work, remove obsolete items, revise statuses — or, when a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. A text-only reply needs no tool call; the check stays pending until work resumes.`,
-		...checkinListBlocks(
-			pending.map((check) => check.scope),
-			sessionId,
-			revision,
-		),
-	].join("\n")
-}
-
 /** Block reason for work tools admitted while a check is pending. Carries
  *  the current instructions on every blocked call — without queuing
  *  repeated steer messages. */
 function checkinBlockReason(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
 	return [
-		`⏸ Todo check-in pending (input revision ${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed.`,
+		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed.`,
 		...checkinListBlocks(
 			pending.map((check) => check.scope),
 			sessionId,
@@ -248,7 +236,7 @@ function checkinBlockReason(pending: readonly CheckinPending[], sessionId: strin
  *  shares that turn before further work tools. */
 function planSubmissionCheckinText(sessionId: string, revision: number): string {
 	return [
-		`Todo check-in (input revision ${revision}): the plan was submitted for review, and work completed while finalizing it may not be reflected in the list below. Before starting further work tools, reconcile the list — mark finished work completed, remove items the submitted plan supersedes — or, when the list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. A text-only reply needs no tool call; the check stays pending until work resumes.`,
+		`Todo check-in (input revision ${revision}): harness reminder, not the user's message. The plan was submitted for review, and work completed while finalizing it may not be reflected in the list below. Before starting further work tools, reconcile the list — mark finished work completed, remove items the submitted plan supersedes — or, when the list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. A text-only reply needs no tool call; the check stays pending until work resumes.`,
 		...checkinListBlocks([GLOBAL_TODO_SCOPE], sessionId, revision),
 	].join("\n")
 }
@@ -338,16 +326,23 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// the same scope — writes to one list never silence pressure on another.
 	const stalenessTracker = createIntervalSteerTracker()
 
-	// A queued follow-up (streamingBehavior "followUp") is delivered only
-	// after the current run ends. Arming the check at receipt would block
-	// work against a direction the model cannot see yet — and a blind
-	// confirmation would consume the revision before the message lands. The
-	// texts below are delivered (message_start) in queue order.
+	// Expected user-message deliveries, recorded from the input event and
+	// consumed by the message_start handler: a queued follow-up
+	// (streamingBehavior "followUp") is delivered only after the current run
+	// ends, and its text lands here, to be delivered (message_start) in queue
+	// order. Entries carry no revision — revisions are assigned at delivery.
 	const deferredCheckinInputs = new Map<string, string[]>()
 
 	// Recent steered/idle input texts, consumed by the user message they
 	// produce: lets the message_start consumer attribute a user message to
 	// the immediate input that caused it, instead of to a queued follow-up.
+	// Deliberately not cleared at agent_end: a steered input can outlive its
+	// run when a later input handler parks on real I/O (documents/intake
+	// @file reads, the clipboard vision gate) — the parked steer is enqueued
+	// into the idle agent and delivers at the next run's steering poll, and
+	// its expectation must still be there to arm. Stale entries from
+	// swallowed inputs self-drain: each positional consumption removes
+	// exactly one, and deliveries advance exactly once regardless.
 	const recentImmediateInputs = new Map<string, string[]>()
 
 	/** Reset one list's staleness bookkeeping — epoch, counter, and reminder
@@ -395,8 +390,11 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		syncTodoWidget(ctx)
 	}
 
-	const deliverGenuineInput = (ctx: ExtensionContext, opts: { deferred: boolean }) => {
+	const deliverGenuineInput = (ctx: ExtensionContext) => {
 		const sessionId = ctx.sessionManager.getSessionId()
+		// The user message has entered history (message_start): the model sees
+		// its direction, so advancing the revision and arming the check here
+		// makes every pending revision one the model has seen.
 		const revision = advanceInputRevision(sessionId)
 		// Publish the effective enforcement state first: a release while
 		// checks are pending must stop surfaces from showing a pause, while
@@ -411,21 +409,22 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		markCheckinPending(getRelevantCheckinScopes(sessionId), sessionId, revision)
 		const pending = getPendingCheckins(sessionId)
 		if (pending.length > 0) {
-			// Immediate inputs queue one instruction per received input revision.
-			// Deferred follow-up deliveries skip the separate instruction: their
-			// message_start fires inside the agent loop right before the response
-			// streams, so a steer sent now is only read after the first tool
-			// batch — the block reason carries the instructions instead, with
-			// the model already looking at the new direction.
-			if (!opts.deferred) {
-				sendHiddenSteer(pi, TODO_CHECKIN_CUSTOM_TYPE, checkinInstructionText(pending, sessionId, revision), {
-					reason: "user_input",
-					inputRevision: revision,
-				})
-			}
-			// The fire is emitted directly with no outcome watcher: the outcome
-			// is attributed when the check actually closes, carrying this
-			// steer_id.
+			// No instruction steer is queued here, on purpose. Any instruction
+			// sent around the user's message races the steering queue: upstream
+			// awaits ALL input handlers before enqueueing the user's message
+			// (agent-session `_queueUserInput`), and later-registered handlers
+			// park on real I/O (`documents/intake` @file reads, clipboard image
+			// vision gate) — so even a macrotask-deferred send can enter the
+			// queue AHEAD of the message it refers to. With one-at-a-time
+			// steering (the default) it is then delivered alone, and a pending
+			// wait release ("a message from the user is waiting") makes the
+			// model read the reminder as that message instead of the input.
+			// The gate itself is the delivery mechanism: the first work-tool
+			// admission after the message is seen is blocked with the full
+			// instructions (checkinBlockReason), with the model already looking
+			// at the new direction — the same contract the follow-up path uses.
+			// The fire is emitted with no outcome watcher: the outcome is
+			// attributed when the check actually closes, carrying this steer_id.
 			const steerId = emitSteerFired(pi, "todo_checkin", "checkin", { interactive: ctx.hasUI, sessionId })
 			if (steerId) checkinSteerIds.set(sessionId, steerId)
 		}
@@ -433,51 +432,59 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	}
 
 	// Genuine user input (interactive or rpc — never extension injections or
-	// replayed history) advances the session's input revision. A newer input
-	// invalidates earlier reconciliation: what must be reconciled changed.
-	// The input event has receive semantics, not acceptance semantics: another
-	// handler may still consume the submission afterwards ({ action: "handled" }
-	// — e.g. a cancelled vision gate), leaving a pending check against a
-	// revision the model never saw. Bounded and self-correcting — the next
-	// real input re-arms the check legitimately.
+	// replayed history) is recorded for delivery attribution only. Nothing is
+	// armed at receipt: the revision advances and the check arms when the user
+	// message enters history (message_start). A write admitted between receipt
+	// and delivery executes unrestricted — the gate can only hold work against
+	// a direction the model has seen — and an input swallowed after receipt
+	// (a later handler returning { action: "handled" }, e.g. a cancelled
+	// vision gate) leaves nothing behind.
 	pi.on("input", (event, ctx) => {
 		if (event.source === "extension") return
-		// Follow-ups are queued until the current run ends: defer the revision
-		// advance and check until the message is actually delivered.
+		const sessionId = ctx.sessionManager.getSessionId()
+		// Follow-ups are queued until the current run ends. The texts below
+		// are delivered (message_start) in queue order.
 		if (event.streamingBehavior === "followUp") {
-			const sessionId = ctx.sessionManager.getSessionId()
 			deferredCheckinInputs.set(sessionId, [...(deferredCheckinInputs.get(sessionId) ?? []), event.text])
 			return
 		}
-		// Steered and idle inputs advance at receipt; remember the text so the
-		// user message it produces is attributed to this input (not to a queued
-		// follow-up) at message_start.
-		const sessionId = ctx.sessionManager.getSessionId()
-		recentImmediateInputs.set(sessionId, [...(recentImmediateInputs.get(sessionId) ?? []), event.text].slice(-4))
-		deliverGenuineInput(ctx, { deferred: false })
+		// Steered and idle inputs deliver within the run that received them;
+		// remember the text so the user message it produces is attributed to
+		// this input (instead of to a queued follow-up) at message_start.
+		// Uncapped on purpose: entries are live expectations — capping would
+		// silently drop the oldest and lose its arming. Entries are consumed by
+		// their delivery (exact or positional — exactly one per delivered user
+		// message), so the list cannot outgrow its undelivered inputs.
+		recentImmediateInputs.set(sessionId, [...(recentImmediateInputs.get(sessionId) ?? []), event.text])
 	})
 
-	// Delivery point for queued follow-ups: the user message entering
-	// history. A user message has one of three causes, resolved in order:
-	// 1. a steered/idle input that already advanced at receipt — matched
-	//    against the recent input texts;
+	// The delivery point for genuine user input — the user message entering
+	// history: this is where the session's input revision advances and the
+	// check-in gate arms. Upstream matches its own steering/follow-up queues
+	// by content too, but that queue state is not extension-visible, so the
+	// attribution necessarily re-implements consume-by-text-match here; if an
+	// upstream queue-drain event or shared matcher ever exists, adopt it.
+	// A user message has one of three causes, resolved in order:
+	// 1. a steered/idle input recorded at receipt — exact text match;
 	// 2. a delivered follow-up whose queued text survived upstream's queueing
 	//    untouched — exact match;
-	// 3. a delivered follow-up whose text was rewritten after the input event
-	//    (skill/template expansion, a later input handler's transform) —
-	//    consumed positionally, but only when no unconsumed immediate input
-	//    could have produced this message, so a stale queue entry (dropped by
-	//    upstream's clearQueue, e.g. an Esc pull-back) can never
-	//    double-advance a later resubmission of the same text.
-	// NOTE: extension-sourced follow-ups (e.g. the ferment plan-confirmation
-	// reply, ferment/events.ts) are filtered at the input event, so they are
-	// neither queued here nor recorded in recent — but their delivery still
-	// produces a user message_start. They are sent at turn_end, after any
-	// user follow-up queued during the run, so they cannot overtake one today;
-	// if that ordering ever changes, the delivery attribution must key on the
-	// message's source rather than position.
+	// 3. an input whose text was rewritten after the input event (skill/
+	//    template expansion, a later input handler's transform) — consumed
+	//    positionally; immediate expectations are preferred because in the
+	//    normal case every pending immediate delivers before every queued
+	//    follow-up (steers inject into the current run; follow-ups deliver
+	//    only after it ends).
+	// A message with no recorded input at all (extension-sourced, e.g. the
+	// ferment plan-confirmation reply, ferment/events.ts) is not advanced or
+	// armed: its direction is not the user's. Harness custom messages
+	// (steers, reminders, the todo state block) have role "custom" and are
+	// excluded by the role check above.
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "user") return
+		// Defense in depth: harness custom payloads (hidden steers, reminders)
+		// always carry role "custom" today — but if an upstream path ever emits
+		// a custom-typed user message, it must never advance the clock.
+		if ("customType" in event.message) return
 		const sessionId = ctx.sessionManager.getSessionId()
 		const content = event.message.content
 		const text =
@@ -486,63 +493,63 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// user message, not only when a follow-up is pending. A session's own
 		// prompt is delivered while the queue is still empty, and a leftover
 		// recent entry would both swallow a repeated follow-up text and block
-		// the positional fallback below. Rewritten prompts (whose delivered
-		// text no longer matches the input event's) never text-match and are
-		// cleared by the agent_end reset below.
+		// the positional fallback below.
 		const recent = recentImmediateInputs.get(sessionId) ?? []
 		// First match, not last: idle and steered prompts are delivered in
 		// arrival order, so with repeated texts the delivered message is the
 		// oldest matching entry.
 		const recentIndex = recent.indexOf(text)
-		const fromImmediateInput = recentIndex !== -1
-		if (fromImmediateInput) {
+		if (recentIndex !== -1) {
 			// Drop the match and every older entry: an entry older than the one
 			// just delivered belongs to an input that will never be delivered
 			// (swallowed by a later input handler, e.g. a cancelled vision gate)
 			// and would otherwise block the positional fallback below.
 			recent.splice(0, recentIndex + 1)
 			recentImmediateInputs.set(sessionId, recent)
+			deliverGenuineInput(ctx)
+			return
 		}
 		const queue = deferredCheckinInputs.get(sessionId)
 		if (!queue || queue.length === 0) {
 			// No follow-up is pending, so this message can only be an idle or
 			// steered prompt's delivery. A rewritten prompt's entry never
-			// text-matches — drop the oldest unconsumed recent entry anyway,
-			// mirroring the follow-up fallback below: every user message
-			// corresponds to exactly one input, so unconsumed entries cannot
-			// linger past this message and block a follow-up delivery that
-			// arrives before the agent_end reset.
-			if (!fromImmediateInput && recent.length > 0) {
+			// text-matches — consume the oldest unconsumed entry positionally:
+			// every user message corresponds to exactly one input, so consuming
+			// here keeps the list in lockstep with deliveries.
+			if (recent.length > 0) {
 				recent.shift()
 				recentImmediateInputs.set(sessionId, recent)
+				deliverGenuineInput(ctx)
 			}
-			return
-		}
-		if (fromImmediateInput) {
-			// Produced by an input that already advanced at receipt.
 			return
 		}
 		const index = queue.indexOf(text)
 		if (index !== -1) {
-			queue.splice(index, 1)
-		} else if (recent.length === 0) {
-			// No unconsumed immediate input can have produced this message —
-			// it is a delivered follow-up whose queued text was rewritten.
-			queue.shift()
+			// Drop the match and every older entry: upstream delivers queued
+			// messages in queue order, so an entry older than the one just
+			// delivered belongs to a follow-up that was drained (Esc pull-back,
+			// ACP cancel) and will never be delivered.
+			queue.splice(0, index + 1)
+		} else if (recent.length > 0) {
+			// No text match anywhere — a rewritten text: consume positionally,
+			// preferring the immediate expectations. In the normal case every
+			// pending immediate delivers before every queued follow-up (steers
+			// inject into the current run; follow-ups deliver only after it
+			// ends — a parked steer whose handler outlives the run is the only
+			// exception, and it is caught by exact match), so a rewrite's
+			// producer is the oldest immediate entry whenever one exists. A
+			// drained follow-up (Esc pull-back, ACP cancel) can leave a
+			// permanently stale queue entry — it must not suppress arming for
+			// later rewritten prompts.
+			recent.shift()
+			recentImmediateInputs.set(sessionId, recent)
 		} else {
-			return
+			// No immediate expectation pending — the message is a rewritten
+			// follow-up.
+			queue.shift()
 		}
 		if (queue.length === 0) deferredCheckinInputs.delete(sessionId)
-		deliverGenuineInput(ctx, { deferred: true })
-	})
-
-	// Run boundary: idle and steered prompts are delivered within the run
-	// that received them, and a rewritten one never text-matches — so any
-	// recent entry still held here can no longer produce a message. Reset
-	// the attribution list so leftovers cannot block the next follow-up
-	// delivery's positional fallback.
-	pi.on("agent_end", (_event, ctx) => {
-		recentImmediateInputs.delete(ctx.sessionManager.getSessionId())
+		deliverGenuineInput(ctx)
 	})
 
 	// Work-tool admission gate. Only reconciliation tools (todo writes,
@@ -557,8 +564,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		const sessionId = ctx.sessionManager.getSessionId()
 
 		// Capture the admitted input revision for todo write tools: a write
-		// can only acknowledge the input accepted when its call was admitted,
-		// never newer input that arrived while the call was executing.
+		// can only acknowledge the input delivered when its call was admitted,
+		// never a user message that entered history while the call was
+		// executing. Revisions are assigned at delivery (message_start), so
+		// the snapshot always names input the model has seen.
 		if (isTodoWriteToolName(toolName)) {
 			recordAdmittedInputRevision(sessionId, event.toolCallId, getInputRevision(sessionId))
 			return { block: false }
@@ -601,6 +610,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		const pending = getPendingCheckins(sessionId)
 		if (pending.length === 0) return { block: false }
+		// Record the blocked call so transcript renderers can anchor the
+		// collapsed gate display on provenance tool output cannot forge.
+		recordGateBlockedToolCall(sessionId, event.toolCallId)
 		return { block: true, reason: checkinBlockReason(pending, sessionId, revision) }
 	})
 

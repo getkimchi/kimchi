@@ -659,6 +659,105 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.pi.setActiveTools).toHaveBeenCalledTimes(initialApplications + 1)
 	})
 
+	it("appends the plan-mode MCP note when the gateway is hidden by plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools()).not.toContain("mcp")
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({
+			systemPrompt: expect.stringMatching(
+				/^BASE\n\nPlan mode is active: the `mcp` gateway.*are hidden while plan mode is on.*$/,
+			),
+		})
+	})
+
+	it("appends — never replaces — so earlier handlers' sections (e.g. the memory digest) survive", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		// Simulate another before_agent_start handler having appended its
+		// section before permissions ran: the note must land AFTER it.
+		const prior = "BASE\n\n## Memory digest\n- fact one"
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: prior }, createMockContext([]))
+
+		const text = (result as { systemPrompt?: string } | undefined)?.systemPrompt ?? ""
+		expect(text.startsWith(prior)).toBe(true)
+		expect(text).toContain("Plan mode is active: the `mcp` gateway")
+	})
+
+	it("appends the note when a non-read-only MCP direct tool is hidden by plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp__salesforce__update_record"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools()).not.toContain("mcp__salesforce__update_record")
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({ systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway") })
+	})
+
+	it("detects MCP tools registered after session start (the note is computed per request, not from the enter-time snapshot)", async () => {
+		const harness = createPermissionsHarness(["read"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		vi.mocked(harness.pi.getAllTools).mockReturnValue([
+			{ name: "read", description: "read tool" },
+			{ name: "mcp", description: "mcp tool" },
+		] as never)
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({ systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway") })
+	})
+
+	it("adds no note in plan mode when no MCP tools are configured", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toBeUndefined()
+	})
+
+	it("adds no note for a read-only MCP direct tool that plan mode keeps visible", async () => {
+		const harness = createPermissionsHarness(["read", "mcp__atlassian__search"], { plan: true })
+		const unregister = registerReadOnlyToolProvider(harness.pi, () => ["mcp__atlassian__search"])
+		try {
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(harness.activeTools()).toContain("mcp__atlassian__search")
+
+			const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+			expect(result).toBeUndefined()
+		} finally {
+			unregister()
+		}
+	})
+
+	it("adds no note outside plan mode even with MCP tools configured", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"])
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toBeUndefined()
+	})
+
+	it("stops appending the note after the session leaves plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await expect(harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))).resolves.toEqual({
+			systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway"),
+		})
+
+		await harness.commands.get("permissions")?.handler("mode default", createMockContext([]))
+		expect(harness.activeTools()).toContain("mcp")
+
+		await expect(
+			harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([])),
+		).resolves.toBeUndefined()
+	})
+
 	it("keeps annotated MCP tools visible and callable regardless of their name", async () => {
 		const names = ["atlassian_getJiraIssue", "docs_stats"]
 		const harness = createPermissionsHarness(["read", ...names], { plan: true })
@@ -3367,6 +3466,31 @@ describe("subagent inherits parent session permission mode", () => {
 
 		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
 	})
+
+	it("regression: child inheriting yolo from parent enforces deny rules (blocklist beats approval-skip)", async () => {
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "yolo"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const harness = createPermissionsHarness(["bash"], { "deny-tool": "bash(gh *)" })
+
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID, getEntries: () => [] },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		// The child (sub-agent worker) inherits the parent's yolo mode …
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
+
+		// … but the user's blocklist still denies the tool call.
+		expect(await harness.fire("tool_call", { toolName: "bash", input: { command: "gh --version" } }, childCtx)).toEqual(
+			{
+				block: true,
+				reason: "Denied by rule bash(gh *) [cli]",
+			},
+		)
+	})
 })
 
 describe("permission mode session-log persistence", () => {
@@ -4184,13 +4308,13 @@ describe("permissions:tool_decision emissions", () => {
 		return decisions
 	}
 
-	it("yolo bypass emits accept/config/yolo_bypass with permissionMode yolo", async () => {
+	it("yolo still auto-approves unmatched commands (yolo_bypass)", async () => {
 		const harness = createPermissionsHarness(["bash", "write"], { yolo: true })
 		const decisions = collectDecisions(harness)
 		await harness.fire("session_start", {}, createMockContext([]))
 
 		expect(
-			await harness.fire("tool_call", tcall("bash", { command: "rm -rf /tmp/x" }), createMockContext([])),
+			await harness.fire("tool_call", tcall("bash", { command: "git status" }), createMockContext([])),
 		).toBeUndefined()
 
 		expect(decisions).toEqual([
@@ -4201,6 +4325,247 @@ describe("permissions:tool_decision emissions", () => {
 				sourceDetail: "yolo_bypass",
 				permissionMode: "yolo",
 			},
+		])
+	})
+
+	it("regression: yolo blocks a command matching a user deny rule (blocklist beats approval-skip)", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "deny-tool": "bash(gh *)" })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "gh --version" }), createMockContext([]))).toEqual({
+			block: true,
+			reason: "Denied by rule bash(gh *) [cli]",
+		})
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "reject",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks builtin-deny programs (sudo)", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "sudo echo hi" }), createMockContext([]))).toEqual({
+			block: true,
+			reason: "Denied by rule bash(sudo *) [builtin]",
+		})
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "reject",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks a denied program hidden behind a pipe", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "deny-tool": "bash(gh *)" })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "echo hi | gh --version" }), createMockContext([])),
+		).toEqual({
+			block: true,
+			reason: "Denied by rule bash(gh *) [cli]",
+		})
+	})
+
+	it("regression: yolo blocks builtin-deny rm -rf on absolute paths", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "rm -rf /tmp/x" }), createMockContext([]))).toEqual(
+			{
+				block: true,
+				reason: "Denied by rule bash(rm -rf /*) [builtin]",
+			},
+		)
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "reject",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks hard-blocked commands when no rule matches", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire(
+				"tool_call",
+				tcall("bash", { command: "rm -rf ~/kimchi-repro-does-not-exist" }),
+				createMockContext([]),
+			),
+		).toEqual({
+			block: true,
+			reason: "Blocked in yolo mode (hard-blocked command): rm -rf ~/kimchi-repro-does-not-exist",
+		})
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "reject",
+				sourceDetail: "yolo_hard_block",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks fork bombs", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: ":(){ :|:& };:" }), createMockContext([]))).toEqual(
+			expect.objectContaining({ block: true }),
+		)
+	})
+
+	it("regression: yolo blocks builtin-deny file writes (.env)", async () => {
+		const harness = createPermissionsHarness(["write"], { yolo: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("write", { path: ".env", content: "X=1" }), createMockContext([])),
+		).toEqual({
+			block: true,
+			reason: "Denied by rule write(.env) [builtin]",
+		})
+	})
+
+	it("yolo honors allow rules overriding builtin deny", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "allow-tool": "bash(sudo echo hi)" })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "sudo echo hi" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("yolo honors allow rules over the hard-block net (explicit user intent wins)", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "allow-tool": "bash(rm -rf *)" })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// `rm -rf /bin/x` is hard-blocked when no rule matches (yolo_hard_block),
+		// but an explicit allow rule outranks the net — mirroring default-mode
+		// semantics where an exact user allow rule wins.
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "rm -rf /bin/x" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("--dangerously-skip-permissions keeps the documented full bypass", async () => {
+		const harness = createPermissionsHarness(["bash"], {
+			"dangerously-skip-permissions": true,
+			"deny-tool": "bash(gh *)",
+		})
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "gh --version" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "yolo_bypass",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("yolo status warning reflects the DANGER flag's full bypass", async () => {
+		const warningCalls = (ctx: ExtensionContext) =>
+			vi
+				.mocked(ctx.ui.setStatus)
+				.mock.calls.filter(([id]) => id === "permissions-warning")
+				.map(([, text]) => text)
+
+		// Plain yolo: the warning must say deny rules still apply.
+		const yoloCtx = createMockContext([])
+		await createPermissionsHarness(["bash"], { yolo: true }).fire("session_start", {}, yoloCtx)
+		expect(warningCalls(yoloCtx)[0]).toContain("Your deny rules still apply")
+
+		// DANGER flag: the warning must not claim deny rules apply — they don't.
+		const dangerCtx = createMockContext([])
+		await createPermissionsHarness(["bash"], { "dangerously-skip-permissions": true }).fire(
+			"session_start",
+			{},
+			dangerCtx,
+		)
+		expect(warningCalls(dangerCtx)[0]).toContain("including your deny rules")
+	})
+
+	it("sandbox-context yolo keeps the full bypass (sandbox sessions have no flag of their own)", async () => {
+		// Sandbox worker sessions enter yolo via the ACP client with no
+		// --dangerously-skip-permissions flag; inside the sandbox cluster the
+		// full bypass is restored (ephemeral throwaway machines, no UI to prompt).
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "deny-tool": "bash(gh *)" })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Deny rule does not block …
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "gh --version" }), createMockContext([])),
+		).toBeUndefined()
+		// … and neither does the hard-block net.
+		expect(
+			await harness.fire(
+				"tool_call",
+				tcall("bash", { command: "sudo apt-get install ripgrep" }, "tc-2"),
+				createMockContext([]),
+			),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{ toolCallId: "tc-1", toolName: "bash", decision: "accept", sourceDetail: "yolo_bypass", permissionMode: "yolo" },
+			{ toolCallId: "tc-2", toolName: "bash", decision: "accept", sourceDetail: "yolo_bypass", permissionMode: "yolo" },
 		])
 	})
 

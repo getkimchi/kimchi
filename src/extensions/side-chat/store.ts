@@ -5,13 +5,13 @@
  *
  *   <session dir>/side-chats/<main session id>/<side chat id>.jsonl
  *
- * The file is in Pi's session format (header, then a linear chain of message
+ * The file uses the harness session format (header, then a linear chain of message
  * entries) so it can be inspected with the usual tools. It holds only the
  * side thread: the inherited main-session context is rebuilt from the main
  * session's branch point when the side chat is reopened, never copied.
  *
  * The path is derived from validated ids, never read from a record, so a
- * tampered record cannot point the store at an arbitrary file. Pi's
+ * tampered record cannot point the store at an arbitrary file. The
  * file-backed SessionManager is deliberately not used here: opening one
  * re-registers the "live" session file (`globalThis.__kimchiSessionFile`)
  * the main session relies on.
@@ -35,7 +35,7 @@ import {
 
 export const SIDE_CHAT_DIR = "side-chats"
 
-/** Same shape Pi accepts for session ids; also keeps ids safe as path segments. */
+/** Same id shape sessions use; also keeps ids safe as path segments. */
 const SAFE_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/
 
 export function isSafeId(id: unknown): id is string {

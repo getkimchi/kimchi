@@ -8,6 +8,11 @@ import type {
 	ToolCallStatus,
 	ToolKind,
 } from "@agentclientprotocol/sdk"
+import {
+	type ProcessDisplaySnapshot,
+	type ProcessRegistry,
+	summarizeCommand,
+} from "../../../extensions/bash-background/process-registry.js"
 import { asString, truncate } from "../utils.js"
 
 // Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
@@ -75,6 +80,107 @@ export function describeToolCall(
 	}
 }
 
+/**
+ * Registry-resolved payload for a `bash_control` call that names the
+ * background process(es) it waits on or stops, plus how long the
+ * longest-running of them has been going. A cohort-wide wait (`wait: true`,
+ * no handles) resolves the running cohort — but only when the call did not
+ * name inspection `handles`: the tool rejects `wait: true` + `handles` as
+ * invalid-params, so resolving that call against the whole cohort would
+ * mislabel an erroring call. Returns undefined when nothing resolves
+ * (unknown or stale handles, empty cohort), so callers keep the plain args
+ * untouched.
+ */
+
+/** One registry-resolved background process behind a bash_control call;
+ * startedAt is ISO 8601 for readability on the wire. */
+export type BashControlBackgroundCommand = { command: string; startedAt: string }
+
+export function resolveBashControlWaitInfo(
+	args: Record<string, unknown>,
+	registry: ProcessRegistry,
+): { commands: BashControlBackgroundCommand[]; elapsedSeconds: number } | undefined {
+	const mentioned = new Set<string>()
+	for (const key of ["stop_handles", "handles"] as const) {
+		const value = args[key]
+		if (Array.isArray(value)) for (const h of value) if (typeof h === "string" && h.length > 0) mentioned.add(h)
+	}
+	// Legacy `{ handle, action }` payloads degrade to an inspection in the
+	// tool, but still name the process they refer to.
+	if (typeof args.handle === "string" && args.handle.length > 0) mentioned.add(args.handle)
+	const snapshots = new Map<string, ProcessDisplaySnapshot>()
+	for (const handle of mentioned) {
+		const snapshot = registry.displaySnapshot(handle)
+		if (snapshot) snapshots.set(handle, snapshot)
+	}
+	// The tool rejects `wait: true` whenever `handles` is present (even an
+	// empty or blank-only array), so ANY `handles` key pins this call to what
+	// it names; only a handle-less wait may fall back to the running cohort.
+	const namesInspectionHandles = Array.isArray(args.handles)
+	if (snapshots.size === 0 && args.wait === true && !namesInspectionHandles) {
+		for (const snapshot of registry.listDisplaySnapshots())
+			if (snapshot.state === "running") snapshots.set(snapshot.handle, snapshot)
+	}
+	if (snapshots.size === 0) return undefined
+	// Earliest-started first: it is the longest-running of the cohort, so its
+	// elapsed seconds headline the wait.
+	const entries = [...snapshots.values()].sort((x, y) => x.startedAt - y.startedAt)
+	// Elapsed headlines the longest-running LIVE process; for a terminal-only
+	// set it reports the actual lifetime, never a ticking since-started value
+	// that would read as the uptime of a process that already finished.
+	const runningEntries = entries.filter((s) => s.state === "running")
+	const elapsedHead = runningEntries[0] ?? entries[0]
+	return {
+		commands: entries.map((s) => ({
+			command: summarizeCommand(s.command, 48),
+			startedAt: new Date(s.startedAt).toISOString(),
+		})),
+		elapsedSeconds: snapshotElapsedSeconds(elapsedHead),
+	}
+}
+
+/**
+ * Seconds a process has been going: elapsed since spawn while it runs, its
+ * actual lifetime (`finishedAt - startedAt`) once it is terminal. Snapshots
+ * without a recorded finish (registry tests, legacy mocks) degrade to the
+ * observation time, mirroring the pre-cap behavior.
+ */
+function snapshotElapsedSeconds(snapshot: ProcessDisplaySnapshot): number {
+	const end = snapshot.state === "running" ? Date.now() : (snapshot.finishedAt ?? snapshot.observedAt ?? Date.now())
+	return Math.max(0, Math.floor((end - snapshot.startedAt) / 1000))
+}
+
+/** Flat tool-call _meta key carrying the registry-resolved cohort behind a `bash_control` call (waits most of all). */
+export const BASH_CONTROL_WAIT_META_KEY = "bashControlWait"
+
+/** Transcript custom-entry type recording a completed wait's targets. */
+export const BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE = "bash-control-wait-targets"
+
+/** Data persisted under BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE — the cohort a completed bash_control resolved for its wait. No elapsedSeconds: a finished wait has no running clock. */
+export interface BashControlWaitTargetsData {
+	toolCallId: string
+	commands: BashControlBackgroundCommand[]
+}
+
+/**
+ * Registry-resolved info behind a `bash_control` call, as a flat `_meta`
+ * fragment (the same flat shape piToolCallId and other tool-call meta
+ * use). rawInput is never touched — it MUST stay exactly what the agent
+ * wrote; live session state is metadata by definition. Returns undefined
+ * for other tools, a missing registry, or when nothing resolves, so
+ * callers can leave _meta absent rather than emit empties.
+ */
+export function bashControlWaitMeta(
+	toolName: string,
+	rawInput: Record<string, unknown>,
+	registry?: ProcessRegistry,
+): Record<string, unknown> | undefined {
+	if (toolName !== "bash_control" || !registry) return undefined
+	const info = resolveBashControlWaitInfo(rawInput, registry)
+	if (!info) return undefined
+	return { [BASH_CONTROL_WAIT_META_KEY]: info }
+}
+
 export function isHiddenToolCall(toolName: string, args: unknown): boolean {
 	// Defense-in-depth: the Agent tool's public schema deliberately omits `visibility`
 	// (see src/extensions/agents/index.ts:execute), so this normally returns false. If a
@@ -92,6 +198,7 @@ type ToolCallFields = {
 	status: ToolCallStatus
 	rawInput: Record<string, unknown>
 	cwd?: string
+	bashControlRegistry?: ProcessRegistry
 	_meta?: Record<string, unknown>
 }
 
@@ -102,7 +209,14 @@ type ToolCallFields = {
  * `sessionUpdate` field — passing a session-notification object there puts an
  * out-of-schema key on the wire.
  */
-export function buildToolCallShape({ toolName, piToolCallId, rawInput, cwd, ...params }: ToolCallFields): ToolCall {
+export function buildToolCallShape({
+	toolName,
+	piToolCallId,
+	rawInput,
+	cwd,
+	bashControlRegistry,
+	...params
+}: ToolCallFields): ToolCall {
 	const { title, kind, locations } = describeToolCall(toolName, rawInput, cwd)
 	return {
 		title,
@@ -110,7 +224,11 @@ export function buildToolCallShape({ toolName, piToolCallId, rawInput, cwd, ...p
 		locations,
 		rawInput,
 		...params,
-		_meta: { piToolCallId, ...params._meta },
+		_meta: {
+			...bashControlWaitMeta(toolName, rawInput, bashControlRegistry),
+			piToolCallId,
+			...params._meta,
+		},
 	}
 }
 

@@ -24,6 +24,10 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 //   routed-pick entry, on the project_trust_update precedent: not advertised
 //   in _meta, sessionId carried in the payload.
 //
+// background_run_start / background_run_end are agent→client extNotifications bracketing an
+//   agent-initiated run (one no client prompt owns), on the same precedent:
+//   not advertised in _meta, sessionId carried in the payload.
+//
 // Capability advertising: every entry here is exposed in
 // `_meta["kimchi.dev"][<key>] === true` so clients can discover the methods
 // the agent supports.
@@ -42,6 +46,32 @@ export const AVAILABLE_EXT_METHODS = {
 
 	// Sessionless inbound — no session involved.
 	auth_status: `_${CAPABILITIES_KEY}/auth_status`,
+	// Cast AI SSO login: stepwise, sessionless flow driven by the client —
+	// begin returns the authorize URL without opening a browser, await waits
+	// for the browser leg and settles either directly (single org) or with
+	// the org list for an in-app pick (select_org completes it), cancel
+	// aborts. Advertised to clients via `_meta["kimchi.dev"].sso`.
+	sso_begin: `_${CAPABILITIES_KEY}/sso_begin`,
+	sso_await: `_${CAPABILITIES_KEY}/sso_await`,
+	sso_select_org: `_${CAPABILITIES_KEY}/sso_select_org`,
+	sso_cancel: `_${CAPABILITIES_KEY}/sso_cancel`,
+	// Post-SSO credential export (LLM-4134, ticket #643): returns the current
+	// valid org-scoped OAuth bearer for the canonical kimchi-dev entry — the
+	// same token the harness itself sends as `Authorization: Bearer` (verified
+	// accepted by /v1/me and /v1/organizations; X-API-Key is rejected).
+	// Refreshed with the harness's lazy-refresh discipline;
+	// SSO_NOT_AUTHENTICATED for non-SSO sessions.
+	// SECURITY: this hands out a LIVE bearer with no user interaction, unlike
+	// the sso_* login flow. Clients must OPT IN by declaring `sso_credential:
+	// true` in their initialize `_meta["kimchi.dev"]` capabilities — the agent
+	// refuses the method (methodNotFound) otherwise, so a network-exposed ACP
+	// transport (socket, port-forward, remote container) is not a
+	// credential-harvest endpoint by default. Every export is logged
+	// server-side (org + expiry only, never the token). If the ACP server ever
+	// gains a non-local transport, this opt-in seam must trip a security
+	// review before the method stays servable.
+	sso_credential: `_${CAPABILITIES_KEY}/sso_credential`,
+
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
 	import_discover: `_${CAPABILITIES_KEY}/import_discover`,
 	import_apply: `_${CAPABILITIES_KEY}/import_apply`,
@@ -68,6 +98,8 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 	agent_activity: `_${CAPABILITIES_KEY}/agent_activity`,
 	routed_model: `_${CAPABILITIES_KEY}/routed_model`,
 	skill_autoload: `_${CAPABILITIES_KEY}/skill_autoload`,
+	background_run_start: `_${CAPABILITIES_KEY}/background_run_start`,
+	background_run_end: `_${CAPABILITIES_KEY}/background_run_end`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS
@@ -83,6 +115,26 @@ export const ADVERTISED_CAPABILITIES: Record<AcpExtMethod, boolean> = Object.key
 export function getClientSupportsMethod(capabilities: ClientCapabilities | undefined, method: AcpExtMethod): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
 	return flags?.[method] === true
+}
+
+/**
+ * Client opt-in key for background runs, in
+ * `clientCapabilities._meta["kimchi.dev"]` at initialize. Opted-in clients
+ * get async background runs: a prompt turn may END while bash commands keep
+ * running, the agent wakes itself on process exit (no prompt outstanding),
+ * and background_run_start/background_run_end bracket that wake so the client can own the stop
+ * button. Clients that do NOT opt in keep the pre-#1616 completion guard:
+ * the turn waits out its background commands, so the client's existing stop
+ * button covers everything and prompts never park mid-run. The agent
+ * advertises the same key in its own capabilities _meta so clients can
+ * feature-detect the gate.
+ */
+export const BACKGROUND_RUNS_CAPABILITY = "backgroundRuns"
+
+/** True when the client opted into background runs at initialize. */
+export function getClientOptedIntoBackgroundRuns(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[BACKGROUND_RUNS_CAPABILITY] === true
 }
 
 /**

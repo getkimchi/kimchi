@@ -316,7 +316,8 @@ function firstHeading(blocks: Block[]): string {
 /**
  * The library's Packer stamps zip entries with wall-clock time, so two runs
  * differ byte-wise. Rebuild the package with every entry dated by the clock
- * seam (DEFLATE stays deterministic for identical input).
+ * seam (DEFLATE stays deterministic for identical input). Folder entries are
+ * skipped and never auto-created, since jszip dates those by wall-clock time.
  */
 async function repackDeterministic(data: Buffer | Uint8Array, date: Date): Promise<Uint8Array> {
 	const src = await JSZip.loadAsync(data)
@@ -331,10 +332,10 @@ async function repackDeterministic(data: Buffer | Uint8Array, date: Date): Promi
 				/<dcterms:(created|modified)\b[^>]*>[^<]*<\/dcterms:\1>/g,
 				(_m, kind) => `<dcterms:${kind} xsi:type="dcterms:W3CDTF">${iso}</dcterms:${kind}>`,
 			)
-			out.file(name, xml, { date })
+			out.file(name, xml, { date, createFolders: false })
 			continue
 		}
-		out.file(name, await entry.async("uint8array"), { date })
+		out.file(name, await entry.async("uint8array"), { date, createFolders: false })
 	}
 	return out.generateAsync({ type: "uint8array", compression: "DEFLATE" })
 }

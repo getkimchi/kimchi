@@ -5,7 +5,7 @@ Kimchi's MCP end-to-end suite runs the real compiled Kimchi client against a det
 
 The suite has four cooperating parts:
 
-1. `tests/e2e/mcp/fixture-server.mjs` is a scenario-driven MCP server built on the pinned official TypeScript SDK. It supports stdio, Streamable HTTP, legacy SSE fallback, static bearer authentication, and a local OAuth authorization server.
+1. `tests/e2e/mcp/fixture-server.mjs` is a scenario-driven MCP server built on the pinned official TypeScript SDK. It supports stdio, Streamable HTTP, legacy SSE fallback, static bearer authentication, and a local OAuth authorization server. A `modern-http` transport mode hand-rolls the stateless MCP `2026-07-28` revision instead: no initialize handshake, `server/discover` negotiation, per-request `_meta` envelopes, cacheable list results, and an MRTR (SEP-2322) elicitation round driven by `behavior.mrtr`.
 2. `tests/e2e/tui/support/mcp-fixture.ts` creates isolated MCP configuration, event logs, loopback listeners, and an OAuth browser driver for each test.
 3. The existing TUI and ACP fixtures launch `dist/bin/kimchi` with an isolated `HOME`, work directory, model configuration, MCP cache, and OAuth credential store.
 4. `tests/e2e/tui/support/mcp-model-script.ts` builds deterministic gateway or direct MCP tool calls and exposes semantic accessors for the results sent back to the model. This tests Kimchi's transport and tool behavior without depending on model tool-selection quality.
@@ -68,11 +68,12 @@ Local development: `node scripts/mcp-live-probe.mjs --self-test` runs the pure U
 | direct tools and cache | first-session exposure specification and successful direct invocation after a real process restart |
 | failures | invalid arguments, startup failure, disconnect during a call, bounded slow calls, transport loss, malformed HTTP, and cancellation specification |
 | Streamable HTTP | initialization, session IDs, custom headers, static bearer authentication, unavailable server behavior, and legacy SSE fallback |
+| modern era (2026-07-28) | stateless negotiation via `server/discover`, per-request `_meta` stamping, cacheable tool lists, and a full MRTR elicitation round (input_required → answer → retry with `inputResponses` + `requestState` echo) on both the TUI and ACP surfaces; legacy servers still handshake under the same default |
 | OAuth | protected-resource and authorization-server metadata, dynamic client registration, authorization code with PKCE, browser callback, remote https redirect completed through the loopback callback, denial, token failure, persistence, and refresh after restart; Google-style issuance rules (refresh token only for `access_type=offline`) and silent renewal across a restart |
 | live providers | authorize-URL shape and provider acceptance per configured provider class (see Live provider checks) |
-| public no-auth server | full add-and-use lifecycle against a real third-party MCP server with no credentials: connect, list tools, invoke one read tool (see Live provider checks) |
+| public no-auth server | full add-and-use lifecycle against real third-party MCP servers with no credentials: connect, list tools, invoke one read tool (see Live provider checks). The inventory spans both eras — a 2025-era server (legacy fallback) and MCPJam's modern-only `stateless.mcpjam.com` (2026-07-28 promotion, MRTR tools listed) |
 | ACP | server probing, cache population, MCP-backed agent turns, image forwarding, authentication-required probing, OAuth login, and protected tool calls |
-| official conformance | the pinned runner's `initialize` and `tools_call` client scenarios against Kimchi's real ACP-hosted client stack |
+| official conformance | the pinned runner's `initialize` and `tools_call` client scenarios against Kimchi's real ACP-hosted client stack, plus `tools_call` and `request-metadata` at spec version `2026-07-28`. The runner is pinned to a `0.2.0-alpha` pre-release (the first line with modern-era scenarios); repin to the stable 0.2.0 when it ships |
 
 The suite contains three `test.fail` behavioral specifications for known product regressions:
 
@@ -138,3 +139,20 @@ An empty `mcp: {}` deliberately exercises production defaults only when the work
 Use a focused co-located unit or integration test for parsing, configuration normalization, or a protocol branch that does not need a user workflow. Use the fixture-backed TUI or ACP suite when the risk crosses process, transport, model, cache, OAuth, or content-forwarding boundaries.
 
 A real external MCP smoke test can be useful for optional manual or scheduled compatibility checking. The live authorize-URL check above runs on pull requests but is not a required merge check — it asserts deterministic OAuth error contracts only, so its signal is trustworthy when it fails, but a maintainer decides whether a provider outage warrants `skip-live-mcp`. Credentialed external tests — sign-in, consent, and token renewal against real accounts — are non-gating by design; external availability, credentials, and server changes make them unsuitable as the primary regression suite, and the local fixture remains the source of deterministic CI evidence.
+
+
+### Compiled-adapter integration tests
+
+A third lane exists for OAuth/auth-mechanics behavior that lives inside the
+vendored `pi-mcp-adapter` itself: a co-located vitest test (for example
+`src/extensions/mcp/oauth-rotation.test.ts`) that imports the adapter's
+compiled `dist/*.js` modules by relative path and drives them against the
+repository fixture server. Use it when the behavior under test cannot be
+reached through the public subpaths and cannot inject a second concurrent
+credential-cache holder through the TUI surface. This lane couples to the
+adapter's dist file layout — re-verify the imports at every adapter version
+bump — and note that the runtime itself loads the package's TypeScript
+sources (the `exports` map resolves `.` to `./index.ts`), so the dist files
+driven here are mirrors that the patch pipeline must keep behaviorally
+identical to the `.ts` sections. It seeds credentials through the adapter's
+real `startAuth`/`completeAuth` flow so the stored entry matches production.

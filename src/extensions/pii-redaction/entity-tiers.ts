@@ -322,6 +322,11 @@ export function isKnownEntity(name: string): boolean {
 	return ENTITY_TIERS.has(name)
 }
 
+/** Every registered entity name (includes GUID). For drift guards. */
+export function listRegisteredEntities(): readonly string[] {
+	return [...ENTITY_TIERS.keys()]
+}
+
 /** The tier for a registered entity, undefined for unknown names. */
 export function getEntityTier(name: string): EntityTier | undefined {
 	return ENTITY_TIERS.get(name)
@@ -339,4 +344,148 @@ export function getDefaultExcludedEntities(): string[] {
 		else if (tier === "bare_shape" && !BARE_SHAPE_KEPT.has(name)) excluded.push(name)
 	}
 	return excluded.sort()
+}
+
+// ---------------------------------------------------------------------------
+// Redaction categories — the coarse unit admins toggle (LLM-4416)
+// ---------------------------------------------------------------------------
+//
+// Every registered entity except GUID belongs to exactly one category and
+// carries an effective default: whether it redacts today. The default is
+// intentionally NOT derived from the tier alone: TELEGRAM_BOT_TOKEN and
+// OKTA_TOKEN are bare_shape at the engine but redact via keyword-anchored
+// custom patterns, while AZURE_CONNECTION_STRING is anchor_required with no
+// anchored re-addition, so it never fires. The category map is therefore
+// explicit; the exhaustiveness test fails if tier and category maps drift.
+
+export const REDACTION_CATEGORIES = [
+	"secrets",
+	"local_paths",
+	"emails",
+	"phones",
+	"network",
+	"credentialed_urls",
+	"financial",
+	"identity_documents",
+	"personal_details",
+] as const
+
+export type RedactionCategory = (typeof REDACTION_CATEGORIES)[number]
+
+const REDACTION_CATEGORY_SET: ReadonlySet<string> = new Set(REDACTION_CATEGORIES)
+
+export function isRedactionCategory(key: string): key is RedactionCategory {
+	return REDACTION_CATEGORY_SET.has(key)
+}
+
+/** anchor_required entities whose anchored re-additions exist in CUSTOM_PATTERNS today. */
+const ANCHOR_REQUIRED_WITH_CUSTOMS = [
+	"AWS_SECRET_KEY",
+	"AZURE_STORAGE_KEY",
+	"GENERIC_SECRET",
+	"BASIC_AUTH",
+	"DOCKER_REGISTRY_AUTH",
+] as const
+
+/** Credentialed-URL entities whose coverage lives in URL_WITH_CREDENTIALS customs, not their own bare shape. */
+const CREDENTIALED_URLS_INERT = [
+	"URL",
+	"ELASTICSEARCH_URL",
+	"FIREBASE_URL",
+	"MONGODB_SRV",
+	"DATABASE_CONNECTION_STRING",
+] as const
+
+/** [category, defaultOn, members]. GUID is deliberately unassigned: structural identifiers are never redacted. */
+type CategoryGroup = readonly [RedactionCategory, boolean, readonly string[]]
+
+const CATEGORY_GROUPS: readonly CategoryGroup[] = [
+	[
+		"secrets",
+		true,
+		[
+			...ANCHORED_ENTITIES.filter(
+				(name) => name !== "EMAIL_ADDRESS" && name !== "REDIS_URL_WITH_PASSWORD" && name !== "COCKROACHDB_CONNECTION",
+			),
+			...ANCHOR_REQUIRED_WITH_CUSTOMS,
+			// bare_shape at engine level, anchored by keyword custom patterns.
+			"TELEGRAM_BOT_TOKEN",
+			"OKTA_TOKEN",
+			// kimchi-owned secret markers.
+			"CASTAI_API_KEY",
+			"OPENAI_API_KEY",
+			"OAUTH_TOKEN",
+			"SECRET_FIELD",
+		],
+	],
+	// anchor_required with no anchored re-addition yet — never fires today.
+	["secrets", false, ["AZURE_CONNECTION_STRING"]],
+	["local_paths", true, ["LOCAL_PATH", "CREDENTIAL_FILE"]],
+	["emails", true, ["EMAIL_ADDRESS"]],
+	["phones", false, ["PHONE_NUMBER"]],
+	["network", true, ["IP_ADDRESS", "MAC_ADDRESS"]],
+	["credentialed_urls", true, ["URL_WITH_CREDENTIALS", "REDIS_URL_WITH_PASSWORD", "COCKROACHDB_CONNECTION"]],
+	["credentialed_urls", false, CREDENTIALED_URLS_INERT],
+	["financial", true, ["CREDIT_CARD", "IBAN_CODE"]],
+	["financial", false, ["ABA_ROUTING_NUMBER", "US_BANK_NUMBER", "CRYPTO"]],
+	[
+		"identity_documents",
+		false,
+		BARE_SHAPE_NATIONAL_IDS.filter(
+			(name) => name !== "ABA_ROUTING_NUMBER" && name !== "US_BANK_NUMBER" && name !== "UK_POSTCODE",
+		),
+	],
+	["personal_details", false, ["PERSON", "LOCATION", "ORGANIZATION", "DATE_TIME", "UK_POSTCODE"]],
+]
+
+interface CategoryEntry {
+	category: RedactionCategory
+	defaultOn: boolean
+}
+
+const ENTITY_CATEGORIES: ReadonlyMap<string, CategoryEntry> = (() => {
+	const map = new Map<string, CategoryEntry>()
+	for (const [category, defaultOn, members] of CATEGORY_GROUPS) {
+		for (const name of members) {
+			if (map.has(name)) throw new Error(`entity "${name}" appears in two CATEGORY_GROUPS entries`)
+			map.set(name, { category, defaultOn })
+		}
+	}
+	return map
+})()
+
+/** The category of a registered entity, undefined for unknown names and GUID (not configurable). */
+export function getEntityCategory(name: string): RedactionCategory | undefined {
+	return ENTITY_CATEGORIES.get(name)?.category
+}
+
+/**
+ * Whether the entity redacts today under the tier defaults. False for
+ * unknown names, GUID, bare-shape detectors, and anchor-required entities
+ * without an anchored re-addition. True for checksum/anchored detectors and
+ * for anchor-off entities covered by keyword-anchored custom patterns.
+ */
+export function getEntityDefaultOn(name: string): boolean {
+	return ENTITY_CATEGORIES.get(name)?.defaultOn ?? false
+}
+
+export interface RedactionCatalogEntry {
+	entity: string
+	tier: EntityTier
+	category: RedactionCategory
+	defaultOn: boolean
+}
+
+/** Computed once — the catalog is a pure function of immutable registries. */
+const REDACTION_CATALOG: readonly RedactionCatalogEntry[] = (() => {
+	const entries: RedactionCatalogEntry[] = []
+	for (const [entity, { category, defaultOn }] of ENTITY_CATEGORIES) {
+		entries.push({ entity, tier: ENTITY_TIERS.get(entity) ?? "anchored", category, defaultOn })
+	}
+	return entries.sort((a, b) => a.entity.localeCompare(b.entity))
+})()
+
+/** The full configurable catalog (GUID excluded), sorted by entity name. */
+export function listRedactionCatalog(): readonly RedactionCatalogEntry[] {
+	return REDACTION_CATALOG
 }

@@ -115,7 +115,40 @@ describe("authenticateWorkspace", () => {
 
 		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
 		expect(putBody.options.gitToken).toBe("ghp_xyz")
-		expect(putBody.options.agentApiKey).toBe("key1")
+		// The Kimchi API key must never ride the create/update body.
+		expect(putBody.options.agentApiKey).toBeUndefined()
+	})
+
+	it("sends templateName on the create/update body when provided (no spec key)", async () => {
+		const mockFetch = mockAuthFlow("wss://h.example.com")
+		await authenticateWorkspace("ws-1", "key1", "desc", {
+			endpoint: BASE,
+			fetch: mockFetch,
+			templateName: "team-stack",
+		})
+
+		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
+		// Resolved server-side to the template's values at creation time.
+		expect(putBody.templateName).toBe("team-stack")
+		// Template and explicit parameters are mutually exclusive on create
+		// (workspaces_api.proto).
+		expect(putBody).not.toHaveProperty("spec")
+	})
+
+	it("refuses to send templateName together with spec", async () => {
+		const mockFetch = mockAuthFlow("wss://h.example.com")
+		await expect(
+			authenticateWorkspace("ws-1", "key1", "desc", {
+				endpoint: BASE,
+				fetch: mockFetch,
+				templateName: "team-stack",
+				spec: { resources: { cpu: "500m" } },
+				gitToken: "ghp_xyz",
+			}),
+		).rejects.toThrow(/mutually exclusive/)
+		// The guard fires inside createOrUpdateWorkspace, after the verifyKey
+		// round-trip but before the upsert PUT.
+		expect(mockFetch).toHaveBeenCalledTimes(1)
 	})
 
 	it("nests the workspace spec under `spec` in the create/update body when provided", async () => {
