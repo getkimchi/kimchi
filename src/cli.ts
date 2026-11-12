@@ -24,6 +24,7 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { runWorkflowBatch, writeWorkflowStderr } from "./commands/workflow-batch.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
@@ -326,6 +327,37 @@ async function cliMain(): Promise<void> {
 		// pipe had not drained when the callback fired). exitCode + return lets
 		// the runtime keep the process alive until stdio has flushed.
 		process.exitCode = code
+		return
+	}
+
+	// Batch workflow host: `kimchi workflow run <name> [--input …] [--result-out …]` runs one
+	// workflow to its terminal state without a chat session; the run's status is the process exit
+	// code (0 completed, 2 blocked, 3 cancelled, 4 crashed/never-started). Routed before
+	// telemetry/session setup and exiting at the dispatch site, exactly like the workers above —
+	// a CI invocation must stay invisible to app_started instrumentation. The extension side of
+	// this package is already bundled (see extensionFactories below); the command is the same
+	// package's headless host, so dispatching on the bundled copy is the coherent choice (no
+	// install surface, no plugin-layout assumptions). The route body itself lives in
+	// commands/workflow-batch.ts so the exit-code contract is unit-testable.
+	if (originalArgs[0] === "workflow") {
+		// Project trust before anything runs: the batch host executes project-authored TS
+		// (<cwd>/.kimchi/workflows/*.ts, spawned in-process via jiti) on first contact, so
+		// this route must honor the trust decision the interactive prompt gates on. The CI
+		// contract gets trust explicitly (`kimchi trust .` or --approve); anything else
+		// refuses with the batch contract's never-started (4). ".kimchi/workflows" is in
+		// the trust-requiring project-resources list, so the no-resources shortcut cannot
+		// auto-trust past this gate.
+		const { options: trustOptions } = getParsedCliArgs()
+		const trustOverride = trustOptions["no-approve"] === true ? false : trustOptions.approve === true ? true : undefined
+		const trustAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+		if (!resolvePreMainProjectTrustWithOverrides(process.cwd(), trustAgentDir, trustOverride)) {
+			writeWorkflowStderr("workflow: workspace is not trusted — run 'kimchi trust .' here first (or pass --approve)\n")
+			process.exitCode = 4
+			return
+		}
+		// exitCode + return, never process.exit(): a batch run's stderr may be piped to a scheduler,
+		// and a hard exit can truncate buffered output (the doc-cli lesson above).
+		process.exitCode = await runWorkflowBatch(originalArgs.slice(1))
 		return
 	}
 

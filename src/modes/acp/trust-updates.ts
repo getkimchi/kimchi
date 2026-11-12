@@ -61,6 +61,11 @@ export const CATEGORY_PATHS: Record<BlockedTrustCategory, readonly string[]> = {
  * finding), permissions/hooks/agents/memory are project_config-adjacent
  * kimchi state, `.claude/settings*.json` is Claude Code config, and
  * tags/plans/ferments are workflow state Studio does not render banners for.
+ * `.kimchi/workflows` joins ferments/plans: it is gated because the batch
+ * host spawns its TS sources in-process on first contact (a clone's
+ * workflows must not run before the workspace is trusted), but a banner
+ * vocabulary for "this project ships executable workflows" is its own
+ * product decision — `executable_writes` at the earliest, not skills.
  */
 export const UNCLASSIFIED_TRUST_PATHS: readonly string[] = [
 	join(".kimchi", "permissions.json"),
@@ -76,6 +81,7 @@ export const UNCLASSIFIED_TRUST_PATHS: readonly string[] = [
 	join(".kimchi", "tags.json"),
 	join(".kimchi", "plans"),
 	join(".kimchi", "ferments"),
+	join(".kimchi", "workflows"),
 	join(".claude", "settings.json"),
 	join(".claude", "settings.local.json"),
 ]

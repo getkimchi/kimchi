@@ -1276,14 +1276,17 @@ index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b715154
  import { dirname, join } from "node:path";
  import lockfile from "proper-lockfile";
  import { CONFIG_DIR_NAME } from "../config.js";
-@@ -15,6 +15,38 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
+@@ -15,6 +15,42 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
      "SYSTEM.md",
      "APPEND_SYSTEM.md",
  ];
 +// Kimchi addition: project-local Kimchi (.kimchi/) and Claude Code (.claude/)
 +// resources that the Kimchi harness reads and acts on at startup (config,
 +// permissions, hooks, skills, agents, memory, tags, plans, ferments, MCP
-+// servers). Without this list a cloned repo that ships these folders is
++// servers, and executable workflow sources `.kimchi/workflows` — a batch
++// run spawns those in-process via jiti on first contact, so a clone's
++// workflows must gate on the same recorded trust decision). Without this
++// list a cloned repo that ships these folders is
 +// auto-trusted and every one of them takes effect without the trust prompt.
 +// Checked in cwd AND its ancestors (the skills/tags readers walk ancestors,
 +// so detection must match enforcement scope); the user's home directory is
@@ -1307,6 +1310,7 @@ index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b715154
 +    ".kimchi/tags.json",
 +    ".kimchi/plans",
 +    ".kimchi/ferments",
++    ".kimchi/workflows",
 +    ".pi/agent/skills",
 +    ".claude/skills",
 +    ".claude/settings.json",
