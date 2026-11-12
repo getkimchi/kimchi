@@ -596,6 +596,15 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		regex: /(aws_secret(?:_access)?_key\s*[:=]\s*["']?)([A-Za-z0-9/+=]{16,})/gi,
 		secretGroup: 2,
 	},
+	// Azure connection-string secrets. AccountName is an identifier and the
+	// keyword itself is never secret, so only the value is redacted — mirrored
+	// after the engine's keyword-anchored patterns, kept value-only for
+	// span-minimal consistency with the URL customs.
+	{
+		name: "AZURE_CONNECTION_STRING",
+		regex: /((?:AccountKey|SharedAccessKey|SharedAccessSignature)=)([A-Za-z0-9+/=]{20,})/g,
+		secretGroup: 2,
+	},
 	// Azure storage keys inside a connection string.
 	{
 		name: "AZURE_STORAGE_KEY",
@@ -606,6 +615,17 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	{
 		name: "BASIC_AUTH",
 		regex: /(Authorization:\s*Basic\s+)([A-Za-z0-9+/=]{8,})/gi,
+		secretGroup: 2,
+	},
+	// Credential-bearing database URIs. The scheme is the anchor; the userinfo
+	// (`user:password`, or password-only for redis) is the only secret in the
+	// string, so only that span is replaced. A credentialless DSN
+	// (`postgres://host/db`) carries no secret and must pass through; the
+	// engine's bare DATABASE_CONNECTION_STRING scheme shape stays excluded for
+	// exactly that reason.
+	{
+		name: "DATABASE_CONNECTION_STRING",
+		regex: /(\b(?:postgres(?:ql)?|mysql|mongodb|redis|amqp|mssql):\/\/)([^/\s:@]*:[^@\s/]+)(@[^\s/"']*)/gi,
 		secretGroup: 2,
 	},
 	// Credentials in URLs, which the engine's URL redaction previously
@@ -622,7 +642,7 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	{
 		name: "URL_WITH_CREDENTIALS",
 		regex:
-			/([?&;](?:token|api_?key|key|sig|signature|secret|password|access_token|refresh_token|session_token|client_secret|sas|sharedaccesssignature)=)([^&;\s]{8,})/gi,
+			/([?&;](?:token|api_?key|key|sig|signature|secret|password|access_token|refresh_token|session_token|client_secret|sas|sharedaccesssignature)=)([^&;\s[]{8,})/gi,
 		secretGroup: 2,
 	},
 	// Keyword-anchored re-additions for bare-shape engine entities the tier

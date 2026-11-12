@@ -112,11 +112,13 @@ const BARE_SHAPE_OTHER = [
 const ANCHOR_REQUIRED_ENTITIES = [
 	"AWS_SECRET_KEY", // 40-char base64 — collides with temp paths, hashes
 	"AZURE_STORAGE_KEY", // 88-char base64 —
-	"AZURE_CONNECTION_STRING", // connection-string shape — keyword-anchored only
+	// Values only: AccountKey=/SharedAccessKey=/SharedAccessSignature= values
+	// re-added anchored below — the keyword itself is never secret.
+	"AZURE_CONNECTION_STRING",
 	"GENERIC_SECRET", // by definition context-free
 	"BASIC_AUTH", // honored via an `Authorization: Basic` anchor
 	"DOCKER_REGISTRY_AUTH",
-	"DATABASE_CONNECTION_STRING", // credentialed URI caught by URL_WITH_CREDENTIALS
+	"DATABASE_CONNECTION_STRING", // bare scheme shape too noisy — credential-bearing DB URIs re-added by custom
 	"URL", // URLs are not credentials — credentialed forms re-added
 	"ELASTICSEARCH_URL",
 	"FIREBASE_URL",
@@ -354,8 +356,8 @@ export function getDefaultExcludedEntities(): string[] {
 // carries an effective default: whether it redacts today. The default is
 // intentionally NOT derived from the tier alone: TELEGRAM_BOT_TOKEN and
 // OKTA_TOKEN are bare_shape at the engine but redact via keyword-anchored
-// custom patterns, while AZURE_CONNECTION_STRING is anchor_required with no
-// anchored re-addition, so it never fires. The category map is therefore
+// custom patterns, while inert entities (URL, MONGODB_SRV, ...) have no
+// re-addition at all and never fire. The category map is therefore
 // explicit; the exhaustiveness test fails if tier and category maps drift.
 
 export const REDACTION_CATEGORIES = [
@@ -381,6 +383,7 @@ export function isRedactionCategory(key: string): key is RedactionCategory {
 /** anchor_required entities whose anchored re-additions exist in CUSTOM_PATTERNS today. */
 const ANCHOR_REQUIRED_WITH_CUSTOMS = [
 	"AWS_SECRET_KEY",
+	"AZURE_CONNECTION_STRING",
 	"AZURE_STORAGE_KEY",
 	"GENERIC_SECRET",
 	"BASIC_AUTH",
@@ -388,13 +391,7 @@ const ANCHOR_REQUIRED_WITH_CUSTOMS = [
 ] as const
 
 /** Credentialed-URL entities whose coverage lives in URL_WITH_CREDENTIALS customs, not their own bare shape. */
-const CREDENTIALED_URLS_INERT = [
-	"URL",
-	"ELASTICSEARCH_URL",
-	"FIREBASE_URL",
-	"MONGODB_SRV",
-	"DATABASE_CONNECTION_STRING",
-] as const
+const CREDENTIALED_URLS_INERT = ["URL", "ELASTICSEARCH_URL", "FIREBASE_URL", "MONGODB_SRV"] as const
 
 /** [category, defaultOn, members]. GUID is deliberately unassigned: structural identifiers are never redacted. */
 type CategoryGroup = readonly [RedactionCategory, boolean, readonly string[]]
@@ -418,13 +415,18 @@ const CATEGORY_GROUPS: readonly CategoryGroup[] = [
 			"SECRET_FIELD",
 		],
 	],
-	// anchor_required with no anchored re-addition yet — never fires today.
-	["secrets", false, ["AZURE_CONNECTION_STRING"]],
 	["local_paths", true, ["LOCAL_PATH", "CREDENTIAL_FILE"]],
 	["emails", true, ["EMAIL_ADDRESS"]],
 	["phones", false, ["PHONE_NUMBER"]],
 	["network", true, ["IP_ADDRESS", "MAC_ADDRESS"]],
-	["credentialed_urls", true, ["URL_WITH_CREDENTIALS", "REDIS_URL_WITH_PASSWORD", "COCKROACHDB_CONNECTION"]],
+	// DATABASE_CONNECTION_STRING fires via its credentialed-URI custom (userinfo
+	// redacted); the bare scheme shape stays engine-excluded, so a DSN without
+	// credentials is never marked.
+	[
+		"credentialed_urls",
+		true,
+		["URL_WITH_CREDENTIALS", "REDIS_URL_WITH_PASSWORD", "COCKROACHDB_CONNECTION", "DATABASE_CONNECTION_STRING"],
+	],
 	["credentialed_urls", false, CREDENTIALED_URLS_INERT],
 	["financial", true, ["CREDIT_CARD", "IBAN_CODE"]],
 	["financial", false, ["ABA_ROUTING_NUMBER", "US_BANK_NUMBER", "CRYPTO"]],

@@ -199,8 +199,8 @@ describe("entity tier registry", () => {
 			"URL",
 			"ELASTICSEARCH_URL",
 			"MONGODB_SRV",
-			"DATABASE_CONNECTION_STRING",
-			"AZURE_CONNECTION_STRING",
+			// DATABASE_CONNECTION_STRING (credentialed-URI custom) and
+			// AZURE_CONNECTION_STRING (keyword-anchored custom) are default-on.
 			"ABA_ROUTING_NUMBER",
 		]) {
 			expect(getEntityDefaultOn(name), name).toBe(false)

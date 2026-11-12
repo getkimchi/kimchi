@@ -205,7 +205,7 @@ describe("redactText — anchored secret patterns", () => {
 
 	it("redacts AccountKey values inside connection strings", async () => {
 		const result = await redactText(fx.azureConnString)
-		expectRedacted(result, fx.azureAccountKey, "AZURE_STORAGE_KEY")
+		expectRedacted(result, fx.azureAccountKey, "AZURE_CONNECTION_STRING")
 		expect(result).toContain("AccountKey=")
 	})
 
@@ -671,6 +671,53 @@ describe("anchored splice and re-additions — review regressions", () => {
 	beforeEach(() => resetRedactorEngine())
 	afterEach(() => resetRedactorEngine())
 
+	describe("connection-string promotion (chunk 5)", () => {
+		// A DSN without credentials is not a secret — must pass through intact.
+		it("leaves credentialless database URIs untouched", async () => {
+			for (const dsn of [
+				"postgres://db.prod.internal:5432/telemetry",
+				"mysql://db.internal:3306/app",
+				"mongodb://mongo.internal:27017/analytics",
+				"redis://cache.internal:6379",
+				"amqp://rabbit.internal:5672",
+				"mssql://sql.internal:1433;databaseName=app",
+			]) {
+				const out = await redactText(`dsn: ${dsn}`)
+				expect(out, dsn).toContain(dsn)
+			}
+		})
+
+		it("redacts only the userinfo of credential-bearing database URIs", async () => {
+			const password = "sTr0ng" + "P4ss" + "w0rd" + "!9z"
+			for (const scheme of ["postgres", "postgresql", "mysql", "mongodb", "amqp", "mssql"]) {
+				const user = "svc_" + scheme
+				const host = "db.intern" + "al:5432/app"
+				const out = await redactText(`dsn: ${scheme}://${user}:${password}@${host}`)
+				expect(out, scheme).toMatch(/\[REDACTED-(DATABASE_CONNECTION_STRING|URL_WITH_CREDENTIALS|EMAIL_ADDRESS)\]/)
+				// label: engine EMAIL/URL claims win email-shaped userinfo spans before customs
+				expect(out, scheme).not.toContain(password)
+			}
+		})
+
+		it("redacts Azure connection-string secrets, value-only", async () => {
+			const sasKey = "RW1iZWRkZWRTQVNLZXl" + "hYmNkZWYxMjM0NTY3ODkwQUJDREVGRw" + "="
+			const out = await redactText(
+				`sb: Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=${sasKey};`,
+			)
+			expect(out).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
+			expect(out).not.toContain(sasKey)
+			expect(out).toContain("SharedAccessKeyName=RootManageSharedAccessKey") // identifier kept
+		})
+
+		it("leaves credentialless Azure connection strings untouched", async () => {
+			const cs = "DefaultEndpointsProtocol=https;AccountName=prodcfg;EndpointSuffix=core.windows.net"
+			expect(await redactText(`cs: ${cs}`)).toContain(cs)
+			expect(await redactText("k: SharedAccessKeyName=RootManageSharedAccessKey")).toContain(
+				"SharedAccessKeyName=RootManageSharedAccessKey",
+			)
+		})
+	})
+
 	it("splices by position: a password equal to the username does not survive (no substring replace)", () => {
 		// Regression for the substring-replace bug: with user == pass, the
 		// first occurrence of the secret text is inside the anchor, and the
@@ -679,7 +726,7 @@ describe("anchored splice and re-additions — review regressions", () => {
 		const input = ["db at postgres", "ql://", "admin", ":", "admin", "@db.internal/app"].join("")
 		const out = applyCustomPatterns(input, new Set())
 		expect(out).not.toContain("admin") // neither user nor pass may survive
-		expect(out).toContain("[REDACTED-URL_WITH_CREDENTIALS]")
+		expect(out).toContain("[REDACTED-DATABASE_CONNECTION_STRING]")
 		expect(out).toContain("db.internal/app")
 	})
 
@@ -743,7 +790,10 @@ describe("anchored splice and re-additions — review regressions", () => {
 		expect(out).not.toContain("x".repeat(24))
 		expect(out).not.toContain("r".repeat(24))
 		expect(out).not.toContain("c".repeat(24))
-		expect(out.split("[REDACTED-URL_WITH_CREDENTIALS]").length - 1).toBe(3)
+		// SharedAccessSignature= is claimed by the AZURE_CONNECTION_STRING
+		// custom; the other two stay URL_WITH_CREDENTIALS.
+		expect(out.split("[REDACTED-URL_WITH_CREDENTIALS]").length - 1).toBe(2)
+		expect(out.split("[REDACTED-AZURE_CONNECTION_STRING]").length - 1).toBe(1)
 	})
 
 	it("re-adds GENERIC_SECRET behind keyword:value pairs only", async () => {
