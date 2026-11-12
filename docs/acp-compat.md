@@ -8,6 +8,10 @@ injection. Nothing malicious: Pi-side assumptions shipped without checking what 
 schema promises and without asking "what does a plain client see change?".
 
 This doc is the rule of thumb for any future harness work that touches the ACP surface.
+"Touches the ACP surface" is broader than it reads: feature work living entirely in
+`src/extensions/` routinely has ACP side effects (wakes, message projections, idle
+keys) — pi events are the same events the ACP server serializes. Not editing
+`src/modes/acp/` does not mean "no wire impact".
 Rules here derive from the spec, not from the incident list — read the anchor each rule
 cites before following the rule.
 
