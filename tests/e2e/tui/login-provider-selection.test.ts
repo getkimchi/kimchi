@@ -12,6 +12,13 @@ test("auth menus offer OpenAI Codex and show one Kimchi provider", async ({ term
 		{
 			artifactName: "login-provider-selection",
 			responses: [],
+			providerId: "kimchi-dev",
+			initialModel: "glm-5.3",
+			// Codex is offered only when the feed lists chatgpt rows.
+			models: [
+				{ slug: "glm-5.3", displayName: "GLM 5.3", provider: "ai-enabler", reasoning: true },
+				{ slug: "gpt-5.5", displayName: "GPT 5.5", provider: "chatgpt", reasoning: true },
+			],
 			seedHome: (homeDir) => {
 				writeFileSync(
 					join(homeDir, ".config", "kimchi", "harness", "auth.json"),

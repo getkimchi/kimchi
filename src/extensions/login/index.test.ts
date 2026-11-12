@@ -75,13 +75,15 @@ describe("loginExtension", () => {
 			registerProvider,
 		} as unknown as ExtensionAPI)
 
-		// The label comes verbatim from pi-ai's builtin openaiCodexProvider()
-		// catalog (the extension registers it unmodified) — upstream pi renamed it.
-		expect(registerProvider.mock.calls[0]?.[0]).toMatchObject({
+		// Stock pi login flow, re-labelled without "(legacy)", with no hardcoded
+		// models (the gateway feed supplies them).
+		const provider = registerProvider.mock.calls[0]?.[0]
+		expect(provider).toMatchObject({
 			id: "openai-codex",
-			name: "OpenAI Codex (legacy)",
+			name: "OpenAI Codex",
 			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
 		})
+		expect(provider.getModels()).toEqual([])
 	})
 
 	it("refreshes billing when an authenticated session starts", () => {

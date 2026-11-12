@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Socket } from "node:net"
 import { setTimeout as sleep } from "node:timers/promises"
+import { zstdDecompressSync } from "node:zlib"
 import type { VerifyApiKeyResponse } from "../../../../src/api/organizations.js"
 
 export interface FakeModel {
@@ -326,6 +327,14 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				return
 			}
 
+			// ChatGPT-subscription route (pi's openai-codex provider through the gateway):
+			// zstd-compressed Responses request, Responses-style SSE reply.
+			if (req.method === "POST" && req.url?.startsWith("/openai/v1/codex/responses")) {
+				const script = pickResponseScript(request, mainQueue, subagentQueue)
+				writeCodexResponse(res, script, body)
+				return
+			}
+
 			writeJson(res, 404, { error: `Unhandled fake OpenAI route: ${req.method} ${req.url}` })
 		} catch (error) {
 			if (!res.headersSent) {
@@ -367,7 +376,9 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
 	}
 	if (chunks.length === 0) return undefined
-	const raw = Buffer.concat(chunks).toString("utf-8")
+	let bytes = Buffer.concat(chunks)
+	if (req.headers["content-encoding"] === "zstd") bytes = zstdDecompressSync(bytes)
+	const raw = bytes.toString("utf-8")
 	try {
 		return JSON.parse(raw)
 	} catch {
@@ -683,6 +694,48 @@ function takeResponseScript(queue: FakeResponseScript[], request: FakeResponseRe
 
 function unixNow(): number {
 	return Math.floor(Date.now() / 1000)
+}
+
+function writeCodexResponse(res: ServerResponse, script: FakeResponseScript, body: unknown): void {
+	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
+	const text = (script.stream ?? ["fake response"]).join("")
+	res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" })
+	const response = (status: string, output: unknown[]) => ({
+		id: "resp_fake",
+		object: "response",
+		model,
+		status,
+		output,
+		usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, input_tokens_details: { cached_tokens: 0 } },
+	})
+	const item = (status: string, content: unknown[]) => ({
+		type: "message",
+		id: "msg_fake",
+		role: "assistant",
+		status,
+		content,
+	})
+	writeSse(res, { type: "response.created", response: response("in_progress", []) })
+	writeSse(res, { type: "response.output_item.added", output_index: 0, item: item("in_progress", []) })
+	writeSse(res, {
+		type: "response.content_part.added",
+		item_id: "msg_fake",
+		output_index: 0,
+		content_index: 0,
+		part: { type: "output_text", text: "", annotations: [] },
+	})
+	writeSse(res, {
+		type: "response.output_text.delta",
+		item_id: "msg_fake",
+		output_index: 0,
+		content_index: 0,
+		delta: text,
+	})
+	const done = item("completed", [{ type: "output_text", text, annotations: [] }])
+	writeSse(res, { type: "response.output_item.done", output_index: 0, item: done })
+	writeSse(res, { type: "response.completed", response: response("completed", [done]) })
+	res.end()
 }
 
 function writeSse(res: ServerResponse, event: unknown): void {

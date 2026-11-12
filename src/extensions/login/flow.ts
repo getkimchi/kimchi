@@ -28,6 +28,7 @@ import { markCredentialStale } from "../../credential-staleness.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
 	applyOrganizationHeader,
+	CODEX_PROVIDER_ID,
 	isTransientModelsError,
 	ModelsFetchError,
 	type PiModelConfig,
@@ -49,6 +50,7 @@ import { discoveryFailureMessage, fetchSelfHostedEndpoints } from "../../self-ho
 import { GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "../auto-model/constants.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 import { requestStatusIdentityRefresh } from "../status/refresh.js"
+import { isCodexGatewayAvailable } from "./codex-gateway.js"
 
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
@@ -380,6 +382,8 @@ function upstreamModelToPiConfig(m: Model<Api>, providerId: string): PiModelConf
 }
 
 export async function prePopulateSubscriptionModels(providerId: string): Promise<void> {
+	// Codex models come from the gateway feed, never pi's hardcoded list.
+	if (providerId === CODEX_PROVIDER_ID) return
 	const piModels = getModels?.(providerId as Parameters<typeof getModels>[0]) ?? []
 	if (piModels.length === 0) return
 
@@ -1024,8 +1028,10 @@ export function getSubscriptionProviderOptions(
 					return { id, name: provider.name ?? provider.auth.oauth.name ?? id }
 				})
 				.filter((provider): provider is { id: string; name: string } => provider !== undefined)
+	const codexOffered = isCodexGatewayAvailable()
 	return providers
 		.filter((provider) => !isKimchiProvider(provider.id))
+		.filter((provider) => provider.id !== CODEX_PROVIDER_ID || codexOffered)
 		.map((provider) => ({
 			id: provider.id,
 			name: provider.name,

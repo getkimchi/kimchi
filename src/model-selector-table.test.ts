@@ -468,3 +468,30 @@ describe("/model selector capability table (installed patch)", () => {
 
 // Keep vi referenced for the future use of mocks in this file's helpers.
 void vi
+
+describe("provider labels for models offered by more than one provider", () => {
+	const theme = { fg: (_color: string, text: string) => text }
+	const row = (model: Model<Api>) => ({
+		model,
+		id: model.id,
+		provider: model.provider,
+		selected: false,
+		description: "",
+	})
+	const codex = makeModel({ provider: "openai-codex", id: "gpt-5.5" })
+	const openai = makeModel({ provider: "kimchi-dev/openai", id: "gpt-5.5" })
+	const glm = makeModel({ id: "glm-5.3" })
+
+	it("labels each entry with its provider instance name; the chatgpt row also says subscription", () => {
+		const labels = new Map([
+			["openai-codex/gpt-5.5", "gpt-5.5 (Team Codex, subscription)"],
+			["kimchi-dev/openai/gpt-5.5", "gpt-5.5 (OpenAI prod)"],
+		])
+		const lines = renderModelTable([row(codex), row(openai), row(glm)], 140, theme, false, undefined, (ref) =>
+			labels.get(ref),
+		)
+		expect(lines[1]).toContain("gpt-5.5 (Team Codex, subscription)")
+		expect(lines[2]).toContain("gpt-5.5 (OpenAI prod)")
+		expect(lines[3]).not.toContain("(")
+	})
+})

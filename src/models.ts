@@ -83,6 +83,10 @@ const RESPONSES_NONE_EFFORT_SLUG_PATTERNS: RegExp[] = [/^gpt-5\.[1-9]/, /^gpt-6/
 
 const GATEWAY_THINKING_LEVEL_MAP: ThinkingLevelMap = { off: "none", max: "max" }
 
+/** Feed provider for ChatGPT-subscription rows, served through pi's stock `openai-codex` provider. */
+export const CHATGPT_FEED_PROVIDER = "chatgpt"
+export const CODEX_PROVIDER_ID = "openai-codex"
+
 const GATEWAY_METADATA_PROVIDERS = new Set(["ai-enabler", "custom"])
 
 function responsesThinkingLevelMap(slug: string): ThinkingLevelMap {
@@ -150,6 +154,8 @@ export interface ModelMetadata {
 	slug: string
 	display_name: string
 	provider: string
+	/** Display name of the gateway provider instance serving this row (e.g. "Team Codex"). */
+	provider_name?: string
 	reasoning: boolean
 	input_modalities: ("text" | "image")[]
 	is_serverless: boolean
@@ -274,6 +280,8 @@ export interface PiModelConfig {
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
+	/** Provider instance display name from the feed; persisted for the /model picker labels. */
+	providerName?: string
 	compat?: OpenAICompletionsCompat | AnthropicMessagesCompat
 	/** Maps thinking levels to provider-specific values. `off: "none"` sends `reasoning_effort: "none"`. */
 	thinkingLevelMap?: ThinkingLevelMap
@@ -322,7 +330,8 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
-	const responsesApi = supportsResponsesApi(m.provider, m.slug)
+	const isChatgpt = m.provider === CHATGPT_FEED_PROVIDER
+	const responsesApi = isChatgpt || supportsResponsesApi(m.provider, m.slug)
 	// Normalized once so the persisted levels, the derived map and the
 	// curated-none check agree, including after a models.json round-trip.
 	const curatedLevels = Array.isArray(m.thinking_levels) ? normalizeThinkingLevels(m.thinking_levels) : undefined
@@ -368,7 +377,8 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
-		...(responsesApi && { api: "openai-responses" as const }),
+		...(responsesApi && { api: isChatgpt ? ("openai-codex-responses" as const) : ("openai-responses" as const) }),
+		...(m.provider_name?.trim() ? { providerName: m.provider_name.trim() } : {}),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
 		...(curatedLevels && { thinkingLevels: curatedLevels }),
 		...(effectiveCompat && { compat: effectiveCompat }),
@@ -378,7 +388,8 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 
 export function buildModelsConfig(models: ModelMetadata[], endpoint?: string, organizationId?: string) {
 	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
-	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
+	const chatgptModels = models.filter((m) => m.provider === CHATGPT_FEED_PROVIDER)
+	const otherModels = models.filter((m) => m.provider !== "ai-enabler" && m.provider !== CHATGPT_FEED_PROVIDER)
 
 	// Surface OpenAI slugs neither routing table knows about.
 	for (const m of otherModels) {
@@ -434,6 +445,18 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string, or
 		}
 	}
 
+	// ChatGPT-subscription rows ride pi's stock `openai-codex` provider (client
+	// login as Bearer) through the gateway; the Kimchi key header is added at
+	// runtime by the login extension. No chatgpt rows means no block, so the
+	// models disappear on refresh while the stored login stays in auth.json.
+	if (chatgptModels.length > 0) {
+		providers[CODEX_PROVIDER_ID] = {
+			baseUrl: chatCompletionsApi(endpoint),
+			api: "openai-codex-responses",
+			models: chatgptModels.map(metadataToModel),
+		}
+	}
+
 	return { providers }
 }
 
@@ -453,6 +476,7 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 		// If `provider` was persisted by metadataToModel, use it. Fall back to the
 		// legacy compat heuristic for files written by older CLI versions.
 		provider: m.provider || (m.compat ? "anthropic" : ""),
+		...(m.providerName ? { provider_name: m.providerName } : {}),
 		reasoning: m.reasoning,
 		input_modalities: m.input,
 		is_serverless: true,
@@ -549,14 +573,56 @@ export function __clearModelThinkingLevelsForTest(): void {
 	modelThinkingLevelsRegistry().clear()
 }
 
+type ModelLabelRegistry = Map<string, string>
+
+function modelLabelRegistry(): ModelLabelRegistry {
+	const globals = process as typeof process & { __kimchiModelLabels?: ModelLabelRegistry }
+	if (!(globals.__kimchiModelLabels instanceof Map)) globals.__kimchiModelLabels = new Map()
+	return globals.__kimchiModelLabels
+}
+
+/** Picker label for a "<provider block>/<model id>" ref, or undefined when the
+ *  model is offered by a single provider. */
+export function getModelLabel(key: string): string | undefined {
+	return modelLabelRegistry().get(key)
+}
+
+/** A model offered by several provider blocks gets one entry per block labelled
+ *  with the provider instance name (block id when the feed names none); the
+ *  ChatGPT-subscription block adds "subscription". Rebuilt from the full
+ *  provider set on every registration. */
+function registerModelLabels(
+	providers: Record<string, { models?: Array<{ id: string; providerName?: string }> } | undefined>,
+): void {
+	const labels = modelLabelRegistry()
+	labels.clear()
+	const blocksById = new Map<string, string[]>()
+	for (const [block, provider] of Object.entries(providers)) {
+		for (const model of provider?.models ?? []) blocksById.set(model.id, [...(blocksById.get(model.id) ?? []), block])
+	}
+	for (const [id, blocks] of blocksById) {
+		if (blocks.length < 2) continue
+		for (const block of blocks) {
+			const model = providers[block]?.models?.find((candidate) => candidate.id === id)
+			const instance = model?.providerName ?? block
+			const subscription = block === CODEX_PROVIDER_ID ? ", subscription" : ""
+			labels.set(`${block}/${id}`, `${id} (${instance}${subscription})`)
+		}
+	}
+}
+
 /** Register every model's description and thinking levels found in models.json
  * provider blocks. Shared with the environment models path (KIMCHI_API_KEY
  * sessions), which bypasses updateModelsConfig and must still populate the
  * /model selector's registries. Each field is registered or cleared
  * independently, so a refresh that drops one preserves the other. */
 export function registerModelInfoFromProviders(
-	providers: Record<string, { models?: Array<{ id: string; description?: string; thinkingLevels?: string[] }> }>,
+	providers: Record<
+		string,
+		{ models?: Array<{ id: string; description?: string; thinkingLevels?: string[]; providerName?: string }> }
+	>,
 ): void {
+	registerModelLabels(providers)
 	for (const [block, provider] of Object.entries(providers)) {
 		for (const model of provider?.models ?? []) {
 			const key = `${block}/${model.id}`
@@ -660,7 +726,7 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 		registerDeprecationMarkers(modelsJsonPath)
 		const result: ModelMetadata[] = []
 		for (const [name, provider] of Object.entries(providers)) {
-			if (!name.startsWith("kimchi-dev")) continue
+			if (!name.startsWith("kimchi-dev") && name !== CODEX_PROVIDER_ID) continue
 			const models = (provider as { models?: PiModelConfig[] }).models
 			if (!Array.isArray(models) || models.length === 0) continue
 			result.push(...models.map(modelToMetadata))
@@ -682,7 +748,7 @@ function readExistingProviders(modelsJsonPath: string): Record<string, unknown> 
 		// plus kimchi-experimental, so they get regenerated on refresh.
 		const rest: Record<string, unknown> = {}
 		for (const [name, value] of Object.entries(providers as Record<string, unknown>)) {
-			if (name.startsWith("kimchi-dev") || name === "kimchi-experimental") continue
+			if (name.startsWith("kimchi-dev") || name === "kimchi-experimental" || name === CODEX_PROVIDER_ID) continue
 			rest[name] = value
 		}
 		return rest
