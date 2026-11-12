@@ -372,6 +372,16 @@ export function disableMem0Telemetry(): void {
 	}
 }
 
+/**
+ * Whether the operator explicitly disabled mem0's telemetry. One encoding of
+ * the parse so the sites cannot drift: mem0 itself treats the env as off only
+ * when it lowercases to exactly "false" (no trim, no truthy aliases) — "0",
+ * "no", or " FALSE " all mean ON to mem0, so they must mean ON here too.
+ */
+export function mem0TelemetryDisabled(): boolean {
+	return process.env.MEM0_TELEMETRY?.toLowerCase() === "false"
+}
+
 /** The id stamped on a telemetry-disabled instance (never leaves the machine). */
 export const LOCAL_TELEMETRY_ID = "kimchi-local"
 
@@ -392,7 +402,7 @@ export const LOCAL_TELEMETRY_ID = "kimchi-local"
  * own id, so an operator's analytics stay distinct per install.
  */
 export function skipTelemetryIdWrite(memory: { telemetryId: string }): void {
-	if (process.env.MEM0_TELEMETRY?.toLowerCase() !== "false") return
+	if (!mem0TelemetryDisabled()) return
 	memory.telemetryId = LOCAL_TELEMETRY_ID
 }
 

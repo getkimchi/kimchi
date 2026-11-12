@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AgentSideConnection } from "@agentclientprotocol/sdk"
@@ -75,6 +75,14 @@ async function settle(): Promise<void> {
 /** Last recorded call for one status/widget key — the settle signal the recall chain leaves behind. */
 function lastCallFor(calls: ReadonlyArray<readonly [string, ...unknown[]]>, key: string) {
 	return calls.filter((call) => call[0] === key).at(-1)
+}
+
+/** Marks captured via the timing sink while KIMCHI_SUBMIT_TIMING points at `file`. */
+function recordedMarks(file: string): Array<Record<string, unknown>> {
+	return readFileSync(file, "utf-8")
+		.split("\n")
+		.filter((line) => line !== "")
+		.map((line) => JSON.parse(line) as Record<string, unknown>)
 }
 
 function startEvent(prompt: string): BeforeAgentStartEvent {
@@ -350,8 +358,12 @@ describe("memory extension", () => {
 			// The abandoned computation lands late.
 			release?.([{ memory: "fact for late", score: 0.7 }])
 			await vi.advanceTimersByTimeAsync(0)
-			// Turn 2 adopts it: no wait, no second search.
-			const turn2 = await start(startEvent("turn 2"), fakeCtx)
+			// Turn 2 adopts it: no wait, no second search. Turn 2's prompt stays
+			// inside delivered territory (its only content word is "late") so the
+			// detached recall branch is inert — the count then asserts the digest
+			// computation alone, independent of microtask ordering in the recall
+			// chain (a recall search would otherwise land a hop after this await).
+			const turn2 = await start(startEvent("late"), fakeCtx)
 			expect(turn2?.systemPrompt).toContain("fact for late")
 			expect(search).toHaveBeenCalledTimes(1)
 			expect(sendMessage).not.toHaveBeenCalled()
@@ -427,6 +439,8 @@ describe("memory extension", () => {
 			const { start, getHandler } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
+			const marksFile = join(mkdtempSync(join(tmpdir(), "kimchi-memory-marks-")), "marks.jsonl")
+			process.env.KIMCHI_SUBMIT_TIMING = marksFile
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
 			await pending
@@ -434,6 +448,9 @@ describe("memory extension", () => {
 			// The stale attempt lands after the epoch moved on.
 			resolvers[0]?.([{ memory: "stale fact", score: 0.7 }])
 			await vi.advanceTimersByTimeAsync(0)
+			// The discard itself is the test subject — not just its downstream
+			// effect on the prompt (which the pre-adoption baseline also passes).
+			expect(recordedMarks(marksFile).some((m) => m.event === "memory.digest.discarded")).toBe(true)
 			// Not adopted: the next start recomputes (second search) and the
 			// stale text never reaches the prompt.
 			const turn2 = start(startEvent("turn 2"), fakeCtx)
@@ -443,6 +460,7 @@ describe("memory extension", () => {
 			expect(search).toHaveBeenCalledTimes(2)
 			expect(result?.systemPrompt).not.toContain("stale fact")
 		} finally {
+			delete process.env.KIMCHI_SUBMIT_TIMING
 			vi.useRealTimers()
 			consoleError.mockRestore()
 		}
@@ -462,6 +480,8 @@ describe("memory extension", () => {
 			const { start } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
+			const marksFile = join(mkdtempSync(join(tmpdir(), "kimchi-memory-marks-")), "marks.jsonl")
+			process.env.KIMCHI_SUBMIT_TIMING = marksFile
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
 			await pending
@@ -471,6 +491,8 @@ describe("memory extension", () => {
 			// Landing while disabled must not touch state either.
 			resolvers[0]?.([{ memory: "stale fact", score: 0.7 }])
 			await vi.advanceTimersByTimeAsync(0)
+			// The discard itself is the test subject, not just the prompt effect.
+			expect(recordedMarks(marksFile).some((m) => m.event === "memory.digest.discarded")).toBe(true)
 			setSessionMemoryOverride(fakeCtx.sessionManager, true)
 			const turn = start(startEvent("after re-enable"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(0)
@@ -478,6 +500,46 @@ describe("memory extension", () => {
 			const result = await turn
 			expect(search).toHaveBeenCalledTimes(2)
 			expect(result?.systemPrompt).not.toContain("stale fact")
+		} finally {
+			delete process.env.KIMCHI_SUBMIT_TIMING
+			setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a digest discarded for an unobserved toggle-off does not wedge the re-enabled session", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						resolvers.push(resolve)
+					}),
+			)
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			// Off and back on entirely BETWEEN starts — no turn observes the
+			// flip, so no epoch bump happens; the settle while disabled must not
+			// leave a settled attempt parked as "in flight".
+			setSessionMemoryOverride(fakeCtx.sessionManager, false)
+			resolvers[0]?.([{ memory: "stale fact", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			setSessionMemoryOverride(fakeCtx.sessionManager, true)
+			// The next start retries immediately — a fresh BLOCKING attempt
+			// instead of bare-notice turns until the 10 s abandon bound.
+			const turn = start(startEvent("after re-enable"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			resolvers[1]?.([{ memory: "fresh fact", score: 0.7 }])
+			const result = await turn
+			expect(search).toHaveBeenCalledTimes(2)
+			expect(result?.systemPrompt).toContain("fresh fact")
 		} finally {
 			setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
 			vi.useRealTimers()
@@ -507,6 +569,51 @@ describe("memory extension", () => {
 			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
 			await tool.execute("c", { query: "z" }, undefined, undefined, toolCtx)
 			expect(createCalls).toBe(2)
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("an abandoned searcher init that fails late must not latch a session failure over a newer init", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			let rejectA: ((error: Error) => void) | undefined
+			const searchB = vi.fn(async () => [] as Array<{ memory: string; score: number }>)
+			let createCalls = 0
+			const { getRegisteredTool, api } = createExtensionApi()
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: () => {
+					createCalls += 1
+					if (createCalls === 1) {
+						return new Promise<never>((_, reject) => {
+							rejectA = reject
+						})
+					}
+					return Promise.resolve({ search: searchB })
+				},
+			})(api)
+			const tool = getRegisteredTool("memory_search")
+			const toolCtx = createToolContext()
+			// Init A wedges; its eventual rejection is absorbed by its joiner — the
+			// point is what it must NOT do to the session.
+			void tool.execute("a", { query: "x" }, undefined, undefined, toolCtx).catch(() => {})
+			await vi.advanceTimersByTimeAsync(0)
+			expect(createCalls).toBe(1)
+			// A is abandoned past the bound; B initializes and succeeds.
+			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			await tool.execute("b", { query: "y" }, undefined, undefined, toolCtx)
+			expect(createCalls).toBe(2)
+			expect(searchB).toHaveBeenCalledTimes(1)
+			// A finally rejects, long after being abandoned — it must not latch
+			// the session-long hard failure over B's working searcher.
+			rejectA?.(new Error("late failure"))
+			await vi.advanceTimersByTimeAsync(0)
+			await tool.execute("c", { query: "z" }, undefined, undefined, toolCtx)
+			expect(createCalls).toBe(2)
+			expect(searchB).toHaveBeenCalledTimes(2)
 		} finally {
 			vi.useRealTimers()
 			consoleError.mockRestore()
