@@ -44,6 +44,7 @@ import {
 	isVisionGateDialogOpen,
 	mergeRetainedSubmission,
 	type PathAttachment,
+	type PendingImage,
 	type RetainedSubmission,
 	registerVisionGateSideEffects,
 	resetVisionGateState,
@@ -73,6 +74,10 @@ const VISION_SMALL = makeModel({ id: "vision-small", contextWindow: 100_000 })
 
 function img(data: string): ImageContent {
 	return { type: "image", data, mimeType: "image/png" }
+}
+
+function pend(data: string): PendingImage {
+	return { image: img(data), inlineId: null }
 }
 
 function path(pathName: string, data: string): PathAttachment {
@@ -148,7 +153,7 @@ afterEach(() => {
 describe("mergeRetainedSubmission", () => {
 	it("gathers a fresh record when nothing is retained", () => {
 		const incoming = [img("a")]
-		const pending = [img("b")]
+		const pending = [pend("b")]
 		const record = mergeRetainedSubmission({
 			text: "hi",
 			incoming,
@@ -164,7 +169,7 @@ describe("mergeRetainedSubmission", () => {
 	})
 
 	it("reuses retained attachments on the same draft without duplicate paths", () => {
-		const pastedImg = img("b")
+		const pastedImg = pend("b")
 		const retained = makeRecord({
 			incoming: [img("a")],
 			pasted: [pastedImg],
@@ -185,7 +190,7 @@ describe("mergeRetainedSubmission", () => {
 	})
 
 	it("refreshes path attachments on a changed draft while retaining explicit attachments", () => {
-		const pastedImg = img("b")
+		const pastedImg = pend("b")
 		const retained = makeRecord({
 			incoming: [img("a")],
 			pasted: [pastedImg],
@@ -197,28 +202,28 @@ describe("mergeRetainedSubmission", () => {
 		const record = mergeRetainedSubmission({
 			text: "different text",
 			incoming: [img("d")],
-			pending: [pastedImg, img("new-paste")],
+			pending: [pastedImg, pend("new-paste")],
 			pathMatches: [path("/tmp/kept.png", "kept"), path("/tmp/new.png", "new")],
 			retained,
 			generation: retained.generation,
 		})
 		expect(record.incoming).toEqual([img("a"), img("d")])
-		expect(record.pasted).toEqual([pastedImg, img("new-paste")])
+		expect(record.pasted).toEqual([pastedImg, pend("new-paste")])
 		expect([...record.paths.keys()].sort()).toEqual(["/tmp/kept.png", "/tmp/new.png"])
 	})
 
 	it("treats new pastes as distinct additions", () => {
-		const pastedImg = img("b")
+		const pastedImg = pend("b")
 		const retained = makeRecord({ pasted: [pastedImg] })
 		const record = mergeRetainedSubmission({
 			text: retained.text,
 			incoming: [],
-			pending: [pastedImg, img("later")],
+			pending: [pastedImg, pend("later")],
 			pathMatches: [],
 			retained,
 			generation: retained.generation,
 		})
-		expect(record.pasted).toEqual([pastedImg, img("later")])
+		expect(record.pasted).toEqual([pastedImg, pend("later")])
 	})
 })
 
@@ -272,7 +277,7 @@ describe("runVisionGate — non-streaming outcomes", () => {
 		const pi = makePi()
 		const record = makeRecord({
 			incoming: [img("a")],
-			pasted: [img("b")],
+			pasted: [pend("b")],
 			paths: new Map([["/tmp/x.png", img("c")]]),
 		})
 		const outcome = runVisionGate({ pi, ctx, event: { text: record.text }, record })
@@ -282,7 +287,7 @@ describe("runVisionGate — non-streaming outcomes", () => {
 		expect(ctx.ui.setEditorText).toHaveBeenCalledWith(record.text)
 		const retained = getRetainedSubmission()
 		expect(retained?.incoming).toEqual([img("a")])
-		expect(retained?.pasted).toEqual([img("b")])
+		expect(retained?.pasted).toEqual([pend("b")])
 		expect(retained?.paths.get("/tmp/x.png")).toEqual(img("c"))
 	})
 
@@ -291,7 +296,7 @@ describe("runVisionGate — non-streaming outcomes", () => {
 		const clearPending = vi.fn()
 		registerVisionGateSideEffects({ clearPendingAttachments: clearPending })
 		const pi = makePi()
-		const record = makeRecord({ pasted: [img("b")] })
+		const record = makeRecord({ pasted: [pend("b")] })
 		const outcome = runVisionGate({ pi, ctx, event: { text: record.text }, record })
 		await vi.waitFor(() => expect(dialogCalls.length).toBe(1))
 		dialogCalls[0]?.resolve({ kind: "remove" })
@@ -388,7 +393,7 @@ describe("runVisionGate — streaming interception", () => {
 	it("consumes, restores the draft, notifies, and arms the deferred latch", async () => {
 		const { ctx } = makeGateContext()
 		const pi = makePi()
-		const record = makeRecord({ pasted: [img("b")] })
+		const record = makeRecord({ pasted: [pend("b")] })
 		const outcome = await runVisionGate({
 			pi,
 			ctx,
@@ -435,7 +440,7 @@ describe("deferred dialog lifecycle (agent_end)", () => {
 			setModel(m)
 			return true
 		})
-		const record = makeRecord({ text: "draft", pasted: [img("b")] })
+		const record = makeRecord({ text: "draft", pasted: [pend("b")] })
 		await runVisionGate({ pi, ctx, event: { text: "draft", streamingBehavior: "steer" }, record })
 		mockDraft(ctx, "draft")
 		visionGateOnAgentEnd(pi, ctx)

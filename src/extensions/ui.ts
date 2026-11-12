@@ -248,6 +248,36 @@ export function setPasteImageHandler(handler: () => void): void {
 	pasteImageHandler = handler
 }
 
+// Registered by the clipboard-image extension: given a complete bracketed
+// paste payload (typically a file drop) and the current session cwd, return
+// true to consume it before the editor inserts it as text. The cwd is
+// threaded through from the editor's session — drops never resolve against
+// the long-lived process cwd.
+let imageDropHandler: ((pastedText: string, cwd: string) => boolean) | undefined
+
+export function setImageDropHandler(handler: (pastedText: string, cwd: string) => boolean): void {
+	imageDropHandler = handler
+}
+
+// Registered by the clipboard-image extension: notified with the full set of
+// `[Image #N]` markers whenever an edit changes them, so pending drops can be
+// detached (or a restored marker re-armed) immediately. The optional cause
+// tells the extension HOW the markers changed: "atomic-marker-delete" means
+// the user deleted one whole marker with (shift+)backspace/forward-delete,
+// which lets the extension restore the consumed drop's path text in place.
+let imageMarkersEditedHandler: ((presentIds: Set<number>, cause?: "atomic-marker-delete") => void) | undefined
+
+export function setImageMarkersEditedHandler(
+	handler: (presentIds: Set<number>, cause?: "atomic-marker-delete") => void,
+): void {
+	imageMarkersEditedHandler = handler
+}
+
+/** Insert text at the prompt editor's cursor (used for inline image markers). */
+export function insertTextAtPromptCursor(text: string): void {
+	currentEditor?.insertTextAtCursor(text)
+}
+
 /**
  * Show or clear a short status string right-aligned on the prompt's first row,
  * next to the placeholder. Used by the clipboard-image extension to surface
@@ -480,6 +510,16 @@ export default function uiExtension(pi: ExtensionAPI) {
 			currentEditor = editor
 			if (pasteImageHandler) {
 				editor.onPasteImage = pasteImageHandler
+			}
+			if (imageDropHandler) {
+				const dropHandler = imageDropHandler
+				// Capture this session's cwd with the handler — the editor is
+				// rebuilt per session, so the closure always resolves drops
+				// against the session they belong to.
+				editor.onImagePathDrop = (text) => dropHandler(text, ctx.cwd)
+			}
+			if (imageMarkersEditedHandler) {
+				editor.onImageMarkersEdited = imageMarkersEditedHandler
 			}
 			if (currentSessionIndicatorText) {
 				editor.setSessionIndicator(currentSessionIndicatorText)

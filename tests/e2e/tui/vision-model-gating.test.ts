@@ -174,6 +174,8 @@ test("pasted image on a text-only model opens the switch dialog and submits on t
 		async (fixture, trace) => {
 			terminal.keyPress("v", { ctrl: true })
 			await waitForText(terminal, "📎 1 image", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			// The paste renders inline at the cursor, same as an image-file drop.
+			await waitForText(terminal, "[Image #1]", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			// The text-only hint rides the indicator (self-clearing on model switch),
 			// not a permanent chat warning.
 			await waitForText(terminal, "· ⚠ text-only", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
