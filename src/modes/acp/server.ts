@@ -161,6 +161,8 @@ import {
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
+import { CANONICAL_THINKING_LEVELS } from "../../thinking-levels.js"
+import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -1145,6 +1147,10 @@ export class KimchiAcpAgent implements Agent {
 				await this.doSetModel(record, params.value ? `${params.value}` : "")
 				break
 			}
+			case "reasoning_effort": {
+				this.doSetThinkingLevel(record, params.value ? `${params.value}` : "")
+				break
+			}
 			default:
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
@@ -1170,6 +1176,31 @@ export class KimchiAcpAgent implements Agent {
 		persistPermissionModeIfChanged(sessionManager, (...args) => sessionManager.appendCustomEntry(...args), state)
 		setPermissionMode(sessionId, state)
 		return permissionMode
+	}
+
+	/**
+	 * Set the session's thinking level from a session/set_config_option
+	 * request. The value must be one of the advertised options — the
+	 * curated-aware selection for the current model, the same set the TUI's
+	 * /thinking picker offers — anything else is -32602 naming the valid
+	 * levels, per the spec contract for select options. Assignment is
+	 * session-scoped like the TUI picker: pi persists the change to the
+	 * session transcript and emits thinking_level_changed, but the global
+	 * default is not rewritten.
+	 */
+	private doSetThinkingLevel(record: SessionRecord, value: string): void {
+		const { session } = record
+		const selection = thinkingSelection(session.model)
+		if (selection.mode !== "levels" || selection.selectable.length === 0) {
+			throw RequestError.invalidParams(undefined, "the current model offers no selectable thinking levels")
+		}
+		if (!isCanonicalThinkingLevel(value) || !selection.selectable.includes(value)) {
+			throw RequestError.invalidParams(
+				undefined,
+				`invalid thinking level "${value}". available levels: ${selection.selectable.join(", ")}`,
+			)
+		}
+		session.setThinkingLevel(value)
 	}
 
 	private async doSetModel(record: SessionRecord, value: string): Promise<string> {
@@ -3831,6 +3862,64 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	}
 }
 
+/** Display names for the canonical thinking levels, mirroring the TUI
+ *  selector's labels ("Extra high" for xhigh, the name Air and codex-acp
+ *  use for the tier in their effort pickers). */
+const THINKING_LEVEL_NAMES: Record<string, string> = {
+	off: "Off",
+	minimal: "Minimal",
+	low: "Low",
+	medium: "Medium",
+	high: "High",
+	xhigh: "Extra high",
+	max: "Max",
+}
+
+const CANONICAL_THINKING_LEVEL_SET = new Set<string>(CANONICAL_THINKING_LEVELS)
+
+/** Runtime proof that a requested thinking level is one of pi's canonical
+ *  levels. Selectable sets are built from curated levels and pi's map keys —
+ *  both canonical — but typed as plain strings, so narrowing to the
+ *  setThinkingLevel parameter needs this guard instead of a call-site cast. */
+function isCanonicalThinkingLevel(value: string): value is AgentSession["thinkingLevel"] {
+	return CANONICAL_THINKING_LEVEL_SET.has(value)
+}
+
+/**
+ * Builds the SessionConfigOption for the session's thinking level — the
+ * control ACP clients render as their reasoning-effort picker (JetBrains Air
+ * binds its native effort control to the `reasoning_effort` configId).
+ *
+ * The selectable values are exactly what the TUI's /thinking selector offers
+ * (thinking-selection.ts): curated levels ∩ pi's wire-supported set for the
+ * current model. Models with nothing selectable (no model yet, non-reasoning,
+ * curated-none, empty intersection) get NO option rather than a dead
+ * one-value selector — clients hide what they are not given. currentValue is
+ * the rank-nearest selectable level so the "currentValue must be one of
+ * options" invariant holds even when the session's stored level predates a
+ * curation change; pi re-clamps on assignment, so what we advertise is what
+ * the wire sends.
+ */
+export type AgentSessionThinkingConfig = Pick<AgentSession, "model" | "thinkingLevel">
+
+export function buildThinkingConfigOption(session: AgentSessionThinkingConfig): SessionConfigOption | null {
+	if (!session.model) return null
+	const selection = thinkingSelection(session.model)
+	if (selection.mode !== "levels" || selection.selectable.length === 0) return null
+	return {
+		id: "reasoning_effort",
+		name: "Reasoning Effort",
+		type: "select",
+		category: "thought_level",
+		description: "How much the model reasons before answering. Available levels depend on the selected model.",
+		currentValue: clampToSelection(session.thinkingLevel, selection),
+		options: selection.selectable.map((level) => ({
+			value: level,
+			name: THINKING_LEVEL_NAMES[level] ?? level,
+		})),
+	}
+}
+
 /**
  * The routed virtual rows' composite name within a built option list, or
  * undefined when the catalog has none. The `model` option's `name` is the
@@ -3850,7 +3939,10 @@ function autoOptionName(configOptions: SessionConfigOption[]): string | undefine
 
 function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
 	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
-	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+	const thinking = buildThinkingConfigOption(session)
+	if (thinking) options.push(thinking)
+	return options
 }
 
 // Checks model PRESENCE only — pi resolves a non-null model object even on
