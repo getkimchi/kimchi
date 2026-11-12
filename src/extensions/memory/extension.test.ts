@@ -580,7 +580,8 @@ describe("memory extension", () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
 			let rejectA: ((error: Error) => void) | undefined
-			const searchB = vi.fn(async () => [] as Array<{ memory: string; score: number }>)
+			let resolveB: (() => void) | undefined
+			const searchB = vi.fn(async () => [{ memory: "b fact", score: 0.7 }])
 			let createCalls = 0
 			const { getRegisteredTool, api } = createExtensionApi()
 			createMemoryExtension({
@@ -592,7 +593,9 @@ describe("memory extension", () => {
 							rejectA = reject
 						})
 					}
-					return Promise.resolve({ search: searchB })
+					return new Promise<{ search: typeof searchB }>((resolve) => {
+						resolveB = () => resolve({ search: searchB })
+					})
 				},
 			})(api)
 			const tool = getRegisteredTool("memory_search")
@@ -602,17 +605,26 @@ describe("memory extension", () => {
 			void tool.execute("a", { query: "x" }, undefined, undefined, toolCtx).catch(() => {})
 			await vi.advanceTimersByTimeAsync(0)
 			expect(createCalls).toBe(1)
-			// A is abandoned past the bound; B initializes and succeeds.
+			// A is abandoned past the bound; B starts and is STILL IN FLIGHT when
+			// A finally rejects — the observable window: pre-fix, the late
+			// rejection latches searcherFailed and a call in this window degrades
+			// instead of joining B.
 			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
-			await tool.execute("b", { query: "y" }, undefined, undefined, toolCtx)
+			const execB = tool.execute("b", { query: "y" }, undefined, undefined, toolCtx)
+			await vi.advanceTimersByTimeAsync(0)
 			expect(createCalls).toBe(2)
-			expect(searchB).toHaveBeenCalledTimes(1)
-			// A finally rejects, long after being abandoned — it must not latch
-			// the session-long hard failure over B's working searcher.
 			rejectA?.(new Error("late failure"))
 			await vi.advanceTimersByTimeAsync(0)
-			await tool.execute("c", { query: "z" }, undefined, undefined, toolCtx)
+			// A caller in the window between A's late rejection and B's completion
+			// must join B, not degrade to no-memory.
+			const execC = tool.execute("c", { query: "z" }, undefined, undefined, toolCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			resolveB?.()
+			await Promise.all([execB, execC])
 			expect(createCalls).toBe(2)
+			// Both window callers joined B and each searched once — pre-fix, the
+			// late rejection latches searcherFailed and "c" degrades without
+			// searching (searchB would be 1).
 			expect(searchB).toHaveBeenCalledTimes(2)
 		} finally {
 			vi.useRealTimers()
