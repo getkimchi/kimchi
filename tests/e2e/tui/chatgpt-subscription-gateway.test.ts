@@ -221,6 +221,7 @@ test("after ChatGPT login the picker lists the feed's chatgpt models and a Codex
 			expect(request.headers.authorization).toBe(`Bearer ${chatgptJwt()}`)
 			expect(request.headers["x-api-key"]).toBe("fake")
 			expect(request.headers.accept).toBe("text/event-stream")
+			expect(request.headers["user-agent"]).toMatch(/^kimchi\//)
 			expect((request.body as { model: string }).model).toBe("gpt-5.4-codex")
 			trace.step("codex request sent with both credentials over SSE")
 		},

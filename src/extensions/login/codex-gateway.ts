@@ -7,6 +7,7 @@ import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-code
 import { gatewayAuthHeaders, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { CODEX_PROVIDER_ID } from "../../models.js"
+import { getVersion } from "../../utils.js"
 
 type CodexProvider = ReturnType<typeof openaiCodexProvider>
 
@@ -37,7 +38,12 @@ export function isCodexGatewayAvailable(): boolean {
 function withGatewayOptions<T extends { headers?: Record<string, string | null> } | undefined>(options: T) {
 	const { token, organizationId } = resolveGatewayCredentials(loadConfig())
 	const kimchiHeaders = token ? { [KIMCHI_KEY_HEADER]: token, ...gatewayOrgHeader(organizationId) } : {}
-	return { ...options, transport: "sse" as const, headers: { ...options?.headers, ...kimchiHeaders } }
+	// pi's Codex client defaults User-Agent to "pi (...)"; the gateway attributes traffic by `kimchi/<version>`.
+	return {
+		...options,
+		transport: "sse" as const,
+		headers: { "User-Agent": `kimchi/${getVersion()}`, ...options?.headers, ...kimchiHeaders },
+	}
 }
 
 /**
