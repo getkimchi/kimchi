@@ -4,8 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import type { CommonEvents } from "@getkimchi/kimchi-bridge/work/kimchi/events"
 import { expect, it } from "vitest"
-import type { CommonEvents } from "./events.js"
 
 it("uploads real SDK capture through the worker with exact legacy drainage and account/consent-safe retries", {
 	timeout: 30_000,
@@ -646,7 +646,7 @@ import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.ur
 import {capture,readStoredRecordsAsync,closeBackends,backendFor} from ${JSON.stringify(new URL("./ledger/records.ts", import.meta.url).href)};
 import {observeEvents,pendingBatch} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
 import {effectiveClaim} from "@getkimchi/kimchi-bridge/work/outbox";
-import {accountKey} from ${JSON.stringify(new URL("./snapshot.ts", import.meta.url).href)};
+import {accountKey} from "@getkimchi/kimchi-bridge/work/kimchi/attribution";
 const input=await Bun.stdin.json();
 for(const row of input.records)capture(input.agent,row,input.agent+"/native-observations.jsonl");
 const stored=await readStoredRecordsAsync(input.agent,()=>{});
@@ -701,7 +701,7 @@ import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.ur
 import {capture,readStoredRecordsAsync,closeBackends,backendFor} from ${JSON.stringify(new URL("./ledger/records.ts", import.meta.url).href)};
 import {observeEvents} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
 import {effectiveClaim} from "@getkimchi/kimchi-bridge/work/outbox";
-import {accountKey} from ${JSON.stringify(new URL("./snapshot.ts", import.meta.url).href)};
+import {accountKey} from "@getkimchi/kimchi-bridge/work/kimchi/attribution";
 import {calculatePullRequestCosts} from ${JSON.stringify(new URL("../work-attribution/costs.ts", import.meta.url).href)};
 const input=await Bun.stdin.json();
 for(const row of input.rows)capture(input.agent,row,input.agent+"/native-observations.jsonl");

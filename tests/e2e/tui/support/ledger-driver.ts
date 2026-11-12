@@ -328,7 +328,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		const { observeEvents, pendingBatch } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
 		)
-		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+		const { accountKey } = await import("@getkimchi/kimchi-bridge/work/kimchi/attribution")
 		const { readWorkCostReport } = await import("../../../../src/extensions/work-attribution/cost-sync.js")
 		const stored = await readStoredRecordsAsync(agent, () => {})
 		const { report } = readWorkCostReport(
@@ -382,7 +382,7 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
 	const { deliverEvents, reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
 	const { pendingBatch, observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
-	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+	const { accountKey } = await import("@getkimchi/kimchi-bridge/work/kimchi/attribution")
 	const { queueSnapshots, readReportingState, setReportingEnabled } = await import(
 		"../../../../src/extensions/pr-cost-reporting/queue.js"
 	)
@@ -781,7 +781,7 @@ async function producerScenario(agent: string): Promise<void> {
 	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
 	const { observeEvents, pendingBatch } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
 	const { machineFingerprint } = await import("../../../../src/extensions/pr-cost-reporting/machine.js")
-	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+	const { accountKey } = await import("@getkimchi/kimchi-bridge/work/kimchi/attribution")
 	const state = await readReportingState(agent)
 	const entry = Object.values(state.entries)[0]
 	if (!entry?.pending) throw new Error("Missing legacy pending producer fixture")

@@ -1,16 +1,11 @@
-import { savedBranchIssueKeys } from "../../shared/issue-keys.js"
+import { savedBranchIssueKeys } from "@getkimchi/kimchi-bridge/work/issue-keys"
+import { requestWorkLinks } from "@getkimchi/kimchi-bridge/work/kimchi/links"
+import { pullRequestAuthor, pullRequestTitle, time } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { plainURL } from "../../utils/url.js"
 import { pullRequestKey } from "../pull-request-status/links.js"
-import {
-	providerId,
-	pullRequestAuthor,
-	pullRequestTitle,
-	repositoryPath,
-	SHA,
-} from "../pull-request-status/provider-records.js"
+import { providerId, repositoryPath, SHA } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { isWorkSegment, type WorkSegment } from "../work-attribution.js"
-import { requestWorkLinks } from "./links.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object, SHA256_HEX, type WorkRecord } from "./summary.js"
 
@@ -127,19 +122,6 @@ export function roundedUsd(nanos: bigint): string {
 	const rounded = (nanos + step / 2n) / step
 	const fraction = (rounded % unit).toString().padStart(places, "0").replace(/0+$/, "").padEnd(2, "0")
 	return `$${(rounded / unit).toLocaleString("en-US")}.${fraction}`
-}
-
-export function time(value: unknown): number | undefined {
-	if (
-		typeof value !== "string" ||
-		!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
-	)
-		return undefined
-	const parsed = Date.parse(value)
-	if (!Number.isFinite(parsed)) return undefined
-	// Date.parse accepts impossible dates such as February 30 by rolling into the next month.
-	const day = value.slice(0, 10)
-	return new Date(`${day}T00:00:00Z`).toISOString().startsWith(day) ? parsed : undefined
 }
 
 function add(map: Map<string, Set<string>>, key: string, value: string): void {
@@ -794,7 +776,7 @@ export function calculatePullRequestCosts(
 	}
 
 	const exclusivePulls = exclusiveRequestPulls(records, ownership, commitPulls)
-	const links = requestWorkLinks(records)
+	const links = requestWorkLinks(records, sameWorkAccount)
 	const priceFor = requestPrices(observations, noCharge)
 	const billingAccounts = new Map<string, (WorkAccount | undefined)[]>()
 	for (const [requestId, account] of noCharge) billingAccounts.set(requestId, [account])

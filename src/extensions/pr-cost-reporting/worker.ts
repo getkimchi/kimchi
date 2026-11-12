@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto"
 import { setImmediate } from "node:timers/promises"
+import {
+	accountKey,
+	type ReportingRepository,
+	type RepositoryIdentity,
+} from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
 import { effectiveClaim, type Fact, type OutboxBatch } from "@getkimchi/kimchi-bridge/work/outbox"
 import type { Acknowledgement } from "@getkimchi/kimchi-bridge/work/protocol"
 import { verifyApiKey } from "../../api/organizations.js"
@@ -54,7 +59,6 @@ import {
 	UPLOAD_INTERVAL_MS,
 	withReportingConsent,
 } from "./queue.js"
-import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
 /** Failed repository-identity lookups wait this long before retrying, inside and outside a pass. */

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+import { accountKey, repositoryKey } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
@@ -42,11 +43,9 @@ import {
 	withReportingConsent,
 } from "./queue.js"
 import {
-	accountKey,
 	buildSnapshots,
 	fitSnapshot,
 	type RepositorySnapshot,
-	repositoryKey,
 	SNAPSHOT_LIMITS,
 	validateSnapshot,
 	type WireSnapshot,

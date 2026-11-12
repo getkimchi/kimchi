@@ -1,6 +1,11 @@
 /** What a GitHub PR or GitLab MR must look like, from a provider response or a saved journal row, and how lookups fail. */
 
-import { branchIssueKeys, MAX_PULL_REQUEST_ISSUE_KEYS, savedBranchIssueKeys } from "../../shared/issue-keys.js"
+import {
+	branchIssueKeys,
+	MAX_PULL_REQUEST_ISSUE_KEYS,
+	savedBranchIssueKeys,
+} from "@getkimchi/kimchi-bridge/work/issue-keys"
+import { pullRequestAuthor, pullRequestTitle } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { plainURL } from "../../utils/url.js"
 import { object } from "../work-attribution/summary.js"
 import type { WorkPullRequest, WorkPullRequestLookup } from "./pull-requests.js"
@@ -65,21 +70,6 @@ export function repositoryPath(value: unknown, provider?: Repository["provider"]
 
 export function label(repository: Pick<Repository, "provider">): string {
 	return repository.provider === "gitlab" ? "GitLab" : "GitHub"
-}
-
-/** PR cost uploads bound a PR's title and author login in characters (code points), as the server counts them. */
-const MAX_TITLE_CHARACTERS = 1024
-const MAX_AUTHOR_CHARACTERS = 255
-
-/** A title cut to the upload bound; a missing, empty or non-text title is unknown. */
-export function pullRequestTitle(value: unknown): string | undefined {
-	// Whole characters: cutting UTF-16 units could leave half a surrogate pair, which the server rejects.
-	return typeof value === "string" && value ? Array.from(value).slice(0, MAX_TITLE_CHARACTERS).join("") : undefined
-}
-
-/** An author login; one past the bound is unknown rather than cut, because a shorter login names someone else. */
-export function pullRequestAuthor(value: unknown): string | undefined {
-	return typeof value === "string" && value && Array.from(value).length <= MAX_AUTHOR_CHARACTERS ? value : undefined
 }
 
 export function pullRequest(

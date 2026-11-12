@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs"
 import { mkdir, open, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
+import { accountKey, type ReportingRepository, repositoryKey } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
+import { validTime } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { lock } from "proper-lockfile"
 import { writeFileDurably } from "../../config/json.js"
 import { isWorkId } from "../../shared/work-id.js"
@@ -14,18 +16,14 @@ import { object, SHA256_HEX } from "../work-attribution/summary.js"
 import { backendFor, diagnostic } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
-	accountKey,
 	fitSnapshot,
 	MAX_REVISION,
-	type ReportingRepository,
 	type RepositorySnapshot,
-	repositoryKey,
 	revision,
 	SNAPSHOT_LIMITS,
 	type SnapshotContent,
 	type SnapshotLimits,
 	validateSnapshot,
-	validTime,
 	type WireSnapshot,
 } from "./snapshot.js"
 

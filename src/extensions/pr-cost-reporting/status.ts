@@ -1,4 +1,5 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import type { ReportingRepository } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
 import type { readOutboxStatus } from "./ledger/outbox.js"
 import {
 	inUploadWindow,
@@ -7,7 +8,6 @@ import {
 	type ReportingState,
 	type ServerLimit,
 } from "./queue.js"
-import type { ReportingRepository } from "./snapshot.js"
 
 const name = (repository: ReportingRepository) => repository.name ?? `${repository.host} repository ${repository.id}`
 const formatCount = (count: number) => count.toLocaleString("en-US")
