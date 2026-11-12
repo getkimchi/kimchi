@@ -518,7 +518,7 @@ function renderPhaseEvent(ev, parent) {
   mark.style.display = "inline-block";
   mark.style.minWidth = "140px";
   const details = {
-    "triage-skip": "p(durable)=" + fmtP(ev.probability),
+    "triage-skip": "p(durable)=" + fmtP(ev.probability) + (ev.topClass ? " · closest class: " + ev.topClass : ""),
     "valuation-discard": (ev.fact || "").slice(0, 80) + " — p(discard)=" + fmtP(ev.probability),
     "durability-skip": (ev.fact || "").slice(0, 80) + " — pattern: " + ev.pattern,
     "oversized-skip": (ev.fact || "").slice(0, 80) + " — " + ev.length + " chars",

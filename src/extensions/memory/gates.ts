@@ -12,7 +12,7 @@
  *
  * Pure — unit-testable under Node.
  */
-import type { ChoiceQuestion } from "./decision-gate.js"
+import type { ChoiceAnswer, ChoiceQuestion } from "./decision-gate.js"
 import { parseBooleanFlag } from "./flags.js"
 
 /** The gates that exist; each maps to one insertion point in the pipeline. */
@@ -73,18 +73,107 @@ export function taskLaneEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return parseBooleanFlag(env, "KIMCHI_MEMORY_TASK_SCOPE")
 }
 
-/** Window triage: should this window pay extraction at all? (E1/E1b/E5b/E6/E8) */
-export function triageQuestion(): Record<"has_durable_fact", ChoiceQuestion> {
+/** Window triage: should this window pay extraction at all? (E1/E1b/E5b/E6/E8,
+ * replaced by the multi-class fan-out after the 2026-11-12 live cross-corpus
+ * experiment — see docs/memory-extension.md. The single has_durable_fact
+ * question crushed assistant-side evidence-grounded conclusions
+ * (p≈0.05–0.24 on tactical notes-to-self); splitting the durable definition
+ * into per-class questions rescued exactly that class without regressing any
+ * content the single question kept.)
+ *
+ * Four CONTENT classes decide keep/skip. A fifth question,
+ * `insight_worth_future_self`, is recorded in the trace/dashboard but is
+ * deliberately NOT gating: it over-fires on raw boilerplate (<skill> blocks,
+ * unmined transcripts) when used as the decider.
+ */
+export type TriageQuestionName =
+	| "user_stated_durable"
+	| "engaged_assistant_answer"
+	| "plan_or_dated_event"
+	| "learned_conclusion"
+	| "insight_worth_future_self"
+
+/** The four classes that gate: skip only when ALL of them score below
+ * TRIAGE_DURABLE_MIN_P. `insight_worth_future_self` is trace-only signal. */
+export const TRIAGE_GATE_CLASSES = [
+	"user_stated_durable",
+	"engaged_assistant_answer",
+	"plan_or_dated_event",
+	"learned_conclusion",
+] as const satisfies readonly TriageQuestionName[]
+
+export type TriageGateClass = (typeof TRIAGE_GATE_CLASSES)[number]
+
+/** All five names, including the trace-only signal — tests key off this set. */
+export const TRIAGE_QUESTION_NAMES: ReadonlySet<string> = new Set([...TRIAGE_GATE_CLASSES, "insight_worth_future_self"])
+
+export function triageQuestions(): Record<TriageQuestionName, ChoiceQuestion> {
 	return {
-		has_durable_fact: {
+		user_stated_durable: {
 			type: "choice",
 			instructions:
-				"Does this snippet contain at least one DURABLE fact worth capturing to long-term memory? Durable sources are: (a) USER-STATED facts — stable preferences, decisions with rationale, corrections, personal context (role, family, plans, possessions, constraints), itemized values (counts, prices, dates, measurements) — each occurrence of recurring items as its own fact; (b) ASSISTANT-PROVIDED answers the user engaged with — the user asked a question it answers, or accepted/acted on/referred back to it (schedules, rotations, recipes, recommendations, numbers); (c) plans and dated events" +
-				(taskLaneEnabled() ? `;${TASK_SCOPE_TRIAGE_SUFFIX}` : "") +
-				". NOT durable: small talk with no fact content, code/file contents, generic advice the user never engaged with.",
-			criteria: { yes: "At least one durable fact is present", no: "Nothing durable — only transient content" },
+				"Does this snippet contain any USER-STATED durable fact: a stable preference, a decision with rationale, a correction, personal context (role, plans, possessions, constraints), or an itemized value (count, price, date, measurement)?" +
+				(taskLaneEnabled()
+					? `; also: TASK facts —${TASK_SCOPE_TRIAGE_SUFFIX.replace(" (d) DURABLE TASK facts —", "")}`
+					: ""),
+			criteria: { yes: "At least one user-stated durable fact", no: "None" },
+		},
+		engaged_assistant_answer: {
+			type: "choice",
+			instructions:
+				"Does this snippet contain an assistant-provided answer or fact the USER actively engaged with (asked for, accepted, acted on, or referred back to) — e.g. schedules, rotations, recipes, recommendations, numbers the user needed?",
+			criteria: { yes: "At least one engaged assistant answer", no: "None" },
+		},
+		plan_or_dated_event: {
+			type: "choice",
+			instructions: "Does this snippet contain a plan, a scheduled event, or a dated occurrence worth recalling later?",
+			criteria: { yes: "At least one plan or dated event", no: "None" },
+		},
+		learned_conclusion: {
+			type: "choice",
+			instructions:
+				"Does this snippet contain a CONCLUSION established from evidence during the session — a failure pattern identified, a procedure/approach validated or invalidated by its observed outcome, a verified mechanic/rule of the environment, or a tactical/strategic lesson — regardless of whether the user or the assistant stated it?",
+			criteria: { yes: "At least one evidence-grounded conclusion", no: "None" },
+		},
+		insight_worth_future_self: {
+			type: "choice",
+			instructions:
+				"Would any content in this snippet materially help an agent answering in a FUTURE session — something worth loading at the start of the next conversation to avoid repeating a mistake or losing established knowledge? (Judge content type: concrete lessons/facts yes, generic advice no.)",
+			criteria: { yes: "Content worth recalling in a future session", no: "Nothing future-useful" },
 		},
 	}
+}
+
+/** Triage keep/skip decision from one d3 response. Skip only when every
+ * gate class reports a numeric p(yes) below TRIAGE_DURABLE_MIN_P — a
+ * response missing numeric answers degrades to NOT-skip (extraction on
+ * unknowns, mirroring the pre-split undefined behavior).
+ * `probabilities` mirrors the four classes (+ signal question) verbatim
+ * for the drain trace: the dashboard renders which class carried a keep. */
+export function triageVerdict(answers: Partial<Record<TriageQuestionName, ChoiceAnswer | undefined>>): {
+	skip: boolean
+	/** Max gate-class probability — the decisions' numeric anchor (undefined
+	 * when no class answered numerically; skip is then false). */
+	maxP: number | undefined
+	/** The class that carried the keep (the argmax) — for trace labeling. */
+	topClass: TriageGateClass | undefined
+	probabilities: Partial<Record<TriageQuestionName, number>>
+} {
+	const probabilities: Partial<Record<TriageQuestionName, number>> = {}
+	let maxP: number | undefined
+	let topClass: TriageGateClass | undefined
+	for (const name of TRIAGE_GATE_CLASSES) {
+		const p = answers[name]?.probabilities.yes
+		if (typeof p !== "number") continue
+		probabilities[name] = p
+		if (maxP === undefined || p > maxP) {
+			maxP = p
+			topClass = name
+		}
+	}
+	const signal = answers.insight_worth_future_self?.probabilities.yes
+	if (typeof signal === "number") probabilities.insight_worth_future_self = signal
+	return { skip: maxP !== undefined && maxP < TRIAGE_DURABLE_MIN_P, maxP, topClass, probabilities }
 }
 
 /** Fact valuation: keep this extracted fact? (E2/E6/E8) */

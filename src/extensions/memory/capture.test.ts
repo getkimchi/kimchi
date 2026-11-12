@@ -60,11 +60,39 @@ import {
 } from "./capture-worker.js"
 import { ADD_FAILURE_MAX_ATTEMPTS, MEMORY_CAPTURE_WINDOW_CHARS, MEMORY_FACT_MAX_CHARS } from "./config.js"
 import type { DecisionGateOptions } from "./decision-gate.js"
-import { VALUATION_STATE } from "./gates.js"
+import { TRIAGE_QUESTION_NAMES, VALUATION_STATE } from "./gates.js"
 import { readTraceEvents, tracesDir } from "./trace.js"
 import { usageLedgerPath } from "./usage-ledger.js"
 
 const msg = (role: "user" | "assistant", content: string): CaptureMessage => ({ role, content })
+
+/** Triage stub answering every question of the request with "definitely not durable" —
+ * old-styled single-name responses would throw inside decide()
+ * (missing per-question answers) and flip the drain into fail-open extraction,
+ * defeating exactly the tests these stubs serve. */
+function neverDurableTriage(): typeof fetch {
+	return vi.fn(
+		async (_input: unknown, init: RequestInit | undefined) =>
+			new Response(
+				JSON.stringify(
+					(() => {
+						const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+						const answers: Record<string, unknown> = {}
+						for (const name of Object.keys(body.questions)) {
+							answers[name] = {
+								type: "choice",
+								choice: "no",
+								probabilities: { yes: 0.01, no: 0.99 },
+								confidence: 0.99,
+							}
+						}
+						return { answers, usage: { input_tokens: 100, output_tokens: 0 } }
+					})(),
+				),
+				{ status: 200 },
+			),
+	) as unknown as typeof fetch
+}
 
 // child_process is module-mocked so the spawn-error test can emit a fake
 // 'error' event; spawnSync (scope.ts's git parsing) stays real.
@@ -1019,7 +1047,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
 			const answers: Record<string, unknown> = {}
 			for (const name of Object.keys(body.questions)) {
-				if (name === "has_durable_fact") {
+				if (TRIAGE_QUESTION_NAMES.has(name)) {
 					const p = options.triageP ?? 0.9
 					answers[name] = {
 						type: "choice",
@@ -1210,15 +1238,16 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			const events = drainEvents()
 			const triage = events.find((e) => e.type === "api" && e.kind === "triage")
 			expect((triage?.request as { state: string }).state).toBe("user: skip me")
-			expect((triage?.request as { questions: Record<string, unknown> }).questions.has_durable_fact).toBeDefined()
+			expect((triage?.request as { questions: Record<string, unknown> }).questions.learned_conclusion).toBeDefined()
 			const answers = (
 				triage?.response as { answers: Record<string, { choice: string; probabilities: Record<string, number> }> }
 			).answers
-			expect(answers.has_durable_fact?.probabilities.yes).toBe(0.1)
+			expect(answers.learned_conclusion?.probabilities.yes).toBe(0.1)
 			expect(events.find((e) => e.type === "phase" && e.phase === "triage-skip")).toMatchObject({
 				job: "trace-triage.json",
 				window: 0,
 				probability: 0.1,
+				topClass: expect.any(String),
 			})
 			// Triaged out: no extraction calls at all, window hash-marked.
 			expect(events.find((e) => e.type === "api" && e.kind === "extraction-user")).toBeUndefined()
@@ -2248,23 +2277,23 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(fake.items.map((item) => item.memory)).toEqual(["I now have 25 new postcards, up from 17"])
 	})
 
-	/** Triage stub: answers every window's durable-fact question with the given pYes. */
+	/** Triage stub: answers every triage class question of the request with the given pYes. */
 	function triageFetchImpl(pYes: number): typeof fetch {
-		const fetchImpl: typeof fetch = async () =>
-			new Response(
-				JSON.stringify({
-					answers: {
-						has_durable_fact: {
-							type: "choice",
-							choice: pYes >= 0.5 ? "yes" : "no",
-							probabilities: { yes: pYes, no: 1 - pYes },
-							confidence: 0.9,
-						},
-					},
-					usage: { input_tokens: 100, output_tokens: 0 },
-				}),
-				{ status: 200 },
-			)
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const name of Object.keys(body.questions)) {
+				answers[name] = {
+					type: "choice",
+					choice: pYes >= 0.5 ? "yes" : "no",
+					probabilities: { yes: pYes, no: 1 - pYes },
+					confidence: 0.9,
+				}
+			}
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), {
+				status: 200,
+			})
+		}
 		return fetchImpl
 	}
 
@@ -2327,23 +2356,22 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		// Triage per window: first call (durable window) durable, second not.
 		const pYesSeq = [0.9, 0.05]
 		let triageCalls = 0
-		const triageFetch: typeof fetch = async () => {
+		const triageFetch: typeof fetch = async (_input, init) => {
 			const pYes = pYesSeq[Math.min(triageCalls, pYesSeq.length - 1)] as number
 			triageCalls += 1
-			return new Response(
-				JSON.stringify({
-					answers: {
-						has_durable_fact: {
-							type: "choice",
-							choice: pYes >= 0.5 ? "yes" : "no",
-							probabilities: { yes: pYes, no: 1 - pYes },
-							confidence: 0.9,
-						},
-					},
-					usage: { input_tokens: 100, output_tokens: 0 },
-				}),
-				{ status: 200 },
-			)
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const name of Object.keys(body.questions)) {
+				answers[name] = {
+					type: "choice",
+					choice: pYes >= 0.5 ? "yes" : "no",
+					probabilities: { yes: pYes, no: 1 - pYes },
+					confidence: 0.9,
+				}
+			}
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), {
+				status: 200,
+			})
 		}
 		const captured = await runCaptureWorker(["--job", durable, "--db", dbPath()], {
 			llm: makeFakeLlm(transcripts),
@@ -3365,23 +3393,7 @@ describe("triage bypass for tool-evidence windows (KIMCHI_MEMORY_CAPTURE_TOOL_TU
 			)
 		// The triage stub answers "definitely not durable" — a tool-evidence
 		// window must never reach it.
-		const triageFetch = vi.fn(
-			async () =>
-				new Response(
-					JSON.stringify({
-						answers: {
-							has_durable_fact: {
-								type: "choice",
-								choice: "no",
-								probabilities: { yes: 0.01, no: 0.99 },
-								confidence: 0.99,
-							},
-						},
-						usage: { input_tokens: 100, output_tokens: 0 },
-					}),
-					{ status: 200 },
-				),
-		)
+		const triageFetch = neverDurableTriage()
 		const job = join(pendingDir(), "tooljob.json")
 		writeFileSync(
 			job,
@@ -3427,23 +3439,7 @@ describe("triage bypass for tool-evidence windows (KIMCHI_MEMORY_CAPTURE_TOOL_TU
 					{ status: 200 },
 				),
 		)
-		const triageFetch = vi.fn(
-			async () =>
-				new Response(
-					JSON.stringify({
-						answers: {
-							has_durable_fact: {
-								type: "choice",
-								choice: "no",
-								probabilities: { yes: 0.01, no: 0.99 },
-								confidence: 0.99,
-							},
-						},
-						usage: { input_tokens: 100, output_tokens: 0 },
-					}),
-					{ status: 200 },
-				),
-		)
+		const triageFetch = neverDurableTriage()
 		const job = join(pendingDir(), "plainjob.json")
 		writeFileSync(job, JSON.stringify({ messages: [msg("user", "ok thanks")], project: null }))
 		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
@@ -3480,23 +3476,7 @@ describe("triage bypass for tool-evidence windows (KIMCHI_MEMORY_CAPTURE_TOOL_TU
 					{ status: 200 },
 				),
 		)
-		const triageFetch = vi.fn(
-			async () =>
-				new Response(
-					JSON.stringify({
-						answers: {
-							has_durable_fact: {
-								type: "choice",
-								choice: "no",
-								probabilities: { yes: 0.01, no: 0.99 },
-								confidence: 0.99,
-							},
-						},
-						usage: { input_tokens: 100, output_tokens: 0 },
-					}),
-					{ status: 200 },
-				),
-		)
+		const triageFetch = neverDurableTriage()
 		const job = join(pendingDir(), "offjob.json")
 		writeFileSync(
 			job,
