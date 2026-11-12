@@ -52,8 +52,8 @@ Event type | Carries
 --- | ---
 `drain_start` | pid, extraction model, enabled gates, the pending job listing
 `job` | job file, project scope, session id, message/window counts, drain/add attempt counters, staged coverage
-`api` | one per LLM/d3 HTTP call: `kind` (`extraction-user`, `extraction-assistant`, `supersede-chat`, `valuation`, `supersede-d3`) with the **full request** (chat: model + system prompt + user text; d3: model + full `state` + every question's instructions and criteria) and **full response** (chat: raw content + usage; d3: every answer's choice, per-option probabilities, and confidence), or `error`/`status` on failure; anchored to its job/window
-`phase` | every deterministic store decision: valuation discard (with p), durability-regex skip (with the matched pattern), redaction (before → after), oversized skip, exact-dup and near-dup skips (Jaccard score + the twin), store add (id), strict-JSON retries, supersede candidate searches and deletions
+`api` | one per LLM/d3 HTTP call: `kind` (`extraction-user`, `extraction-assistant`, `supersede-chat`, `triage`, `valuation`, `supersede-d3`) with the **full request** (chat: model + system prompt + user text; d3: model + full `state` + every question's instructions and criteria) and **full response** (chat: raw content + usage; d3: every answer's choice, per-option probabilities, and confidence), or `error`/`status` on failure; anchored to its job/window
+`phase` | every deterministic store decision: triage skip (with p), valuation discard (with p), durability-regex skip (with the matched pattern), redaction (before → after), oversized skip, exact-dup and near-dup skips (Jaccard score + the twin), store add (id), strict-JSON retries, supersede candidate searches and deletions
 `job_end` | committed (per-skip-class counts), kept-for-retry, or quarantined (poison / add-failure, with attempts)
 `drain_end` | drain totals and duration
 
@@ -79,14 +79,15 @@ Five judgment calls run on the platform decision model (`d3` via `/typesafe/v1/s
 
 | Gate | Insertion point | Judgment | Rule | Degrade on gate failure |
 | --- | --- | --- | --- | --- |
+| triage | capture, after windowing | window contains ≥1 durable fact? — FIVE per-window questions in one call (`user_stated_durable`, `engaged_assistant_answer`, `plan_or_dated_event`, `learned_conclusion`, plus the trace-only `insight_worth_future_self`) | skip extraction when EVERY gate class scores p(yes) < 0.3 (`TRIAGE_DURABLE_MIN_P`), else extract; the skip carries the argmax class + per-class probabilities into the drain trace | extract the window (fail-open) |
 | valuation | capture, after redaction + durability filter, before store adds | keep this extracted fact? | discard only when d3 says `discard` at p ≥ 0.9 (`VALUATION_DISCARD_MIN_P`) | keep the job's facts |
 | supersede | capture, one batched judge per store | does a new fact explicitly replace this memory? | d3 judge replaces the chat judge (E7: matched it 4/5 and caught the preference reversal it missed) | per-batch catch keeps all |
 | digest | turn 1, after retrieval | does this candidate earn an injection slot for this prompt? | selector replaces the score threshold among retrieved candidates | threshold rule |
 | recall | turns 2+, after the lexical coverage gate | is an archive search worth this drift signal? | skip the search when d3 says skip (E4: 9 searches → 1) | search anyway |
 
-The gates are pure filters over the pre-gate rules, so rollback is exact. `KIMCHI_MEMORY_DECISION_GATE`: absent/empty = all on, `off` = all off, a comma subset (`valuation,digest`) = exactly those (unknown names are logged and ignored). A session without a configured API key resolves as "gates unavailable" rather than hammering the gateway with an empty Bearer. Calibration and the E1–E8 evidence live in the spike documents (REPORT.md); thresholds are validated at chain level — needle survival through extraction → valuation → digest selection — not per-gate scores.
+The gates are pure filters over the pre-gate rules, so rollback is exact. `KIMCHI_MEMORY_DECISION_GATE`: absent/empty = all on, `off` = all off, a comma subset (`valuation,digest`) = exactly those (unknown names are logged and ignored). A session without a configured API key resolves as "gates unavailable" rather than hammering the gateway with an empty Bearer. Calibration and the E1–E8 evidence live in the spike documents (REPORT.md); thresholds are validated at chain level — needle survival through triage → extraction → valuation → digest selection — not per-gate scores.
 
-Triage note: the 2026-11-12 d3 pre-extraction triage (single question, then the multi-class split the same day) was RETIRED hours after the split shipped: the store grew an `[internal reasoning]` lane whose windows the calibrated gate could not score (it bernoullied them out at p=0.01–0.2 regardless, then the tool-evidence bypass exempted effectively every window anyway). Every window now extracts; valuation remains the post-extraction discard control, and a window that extracts to `[]` is hash-marked so it never re-enters a drain.
+Triage note: the 2026-11-12 multi-class split replaced the single `has_durable_fact` question (which crushed assistant-side, evidence-grounded conclusions at p≈0.05–0.24 on cross-corpus windows). The four gating classes decompose the old durable definition and add the `learned_conclusion` class; gating is max-class-argmax against the same 0.3 bar, and `insight_worth_future_self` is recorded for the dashboard/trace but deliberately non-gating (it over-fires on raw boilerplate). The tool-evidence bypass (which skipped triage on windows containing `[tool]` records) was REMOVED the same day — triage always happens now: live d3 checks on reasoning-lane windows score completed arcs 0.66 (extract) while receipts-only and boilerplate stay ≤0.07 (skip).
 
 A sixth, manual surface is `kimchi memory consolidate`: one-shot store cleanup classifying every fact as unique / complementary / exact_twin / near_twin (E7 Part B: every twin group recovered, zero false positives). It reports first and deletes only with `--yes` or an interactive confirmation; verdicts of unique or complementary never delete, and a sweep that would empty a store keeps the oldest fact instead.
 
@@ -113,7 +114,7 @@ Memory never breaks a session:
 | Gateway call fails | retried per the shared retry contract, then the window's hashes stay unmarked for the next spawn |
 | Duplicate guard (`getAll`) fails | logged, adds proceed without dedupe |
 | Lock held by a crashed worker | stealable after 15 min; merge-on-save keeps ledger marks |
-| Decision gate call fails or times out | logged once per call site; that gate degrades to its pre-gate rule for the call (valuation/supersede keep, digest/recall fall back to their threshold/coverage rules) |
+| Decision gate call fails or times out | logged once per call site; that gate degrades to its pre-gate rule for the call (triage/valuation/supersede keep, digest/recall fall back to their threshold/coverage rules) |
 | Decision gate with no API key configured | resolves as “gates unavailable” at resolution time — every gate behaves as disabled; the gateway is never called with an empty key |
 
 ## Tuning constants
@@ -131,7 +132,7 @@ All in `src/extensions/memory/config.ts`.
 | `MEMORY_CAPTURE_ASSISTANT_MAX_CHARS` | 1,000 | an answer's key statement sits at its start — truncate, don't exclude |
 | `TURN_RECALL_RESPONSE_CHARS` / `QUERY_MAX_CHARS` / `MAX_FACTS` / `MAX_FACT_CHARS` | 400 / 1,000 / 3 / 400 | drift-query bounds (response tail, total query) and steer size |
 | `GATE_MIN_COVERAGE` | 0.3 | below this coverage, retrieval is likely to add value |
-| `VALUATION_DISCARD_MIN_P` (gates.ts) | 0.9 | valuation discard bar — chain-calibrated on LongMemEval |
+| `TRIAGE_DURABLE_MIN_P` / `VALUATION_DISCARD_MIN_P` (gates.ts) | 0.3 / 0.9 | triage floor and valuation discard bar — chain-calibrated on LongMemEval; 0.35+ started dropping needle windows |
 | `DECISION_BATCH_SIZE` / `DECISION_QUESTION_CAP` (decision-gate.ts) | 30 / 64 | questions per d3 call; the gateway hard-rejects >64 (spike-verified) |
 | `MEMORY_PRE_REQUEST_TIMEOUT_MS` | 2,000 | bound for memory work that gates the turn's start: the turn-1 digest (pre-echo) and the detached recall's gate/searcher-init legs |
 | `MEMORY_SEARCH_TIMEOUT_MS` | 10,000 | bound on each detached drift search — background work, never blocks the turn |

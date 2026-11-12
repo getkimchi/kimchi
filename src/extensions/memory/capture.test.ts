@@ -1252,21 +1252,33 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			expect(events.find((e) => e.type === "drain_end")).toMatchObject({ captured: 1, jobs: 1 })
 		})
 
-		it("an enabled triage gate does not run before extraction — every window extracts", async () => {
+		it("the triage gate records its full state, the question asked, and the per-option probabilities", async () => {
 			const fake = makeFakeBackend()
 			const jobFile = writeJob("trace-triage", [msg("user", "skip me")])
 			const transcripts: string[] = []
 			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
 				llm: makeFakeLlm(transcripts),
 				createBackend: () => Promise.resolve(fake.backend),
-				decision: { gate: makeFakeD3({ triageP: 0.1 }), enabled: new Set(["valuation"]) },
+				decision: { gate: makeFakeD3({ triageP: 0.1 }), enabled: new Set(["triage"]) },
 			})
 			const events = drainEvents()
-			// No pre-extraction gate call — extraction went straight to the window.
-			expect(events.find((e) => e.type === "api" && e.kind === "triage")).toBeUndefined()
-			expect(events.find((e) => e.type === "api" && e.kind === "extraction-user")).toBeDefined()
-			expect(transcripts).toHaveLength(1)
-			expect(events.find((e) => e.type === "drain_end")).toMatchObject({ triagedOut: 0 })
+			const triage = events.find((e) => e.type === "api" && e.kind === "triage")
+			expect((triage?.request as { state: string }).state).toBe("user: skip me")
+			expect((triage?.request as { questions: Record<string, unknown> }).questions.learned_conclusion).toBeDefined()
+			const answers = (
+				triage?.response as { answers: Record<string, { choice: string; probabilities: Record<string, number> }> }
+			).answers
+			expect(answers.learned_conclusion?.probabilities.yes).toBe(0.1)
+			expect(events.find((e) => e.type === "phase" && e.phase === "triage-skip")).toMatchObject({
+				job: "trace-triage.json",
+				window: 0,
+				probability: 0.1,
+				topClass: expect.any(String),
+			})
+			// Triaged out: no extraction calls at all, window hash-marked.
+			expect(events.find((e) => e.type === "api" && e.kind === "extraction-user")).toBeUndefined()
+			expect(transcripts).toHaveLength(0)
+			expect(events.find((e) => e.type === "drain_end")).toMatchObject({ triagedOut: 1 })
 		})
 
 		it("the valuation gate records every question (instructions + criteria) and the resulting discard", async () => {
@@ -2311,46 +2323,95 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		return fetchImpl
 	}
 
-	it("an enabled triage gate no longer skips any window: extraction always runs and the window is hash-marked", async () => {
+	it("triage skips a non-durable window: no extraction call, but the window is hash-marked", async () => {
 		const fake = makeFakeBackend()
-		const extractionFetch = vi.fn(
-			async () => new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 }),
-		)
+		const extractionFetch = vi.fn(async () => {
+			throw new Error("extraction must not run when triage says non-durable")
+		})
 		const jobFile = writeJob("job", [msg("user", "ok sounds good, thanks")])
 		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
 			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractionFetch },
 			createBackend: () => Promise.resolve(fake.backend),
 			decision: {
 				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetchImpl(0.05) },
-				enabled: new Set(["valuation"]),
+				enabled: new Set(["triage"]),
 			},
 		})
-		// A low d3 durable score no longer short-circuits extraction.
-		expect(extractionFetch).toHaveBeenCalled()
+		expect(extractionFetch).not.toHaveBeenCalled()
 		expect(captured).toBe(0)
 		expect(fake.added).toEqual([])
 		// The window is hash-marked like an extracted-empty window — and the
-		// job is removed, so a future drain never re-extracts it.
+		// job is removed, so a future drain never re-triages it.
 		expect(existsSync(jobFile)).toBe(false)
 		const ledger = JSON.parse(readFileSync(ledgerPath(), "utf-8")) as string[]
 		expect(ledger).toHaveLength(1)
 	})
 
-	it("one drain extracts every window across jobs (a smalltalk-only window extracts to no-op)", async () => {
+	it("triage failure is fail-open: the window still gets extracted", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const fake = makeFakeBackend()
+			const transcripts: string[] = []
+			const down = async () => new Response(JSON.stringify({ error: "quota" }), { status: 401 })
+			const captured = await runCaptureWorker(
+				["--job", writeJob("job", [msg("user", "my dog is named Fred")]), "--db", dbPath()],
+				{
+					llm: makeFakeLlm(transcripts),
+					createBackend: () => Promise.resolve(fake.backend),
+					decision: {
+						gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: down, maxRetries: 0 },
+						enabled: new Set(["triage"]),
+					},
+				},
+			)
+			expect(captured).toBe(1)
+			expect(fake.added).toEqual(["my dog is named Fred"])
+			expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("triage gate failed"))).toBe(true)
+		} finally {
+			errorSpy.mockRestore()
+		}
+	})
+
+	it("one drain triages and extracts per window across jobs (outcome mapping preserved)", async () => {
 		const fake = makeFakeBackend()
 		const transcripts: string[] = []
 		const now = Date.now()
 		const durable = writeJob("durable", [msg("user", "my dog is named Freya")])
 		writeJob("smalltalk", [msg("user", "ok thanks, that works")]) // side effect: it sits in the pending dir and gets drained
 		utimesSync(durable, new Date(now - 10_000), new Date(now - 10_000)) // durable drains first
+		// Triage per window: first call (durable window) durable, second not.
+		const pYesSeq = [0.9, 0.05]
+		let triageCalls = 0
+		const triageFetch: typeof fetch = async (_input, init) => {
+			const pYes = pYesSeq[Math.min(triageCalls, pYesSeq.length - 1)] as number
+			triageCalls += 1
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const name of Object.keys(body.questions)) {
+				answers[name] = {
+					type: "choice",
+					choice: pYes >= 0.5 ? "yes" : "no",
+					probabilities: { yes: pYes, no: 1 - pYes },
+					confidence: 0.9,
+				}
+			}
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), {
+				status: 200,
+			})
+		}
 		const captured = await runCaptureWorker(["--job", durable, "--db", dbPath()], {
 			llm: makeFakeLlm(transcripts),
 			createBackend: () => Promise.resolve(fake.backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
 		})
-		expect(captured).toBe(2)
-		expect(fake.added).toEqual(["my dog is named Freya", "ok thanks, that works"])
-		// Both windows extracted — no window can be gated away beforehand.
-		expect(transcripts).toHaveLength(2)
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["my dog is named Freya"])
+		// Extraction ran exactly once (the durable window), triage judged both.
+		expect(transcripts).toHaveLength(1)
+		expect(triageCalls).toBe(2)
 		// Both jobs committed their windows — the ledger holds both hashes.
 		const ledger = JSON.parse(readFileSync(ledgerPath(), "utf-8")) as string[]
 		expect(ledger).toHaveLength(2)
@@ -3391,7 +3452,7 @@ describe("applyDerivedTags — the batched classifier post-pass (KIMCHI_MEMORY_F
 	})
 })
 
-describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS windows", () => {
+describe("triage runs on tool-evidence windows too (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)", () => {
 	const realHome = process.env.HOME
 	const realAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	const FLG = "KIMCHI_MEMORY_CAPTURE_TOOL_TURNS"
@@ -3414,7 +3475,7 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 	const pendingDir = () => join(home, ".config", "kimchi", "memory", "pending")
 	const dbPath = () => join(home, ".config", "kimchi", "memory", "personal", "memory.db")
 
-	it("flag ON + [tool] window: d3 triage is skipped entirely, extraction still runs", async () => {
+	it("flag ON + [tool] window: triage runs like on any other window (bypass removed)", async () => {
 		process.env[FLG] = "1"
 		const stored: string[] = []
 		const backend: CaptureBackend = {
@@ -3433,6 +3494,9 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 				}),
 				{ status: 200 },
 			)
+		// The triage stub answers "definitely not durable": the window gets
+		// no exemption now — the gate judges it and skips extraction.
+		const triageFetch = neverDurableTriage()
 		const job = join(pendingDir(), "tooljob.json")
 		writeFileSync(
 			job,
@@ -3447,12 +3511,17 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
 			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
 			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
 		})
-		expect(stored).toEqual(["items ts is milliseconds"])
-		expect(captured).toBe(1)
+		expect(stored).toEqual([])
+		expect(captured).toBe(0)
+		expect(triageFetch).toHaveBeenCalled()
 	})
 
-	it("flag ON + plain window: extraction runs without any triage call (triage retired)", async () => {
+	it("flag ON + plain window: triage still gates (no accidental blanket bypass)", async () => {
 		process.env[FLG] = "1"
 		const stored: string[] = []
 		const backend: CaptureBackend = {
@@ -3473,18 +3542,24 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 					{ status: 200 },
 				),
 		)
+		const triageFetch = neverDurableTriage()
 		const job = join(pendingDir(), "plainjob.json")
 		writeFileSync(job, JSON.stringify({ messages: [msg("user", "ok thanks")], project: null }))
 		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
 			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
 			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
 		})
-		expect(extractFetch).toHaveBeenCalled()
-		expect(stored).toEqual(["the dog is named Freya"])
-		expect(captured).toBe(1)
+		expect(triageFetch).toHaveBeenCalled()
+		expect(extractFetch).not.toHaveBeenCalled()
+		expect(stored).toEqual([])
+		expect(captured).toBe(0)
 	})
 
-	it("flag OFF: a [tool] record extracts as an ordinary window — no triage call either", async () => {
+	it("flag OFF: a [tool] record is an ordinary window — triage does run", async () => {
 		const stored: string[] = []
 		const backend: CaptureBackend = {
 			add: async (fact) => {
@@ -3518,11 +3593,10 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 			createBackend: () => Promise.resolve(backend),
 			decision: {
 				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
-				enabled: new Set(["valuation"]),
+				enabled: new Set(["triage"]),
 			},
 		})
-		expect(triageFetch).not.toHaveBeenCalled()
-		expect(extractFetch).toHaveBeenCalled()
+		expect(triageFetch).toHaveBeenCalled()
 	})
 })
 
