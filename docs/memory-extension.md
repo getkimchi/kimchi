@@ -42,6 +42,23 @@ Per job:
 
 Extraction runs at temperature 0 — at the gateway's default temperature, the same haystack produced different facts per run. Facts are **date-stamped when the conversation explicitly states or implies a date** ("As of 2023-05-26, planning a trip to Seattle"): the prompt mines dates from the conversation text, resolving relative expressions against the conversation's own stated dates and context. **Recording time never enters the LLM's input** — the extraction transcript is deliberately date-prefix-free and `CaptureMessage` carries no date: a session entry timestamp is a proxy that diverges from conversation time on replayed or imported history, and any instruction anchoring to it launders the proxy into fact text where the judge can no longer distinguish it from conversation dates. Undated facts stay undated and order internally via the drain's chronological commit order. The extraction prompts also ban the placeholder stamp "As of the conversation" outright — a real date from the conversation, or no date at all. The supersede judge encodes explicit-over-proxy precedence: a conversation-dated fact is never superseded by an undated fact or by recording time alone, unless the other fact explicitly says it supersedes ("up from", "replaced", "now"). The model is deepseek-v4-flash-0731 (benchmarks showed it is the only suitable model for extraction), resolved against the gateway's live model list at worker start; the auto router was removed from the extraction path after benchmarking showed it picks models suited to conversation rather than strict-JSON extraction at temperature 0. `memoryExtraction.model` in the kimchi config file overrides (authoritative — used as-is, without the gateway-list check the pinned default gets). HTTP retry uses the shared gateway reliability contract (`src/utils/http.ts`): 429 plus the Cloudflare 5xx family, jittered backoff, retry-after honoring, a 300s per-attempt ceiling above the edge's ~100s cutoff.
 
+## Drain tracing and the extraction dashboard
+
+Every drain records a full trace of what it did — one append-only JSONL file per drain at `~/.config/kimchi/memory/traces/drain-<isotime>-<pid>.jsonl`. Tracing is always-on and fail-soft (an unwritable traces dir logs once and the drain continues untraced; it can never break capture), or disabled via `KIMCHI_MEMORY_TRACE_DRAINS=0`. The ring keeps the newest 50 drains (same env var overrides), pruned at worker start. Files record raw, pre-redaction text: they are a local-only debug surface, same exposure class as the memory store directory itself.
+
+Event type | Carries
+--- | ---
+`drain_start` | pid, extraction model, enabled gates, the pending job listing
+`job` | job file, project scope, session id, message/window counts, drain/add attempt counters, staged coverage
+`api` | one per LLM/d3 HTTP call: `kind` (`extraction-user`, `extraction-assistant`, `supersede-chat`, `triage`, `valuation`, `supersede-d3`) with the **full request** (chat: model + system prompt + user text; d3: model + full `state` + every question's instructions and criteria) and **full response** (chat: raw content + usage; d3: every answer's choice, per-option probabilities, and confidence), or `error`/`status` on failure; anchored to its job/window
+`phase` | every deterministic store decision: triage skip (with p), valuation discard (with p), durability-regex skip (with the matched pattern), redaction (before → after), oversized skip, exact-dup and near-dup skips (Jaccard score + the twin), store add (id), strict-JSON retries, supersede candidate searches and deletions
+`job_end` | committed (per-skip-class counts), kept-for-retry, or quarantined (poison / add-failure, with attempts)
+`drain_end` | drain totals and duration
+
+Lines are appended atomically per event and readers drop an unparseable trailing line, so a crashed worker still leaves a partially-readable, fully truthful drain. The trace seam is drain-site only: `chatJson`/`decide` take an optional exchange hook that only the capture worker sets — the session turn path (digest/recall) is never traced and never pays for the possibility.
+
+`kimchi memory dashboard [--port N] [--no-open]` serves a loopback-only web UI over the queue and traces (rejects non-loopback peers): the pending queue with per-job state, quarantine, and capture-lock state; drains with summary stats; and drill-down per drain/job/window to the full API exchanges and per-question decision probabilities. It auto-refreshes every 5s (pausable) and runs until Ctrl+C. It is a sessionless op — it works with the memory feature disabled and is terminal-only (in-session `/memory dashboard` points you at the terminal command).
+
 ## Injection policy
 
 Auto-injected context must earn its tokens:
@@ -149,6 +166,7 @@ kimchi memory search <query>        [--scope ...] [--json]
 kimchi memory delete <id> [...]
 kimchi memory reset --scope all|personal|project [--project <owner/name>] [--yes]
 kimchi memory consolidate [--scope ...] [--yes]   d3-assisted twin/trivial-redundancy cleanup — report first
+kimchi memory dashboard [--port N] [--no-open]   web dashboard over the capture queue and drain traces (terminal only)
 kimchi memory enable | disable      (in-session /memory only — see the session toggle)
 ```
 

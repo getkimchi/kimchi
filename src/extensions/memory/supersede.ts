@@ -42,6 +42,9 @@ export function createDecisionSupersedeJudge(gate: DecisionGateOptions): Superse
 				if (!candidate) throw new Error(`supersede judge: batch index ${index} out of candidate range`)
 				return supersedeQuestion(candidate)
 			},
+			undefined,
+			undefined,
+			"supersede",
 		)
 		const deleted: string[] = []
 		for (const [i, candidate] of candidates.entries()) {

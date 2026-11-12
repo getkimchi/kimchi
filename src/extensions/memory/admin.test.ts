@@ -937,3 +937,47 @@ describe("runAdminCommand — consolidate", () => {
 		expect(parseAdminArgs(["consolidate", "x"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
 	})
 })
+
+describe("dashboard subcommand", () => {
+	it("grammar: defaults, --port, --no-open; positionals and bad ports are usage errors", () => {
+		expect(parseAdminArgs(["dashboard"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "dashboard",
+			port: undefined,
+			noOpen: false,
+		})
+		expect(parseAdminArgs(["dashboard", "--port", "19432"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "dashboard",
+			port: 19432,
+			noOpen: false,
+		})
+		expect(parseAdminArgs(["dashboard", "--no-open"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "dashboard",
+			port: undefined,
+			noOpen: true,
+		})
+		expect(parseAdminArgs(["dashboard", "--port", "abc"], { cwd: NO_REPO_CWD })).toMatchObject({
+			op: "usage-error",
+		})
+		expect(parseAdminArgs(["dashboard", "extra"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
+	})
+
+	it("without a launcher (the in-session surface) the op answers with the terminal-only hint", async () => {
+		const result = await runAdminCommand(["dashboard"], { cwd: NO_REPO_CWD })
+		expect(result.code).toBe(1)
+		expect(result.text).toContain("terminal-only")
+	})
+
+	it("the CLI launcher receives parsed port/openBrowser and its result surfaces", async () => {
+		const calls: Array<{ port?: number; openBrowser: boolean }> = []
+		const result = await runAdminCommand(["dashboard", "--port", "4000", "--no-open"], {
+			cwd: NO_REPO_CWD,
+			launchDashboard: (options) => {
+				calls.push(options)
+				return Promise.resolve({ text: "Running.", json: "{}", code: 0 })
+			},
+		})
+		expect(calls).toEqual([{ port: 4000, openBrowser: false }])
+		expect(result.code).toBe(0)
+		expect(result.text).toBe("Running.")
+	})
+})

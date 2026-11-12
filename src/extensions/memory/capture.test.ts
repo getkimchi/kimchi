@@ -58,6 +58,11 @@ import {
 	tokenJaccard,
 	windowByBudget,
 } from "./capture-worker.js"
+import { ADD_FAILURE_MAX_ATTEMPTS, MEMORY_CAPTURE_WINDOW_CHARS, MEMORY_FACT_MAX_CHARS } from "./config.js"
+import type { DecisionGateOptions } from "./decision-gate.js"
+import { VALUATION_STATE } from "./gates.js"
+import { readTraceEvents, tracesDir } from "./trace.js"
+import { usageLedgerPath } from "./usage-ledger.js"
 
 const msg = (role: "user" | "assistant", content: string): CaptureMessage => ({ role, content })
 
@@ -765,7 +770,7 @@ describe("chatJson retry behavior", () => {
 		const fetchImpl = vi
 			.fn()
 			.mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 }))
-		await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u")
+		await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", "extraction")
 		const init = fetchImpl.mock.calls[0]?.[1] as RequestInit
 		const body = JSON.parse(String(init.body)) as { tags?: string[] }
 		expect(body.tags).toContain("memory:extraction")
@@ -777,7 +782,12 @@ describe("chatJson retry behavior", () => {
 			.mockResolvedValue(
 				new Response(JSON.stringify({ choices: [{ message: { content: '["fact"]' } }] }), { status: 200 }),
 			)
-		const text = await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u")
+		const text = await chatJson(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			"s",
+			"u",
+			"extraction",
+		)
 		expect(text).toBe('["fact"]')
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
 	})
@@ -787,7 +797,12 @@ describe("chatJson retry behavior", () => {
 			.fn()
 			.mockResolvedValueOnce(new Response("boom", { status: 502 }))
 			.mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }))
-		const text = await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u")
+		const text = await chatJson(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			"s",
+			"u",
+			"extraction",
+		)
 		expect(text).toBe("ok")
 		expect(fetchImpl).toHaveBeenCalledTimes(2)
 	})
@@ -795,7 +810,7 @@ describe("chatJson retry behavior", () => {
 	it("does not retry other 4xx errors", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(new Response("bad request", { status: 400 }))
 		await expect(
-			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u"),
+			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", "extraction"),
 		).rejects.toThrow(/gateway rejected/)
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
 	})
@@ -803,7 +818,7 @@ describe("chatJson retry behavior", () => {
 	it("classifies non-retryable 4xx as poison (deterministic — never re-drained)", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(new Response("bad request", { status: 400 }))
 		await expect(
-			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u"),
+			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", "extraction"),
 		).rejects.toBeInstanceOf(PoisonExtractionError)
 	})
 
@@ -813,6 +828,7 @@ describe("chatJson retry behavior", () => {
 			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 			"s",
 			"u",
+			"extraction",
 			1, // one attempt — exhausts immediately
 		).catch((err: unknown) => err)
 		expect(error).toBeInstanceOf(Error)
@@ -825,6 +841,7 @@ describe("chatJson retry behavior", () => {
 			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 			"s",
 			"u",
+			"extraction",
 			1,
 		).catch((err: unknown) => err)
 		expect(error).toBeInstanceOf(Error)
@@ -834,7 +851,7 @@ describe("chatJson retry behavior", () => {
 	it("gives up after max attempts on persistent 5xx", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(new Response("still down", { status: 503 }))
 		await expect(
-			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", 2),
+			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", "extraction", 2),
 		).rejects.toThrow(/gateway rejected the request: HTTP 503/)
 		expect(fetchImpl).toHaveBeenCalledTimes(2)
 	})
@@ -863,6 +880,7 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 				"system",
 				"user",
 				parseStringArray,
+				"extraction",
 			)
 			expect(facts).toEqual(["I mediate disputes weekly"])
 			expect(fetchImpl).toHaveBeenCalledTimes(2)
@@ -886,6 +904,7 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 					"system",
 					"user",
 					parseStringArray,
+					"extraction",
 				),
 			).rejects.toThrow(/unparseable response after strict retry/)
 			// Same model + temperature 0 + same input fails identically next drain.
@@ -894,6 +913,7 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 				"system",
 				"user",
 				parseStringArray,
+				"extraction",
 			)
 			await expect(attempt).rejects.toBeInstanceOf(PoisonExtractionError)
 			expect(fetchImpl).toHaveBeenCalledTimes(4)
@@ -986,6 +1006,43 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			)
 		}
 		return { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+	}
+
+	/** Stubbed d3 systemone endpoint: triage windows at a fixed p(yes);
+	 * valuation keeps or discards every candidate at a fixed p(discard). */
+	function makeFakeD3(options: {
+		triageP?: number
+		valuation?: "keep" | "discard"
+		valuationP?: number
+	}): DecisionGateOptions {
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const name of Object.keys(body.questions)) {
+				if (name === "has_durable_fact") {
+					const p = options.triageP ?? 0.9
+					answers[name] = {
+						type: "choice",
+						choice: p >= 0.3 ? "yes" : "no",
+						probabilities: { yes: p, no: 1 - p },
+						confidence: 0.9,
+					}
+				} else {
+					const p = options.valuationP ?? (options.valuation === "discard" ? 0.95 : 0.1)
+					answers[name] = {
+						type: "choice",
+						choice: options.valuation === "discard" ? "discard" : "keep",
+						probabilities: { keep: 1 - p, discard: p },
+						confidence: 0.9,
+					}
+				}
+			}
+			return new Response(
+				JSON.stringify({ id: "fake-d3", model: "d3", answers, usage: { input_tokens: 100, output_tokens: 0 } }),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			)
+		}
+		return { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl }
 	}
 
 	const writeJob = (name: string, messages: CaptureMessage[]): string => {
@@ -1096,6 +1153,238 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(updated.sessions[session]?.factsAdded).toBe(2)
 	})
 
+	describe("drain tracing", () => {
+		/** Events of one drain trace file (index -1 = newest). */
+		const drainEvents = (index = -1) => {
+			const files = readdirSync(tracesDir()).sort()
+			const target = files[index < 0 ? files.length + index : index]
+			return target ? readTraceEvents(join(tracesDir(), target)) : []
+		}
+
+		it("records a full drain: api events carry the complete system prompt, window transcript, and raw response", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace1", [msg("user", "my dog's name is Fred")])
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(fake.backend),
+			})
+			const events = drainEvents()
+			expect(events[0]).toMatchObject({ type: "drain_start", model: "m", jobFiles: ["trace1.json"] })
+			expect(events.find((e) => e.type === "job")).toMatchObject({
+				job: "trace1.json",
+				messages: 1,
+				windows: 1,
+			})
+			// Full chat exchange: exact system prompt + window transcript in,
+			// complete raw response out.
+			const extraction = events.find((e) => e.type === "api" && e.kind === "extraction-user")
+			expect(extraction).toMatchObject({ job: "trace1.json", window: 0 })
+			const request = extraction?.request as { model: string; system: string; user: string }
+			expect(request).toMatchObject({ model: "m", user: "user: my dog's name is Fred" })
+			expect(request.system).toBe(EXTRACTION_SYSTEM_PROMPT)
+			const response = extraction?.response as { content: string }
+			expect(response.content).toContain("Fred")
+			// Pure-user window: no assistant pass.
+			expect(events.find((e) => e.type === "api" && e.kind === "extraction-assistant")).toBeUndefined()
+			// Store + supersede trail.
+			expect(events.find((e) => e.type === "phase" && e.phase === "store-add")).toMatchObject({
+				store: "personal",
+				fact: "my dog's name is Fred",
+			})
+			const supersedeChat = events.find((e) => e.type === "api" && e.kind === "supersede-chat")
+			expect(supersedeChat).toMatchObject({ store: "personal" })
+			expect((supersedeChat?.request as { system: string }).system).toBe(SUPERSEDE_SYSTEM_PROMPT)
+			expect(events.find((e) => e.type === "job_end")).toMatchObject({ outcome: "committed", captured: 1 })
+			expect(events.find((e) => e.type === "drain_end")).toMatchObject({ captured: 1, jobs: 1 })
+		})
+
+		it("the triage gate records its full state, the question asked, and the per-option probabilities", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace-triage", [msg("user", "skip me")])
+			const transcripts: string[] = []
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm(transcripts),
+				createBackend: () => Promise.resolve(fake.backend),
+				decision: { gate: makeFakeD3({ triageP: 0.1 }), enabled: new Set(["triage"]) },
+			})
+			const events = drainEvents()
+			const triage = events.find((e) => e.type === "api" && e.kind === "triage")
+			expect((triage?.request as { state: string }).state).toBe("user: skip me")
+			expect((triage?.request as { questions: Record<string, unknown> }).questions.has_durable_fact).toBeDefined()
+			const answers = (
+				triage?.response as { answers: Record<string, { choice: string; probabilities: Record<string, number> }> }
+			).answers
+			expect(answers.has_durable_fact?.probabilities.yes).toBe(0.1)
+			expect(events.find((e) => e.type === "phase" && e.phase === "triage-skip")).toMatchObject({
+				job: "trace-triage.json",
+				window: 0,
+				probability: 0.1,
+			})
+			// Triaged out: no extraction calls at all, window hash-marked.
+			expect(events.find((e) => e.type === "api" && e.kind === "extraction-user")).toBeUndefined()
+			expect(transcripts).toHaveLength(0)
+			expect(events.find((e) => e.type === "drain_end")).toMatchObject({ triagedOut: 1 })
+		})
+
+		it("the valuation gate records every question (instructions + criteria) and the resulting discard", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace-val", [msg("user", "two facts")])
+			// Extraction returns two facts; the d3 fake discards both at p=0.95.
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				return new Response(
+					JSON.stringify({
+						choices: [{ message: { content: JSON.stringify({ personal: ["fact alpha", "fact beta"], project: [] }) } }],
+					}),
+					{ status: 200 },
+				)
+			}
+			const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+				decision: { gate: makeFakeD3({ valuation: "discard", valuationP: 0.95 }), enabled: new Set(["valuation"]) },
+			})
+			expect(captured).toBe(0)
+			const events = drainEvents()
+			const valuation = events.find((e) => e.type === "api" && e.kind === "valuation")
+			const vRequest = valuation?.request as {
+				state: string
+				questions: Record<string, { instructions: string; criteria: Record<string, string> }>
+			}
+			expect(vRequest.state).toBe(VALUATION_STATE)
+			expect(Object.keys(vRequest.questions)).toEqual(["item_1", "item_2"])
+			expect(vRequest.questions.item_1?.instructions).toContain("fact alpha")
+			expect(vRequest.questions.item_1?.criteria).toHaveProperty("keep")
+			expect(vRequest.questions.item_1?.criteria).toHaveProperty("discard")
+			const vAnswers = (valuation?.response as { answers: Record<string, { choice: string }> }).answers
+			expect(vAnswers.item_2?.choice).toBe("discard")
+			const discards = events.filter((e) => e.type === "phase" && e.phase === "valuation-discard")
+			expect(discards).toHaveLength(2)
+			expect(discards[0]).toMatchObject({ job: "trace-val.json", fact: "fact alpha", probability: 0.95 })
+			expect(events.find((e) => e.type === "job_end")).toMatchObject({ outcome: "committed", skippedByValuation: 2 })
+		})
+
+		it("records each local store decision: durability pattern, exact-dup, redaction, store-add", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace-local", [msg("user", "mixed facts")])
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				return new Response(
+					JSON.stringify({
+						choices: [
+							{
+								message: {
+									content: JSON.stringify({
+										personal: [
+											"PR #5 is still queued",
+											"a durable preference",
+											"a durable preference",
+											"my api key is sk-proj-abc123def456789",
+										],
+										project: [],
+									}),
+								},
+							},
+						],
+					}),
+					{ status: 200 },
+				)
+			}
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+			})
+			const events = drainEvents()
+			const durable = events.find((e) => e.type === "phase" && e.phase === "durability-skip")
+			expect(durable).toMatchObject({ job: "trace-local.json", store: "personal", fact: "PR #5 is still queued" })
+			expect(String(durable?.pattern)).toContain("pr")
+			expect(events.filter((e) => e.type === "phase" && e.phase === "store-add")).toHaveLength(2)
+			expect(events.find((e) => e.type === "phase" && e.phase === "exact-dup-skip")).toMatchObject({
+				fact: "a durable preference",
+			})
+			const redaction = events.find((e) => e.type === "phase" && e.phase === "redaction")
+			expect(String(redaction?.before)).toContain("sk-proj-")
+			expect(String(redaction?.after)).not.toContain("sk-proj-")
+		})
+
+		it("a strict-JSON retry emits both api exchanges and the strict-json-retry phase event", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace-retry", [msg("user", "retry me")])
+			let calls = 0
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				calls += 1
+				const content =
+					calls === 1
+						? "I cannot extract facts from this."
+						: JSON.stringify({ personal: ["retried fact"], project: [] })
+				return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 })
+			}
+			vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+					createBackend: () => Promise.resolve(fake.backend),
+				})
+			} finally {
+				vi.restoreAllMocks()
+			}
+			const events = drainEvents()
+			const extractions = events.filter((e) => e.type === "api" && e.kind === "extraction-user")
+			expect(extractions).toHaveLength(2)
+			expect((extractions[0]?.response as { content: string }).content).toBe("I cannot extract facts from this.")
+			expect((extractions[1]?.request as { system: string }).system).toContain("CRITICAL FORMAT REMINDER")
+			expect(events.find((e) => e.type === "phase" && e.phase === "strict-json-retry")).toMatchObject({
+				kind: "extraction-user",
+				job: "trace-retry.json",
+				window: 0,
+			})
+			expect(fake.added).toEqual(["retried fact"])
+		})
+
+		it("a persistently poisoned job records job_end kept-for-retry then quarantined at the attempt cap", async () => {
+			const jobFile = writeJob("poison", [msg("user", "poison me")])
+			const fetchImpl: typeof fetch = async () =>
+				new Response(JSON.stringify({ choices: [{ message: { content: "not json, ever" } }] }), { status: 200 })
+			const options = {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(makeFakeBackend().backend),
+			}
+			vi.spyOn(console, "error").mockImplementation(() => {})
+			let first: number
+			let second: number
+			try {
+				first = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], options)
+				second = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], options)
+			} finally {
+				vi.restoreAllMocks()
+			}
+			expect(first).toBe(0)
+			expect(second).toBe(0)
+			expect(readdirSync(tracesDir())).toHaveLength(2)
+			const firstEnd = drainEvents(0).find((e) => e.type === "job_end")
+			expect(firstEnd).toMatchObject({ outcome: "kept-for-retry", failedWindows: 1 })
+			const secondEvents = drainEvents(1)
+			expect(secondEvents.find((e) => e.type === "job")).toMatchObject({ drainAttempts: 1 })
+			expect(secondEvents.find((e) => e.type === "job_end" && e.outcome === "quarantined")).toMatchObject({
+				reason: "poison",
+				attempts: 2,
+			})
+		})
+	})
+
 	it("a re-spawned duplicate job is a no-op (ledger idempotence)", async () => {
 		const fake = makeFakeBackend()
 		const transcripts: string[] = []
@@ -1126,6 +1415,272 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(captured).toBe(1)
 		expect(fake.added).toEqual(["crash marker"])
 		expect(existsSync(jobFile)).toBe(false)
+	})
+
+	it("extracts once: a failed add stages the facts — the retry drain re-adds without re-paying the LLM", async () => {
+		const jobFile = writeJob("job1", [msg("user", "crash marker")])
+		const transcripts: string[] = []
+		// First drain: extraction succeeds, the store rejects every add → the
+		// job stays with its facts STAGED (extract-once); the ledger is
+		// commit-gated, so it is still absent (pre-staging observable).
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm(transcripts),
+				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		expect(existsSync(jobFile)).toBe(true)
+		const staged = JSON.parse(readFileSync(jobFile, "utf-8")) as { staged?: { personalFacts: string[] } }
+		expect(staged.staged?.personalFacts).toEqual(["crash marker"])
+		expect(existsSync(ledgerPath())).toBe(false)
+		expect(transcripts).toHaveLength(1)
+		// Retry with a working store: the staged facts capture and the window
+		// hash reaches the ledger at commit — with NO second extraction call
+		// (the October incident's multiplier, gone).
+		const fake = makeFakeBackend()
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm(transcripts),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["crash marker"])
+		expect(transcripts).toHaveLength(1) // extraction paid exactly once across both drains
+		expect(existsSync(jobFile)).toBe(false)
+		const ledger = JSON.parse(readFileSync(ledgerPath(), "utf-8")) as string[]
+		expect(ledger).toHaveLength(1)
+	})
+
+	it("a fully-staged job with persistently failing adds survives every drain until the add-failure cap quarantines it", async () => {
+		const jobFile = writeJob("job1", [msg("user", "quarantine marker")])
+		const transcripts: string[] = []
+		const failing = (): Promise<CaptureBackend> => Promise.resolve(makeFakeBackend({ failAdds: true }).backend)
+		const drain = (createBackend: () => Promise<CaptureBackend>) =>
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], { llm: makeFakeLlm(transcripts), createBackend }).catch(
+				(err: unknown) => (err instanceof Error ? err.message : String(err)),
+			)
+		// ADD_FAILURE_MAX_ATTEMPTS - 1 failing drains: the job stays in pending/
+		// (never deleted by planJob — its staged facts are uncommitted) with a
+		// growing addAttempts counter and the staged facts intact.
+		for (let i = 0; i < ADD_FAILURE_MAX_ATTEMPTS - 1; i++) {
+			expect(await drain(failing)).toContain("1 capture job(s) failed")
+			expect(existsSync(jobFile)).toBe(true)
+			const job = JSON.parse(readFileSync(jobFile, "utf-8")) as { addAttempts?: number; staged?: unknown }
+			expect(job.addAttempts).toBe(i + 1)
+			expect(job.staged).toBeDefined()
+		}
+		// The cap drain quarantines to failed/ with the staged facts preserved
+		// for the manual mv-back requeue (failedJobs counts it — same dir).
+		expect(await drain(failing)).toContain("1 capture job(s) failed")
+		expect(existsSync(jobFile)).toBe(false)
+		const quarantined = join(home, ".config", "kimchi", "memory", "failed", "job1.json")
+		expect(existsSync(quarantined)).toBe(true)
+		const job = JSON.parse(readFileSync(quarantined, "utf-8")) as {
+			addAttempts?: number
+			staged?: { personalFacts: string[] }
+		}
+		expect(job.addAttempts).toBe(ADD_FAILURE_MAX_ATTEMPTS)
+		expect(job.staged?.personalFacts).toEqual(["quarantine marker"])
+		// Extraction was paid exactly once across all the failing drains, and
+		// an empty pending dir makes no calls.
+		expect(transcripts).toHaveLength(1)
+		expect(await drain(() => Promise.resolve(makeFakeBackend().backend))).toBe(0)
+		expect(transcripts).toHaveLength(1)
+	})
+
+	it("a staged job with a previously-failed window re-extracts only that window", async () => {
+		// Two windows: the combined content exceeds MEMORY_CAPTURE_WINDOW_CHARS.
+		const long = (marker: string) => `keep ${marker} ${"x".repeat(MEMORY_CAPTURE_WINDOW_CHARS)}`
+		const jobFile = writeJob("windows", [msg("user", long("FIRST")), msg("user", long("FAILME"))])
+		const transcripts: string[] = []
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			const transcript = body.messages[1]?.content ?? ""
+			// Deterministic failure class (non-retryable 4xx) — fails fast: no
+			// retry-backoff round, no jittered waits inside the 5s test budget.
+			if (transcript.includes("FAILME")) return new Response("extraction refused", { status: 400 })
+			transcripts.push(transcript)
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "").slice(0, 40)
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+		const fake = makeFakeBackend()
+		// Drain 1: the FIRST window extracts and stages; the FAILME window
+		// fails deterministically (poison class — skipped by the transient
+		// retry round; the drain itself is fail-soft). The job stays with one
+		// of two windows covered and one recorded poison attempt (below the
+		// quarantine cap).
+		const first = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm,
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(first).toBe(1) // the FIRST window's fact committed
+		expect(existsSync(jobFile)).toBe(true)
+		expect(transcripts).toHaveLength(1) // only the FIRST window extracted
+		const staged1 = JSON.parse(readFileSync(jobFile, "utf-8")) as { staged?: { personalFacts: string[] } }
+		expect(staged1.staged?.personalFacts).toHaveLength(1)
+		// Drain 2: only the FAILME window re-extracts (the staged window is
+		// covered by staged.windowHashes) against a now-healthy gateway; the
+		// FAILME fact commits (the FIRST fact is already in the store —
+		// deduped), and the job deletes.
+		const okFetch: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const transcript = body.messages[1]?.content ?? ""
+			transcripts.push(transcript)
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "").slice(0, 40)
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const second = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: { ...llm, fetchImpl: okFetch },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(second).toBe(1) // the FAILME fact newly added
+		expect(fake.added).toHaveLength(2) // both windows' facts across both drains
+		// Extraction transcripts only (the supersede judge's chat traffic rides
+		// the same stub): the FIRST window exactly once (drain 1), the FAILME
+		// window exactly once more (drain 2) — staged coverage held.
+		const extraction = transcripts.filter((t) => !t.startsWith("NEW FACTS"))
+		expect(extraction).toHaveLength(2)
+		expect(extraction[0]).toContain("FIRST")
+		expect(extraction[1]).toContain("FAILME")
+		expect(existsSync(jobFile)).toBe(false)
+	})
+
+	it("a staged write that outlived a lost ledger state still re-adds without re-extracting", async () => {
+		const jobFile = writeJob("job1", [msg("user", "ledger crash marker")])
+		const transcripts: string[] = []
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm(transcripts),
+				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		// The ledger save is commit-gated anyway; the staged coverage that
+		// prevents re-extraction lives in the job file itself.
+		expect(existsSync(jobFile)).toBe(true)
+		const fake = makeFakeBackend()
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm(transcripts),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["ledger crash marker"])
+		expect(transcripts).toHaveLength(1) // staged coverage prevented re-extraction
+	})
+
+	it("the staged rewrite preserves the job file's mtime (drain order / sweep age)", async () => {
+		const jobFile = writeJob("job1", [msg("user", "mtime marker")])
+		// Recent enough to survive the 7-day stale-job sweep, distinct from
+		// the write time the rewrites must restore.
+		const fixed = new Date(Date.now() - 60_000)
+		utimesSync(jobFile, fixed, fixed)
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		// The file was rewritten twice (staging + add-failure counter) and both
+		// rewrites restored the original mtime.
+		expect(statSync(jobFile).mtimeMs).toBe(fixed.getTime())
+	})
+
+	it("skips oversized facts before the embed (never truncates) and counts them in the summary", async () => {
+		const jobFile = writeJob("job1", [msg("user", "size guard marker")])
+		const oversized = `I have an enormous number of coins ${"x".repeat(MEMORY_FACT_MAX_CHARS)}` // over the cap
+		const boundary = "i collect vintage typewriters ".padEnd(MEMORY_FACT_MAX_CHARS, "y") // exactly the cap — the strict > keeps it
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			return new Response(
+				JSON.stringify({
+					choices: [
+						{ message: { content: JSON.stringify({ personal: ["a normal fact", oversized, boundary], project: [] }) } },
+					],
+				}),
+				{ status: 200 },
+			)
+		}
+		const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => {})
+		const fake = makeFakeBackend()
+		try {
+			const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+			})
+			expect(captured).toBe(2) // the normal fact and the boundary fact
+			expect(fake.added).toEqual(["a normal fact", boundary]) // the oversized fact never reached the store
+			expect(consoleInfo).toHaveBeenCalledWith(expect.stringContaining("1 oversized fact(s) skipped"))
+		} finally {
+			consoleInfo.mockRestore()
+		}
+	})
+
+	it("records usage-ledger rows for the chat funnel: extraction and supersede distinguished by kind", async () => {
+		const jobFile = writeJob("job1", [msg("user", "ledger row marker")])
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				// The chat supersede judge: usage rides the same response shape.
+				return new Response(
+					JSON.stringify({
+						choices: [{ message: { content: "[]" } }],
+						usage: { prompt_tokens: 55, completion_tokens: 5 },
+					}),
+					{ status: 200 },
+				)
+			}
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: JSON.stringify({ personal: ["ledger row marker"], project: [] }) } }],
+					usage: { prompt_tokens: 120, completion_tokens: 30 },
+				}),
+				{ status: 200 },
+			)
+		}
+		const fake = makeFakeBackend()
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		const rows = readFileSync(usageLedgerPath(), "utf-8")
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+		expect(rows).toHaveLength(2) // one extraction row, one supersede-judge row
+		expect(rows[0]).toMatchObject({ kind: "extraction", model: "m", inputTokens: 120, outputTokens: 30 })
+		expect(rows[1]).toMatchObject({ kind: "supersede", model: "m", inputTokens: 55, outputTokens: 5 })
+	})
+
+	it("records a failed extraction row with no token counts when the gateway rejects", async () => {
+		const jobFile = writeJob("job2", [msg("user", "doomed marker")])
+		const fetchImpl: typeof fetch = async () => new Response("bad request", { status: 400 })
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(makeFakeBackend().backend),
+		})
+		expect(captured).toBe(0) // the poisoned window captured nothing (fail-soft)
+		const rows = readFileSync(usageLedgerPath(), "utf-8")
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+		expect(rows).toHaveLength(1)
+		expect(rows[0]).toMatchObject({ kind: "extraction", model: "m", failed: true })
+		expect(rows[0].inputTokens).toBeUndefined()
 	})
 
 	it("a poison job file is removed and does not block the rest of the drain", async () => {
@@ -2671,6 +3226,8 @@ describe("applyDerivedTags — the batched classifier post-pass (KIMCHI_MEMORY_F
 		session: undefined,
 		drainAttempts: 0,
 		transientAttempts: 0,
+		addAttempts: 0,
+		staged: undefined,
 		windows: [],
 		personalFacts,
 		projectFacts,

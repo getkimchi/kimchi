@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, it, vi } from "vitest"
 import {
 	batchChoice,
@@ -8,6 +9,17 @@ import {
 	MEMORY_DECISION_TAG,
 	systemoneEndpoint,
 } from "./decision-gate.js"
+import { usageLedgerPath } from "./usage-ledger.js"
+
+/** The last usage-ledger row (rows accumulate across this file's tests). */
+function lastLedgerRow(): Record<string, unknown> {
+	const lines = readFileSync(usageLedgerPath(), "utf-8")
+		.split("\n")
+		.filter((line) => line.length > 0)
+	const last = lines[lines.length - 1]
+	if (!last) throw new Error("usage ledger has no rows")
+	return JSON.parse(last) as Record<string, unknown>
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
@@ -37,6 +49,37 @@ describe("systemoneEndpoint", () => {
 })
 
 describe("decide", () => {
+	it("records a usage-ledger row with kind, model, usage, and question count", async () => {
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse({
+				...(answersBody(["q1"]) as Record<string, unknown>),
+				usage: { input_tokens: 42, output_tokens: 0 },
+			}),
+		) as unknown as typeof fetch
+		await decide(
+			{ ...GATE, fetchImpl },
+			"state",
+			{ q1: { type: "choice", instructions: "i", criteria: { yes: "y", no: "n" } } },
+			"triage",
+		)
+		expect(lastLedgerRow()).toMatchObject({ kind: "triage", model: "d3", inputTokens: 42, questions: 1 })
+	})
+
+	it("records a failed row (zero tokens) when the gateway rejects the call", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ error: "no quota" }, 401)) as unknown as typeof fetch
+		await expect(
+			decide(
+				{ ...GATE, fetchImpl, maxRetries: 0 },
+				"s",
+				{ q1: { type: "choice", instructions: "i", criteria: { a: "a" } } },
+				"recall",
+			),
+		).rejects.toThrow(/HTTP 401/)
+		const row = lastLedgerRow()
+		expect(row).toMatchObject({ kind: "recall", failed: true })
+		expect(row.inputTokens).toBeUndefined()
+	})
+
 	it("posts state, questions, model, and the usage tag; returns validated answers", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1", "q2"]))) as unknown as typeof fetch
 		const res = await decide({ ...GATE, fetchImpl }, "state text", {
@@ -137,5 +180,62 @@ describe("batchChoice", () => {
 				criteria: { a: "a" },
 			})),
 		).rejects.toBeInstanceOf(DecisionGateError)
+	})
+})
+
+describe("decide onExchange hook", () => {
+	const question = { type: "choice" as const, instructions: "durable?", criteria: { yes: "y", no: "n" } }
+
+	it("receives the exact request body and the full parsed response on success", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1"]))) as unknown as typeof fetch
+		const exchanges: Array<{ request: Record<string, unknown>; response?: Record<string, unknown> }> = []
+		const result = await decide(
+			{ ...GATE, fetchImpl, onExchange: (exchange) => exchanges.push(exchange) },
+			"the full state text",
+			{ q1: question },
+		)
+		expect(exchanges).toHaveLength(1)
+		expect(exchanges[0]?.request).toEqual({
+			model: "d3",
+			state: "the full state text",
+			questions: { q1: question },
+			tags: [MEMORY_DECISION_TAG],
+		})
+		expect(exchanges[0]?.response?.answers).toEqual(result.answers)
+		expect(exchanges[0]?.response?.id).toBe("decision-x")
+		expect(exchanges[0]?.response?.usage).toEqual({ input_tokens: 10, output_tokens: 0 })
+	})
+
+	it("receives the HTTP status on a rejected call", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ error: "no quota" }, 401)) as unknown as typeof fetch
+		const exchanges: Array<{ error?: string; status?: number }> = []
+		await expect(
+			decide({ ...GATE, fetchImpl, maxRetries: 0, onExchange: (exchange) => exchanges.push(exchange) }, "s", {
+				q1: question,
+			}),
+		).rejects.toBeInstanceOf(DecisionGateError)
+		expect(exchanges).toHaveLength(1)
+		expect(exchanges[0]?.status).toBe(401)
+	})
+
+	it("receives the error on a network failure after the retry budget", async () => {
+		const fetchImpl = vi.fn(async () => {
+			throw new Error("socket hang up")
+		}) as unknown as typeof fetch
+		const exchanges: Array<{ error?: string }> = []
+		await expect(
+			decide({ ...GATE, fetchImpl, maxRetries: 0, onExchange: (exchange) => exchanges.push(exchange) }, "s", {
+				q1: question,
+			}),
+		).rejects.toThrow("socket hang up")
+		expect(exchanges).toHaveLength(1)
+		expect(exchanges[0]?.error).toBe("socket hang up")
+	})
+
+	it("turn-path regression: no hook configured — behave exactly as before (no hook calls, same result)", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1"]))) as unknown as typeof fetch
+		const result = await decide({ ...GATE, fetchImpl }, "s", { q1: question })
+		expect(result.answers.q1?.choice).toBe("yes")
+		expect(result.usage.input_tokens).toBe(10)
 	})
 })

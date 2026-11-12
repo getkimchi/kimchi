@@ -544,7 +544,15 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					const candidates = digestCandidateTexts(hits)
 					if (shouldRunDigestSelection(candidates.length, floor)) {
 						try {
-							const answers = await batchChoice(decision.gate, digestState(query), candidates, digestQuestion)
+							const answers = await batchChoice(
+								decision.gate,
+								digestState(query),
+								candidates,
+								digestQuestion,
+								undefined,
+								undefined,
+								"digest",
+							)
 							const kept = new Set<string>()
 							for (let i = 0; i < candidates.length; i++) {
 								if (answers[i]?.choice === "inject") kept.add(candidates[i] as string)

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -20,6 +20,7 @@ import {
 } from "./backend.js"
 import { MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
 import type { SharedEmbedder } from "./embedder.js"
+import { usageLedgerPath } from "./usage-ledger.js"
 
 function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 	return {
@@ -410,6 +411,37 @@ describe("createMemoryBackend", () => {
 			} finally {
 				globalThis.fetch = originalFetch
 			}
+		})
+
+		it("records a usage-ledger embedding row without consuming the response body", async () => {
+			const originalFetch = globalThis.fetch
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(JSON.stringify({ data: [], usage: { prompt_tokens: 7, total_tokens: 7 } }), {
+						status: 200,
+					}),
+			)
+			try {
+				tagEmbeddingRequests("https://gw.test/v1")
+				const returned = await globalThis.fetch("https://gw.test/v1/embeddings", {
+					method: "POST",
+					headers: { authorization: "Bearer k" },
+					body: JSON.stringify({ input: ["text"], model: "bge-m3" }),
+				})
+				// The SDK's consumer can still read the body — the ledger row read
+				// a clone, not the response itself.
+				const body = (await returned.json()) as { usage?: { prompt_tokens?: number } }
+				expect(body.usage?.prompt_tokens).toBe(7)
+			} finally {
+				globalThis.fetch = originalFetch
+			}
+			// The row lands (the clone read is asynchronous — give it a beat).
+			await new Promise((resolve) => setTimeout(resolve, 20))
+			const lines = readFileSync(usageLedgerPath(), "utf-8")
+				.split("\n")
+				.filter((line) => line.length > 0)
+			const row = JSON.parse(lines[lines.length - 1] ?? "") as Record<string, unknown>
+			expect(row).toMatchObject({ kind: "embedding", model: "bge-m3", inputTokens: 7 })
 		})
 	})
 })
