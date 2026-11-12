@@ -93,6 +93,23 @@ describe("getDetectedVersion", () => {
 	})
 })
 
+/** True when the local git can create reftable repositories (git >= 2.45). */
+let reftableCapable: boolean | undefined
+function gitSupportsReftable(): boolean {
+	reftableCapable ??= (() => {
+		const probe = mkdtempSync(join(tmpdir(), "kimchi-reftable-probe-"))
+		try {
+			execFileSync("git", ["init", "-q", "--ref-format=reftable", probe])
+			return true
+		} catch {
+			return false
+		} finally {
+			rmSync(probe, { recursive: true, force: true })
+		}
+	})()
+	return reftableCapable
+}
+
 describe("refreshGitBranch", () => {
 	it("reads the branch from .git/HEAD without spawning git", async () => {
 		const { refreshGitBranch } = await import("./utils.js")
@@ -183,6 +200,89 @@ describe("refreshGitBranch", () => {
 			vi.unstubAllEnvs()
 			rmSync(a, { recursive: true, force: true })
 			rmSync(b, { recursive: true, force: true })
+		}
+	})
+
+	it("does not report the reftable HEAD stub as the branch", async () => {
+		const { refreshGitBranch } = await import("./utils.js")
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-reftable-stub-"))
+		try {
+			// A reftable repository's on-disk HEAD is the spec-mandated stub
+			// `ref: refs/heads/.invalid`; the real HEAD lives in the reftable tables.
+			mkdirSync(join(dir, ".git", "reftable"), { recursive: true })
+			writeFileSync(join(dir, ".git", "reftable", "tables.list"), "stub\n")
+			writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/.invalid\n")
+			let fired = false
+			const settled = new Promise<string | undefined>((resolve) => {
+				refreshGitBranch((value) => {
+					fired = true
+					resolve(value)
+				}, dir)
+			})
+			// The direct read must decline: the stub never answers synchronously.
+			expect(fired).toBe(false)
+			expect(await settled).not.toBe(".invalid")
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it.skipIf(!gitSupportsReftable())("asks Git for the branch on a reftable repository", async () => {
+		const { refreshGitBranch } = await import("./utils.js")
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-reftable-real-"))
+		try {
+			execFileSync("git", ["init", "-q", "--ref-format=reftable", dir])
+			execFileSync("git", ["checkout", "-q", "-b", "feature-reftable"], { cwd: dir })
+			let fired = false
+			const branch = await new Promise<string | undefined>((resolve) => {
+				refreshGitBranch((value) => {
+					fired = true
+					resolve(value)
+				}, dir)
+				// The direct read must decline on the stub; only spawned Git answers.
+				expect(fired).toBe(false)
+			})
+			expect(branch).toBe("feature-reftable")
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it.skipIf(!gitSupportsReftable())("asks Git for the branch in a reftable linked worktree", async () => {
+		const { refreshGitBranch } = await import("./utils.js")
+		const main = mkdtempSync(join(tmpdir(), "kimchi-reftable-main-"))
+		const worktree = mkdtempSync(join(tmpdir(), "kimchi-reftable-wt-"))
+		try {
+			execFileSync("git", ["init", "-q", "--ref-format=reftable", main])
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.email=none",
+					"-c",
+					"user.name=t",
+					// Global gpgsign or hooksPath settings must not leak into the fixture.
+					"-c",
+					"commit.gpgsign=false",
+					"-c",
+					"core.hooksPath=",
+					"commit",
+					"-q",
+					"--allow-empty",
+					"-m",
+					"init",
+				],
+				{ cwd: main },
+			)
+			// The worktree's on-disk HEAD is the `.invalid` stub too, and its git
+			// directory carries its own reftable marker beside it.
+			rmSync(worktree, { recursive: true, force: true })
+			execFileSync("git", ["worktree", "add", "-q", "-b", "wt-branch", worktree], { cwd: main })
+			const branch = await new Promise<string | undefined>((resolve) => refreshGitBranch(resolve, worktree))
+			expect(branch).toBe("wt-branch")
+		} finally {
+			rmSync(main, { recursive: true, force: true })
+			rmSync(worktree, { recursive: true, force: true })
 		}
 	})
 })
