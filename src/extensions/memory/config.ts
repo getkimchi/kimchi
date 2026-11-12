@@ -149,10 +149,10 @@ export const MEMORY_SEARCH_TIMEOUT_MS = 10_000
  * Bound for memory work that gates the turn's start: the turn-1 digest
  * (which sits in front of the user's message echoing) and the detached
  * recall's quick legs (decision gate, searcher init) whose settling releases
- * the in-flight valve. Healthy runs measure ~1 s (digest) and ~0.25 s (gate),
- * so this is ~2× headroom: a slow gateway degrades to skip-within-this-budget
- * instead of freezing the screen — or wedging the valve — for the search
- * timeout.
+ * the in-flight valve. Standalone measurements put the digest near 1 s and the
+ * gate near 0.25 s: a slow gateway degrades to skip-within-this-budget instead
+ * of freezing the screen — or wedging the valve — for the search timeout. A
+ * digest that overruns keeps running and is adopted when it lands.
  */
 export const MEMORY_PRE_REQUEST_TIMEOUT_MS = 2_000
 

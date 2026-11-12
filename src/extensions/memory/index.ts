@@ -11,9 +11,10 @@
  *     constant enabled-notice section goes out.
  *   - Cache contract: the digest is computed on the first agent start
  *     (turn 1 awaits it) and appended with identical bytes on EVERY start —
- *     the provider-facing prefix is stable from the very first request,
- *     so memory causes zero mid-session cache breaks. It is recomputed
- *     only after a compaction, where the prefix breaks anyway. A session
+ *     the provider-facing prefix is stable from the very first request.
+ *     A digest that overruns its bounded wait is adopted when it lands (one
+ *     prefix change per epoch). It is recomputed after a compaction, where
+ *     the prefix breaks anyway. A session
  *     whose digest came back empty injects only the constant notice — the
  *     model must know capture is automatic (it has no write tool).
  *   - `memory_search` is the pull-based supplement for anything the digest
@@ -298,7 +299,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// cannot keep showing counts for just-deleted facts. The digest
 				// re-derives against the now-empty store on the next agent start.
 				if (parsed.op === "reset" && result.code === 0) {
-					digest = undefined
+					resetDigest()
 					deliveredKeys.clear()
 					deliveredFacts.length = 0
 					incrementalState = createIncrementalCaptureState()
@@ -341,6 +342,22 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// nothing cleared the value bar (or the store failed — logged once),
 		// set = inject these bytes on every start.
 		let digest: DigestState | null | undefined
+		// Digest attempt bookkeeping. An attempt that outlives its 2 s wait keeps
+		// running; its result is adopted when it lands, unless a toggle flip,
+		// compaction or reset (digestEpoch bump / attempt cleared) came first.
+		let digestEpoch = 0
+		let digestAttempt: { epoch: number; startedAt: number; waiting: boolean } | undefined
+		// True once this epoch has had its one blocking attempt.
+		let digestWaited = false
+		// Reads through a function: the settle handler assigns `digest` from a
+		// closure, which control-flow narrowing at the call site cannot see.
+		const readDigest = (): DigestState | null | undefined => digest
+		const resetDigest = (): void => {
+			digest = undefined
+			digestEpoch++
+			digestAttempt = undefined
+			digestWaited = false
+		}
 		let searcher: MemorySearcher | undefined
 		let searcherFailed = false
 		// Progressive-recall state: the delivery ledger (facts already in
@@ -482,9 +499,28 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			ctx.ui.setStatus(MEMORY_SAVED_STATUS_KEY, undefined)
 		}
 
-		const getSearcher = async (): Promise<MemorySearcher | undefined> => {
-			if (searcher) return searcher
-			if (searcherFailed) return undefined
+		// One init in flight at a time: a timed-out turn abandons its wait, not
+		// the init, so a later caller must join it instead of starting a second.
+		let searcherInit: Promise<MemorySearcher | undefined> | undefined
+		let searcherInitStartedAt = 0
+		const getSearcher = (): Promise<MemorySearcher | undefined> => {
+			if (searcher) return Promise.resolve(searcher)
+			if (searcherFailed) return Promise.resolve(undefined)
+			// A wedged factory must not wedge the session: past the search bound
+			// the stuck init is abandoned and a fresh one may start.
+			if (searcherInit && Date.now() - searcherInitStartedAt > MEMORY_SEARCH_TIMEOUT_MS) searcherInit = undefined
+			if (!searcherInit) {
+				searcherInitStartedAt = Date.now()
+				const init = initSearcher().finally(() => {
+					// Identity check: only clear our own entry.
+					if (searcherInit === init) searcherInit = undefined
+				})
+				searcherInit = init
+			}
+			return searcherInit
+		}
+
+		const initSearcher = async (): Promise<MemorySearcher | undefined> => {
 			if (deps.createSearcher) {
 				try {
 					searcher = await deps.createSearcher()
@@ -514,8 +550,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		const computeDigest = async (query: string): Promise<DigestState | null> => {
 			try {
 				const s = await getSearcher()
+				mark("memory.digest.searcher", s ? undefined : { skipped: "no searcher" })
 				if (!s) return null
 				const hits = await s.search(query)
+				mark("memory.digest.search")
 				// Digest selection (spike E3/E6/E8): the decision model picks which
 				// retrieved candidates earn an injection slot — embedding rank is a
 				// weak relevance signal (rank-1 echo, topic twins) and bge-m3 made
@@ -528,12 +566,14 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					if (candidates.length > 0) {
 						try {
 							const answers = await batchChoice(decision.gate, digestState(query), candidates, digestQuestion)
+							mark("memory.digest.gate", { candidates: candidates.length })
 							const kept = new Set<string>()
 							for (let i = 0; i < candidates.length; i++) {
 								if (answers[i]?.choice === "inject") kept.add(candidates[i] as string)
 							}
 							selected = kept
 						} catch (err) {
+							mark("memory.digest.gate", { errored: true })
 							console.error(
 								`[memory] digest selection failed, falling back to the threshold rule:`,
 								err instanceof Error ? err.message : err,
@@ -568,6 +608,36 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			}
 		}
 
+		// Start a digest computation and register it as the single in-flight
+		// attempt. The settle handler is the only place a digest is adopted, so the
+		// awaited first attempt and a late-landing one share one path. Never rejects
+		// (computeDigest degrades internally).
+		const startDigestAttempt = (
+			query: string,
+			ctx: ExtensionContext,
+		): { attempt: { waiting: boolean }; settled: Promise<void> } => {
+			const attempt = { epoch: digestEpoch, startedAt: Date.now(), waiting: !digestWaited }
+			digestAttempt = attempt
+			const settled = computeDigest(query).then((d) => {
+				if (digestAttempt !== attempt || attempt.epoch !== digestEpoch || !memoryActive()) {
+					mark("memory.digest.discarded")
+					return
+				}
+				digestAttempt = undefined
+				digest = d
+				if (d) {
+					// Seed the ledger: the digest's facts are already in context.
+					for (const fact of d.facts) {
+						deliveredKeys.add(factKey(fact))
+						deliveredFacts.push(fact)
+					}
+				}
+				updateMemoryStatus(ctx)
+				if (!attempt.waiting) mark("memory.digest.adopted", { empty: d === null })
+			})
+			return { attempt, settled }
+		}
+
 		pi.on("before_agent_start", async (event, ctx) => {
 			// upstream pi: the event fires for extension-triggered runs too and is a
 			// union — memory digests/recall key off user prompts only.
@@ -595,7 +665,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			const active = memoryActive()
 			if (active !== lastActive) {
 				if (lastActive !== undefined) {
-					digest = undefined
+					resetDigest()
 					deliveredKeys.clear()
 					deliveredFacts.length = 0
 					pendingRecallQuery = undefined
@@ -631,39 +701,42 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// Turn 1 (awaited): the prefix carries the digest from the very first
 			// request, so later turns never see a prompt change.
 			if (digest === undefined) {
-				mark("memory.digest.begin")
-				// Wrap the outcome so a withTimeout null (timed out) stays
-				// distinguishable from a computeDigest null (empty store): a
-				// timeout leaves digest UNDEFINED and the next turn retries — the
-				// 2 s bound fires on healthy stores, and caching the failure made
-				// the session silently lose turn-1 memory until compaction.
-				const outcome = await withRecallIndicator(ctx, event.prompt, () =>
-					withTimeout(
-						computeDigest(event.prompt).then((d) => ({ d })),
-						MEMORY_PRE_REQUEST_TIMEOUT_MS,
-						"digest computation",
-					),
-				)
-				mark("memory.digest.end", outcome === null ? { timedOut: true } : undefined)
-				if (outcome === null) {
-					// Timed out — degrade this turn with the bare notice and retry
-					// on the next agent start (digest stays undefined).
-					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
+				// A pending attempt past the search bound is presumed hung: abandon it
+				// (its late settle is ignored by the identity check) so a fresh one can
+				// start. Otherwise a pending attempt is left alone — one in flight max.
+				if (digestAttempt && Date.now() - digestAttempt.startedAt > MEMORY_SEARCH_TIMEOUT_MS) {
+					mark("memory.digest.abandoned")
+					digestAttempt = undefined
 				}
-				digest = outcome.d
-				if (digest) {
-					// Seed the ledger: the digest's facts are already in context.
-					for (const fact of digest.facts) {
-						deliveredKeys.add(factKey(fact))
-						deliveredFacts.push(fact)
+				if (!digestAttempt) {
+					const { attempt, settled } = startDigestAttempt(event.prompt, ctx)
+					if (digestWaited) {
+						// Only the first attempt per epoch blocks the turn; retries run
+						// in the background and are adopted when they land.
+						mark("memory.digest.begin", { detached: true })
+					} else {
+						digestWaited = true
+						mark("memory.digest.begin")
+						// A withTimeout null (timed out) leaves the attempt running: it
+						// settles in the background and is adopted on a later turn.
+						const outcome = await withRecallIndicator(ctx, event.prompt, () =>
+							withTimeout(settled, MEMORY_PRE_REQUEST_TIMEOUT_MS, "digest computation"),
+						)
+						attempt.waiting = false
+						mark("memory.digest.end", outcome === null ? { timedOut: true } : undefined)
 					}
 				}
-				updateMemoryStatus(ctx)
-				// The digest search already used this prompt — no recall this turn.
-				if (digest === null) {
+				// Still undefined: timed out, pending, or discarded as stale — bare
+				// notice this turn; a later turn adopts the result or retries.
+				const landed = readDigest()
+				if (landed === undefined) {
 					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
 				}
-				return { systemPrompt: `${event.systemPrompt}${digest.text}${MEMORY_ENABLED_NOTICE}` }
+				// The digest search already used this prompt — no recall this turn.
+				if (landed === null) {
+					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
+				}
+				return { systemPrompt: `${event.systemPrompt}${landed.text}${MEMORY_ENABLED_NOTICE}` }
 			}
 
 			// Turns 2+: progressive recall on drift — every user message is
@@ -823,7 +896,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// against the post-compaction state on the next agent start, and
 			// reset the delivery ledger: earlier recall steers may have been
 			// compacted away, so re-delivery is allowed.
-			digest = undefined
+			resetDigest()
 			deliveredKeys.clear()
 			deliveredFacts.length = 0
 			pendingRecallQuery = undefined
