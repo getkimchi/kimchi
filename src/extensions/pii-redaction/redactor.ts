@@ -458,8 +458,7 @@ export async function collectDetections(
 			// keys are ~100+ chars, well over the engine's OPENAI threshold,
 			// so without this relabel the label fix below is a no-op for real
 			// keys. Fire only on the distinct prefix — never on content alone.
-			const entityType =
-				d.entityType === "OPENAI_KEY" && d.text.startsWith("sk-ant-") ? "ANTHROPIC_KEY" : d.entityType
+			const entityType = d.entityType === "OPENAI_KEY" && d.text.startsWith("sk-ant-") ? "ANTHROPIC_KEY" : d.entityType
 			if (isNonIdentifyingDetection(entityType, d.text)) continue
 			if (isBase64ShadowDrop(entityType, text, d.start, d.end)) continue
 			active.push({ entityType, start: d.start, end: d.end, text: d.text })
