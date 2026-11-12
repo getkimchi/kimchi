@@ -40,6 +40,26 @@ describe("runWorkflowBatch", () => {
 		}
 	})
 
+	it("maps out-of-range integers to a crashed run (4) — the kernel would range-mask 300 to 44 and -1 to 255, reporting a status the workflow never produced", async () => {
+		for (const bogus of [300, -1, 256, -300]) {
+			const result = await runWorkflowBatch(["run", "w"], { main: async () => bogus })
+			expect(result).toBe(4)
+		}
+	})
+
+	it("a truncating stderr consumer (2> >(head -1)) still yields exit 4, never a raw EPIPE stack", async () => {
+		stderrSpy.mockRestore()
+		stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => {
+			throw new Error("EPIPE")
+		})
+		const result = await runWorkflowBatch(["run", "w"], {
+			main: async () => {
+				throw new Error("sub-cli blew up")
+			},
+		})
+		expect(result).toBe(4)
+	})
+
 	it("converts a host throw into one clean stderr line and exit 4 (no raw stack for scheduler logs)", async () => {
 		const result = await runWorkflowBatch(["run", "w"], {
 			main: async () => {
@@ -62,5 +82,20 @@ describe("runWorkflowBatch", () => {
 		})
 		expect(result).toBe(4)
 		expect(String(stderrSpy.mock.calls[0][0])).toContain("[object Object]")
+	})
+
+	it("cause chains land on a dev detail line in the same single write — never interpolated into the stable user line", async () => {
+		const result = await runWorkflowBatch(["run", "w"], {
+			main: async () => {
+				throw new Error("top-level wrapped", { cause: new Error("low level #oops") })
+			},
+		})
+		expect(result).toBe(4)
+		expect(stderrSpy).toHaveBeenCalledTimes(1)
+		const text = String(stderrSpy.mock.calls[0][0])
+		const [userLine, detailLine] = text.split("\n")
+		expect(userLine).toBe("workflow: top-level wrapped")
+		expect(userLine).not.toContain("low level #oops")
+		expect(detailLine).toContain("  detail: low level #oops")
 	})
 })

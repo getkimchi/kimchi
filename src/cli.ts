@@ -24,7 +24,7 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
-import { runWorkflowBatch } from "./commands/workflow-batch.js"
+import { runWorkflowBatch, writeWorkflowStderr } from "./commands/workflow-batch.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
@@ -267,21 +267,7 @@ function getSubcommand(args: string[]): string {
 		// Checked BEFORE the help/version flags: a known subcommand invocation
 		// (`kimchi env --help`) reports the subcommand, not "help" — the flags
 		// belong to the subcommand, not to the harness.
-		if (
-			[
-				"setup",
-				"config",
-				"login",
-				"logout",
-				"doctor",
-				"skills",
-				"telemetry",
-				"mcp",
-				"memory",
-				"env",
-				"workflow",
-			].includes(sub)
-		)
+		if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory", "env"].includes(sub))
 			return sub
 	}
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -354,6 +340,21 @@ async function cliMain(): Promise<void> {
 	// install surface, no plugin-layout assumptions). The route body itself lives in
 	// commands/workflow-batch.ts so the exit-code contract is unit-testable.
 	if (originalArgs[0] === "workflow") {
+		// Project trust before anything runs: the batch host executes project-authored TS
+		// (<cwd>/.kimchi/workflows/*.ts, spawned in-process via jiti) on first contact, so
+		// this route must honor the trust decision the interactive prompt gates on. The CI
+		// contract gets trust explicitly (`kimchi trust .` or --approve); anything else
+		// refuses with the batch contract's never-started (4). ".kimchi/workflows" is in
+		// the trust-requiring project-resources list, so the no-resources shortcut cannot
+		// auto-trust past this gate.
+		const { options: trustOptions } = getParsedCliArgs()
+		const trustOverride = trustOptions["no-approve"] === true ? false : trustOptions.approve === true ? true : undefined
+		const trustAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+		if (!resolvePreMainProjectTrustWithOverrides(process.cwd(), trustAgentDir, trustOverride)) {
+			writeWorkflowStderr("workflow: workspace is not trusted — run 'kimchi trust .' here first (or pass --approve)\n")
+			process.exitCode = 4
+			return
+		}
 		// exitCode + return, never process.exit(): a batch run's stderr may be piped to a scheduler,
 		// and a hard exit can truncate buffered output (the doc-cli lesson above).
 		process.exitCode = await runWorkflowBatch(originalArgs.slice(1))
