@@ -9,7 +9,9 @@ import {
 	getAllImages,
 	getImagesByIds,
 	parseImageReferences,
+	removeSessionScope,
 	resolveImageContentById,
+	restoreSessionImages,
 	setImageCacheDir,
 } from "./image-registry.js"
 
@@ -120,12 +122,13 @@ describe("image-registry", () => {
 		addImage(SESSION, 1, makeImage())
 		addImage(SESSION, 2, makeImage())
 		addImage(OTHER_SESSION, 3, makeImage())
-		expect(readdirSync(dir).length).toBe(2)
+		// Two cached images plus the manifest written on every addImage.
+		expect(readdirSync(dir).length).toBe(3)
 		clearSessionImages(SESSION)
 		expect(getAllImages(SESSION)).toEqual([])
 		expect(readdirSync(dir).length).toBe(0)
 		expect(getAllImages(OTHER_SESSION)).toHaveLength(1)
-		expect(readdirSync(otherDir).length).toBe(1)
+		expect(readdirSync(otherDir).filter((f) => f !== "manifest.json")).toHaveLength(1)
 	})
 
 	it("parseImageReferences extracts unique ids in order of first appearance", () => {
@@ -142,5 +145,48 @@ describe("image-registry", () => {
 		expect(b.id).toBe(1)
 		expect(b.path).toBe(a.path)
 		expect(getAllImages(SESSION)).toHaveLength(1)
+	})
+
+	it("persists a manifest on addImage so entries survive an in-memory scope loss", () => {
+		addImage(SESSION, 1, makeImage())
+		addImage(SESSION, 3, makeImage())
+		expect(existsSync(join(dir, "manifest.json"))).toBe(true)
+
+		removeSessionScope(SESSION)
+		expect(getAllImages(SESSION)).toEqual([])
+		// The files outlive the scope; resolution fails only because the entry
+		// map is gone (this is the resume-after-restart starting point).
+		expect(resolveImageContentById(SESSION, 3)).toEqual({ kind: "unknown" })
+
+		setImageCacheDir(SESSION, dir)
+		expect(restoreSessionImages(SESSION)).toBe(3)
+		expect(resolveImageContentById(SESSION, 3)).toEqual({ kind: "ok", image: makeImage() })
+		expect(resolveImageContentById(SESSION, 1)).toEqual({ kind: "ok", image: makeImage() })
+	})
+
+	it("restoreSessionImages skips manifest entries whose file is gone and ignores unknown sessions", () => {
+		const entry = addImage(SESSION, 2, makeImage())
+		rmSync(entry.path)
+		removeSessionScope(SESSION)
+		setImageCacheDir(SESSION, dir)
+		expect(restoreSessionImages(SESSION)).toBe(0)
+		expect(getAllImages(SESSION)).toEqual([])
+		expect(restoreSessionImages("never-seen")).toBe(0)
+	})
+
+	it("restoreSessionImages returns the existing max id when the scope already has entries", () => {
+		addImage(SESSION, 5, makeImage())
+		expect(restoreSessionImages(SESSION)).toBe(5)
+		expect(getAllImages(SESSION).map((e) => e.id)).toEqual([5])
+	})
+
+	it("removeSessionScope frees memory but keeps cache files for a later restore", () => {
+		addImage(SESSION, 1, makeImage())
+		removeSessionScope(SESSION)
+		expect(getAllImages(SESSION)).toEqual([])
+		expect(readdirSync(dir).length).toBeGreaterThan(0)
+		setImageCacheDir(SESSION, dir)
+		restoreSessionImages(SESSION)
+		expect(resolveImageContentById(SESSION, 1)).toEqual({ kind: "ok", image: makeImage() })
 	})
 })
