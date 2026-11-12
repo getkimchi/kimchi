@@ -4261,10 +4261,12 @@ describe("document-skill CLI route (kimchi doc-cli)", () => {
 
 	it("warns when the bundled skills dir does not resolve (deny inactive)", async () => {
 		bundledSkillsDirState.dir = ""
-		const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+		// hasUI: false → severity-matched headless fallback: a warning prints at
+		// console.warn level (notifyUser), not the historical drifted console.error.
+		const spy = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
 			const harness = createPermissionsHarness(["bash"], { auto: true })
-			const ctx = createClassifierContext() // hasUI: false → console.error
+			const ctx = createClassifierContext() // hasUI: false → console.warn
 			await harness.fire("session_start", {}, ctx)
 			expect(spy).toHaveBeenCalledWith(expect.stringContaining("bundled skills dir not found"))
 		} finally {

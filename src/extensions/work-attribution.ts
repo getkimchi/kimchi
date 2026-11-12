@@ -19,6 +19,7 @@ import { isResourceEnabled } from "../resources/store.js"
 import { isDefaultToolEnabled } from "../settings-watcher.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
+import { notifyUser } from "../utils/notify-user.js"
 import { getVersion } from "../utils.js"
 import { derefToolArgsForExecution } from "./pii-redaction/vault.js"
 import { capture, ledgerHasWorkOutput, ledgerSessionInfo } from "./pr-cost-reporting/ledger/records.js"
@@ -547,15 +548,9 @@ function hasWorkOutput(ctx: ExtensionContext, workId: string): boolean {
 	}
 	return ledgerHasWorkOutput(getAgentDir(), workId)
 }
-function notify(ctx: ExtensionContext, message: string, type: "info" | "warning" = "info"): void {
-	if (ctx.hasUI) ctx.ui.notify(message, type)
-	else console.error(message)
-}
 /** Visible, non-fatal warning shared by every attribution caller. */
 export function warnWorkAttribution(ctx: Pick<ExtensionContext, "hasUI" | "ui">, error: unknown): void {
-	const message = `Work attribution unavailable: ${error instanceof Error ? error.message : String(error)}`
-	if (ctx.hasUI) ctx.ui.notify(message, "warning")
-	else console.error(message)
+	notifyUser(ctx, `Work attribution unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning")
 }
 /** A null identity denotes a child whose parent attribution was unavailable. */
 export function createWorkAttributionExtension(
@@ -886,9 +881,10 @@ export function createWorkAttributionExtension(
 					}
 					if (found.workId !== current) {
 						setWorkId(ctx, found.workId, pi, continuation)
-						notify(
+						notifyUser(
 							ctx,
 							`Continuing the saved ${found.source === "named-artifact" ? "artifact" : "plan"}'s work: ${found.workId}`,
+							"info",
 						)
 					} else appendWorkRecord(ctx, { type: "work", continuation }, current)
 					explicitSelection.set(key, found.source)
@@ -988,7 +984,11 @@ export function createWorkAttributionExtension(
 						if (workId !== current) {
 							if (decision.decision === "new") newWorksToScope.set(workId, credential)
 							setWorkId(ctx, workId, pi, { source: "semantic", evidence })
-							notify(ctx, `Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`)
+							notifyUser(
+								ctx,
+								`Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`,
+								"info",
+							)
 						} else appendWorkRecord(ctx, { type: "work", continuation: { source: "semantic", evidence } }, current)
 						saveScope(workId)
 						const attribution = decision.decision === "unknown" ? "unknown" : freshTask ? "session" : "inferred"
@@ -1138,18 +1138,19 @@ export function createWorkAttributionExtension(
 					if (value === "matching on" || value === "matching off") {
 						writeConfigSetting("workSemanticMatching", value === "matching on")
 						abortMatching()
-						notify(
+						notifyUser(
 							ctx,
 							value === "matching on"
 								? "Task matching enabled: saved task text may be sent to Kimchi's classifier models or your selected model."
 								: "Task matching disabled. Local work tracking stays enabled.",
+							"info",
 						)
 						return
 					}
 					await ctx.waitForIdle()
 					bind(ctx)
 					if (/^(link|unlink)(?:\s|$)/.test(value)) {
-						notify(ctx, await correctWorkLink(ctx, value))
+						notifyUser(ctx, await correctWorkLink(ctx, value), "info")
 						notifyWorkChanged()
 						return
 					}
@@ -1170,7 +1171,7 @@ export function createWorkAttributionExtension(
 							issueArgs,
 						)
 						if (warning) {
-							notify(ctx, lines.join("\n"), "warning")
+							notifyUser(ctx, lines.join("\n"), "warning")
 							return
 						}
 						// The next input reads the new selection before its first request.
@@ -1185,7 +1186,7 @@ export function createWorkAttributionExtension(
 						const captured = planScope && (await captureWorkScope(ctx.cwd))
 						if (planScope && captured?.isCurrent() && !sameWorkScope(planScope, captured.scope)) {
 							const other = planScope.repository === captured.scope.repository ? "account" : "repository"
-							notify(
+							notifyUser(
 								ctx,
 								`Cannot continue this plan here: its work ${workId} belongs to another ${other}. Current work: ${getWorkId(ctx)}`,
 								"warning",
@@ -1224,17 +1225,17 @@ export function createWorkAttributionExtension(
 					// The terminal browses recent works; other modes and every subcommand print text.
 					if (!value && ctx.mode === "tui") {
 						// The browser lists works, so say here that matching stopped.
-						if (stopped) notify(ctx, stopped)
+						if (stopped) notifyUser(ctx, stopped, "info")
 						const browser = await readWorkBrowser(getAgentDir(), details)
 						const selected = await ctx.ui.custom<string | undefined>(
 							(_tui, theme, _keybindings, done) => new WorkBrowserPanel(browser, theme, done),
 						)
 						const row = browser.rows.find((candidate) => candidate.workId === selected)
-						if (row) notify(ctx, row.details)
+						if (row) notifyUser(ctx, row.details, "info")
 						return
 					}
 					details.lines.push(...workCostDetails(getAgentDir(), details.workId))
-					notify(ctx, [...notice, `Work ID: ${details.workId}`, ...details.lines].join("\n"))
+					notifyUser(ctx, [...notice, `Work ID: ${details.workId}`, ...details.lines].join("\n"), "info")
 				} catch (error) {
 					warnWorkAttribution(ctx, error)
 				}
@@ -1280,7 +1281,6 @@ export function saveToolPlan(
 		return { ...saved, workId }
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error)
-		if (ctx.hasUI) ctx.ui.notify(`${label}: failed to save plan file: ${detail}`, "warning")
-		else console.error(`${label}: failed to save plan file: ${detail}`)
+		notifyUser(ctx, `${label}: failed to save plan file: ${detail}`, "warning")
 	}
 }

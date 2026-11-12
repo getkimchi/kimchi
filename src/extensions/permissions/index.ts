@@ -31,6 +31,7 @@ import * as PromptSupplementRegistry from "../../shared/planning/prompt-suppleme
 import { getToolsForProfile, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import { notifyUser } from "../../utils/notify-user.js"
 import { isInSandboxCluster } from "../../utils/sandbox.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
@@ -442,7 +443,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// Policy backstop: every entry seam rejects disallowed modes with proper
 			// UX; anything that slips through is dropped here, keeping the current mode.
 			const message = `permissions: mode "${next.mode}" is not allowed by your organization's policy`
-			if (next.initiatedBy === "user" && ctx.hasUI) ctx.ui.notify(message, "warning")
+			if (next.initiatedBy === "user") notifyUser(ctx, message, "warning")
 			else console.error(message)
 			return
 		}
@@ -671,13 +672,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// doc-cli load path is inactive. Should only happen on a broken
 			// install (staged dir missing) — say so instead of degrading silently.
 			const msg = "permissions: bundled skills dir not found — the doc-cli write deny is inactive this session"
-			if (ctx.hasUI) ctx.ui.notify(msg, "warning")
-			else console.error(msg)
+			notifyUser(ctx, msg, "warning")
 		}
 
 		for (const err of errors) {
-			if (ctx.hasUI) ctx.ui.notify(`permissions: ${err}`, "warning")
-			else console.error(`permissions: ${err}`)
+			notifyUser(ctx, `permissions: ${err}`, "warning")
 		}
 
 		// Register a global terminal input listener so that the shift+tab shortcut
@@ -716,8 +715,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			const message =
 				`mode "${initial.requested}" is not allowed by your organization's policy — starting in "${current.mode}". ` +
 				`Allowed: ${[...getAllowedModes()].join(", ")}`
-			if (ctx.hasUI) ctx.ui.notify(message, "warning")
-			else console.error(message)
+			notifyUser(ctx, message, "warning")
 		}
 		let next = current
 		// Active ferment → elevate so scoping/lifecycle work can proceed without
