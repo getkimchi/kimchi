@@ -237,7 +237,7 @@ export function buildValuationState(existing?: string[], sources?: string[]): st
 				continue
 			}
 			const cap = Math.min(perWindowCap, VALUATION_SOURCE_MAX_CHARS - used)
-			kept.push(source.length > cap ? source.slice(0, cap) + "\n[truncated]" : source)
+			kept.push(source.length > cap ? `${source.slice(0, cap)}\n[truncated]` : source)
 			used += Math.min(source.length, cap)
 		}
 		if (truncated > 0) kept.push(`[${truncated} further window(s) omitted]`)
