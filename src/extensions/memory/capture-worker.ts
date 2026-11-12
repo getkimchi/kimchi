@@ -88,8 +88,8 @@ import type { DecisionGateKind } from "./gates.js"
 import {
 	buildValuationState,
 	parseDecisionGateFlag,
-	TRIAGE_DURABLE_MIN_P,
-	triageQuestion,
+	triageQuestions,
+	triageVerdict,
 	VALUATION_DISCARD_MIN_P,
 	valuationContextEnabled,
 	valuationQuestion,
@@ -1727,12 +1727,14 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		}
 	}
 
-	// Triage gate (spike E1/E1b/E5b/E6/E8): one d3 durable-fact judgment per
-	// window, parallel at the drain concurrency. A window below the durable
-	// bar skips extraction; its outcome is ok/empty so the claim phase
-	// hash-marks it like an extracted-empty window — a triaged-out window
-	// must never re-enter a later drain. Per-window gate failure degrades
-	// to extraction (fail-open).
+	// Triage gate: five per-window d3 questions (four gating content classes +
+	// one trace-only signal). A window below the durable bar on EVERY gate class
+	// skips extraction; its outcome is ok/empty so the claim phase hash-marks
+	// it like an extracted-empty window — a triaged-out window must never
+	// re-enter a later drain. Per-window gate failure degrades to extraction
+	// (fail-open). The multi-class split (2026-11-12) replaced the single
+	// has_durable_fact question, which crushed evidence-grounded assistant
+	// conclusions at p≈0.05–0.24.
 	let results: ExtractionOutcome[]
 	let triagedOut = 0
 	if (decision.enabled.has("triage") && decision.gate) {
@@ -1749,13 +1751,20 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			try {
 				const job = basename(task.plan.jobFile)
 				const gateTraced = trace ? withGateApiHook(gate, "triage", { job, window: task.index }, trace) : gate
-				const response = await decide(gateTraced, renderWindow(task.window), triageQuestion(), "triage")
-				const pDurable = response.answers.has_durable_fact?.probabilities.yes
-				const skip = typeof pDurable === "number" && pDurable < TRIAGE_DURABLE_MIN_P
-				if (skip) {
-					trace?.emit({ type: "phase", phase: "triage-skip", job, window: task.index, probability: pDurable })
+				const response = await decide(gateTraced, renderWindow(task.window), triageQuestions(), "triage")
+				const verdict = triageVerdict(response.answers)
+				if (verdict.skip) {
+					trace?.emit({
+						type: "phase",
+						phase: "triage-skip",
+						job,
+						window: task.index,
+						probability: verdict.maxP,
+						topClass: verdict.topClass,
+						probabilities: verdict.probabilities,
+					})
 				}
-				return skip
+				return verdict.skip
 			} catch (err) {
 				console.error(
 					"[memory-capture] triage gate failed, extracting window (fail-open):",
