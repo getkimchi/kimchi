@@ -72,6 +72,15 @@ jobs:
       - name: Check (lint + type check)
         run: pnpm run check
 
+      # Tripwire for ACP wire-compat regressions (docs/acp-compat.md):
+      # self-test first so a broken checker fails as a checker bug, not as a
+      # wire finding.
+      - name: ACP wire-compat tripwire
+        run: |
+          git fetch --quiet origin "${{ github.base_ref }}"
+          pnpm run check:acp-wire:self-test
+          pnpm run check:acp-wire -- --base "origin/${{ github.base_ref }}"
+
       - name: Build binary
         run: pnpm run build:binary
 
