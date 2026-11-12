@@ -161,7 +161,7 @@ import {
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
-import { CANONICAL_THINKING_LEVELS, thinkingLevelName } from "../../thinking-levels.js"
+import { CANONICAL_THINKING_LEVELS } from "../../thinking-levels.js"
 import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -3957,7 +3957,7 @@ export function buildThinkingConfigOption(session: AgentSessionThinkingConfig): 
 		currentValue: clampToSelection(session.thinkingLevel, selection),
 		options: selection.selectable.map((level) => ({
 			value: level,
-			name: thinkingLevelName(level),
+			name: level,
 		})),
 	}
 }

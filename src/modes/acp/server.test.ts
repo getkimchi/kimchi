@@ -9486,9 +9486,9 @@ describe("setSessionConfigOption", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
 			const select = effort as any
 			expect(select.options).toEqual([
-				{ value: "low", name: "Low" },
-				{ value: "high", name: "High" },
-				{ value: "max", name: "Max" },
+				{ value: "low", name: "low" },
+				{ value: "high", name: "high" },
+				{ value: "max", name: "max" },
 			])
 		})
 

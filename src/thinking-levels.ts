@@ -16,34 +16,6 @@ import type { ThinkingLevelMap } from "@earendil-works/pi-ai"
 /** Canonical level order: `off < minimal < low < medium < high < xhigh < max`. */
 export const CANONICAL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const
 
-/** A canonical thinking level as a concrete union. */
-export type CanonicalThinkingLevel = (typeof CANONICAL_THINKING_LEVELS)[number]
-
-/**
- * Display names for the canonical thinking levels. Keyed by the concrete
- * union, so adding a level to CANONICAL_THINKING_LEVELS without a name
- * here fails to compile instead of silently rendering the raw id. "Extra
- * high" for xhigh is the label Air and codex-acp use for the tier in their
- * effort pickers.
- */
-const THINKING_LEVEL_NAMES: Record<CanonicalThinkingLevel, string> = {
-	off: "Off",
-	minimal: "Minimal",
-	low: "Low",
-	medium: "Medium",
-	high: "High",
-	xhigh: "Extra high",
-	max: "Max",
-}
-
-/** Display name for a thinking level, falling back to the level id when unknown. */
-export function thinkingLevelName(level: string): string {
-	// Widening is deliberate: selectable sets are typed string[] even though
-	// their members are canonical by construction.
-	const names = THINKING_LEVEL_NAMES as Record<string, string | undefined>
-	return names[level] ?? level
-}
-
 const LEVEL_RANK = new Map<string, number>(CANONICAL_THINKING_LEVELS.map((level, rank) => [level, rank]))
 
 /**
