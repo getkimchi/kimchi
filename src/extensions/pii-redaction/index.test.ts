@@ -80,6 +80,114 @@ describe("pii-redaction hooks — broken settings block", () => {
 	})
 })
 
+describe("pii-redaction tool_call guard — placeholders in path arguments", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "pii-path-guard-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		writeFileSync(join(codingAgentDir, "settings.json"), "{}")
+		resetOrgPolicyForTests()
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, true)
+		resetRedactorEngine()
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		resetOrgPolicyForTests()
+		resetRedactorEngine()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	it("blocks write/read/edit whose path argument is a placeholder", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+
+		for (const toolName of ["write", "read", "edit"]) {
+			const results = (await invoke("tool_call", {
+				type: "tool_call",
+				toolCallId: "call-1",
+				toolName,
+				input: { path: "[REDACTED-LOCAL_PATH]", content: "data" },
+			})) as Array<{ block?: boolean; reason?: string } | undefined>
+			expect(results[0]).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("[REDACTED-LOCAL_PATH]"),
+			})
+		}
+	})
+
+	it("lets a write through whose CONTENT contains a placeholder", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+
+		const results = await invoke("tool_call", {
+			type: "tool_call",
+			toolCallId: "call-2",
+			toolName: "write",
+			input: { path: "docs/redaction.md", content: "The marker [REDACTED-LOCAL_PATH] appears in prose." },
+		})
+		expect(results[0]).toBeUndefined()
+	})
+
+	it("blocks a codemode-nested tools.write with a placeholder path", async () => {
+		// Nested calls (codemode's NestedToolCallRunner -> executeTool) fire the
+		// SAME tool_call event with parentToolCallId set; the guard has no
+		// separate wiring, so this event shape is the coverage contract.
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+
+		const results = (await invoke("tool_call", {
+			type: "tool_call",
+			toolCallId: "call-3/1",
+			parentToolCallId: "call-3",
+			toolName: "write",
+			input: { path: "[REDACTED-LOCAL_PATH]", content: "payload" },
+		})) as Array<{ block?: boolean; reason?: string } | undefined>
+		expect(results[0]).toMatchObject({ block: true, reason: expect.stringContaining('"path"') })
+	})
+
+	it("does not block when redaction is disabled", async () => {
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, false)
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+
+		const results = await invoke("tool_call", {
+			type: "tool_call",
+			toolCallId: "call-4",
+			toolName: "write",
+			input: { path: "[REDACTED-LOCAL_PATH]", content: "data" },
+		})
+		expect(results[0]).toBeUndefined()
+	})
+
+	it("blocks an MCP-style file_path argument", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+
+		const results = (await invoke("tool_call", {
+			type: "tool_call",
+			toolCallId: "call-5",
+			toolName: "mcp__server__write_file",
+			input: { file_path: "[REDACTED-LOCAL_PATH]", text: "data" },
+		})) as Array<{ block?: boolean; reason?: string } | undefined>
+		expect(results[0]).toMatchObject({ block: true })
+	})
+
+	it("lets a lookalike path through", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+
+		const results = await invoke("tool_call", {
+			type: "tool_call",
+			toolCallId: "call-6",
+			toolName: "write",
+			input: { path: "src/tsconfig.json", content: "{}" },
+		})
+		expect(results[0]).toBeUndefined()
+	})
+})
+
 type EmittedEvent = { channel: string; payload: unknown }
 
 function makePi() {

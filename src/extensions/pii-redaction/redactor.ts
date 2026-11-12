@@ -485,10 +485,27 @@ const CUSTOM_PATTERNS: RedactionPattern[] = [
 	{ name: "GITHUB_TOKEN", regex: /\bgh[pousr]_[A-Za-z0-9]{10,}\b/g },
 	{ name: "GITHUB_TOKEN", regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g },
 	// Local auth/config paths — redact user home directory paths that reveal
-	// the OS user and expose config/credential file locations.
+	// the OS user and expose config/credential file locations. Both variants
+	// are SEGMENT-anchored: the sensitive name must be a whole path segment —
+	// a `/.ssh/`, `/.aws/` or `/.config/kimchi/` directory, or the exact final
+	// file name `config.json`/`credentials` — never a substring inside a longer
+	// name (`…/tsconfig.json`, `…/app-config.json`, `…/credentials_test.go` all
+	// stay readable). Intermediate segments exclude `/` so the anchor cannot
+	// start mid-name, and the trailing lookahead makes a lookalike segment
+	// (`.sshx`, `config.json.bak`) fail the whole match instead of leaving a
+	// partially redacted path behind. The trailing class includes shell
+	// metacharacters (`& | = ~ <` backtick) alongside whitespace/quotes/closing
+	// brackets so a bare anchor directory glued to shell punctuation
+	// (`cd … &&ls`, `cat … ||echo`) is still redacted — the previous omission
+	// let such paths reach the provider unredacted.
 	{
 		name: "LOCAL_PATH",
-		regex: /(?:\/Users|\/home)[^\s"']*(?:\.config\/kimchi|\.ssh|\.aws|config\.json|credentials)[^\s"']*/g,
+		regex:
+			/(?:\/Users|\/home)\/(?:[^\s"'/]+\/)*\.(?:ssh|aws|config\/kimchi)(?:\/[^\s"']*)?(?=[\s"',;:)>\]}!&|=~<`]|$)/g,
+	},
+	{
+		name: "LOCAL_PATH",
+		regex: /(?:\/Users|\/home)\/(?:[^\s"'/]+\/)*(?:config\.json|credentials)(?=[\s"',;:)>\]}!&|=~<`]|$)/g,
 	},
 	// Credential filenames in home directory
 	{ name: "CREDENTIAL_FILE", regex: /~\/\.ssh\/[^\s"']+/g },

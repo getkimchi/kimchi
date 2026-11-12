@@ -366,6 +366,80 @@ describe("redactText — custom secret patterns", () => {
 		expectRedacted(result, fx.credentialFile, "CREDENTIAL_FILE")
 	})
 
+	describe("LOCAL_PATH — segment anchoring", () => {
+		// Assembled from fragments per this file's convention: a literal
+		// sensitive path in source would be replaced by a marker on disk before
+		// the test ever runs (the harness redacts write arguments — including
+		// the file content, observed live while writing this very suite).
+		const p = (...parts: string[]) => parts.join("/")
+
+		it("still redacts real sensitive paths (whole segments)", async () => {
+			const ssh = p("", "Users", "jane", ".ssh", "id_rsa")
+			expectRedacted(await redactText(`Key at ${ssh}`), ssh, "LOCAL_PATH")
+
+			const aws = p("", "home", "bob", ".aws", "credentials")
+			expectRedacted(await redactText(`Creds at ${aws}`), aws, "LOCAL_PATH")
+
+			// Bare sensitive directory, no trailing content.
+			const bareAws = p("", "Users", "jane", ".aws")
+			expectRedacted(await redactText(`Dir ${bareAws} exists`), bareAws, "LOCAL_PATH")
+
+			const kimchiConfig = p("", "Users", "jane", ".config", "kimchi", "harness", "settings.json")
+			expectRedacted(await redactText(`Settings at ${kimchiConfig}`), kimchiConfig, "LOCAL_PATH")
+
+			// Exact final filenames under a home root.
+			const configFile = p("", "Users", "jane", "project", "config.json")
+			expectRedacted(await redactText(`See ${configFile}`), configFile, "LOCAL_PATH")
+
+			const creds = p("", "home", "bob", "project", "credentials")
+			expectRedacted(await redactText(`See ${creds}`), creds, "LOCAL_PATH")
+
+			// A quoted path: the boundary accepts the closing quote.
+			const quoted = p("", "Users", "jane", ".ssh", "known_hosts")
+			expectRedacted(await redactText(`cat "${quoted}"`), quoted, "LOCAL_PATH")
+		})
+
+		it("still redacts anchor paths glued to shell metacharacters", async () => {
+			// Regression (review round 1): the trailing lookahead omitted shell
+			// metacharacters, so a bare anchor directory glued to `&&`/`||`/`=`
+			// (or backtick/`~`/`<`) reached the provider unredacted where the old
+			// substring pattern covered it.
+			const sshAnd = p("", "Users", "jane", ".ssh")
+			expectRedacted(await redactText(`cd ${sshAnd}&&ls -la`), sshAnd, "LOCAL_PATH")
+
+			const kimchiOr = p("", "Users", "jane", ".config", "kimchi")
+			expectRedacted(await redactText(`cat ${kimchiOr}||echo gone`), kimchiOr, "LOCAL_PATH")
+
+			const awsEq = p("", "home", "bob", ".aws")
+			expectRedacted(await redactText(`env DIR=${awsEq}=x ls`), awsEq, "LOCAL_PATH")
+
+			const sshTick = p("", "Users", "jane", ".ssh")
+			expectRedacted(await redactText(`echo \`${sshTick}\``), sshTick, "LOCAL_PATH")
+
+			const sshTilde = p("", "Users", "jane", ".ssh")
+			expectRedacted(await redactText(`mv ${sshTilde}~old ${sshTilde}`), sshTilde, "LOCAL_PATH")
+
+			const awsLt = p("", "home", "bob", ".aws")
+			expectRedacted(await redactText(`cat ${awsLt}<in.txt`), awsLt, "LOCAL_PATH")
+		})
+
+		it("keeps lookalike paths that only contain the words", async () => {
+			for (const lookalike of [
+				p("", "Users", "jane", "project", "tsconfig.json"),
+				p("", "Users", "jane", "project", "tsconfig.spike.json"),
+				p("", "Users", "jane", "project", "app-config.json"),
+				p("", "Users", "jane", "project", "credentials_test.go"),
+				p("", "Users", "u", "p", "package.json"),
+				p("", "Users", "jane", "sshconfig"),
+				"tsconfig.json",
+			]) {
+				const result = await redactText(`Edit ${lookalike} now`)
+				expect(result).toBe(`Edit ${lookalike} now`)
+				expect(result).not.toContain("[REDACTED-LOCAL_PATH]")
+			}
+		})
+	})
+
 	it("redacts OpenAI-style API keys (sk-, sk-proj-)", async () => {
 		const result = await redactText(`Gateway key: ${fx.skKey}, old ${fx.skProjKey}`)
 		expect(result).not.toContain(fx.skKey)
