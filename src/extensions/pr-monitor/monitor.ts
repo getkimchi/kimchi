@@ -24,6 +24,7 @@ export class PRMonitor {
 	private controller = new AbortController()
 	private pending: Promise<PRMonitorState> | undefined
 	private notify: ((state: PRMonitorState) => void) | undefined
+	private readonly observers = new Set<(state: PRMonitorState) => void>()
 	private readonly handled = new Set<string>()
 	private attempts = 0
 	private target: string | undefined
@@ -67,10 +68,22 @@ export class PRMonitor {
 		this.notify = notify
 	}
 
+	observe(listener: (state: PRMonitorState) => void): () => void {
+		if (this.stopped) return () => {}
+		this.observers.add(listener)
+		return () => this.observers.delete(listener)
+	}
+
 	private publish(update: Partial<PRMonitorState>): void {
 		if (this.stopped) return
 		this.state = { ...this.state, ...update, revision: this.state.revision + 1 }
-		this.notify?.(this.snapshot)
+		for (const notify of [this.notify, ...this.observers]) {
+			try {
+				notify?.(this.snapshot)
+			} catch {
+				// A display failure must not interrupt monitoring or repairs.
+			}
+		}
 	}
 
 	private persist(): void {
@@ -333,6 +346,7 @@ export class PRMonitor {
 		await this.pending
 		await this.releaseLease()
 		this.notify = undefined
+		this.observers.clear()
 	}
 }
 

@@ -44,6 +44,37 @@ describe("session PR monitor", () => {
 		return { monitor, ctx, extension }
 	}
 
+	it("observes isolated snapshots without polling and detaches on unsubscribe", async () => {
+		const { monitor } = setup()
+		const observer = vi.fn()
+		const unsubscribe = monitor.observe(observer)
+		monitor.observe((state) => {
+			state.enabled = false
+		})
+		expect(readPRSnapshot).not.toHaveBeenCalled()
+		await monitor.configure(true, false)
+		expect(observer).toHaveBeenCalled()
+		expect(monitor.snapshot.enabled).toBe(true)
+		unsubscribe()
+		observer.mockClear()
+		await monitor.refresh()
+		expect(observer).not.toHaveBeenCalled()
+	})
+	it("keeps display errors from blocking a repair or another observer", async () => {
+		const { monitor, extension } = setup()
+		monitor.setNotify(() => {
+			throw new Error("display unavailable")
+		})
+		monitor.observe(() => {
+			throw new Error("panel unavailable")
+		})
+		const observer = vi.fn()
+		monitor.observe(observer)
+		await monitor.configure(true, true)
+		expect(extension.sendMessage).toHaveBeenCalledOnce()
+		expect(observer).toHaveBeenCalledWith(expect.objectContaining({ phase: "fixing" }))
+	})
+
 	it("tracks checks without starting inference until auto-fix is explicitly enabled", async () => {
 		const { monitor, extension } = setup()
 		expect((await monitor.configure(true, false)).pullRequest?.number).toBe(7)

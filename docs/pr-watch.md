@@ -14,6 +14,7 @@ grants fixes or pushes, and a saved explicit stop takes precedence when resuming
 /pr-watch                         Start tracking and allow automatic fixes
 /pr-watch only fix lint errors    Restrict repairs with your instructions
 /pr-watch watch                   Track without allowing automatic fixes
+/pr-watch monitor                 Open the live Monitor view
 /pr-watch status                  Show CI, review counts and watcher state
 /pr-watch stop                    Stop tracking and cancel its current repair
 ```
@@ -22,6 +23,12 @@ Keep the Kimchi process open. Closing it stops the local watcher. A resumed
 session restores monitoring with automatic fixes off; run `/pr-watch` to grant
 another round. Plan mode permits monitoring but blocks repairs.
 
+While tracking, an indicator above the prompt shows the watcher state, CI and
+review counts, and whether fixes are enabled. `/pr-watch monitor` opens a single
+Monitor tab with the PR, checks, unresolved feedback and last observation time.
+Use **R** to refresh, **P** to pause fixes, **S** to stop watching, and **Esc** to
+close the view. Opening or closing it only observes the watcher; tracking continues.
+
 ## Studio and other ACP clients
 
 The harness advertises `pr-watch` through standard `available_commands_update`.
@@ -29,6 +36,7 @@ Commands sent as ordinary `session/prompt` text return ordinary
 `agent_message_chunk` replies. Existing Studio builds can list, send and display
 the command without a Studio code change. Repair output and tool activity use
 the existing agent-initiated run stream.
+`/pr-watch monitor` returns the current snapshot as ordinary text in ACP clients.
 
 Clients that want structured state can use these optional extension methods:
 

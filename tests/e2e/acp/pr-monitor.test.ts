@@ -117,6 +117,11 @@ it.each([
 			expect(fixture.client.agentTextBySession().get(sessionId)).toContain("PR watch · Local · watching")
 			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch stop" }] })
 			expect(fixture.client.agentTextBySession().get(sessionId)).toContain("PR watch · Local · idle")
+			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch monitor" }] })
+			expect((await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId })).state).toMatchObject({
+				enabled: false,
+				autoFix: false,
+			})
 			expect(fixture.fake.requests.filter((request) => request.url.includes("chat/completions")).length).toBe(requests)
 		} else await fixture.conn.extMethod("_kimchi.dev/set_pr_monitor", { sessionId, enabled: false, autoFix: false })
 	} finally {

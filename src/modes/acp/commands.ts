@@ -19,7 +19,7 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 	{
 		name: "pr-watch",
 		description: SLASH_COMMANDS["pr-watch"].hint,
-		input: { hint: "[instructions|watch|status|stop]" },
+		input: { hint: "[instructions|watch|monitor|status|stop]" },
 	},
 	{
 		name: "bug",
