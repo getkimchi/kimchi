@@ -9,6 +9,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { markHarnessSteer } from "../steer-marker.js"
+import { MEMORY_STEP_ENV_TAIL_CHARS, MEMORY_STEP_REASONING_HEAD_CHARS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { buildTurnRecall, factKey, isCovered, type MemorySearchHit } from "./inject.js"
 
 export type RecallOutcome = "injected" | "covered" | "gate-skip" | "no-hits" | "no-searcher" | "failed"
@@ -107,4 +108,20 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 		return "failed"
 	}
 	return recall ? "injected" : "no-hits"
+}
+
+/**
+ * Mid-loop recall query: the latest assistant response's head (the planner
+ * voice) plus the retained state tails of the last tool results. Settled
+ * composition — head priority: head cap 400, each tail cap 600, total
+ * TURN_RECALL_QUERY_MAX_CHARS; with no tails the head alone fills the cap.
+ */
+export function buildLoopRecallQuery(reasoningText: string, envTails: readonly string[]): string {
+	const head = reasoningText.slice(0, MEMORY_STEP_REASONING_HEAD_CHARS)
+	const tails = envTails
+		.filter((t) => t.length > 0)
+		.slice(-2)
+		.map((t) => t.slice(-MEMORY_STEP_ENV_TAIL_CHARS))
+	if (tails.length === 0) return head.slice(0, TURN_RECALL_QUERY_MAX_CHARS)
+	return `${head}\n${tails.join("\n")}`.slice(0, TURN_RECALL_QUERY_MAX_CHARS)
 }

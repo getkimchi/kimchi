@@ -109,6 +109,27 @@ export const UNKNOWN_CAPTURE_SESSION_ID = "(unknown-session)"
 export const MEMORY_CAPTURE_JOB_MAX_MESSAGES = 30
 
 /**
+ * Tool steps between mid-episode recall evaluations in agent loops (the
+ * step-budget trigger). Same constant also defines the cross-trigger
+ * suppression window: a recall injected by ANY path within the window
+ * blocks the step trigger. KIMCHI_MEMORY_STEP_RECALL_INTERVAL env
+ * overrides for bench tuning.
+ */
+export const MEMORY_STEP_RECALL_INTERVAL = 25
+
+/** Chars of the latest assistant response kept as the reasoning head of a mid-loop recall query. */
+export const MEMORY_STEP_REASONING_HEAD_CHARS = 400
+
+/** Chars of each retained tool-result state tail kept for a mid-loop recall query. */
+export const MEMORY_STEP_ENV_TAIL_CHARS = 600
+
+/** Tool steps between mid-loop recall evaluations; env override. */
+export function stepRecallInterval(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = Number.parseInt(env.KIMCHI_MEMORY_STEP_RECALL_INTERVAL ?? "", 10)
+	return Number.isFinite(raw) && raw > 0 ? raw : MEMORY_STEP_RECALL_INTERVAL
+}
+
+/**
  * Capture drain lock staleness: a held lock whose mtime is older than this
  * is considered compromised and stealable. Must exceed the worst-case
  * legitimate drain duration (several jobs, minutes each).
@@ -142,7 +163,6 @@ export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 12 * 60_000
 export const POISON_JOB_MAX_ATTEMPTS = 2
 
 /**
-<<<<<<< Updated upstream
  * Cross-drain attempt cap for a WHOLly-transient failing job: a sustained
  * gateway outage (retry-exhausted 5xx) makes every drain re-run the same
  * windows and the drain gate blocks on pending-until-empty forever — the

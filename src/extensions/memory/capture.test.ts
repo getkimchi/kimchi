@@ -13,7 +13,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -170,7 +170,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("KIMCHI_MEMORY_CAPTURE=off: no handlers registered, no job files, no spawns", () => {
 		process.env.KIMCHI_MEMORY_CAPTURE = "off"
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true, "capture-sess")
+		wireMemoryCapture(api, () => true, undefined, "capture-sess")
 		// The gate returns before registering: no handlers exist at all.
 		expect(() => getHandler("session_shutdown")).toThrow()
 		expect(() => getHandler("session_before_compact")).toThrow()
@@ -183,7 +183,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("default (unset) keeps normal capture", () => {
 		delete process.env.KIMCHI_MEMORY_CAPTURE
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true, "capture-sess")
+		wireMemoryCapture(api, () => true, undefined, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -273,7 +273,7 @@ describe("incrementalCapture", () => {
 	it("does not spawn below the threshold", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
-		incrementalCapture([msgEntry("one"), msgEntry("two")], state, "/test/cwd", "capture-sess", spawn)
+		incrementalCapture([msgEntry("one"), msgEntry("two")], state, "/test/cwd", spawn, "capture-sess")
 		expect(spawn).not.toHaveBeenCalled()
 		expect(state.spawnedCount).toBe(0)
 	})
@@ -2434,7 +2434,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("session_shutdown writes a deterministic job file and spawns the worker", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true, "capture-sess")
+		wireMemoryCapture(api, () => true, undefined, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -2465,7 +2465,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("an isActive gate of false skips capture entirely", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => false, "capture-sess")
+		wireMemoryCapture(api, () => false, undefined, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -2482,7 +2482,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("an isActive gate of false skips before-compaction capture too", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => false, "capture-sess")
+		wireMemoryCapture(api, () => false, undefined, "capture-sess")
 		const beforeCompact = getHandler<{ type: "session_before_compact"; branchEntries: SessionEntry[] }>(
 			"session_before_compact",
 		)
@@ -3696,5 +3696,69 @@ describe("incrementalCapture — spawn failure keeps the mark", () => {
 		incrementalCapture(entries, state, "/test/cwd", spawnOk)
 		expect((spawnOk.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
 		expect(state.spawnedCount).toBe(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
+	})
+})
+
+describe("mid-loop recall producer wiring", () => {
+	const toolResultEvent = (text: string) => ({
+		type: "tool_result",
+		toolCallId: "t1",
+		toolName: "bash",
+		input: {},
+		content: [{ type: "text", text }],
+		isError: false,
+	})
+
+	it("delivers the result-text tail to the callback per received tool_result", () => {
+		const { api, getHandler } = createExtensionApi()
+		const tails: string[] = []
+		const ctx = createContext()
+		wireMemoryCapture(
+			api as ExtensionAPI,
+			() => true,
+			(tail) => tails.push(tail),
+		)
+		const tri = getHandler("tool_result")
+		tri(toolResultEvent(`head-${"x".repeat(700)}-END`) as never, ctx)
+		tri(toolResultEvent("plain text") as never, ctx)
+		expect(tails).toHaveLength(2)
+		expect(tails[0].endsWith("-END")).toBe(true)
+		expect(tails[0].length).toBeLessThanOrEqual(700) // tail-capped, head dropped
+		expect(tails[1]).toBe("plain text")
+	})
+
+	it("swallows producer errors — capture keeps working", () => {
+		const { api, getHandler } = createExtensionApi()
+		const ctx = createContext()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		let failed = 0
+		wireMemoryCapture(
+			api as ExtensionAPI,
+			() => true,
+			() => {
+				failed++
+				throw new Error("producer boom")
+			},
+		)
+		const tri = getHandler("tool_result")
+		expect(() => tri(toolResultEvent("t") as never, ctx)).not.toThrow()
+		expect(failed).toBe(1)
+		expect(consoleError).toHaveBeenCalled()
+		consoleError.mockRestore()
+	})
+
+	it("the producer stays live when capture is disabled", () => {
+		const { api, getHandler } = createExtensionApi()
+		const tails: string[] = []
+		const ctx = createContext()
+		vi.stubEnv("KIMCHI_MEMORY_CAPTURE", "off")
+		wireMemoryCapture(
+			api as ExtensionAPI,
+			() => true,
+			(tail) => tails.push(tail),
+		)
+		getHandler("tool_result")(toolResultEvent("tail-fact") as never, ctx)
+		expect(tails).toEqual(["tail-fact"])
+		vi.unstubAllEnvs()
 	})
 })

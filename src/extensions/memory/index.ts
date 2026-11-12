@@ -66,6 +66,7 @@ import {
 	MEMORY_PRE_REQUEST_TIMEOUT_MS,
 	MEMORY_SEARCH_TIMEOUT_MS,
 	MEMORY_USER_ID,
+	stepRecallInterval,
 	TURN_RECALL_QUERY_MAX_CHARS,
 	TURN_RECALL_RESPONSE_CHARS,
 } from "./config.js"
@@ -90,7 +91,9 @@ import {
 } from "./inject.js"
 import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 import { migrateAgentMemory } from "./migrate-agent-memory.js"
-import { runRecall } from "./recall.js"
+import { markHarnessSteer } from "../steer-marker.js"
+import { submitTimingMark } from "../submit-timing.js"
+import { buildLoopRecallQuery, runRecall } from "./recall.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
 import { authoredEnabled, createMemorySaveTool, createMemorySearchTool } from "./tools.js"
@@ -256,6 +259,111 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// before that the default (active) applies.
 		let sessionKey: object | undefined
 		let lastActive: boolean | undefined
+		// Mid-loop recall budget (step trigger): counts received tool results;
+		// lastRecallAtStep is the step count when ANY recall path last injected
+		// (user-turn + step share it — the K-window suppression is cross-path).
+		let loopStepCount = 0
+		let lastRecallAtStep = 0
+		// Marks the step count at which the last evaluation was CONSUMED —
+		// captured at scheduling time, not at body time: tool results keep
+		// arriving while a d3 round-trip runs, and the window must anchor
+		// to the trigger boundary, not the completion.
+		// A consumed-but-clean no-hits window resets the budget too, so
+		// thousands of uncovered steps don't queue one evaluation each.
+		let lastRecallEvalAtStep = Number.NEGATIVE_INFINITY
+		let loopEvalPending = false
+		let loopRecallGeneration = 0
+		let lastLoopEnvTails: string[] = []
+		// Serializes mid-loop evaluations so a slow gate search can't stack.
+		let loopRecallChain: Promise<void> = Promise.resolve()
+		const resetLoopRecallState = (): void => {
+			loopStepCount = 0
+			lastRecallAtStep = 0
+			lastRecallEvalAtStep = Number.NEGATIVE_INFINITY
+			// Invalidates queued-but-unrun evaluations reading a just-reset
+			// budget. loopEvalPending survives — it's topology-only; the
+			// generation check handles what was queued.
+			loopRecallGeneration++
+			lastLoopEnvTails = []
+		}
+
+		/**
+		 * Step-budget trigger: every MEMORY_STEP_RECALL_INTERVAL tool steps,
+		 * evaluate the shared recall pipeline with a loop-tail query. Fires
+		 * mid-turn via the capture wiring's tool_result producer; one
+		 * evaluation at a time via the chain. Suppressed for one full
+		 * budget window after ANY recall injection (cross-path), and a
+		 * silent no-op while memory is disabled (capture's isActive gate).
+		 */
+		function handleLoopStep(toolResultText: string, ctx: ExtensionContext): void {
+			if (recallFailed) return
+			loopStepCount++
+			if (toolResultText) {
+				lastLoopEnvTails = [...lastLoopEnvTails, toolResultText].slice(-2)
+			}
+			maybeScheduleLoopRecall(ctx)
+		}
+
+		/**
+		 * Enqueue one step-budget evaluation when a full window has passed
+		 * since the last consumption (an injection OR a completed evaluation).
+		 * Coalescing = at most one evaluation in flight; a window that fell
+		 * eligible DURING an in-flight evaluation is picked up by the
+		 * re-check after completion — tool results can land far faster than
+		 * a d3 gate round-trip.
+		 */
+		function maybeScheduleLoopRecall(ctx: ExtensionContext): void {
+			if (loopEvalPending || recallFailed) return
+			const lastConsumption = Math.max(lastRecallAtStep, lastRecallEvalAtStep)
+			if (loopStepCount - lastConsumption < stepRecallInterval(process.env)) return
+			loopEvalPending = true
+			const generation = loopRecallGeneration
+			const scheduledAt = loopStepCount
+			lastRecallEvalAtStep = scheduledAt
+			loopRecallChain = loopRecallChain
+				.then(async () => {
+					if (generation !== loopRecallGeneration) return
+					if (recallFailed || !memoryActive()) return
+					const query = buildLoopRecallQuery(lastAssistantText(ctx), lastLoopEnvTails)
+					if (!query) return
+					const outcome = await runRecall({
+						trigger: "step-budget",
+						query,
+						pi,
+						ctx,
+						search: async () => {
+							const s = await getSearcher()
+							if (!s) return undefined
+							return withTimeout(s.search(query), MEMORY_SEARCH_TIMEOUT_MS, "loop recall search")
+						},
+						decideGate: makeRecallGate(query),
+						deliveredFacts,
+						deliveredKeys,
+						emit: (partial) =>
+							createRecallRecorder()?.emit({ type: "recall", kind: "digest-progressive", query, ...partial }),
+					})
+					if (outcome === "injected") {
+						// Anchor on the trigger boundary, not completion time —
+						// steps that kept arriving while the gate ran must not
+						// quietly extend the suppression window past it.
+						lastRecallAtStep = scheduledAt
+					} else if (outcome === "failed") {
+						recallFailed = true
+						logDegrade(
+							"loop recall failed, disabling mid-loop recall for this session",
+							new Error("recall pipeline failure (see trace)"),
+						)
+					}
+				})
+				.catch(() => {
+					// runRecall swallows and classifies its own failures; this guards the chain itself.
+				})
+				.finally(() => {
+					loopEvalPending = false
+					// Catch-up: a window that fell eligible mid-evaluation.
+					if (generation === loopRecallGeneration) maybeScheduleLoopRecall(ctx)
+				})
+		}
 		const memoryActive = (): boolean =>
 			sessionKey === undefined ? true : (getSessionMemoryOverride(sessionKey) ?? true)
 
@@ -263,7 +371,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// an ACP server hosts concurrent sessions in one process, and their
 		// captures must not merge into one record entry.
 		const captureId = deps.captureId ?? randomUUID()
-		const captureWiring = wireMemoryCapture(pi, memoryActive, captureId)
+		const captureWiring = wireMemoryCapture(pi, memoryActive, handleLoopStep, captureId)
 
 		// Timing marks are stamped with this session's id — per instance for
 		// the same reason as captureId: module state cannot tell concurrent
@@ -622,6 +730,22 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			}
 		}
 
+		// Shared d3 gate builder: null = pre-gate behavior (search whenever
+		// uncovered). Used by the user-turn and the step trigger alike.
+		const makeRecallGate = (query: string): (() => Promise<boolean>) | null => {
+			const decision = resolveDecision()
+			if (!(decision.enabled.has("recall") && decision.gate)) return null
+			const gate = decision.gate
+			return async () => {
+				const judged = await withTimeout(
+					decide(gate, recallState(deliveredFacts.join("\n"), query), recallQuestion(), "recall"),
+					MEMORY_SEARCH_TIMEOUT_MS,
+					"recall gating",
+				)
+				return judged?.answers.lookup?.choice === "skip"
+			}
+		}
+
 		pi.on("before_agent_start", async (event, ctx) => {
 			// upstream pi: the event fires for extension-triggered runs too and is a
 			// union — memory digests/recall key off user prompts only.
@@ -653,7 +777,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					deliveredKeys.clear()
 					deliveredFacts.length = 0
 					pendingRecallQuery = undefined
-					incrementalState = createIncrementalCaptureState()
+					resetLoopRecallState()
 					// The flip emptied the ledger — drop any stale count.
 					updateMemoryStatus(ctx)
 					clearSavedStatus(ctx)
@@ -745,31 +869,23 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					pi,
 					ctx,
 					search: async () => {
-						return withRecallIndicator(ctx, async () => {
+						return withRecallIndicator(ctx, event.prompt, async () => {
 							const s = await getSearcher()
 							if (!s) return undefined
 							return withTimeout(s.search(recent), MEMORY_SEARCH_TIMEOUT_MS, "turn recall search")
 						})
 					},
-					decideGate: (() => {
-						const decision = resolveDecision()
-						if (!(decision.enabled.has("recall") && decision.gate)) return null
-						const gate = decision.gate
-						return async () => {
-							const judged = await withTimeout(
-								decide(gate, recallState(deliveredFacts.join("\n"), recent), recallQuestion(), "recall"),
-								MEMORY_SEARCH_TIMEOUT_MS,
-								"recall gating",
-							)
-							return judged?.answers.lookup?.choice === "skip"
-						}
-					})(),
+					decideGate: makeRecallGate(recent),
 					deliveredFacts,
 					deliveredKeys,
 					emit: (partial) =>
 						createRecallRecorder()?.emit({ type: "recall", kind: "digest-progressive", query: recent, ...partial }),
 				})
-				if (outcome === "failed") {
+				if (outcome === "injected") {
+					// Cross-path suppression: a user-turn injection blocks the
+					// step trigger for one full budget window (K = interval).
+					lastRecallAtStep = loopStepCount
+				} else if (outcome === "failed") {
 					recallFailed = true
 					logDegrade(
 						"turn recall failed, disabling progressive recall for this session",
@@ -793,6 +909,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			deliveredKeys.clear()
 			deliveredFacts.length = 0
 			pendingRecallQuery = undefined
+			resetLoopRecallState()
 			captureWiring.resetIncrement()
 			// The ledger reset means nothing is in context — clear the count
 			// until the next agent start recomputes the digest.

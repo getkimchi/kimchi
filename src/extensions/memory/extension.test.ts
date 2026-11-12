@@ -1526,3 +1526,132 @@ describe("authored lane redaction parity", () => {
 		expect(stored[0]).not.toContain("sk-proj-")
 	})
 })
+
+describe("mid-loop recall (step-budget trigger)", () => {
+	const K = 25 // MEMORY_STEP_RECALL_INTERVAL — the tool steps between evaluations
+
+	const toolResultEvent = (text: string) => ({
+		type: "tool_result",
+		toolCallId: "t1",
+		toolName: "bash",
+		input: {},
+		content: [{ type: "text", text }],
+		isError: false,
+	})
+
+	function fireToolResults(handler: ReturnType<RigBundle["getHandler"]>, n: number, label: string) {
+		for (let i = 0; i < n; i++) {
+			handler(toolResultEvent(`${label} step state ${i}`) as never, fakeCtx)
+		}
+	}
+	type RigBundle = Awaited<ReturnType<typeof setup>>
+	// One combined tool_result handler in the capture-enabled wiring (producer + increment).
+	const getToolResultHandler = (r: RigBundle) => r.getHandler("tool_result")
+
+	function freshFactSearcher() {
+		let n = 0
+		let first = true
+		return {
+			search: vi.fn(async () => {
+				if (first) {
+					first = false
+					return [] // turn-1 digest finds nothing: no seeds, no pre-turn injection
+				}
+				n++
+				return [{ memory: `durable loop tactic ${n}`, score: 0.95 }]
+			}),
+		}
+	}
+
+	async function flushChain() {
+		// The step trigger's evaluation chains microtasks after the
+		// tool_result handler returns; a few macrotask ticks drain the whole
+		// microtask queue, including chained catch-up evaluations.
+		for (let i = 0; i < 5; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 0))
+		}
+	}
+
+	it("evaluates recall every K tool steps in a loop without user turns", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run the episode"), fakeCtx)
+		fireToolResults(tri, 2 * K + K / 2, "arc")
+		await flushChain()
+		// 2*K + K/2 steps → exactly 2 step-window evaluations, both injecting.
+		expect(sendMessage.mock.calls.length).toBe(2)
+		// within the last window nothing else fires
+		fireToolResults(tri, K - 1, "tail")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(2)
+	})
+
+	it("a user-turn injection suppresses the step trigger for one full window", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("entry"), fakeCtx)
+		// Second user turn: progressive recall injects at loop step 0.
+		await start(startEvent("new topic, please adjust"), fakeCtx)
+		expect(sendMessage.mock.calls.length).toBe(1)
+		// K-1 tool steps: inside the suppression window — no step injection.
+		fireToolResults(tri, K - 1, "suppressed")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		// At K steps since the user-turn injection the trigger shoulders in.
+		fireToolResults(tri, 1, "crossing")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(2)
+	})
+
+	it("compaction resets the step counter and budget window", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		fireToolResults(tri, K - 1, "pre-compact")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+		await start(startEvent("continuation after compact"), fakeCtx) // has hits now: user-turn injects (1)
+		expect(sendMessage.mock.calls.length).toBe(1)
+		rig.getHandler("session_compact")({}, fakeCtx)
+		// Counter zeroed: K-1 further steps stay inside the fresh window,
+		// NOT crossing an old boundary at K total.
+		fireToolResults(tri, K - 2, "post-compact")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+	})
+
+	it("disabled memory session: step trigger no-ops and a flip resets counters", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		setSessionMemoryOverride(fakeCtx.sessionManager, false)
+		fireToolResults(tri, K, "disabled")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+		// Flip back on → the flip is processed at the next agent start; that
+		// turn's progressive recall legitimately injects (user-turn path),
+		// and the flip ALSO resets the step counters, so the following K-1
+		// steps stay within the fresh window: only the crossing step fires.
+		setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
+		await start(startEvent("memory back on"), fakeCtx) // user-turn injects: 1
+		expect(sendMessage.mock.calls.length).toBe(1)
+		fireToolResults(tri, K - 1, "after-flip")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		fireToolResults(tri, 1, "after-flip-crossing")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(2)
+	})
+})
