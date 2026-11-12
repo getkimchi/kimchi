@@ -25,6 +25,12 @@ surfaces at the client, not in our logs. The class spans more than turns: payloa
 turn timing, context content, replay, artifacts. Any agent-related work with a side
 effect on any of these counts.
 
+When a client cannot represent a behavior at all, degradation must be a decision the
+agent makes — a fallback, an opt-in gate, or a deliberate no-op are valid answers — not
+something that happens to the client by default. A client silently misrendering or
+idling because nobody made that call is this failure class, even when the wire itself
+technically carries the update.
+
 ## Spec anchors
 
 Every rule below cites one of these. Quote the spec, not this doc, when arguing about a

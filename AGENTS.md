@@ -116,9 +116,9 @@ The harness ships two user-facing surfaces: the interactive TUI (upstream `Inter
 - streamed text the user sees: steering, `<done>`/recovery markers, status output
 - MCP servers, probing, or OAuth flows
 - image/content forwarding, or any new content-block type
-- anything that reaches a client by a new notification, `_meta` key, or ext-method (walk the full surface checklist in [docs/acp-compat.md](docs/acp-compat.md) rule 3)
+- any behavior whose effects could reach an ACP client, by whatever path the current implementation happens to use (walk the surface checklist in [docs/acp-compat.md](docs/acp-compat.md) rule 3)
 
-This list is what has bitten us so far, not a taxonomy — feature categories keep being added, and there is no way to enumerate the ACP surface in advance. Treat **anything an ACP client could observe** as in scope by default.
+This list codifies past incidents, not a boundary: feature categories keep being added, and the ACP surface cannot be enumerated in advance. The rule that generalizes: **if a client could observe an effect, the change is ACP-relevant, and the change — not the client — decides what a client that cannot represent that behavior gets.** A fallback, an opt-in gate, or a deliberate no-op are all fine answers; a client silently degrading, misrendering, or idling because nobody made the call is not.
 
 If the change is ACP-relevant:
 
