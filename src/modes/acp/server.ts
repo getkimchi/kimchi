@@ -161,7 +161,7 @@ import {
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
-import { CANONICAL_THINKING_LEVELS } from "../../thinking-levels.js"
+import { CANONICAL_THINKING_LEVELS, thinkingLevelName } from "../../thinking-levels.js"
 import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -3917,19 +3917,6 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	}
 }
 
-/** Display names for the canonical thinking levels, mirroring the TUI
- *  selector's labels ("Extra high" for xhigh, the name Air and codex-acp
- *  use for the tier in their effort pickers). */
-const THINKING_LEVEL_NAMES: Record<string, string> = {
-	off: "Off",
-	minimal: "Minimal",
-	low: "Low",
-	medium: "Medium",
-	high: "High",
-	xhigh: "Extra high",
-	max: "Max",
-}
-
 const CANONICAL_THINKING_LEVEL_SET = new Set<string>(CANONICAL_THINKING_LEVELS)
 
 /** Runtime proof that a requested thinking level is one of pi's canonical
@@ -3970,7 +3957,7 @@ export function buildThinkingConfigOption(session: AgentSessionThinkingConfig): 
 		currentValue: clampToSelection(session.thinkingLevel, selection),
 		options: selection.selectable.map((level) => ({
 			value: level,
-			name: THINKING_LEVEL_NAMES[level] ?? level,
+			name: thinkingLevelName(level),
 		})),
 	}
 }
