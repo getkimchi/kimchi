@@ -231,7 +231,7 @@ describe("listRecallFiles + resolveRecallFile", () => {
 		writeFileSync(join(tracesDir(), drainName("6")), "{}\n")
 		expect(listRecallFiles()).toEqual([recall])
 		expect(resolveRecallFile(recall)).toBe(join(tracesDir(), recall))
-		expect(resolveRecallFile("../" + recall)).toBeNull()
+		expect(resolveRecallFile(`../${recall}`)).toBeNull()
 		expect(resolveRecallFile(drainName("6"))).toBeNull()
 		expect(resolveRecallFile("recall-missing.jsonl")).toBeNull()
 		expect(resolveRecallFile("")).toBeNull()
