@@ -408,35 +408,49 @@ describe("memory extension", () => {
 		process.on("unhandledRejection", onUnhandled)
 		const marks = useMarksSink()
 		try {
-			let release: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
+			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
 			const search = vi.fn(
 				() =>
 					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
-						release = resolve
+						resolvers.push(resolve)
 					}),
 			)
 			const ctx = createContext()
-			// The one realistically throwing step in the settle: the UI bridge.
-			vi.mocked(ctx.ui.setStatus).mockImplementationOnce(() => {
-				throw new Error("ui bridge broke")
-			})
 			const { start } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
+			// Turn 1 waits its bounded 2 s and times out; the attempt stays pending.
 			const pending = start(startEvent("turn 1"), ctx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
 			await pending
-			// The settle lands detached (turn 1 already returned): the throw must
-			// be contained — no unhandled rejection on the un-awaited promise.
-			release?.([{ memory: "resilient fact", score: 0.7 }])
+			// Past the search bound the attempt is presumed hung and abandoned;
+			// resolvers[0] (its search) never settles — that is the point.
+			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			// Turn 2 starts the RETRY DETACHED: `settled` is dropped without any
+			// withTimeout ever attaching handlers to it, so a rethrown settle
+			// error would be a genuine unhandled rejection — the assertion on
+			// `unhandled` below is load-bearing on exactly this branch.
+			const turn2 = start(startEvent("turn 2"), ctx)
+			await vi.advanceTimersByTimeAsync(0)
+			await turn2
+			expect(resolvers).toHaveLength(2)
+			// The one realistically throwing step in the settle: the UI bridge,
+			// armed for the detached attempt's settle only.
+			vi.mocked(ctx.ui.setStatus).mockImplementationOnce(() => {
+				throw new Error("ui bridge broke")
+			})
+			resolvers[1]?.([{ memory: "resilient fact", score: 0.7 }])
 			await vi.advanceTimersByTimeAsync(0)
 			expect(unhandled).toEqual([])
 			expect(consoleError.mock.calls.some(([m]) => String(m).includes("digest settle failed"))).toBe(true)
 			// The adoption was recorded before the UI step, and the next turn
 			// uses the digest (its prompt stays inside delivered territory).
 			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(true)
-			const turn2 = await start(startEvent("resilient fact"), ctx)
-			expect(turn2?.systemPrompt).toContain("resilient fact")
+			// Mutual exclusion of terminals: a post-adoption throw must not also
+			// emit the catch's discarded backstop (the identity guard is false).
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.discarded")).toBe(false)
+			const turn3 = await start(startEvent("resilient fact"), ctx)
+			expect(turn3?.systemPrompt).toContain("resilient fact")
 		} finally {
 			process.off("unhandledRejection", onUnhandled)
 			marks.cleanup()
