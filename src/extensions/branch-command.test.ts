@@ -1,15 +1,10 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { getActiveAgentCount } from "./agents/index.js"
 import branchCommandExtension, {
 	BRANCH_RESUME_CUSTOM_TYPE,
 	branchResumeMessage,
 	branchSessionName,
 } from "./branch-command.js"
-
-vi.mock("./agents/index.js", () => ({
-	getActiveAgentCount: vi.fn(),
-}))
 
 type BranchCommand = {
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>
@@ -211,38 +206,7 @@ describe("branchCommandExtension", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Nothing to branch yet", "info")
 	})
 
-	it("notifies when background agents were handed over to the branch", async () => {
-		vi.mocked(getActiveAgentCount).mockReturnValue(3)
-		const { api, command } = makePi()
-		branchCommandExtension(api)
-		const branchCtx = {
-			sessionManager: {
-				getSessionId: vi.fn(() => "abcdef12-3456-7890-abcd-ef1234567890"),
-				appendSessionInfo: vi.fn(),
-			},
-			ui: { notify: vi.fn() },
-			sendMessage: vi.fn(async () => {}),
-		}
-		const ctx = {
-			waitForIdle: vi.fn(async () => {}),
-			sessionManager: {
-				getLeafId: vi.fn(() => "leaf-1"),
-				getSessionName: vi.fn(() => "hello"),
-			},
-			fork: vi.fn(async (_entryId: string, options?: { withSession?: (ctx: typeof branchCtx) => Promise<void> }) => {
-				await options?.withSession?.(branchCtx)
-				return { cancelled: false }
-			}),
-			ui: { notify: vi.fn() },
-		} as unknown as ExtensionCommandContext
-
-		await command().handler("", ctx)
-
-		expect(branchCtx.ui.notify).toHaveBeenCalledWith("Branch created — 3 background agents still running", "info")
-	})
-
-	it("does not mention agents on a branch with none running", async () => {
-		vi.mocked(getActiveAgentCount).mockReturnValue(0)
+	it("does not notify inside the branch callback (single toast: the adoption one)", async () => {
 		const { api, command } = makePi()
 		branchCommandExtension(api)
 		const branchCtx = {

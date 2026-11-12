@@ -282,9 +282,12 @@ local subagents over to the replacement session instead of aborting them: the
 agents extension extracts the running records at `session_shutdown` (reason
 `fork`/`new`) and adopts them on the replacement's `session_start`, keyed by the
 outgoing session file. Agent ids stay stable — `get_subagent_result` on a
-pre-fork id keeps working in the branch, completions arrive as notifications
-there, and agents that were still queued re-spawn under the replacement's
-concurrency cap.
+pre-fork id keeps working in the branch, and agents that were still queued
+re-spawn under the replacement's concurrency cap. Delivery semantics are
+preserved, not upgraded: background completions arrive as notifications in the
+branch (including from a foreground agent detached with Ctrl+B after the
+branch), while foreground and resumed agents keep their usual surface — no
+completion notification, result reachable via `get_subagent_result`.
 
 Switching to an unrelated session (resume, the session picker) stops local
 subagents, with a notification naming how many were stopped. Quitting the

@@ -168,11 +168,19 @@ vi.mock("./manager/agent-manager.js", () => {
 						return status === "running" || status === "queued"
 					})
 					for (const r of active) records.delete((r as { id: string }).id)
-					return { records: active, queued: [] }
+					return { records: active, queued: [], midResumeIds: new Set() }
 				}),
-				adoptRecords: vi.fn((adopted: Array<Record<string, unknown>>) => {
-					for (const r of adopted) records.set(r.id as string, r)
-				}),
+				adoptRecords: vi.fn(
+					(
+						adopted: Array<Record<string, unknown>>,
+						_queued: unknown,
+						_midResumeIds: unknown,
+						_pi: unknown,
+						_ctx: unknown,
+					) => {
+						for (const r of adopted) records.set(r.id as string, r)
+					},
+				),
 			}
 			return manager
 		}),
@@ -2236,7 +2244,13 @@ describe("local agents survive session replacement (fork/new)", () => {
 		)
 
 		expect(peekHandoff()).toBeUndefined()
-		expect(manager2.adoptRecords).toHaveBeenCalledWith([expect.objectContaining({ id })], [], pi2.api, live2.ctx)
+		expect(manager2.adoptRecords).toHaveBeenCalledWith(
+			[expect.objectContaining({ id })],
+			[],
+			expect.any(Set),
+			pi2.api,
+			live2.ctx,
+		)
 		expect(manager2.getRecord(id)).toMatchObject({ id, status: "running" })
 
 		// the adopted agent's completion reaches the replacement's notification surface
@@ -2333,6 +2347,9 @@ describe("local agents survive session replacement (fork/new)", () => {
 			description: "work",
 			isBackground: true,
 		})
+		// A transient visual record: abortAll counts it, but it must not
+		// inflate the resume notice.
+		manager._records.set("transient-1", { id: "transient-1", status: "running" })
 		// currentUi is wired by tool_execution_start — fire one so the
 		// resume notice has a surface to land on.
 		await pi.emit("tool_execution_start", { toolCallId: "t1", toolName: "read" }, live.ctx)
@@ -2342,7 +2359,7 @@ describe("local agents survive session replacement (fork/new)", () => {
 
 		expect(manager.abortAll).toHaveBeenCalledWith({ skipRemote: true })
 		expect(manager.dispose).toHaveBeenCalled()
-		expect(notify).toHaveBeenCalledWith("Aborted 2 background agents — switching sessions", "warning")
+		expect(notify).toHaveBeenCalledWith("Aborted 1 background agent — switching sessions", "warning")
 		expect(peekHandoff()).toBeUndefined()
 	})
 
@@ -2395,6 +2412,7 @@ describe("local agents survive session replacement (fork/new)", () => {
 			fromSessionFile: "/tmp/gone-session.json",
 			records: [makeRunningRecord({ abortController: { abort } }) as never],
 			queued: [],
+			midResumeIds: new Set(),
 			activity: [],
 		})
 

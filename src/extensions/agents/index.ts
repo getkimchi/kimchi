@@ -94,6 +94,7 @@ import {
 	type AgentRecord,
 	type AgentTaskRef,
 	type AgentVisibility,
+	isActiveStatus,
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
@@ -1376,14 +1377,15 @@ export default function (pi: ExtensionAPI) {
 		// takeHandoffFor refuses (undefined never claims).
 		const handoff = takeHandoffFor(event.previousSessionFile)
 		if (!handoff) return
-		manager.adoptRecords(handoff.records, handoff.queued, pi, ctx)
+		manager.adoptRecords(handoff.records, handoff.queued, handoff.midResumeIds, pi, ctx)
 		for (const [id, entry] of handoff.activity) agentActivity.set(id, entry)
 		widget.setUICtx(ctx.ui as UICtx)
 		widget.ensureTimer()
 		widget.update()
-		if (handoff.records.length > 0 && ctx.hasUI) {
+		const backgroundCount = handoff.records.filter((r) => r.isBackground).length
+		if (backgroundCount > 0 && ctx.hasUI) {
 			ctx.ui.notify?.(
-				`${handoff.records.length} background agent${handoff.records.length === 1 ? "" : "s"} continue running from the previous session`,
+				`${backgroundCount} background agent${backgroundCount === 1 ? "" : "s"} continue running from the previous session`,
 				"info",
 			)
 		}
@@ -1546,7 +1548,7 @@ export default function (pi: ExtensionAPI) {
 		const ui = currentUi
 		currentUi = undefined
 		if (continuing) {
-			const { records, queued } = manager.extractRunningLocal()
+			const { records, queued, midResumeIds } = manager.extractRunningLocal()
 			const activity: Array<[string, AgentActivity]> = []
 			for (const record of records) {
 				const entry = agentActivity.get(record.id)
@@ -1562,6 +1564,7 @@ export default function (pi: ExtensionAPI) {
 					fromSessionFile: ctx?.sessionManager.getSessionFile(),
 					records,
 					queued,
+					midResumeIds,
 					activity,
 				})
 			}
@@ -1576,15 +1579,21 @@ export default function (pi: ExtensionAPI) {
 		}
 		// Remote runs survive the process — they are owned by the worker and
 		// resumable via kimchi --session (remote-run-persistence.ts).
-		const aborted = manager.abortAll({ skipRemote: true })
+		// Count only background agents for the notice: abortAll's return includes
+		// transient visual records, which would overstate the number.
+		const backgroundAborted = manager.listAgents().filter((a) => a.isBackground && isActiveStatus(a.status)).length
+		manager.abortAll({ skipRemote: true })
 		// A handoff staged by an earlier runtime that was never claimed can no
 		// longer be claimed by anyone — abort its records instead of letting
 		// them run headless.
 		abortStagedHandoff()
-		if (event.reason === "resume" && aborted > 0) {
+		if (event.reason === "resume" && backgroundAborted > 0) {
 			// Switching to an unrelated session stops local agents — but say so,
 			// instead of killing them silently.
-			ui?.notify(`Aborted ${aborted} background agent${aborted === 1 ? "" : "s"} — switching sessions`, "warning")
+			ui?.notify(
+				`Aborted ${backgroundAborted} background agent${backgroundAborted === 1 ? "" : "s"} — switching sessions`,
+				"warning",
+			)
 		}
 		budgetRetryCandidates.clear()
 		if (batchFinalizeTimer) {

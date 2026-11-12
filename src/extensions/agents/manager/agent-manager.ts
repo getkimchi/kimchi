@@ -1335,7 +1335,7 @@ export class AgentManager {
 	 *  persistence and reattach in the new session), as are terminal records
 	 *  and transient visual entries. The background-run count moves to the
 	 *  adopter; this manager clamps at 0 from here on. */
-	extractRunningLocal(): { records: AgentRecord[]; queued: QueuedAgentHandoff[] } {
+	extractRunningLocal(): { records: AgentRecord[]; queued: QueuedAgentHandoff[]; midResumeIds: Set<string> } {
 		const records: AgentRecord[] = []
 		const adoptedIds = new Set<string>()
 		const queuedIds = new Set(this.queue.map((entry) => entry.id))
@@ -1360,37 +1360,57 @@ export class AgentManager {
 			if (!adoptedIds.has(entry.id)) continue
 			queued.push({ id: entry.id, type: entry.args.type, prompt: entry.args.prompt, options: entry.args.options })
 		}
+		// Records with an in-flight resume: resume() never fires onComplete and
+		// the resume's continuation still lands its result on the shared record
+		// object — the adopter must merely not start notifying for them (see
+		// adoptRecords' settle-gap branch).
+		const midResumeIds = new Set<string>()
+		for (const record of records) {
+			if (this.activeResumePromises.has(record)) midResumeIds.add(record.id)
+		}
 		for (const id of adoptedIds) this.agents.delete(id)
 		this.queue = this.queue.filter((entry) => !adoptedIds.has(entry.id))
 		// The adopting manager owns the count from here on.
 		this.runningBackground = 0
-		return { records, queued }
+		return { records, queued, midResumeIds }
 	}
 
 	/** Adopt records and queue entries handed off by a replaced session
 	 *  runtime. Records keep their ids — the orchestrator LLM already holds
-	 *  them. Running records keep their live run, but their settle chain
-	 *  closes over the outgoing (now disposed) manager, so it is re-wired onto
-	 *  this manager: completion fires this manager's onComplete and drains
-	 *  this manager's queue. Queued entries are re-spawned against the new
-	 *  pi/ctx with their original ids.
+	 *  them. Queued entries are re-spawned against the new pi/ctx with their
+	 *  original ids.
+	 *
+	 *  Settle wiring is attached to EVERY live run, regardless of
+	 *  background-ness: a foreground record can later be detached to
+	 *  background (Ctrl+B), and settleAdopted re-checks isBackground at settle
+	 *  time — so the slot count stays balanced whether or not a detach
+	 *  happened. Foreground runs still never raise a completion notification
+	 *  (settleAdopted early-returns for them); the result remains reachable
+	 *  via get_subagent_result by id. Mid-resume records (id in
+	 *  midResumeIds) keep the pre-existing semantics of resume(): no
+	 *  onComplete, the resume continuation still lands its result on the
+	 *  shared record object.
 	 *
 	 *  A background record that settled in the staging gap (between
-	 *  extractRunningLocal and this call) gets its completion fired here: the
+	 *  extractRunningLocal and this call) gets its completion fired here — the
 	 *  outgoing chain suppressed it (disposed) and its original run promise is
 	 *  gone (the chain's finally cleared record.promise), so there is nothing
-	 *  left to re-wrap. Mid-resume records (record.promise cleared by a prior
-	 *  run, resume in flight on the outgoing manager) are deliberately NOT
-	 *  wired: resumed agents never fired onComplete before session replacement
-	 *  either — the awaiting tool result was their delivery surface — and they
-	 *  remain reachable via get_subagent_result by id. */
-	adoptRecords(records: AgentRecord[], queued: QueuedAgentHandoff[], pi: ExtensionAPI, ctx: ExtensionContext): void {
+	 *  left to re-wrap. Records that were mid-resume at extract time are
+	 *  excluded from this branch: they never notified before replacement
+	 *  either. */
+	adoptRecords(
+		records: AgentRecord[],
+		queued: QueuedAgentHandoff[],
+		midResumeIds: Set<string>,
+		pi: ExtensionAPI,
+		ctx: ExtensionContext,
+	): void {
 		if (this.disposed) return
 		for (const record of records) {
 			if (this.agents.has(record.id)) continue
 			this.agents.set(record.id, record)
-			if (record.isBackground && isActiveStatus(record.status) && record.promise !== undefined) {
-				this.runningBackground++
+			if (record.promise !== undefined && isActiveStatus(record.status)) {
+				if (record.isBackground) this.runningBackground++
 				const original = record.promise
 				record.promise = original.then(
 					(text: string) => {
@@ -1402,7 +1422,7 @@ export class AgentManager {
 						return ""
 					},
 				)
-			} else if (record.isBackground && !isActiveStatus(record.status)) {
+			} else if (record.isBackground && !isActiveStatus(record.status) && !midResumeIds.has(record.id)) {
 				// Settled in the staging gap — fire the adoption-side settle now so
 				// the replacement session still gets the completion notification.
 				// No runningBackground bookkeeping: this record never occupied a

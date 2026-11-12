@@ -32,6 +32,10 @@ export interface AgentHandoff {
 	records: AgentRecord[]
 	/** Queue entries (not yet started) drained from the outgoing manager. */
 	queued: QueuedAgentHandoff[]
+	/** Ids of records with an in-flight resume at extract time. resume() never
+	 *  fires onComplete (pre-existing semantics), so adoption must not start
+	 *  notifying for them via the settle-gap branch either. */
+	midResumeIds: Set<string>
 	/** Widget activity entries for the handed-off records. */
 	activity: Array<[string, AgentActivity]>
 }
@@ -51,8 +55,14 @@ function abortRecords(handoff: AgentHandoff | undefined): void {
 
 /** Stage a handoff, replacing any stale one. A hand-off being evicted can
  *  never be claimed — the runtime that would match its lineage key is
- *  already gone — so its records are aborted instead of running headless. */
+ *  already gone — so its records are aborted instead of running headless.
+ *  A hand-off without a lineage key (in-memory session managers) is refused
+ *  the same way: no replacement could ever claim it. */
 export function stageHandoff(handoff: AgentHandoff): void {
+	if (handoff.fromSessionFile === undefined) {
+		abortRecords(handoff)
+		return
+	}
 	abortRecords(pending)
 	pending = handoff
 }

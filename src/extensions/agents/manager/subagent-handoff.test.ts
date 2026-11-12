@@ -20,6 +20,7 @@ function makeHandoff(fromSessionFile: string | undefined): AgentHandoff {
 		fromSessionFile,
 		records: [record],
 		queued: [],
+		midResumeIds: new Set(),
 		activity: [],
 	}
 }
@@ -81,6 +82,18 @@ describe("subagent handoff slot", () => {
 		clearHandoff()
 		expect(peekHandoff()).toBeUndefined()
 		expect(takeHandoffFor("/old/session.jsonl")).toBeUndefined()
+	})
+
+	it("refuses to stage a handoff without a lineage key and aborts its records", () => {
+		const abort = vi.fn()
+		const handoff = makeHandoff(undefined)
+		handoff.records = [{ ...handoff.records[0]!, abortController: { abort, signal: undefined } as never }]
+		stageHandoff(handoff)
+
+		// No lineage key → no replacement can ever claim it: abort instead of
+		// staging an unclaimable handoff.
+		expect(abort).toHaveBeenCalledTimes(1)
+		expect(peekHandoff()).toBeUndefined()
 	})
 
 	it("aborts the evicted handoff's records when staging a new one", () => {

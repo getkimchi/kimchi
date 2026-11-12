@@ -2096,7 +2096,7 @@ describe("AgentManager session hand-off", () => {
 		const b = new AgentManager(() => {
 			completionsInB++
 		})
-		b.adoptRecords(records, queued, fakePi(), fakeCtx())
+		b.adoptRecords(records, queued, new Set(), fakePi(), fakeCtx())
 		expect(b.getRecord(id)).toBe(recordA)
 		expect(b.getRunningCount()).toBe(1)
 
@@ -2150,7 +2150,7 @@ describe("AgentManager session hand-off", () => {
 			completions++
 		}, 1)
 		const ctxB = fakeCtx()
-		b.adoptRecords(records, queued, fakePi(), ctxB)
+		b.adoptRecords(records, queued, new Set(), fakePi(), ctxB)
 		// cap 1: the queued agent must not start while the adopted run holds the slot
 		expect(b.getRecord(id2)?.status).toBe("queued")
 		expect(mockRunAgent).toHaveBeenCalledTimes(1)
@@ -2233,13 +2233,102 @@ describe("AgentManager session hand-off", () => {
 		const b = new AgentManager(() => {
 			completionsInB++
 		})
-		b.adoptRecords(records, queued, fakePi(), fakeCtx())
+		b.adoptRecords(records, queued, new Set(), fakePi(), fakeCtx())
 
 		// the adoption-side settle fires exactly once
 		expect(completionsInB).toBe(1)
 		expect(b.getRecord(id)?.status).toBe("completed")
 		await new Promise((r) => setTimeout(r, 20))
 		expect(completionsInB).toBe(1)
+		b.dispose()
+	})
+
+	it("does not notify for a mid-resume record that settles in the gap (resume never fires onComplete)", async () => {
+		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => runResult.promise)
+
+		const a = new AgentManager()
+		const id = a.spawn(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			isBackground: true,
+		})
+		// Simulate resume-in-flight at extract time: the record carries the
+		// isBackground flag but its delivery surface is the continuation's
+		// record mutation, not a completion notification.
+		const { records, queued, midResumeIds } = a.extractRunningLocal()
+		midResumeIds.add(id)
+		a.dispose()
+
+		runResult.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await new Promise((r) => setTimeout(r, 20))
+		expect(records[0]?.status).toBe("completed")
+
+		let completionsInB = 0
+		const b = new AgentManager(() => {
+			completionsInB++
+		})
+		b.adoptRecords(records, queued, midResumeIds, fakePi(), fakeCtx())
+
+		expect(completionsInB).toBe(0)
+		expect(b.getRecord(id)?.status).toBe("completed")
+		b.dispose()
+	})
+
+	it("wires foreground adopted records so a later detach cannot wedge the slot (bug-hunt F1 probe)", async () => {
+		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => runResult.promise)
+
+		let completionsInB = 0
+		const a = new AgentManager()
+		// Foreground run alive at extract time (the Agent tool's wait path sets
+		// detachResolver on the shared record — it survives the hand-off).
+		const id = a.spawn(fakePi(), fakeCtx(), "Explore", "inspect", { description: "inspect" })
+		const record = a.getRecord(id)
+		if (!record) throw new Error("record missing")
+		record.detachResolver = () => {}
+
+		const { records, queued } = a.extractRunningLocal()
+		a.dispose()
+
+		const b = new AgentManager(() => {
+			completionsInB++
+		}, 1)
+		b.adoptRecords(records, queued, new Set(), fakePi(), fakeCtx())
+
+		// Ctrl+B in the branched session: detachToBackground flips isBackground
+		// and occupies the (cap 1) slot.
+		expect(b.detachToBackground(id)).toBe(true)
+
+		runResult.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await vi.waitFor(() => expect(completionsInB).toBe(1))
+
+		// Slot accounting must be balanced: a fresh background spawn starts
+		// immediately instead of queueing behind a leaked slot.
+		const run2 = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => run2.promise)
+		const id2 = b.spawn(fakePi(), fakeCtx(), "Explore", "second", {
+			description: "second",
+			isBackground: true,
+		})
+		expect(b.getRecord(id2)?.status).toBe("running")
+
+		run2.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await vi.waitFor(() => expect(completionsInB).toBe(2))
 		b.dispose()
 	})
 
@@ -2256,7 +2345,7 @@ describe("AgentManager session hand-off", () => {
 
 		const b = new AgentManager()
 		b.dispose()
-		b.adoptRecords(records, queued, fakePi(), fakeCtx())
+		b.adoptRecords(records, queued, new Set(), fakePi(), fakeCtx())
 		expect(b.getRecord(id)).toBeUndefined()
 
 		runResult.resolve({

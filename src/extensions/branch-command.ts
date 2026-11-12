@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, MessageRenderer, SessionManager } from "@earendil-works/pi-coding-agent"
 import { Box, Spacer, Text } from "@earendil-works/pi-tui"
-import { getActiveAgentCount } from "./agents/index.js"
 
 type WritableSessionManager = Pick<SessionManager, "appendSessionInfo">
 export const BRANCH_RESUME_CUSTOM_TYPE = "kimchi-session-branch"
@@ -82,16 +81,9 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 						},
 						{ triggerTurn: false },
 					)
-					// Background agents running at fork time were handed over to the
-					// branch (agents extension session hand-off) — say so instead of
-					// letting the rows silently change owners.
-					const running = getActiveAgentCount()
-					if (running > 0) {
-						branchCtx.ui.notify(
-							`Branch created — ${running} background agent${running === 1 ? "" : "s"} still running`,
-							"info",
-						)
-					}
+					// The agents extension's own adoption toast ("N background agent(s)
+					// continue running from the previous session") covers the hand-off
+					// notice — one toast, uniform across /branch, /clone, and /new.
 				},
 			})
 			if (result.cancelled) return
