@@ -314,11 +314,13 @@ export function isNonSensitiveIp(span: string): boolean {
 	if (span === "::" || span === "::1") return true
 	if (/^fe80:/i.test(span)) return true
 	if (/^2001:db8:/i.test(span)) return true
-	// Prefix-only v6 fragments — a lone hex hunk followed by `::` and nothing
-	// after — are not addresses: ClickHouse scope markers (`DB::`), Go module
-	// versions (`core::0136::`), ULA prefixes (`fc00::`). Real addresses carry
-	// at least one more group (`2001:db8::1`, `fe80::1`, …).
-	if (/^[0-9a-f]{1,4}::$/i.test(span)) return true
+	// Prefix-only v6 fragments that cannot start a real address: ClickHouse
+	// scope markers (`DB::`), Go module versions (`core::0136::`), the bare ULA
+	// network prefix (`fc00::`). Routable global unicast (2000::/3 → `2xxx::`,
+	// `3xxx::`) and ULA /48 bases (`fdXX::`) are real topology — kept, same
+	// precedent as RFC1918 above.
+	if (/^[0-9a-f]{1,4}::$/i.test(span) && !/^[23][0-9a-f]{3}::$/i.test(span) && !/^fd[0-9a-f]{2}::$/i.test(span))
+		return true
 	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(span)
 	if (!v4) return false
 	const [a, b] = [Number(v4[1]), Number(v4[2])]
@@ -359,7 +361,21 @@ const BASE64_SHADOW_ENTITIES: ReadonlySet<string> = new Set([
 	"GCP_API_KEY",
 ])
 
-const BASE64_SHADOW_CHAR = /[A-Za-z0-9+/=]/
+/**
+ * Char sets for shadow evidence. START-side: the base64 alphabet, but NOT
+ * `=` — the assignment byte (`KEY=<token>`) is the most common real-secret
+ * framing and must never be treated as entropy (security-002). END-side:
+ * only the blob terminator bytes `+`, `/`, `=` — engine value regexes are
+ * greedy alnum tails, so an alphanumeric end-neighbor is truncation of a
+ * real (over-long) key, not embedding; inside a blob the span's boundary is
+ * always one of the three.
+ */
+function isBase64RunChar(c: string): boolean {
+	return c.length > 0 && IS_BASE64_CHAR[c.charCodeAt(0)] === 1
+}
+function isBase64TailChar(c: string): boolean {
+	return c === "+" || c === "/" || c === "="
+}
 
 /**
  * Whether a detection of a base64-shadow-prone entity sits inside an entropy
@@ -369,12 +385,22 @@ const BASE64_SHADOW_CHAR = /[A-Za-z0-9+/=]/
  * kept — a single ambiguous neighbor fails toward redaction. Marker text
  * breaks the run (`[`/`]` are not base64), so fixture strings keep redacting.
  */
+/**
+ * How much base64 run precedes position `start` (padding counts as base64).
+ * The engine-shadow predicate keys on immediate neighbors; keyword-anchored
+ * custom patterns (GENERIC_SECRET) need a longer witness because their value
+ * charset swallows base64 chars, so an end-neighbor never proves embedding.
+ */
+export function base64RunBefore(text: string, start: number): number {
+	let n = 0
+	for (let i = start - 1; i >= 0 && isBase64RunChar(text.charAt(i)); i--) n++
+	return n
+}
+
 export function isBase64ShadowDrop(entityType: string, text: string, start: number, end: number): boolean {
 	if (!BASE64_SHADOW_ENTITIES.has(entityType)) return false
 	if (start <= 0 || end >= text.length) return false
-	const before = text[start - 1]
-	const after = text[end]
-	return before !== undefined && after !== undefined && BASE64_SHADOW_CHAR.test(before) && BASE64_SHADOW_CHAR.test(after)
+	return isBase64RunChar(text.charAt(start - 1)) && isBase64TailChar(text.charAt(end))
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +532,16 @@ export async function detectAndComposeTokenized(
  * secretGroup) replace the whole match, which is correct for prefixed
  * shapes.
  */
-const CUSTOM_PATTERNS: RedactionPattern[] = [
+/**
+ * `skipIfEmbeddedInBase64`: anchored keyword shapes also occur inside base64
+ * payloads, where the keyword appears mid-blob. When the flag is set, matches
+ * immediately preceded by a >=16-char base64 run are skipped — the engine's
+ * base64-shadow drop covers engine detections only, and the keyword would
+ * otherwise re-capture the span the drop removed.
+ */
+type CustomPattern = RedactionPattern & { skipIfEmbeddedInBase64?: boolean }
+
+const CUSTOM_PATTERNS: CustomPattern[] = [
 	// CastAI API keys
 	{ name: "CASTAI_API_KEY", regex: /castai_v1_[A-Za-z0-9_-]{8,}/g },
 	// Bearer tokens (Authorization header or standalone). Anchor is captured
@@ -519,7 +554,7 @@ const CUSTOM_PATTERNS: RedactionPattern[] = [
 	// Anthropic keys first — the generic sk- catch-all below would otherwise
 	// claim sk-ant- spans under the wrong label (matters for vault tokens and
 	// telemetry attribution). First pattern wins the span.
-	{ name: "ANTHROPIC_KEY", regex: /\bsk-ant-[A-Za-z0-9_-]{10,}\b/g },
+	{ name: "ANTHROPIC_KEY", regex: /\bsk-ant-[A-Za-z0-9_-]{6,}\b/g },
 	// OpenAI-style API keys (sk-, sk-proj-, sk-conv-) — the bulkhead
 	// secret engine's key guard misses the newer prefixed formats (verified:
 	// sk-proj-… passes through untouched, and exported such a key once).
@@ -601,14 +636,17 @@ const CUSTOM_PATTERNS: RedactionPattern[] = [
 	// coverage (anchor_required, excluded by default) for the free-text case
 	// the JSON sensitive-key path cannot see. Value charset excludes `[` so
 	// an earlier pattern's `[REDACTED-…]` marker is never re-consumed.
-	// The anchor consumes a leading non-identifier byte: without it the keyword
-	// matches keyword-shaped suffixes of camelCase identifiers
+	// The anchor consumes a leading non-alphanumeric byte: without it the
+	// keyword matches keyword-shaped suffixes of camelCase identifiers
 	// (`oauthAccessToken = "kimchi-e2e-…"` → "Token = …" — measured ~2,850
-	// false redactions across engineering transcripts).
+	// false redactions across engineering transcripts). `_` / `-` stay legal
+	// boundaries: MY_TOKEN=… env keys and --token=… CLI flags are real
+	// secret habitats, not identifiers.
 	{
+		skipIfEmbeddedInBase64: true,
 		name: "GENERIC_SECRET",
 		regex:
-			/((?:^|[^A-Za-z0-9_-])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
+			/((?:^|[^A-Za-z0-9])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
 		secretGroup: 2,
 	},
 	// Docker registry auth from a config's JSON `"auth"` key (base64 of
@@ -697,11 +735,18 @@ export function applyCustomPatterns(
 	patterns?: readonly RedactionPattern[],
 ): string {
 	let result = text
-	const all = patterns ?? CUSTOM_PATTERNS
-	for (const { name, regex, secretGroup } of all) {
+	const all: readonly CustomPattern[] = patterns ?? CUSTOM_PATTERNS
+	for (const pattern of all) {
+		const { name, regex, secretGroup } = pattern
 		if (disabled.has(name)) continue
 		const marker = `[REDACTED-${name}]`
-		result = result.replace(regex, (match, ...args: unknown[]) => {
+		result = result.replace(regex, (match: string, ...args: unknown[]) => {
+			if (pattern.skipIfEmbeddedInBase64) {
+				const offset = args[args.length - 2]
+				const input = args[args.length - 1]
+				if (typeof offset === "number" && typeof input === "string" && base64RunBefore(input, offset) >= 16)
+					return match
+			}
 			if (secretGroup !== undefined) {
 				// Replace by POSITION, never by substring search: the secret's text
 				// can also occur inside the anchor (user == password URLs, keyword

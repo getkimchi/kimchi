@@ -383,6 +383,13 @@ describe("redactText — custom secret patterns", () => {
 		expect(result).not.toContain("[REDACTED-OPENAI_API_KEY]")
 	})
 
+	it("short-tailed sk-ant- keys keep the pre-split coverage floor", async () => {
+		const key = ["sk-ant-", "K9", "d7q2"].join("")
+		const result = await redactText(`key: ${key}`)
+		expect(result).not.toContain(key)
+		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
+	})
+
 	it("redacts standalone GitHub tokens whole (ghp_ numeric tails, mixed PATs)", async () => {
 		const result = await redactText(`Token ${fx.ghpToken} leaked`)
 		expectRedacted(result, fx.ghpToken, "GITHUB_TOKEN")
@@ -741,6 +748,20 @@ describe("anchored splice and re-additions — review regressions", () => {
 		const positive = await redactText(`token: ${fixture}`)
 		expect(positive).not.toContain(fixture)
 		expect(positive).toContain("[REDACTED-GENERIC_SECRET]")
+	})
+
+	it("keeps redacting SNAKE_CASE env keys and dashed CLI flags", async () => {
+		// `_` / `-` are keyword boundaries, not identifier chars: MY_TOKEN=…
+		// and --token=… are real secret habitats (contracts-001 fix).
+		const secret = ["s", "c9f2b7a1d3e5f7a9c1b3d5e7f9a1c3e5"].join("")
+		const envLine = `MY_TOKEN=${secret}`
+		const env = await redactText(envLine)
+		expect(env).not.toContain(secret)
+		expect(env).toContain("[REDACTED-GENERIC_SECRET]")
+		const flag = await redactText(`run --token=${secret} now`)
+		expect(flag).not.toContain(secret)
+		expect(flag).toContain("[REDACTED-GENERIC_SECRET]")
+		expect(flag).toContain("--token=")
 	})
 
 	it("re-adds DOCKER_REGISTRY_AUTH from the config's JSON auth key", async () => {
@@ -1163,6 +1184,9 @@ describe("precision defaults — true-positive guards", () => {
 		["192.168.1.10", "RFC1918 /16"],
 		["172.16.5.4", "RFC1918 /12"],
 		["fc00::1", "ipv6 ULA"],
+		["2607::", "routable global-unicast base (security-003)"],
+		["2a00::", "RIPE global-unicast base (security-003)"],
+		["fd12::", "ULA /48 base (security-003)"],
 		["2001:4860:4860::8888", "global IPv6 (must not be caught by the db8 rule)"],
 	])("keeps %s (%s)", (span) => {
 		expect(isNonSensitiveIp(span)).toBe(false)
@@ -1175,7 +1199,7 @@ describe("base64-shadow suppression", () => {
 
 	it("drops base64-shadow-prone entities embedded in an entropy block", () => {
 		const token = fbShape()
-		const text = `iVBORw0KGgo${token}SUQmCC`
+		const text = `iVBORw0KGgo${token}+`
 		const start = text.indexOf(token)
 		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", text, start, start + token.length)).toBe(true)
 	})
@@ -1217,6 +1241,15 @@ describe("base64-shadow suppression", () => {
 		const delimited = await redactText(`FACEBOOK_TOKEN="${token}"`)
 		expect(delimited).not.toContain(token)
 		expect(delimited).toContain("[REDACTED-FACEBOOK_TOKEN]")
+	})
+
+	it("over-length vendor keys in ordinary assignments still redact (security-002)", async () => {
+		// Engine spans are length-capped (LTAI{12,20}): past the cap the
+		// end-neighbor is alphanumeric — truncation, not entropy embedding.
+		const longKey = "LTAI" + "aB3dE6gH9jK2mN5pQ8sT1v2W4yZ6"
+		const result = await redactText(`ACCESS_KEY_ID=${longKey}`)
+		expect(result).not.toContain(longKey)
+		expect(result).toContain("[REDACTED-ALIBABA_CLOUD_KEY]")
 	})
 })
 
