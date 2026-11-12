@@ -215,6 +215,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		description: "Absolute per-process safety limit for background bash commands, in seconds (default 3600)",
 		placeholder: "<seconds>",
 	},
+	"background-runs": {
+		type: "boolean",
+		description:
+			"Opt in to background runs for the embedding host: rpc-mode turns may end while managed commands keep running",
+	},
 	"mcp-config": {
 		type: "string",
 		description: "Use a specific MCP configuration file",
@@ -267,6 +272,7 @@ export interface SessionCliArgs {
 		"no-approve"?: boolean
 		"permissions-config"?: string
 		"bash-process-limit"?: string
+		"background-runs"?: boolean
 		"mcp-config"?: string
 		verbose?: boolean
 		"no-auto-update"?: boolean
@@ -347,6 +353,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"no-approve",
 	"permissions-config",
 	"bash-process-limit",
+	"background-runs",
 	"mcp-config",
 	"verbose",
 	"no-auto-update",
@@ -392,6 +399,11 @@ export function getParsedCliArgs(): SessionCliArgs {
 		cachedCliArgs = parseCliArgs(process.argv.slice(2))
 	}
 	return cachedCliArgs
+}
+
+/** True when the embedding host passed `--background-runs` (rpc-mode opt-in to run-outliving turns). */
+export function hasBackgroundRunsFlag(): boolean {
+	return getParsedCliArgs().options["background-runs"] === true
 }
 
 export function normalizeResumeIdArgs(args: string[]): string[] {

@@ -26,21 +26,22 @@ describe("resolveBashSessionKind — policy matrix", () => {
 		expect(resolveBashSessionKind({ mode: "tui", isWorker: false })).toBe("user-facing")
 	})
 
-	it("rpc sessions are user-facing when background runs are permitted (the bare-RPC default)", () => {
-		// The historical premise: the rpc channel means a conversational
-		// frontend with a human driving it (the ACP server installs mode
-		// "rpc"; `--mode rpc` embeds frontends such as studio). A host that
-		// never declares background-run wiring — bare RPC included — keeps
-		// this contract, since nothing mutates the flag.
+	it("rpc sessions are user-facing once the host opted into background runs", () => {
+		// The rpc channel serves embedding hosts (ACP installs mode "rpc";
+		// bare `--mode rpc` serves other integrations). Only a host that
+		// declared run wiring — the ACP backgroundRuns capability or the
+		// `--background-runs` launch toggle — gets turns that may END
+		// while background commands keep running.
+		setBackgroundRunsPermitted(true)
 		expect(resolveBashSessionKind({ mode: "rpc", isWorker: false })).toBe("user-facing")
 	})
 
-	it("an rpc client without background-run permission keeps the completion guard", () => {
-		// A client that cannot render background_run_start/background_run_end and stop an
-		// agent-initiated run must not see turns END mid-run: the
-		// completion guard makes its turn wait out background commands,
-		// and its existing stop button covers everything — no ghost runs.
-		setBackgroundRunsPermitted(false)
+	it("rpc sessions stay on the completion guard until the host opts in (the default)", () => {
+		// An unknown rpc client cannot render background_run_start/
+		// background_run_end or stop an agent-initiated run, so it must
+		// not see turns END mid-run: the completion guard makes its turn
+		// wait out background commands, and its existing stop button
+		// covers everything — no ghost runs.
 		expect(resolveBashSessionKind({ mode: "rpc", isWorker: false })).toBe("unattended")
 	})
 

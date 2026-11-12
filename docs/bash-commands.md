@@ -57,7 +57,7 @@ E2E rigs shorten the handoff with `KIMCHI_E2E_BASH_HANDOFF_SECONDS` (honored onl
 
 ## Interactive sessions and user messages
 
-Interactive sessions — the TUI and rpc-driven integrations (the embedding channel for conversational frontends) — treat the user as present: turns may end while background runs continue. ACP clients must opt into that at initialize with `_meta["kimchi.dev"].backgroundRuns: true`; the server maps the capability onto the session policy, so a client without the opt-in keeps the completion guard from the next section instead — it cannot present an agent-initiated run's stop button, and background_run_start/background_run_end are emitted only to opted-in clients.
+Interactive sessions — the TUI and rpc-driven integrations whose host opted into background runs — treat the user as present: turns may end while background runs continue. Opt-in is explicit per channel, because a client without run wiring cannot present an agent-initiated run's stop button: ACP clients pass `_meta["kimchi.dev"].backgroundRuns: true` at initialize (the server maps the capability onto the session policy, and background_run_start/background_run_end are emitted only to such clients); other `--mode rpc` hosts pass `--background-runs` at launch. A host without either opt-in keeps the completion guard from the next section instead.
 
 With the user treated as present:
 
