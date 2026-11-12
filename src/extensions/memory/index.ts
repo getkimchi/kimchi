@@ -349,6 +349,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		let digestAttempt: { epoch: number; startedAt: number; waiting: boolean } | undefined
 		// True once this epoch has had its one blocking attempt.
 		let digestWaited = false
+		// Bumped at every before_agent_start: a digest settling during a later
+		// turn must not fire that turn's UI notify (the "Recalled N memories"
+		// popup would land mid-generation of an unrelated turn).
+		let turnSeq = 0
 		// Reads through a function: the settle handler assigns `digest` from a
 		// closure, which control-flow narrowing at the call site cannot see.
 		const readDigest = (): DigestState | null | undefined => digest
@@ -469,10 +473,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// real uiContext (server.ts bindExtensions), so hasUI is true there and
 		// the count reaches IDE clients via the setStatus bridge
 		// (acp-ui-context.ts forwards it as _kimchi.dev/pi_notify).
-		const updateMemoryStatus = (ctx: ExtensionContext): void => {
+		const updateMemoryStatus = (ctx: ExtensionContext, notify = true): void => {
 			if (!ctx.hasUI) return
 			ctx.ui.setStatus(MEMORY_STATUS_KEY, deliveredFacts.length > 0 ? String(deliveredFacts.length) : undefined)
-			if (!recallNotified && deliveredFacts.length > 0) {
+			if (notify && !recallNotified && deliveredFacts.length > 0) {
 				recallNotified = true
 				ctx.ui.notify(`Recalled ${memoryCountText(deliveredFacts.length)}`, "info")
 			}
@@ -503,15 +507,24 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// the init, so a later caller must join it instead of starting a second.
 		let searcherInit: Promise<MemorySearcher | undefined> | undefined
 		let searcherInitStartedAt = 0
+		// Generation of the most recently STARTED init: an abandoned init that
+		// settles late must not overwrite a newer init's searcher or latch a
+		// session-long hard failure — only the current generation may write.
+		let searcherInitGen = 0
+		// Staleness reads the monotonic clock — a wall-clock step (NTP, manual
+		// change) must neither extend nor shorten the bound. Shared by the
+		// searcher-init and digest-attempt abandonments so the two cannot drift.
+		const hungPast = (startedAt: number): boolean => performance.now() - startedAt > MEMORY_SEARCH_TIMEOUT_MS
 		const getSearcher = (): Promise<MemorySearcher | undefined> => {
 			if (searcher) return Promise.resolve(searcher)
 			if (searcherFailed) return Promise.resolve(undefined)
 			// A wedged factory must not wedge the session: past the search bound
 			// the stuck init is abandoned and a fresh one may start.
-			if (searcherInit && Date.now() - searcherInitStartedAt > MEMORY_SEARCH_TIMEOUT_MS) searcherInit = undefined
+			if (searcherInit && hungPast(searcherInitStartedAt)) searcherInit = undefined
 			if (!searcherInit) {
-				searcherInitStartedAt = Date.now()
-				const init = initSearcher().finally(() => {
+				searcherInitStartedAt = performance.now()
+				const gen = ++searcherInitGen
+				const init = initSearcher(gen).finally(() => {
 					// Identity check: only clear our own entry.
 					if (searcherInit === init) searcherInit = undefined
 				})
@@ -520,14 +533,22 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			return searcherInit
 		}
 
-		const initSearcher = async (): Promise<MemorySearcher | undefined> => {
+		const initSearcher = async (gen: number): Promise<MemorySearcher | undefined> => {
+			// True when a newer init has started since this one — a late settle
+			// from an abandoned init hands its value to its joiners but writes
+			// neither the cached searcher nor the failure latch.
+			const stale = () => gen !== searcherInitGen
 			if (deps.createSearcher) {
 				try {
-					searcher = await deps.createSearcher()
+					const s = await deps.createSearcher()
+					if (stale()) return s
+					searcher = s
 				} catch (err) {
 					// A throwing factory is a hard failure for this session — mark it
-					// so later turns (progressive recall) don't retry it.
-					searcherFailed = true
+					// so later turns (progressive recall) don't retry it. An abandoned
+					// init's late rejection must not latch the failure over a newer
+					// init that may have succeeded.
+					if (!stale()) searcherFailed = true
 					throw err
 				}
 				if (!searcher) searcherFailed = true
@@ -538,10 +559,12 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// store, merged by score (a project-store failure degrades to
 				// personal-only inside createScopedSearcher). The cwd is captured at
 				// the first agent start; the tool fallback uses personal-only.
-				searcher = await createScopedSearcher(sessionCwd ?? "")
+				const s = await createScopedSearcher(sessionCwd ?? "")
+				if (stale()) return s
+				searcher = s
 				return searcher
 			} catch (err) {
-				searcherFailed = true
+				if (!stale()) searcherFailed = true
 				logDegrade("memory backend unavailable, continuing without memory", err)
 				return undefined
 			}
@@ -616,11 +639,30 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			query: string,
 			ctx: ExtensionContext,
 		): { attempt: { waiting: boolean }; settled: Promise<void> } => {
-			const attempt = { epoch: digestEpoch, startedAt: Date.now(), waiting: !digestWaited }
+			const attempt = { epoch: digestEpoch, startedAt: performance.now(), waiting: !digestWaited }
 			digestAttempt = attempt
+			// Turns tick at every before_agent_start; if the settle lands while a
+			// LATER turn is mid-flight, its UI notify would pop mid-generation of
+			// an unrelated turn — gate the notify on the attempt still belonging to
+			// the current turn (the status segment still updates; it is idempotent).
+			const attemptTurn = turnSeq
 			const settled = computeDigest(query).then((d) => {
-				if (digestAttempt !== attempt || attempt.epoch !== digestEpoch || !memoryActive()) {
-					mark("memory.digest.discarded")
+				if (digestAttempt !== attempt) {
+					mark("memory.digest.discarded", { reason: "stale" })
+					return
+				}
+				if (attempt.epoch !== digestEpoch) {
+					mark("memory.digest.discarded", { reason: "epoch" })
+					return
+				}
+				if (!memoryActive()) {
+					// The toggle flipped without a turn observing it (e.g. off/on
+					// entirely between starts): clear the tombstone and the epoch's
+					// blocking-wait credit so the next active start retries
+					// immediately instead of waiting out the abandon bound.
+					mark("memory.digest.discarded", { reason: "inactive" })
+					digestAttempt = undefined
+					digestWaited = false
 					return
 				}
 				digestAttempt = undefined
@@ -632,8 +674,8 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						deliveredFacts.push(fact)
 					}
 				}
-				updateMemoryStatus(ctx)
-				if (!attempt.waiting) mark("memory.digest.adopted", { empty: d === null })
+				updateMemoryStatus(ctx, turnSeq === attemptTurn)
+				mark("memory.digest.adopted", { empty: d === null })
 			})
 			return { attempt, settled }
 		}
@@ -643,6 +685,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// union — memory digests/recall key off user prompts only.
 			if (event.messageType !== "user") return
 			markSession ??= ctx.sessionManager.getSessionId()
+			turnSeq++
 			clearMemoryView(ctx)
 			// Capture the session cwd once — scopes retrieval to the project store.
 			sessionCwd ??= ctx.cwd
@@ -704,15 +747,18 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// A pending attempt past the search bound is presumed hung: abandon it
 				// (its late settle is ignored by the identity check) so a fresh one can
 				// start. Otherwise a pending attempt is left alone — one in flight max.
-				if (digestAttempt && Date.now() - digestAttempt.startedAt > MEMORY_SEARCH_TIMEOUT_MS) {
+				if (digestAttempt && hungPast(digestAttempt.startedAt)) {
 					mark("memory.digest.abandoned")
+					console.info("[memory] digest attempt presumed hung — abandoned, a fresh one will start")
 					digestAttempt = undefined
 				}
 				if (!digestAttempt) {
 					const { attempt, settled } = startDigestAttempt(event.prompt, ctx)
 					if (digestWaited) {
 						// Only the first attempt per epoch blocks the turn; retries run
-						// in the background and are adopted when they land.
+						// in the background and are adopted when they land. NOTE: this
+						// begin has no paired digest.end — the detached span's terminals
+						// are memory.digest.adopted / .discarded / .abandoned.
 						mark("memory.digest.begin", { detached: true })
 					} else {
 						digestWaited = true
