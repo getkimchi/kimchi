@@ -82,12 +82,14 @@ import {
 	UNKNOWN_CAPTURE_SESSION_ID,
 	TRANSIENT_JOB_MAX_ATTEMPTS,
 } from "./config.js"
-import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, systemoneEndpoint } from "./decision-gate.js"
+import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
 import { factClassesEnabled, parseBooleanFlag } from "./flags.js"
 import type { DecisionGateKind } from "./gates.js"
 import {
 	buildValuationState,
 	parseDecisionGateFlag,
+	triageQuestions,
+	triageVerdict,
 	VALUATION_DISCARD_MIN_P,
 	valuationContextEnabled,
 	valuationQuestion,
@@ -608,7 +610,13 @@ function traceEventContext(ctx: TraceCtx): Record<string, unknown> {
 	return { job: ctx.job, window: ctx.window }
 }
 
-type TraceApiKind = "extraction-user" | "extraction-assistant" | "supersede-chat" | "valuation" | "supersede-d3"
+type TraceApiKind =
+	| "extraction-user"
+	| "extraction-assistant"
+	| "supersede-chat"
+	| "triage"
+	| "valuation"
+	| "supersede-d3"
 
 /** Clone llm options with the exchange hook bound to an api event
  * carrying the given kind + event context (job/window or store). */
@@ -1560,6 +1568,9 @@ export interface JobPlan {
 	transientWindowCount: number
 }
 
+/** Shared empty result — consumers only spread the arrays, so reuse is safe. */
+const EMPTY_TAGGED: TaggedFacts = { personal: [], project: [] }
+
 /** One extraction unit for phase B: a window with a pointer back to its plan. */
 interface ExtractionTask {
 	plan: JobPlan
@@ -1733,16 +1744,66 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		}
 	}
 
-	// No pre-extraction gate: every window extracts. The d3 triage split
-	// (2026-11-12, removable 2026-11-12) was retired the same day — with the
-	// reasoning lane, essentially every window carries tool/reasoning content
-	// the triage bypass already exempted, and the gate's only effect on the
-	// rest was to waste a decision call judging classes it could not score.
-	// Post-extraction valuation remains the discard control. Windows that
-	// extract to [] are hash-marked in the claim phase like any empty window,
-	// so an extracted-empty window never re-enters a later drain.
-	const results = await mapWithConcurrency(tasks, drainConcurrency, extractTask)
-	const triagedOut = 0
+	// Triage gate: five per-window d3 questions (four gating content classes +
+	// one trace-only signal), run on EVERY window — the tool-evidence bypass
+	// was removed 2026-11-12 (the gate must always happen; valuation then
+	// discards after extraction). A window below the durable bar on EVERY
+	// gate class skips extraction; its outcome is ok/empty so the claim phase
+	// hash-marks it like an extracted-empty window — a triaged-out window
+	// must never re-enter a later drain. Per-window gate failure degrades to
+	// extraction (fail-open). The multi-class split (2026-11-12) replaced the
+	// single has_durable_fact question, which crushed evidence-grounded
+	// assistant conclusions at p≈0.05–0.24.
+	let results: ExtractionOutcome[]
+	let triagedOut = 0
+	if (decision.enabled.has("triage") && decision.gate) {
+		const gate = decision.gate
+		const skips = await mapWithConcurrency(tasks, drainConcurrency, async (task) => {
+			try {
+				const job = basename(task.plan.jobFile)
+				const gateTraced = trace ? withGateApiHook(gate, "triage", { job, window: task.index }, trace) : gate
+				const response = await decide(gateTraced, renderWindow(task.window), triageQuestions(), "triage")
+				const verdict = triageVerdict(response.answers)
+				if (verdict.skip) {
+					trace?.emit({
+						type: "phase",
+						phase: "triage-skip",
+						job,
+						window: task.index,
+						probability: verdict.maxP,
+						topClass: verdict.topClass,
+						probabilities: verdict.probabilities,
+					})
+				}
+				return verdict.skip
+			} catch (err) {
+				console.error(
+					"[memory-capture] triage gate failed, extracting window (fail-open):",
+					err instanceof Error ? err.message : err,
+				)
+				return false
+			}
+		})
+		const runTasks: ExtractionTask[] = []
+		results = new Array(tasks.length)
+		for (let i = 0; i < tasks.length; i++) {
+			if (skips[i]) {
+				results[i] = { ok: true, facts: EMPTY_TAGGED }
+				triagedOut += 1
+			} else {
+				runTasks.push(tasks[i] as ExtractionTask)
+			}
+		}
+		const runResults = await mapWithConcurrency(runTasks, drainConcurrency, extractTask)
+		for (let i = 0, k = 0; i < tasks.length; i++) {
+			if (!skips[i]) {
+				results[i] = runResults[k] as ExtractionOutcome
+				k += 1
+			}
+		}
+	} else {
+		results = await mapWithConcurrency(tasks, drainConcurrency, extractTask)
+	}
 	// One retry round for transient failures — the pre-pipeline drain relied
 	// on a later superset job re-carrying the messages; the claim pass now
 	// dedupes those, so the retry lives here instead. Poisoned windows sit
@@ -1898,6 +1959,9 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 				})
 			}
 		}
+	}
+	if (triagedOut > 0) {
+		console.info(`[memory-capture] ${triagedOut} window(s) skipped by triage (judged non-durable)`)
 	}
 	if (skippedNonDurable > 0 || skippedByValuation > 0 || redacted > 0 || skippedOversized > 0) {
 		console.info(
