@@ -201,9 +201,30 @@ describe("digest selection floor (KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES)
 })
 
 describe("buildTurnRecall (progressive-recall value gate)", () => {
+	it("drops candidates that merely echo the query itself (self-echo guard)", () => {
+		const query = "pressed: a,a,b | step 38 | badges=0 party=0"
+		const echo = "pressed: a,a,b step 38 badges 0 party 0"
+		const recall = buildTurnRecall([{ memory: echo, score: 0.99 }], new Set(), query)
+		expect(recall).toBeUndefined()
+	})
+
+	it("keeps candidates that share words with the query but add new information", () => {
+		const query = "planned next step: retry the deploy after the backoff"
+		const novel = "the deploy endpoint rejects payloads above 8KB with a 413"
+		const recall = buildTurnRecall([{ memory: novel, score: 0.5 }], new Set(), query)
+		expect(recall?.facts).toHaveLength(1)
+	})
+
+	it("is case- and punctuation-insensitive across script boundaries in the word sets", () => {
+		const query = "badges=0 party=0"
+		const echo = "Badges 0, party 0."
+		const recall = buildTurnRecall([{ memory: echo, score: 0.99 }], new Set(), query)
+		expect(recall).toBeUndefined()
+	})
+
 	it("keeps at most TURN_RECALL_MAX_FACTS new facts and counts the overflow", () => {
 		const hits = [1, 2, 3, 4, 5].map((i) => ({ memory: `fact ${i}`, score: 0.5 }))
-		const recall = buildTurnRecall(hits, new Set())
+		const recall = buildTurnRecall(hits, new Set(), "")
 		expect(recall?.facts).toHaveLength(TURN_RECALL_MAX_FACTS)
 		expect(recall?.composition.facts).toBe(TURN_RECALL_MAX_FACTS)
 		expect(recall?.composition.overCap).toBe(5 - TURN_RECALL_MAX_FACTS)
@@ -211,7 +232,7 @@ describe("buildTurnRecall (progressive-recall value gate)", () => {
 
 	it("truncates facts over the per-fact char cap; the ledger keeps the full fact", () => {
 		const long = "y".repeat(TURN_RECALL_MAX_FACT_CHARS + 100)
-		const recall = buildTurnRecall([{ memory: long, score: 0.5 }], new Set())
+		const recall = buildTurnRecall([{ memory: long, score: 0.5 }], new Set(), "")
 		if (!recall) throw new Error("expected a recall")
 		expect(recall.text).toContain("…")
 		expect(recall.text.replace("- ", "").length).toBe(TURN_RECALL_MAX_FACT_CHARS)
@@ -226,12 +247,13 @@ describe("buildTurnRecall (progressive-recall value gate)", () => {
 				{ memory: "brand new", score: 0.5 },
 			],
 			delivered,
+			"",
 		)
 		expect(recall?.facts).toEqual(["brand new"])
 	})
 
 	it("returns undefined when nothing new clears the bar", () => {
-		expect(buildTurnRecall([{ memory: "weak", score: 0.1 }], new Set())).toBeUndefined()
+		expect(buildTurnRecall([{ memory: "weak", score: 0.1 }], new Set(), "")).toBeUndefined()
 	})
 })
 
