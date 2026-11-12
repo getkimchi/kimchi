@@ -2119,7 +2119,6 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 			transientAttempts?: number
 			addAttempts?: number
 			staged?: StagedExtraction
-
 		}
 	} catch (err) {
 		// Poison job: an unparseable file can never be processed — remove it
@@ -2452,11 +2451,7 @@ async function commitPlan(
 				// this addAll — judging new facts against what is already known,
 				// which is exactly the duplicate/paraphrase judgment a blind
 				// per-fact verdict cannot make (KIMCHI_MEMORY_VALUATION_CONTEXT).
-				valuationDiscard = await valueGate(
-					eligible,
-					valuationContextEnabled() ? existing.rawTexts : undefined,
-					jobName,
-				)
+				valuationDiscard = await valueGate(eligible, valuationContextEnabled() ? existing.rawTexts : undefined, jobName)
 			} catch (err) {
 				console.error("[memory-capture] valuation gate failed, keeping this job's facts (fail-open):", err)
 				valuationDiscard = undefined
