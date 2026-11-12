@@ -4,12 +4,12 @@
  * Enabled only when KIMCHI_SUBMIT_TIMING points at an ABSOLUTE file path: every
  * mark is one JSONL line `{ ...detail, t, perf, seq, event, session }` (t =
  * wall-clock epoch ms, perf = performance.now(), session = the emitting
- * session's id, so a shared file splits per session — absent on lines written
- * before this field existed, and it correlates each prompt prefix to one
- * named session, so share the file accordingly). The path
- * must be absolute so marks can
- * never land inside the checked-out project (a relative value is ignored with
- * one error line). The file is created 0o600 and carries the first 80 chars
+ * session's id, so a shared file splits per session). The session field is
+ * absent on lines written before it existed, and it correlates each prompt
+ * prefix to one named session — share the file accordingly. The path must be
+ * absolute so marks can never land inside the checked-out project (a
+ * relative value is ignored with one error line). The file is created
+ * 0o600 and carries the first 80 chars
  * of each user prompt, so treat the location accordingly. Without the env var
  * (or with an invalid one) every mark is a no-op, so the extension is safe to
  * register unconditionally.
