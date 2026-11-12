@@ -38,7 +38,7 @@ describe("session PR monitor", () => {
 	})
 	function setup() {
 		const extension = createExtensionApi()
-		const ctx = createContext({ isIdle: vi.fn(() => true), isProjectTrusted: vi.fn(() => true) })
+		const ctx = createContext({ isIdle: vi.fn(() => true), isProjectTrusted: vi.fn(() => true), abort: vi.fn() })
 		const monitor = new PRMonitor(extension.api, ctx)
 		monitors.push(monitor)
 		return { monitor, ctx, extension }
@@ -117,6 +117,17 @@ describe("session PR monitor", () => {
 		expect(extension.sendMessage).toHaveBeenCalledTimes(2)
 	})
 
+	it("cancels its running repair when the user switches to watch-only", async () => {
+		const { monitor, ctx, extension } = setup()
+		await monitor.configure(true, true)
+		await monitor.configure(true, false)
+		expect(ctx.abort).toHaveBeenCalledOnce()
+		expect(monitor.snapshot).toMatchObject({ enabled: true, autoFix: false })
+		await monitor.settled(true)
+		await monitor.refresh()
+		expect(extension.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
 	it("requires review when a repair produces no new pushed commit", async () => {
 		const { monitor, extension } = setup()
 		await monitor.configure(true, true)
@@ -186,6 +197,20 @@ describe("session PR monitor", () => {
 		await monitor.refresh()
 		expect(monitor.snapshot).toMatchObject({ phase: "attention", autoFix: false })
 		expect(extension.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it.each(["merged", "changed"])("cancels its active repair when the PR is %s", async (state) => {
+		const { monitor, ctx, extension } = setup()
+		await monitor.configure(true, true)
+		vi.mocked(readPRSnapshot).mockResolvedValue(
+			state === "merged"
+				? { ...pr(), state: "merged" }
+				: { ...pr(), url: "https://github.com/owner/repo/pull/8", number: 8 },
+		)
+		await monitor.refresh()
+		expect(ctx.abort).toHaveBeenCalledOnce()
+		expect(monitor.snapshot.autoFix).toBe(false)
+		expect(extension.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
 	it("does not repair when another session owns the PR lease", async () => {

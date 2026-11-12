@@ -114,6 +114,7 @@ export class PRMonitor {
 		if (!this.state.enabled) this.target = undefined
 		if (autoFix && !this.state.autoFix) this.attempts = 0
 		this.publish({ enabled, autoFix, message: null, phase: this.repairHead ? "fixing" : "watching" })
+		if (!autoFix && this.repairHead) this.ctx.abort()
 		this.startTimer()
 		this.persist()
 		return this.refresh()
@@ -134,6 +135,7 @@ export class PRMonitor {
 			const pr = await readPRSnapshot(this.ctx.cwd, signal)
 			if (signal.aborted || this.stopped) return this.snapshot
 			if (this.state.enabled && this.target && (!pr || prKey(pr) !== this.target)) {
+				if (this.repairHead) this.ctx.abort()
 				this.publish({
 					autoFix: false,
 					phase: "attention",
@@ -154,6 +156,7 @@ export class PRMonitor {
 				this.persist()
 			}
 			if (pr.state !== "open") {
+				if (this.repairHead) this.ctx.abort()
 				this.publish({
 					enabled: false,
 					autoFix: false,
