@@ -314,6 +314,11 @@ export function isNonSensitiveIp(span: string): boolean {
 	if (span === "::" || span === "::1") return true
 	if (/^fe80:/i.test(span)) return true
 	if (/^2001:db8:/i.test(span)) return true
+	// Prefix-only v6 fragments — a lone hex hunk followed by `::` and nothing
+	// after — are not addresses: ClickHouse scope markers (`DB::`), Go module
+	// versions (`core::0136::`), ULA prefixes (`fc00::`). Real addresses carry
+	// at least one more group (`2001:db8::1`, `fe80::1`, …).
+	if (/^[0-9a-f]{1,4}::$/i.test(span)) return true
 	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(span)
 	if (!v4) return false
 	const [a, b] = [Number(v4[1]), Number(v4[2])]
@@ -334,6 +339,42 @@ export function isNonIdentifyingDetection(entityType: string, span: string): boo
 	if (entityType === "EMAIL_ADDRESS") return isNonIdentifyingEmail(span)
 	if (entityType === "IP_ADDRESS") return isNonSensitiveIp(span)
 	return false
+}
+
+/**
+ * Secret entities whose vendor-prefix shape also occurs inside base64-encoded
+ * binary payloads (embedded images, fonts). Measured on 2,604 engineering
+ * transcripts: 0–3% precision — their prefix is not load-bearing inside a
+ * base64 run. The entity still fires for real tokens in prose/JSON, where the
+ * token is properly delimited.
+ */
+const BASE64_SHADOW_ENTITIES: ReadonlySet<string> = new Set([
+	"FACEBOOK_TOKEN",
+	"AIRTABLE_KEY",
+	"TWITTER_BEARER_TOKEN",
+	"CRATES_IO_TOKEN",
+	"NUGET_KEY",
+	"SQUARE_ACCESS_TOKEN",
+	"ALIBABA_CLOUD_KEY",
+	"GCP_API_KEY",
+])
+
+const BASE64_SHADOW_CHAR = /[A-Za-z0-9+/=]/
+
+/**
+ * Whether a detection of a base64-shadow-prone entity sits inside an entropy
+ * block: base64-alphabet characters on BOTH sides of the span. A real secret
+ * is delimited (`token: EAAA…`, `"pat…",`); a payload noise segment never is
+ * (`iVBORwEAAA…SUQmCC`). Both characters must be base64 or the detection is
+ * kept — a single ambiguous neighbor fails toward redaction. Marker text
+ * breaks the run (`[`/`]` are not base64), so fixture strings keep redacting.
+ */
+export function isBase64ShadowDrop(entityType: string, text: string, start: number, end: number): boolean {
+	if (!BASE64_SHADOW_ENTITIES.has(entityType)) return false
+	if (start <= 0 || end >= text.length) return false
+	const before = text[start - 1]
+	const after = text[end]
+	return before !== undefined && after !== undefined && BASE64_SHADOW_CHAR.test(before) && BASE64_SHADOW_CHAR.test(after)
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +426,7 @@ export async function collectDetections(
 		for (const d of r.detections) {
 			if (excluded.has(d.entityType)) continue
 			if (isNonIdentifyingDetection(d.entityType, d.text)) continue
+			if (isBase64ShadowDrop(d.entityType, text, d.start, d.end)) continue
 			active.push({ entityType: d.entityType, start: d.start, end: d.end, text: d.text })
 		}
 	}
@@ -474,10 +516,16 @@ const CUSTOM_PATTERNS: RedactionPattern[] = [
 	// OAuth tokens (Google ya29.*, Azure)
 	// biome-ignore lint/complexity/noUselessEscapeInRegex: -
 	{ name: "OAUTH_TOKEN", regex: /ya29\.[A-Za-z0-9_\-]{16,}/g },
-	// OpenAI-style API keys (sk-, sk-proj-, sk-ant-, sk-conv-) — the bulkhead
+	// Anthropic keys first — the generic sk- catch-all below would otherwise
+	// claim sk-ant- spans under the wrong label (matters for vault tokens and
+	// telemetry attribution). First pattern wins the span.
+	{ name: "ANTHROPIC_KEY", regex: /\bsk-ant-[A-Za-z0-9_-]{10,}\b/g },
+	// OpenAI-style API keys (sk-, sk-proj-, sk-conv-) — the bulkhead
 	// secret engine's key guard misses the newer prefixed formats (verified:
 	// sk-proj-… passes through untouched, and exported such a key once).
-	{ name: "OPENAI_API_KEY", regex: /\bsk-[A-Za-z0-9_-]{10,}\b/g },
+	// Generic on purpose (unknown-future sk- formats), but sk-ant- is owned by
+	// the ANTHROPIC_KEY pattern above.
+	{ name: "OPENAI_API_KEY", regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{10,}\b/g },
 	// GitHub tokens outside a KEY=value assignment — bulkhead only catches
 	// them behind "TOKEN=". Covers personal/oauth/user-to-server/
 	// server-to-server/refresh prefixes (ghp_, gho_, ghu_, ghs_, ghr_) and
@@ -553,10 +601,14 @@ const CUSTOM_PATTERNS: RedactionPattern[] = [
 	// coverage (anchor_required, excluded by default) for the free-text case
 	// the JSON sensitive-key path cannot see. Value charset excludes `[` so
 	// an earlier pattern's `[REDACTED-…]` marker is never re-consumed.
+	// The anchor consumes a leading non-identifier byte: without it the keyword
+	// matches keyword-shaped suffixes of camelCase identifiers
+	// (`oauthAccessToken = "kimchi-e2e-…"` → "Token = …" — measured ~2,850
+	// false redactions across engineering transcripts).
 	{
 		name: "GENERIC_SECRET",
 		regex:
-			/((?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
+			/((?:^|[^A-Za-z0-9_-])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
 		secretGroup: 2,
 	},
 	// Docker registry auth from a config's JSON `"auth"` key (base64 of

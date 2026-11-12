@@ -11,6 +11,7 @@ import { getDefaultExcludedEntities } from "./entity-tiers.js"
 import {
 	applyCustomPatterns,
 	getRedactionConfigError,
+	isBase64ShadowDrop,
 	isGenericLocalPart,
 	isNonIdentifyingDetection,
 	isNonIdentifyingEmail,
@@ -374,6 +375,14 @@ describe("redactText — custom secret patterns", () => {
 		expect(result).toContain("Gateway key:")
 	})
 
+	it("labels sk-ant- keys ANTHROPIC_KEY, not OPENAI_API_KEY", async () => {
+		const key = ["sk-ant-", "a".repeat(24), "9K"].join("")
+		const result = await redactText(`claude key: ${key}`)
+		expect(result).not.toContain(key)
+		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
+		expect(result).not.toContain("[REDACTED-OPENAI_API_KEY]")
+	})
+
 	it("redacts standalone GitHub tokens whole (ghp_ numeric tails, mixed PATs)", async () => {
 		const result = await redactText(`Token ${fx.ghpToken} leaked`)
 		expectRedacted(result, fx.ghpToken, "GITHUB_TOKEN")
@@ -720,6 +729,18 @@ describe("anchored splice and re-additions — review regressions", () => {
 		// A 16+ run without a keyword passes (bare-shape precision).
 		const bare = `blob ${secret} tail`
 		expect(await redactText(bare)).toBe(bare)
+	})
+
+	it("rejects keyword-shaped identifier suffixes as GENERIC_SECRET anchors", async () => {
+		// The keyword must stand alone — inside a camelCase identifier it is not
+		// a keyword (`oauthAccessToken = …`, measured FP class).
+		const fixture = "c" + "zk7dj39sl4kf8tn2qp0a5wbxreu"
+		const assignment = `oauthAccessToken = "${fixture}"`
+		expect(await redactText(assignment)).toBe(assignment)
+		// The same value behind a real keyword still redacts.
+		const positive = await redactText(`token: ${fixture}`)
+		expect(positive).not.toContain(fixture)
+		expect(positive).toContain("[REDACTED-GENERIC_SECRET]")
 	})
 
 	it("re-adds DOCKER_REGISTRY_AUTH from the config's JSON auth key", async () => {
@@ -1083,6 +1104,11 @@ describe("precision defaults — measured false-positive families", () => {
 		["fe80::1", "ipv6 link-local"],
 		["2001:db8::", "ipv6 documentation prefix"],
 		["2001:db8::1", "ipv6 documentation address"],
+		// Prefix-only fragments are not addresses.
+		["DB::", "ClickHouse scope marker"],
+		["0136::", "Go module version in scoped path"],
+		["127::", "unknown-protocol scope fragment"],
+		["fc00::", "bare ULA network prefix"],
 	])("drops %s (%s)", (span) => {
 		expect(isNonSensitiveIp(span)).toBe(true)
 		expect(isNonIdentifyingDetection("IP_ADDRESS", span)).toBe(true)
@@ -1141,6 +1167,56 @@ describe("precision defaults — true-positive guards", () => {
 	])("keeps %s (%s)", (span) => {
 		expect(isNonSensitiveIp(span)).toBe(false)
 		expect(isNonIdentifyingDetection("IP_ADDRESS", span)).toBe(false)
+	})
+})
+
+describe("base64-shadow suppression", () => {
+	const fbShape = () => ["EAAC", "g".repeat(80)].join("")
+
+	it("drops base64-shadow-prone entities embedded in an entropy block", () => {
+		const token = fbShape()
+		const text = `iVBORw0KGgo${token}SUQmCC`
+		const start = text.indexOf(token)
+		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", text, start, start + token.length)).toBe(true)
+	})
+
+	it.each([
+		"FACEBOOK_TOKEN",
+		"AIRTABLE_KEY",
+		"TWITTER_BEARER_TOKEN",
+		"CRATES_IO_TOKEN",
+		"NUGET_KEY",
+		"SQUARE_ACCESS_TOKEN",
+		"ALIBABA_CLOUD_KEY",
+		"GCP_API_KEY",
+	])("applies to %s", (entity) => {
+		const text = `q+${"a".repeat(60)}/w`
+		expect(isBase64ShadowDrop(entity, text, 2, 62)).toBe(true)
+	})
+
+	it("fails toward redaction: edges, unknown entities, non-base64 neighbor", () => {
+		const token = fbShape()
+		// String edges have no neighbor to prove embedding.
+		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", token, 0, token.length)).toBe(false)
+		// Unknown entity types are never filtered.
+		expect(isBase64ShadowDrop("OPENAI_KEY", `q${token}w`, 1, 1 + token.length)).toBe(false)
+		// One delimiting neighbor is enough to keep the span.
+		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", `${token},`, 0, token.length)).toBe(false)
+		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", `"${token}"`, 1, 1 + token.length)).toBe(false)
+	})
+
+	it("pipeline: base64-embedded keyword-anchored runs pass through, delimited ones redact", async () => {
+		// The engine's FACEBOOK_TOKEN shape is keyword-anchored; embedded
+		// occurrences in base64 payloads are the measured FP class.
+		const token = ["EAAC", "g".repeat(60)].join("")
+		// The engine value regex greedily swallows trailing base64 chars into
+		// the span; base64 padding (`=`) breaks the run, as in real payloads.
+		const kw = "FACEB" + "OOK_TOKEN="
+		const embedded = `data:image/png;base64,iVBORw0KGgo${kw}${token}SUQmCC==`
+		expect(await redactText(embedded)).toBe(embedded)
+		const delimited = await redactText(`FACEBOOK_TOKEN="${token}"`)
+		expect(delimited).not.toContain(token)
+		expect(delimited).toContain("[REDACTED-FACEBOOK_TOKEN]")
 	})
 })
 
@@ -1443,15 +1519,24 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 		["bare secret with an empty image subtype", { mimeType: "image/", data: tokenShaped }],
 		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo${tokenShaped}` }],
 		["image data URL whose bytes are not an image", { image_url: { url: `data:image/png;base64,${tokenShaped}A` } }],
-		["image data URL inside a text block", { type: "text", text: `data:image/png;base64,${base64}` }],
-		["image data URL as a tool argument", { command: `data:image/png;base64,${base64}` }],
-		["image data URL under a generic url key", { url: `data:image/png;base64,${base64}` }],
 	])("still scans %s", async (_name, block) => {
 		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-CRATES_IO_TOKEN]")
 	})
 
-	it("scans a bare top-level image data URL as text", async () => {
-		expect(await redactObjectStrings(`data:image/png;base64,${base64}`)).toContain("[REDACTED-CRATES_IO_TOKEN]")
+	it.each([
+		["image data URL inside a text block", { type: "text", text: `data:image/png;base64,${base64}` }],
+		["image data URL as a tool argument", { command: `data:image/png;base64,${base64}` }],
+		["image data URL under a generic url key", { url: `data:image/png;base64,${base64}` }],
+	])("base64-embedded token shapes in %s pass through unmodified", async (_name, block) => {
+		// The shadow-entity match inside an entropy block is payload noise —
+		// splicing a marker into base64 corrupts the image (the provider 400
+		// bug documented above). Scanning stays on: the grid above redacts
+		// genuinely delimited secrets in these same contexts.
+		expect(await redactObjectStrings(block)).toEqual(block)
+	})
+
+	it("passes a bare top-level image data URL through byte-identical", async () => {
+		expect(await redactObjectStrings(`data:image/png;base64,${base64}`)).toBe(`data:image/png;base64,${base64}`)
 	})
 
 	it("keeps Bedrock's binary image bytes as a typed array", async () => {
