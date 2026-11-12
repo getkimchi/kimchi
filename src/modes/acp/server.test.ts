@@ -44,6 +44,10 @@ import {
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
+import {
+	resetBackgroundRunsPermittedForTest,
+	setBackgroundRunsPermitted,
+} from "../../extensions/bash-background/session-policy.js"
 import { setSessionState } from "../../extensions/bash-background/session-registry.js"
 import feedbackExtension from "../../extensions/feedback/index.js"
 import {
@@ -7013,7 +7017,12 @@ describe("generated artifacts (live turns)", () => {
 			clientCapabilities: {},
 			clientInfo: { name: "test", version: "0" },
 		})
-		expect(response.agentCapabilities?._meta?.["kimchi.dev"]).toMatchObject({ artifacts: true })
+		expect(response.agentCapabilities?._meta?.["kimchi.dev"]).toMatchObject({
+			artifacts: true,
+			// Clients feature-detect the background-runs gate through this flag
+			// before deciding whether to opt in at initialize.
+			backgroundRuns: true,
+		})
 	})
 })
 
@@ -8070,6 +8079,197 @@ describe("routed model notifications", () => {
 
 		// No-op extNotification: the fire-and-forget push must not reject the turn.
 		await expect(runTurn(agent, "session-routed-5")).resolves.toBeUndefined()
+	})
+})
+
+// An agent-initiated run (no prompt owns it, e.g. a background-bash exit
+// waking an idle agent) brackets its streamed output with background_run_start / background_run_end
+// ext notifications. The boundary must close exactly once per run — also when
+// a client prompt waits the run out and when the client cancels mid-run — so
+// a client anchored on `state: "running"` never sees a permanent-running
+// session.
+describe("run boundary notifications", () => {
+	const RUN_START = "_kimchi.dev/background_run_start"
+	const RUN_END = "_kimchi.dev/background_run_end"
+
+	async function startRunBoundarySession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+		// Background-runs opt-in: these tests exercise run boundaries, which
+		// only fire for clients that opted in at initialize. The unit fabric
+		// skips initialize, so set the same process flag it would set there.
+		setBackgroundRunsPermitted(true)
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		return agent
+	}
+
+	afterEach(() => {
+		resetBackgroundRunsPermittedForTest()
+	})
+
+	it("closes the boundary once before a prompt that waited out the run starts", async () => {
+		let releaseIdle!: () => void
+		const fake = new FakeAgentSession("session-rb-wait")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRunBoundarySession(fake, conn)
+		// The wait outlasts the run: real pi-mono notifies agent_settled
+		// listeners BEFORE waitForIdle resolves (_emitAgentSettled), and this
+		// harness mirrors that ordering.
+		fake.waitForIdleImpl = () =>
+			new Promise<void>((resolve) => {
+				releaseIdle = resolve
+			})
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+
+		// The unsolicited run starts — no prompt owns it.
+		fake.emit({ type: "agent_start" })
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toEqual([
+			{ method: RUN_START, params: { sessionId: "session-rb-wait", state: "running", reason: "agent-initiated" } },
+		])
+
+		const pending = agent.prompt({ sessionId: "session-rb-wait", prompt: [{ type: "text", text: "next question" }] })
+		await delay(0)
+		// The run chain drains; the boundary closes while the prompt still waits.
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		releaseIdle()
+
+		await expect(pending).resolves.toEqual({ stopReason: "end_turn" })
+		expect(fake.promptCalls.map((c) => c.prompt)).toEqual(["next question"])
+		// Exactly one boundary for the run — the waiting prompt's own turn
+		// opened no new one.
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
+			{ method: RUN_END, params: { sessionId: "session-rb-wait", state: "idle", stopReason: "end_turn" } },
+		])
+	})
+
+	it("a cancel mid-run closes the boundary with stopReason cancelled", async () => {
+		const fake = new FakeAgentSession("session-rb-cancel")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRunBoundarySession(fake, conn)
+
+		fake.emit({ type: "agent_start" })
+		await agent.cancel({ sessionId: "session-rb-cancel" })
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+
+		expect(fake.aborted).toBe(true)
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		// cancel() only marks prompt-owned turns, so without flagging the
+		// unsolicited context too this would mislabel the cancel "end_turn".
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
+			{ method: RUN_END, params: { sessionId: "session-rb-cancel", state: "idle", stopReason: "cancelled" } },
+		])
+	})
+
+	// Regression: a prompt parked behind an unsolicited run that gets cancelled
+	// released the parked wait — and the defensive unsolicitedTurn reset ran
+	// while the run was still streaming, so the aborted run's agent_settled
+	// found no context and skipped background_run_end. The client anchored on
+	// `state: "running"` saw a permanently-running session.
+	it("a cancel of a prompt parked behind the run still closes the boundary when the run settles", async () => {
+		const fake = new FakeAgentSession("session-rb-parked-cancel")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRunBoundarySession(fake, conn)
+		// The run stays in flight: waitForIdle never resolves on its own — only
+		// cancel's release of the parked wait lets the prompt continue.
+		fake.waitForIdleImpl = () => new Promise<void>(() => {})
+
+		// The unsolicited run starts — no prompt owns it.
+		fake.emit({ type: "agent_start" })
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toEqual([
+			{
+				method: RUN_START,
+				params: { sessionId: "session-rb-parked-cancel", state: "running", reason: "agent-initiated" },
+			},
+		])
+
+		// The prompt parks behind the run and is cancelled before its turn exists.
+		const pending = agent.prompt({
+			sessionId: "session-rb-parked-cancel",
+			prompt: [{ type: "text", text: "next question" }],
+		})
+		await delay(0)
+		await agent.cancel({ sessionId: "session-rb-parked-cancel" })
+
+		// The parked prompt never started its own turn.
+		await expect(pending).resolves.toEqual({ stopReason: "cancelled" })
+		expect(fake.promptCalls).toHaveLength(0)
+
+		// The aborted run settles: the boundary closes exactly once, labelled
+		// cancelled — resetting the unsolicited context on the cancel path would
+		// have skipped this background_run_end and leaked the background_run_start.
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
+			{ method: RUN_END, params: { sessionId: "session-rb-parked-cancel", state: "idle", stopReason: "cancelled" } },
+		])
+	})
+
+	// Regression: cancel() during the wake RAMP — the steer is submitted but
+	// pi's agent_start has not yet arrived — found no unsolicitedTurn to mark,
+	// so the cancel vanished; the run then emitted background_run_start, streamed to
+	// completion, and closed end_turn. The cancel now latches and the
+	// allocation consumes it: abort + cancelled stopReason.
+	it("a cancel during the wake ramp cancels the run when agent_start arrives", async () => {
+		const fake = new FakeAgentSession("session-rb-ramp")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRunBoundarySession(fake, conn)
+
+		await agent.cancel({ sessionId: "session-rb-ramp" })
+		fake.emit({ type: "agent_start" })
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
+			{ method: RUN_END, params: { sessionId: "session-rb-ramp", state: "idle", stopReason: "cancelled" } },
+		])
+	})
+
+	it("emits no run boundary for a client that did not opt into background runs at initialize", async () => {
+		// Model what initialize would write for a client without the
+		// backgroundRuns capability (initialize never runs in this test
+		// fabric). An unsophisticated client must never learn about an
+		// agent-initiated run it cannot present — and the completion guard
+		// it keeps means the turn wouldn't have ended anyway.
+		setBackgroundRunsPermitted(false)
+		const fake = new FakeAgentSession("session-rb-gated")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		fake.emit({ type: "agent_start" })
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(0)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toHaveLength(0)
+	})
+
+	it("an initialize opt-in unlocked run boundaries start-to-end for that process", async () => {
+		setBackgroundRunsPermitted(true)
+		const fake = new FakeAgentSession("session-rb-opted")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		fake.emit({ type: "agent_start" })
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toHaveLength(1)
 	})
 })
 

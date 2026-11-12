@@ -24,6 +24,10 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 //   routed-pick entry, on the project_trust_update precedent: not advertised
 //   in _meta, sessionId carried in the payload.
 //
+// background_run_start / background_run_end are agent→client extNotifications bracketing an
+//   agent-initiated run (one no client prompt owns), on the same precedent:
+//   not advertised in _meta, sessionId carried in the payload.
+//
 // Capability advertising: every entry here is exposed in
 // `_meta["kimchi.dev"][<key>] === true` so clients can discover the methods
 // the agent supports.
@@ -94,6 +98,8 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 	agent_activity: `_${CAPABILITIES_KEY}/agent_activity`,
 	routed_model: `_${CAPABILITIES_KEY}/routed_model`,
 	skill_autoload: `_${CAPABILITIES_KEY}/skill_autoload`,
+	background_run_start: `_${CAPABILITIES_KEY}/background_run_start`,
+	background_run_end: `_${CAPABILITIES_KEY}/background_run_end`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS
@@ -109,6 +115,26 @@ export const ADVERTISED_CAPABILITIES: Record<AcpExtMethod, boolean> = Object.key
 export function getClientSupportsMethod(capabilities: ClientCapabilities | undefined, method: AcpExtMethod): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
 	return flags?.[method] === true
+}
+
+/**
+ * Client opt-in key for background runs, in
+ * `clientCapabilities._meta["kimchi.dev"]` at initialize. Opted-in clients
+ * get async background runs: a prompt turn may END while bash commands keep
+ * running, the agent wakes itself on process exit (no prompt outstanding),
+ * and background_run_start/background_run_end bracket that wake so the client can own the stop
+ * button. Clients that do NOT opt in keep the pre-#1616 completion guard:
+ * the turn waits out its background commands, so the client's existing stop
+ * button covers everything and prompts never park mid-run. The agent
+ * advertises the same key in its own capabilities _meta so clients can
+ * feature-detect the gate.
+ */
+export const BACKGROUND_RUNS_CAPABILITY = "backgroundRuns"
+
+/** True when the client opted into background runs at initialize. */
+export function getClientOptedIntoBackgroundRuns(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[BACKGROUND_RUNS_CAPABILITY] === true
 }
 
 /**

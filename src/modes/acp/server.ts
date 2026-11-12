@@ -95,6 +95,10 @@ import {
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
+import {
+	getBackgroundRunsPermitted,
+	setBackgroundRunsPermitted,
+} from "../../extensions/bash-background/session-policy.js"
 import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
 import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
 import { readE2eSeam } from "../../extensions/e2e-seam.js"
@@ -156,6 +160,7 @@ import {
 } from "../../sandbox/worker/acp-protocol.js"
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
+import { takePendingRunReason } from "../../shared/run-reason-registry.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -164,6 +169,8 @@ import { TurnArtifactBuffer } from "./artifact-links.js"
 import {
 	ADVERTISED_CAPABILITIES,
 	AVAILABLE_EXT_METHODS,
+	BACKGROUND_RUNS_CAPABILITY,
+	getClientOptedIntoBackgroundRuns,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
 } from "./capabilities.js"
@@ -193,6 +200,7 @@ import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelM
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
+import { emitRunEnd, emitRunStart, runStopReasonFromFlags } from "./run-boundary.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
 import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
 import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
@@ -407,6 +415,17 @@ type SessionRecord = {
 	 */
 	unsolicitedTurn?: TurnContext
 	/**
+	 * A session/cancel that arrived while a wake was still ramping: the
+	 * steer that wakes the agent is submitted but pi's agent_start has not
+	 * arrived, so there is no unsolicitedTurn to mark yet. The next
+	 * agent_start consumes the latch: if it starts an unsolicited run, the
+	 * run is cancelled immediately (mirroring the prompt path's
+	 * turn.cancelled re-abort); if it starts a prompt-owned turn the latch
+	 * is dropped — a cancel on an idle session must not poison the user's
+	 * next prompt. Cleared at every agent_start.
+	 */
+	unsolicitedCancelRequested?: boolean
+	/**
 	 * Prompts accepted but not yet started (no TurnContext of their own):
 	 * e.g. waiting out an unsolicited run. `cancel` marks every entry so a
 	 * cancelled prompt resolves "cancelled" instead of starting its turn.
@@ -614,6 +633,12 @@ export class KimchiAcpAgent implements Agent {
 		setAcpClientInfo(request.clientInfo ?? { name: "unknown", version: "0.0.0" })
 
 		this.clientCapabilities = request.clientCapabilities
+		// One CLI process = one ACP client: the opt-in steers BOTH the wire
+		// (background_run_start/background_run_end emission below and in the session event
+		// subscriber) and the bash-background session policy (turns yielding
+		// live commands vs. the completion guard) for every session this
+		// server creates.
+		setBackgroundRunsPermitted(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
 
 		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
@@ -686,6 +711,13 @@ export class KimchiAcpAgent implements Agent {
 					// as `resource_link` chunks carrying
 					// `_meta["kimchi.dev"].type = "artifact"`.
 					artifacts: true,
+					// Advertises the background-runs GATE: clients that opt in at
+					// initialize with the same key get async background runs plus
+					// background_run_start/background_run_end; everyone else keeps the completion guard
+					// (pre-#1616) so no client sees a ghost run without a stop
+					// button. Note the agent NEEDS this flag advertised only so
+					// clients feature-detect the gate; emission is opt-in gated.
+					[BACKGROUND_RUNS_CAPABILITY]: true,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
@@ -1467,12 +1499,19 @@ export class KimchiAcpAgent implements Agent {
 			// Cancel, close, and shutdown release the wait directly: abort may not
 			// settle waitForIdle() on a session being torn down.
 			await Promise.race([entry.session.waitForIdle(), pending.released])
-			// Defensive reset: agent_settled already clears it after the full run
-			// chain — anything left here is stale state, never this prompt's turn.
+		}
+		// Cancelled before its turn existed: never start it. Do NOT reset the
+		// unsolicited context here: cancel released the wait while the run is
+		// still streaming, so agent_settled must keep the context to close the
+		// run boundary with stopReason "cancelled" — resetting it would leak the
+		// background_run_start with no matching background_run_end.
+		if (pending.cancelled) return { stopReason: "cancelled" }
+		if (entry.unsolicitedTurn) {
+			// Defensive reset (settled-run path only): agent_settled already
+			// clears it after the full run chain — anything left here is stale
+			// state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
 		}
-		// Cancelled before its turn existed: never start it.
-		if (pending.cancelled) return { stopReason: "cancelled" }
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
@@ -1545,6 +1584,13 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
+		// An unsolicited run (no prompt owns it) has no turn to mark: flag its
+		// passive context so agent_settled closes the run boundary with
+		// stopReason "cancelled" instead of mislabeling the cancel "end_turn".
+		if (entry.unsolicitedTurn) entry.unsolicitedTurn.cancelled = true
+		// A cancel during the wake RAMP (steer submitted, agent_start not yet
+		// arrived) has neither context to mark — latch it for the allocation.
+		else if (!entry.turn) entry.unsolicitedCancelRequested = true
 		cancelPendingPrompts(entry)
 		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
 		// chains queued steering messages into the running prompt —
@@ -2213,7 +2259,29 @@ export class KimchiAcpAgent implements Agent {
 				// forward exactly like a prompt turn's. agent_start fires per
 				// chained continue within the run, so an existing context is
 				// kept — only the run chain's first start allocates.
-				if (!entry.turn) entry.unsolicitedTurn ??= createTurnContext()
+				// The wake reason is consumed (and cleared) on EVERY agent_start:
+				// for a prompt-owned start the registered reason belonged to a steer
+				// that continued an existing turn, so it is discarded; for the run
+				// chain's first unsolicited start it labels the run boundary.
+				const runStartReason = takePendingRunReason(sessionId)
+				const wakeCancel = entry.unsolicitedCancelRequested === true
+				entry.unsolicitedCancelRequested = false
+				if (!entry.turn && !entry.unsolicitedTurn) {
+					entry.unsolicitedTurn = createTurnContext()
+					// Announce the agent-initiated run BEFORE its streamed output
+					// (v1 bridge for the v2 Background Work RFD state transition).
+					// Opted-in clients only: a non-opted client should have had the
+					// completion guard hold its turn open — never reach here — and
+					// must not learn about runs it cannot present.
+					if (getBackgroundRunsPermitted()) emitRunStart(this.conn, sessionId, runStartReason)
+					if (wakeCancel) {
+						// Cancel raced the wake ramp: no unsolicitedTurn existed to
+						// mark when it arrived, so latch+apply here — otherwise the
+						// run would stream to completion and close end_turn.
+						entry.unsolicitedTurn.cancelled = true
+						void entry.session.abort()
+					}
+				}
 				// A held plan-review turn seeing the follow-up turn begin: pi events
 				// derive "decision applied with work" — no extension notification.
 				if (turn?.planReviewHeld) turn.planReviewExecuting = true
@@ -2252,6 +2320,20 @@ export class KimchiAcpAgent implements Agent {
 						this.send({ sessionId: entry.session.sessionId, update })
 					}
 					this.emitUsageUpdate(entry.session, unsolicited.usage)
+					// Close the run boundary AFTER the last streamed output, mirroring
+					// finalizeTurn's stopReason mapping for prompt-owned turns.
+					// Symmetric with background_run_start: non-opted clients never see it.
+					if (getBackgroundRunsPermitted()) {
+						emitRunEnd(
+							this.conn,
+							sessionId,
+							runStopReasonFromFlags({
+								cancelled: unsolicited.cancelled,
+								lastAssistantError: unsolicited.lastAssistantError,
+								refused: unsolicited.refused,
+							}),
+						)
+					}
 				}
 				return
 			}

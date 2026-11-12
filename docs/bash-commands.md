@@ -57,7 +57,9 @@ E2E rigs shorten the handoff with `KIMCHI_E2E_BASH_HANDOFF_SECONDS` (honored onl
 
 ## Interactive sessions and user messages
 
-Interactive sessions — the TUI and ACP/IDE integrations — treat the user as present:
+Interactive sessions — the TUI and rpc-driven integrations — treat the user as present: turns may end while background runs continue. Native `--mode rpc` is opted in at launch (every run effect is a native rpc event and the rpc abort command stops the wake turn). ACP clients opt in per client at initialize with `_meta["kimchi.dev"].backgroundRuns: true`; the server maps the capability onto the session policy, so a client without the opt-in keeps the completion guard from the next section instead — it cannot present an agent-initiated run's stop button, and background_run_start/background_run_end are emitted only to opted-in clients.
+
+With the user treated as present:
 
 - A user message queued while a `bash_control(wait: true)` call is waiting releases the wait immediately. The wait returns a distinct `user-input` result with the current cohort evidence — nothing is stopped and no checkpoint is counted — and the agent handles the message. Exit results still arrive on their own afterwards.
 - A chat turn may end while managed commands keep running. The harness does not force the agent back into a wait or a stop for them: their exit results arrive as automatic notifications, and each one wakes an idle agent.

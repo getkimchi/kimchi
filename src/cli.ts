@@ -9,6 +9,7 @@ import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@eare
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
+	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	hasPrintFlag,
@@ -69,6 +70,7 @@ import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import backgroundUpdateExtension from "./extensions/background-update.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
+import { setBackgroundRunsPermitted } from "./extensions/bash-background/session-policy.js"
 import { coupleBashControlToolArg } from "./extensions/bash-background/tool-coupling.js"
 import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
@@ -897,6 +899,12 @@ async function cliMain(): Promise<void> {
 			const mcpAdapterExtensions = enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[])
+			// Native `--mode rpc` hosts get background runs unconditionally:
+			// every run effect (wake turn, steering, tool events) is a native
+			// rpc event and the rpc abort command stops the wake turn. ACP
+			// decides per client at initialize instead (server.ts). See
+			// extensions/bash-background/session-policy.ts.
+			if (getCliModeArg(rawArgs) === "rpc") setBackgroundRunsPermitted(true)
 			const extensionFactories = [
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.

@@ -252,9 +252,8 @@ it(
 			const waitCard = await waitForSessionUpdate(
 				fixture,
 				sessionId,
-				// rawInput carries the enrichment the harness adds for cohort
-				// waits (commands/elapsedSeconds), so match the wait flag, not
-				// the exact object.
+				// rawInput carries only the agent's args (the wait flag), so
+				// match the flag, not the exact object.
 				(update) =>
 					update.sessionUpdate === "tool_call" &&
 					typeof update.rawInput === "object" &&
@@ -262,14 +261,16 @@ it(
 					"wait" in update.rawInput &&
 					update.rawInput.wait === true,
 			)
-			// The enrichment must actually have fired for THIS wait: the full
-			// running cohort (the spawned sleep) plus the wait's own elapsed
-			// wait budget. Asserting only the flag would pass even if the
-			// enrichment regressed to a no-op.
-			const waitInput = (waitCard as { rawInput?: { commands?: { command?: string }[]; elapsedSeconds?: number } })
-				.rawInput
-			expect(waitInput?.commands).toEqual([expect.objectContaining({ command: "echo alive && sleep 90" })])
-			expect(typeof waitInput?.elapsedSeconds).toBe("number")
+			// The wait info must actually have been resolved for THIS wait:
+			// the full running cohort (the spawned sleep) plus its elapsed
+			// counter. The wire contract is _meta.bashControlWait — rawInput
+			// carries only the agent's verbatim args, so asserting the flag
+			// alone would pass even if the _meta info regressed to a no-op.
+			const waitMeta = (
+				waitCard as { _meta?: { bashControlWait?: { commands?: { command?: string }[]; elapsedSeconds?: number } } }
+			)._meta?.bashControlWait
+			expect(waitMeta?.commands).toEqual([expect.objectContaining({ command: "echo alive && sleep 90" })])
+			expect(typeof waitMeta?.elapsedSeconds).toBe("number")
 			await fixture.conn.cancel({ sessionId })
 			expect((await pending).stopReason).toBe("cancelled")
 			expect((await prompt(fixture, sessionId, "Inspect the command, then stop it")).stopReason).toBe("end_turn")
