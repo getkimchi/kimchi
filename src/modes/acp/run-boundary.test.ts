@@ -1,7 +1,7 @@
 import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import { describe, expect, it } from "vitest"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
-import { emitRunEnd, emitRunStart, runEndOutcomeFromFlags } from "./run-boundary.js"
+import { emitRunEnd, emitRunStart, runStopReasonFromFlags } from "./run-boundary.js"
 
 function fakeConn(): { conn: AgentSideConnection; sent: Array<{ method: string; params: Record<string, unknown> }> } {
 	const sent: Array<{ method: string; params: Record<string, unknown> }> = []
@@ -36,28 +36,28 @@ describe("run-boundary emission", () => {
 		])
 	})
 
-	it("run_end carries the v2-shaped idle state and outcome", () => {
+	it("run_end carries the idle state and a v1-named stopReason", () => {
 		const { conn, sent } = fakeConn()
 		emitRunEnd(conn, "session-1", "end_turn")
 		expect(sent).toEqual([
 			{
 				method: AVAILABLE_EXT_NOTIFICATIONS.run_end,
-				params: { sessionId: "session-1", state: "idle", outcome: "end_turn" },
+				params: { sessionId: "session-1", state: "idle", stopReason: "end_turn" },
 			},
 		])
 	})
 })
 
-describe("runEndOutcomeFromFlags", () => {
+describe("runStopReasonFromFlags", () => {
 	it("precedence: cancelled > error > refusal > end_turn", () => {
 		const base = { cancelled: false, lastAssistantError: undefined, refused: false }
-		expect(runEndOutcomeFromFlags(base)).toBe("end_turn")
-		expect(runEndOutcomeFromFlags({ ...base, refused: true })).toBe("refusal")
-		expect(runEndOutcomeFromFlags({ ...base, refused: true, lastAssistantError: "boom" })).toBe("error")
-		expect(runEndOutcomeFromFlags({ cancelled: true, lastAssistantError: "boom", refused: true })).toBe("cancelled")
+		expect(runStopReasonFromFlags(base)).toBe("end_turn")
+		expect(runStopReasonFromFlags({ ...base, refused: true })).toBe("refusal")
+		expect(runStopReasonFromFlags({ ...base, refused: true, lastAssistantError: "boom" })).toBe("error")
+		expect(runStopReasonFromFlags({ cancelled: true, lastAssistantError: "boom", refused: true })).toBe("cancelled")
 	})
 
 	it("treats missing flags as a clean end_turn", () => {
-		expect(runEndOutcomeFromFlags({})).toBe("end_turn")
+		expect(runStopReasonFromFlags({})).toBe("end_turn")
 	})
 })

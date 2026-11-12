@@ -194,7 +194,7 @@ import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelM
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
-import { emitRunEnd, emitRunStart, runEndOutcomeFromFlags } from "./run-boundary.js"
+import { emitRunEnd, emitRunStart, runStopReasonFromFlags } from "./run-boundary.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
 import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
 import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
@@ -408,6 +408,17 @@ type SessionRecord = {
 	 * client. Its resolve/reject are no-ops — nothing awaits its outcome.
 	 */
 	unsolicitedTurn?: TurnContext
+	/**
+	 * A session/cancel that arrived while a wake was still ramping: the
+	 * steer that wakes the agent is submitted but pi's agent_start has not
+	 * arrived, so there is no unsolicitedTurn to mark yet. The next
+	 * agent_start consumes the latch: if it starts an unsolicited run, the
+	 * run is cancelled immediately (mirroring the prompt path's
+	 * turn.cancelled re-abort); if it starts a prompt-owned turn the latch
+	 * is dropped — a cancel on an idle session must not poison the user's
+	 * next prompt. Cleared at every agent_start.
+	 */
+	unsolicitedCancelRequested?: boolean
 	/**
 	 * Prompts accepted but not yet started (no TurnContext of their own):
 	 * e.g. waiting out an unsolicited run. `cancel` marks every entry so a
@@ -1473,7 +1484,7 @@ export class KimchiAcpAgent implements Agent {
 		// Cancelled before its turn existed: never start it. Do NOT reset the
 		// unsolicited context here: cancel released the wait while the run is
 		// still streaming, so agent_settled must keep the context to close the
-		// run boundary with outcome "cancelled" — resetting it would leak the
+		// run boundary with stopReason "cancelled" — resetting it would leak the
 		// run_start with no matching run_end.
 		if (pending.cancelled) return { stopReason: "cancelled" }
 		if (entry.unsolicitedTurn) {
@@ -1555,9 +1566,12 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
 		// An unsolicited run (no prompt owns it) has no turn to mark: flag its
-		// passive context so agent_settled closes the run boundary with outcome
-		// "cancelled" instead of mislabeling the cancel "end_turn".
+		// passive context so agent_settled closes the run boundary with
+		// stopReason "cancelled" instead of mislabeling the cancel "end_turn".
 		if (entry.unsolicitedTurn) entry.unsolicitedTurn.cancelled = true
+		// A cancel during the wake RAMP (steer submitted, agent_start not yet
+		// arrived) has neither context to mark — latch it for the allocation.
+		else if (!entry.turn) entry.unsolicitedCancelRequested = true
 		cancelPendingPrompts(entry)
 		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
 		// chains queued steering messages into the running prompt —
@@ -2230,12 +2244,21 @@ export class KimchiAcpAgent implements Agent {
 				// for a prompt-owned start the registered reason belonged to a steer
 				// that continued an existing turn, so it is discarded; for the run
 				// chain's first unsolicited start it labels the run boundary.
-				const runStartReason = takePendingRunReason()
+				const runStartReason = takePendingRunReason(sessionId)
+				const wakeCancel = entry.unsolicitedCancelRequested === true
+				entry.unsolicitedCancelRequested = false
 				if (!entry.turn && !entry.unsolicitedTurn) {
 					entry.unsolicitedTurn = createTurnContext()
 					// Announce the agent-initiated run BEFORE its streamed output
 					// (v1 bridge for the v2 Background Work RFD state transition).
 					emitRunStart(this.conn, sessionId, runStartReason)
+					if (wakeCancel) {
+						// Cancel raced the wake ramp: no unsolicitedTurn existed to
+						// mark when it arrived, so latch+apply here — otherwise the
+						// run would stream to completion and close end_turn.
+						entry.unsolicitedTurn.cancelled = true
+						void entry.session.abort()
+					}
 				}
 				// A held plan-review turn seeing the follow-up turn begin: pi events
 				// derive "decision applied with work" — no extension notification.
@@ -2280,7 +2303,7 @@ export class KimchiAcpAgent implements Agent {
 					emitRunEnd(
 						this.conn,
 						sessionId,
-						runEndOutcomeFromFlags({
+						runStopReasonFromFlags({
 							cancelled: unsolicited.cancelled,
 							lastAssistantError: unsolicited.lastAssistantError,
 							refused: unsolicited.refused,

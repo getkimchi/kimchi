@@ -7,10 +7,10 @@ const RUN_END_METHOD = "_kimchi.dev/run_end"
 
 // An agent-initiated run (a background-bash exit waking the idle
 // agent) announces its boundary over ACP — run_start with the wake reason
-// BEFORE the run's streamed output, run_end with the outcome AFTER it —
+// BEFORE the run's streamed output, run_end with the stopReason AFTER it —
 // while prompt-owned turns emit neither.
 it(
-	"background-task completion wake emits run_start (reason) and run_end (outcome) around its streamed output",
+	"background-task completion wake emits run_start (reason) and run_end (stopReason) around its streamed output",
 	async () => {
 		const fixture = await startAcpFixture({
 			artifactName: "run-boundary-wake",
@@ -64,7 +64,7 @@ it(
 				state: "running",
 				reason: "background-task-complete",
 			})
-			expect(runEnds[0].params).toMatchObject({ sessionId, state: "idle", outcome: "end_turn" })
+			expect(runEnds[0].params).toMatchObject({ sessionId, state: "idle", stopReason: "end_turn" })
 
 			// Ordering on the wire: run_start opens before any of the run's
 			// streamed chunks, run_end closes after its last one. The scripted

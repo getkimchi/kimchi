@@ -600,7 +600,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 					// Background Work RFD state transition). No-op when the batch
 					// continues an already-running turn: the ACP server consumes
 					// and discards the reason on that turn's next agent_start.
-					registerUnsolicitedRunReason("background-task-complete")
+					registerUnsolicitedRunReason(state.delivery.sessionId, "background-task-complete")
 				}
 				const details: BashExitMessageDetails = {
 					deliveryId,

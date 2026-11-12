@@ -8128,11 +8128,11 @@ describe("run boundary notifications", () => {
 		// opened no new one.
 		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
 		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
-			{ method: RUN_END, params: { sessionId: "session-rb-wait", state: "idle", outcome: "end_turn" } },
+			{ method: RUN_END, params: { sessionId: "session-rb-wait", state: "idle", stopReason: "end_turn" } },
 		])
 	})
 
-	it("a cancel mid-run closes the boundary with outcome cancelled", async () => {
+	it("a cancel mid-run closes the boundary with stopReason cancelled", async () => {
 		const fake = new FakeAgentSession("session-rb-cancel")
 		const { conn, extNotifications } = makeRecordingConn()
 		const agent = await startRunBoundarySession(fake, conn)
@@ -8146,7 +8146,7 @@ describe("run boundary notifications", () => {
 		// cancel() only marks prompt-owned turns, so without flagging the
 		// unsolicited context too this would mislabel the cancel "end_turn".
 		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
-			{ method: RUN_END, params: { sessionId: "session-rb-cancel", state: "idle", outcome: "cancelled" } },
+			{ method: RUN_END, params: { sessionId: "session-rb-cancel", state: "idle", stopReason: "cancelled" } },
 		])
 	})
 
@@ -8190,7 +8190,27 @@ describe("run boundary notifications", () => {
 		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
 		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
 		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
-			{ method: RUN_END, params: { sessionId: "session-rb-parked-cancel", state: "idle", outcome: "cancelled" } },
+			{ method: RUN_END, params: { sessionId: "session-rb-parked-cancel", state: "idle", stopReason: "cancelled" } },
+		])
+	})
+
+	// Regression: cancel() during the wake RAMP — the steer is submitted but
+	// pi's agent_start has not yet arrived — found no unsolicitedTurn to mark,
+	// so the cancel vanished; the run then emitted run_start, streamed to
+	// completion, and closed end_turn. The cancel now latches and the
+	// allocation consumes it: abort + cancelled stopReason.
+	it("a cancel during the wake ramp cancels the run when agent_start arrives", async () => {
+		const fake = new FakeAgentSession("session-rb-ramp")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRunBoundarySession(fake, conn)
+
+		await agent.cancel({ sessionId: "session-rb-ramp" })
+		fake.emit({ type: "agent_start" })
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
+			{ method: RUN_END, params: { sessionId: "session-rb-ramp", state: "idle", stopReason: "cancelled" } },
 		])
 	})
 })
