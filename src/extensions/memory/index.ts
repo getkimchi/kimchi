@@ -346,8 +346,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// running; its result is adopted when it lands, unless a toggle flip,
 		// compaction or reset (digestEpoch bump / attempt cleared) came first.
 		let digestEpoch = 0
-		let digestAttempt: { epoch: number; startedAt: number; waiting: boolean } | undefined
-		// True once this epoch has had its one blocking attempt.
+		let digestAttempt: { epoch: number; startedAt: number } | undefined
+		// True once this epoch has had its one blocking attempt (a settle landing
+		// while memory is inactive re-arms it, so an unobserved toggle flip still
+		// gets its blocking retry).
 		let digestWaited = false
 		// Bumped at every before_agent_start: a digest settling during a later
 		// turn must not fire that turn's UI notify (the "Recalled N memories"
@@ -635,11 +637,8 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// attempt. The settle handler is the only place a digest is adopted, so the
 		// awaited first attempt and a late-landing one share one path. Never rejects
 		// (computeDigest degrades internally).
-		const startDigestAttempt = (
-			query: string,
-			ctx: ExtensionContext,
-		): { attempt: { waiting: boolean }; settled: Promise<void> } => {
-			const attempt = { epoch: digestEpoch, startedAt: performance.now(), waiting: !digestWaited }
+		const startDigestAttempt = (query: string, ctx: ExtensionContext): { settled: Promise<void> } => {
+			const attempt = { epoch: digestEpoch, startedAt: performance.now() }
 			digestAttempt = attempt
 			// Turns tick at every before_agent_start; if the settle lands while a
 			// LATER turn is mid-flight, its UI notify would pop mid-generation of
@@ -677,7 +676,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				updateMemoryStatus(ctx, turnSeq === attemptTurn)
 				mark("memory.digest.adopted", { empty: d === null })
 			})
-			return { attempt, settled }
+			return { settled }
 		}
 
 		pi.on("before_agent_start", async (event, ctx) => {
@@ -753,7 +752,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					digestAttempt = undefined
 				}
 				if (!digestAttempt) {
-					const { attempt, settled } = startDigestAttempt(event.prompt, ctx)
+					const { settled } = startDigestAttempt(event.prompt, ctx)
 					if (digestWaited) {
 						// Only the first attempt per epoch blocks the turn; retries run
 						// in the background and are adopted when they land. NOTE: this
@@ -768,7 +767,6 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						const outcome = await withRecallIndicator(ctx, event.prompt, () =>
 							withTimeout(settled, MEMORY_PRE_REQUEST_TIMEOUT_MS, "digest computation"),
 						)
-						attempt.waiting = false
 						mark("memory.digest.end", outcome === null ? { timedOut: true } : undefined)
 					}
 				}
