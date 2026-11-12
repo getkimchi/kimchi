@@ -1,3 +1,4 @@
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { __clearModelThinkingLevelsForTest, registerModelThinkingLevels } from "./models.js"
 import { CANONICAL_THINKING_LEVELS } from "./thinking-levels.js"
@@ -98,7 +99,7 @@ describe("thinkingSelection", () => {
 })
 
 describe("clampToSelection", () => {
-	const curated = ["low", "high", "max"]
+	const curated: ModelThinkingLevel[] = ["low", "high", "max"]
 
 	it("keeps a level that is already selectable", () => {
 		expect(clampToSelection("high", { mode: "levels", selectable: curated })).toBe("high")
@@ -114,7 +115,11 @@ describe("clampToSelection", () => {
 	})
 
 	it("falls back to the first selectable level for unknown levels", () => {
-		expect(clampToSelection("turbo", { mode: "levels", selectable: curated })).toBe("low")
+		// Deliberately outside ModelThinkingLevel: wire-facing callers pass
+		// strings (selectable sets are string[]-typed), so the clamp must not
+		// trust the type at runtime.
+		const unknownLevel = "turbo" as ModelThinkingLevel
+		expect(clampToSelection(unknownLevel, { mode: "levels", selectable: curated })).toBe("low")
 	})
 
 	it("clamps to off when nothing is selectable, so no effort is derived", () => {
