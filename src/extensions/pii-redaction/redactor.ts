@@ -387,7 +387,10 @@ function isBase64TailChar(c: string): boolean {
  * breaks the run (`[`/`]` are not base64), so fixture strings keep redacting.
  */
 /**
- * How much base64 run precedes position `start` (padding counts as base64).
+ * How much base64 run precedes position `start`. `=` and `/` are excluded from
+ * the alphabet here: the assignment byte and the URL separator are real-secret
+ * delimiters, so they terminate the run (the doc previously said padding counts
+ * — it does not, by design).
  * The engine-shadow predicate keys on immediate neighbors; keyword-anchored
  * custom patterns (GENERIC_SECRET) need a longer witness because their value
  * charset swallows base64 chars, so an end-neighbor never proves embedding.
@@ -401,6 +404,13 @@ export function base64RunBefore(text: string, start: number): number {
 export function isBase64ShadowDrop(entityType: string, text: string, start: number, end: number): boolean {
 	if (!BASE64_SHADOW_ENTITIES.has(entityType)) return false
 	if (start <= 0 || end >= text.length) return false
+	// Long-run witness: −16 base64 chars before the span can only be payload — drop
+	// regardless of the end neighbor. Genuine framings (api_key=AIza…, URL-path
+	// segments, 'token: pat…') all expose a non-base64 delimiter on the left
+	// ('=', '/', ':', quote, space), so the run there is 0 (rule-2 assessment:
+	// double-'=' evidence was measured rule-less on corpus — the FP spans sit
+	// mid-run with alnum neighbors on both sides).
+	if (base64RunBefore(text, start) >= 16) return true
 	return isBase64RunChar(text.charAt(start - 1)) && isBase64TailChar(text.charAt(end))
 }
 
@@ -548,7 +558,11 @@ export async function detectAndComposeTokenized(
  * base64-shadow drop covers engine detections only, and the keyword would
  * otherwise re-capture the span the drop removed.
  */
-type CustomPattern = RedactionPattern & { skipIfEmbeddedInBase64?: boolean }
+type CustomPattern = RedactionPattern & {
+	skipIfEmbeddedInBase64?: boolean
+	/** Value guard: when true, the match is left untouched (matches stay eligible for other patterns' spans via separate matches). */
+	rejectValue?: (value: string) => boolean
+}
 
 const CUSTOM_PATTERNS: CustomPattern[] = [
 	// CastAI API keys
@@ -673,6 +687,7 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// secret habitats, not identifiers.
 	{
 		skipIfEmbeddedInBase64: true,
+		rejectValue: isGenericNonSecretValue,
 		name: "GENERIC_SECRET",
 		regex:
 			/((?:^|[^A-Za-z0-9])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
@@ -686,6 +701,29 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		secretGroup: 2,
 	},
 ]
+
+/**
+ * Value guards for GENERIC_SECRET (rule-1, amended by two external reviewers
+ * against the measured corpus): the keyword anchor still fires on values that
+ * are provably not secrets — shell expansions (${VAR:-…}, $(cmd), $VAR/…),
+ * doc placeholders (<your_access_token>), absolute/relative or variable-anchored
+ * paths, and digit-free identifier shapes (oauthRefreshToken, options.bearerToken).
+ * Bounds: base64 secrets containing '/' start alphanumeric, never path-anchored;
+ * diceware passphrases carry no digits but are not identifier-shaped — only
+ * camelCase-or-dotted digit-free values are rejected, so word-like secrets with
+ * an uppercase letter and no symbols DO get rejected intentionally (the corpus
+ * found none), while `mysecretpassword` lowercase forms stay redacted.
+ */
+export function isGenericNonSecretValue(value: string): boolean {
+	// Shell expansions and command substitutions.
+	if (/^\$[{[(\w]/.test(value) || /^<[A-Za-z0-9_\s-]*>$/.test(value)) return true
+	// Paths: anchored start (/, ~/, ./, ../, $VAR/) with path-ish body.
+	if (/^(?:~?\/|\.\.?\/|\$[A-Za-z_][\w]*\/)[\w.+=/@-]+\/?$/.test(value)) return true
+	// Identifier-shaped, digit-free (camelCase single words or dotted paths) —
+	// every measured identifier-FP is digit-free while real secrets carry digits.
+	if (!/\d/.test(value) && /^[A-Za-z$_][\w$]*(?:\.[\w$]+)*[,;]?$/.test(value) && /[A-Z]/.test(value)) return true
+	return false
+}
 
 /**
  * Distinct entity names emitted by CUSTOM_PATTERNS. Exported so the
@@ -785,6 +823,10 @@ export function applyCustomPatterns(
 				// the callback hands us (offset + input trail the rest args).
 				const groups = args.slice(0, -2)
 				const secret = groups[secretGroup - 1]
+				// A rejected value leaves the match untouched — never fall into the
+				// tail marker (that would still redact; and it would claim the span
+				// for later patterns that run single-shot passes).
+				if (pattern.rejectValue && typeof secret === "string" && pattern.rejectValue(secret)) return match
 				if (typeof secret === "string" && secret.length > 0) {
 					onMatch?.({ name, secret })
 					const parts = groups.map((g) => (typeof g === "string" ? g : ""))

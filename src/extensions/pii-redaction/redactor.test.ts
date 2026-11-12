@@ -1589,14 +1589,20 @@ describe("token mode — composition and tally parity", () => {
 
 describe("redactObjectStrings — image payloads are binary, not text", () => {
 	// Real-session shape: base64 of an ordinary PNG happened to contain a run
-	// matching the crates.io token pattern. Replacing it corrupted the image,
+	// matching an api-key pattern. Replacing it corrupted the image,
 	// and the provider rejected every later turn with a 400.
-	const tokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
-	const base64 = `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC==`
-	const fromBytes = (head: string) => `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+	// tokenShaped: redactable fixture (Airtable shape) for the "still scans" cases.
+	// blobTokenShaped: crates.io shape — anchor-required (never fires) since the
+	// byte-identical cases assert the payload bypass, not entity detection; the
+	// pure-base64-alphabet shape keeps payload alignment semantics intact.
+	const tokenShaped = ["key", "aB3dE6gH9jK2mN"].join("")
+	const blobTokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
+	const base64 = `iVBORw0KGgoA/+${blobTokenShaped}/+AAAAElFTkSuQmCC==`
+	const fromBytes = (head: string) =>
+		`${Buffer.from(head, "latin1").toString("base64")}${blobTokenShaped}A`.padEnd(64, "A")
 	// A break inside the first 16 base64 chars shrinks the signature window.
 	const breakInSignature = (head: string) => {
-		const raw = `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+		const raw = `${Buffer.from(head, "latin1").toString("base64")}${blobTokenShaped}A`.padEnd(64, "A")
 		return `${raw.slice(0, 8)}\n${raw.slice(8)}`
 	}
 
@@ -1634,10 +1640,10 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 		["non-image data URL", { image_url: { url: `data:text/plain;base64,${tokenShaped}` } }],
 		["bare secret labelled as an image", { mimeType: "image/png", data: tokenShaped }],
 		["bare secret with an empty image subtype", { mimeType: "image/", data: tokenShaped }],
-		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo${tokenShaped}` }],
+		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo${tokenShaped}A` }],
 		["image data URL whose bytes are not an image", { image_url: { url: `data:image/png;base64,${tokenShaped}A` } }],
 	])("still scans %s", async (_name, block) => {
-		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-CRATES_IO_TOKEN]")
+		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-AIRTABLE_KEY]")
 	})
 
 	it.each([

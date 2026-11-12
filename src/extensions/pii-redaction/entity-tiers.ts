@@ -116,6 +116,10 @@ const ANCHOR_REQUIRED_ENTITIES = [
 	// re-added anchored below — the keyword itself is never secret.
 	"AZURE_CONNECTION_STRING",
 	"GENERIC_SECRET", // by definition context-free
+	// 0% measured precision on 2.6k production transcripts — every
+	// hit was an identifier fragment or payload noise, zero real keys.
+	"CRATES_IO_TOKEN",
+	"NUGET_KEY",
 	"BASIC_AUTH", // honored via an `Authorization: Basic` anchor
 	"DOCKER_REGISTRY_AUTH",
 	"DATABASE_CONNECTION_STRING", // bare scheme shape too noisy — credential-bearing DB URIs re-added by custom
@@ -183,10 +187,8 @@ const ANCHORED_ENTITIES = [
 	"CODECOV_TOKEN",
 	// Package registries
 	"NPM_TOKEN",
-	"NUGET_KEY",
 	"PYPI_TOKEN",
 	"RUBYGEMS_KEY",
-	"CRATES_IO_TOKEN",
 	"DOCKER_HUB_TOKEN",
 	"HELM_REPO_TOKEN",
 	// Payments / commerce
@@ -393,6 +395,10 @@ const ANCHOR_REQUIRED_WITH_CUSTOMS = [
 /** Credentialed-URL entities whose coverage lives in URL_WITH_CREDENTIALS customs, not their own bare shape. */
 const CREDENTIALED_URLS_INERT = ["URL", "ELASTICSEARCH_URL", "FIREBASE_URL", "MONGODB_SRV"] as const
 
+/** anchor_required entities with no anchored re-addition — never fire today.
+ * CRATES_IO_TOKEN / NUGET_KEY: measured 0% precision on production transcripts. */
+const SECRETS_INERT = ["CRATES_IO_TOKEN", "NUGET_KEY"] as const
+
 /** [category, defaultOn, members]. GUID is deliberately unassigned: structural identifiers are never redacted. */
 type CategoryGroup = readonly [RedactionCategory, boolean, readonly string[]]
 
@@ -427,6 +433,7 @@ const CATEGORY_GROUPS: readonly CategoryGroup[] = [
 		true,
 		["URL_WITH_CREDENTIALS", "REDIS_URL_WITH_PASSWORD", "COCKROACHDB_CONNECTION", "DATABASE_CONNECTION_STRING"],
 	],
+	["secrets", false, SECRETS_INERT],
 	["credentialed_urls", false, CREDENTIALED_URLS_INERT],
 	["financial", true, ["CREDIT_CARD", "IBAN_CODE"]],
 	["financial", false, ["ABA_ROUTING_NUMBER", "US_BANK_NUMBER", "CRYPTO"]],
