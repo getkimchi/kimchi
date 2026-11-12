@@ -49,7 +49,7 @@ incidents were extension-side wakes and message projections). Extension-only
 PRs are not exempt.
 
 - **Review rule:** a PR touching `src/modes/acp/**`, any pi-event→ACP-notification
-  path, or any extension behavior with a wire side effect must state in its body: *what does a client that opts into nothing see change —
+  path, or any extension behavior with a wire side effect must state in its body: *what does a client that opts into nothing see change
   in the main turn, between turns, and on replay?* Answer "nothing", or name the
   opt-in gate (`clientCapabilities._meta` key echoed at initialize).
 - **Verification stance:** the ACP e2e suite proves serialization, not survival under

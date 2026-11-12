@@ -35,7 +35,7 @@ Org policy is fetched at startup and held for the session; each field has one en
 
 Behavior and contracts documented per topic — read the linked doc when working in that area:
 
-- [docs/acp-compat.md](docs/acp-compat.md) — ACP wire-compat rules for agent-side changes: default-invisible, schema-first, replay = fresh wire history — read before touching anything visible on the ACP wire (emissions, wakes, replay, artifacts, context, ext-methods)
+- [docs/acp-compat.md](docs/acp-compat.md) — ACP wire-compat rules for agent-side changes (default-invisible, schema-first, replay = fresh wire history); read before touching anything visible on the ACP wire: emissions, wakes, replay, artifacts, context, ext-methods
 - [docs/acp-compaction.md](docs/acp-compaction.md) — compaction wire contract: `_kimchi.dev/compact` ext methods, `agent_activity` lifecycle, post-compaction `usage_update` refresh
 - [docs/acp-model-attribution.md](docs/acp-model-attribution.md) — per-message model/provider attribution on ACP blocks
 - [docs/agents.md](docs/agents.md) — agent infrastructure (workers, subagents, ferment planning pipeline)
