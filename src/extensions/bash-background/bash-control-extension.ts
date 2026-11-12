@@ -91,6 +91,7 @@
  */
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { registerUnsolicitedRunReason } from "../../shared/run-reason-registry.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { classifyTool } from "../permissions/taxonomy.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -594,6 +595,16 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 				// payload in the conversation (appended, no inference wake)
 				// instead of triggering a turn.
 				const triggerTurn = runTerminated === undefined
+				if (triggerTurn && sessionId !== undefined) {
+					// Label the run this wake may start (v1 bridge for the v2
+					// Background Work RFD state transition). No-op when the batch
+					// continues an already-running turn: the ACP server consumes
+					// and discards the reason on that turn's next agent_start.
+					// The key MUST be the pi session id (the ACP server consumes by
+					// its own session id) — delivery.sessionId is a per-object
+					// correlation id, never a session identity.
+					registerUnsolicitedRunReason(sessionId, "background-task-complete")
+				}
 				const details: BashExitMessageDetails = {
 					deliveryId,
 					sessionId: state.delivery.sessionId,
