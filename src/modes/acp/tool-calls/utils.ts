@@ -151,22 +151,31 @@ function snapshotElapsedSeconds(snapshot: ProcessDisplaySnapshot): number {
 }
 
 /**
- * Enrich a `bash_control` rawInput with registry-resolved info so clients
- * can show which background command a wait blocks on without parsing a
- * human title. Builds a NEW object — the agent's args are shared with
- * agent state and must never be mutated. Any other tool, a missing
- * registry, or handles that resolve to nothing pass the args through
- * unchanged.
+ * _meta["kimchi.dev"] key carrying the registry-resolved background
+ * processes behind a `bash_control` call (waits most of all).
  */
-export function enrichBashControlRawInput(
+export const BASH_CONTROL_WAIT_META_KEY = "bash_control_wait"
+
+/** Transcript custom-entry type recording a completed wait's targets. */
+export const BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE = "bash-control-wait-targets"
+
+/**
+ * Registry-resolved info behind a `bash_control` call, as a flat `_meta`
+ * fragment (the same flat shape piToolCallId and other tool-call meta
+ * use). rawInput is never touched — it MUST stay exactly what the agent
+ * wrote; live session state is metadata by definition. Returns undefined
+ * for other tools, a missing registry, or when nothing resolves, so
+ * callers can leave _meta absent rather than emit empties.
+ */
+export function bashControlWaitMeta(
 	toolName: string,
 	rawInput: Record<string, unknown>,
 	registry?: ProcessRegistry,
-): Record<string, unknown> {
-	if (toolName !== "bash_control" || !registry) return rawInput
+): Record<string, unknown> | undefined {
+	if (toolName !== "bash_control" || !registry) return undefined
 	const info = resolveBashControlWaitInfo(rawInput, registry)
-	if (!info) return rawInput
-	return { ...rawInput, ...info }
+	if (!info) return undefined
+	return { [BASH_CONTROL_WAIT_META_KEY]: info }
 }
 
 export function isHiddenToolCall(toolName: string, args: unknown): boolean {
@@ -205,15 +214,18 @@ export function buildToolCallShape({
 	bashControlRegistry,
 	...params
 }: ToolCallFields): ToolCall {
-	const enrichedRawInput = enrichBashControlRawInput(toolName, rawInput, bashControlRegistry)
-	const { title, kind, locations } = describeToolCall(toolName, enrichedRawInput, cwd)
+	const { title, kind, locations } = describeToolCall(toolName, rawInput, cwd)
 	return {
 		title,
 		kind,
 		locations,
-		rawInput: enrichedRawInput,
+		rawInput,
 		...params,
-		_meta: { piToolCallId, ...params._meta },
+		_meta: {
+			...bashControlWaitMeta(toolName, rawInput, bashControlRegistry),
+			piToolCallId,
+			...params._meta,
+		},
 	}
 }
 

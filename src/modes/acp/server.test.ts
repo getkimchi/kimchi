@@ -13443,13 +13443,12 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 	})
 })
 
-describe("bash_control wait enrichment placement", () => {
-	// A wait's rawInput names its target cohort on the wire. That cohort is a
-	// LIVE fact, so it may only be sampled where the wait is happening
-	// (displayLiveArgs) — never where history is replayed. These two tests
-	// pin both sides: a live args-complete update carries the cohort, a
-	// replayed historical wait stays as recorded even while a new process
-	// runs.
+describe("bash_control wait info placement", () => {
+	// A wait's target cohort is LIVE-registry state: it rides _meta while
+	// the wait is happening, is recorded as a metadata custom entry when
+	// the call completes, and replay threads the recorded entry back into
+	// _meta. rawInput stays exactly what the agent wrote on every path, and
+	// a replayed wait never samples today's cohort.
 	const oneRunning = () =>
 		({
 			registry: {
@@ -13465,9 +13464,11 @@ describe("bash_control wait enrichment placement", () => {
 	afterEach(() => {
 		setSessionState("enrich-live", undefined)
 		setSessionState("enrich-replay", undefined)
+		setSessionState("enrich-replay-recorded", undefined)
+		setSessionState("wait-persist", undefined)
 	})
 
-	it("enriches the args-complete update with the live cohort", async () => {
+	it("threads the live cohort into _meta on the args-complete update", async () => {
 		const fake = new FakeAgentSession("enrich-live")
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
@@ -13510,11 +13511,12 @@ describe("bash_control wait enrichment placement", () => {
 				u.update.sessionUpdate === "tool_call_update" &&
 				typeof (u.update as { rawInput?: unknown }).rawInput === "object",
 		)
-		const rawInput = (argsUpdate?.update as { rawInput?: { commands?: { command?: string }[] } }).rawInput
-		expect(rawInput?.commands).toEqual([expect.objectContaining({ command: "sleep 60" })])
+		expect((argsUpdate?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
+		const meta = (argsUpdate?.update as { _meta?: { bash_control_wait?: { commands?: { command?: string }[] } } })._meta
+		expect(meta?.bash_control_wait?.commands).toEqual([expect.objectContaining({ command: "sleep 60" })])
 	})
 
-	it("does not enrich a replayed historical wait against today's cohort", async () => {
+	it("never samples today's cohort for a replayed historical wait without a recorded entry", async () => {
 		const fake = new FakeAgentSession("enrich-replay")
 		fake.branch = [
 			userTextEntry("wait for the build", "u1", null),
@@ -13538,5 +13540,92 @@ describe("bash_control wait enrichment placement", () => {
 		const replayed = updates.find((u) => u.update.sessionUpdate === "tool_call")
 		expect(replayed?.update.sessionUpdate).toBe("tool_call")
 		expect((replayed?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
+		expect((replayed?.update as { _meta?: { bash_control_wait?: unknown } })._meta?.bash_control_wait).toBeUndefined()
+	})
+
+	it("records the resolved wait targets as a metadata custom entry when the call completes", async () => {
+		const fake = new FakeAgentSession("wait-persist")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-p1",
+				toolName: "bash_control",
+				args: { wait: true },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-p1",
+				toolName: "bash_control",
+				result: { content: [{ type: "text", text: "waited" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		const { conn, updates } = makeRecordingConn()
+		setSessionState("wait-persist", oneRunning())
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await agent.prompt({ sessionId: "wait-persist", prompt: [{ type: "text", text: "wait" }] })
+
+		const recorded = fake.branch.find(
+			(e) =>
+				typeof e === "object" &&
+				e !== null &&
+				(e as { type?: string }).type === "custom" &&
+				(e as { customType?: string }).customType === "bash-control-wait-targets",
+		)
+		expect((recorded as { data?: unknown })?.data).toEqual({
+			toolCallId: "tc-p1",
+			commands: [{ command: "sleep 60", startedAt: expect.any(String) }],
+		})
+		expect(updates.length).toBeGreaterThan(0)
+	})
+
+	it("replay threads recorded wait targets into _meta and keeps rawInput as agent input", async () => {
+		const fake = new FakeAgentSession("enrich-replay-recorded")
+		fake.branch = [
+			userTextEntry("wait for the build", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-w3", name: "bash_control", arguments: { wait: true } }],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-w3", "bash_control", "All processes exited", false),
+			{
+				type: "custom",
+				id: "wt-w3",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-control-wait-targets",
+				data: {
+					toolCallId: "tc-w3",
+					commands: [{ command: "npm test", startedAt: "2026-05-09T00:00:00.000Z" }],
+				},
+			},
+		]
+		const { conn, updates } = makeRecordingConn()
+		setSessionState("enrich-replay-recorded", oneRunning())
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			sessionLoader: async () => asSession(fake),
+		})
+		await agent.loadSession({ sessionId: "enrich-replay-recorded", cwd: "/tmp", mcpServers: [] })
+
+		const replayed = updates.find((u) => u.update.sessionUpdate === "tool_call")
+		expect(replayed?.update.sessionUpdate).toBe("tool_call")
+		expect((replayed?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
+		expect(
+			(replayed?.update as { _meta?: { bash_control_wait?: { commands?: unknown[] } } })._meta?.bash_control_wait,
+		).toEqual({
+			commands: [{ command: "npm test", startedAt: "2026-05-09T00:00:00.000Z" }],
+		})
 	})
 })

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "../../../extensions/bash-background/process-registry.js"
 import {
+	bashControlWaitMeta,
 	buildToolCall,
 	buildToolCallShape,
 	buildToolCallUpdate,
 	describeToolCall,
-	enrichBashControlRawInput,
 	isHiddenToolCall,
 	resolveBashControlWaitInfo,
 } from "./utils.js"
@@ -779,7 +779,7 @@ describe("resolveBashControlWaitInfo", () => {
 	})
 })
 
-describe("enrichBashControlRawInput", () => {
+describe("bashControlWaitMeta", () => {
 	const NOW = new Date("2026-11-11T12:00:05Z")
 
 	beforeEach(() => {
@@ -801,34 +801,32 @@ describe("enrichBashControlRawInput", () => {
 		listDisplaySnapshots: () => snapshots,
 	} as unknown as ProcessRegistry
 
-	it("enriches a wait with a known handle, building a new object without mutating the agent's args", () => {
+	it("resolves a wait with a known handle into a flat _meta fragment, never mutating the agent's args", () => {
 		const args = { wait: true, handles: ["h1"] }
-		const enriched = enrichBashControlRawInput("bash_control", args, registry)
-		expect(enriched).toEqual({
-			wait: true,
-			handles: ["h1"],
-			commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
-			elapsedSeconds: 5,
+		expect(bashControlWaitMeta("bash_control", args, registry)).toEqual({
+			bash_control_wait: {
+				commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
+				elapsedSeconds: 5,
+			},
 		})
-		expect(enriched).not.toBe(args)
 		expect(args).toEqual({ wait: true, handles: ["h1"] })
 	})
 
-	it("passes a stale handle through unchanged", () => {
+	it("returns undefined for a stale handle", () => {
 		const args = { handle: "gone", action: "stop" }
-		expect(enrichBashControlRawInput("bash_control", args, registry)).toBe(args)
+		expect(bashControlWaitMeta("bash_control", args, registry)).toBeUndefined()
 	})
 
-	it("leaves non-wait bash_control calls and other tools untouched", () => {
+	it("returns undefined for non-wait bash_control calls and other tools", () => {
 		const stopFew = { stop_handles: ["gone"] }
-		expect(enrichBashControlRawInput("bash_control", stopFew, registry)).toBe(stopFew)
+		expect(bashControlWaitMeta("bash_control", stopFew, registry)).toBeUndefined()
 		const bash = { command: "echo hi" }
-		expect(enrichBashControlRawInput("bash", bash, registry)).toBe(bash)
+		expect(bashControlWaitMeta("bash", bash, registry)).toBeUndefined()
 	})
 
-	it("passes args through without a registry", () => {
+	it("returns undefined without a registry", () => {
 		const args = { handles: ["h1"] }
-		expect(enrichBashControlRawInput("bash_control", args)).toBe(args)
+		expect(bashControlWaitMeta("bash_control", args)).toBeUndefined()
 	})
 })
 
@@ -860,7 +858,7 @@ describe("describeToolCall bash_control", () => {
 		})
 	})
 
-	it("buildToolCallShape enriches rawInput and leaves the title unchanged", () => {
+	it("buildToolCallShape keeps rawInput as agent input and threads the wait info into _meta", () => {
 		const shape = buildToolCallShape({
 			toolName: "bash_control",
 			toolCallId: "kt.bash_control.0",
@@ -870,11 +868,13 @@ describe("describeToolCall bash_control", () => {
 			bashControlRegistry: registry,
 		})
 		expect(shape.title).toBe("bash_control")
-		expect(shape.rawInput).toEqual({
-			handle: "h1",
-			action: "stop",
-			commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
-			elapsedSeconds: 5,
+		expect(shape.rawInput).toEqual({ handle: "h1", action: "stop" })
+		expect(shape._meta).toEqual({
+			bash_control_wait: {
+				commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
+				elapsedSeconds: 5,
+			},
+			piToolCallId: "tc-9",
 		})
 	})
 
