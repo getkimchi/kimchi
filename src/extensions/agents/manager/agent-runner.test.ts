@@ -1504,7 +1504,7 @@ describe("getActiveSubagentToolNames — tool filter rules", () => {
 			["read"],
 			["read", "ghost_tool"],
 			true,
-			allRegistered(["read", "ghost_tool"].filter((n) => n !== "ghost_tool")),
+			allRegistered(["read"]),
 			undefined,
 			(names) => dropped.push(...names),
 		)
