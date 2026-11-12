@@ -291,6 +291,19 @@ function classifyEditError(fullMsg: string): ToolErrorClassification | undefined
 	if (m) return { kind: "model_mistake", message: "Edit produced no changes", attrs: { file_hash: hashFilePath(m[1]) } }
 	m = fullMsg.match(/^Could not edit file: (.+?)\. Error code: ENOENT\./)
 	if (m) return { kind: "model_mistake", message: "Edit target missing", attrs: { file_hash: hashFilePath(m[1]) } }
+	// Upstream edit-diff.js: overlapping edits are rejected wholesale.
+	m = fullMsg.match(
+		/^edits\[(\d+)\] and edits\[(\d+)\] overlap in (.+?)\. Merge them into one edit or target disjoint regions\.$/,
+	)
+	if (m)
+		return {
+			kind: "model_mistake",
+			message: "Edit targets overlap",
+			attrs: { first_edit_index: Number(m[1]), second_edit_index: Number(m[2]), file_hash: hashFilePath(m[3]) },
+		}
+	// Upstream edit.js: argument validation.
+	if (fullMsg === "Edit tool input is invalid. edits must contain at least one replacement.")
+		return { kind: "model_mistake", message: "Edit empty replacements" }
 	return undefined
 }
 
@@ -299,11 +312,16 @@ function classifyEditError(fullMsg: string): ToolErrorClassification | undefined
 // ---------------------------------------------------------------------------
 
 function classifyReadError(fullMsg: string): ToolErrorClassification | undefined {
-	let m = fullMsg.match(/^ENOENT: no such file or directory, access '(.+)'$/)
+	let m = fullMsg.match(/^ENOENT: no such file or directory, (?:access|open) '(.+)'$/)
 	if (m) return { kind: "model_mistake", message: "Read path not found", attrs: { file_hash: hashFilePath(m[1]) } }
 	// Already canonical (kimchi permissions read gate) — keep the message.
 	if (fullMsg === "Path is a directory; read only accepts files. List or search the directory instead.") {
 		return { kind: "model_mistake", message: fullMsg }
+	}
+	// Upstream read.js surfaces the raw errno when the gate is bypassed
+	// (e.g. a stat/open race): same semantics as the gate above.
+	if (fullMsg === "EISDIR: illegal operation on a directory, read") {
+		return { kind: "model_mistake", message: "Path is a directory" }
 	}
 	m = fullMsg.match(/^Offset (\d+) is beyond end of file \(\d+ lines total\)$/)
 	if (m) return { kind: "model_mistake", message: "Read offset beyond EOF", attrs: { offset: Number(m[1]) } }
@@ -320,6 +338,26 @@ function classifyPathError(fullMsg: string): ToolErrorClassification | undefined
 	// Distinct from the read family's canonical message — these producers
 	// (find/grep/ls path probing) are not the read tool.
 	return { kind: "model_mistake", message: "Path not found", attrs: { file_hash: hashFilePath(m[1]) } }
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem errno family (read / write / edit / find / grep / ls)
+// ---------------------------------------------------------------------------
+
+/** Node fs errno families shared by every file-accessing tool. The raw
+ *  message carries the absolute path — it is hashed, never exported.
+ *  EACCES/EPERM are target rejections (the model attempted a file it has no
+ *  permission for — model friction); ETIMEDOUT is an environment failure
+ *  (network filesystems) and stays in the error funnel with a canonical. */
+function classifyFsError(fullMsg: string): ToolErrorClassification | undefined {
+	let m = fullMsg.match(
+		/^(?:EACCES: permission denied|EPERM: operation not permitted), (?:open|access|write|rename) '(.+)'$/,
+	)
+	if (m)
+		return { kind: "model_mistake", message: "Filesystem permission denied", attrs: { file_hash: hashFilePath(m[1]) } }
+	m = fullMsg.match(/^ETIMEDOUT: connection timed out, (?:read|write)$/)
+	if (m) return { kind: "failure", message: "Filesystem timeout" }
+	return undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +445,24 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 		) {
 			return { kind: "blocked", message: "Ferment state guard" }
 		}
+		// Ferment argument-validation families (ferment/tools/lifecycle.ts
+		// parseJsonArray + gate-validation.ts): the model passed malformed
+		// or failing arguments — agent friction, not anomalies. All three
+		// parseJsonArray variants plus the gate-object shape check.
+		const fermentField = msg.match(
+			/^Field "([a-z0-9_.]+)" (?:must be an array|was a JSON string, but it did not decode to an array|was a string, but it did not contain a valid JSON array)\./,
+		)
+		if (fermentField)
+			return { kind: "model_mistake", message: "Ferment argument not valid JSON", attrs: { field: fermentField[1] } }
+		if (msg.startsWith("Every gate object requires {id, verdict, rationale, evidence}. Fix these and retry:")) {
+			return { kind: "model_mistake", message: "Ferment gate objects invalid" }
+		}
+		if (
+			/^complete_ferment refused — agent self-flagged on \d+ ferment gate\(s\):/.test(msg) ||
+			/^Call refused — agent self-flagged on \d+ gate\(s\):/.test(msg)
+		) {
+			return { kind: "model_mistake", message: "Ferment self-flagged" }
+		}
 	}
 
 	// Declines — user decisions, by definition not failures.
@@ -440,12 +496,35 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 		if (read) return read
 	}
 	if (PATH_TOOLS.has(toolName)) {
+		// rg/fd subprocess families (the grep tool shells out to bundled rg,
+		// find to fd): a bad pattern in the model's own regex is friction; a
+		// bootstrap failure to download the tool is a real harness failure.
+		if (/^rg: (?:regex parse error|the literal)/.test(msg)) {
+			return { kind: "model_mistake", message: "Invalid regex" }
+		}
+		if (/^(?:ripgrep \(rg\)|rg|fd) is not available and could not be downloaded$/.test(msg)) {
+			return { kind: "failure", message: "Search tool unavailable" }
+		}
 		const path = classifyPathError(msg)
 		if (path) return path
 	}
 
+	// Filesystem errno family — shared by every file-accessing tool scope.
+	if (toolName === "read" || WRITE_EDIT_TOOLS.has(toolName) || PATH_TOOLS.has(toolName)) {
+		const fs = classifyFsError(msg)
+		if (fs) return fs
+	}
+
 	const engine = classifyEngineValidationError(msg)
 	if (engine) return engine
+
+	// Codemode options-line validation (pi-mono codemode chunk): the
+	// // @options: directive must lead the script; a misplaced one is rejected.
+	// Harness-owned string, tool-agnostic match (same exception class as
+	// engine validation).
+	if (/^The \/\/ @options: line must be the first line of the input; found one on line \d+$/.test(msg)) {
+		return { kind: "model_mistake", message: "Codemode options line misplaced" }
+	}
 
 	// Fail-open fallback: today's behavior, unchanged.
 	return { kind: "failure", message: msg.slice(0, 300) }

@@ -58,9 +58,11 @@ describe("classifyToolError — fixture replay (real export messages)", () => {
 
 	it("collapses the curated set to a bounded set of canonical messages", () => {
 		const distinct = new Set(typedFixtures.map((f) => f.expect.message))
-		// ~40 canonical families cover the curated export; growth beyond this
-		// means a new pattern is emitting per-instance messages.
-		expect(distinct.size).toBeLessThanOrEqual(40)
+		// ~40 canonical families covered the curated export through the 1.28.2
+		// canonicalization; the 2026-11 gap-closing pass (fs errno, rg/fd,
+		// codemode, ferment validation) raises the ceiling to 50. Growth beyond
+		// that means a new pattern is emitting per-instance messages.
+		expect(distinct.size).toBeLessThanOrEqual(50)
 	})
 
 	it("leaks no absolute path, ISO timestamp, or rate-limit window into canonical messages", () => {

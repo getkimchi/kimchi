@@ -72,7 +72,8 @@ describe("handleTransportError", () => {
 			"error",
 			{
 				error_type: "transport_error",
-				error_message: errorMessage,
+				error_message: "Transport: socket closed unexpectedly",
+				canonicalization: "v1",
 			},
 			piCtx,
 		)
@@ -90,7 +91,11 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: expect.any(String) }),
+			expect.objectContaining({
+				error_type: "transport_error",
+				error_message: "Transport: socket closed unexpectedly",
+				canonicalization: "v1",
+			}),
 			expect.anything(),
 		)
 	})
@@ -107,7 +112,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "Connection reset by peer" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: connection reset" }),
 			expect.anything(),
 		)
 	})
@@ -119,7 +124,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "socket closed" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: connection closed" }),
 			expect.anything(),
 		)
 	})
@@ -131,7 +136,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "connection closed" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: connection closed" }),
 			expect.anything(),
 		)
 	})
@@ -143,7 +148,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "read ECONNRESET" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: connection reset" }),
 			expect.anything(),
 		)
 	})
@@ -161,7 +166,7 @@ describe("handleTransportError", () => {
 			"error",
 			expect.objectContaining({
 				error_type: "transport_error",
-				error_message: "connect ECONNREFUSED 127.0.0.1:443",
+				error_message: "Transport: connection refused",
 			}),
 			expect.anything(),
 		)
@@ -174,7 +179,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "Broken pipe" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: broken pipe" }),
 			expect.anything(),
 		)
 	})
@@ -193,20 +198,20 @@ describe("handleTransportError", () => {
 			"error",
 			{
 				error_type: "transport_error",
-				error_message: "socket connection was closed unexpectedly",
+				error_message: "Transport: socket closed unexpectedly",
+				canonicalization: "v1",
 			},
 			piCtx,
 		)
 	})
 
-	it("truncates error_message to 300 chars", () => {
+	it("canonicalizes a long transport error instead of leaking its raw tail", () => {
 		const sessionCtx = mockSessionCtx()
 		const longMessage = `socket connection was closed unexpectedly ${"x".repeat(400)}`
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
 			message: { role: "assistant", stopReason: "error", errorMessage: longMessage } as AssistantMessage,
 		})
 		const emitted = (sessionCtx.emit as ReturnType<typeof vi.fn>).mock.calls[0][1] as { error_message: string }
-		expect(emitted.error_message.length).toBe(300)
-		expect(emitted.error_message.endsWith("xxx")).toBe(true)
+		expect(emitted.error_message).toBe("Transport: socket closed unexpectedly")
 	})
 })
