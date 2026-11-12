@@ -2115,7 +2115,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			// The valuation question embeds the fact text in its instructions.
 			const facts = Object.values(body.questions).map((q) =>
 				q.instructions.replace(
-					/^Candidate memory fact \d+: "|" — should a long-term memory system KEEP this fact\?$/g,
+					/^Candidate memory fact \d+: "|" — would knowing it in advance help a future session of this agent complete its task\?$/g,
 					"",
 				),
 			)
