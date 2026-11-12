@@ -165,3 +165,28 @@ Unsolicited-turn gating: #1728 (`session-policy.ts`). Replay id re-allocation on
 fragility: `describeToolCall` kind-`"other"` tools had no schema slot for the tool name
 (the spec's `name` field is now the fix target). Placement rework: #1727. CustomEntry vs
 `sendCustomMessage`: #1729 (commit `cb2985e5c`).
+
+Earlier instances of the same class, all fixed after the fact:
+
+- **Subagents backgrounded by default** (#1388; follow-up #1509). A TUI-side
+  background-by-default change swept rpc-mode sessions into the interactive bucket,
+  so backgrounded subagents outlived their turn with no client surface. The fix
+  made backgrounding TUI-only, allowlisting the surface that actually watches
+  run lifecycles, and its review notes the general pattern: the surface that
+  cannot represent the behavior gets the safe default, not the feature. Rule 1 and
+  rule 10 precedent.
+- **`<done>` recovery token leaked to clients** (#1311). The continuation-nudge
+  machinery blanked the recovery reply only for consumers that render message
+  content; the ACP server forwards raw text deltas, so clients watched the control
+  token stream past. Effect reached clients by a path nobody had walked.
+- **`rawInput` empty during the whole permission window** (#1304). Pending tool calls
+  carried partial (usually empty) arguments until post-approval re-send; clients
+  rendered edit cards with no path while the user was being asked to approve them.
+  Rule 2's "every emission path" wording exists because of this.
+- **Command-palette broadcast storm** (#1251). Skill-watcher debounce windows each
+  re-broadcast an identical `available_commands_update` to every attached session:
+  one deliberate change, three wire notifications per client.
+- **`session/cancel` lost in pi-mono's pre-run window** (#1630). A cancel landing
+  before the run's AbortController existed was silently dropped; the turn streamed
+  to completion (~60 s) and the client's prompt request timed out instead of
+  resolving `cancelled`. Exactly the spec's cancellation anchor.
