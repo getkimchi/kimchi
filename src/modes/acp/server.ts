@@ -634,7 +634,7 @@ export class KimchiAcpAgent implements Agent {
 
 		this.clientCapabilities = request.clientCapabilities
 		// One CLI process = one ACP client: the opt-in steers BOTH the wire
-		// (run_start/run_end emission below and in the session event
+		// (background_run_start/background_run_end emission below and in the session event
 		// subscriber) and the bash-background session policy (turns yielding
 		// live commands vs. the completion guard) for every session this
 		// server creates.
@@ -713,7 +713,7 @@ export class KimchiAcpAgent implements Agent {
 					artifacts: true,
 					// Advertises the background-runs GATE: clients that opt in at
 					// initialize with the same key get async background runs plus
-					// run_start/run_end; everyone else keeps the completion guard
+					// background_run_start/background_run_end; everyone else keeps the completion guard
 					// (pre-#1616) so no client sees a ghost run without a stop
 					// button. Note the agent NEEDS this flag advertised only so
 					// clients feature-detect the gate; emission is opt-in gated.
@@ -1504,7 +1504,7 @@ export class KimchiAcpAgent implements Agent {
 		// unsolicited context here: cancel released the wait while the run is
 		// still streaming, so agent_settled must keep the context to close the
 		// run boundary with stopReason "cancelled" — resetting it would leak the
-		// run_start with no matching run_end.
+		// background_run_start with no matching background_run_end.
 		if (pending.cancelled) return { stopReason: "cancelled" }
 		if (entry.unsolicitedTurn) {
 			// Defensive reset (settled-run path only): agent_settled already
@@ -2322,7 +2322,7 @@ export class KimchiAcpAgent implements Agent {
 					this.emitUsageUpdate(entry.session, unsolicited.usage)
 					// Close the run boundary AFTER the last streamed output, mirroring
 					// finalizeTurn's stopReason mapping for prompt-owned turns.
-					// Symmetric with run_start: non-opted clients never see it.
+					// Symmetric with background_run_start: non-opted clients never see it.
 					if (isAcpBackgroundRunsOptedIn()) {
 						emitRunEnd(
 							this.conn,

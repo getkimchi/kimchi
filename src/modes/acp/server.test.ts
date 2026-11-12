@@ -7021,7 +7021,7 @@ describe("generated artifacts (live turns)", () => {
 			artifacts: true,
 			// Clients feature-detect the background-runs gate through this flag
 			// before deciding whether to opt in at initialize.
-			background_runs: true,
+			backgroundRuns: true,
 		})
 	})
 })
@@ -8083,14 +8083,14 @@ describe("routed model notifications", () => {
 })
 
 // An agent-initiated run (no prompt owns it, e.g. a background-bash exit
-// waking an idle agent) brackets its streamed output with run_start / run_end
+// waking an idle agent) brackets its streamed output with background_run_start / background_run_end
 // ext notifications. The boundary must close exactly once per run — also when
 // a client prompt waits the run out and when the client cancels mid-run — so
 // a client anchored on `state: "running"` never sees a permanent-running
 // session.
 describe("run boundary notifications", () => {
-	const RUN_START = "_kimchi.dev/run_start"
-	const RUN_END = "_kimchi.dev/run_end"
+	const RUN_START = "_kimchi.dev/background_run_start"
+	const RUN_END = "_kimchi.dev/background_run_end"
 
 	async function startRunBoundarySession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
 		// Background-runs opt-in: these tests exercise run boundaries, which
@@ -8170,7 +8170,7 @@ describe("run boundary notifications", () => {
 	// Regression: a prompt parked behind an unsolicited run that gets cancelled
 	// released the parked wait — and the defensive unsolicitedTurn reset ran
 	// while the run was still streaming, so the aborted run's agent_settled
-	// found no context and skipped run_end. The client anchored on
+	// found no context and skipped background_run_end. The client anchored on
 	// `state: "running"` saw a permanently-running session.
 	it("a cancel of a prompt parked behind the run still closes the boundary when the run settles", async () => {
 		const fake = new FakeAgentSession("session-rb-parked-cancel")
@@ -8203,7 +8203,7 @@ describe("run boundary notifications", () => {
 
 		// The aborted run settles: the boundary closes exactly once, labelled
 		// cancelled — resetting the unsolicited context on the cancel path would
-		// have skipped this run_end and leaked the run_start.
+		// have skipped this background_run_end and leaked the background_run_start.
 		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
 		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
 		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
@@ -8213,7 +8213,7 @@ describe("run boundary notifications", () => {
 
 	// Regression: cancel() during the wake RAMP — the steer is submitted but
 	// pi's agent_start has not yet arrived — found no unsolicitedTurn to mark,
-	// so the cancel vanished; the run then emitted run_start, streamed to
+	// so the cancel vanished; the run then emitted background_run_start, streamed to
 	// completion, and closed end_turn. The cancel now latches and the
 	// allocation consumes it: abort + cancelled stopReason.
 	it("a cancel during the wake ramp cancels the run when agent_start arrives", async () => {

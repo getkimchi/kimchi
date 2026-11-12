@@ -10,8 +10,8 @@
 // the v2 migration will be a RESHAPE into that envelope, not a bare
 // rename:
 //
-//   _kimchi.dev/run_start { sessionId, state: "running", reason }
-//   _kimchi.dev/run_end   { sessionId, state: "idle", stopReason }
+//   _kimchi.dev/background_run_start { sessionId, state: "running", reason }
+//   _kimchi.dev/background_run_end   { sessionId, state: "idle", stopReason }
 //
 // Clients that don't know the notification ignore it (JSON-RPC
 // notifications with unknown methods are no-ops). The reason travels
@@ -31,11 +31,11 @@ import { emitExtNotification } from "./ext-notifications.js"
 export type RunEndStopReason = "end_turn" | "cancelled" | "refusal" | "error"
 
 export function emitRunStart(conn: AgentSideConnection, sessionId: string, reason: RunStartReason): void {
-	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.run_start, { sessionId, state: "running", reason })
+	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.background_run_start, { sessionId, state: "running", reason })
 }
 
 export function emitRunEnd(conn: AgentSideConnection, sessionId: string, stopReason: RunEndStopReason): void {
-	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.run_end, { sessionId, state: "idle", stopReason })
+	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.background_run_end, { sessionId, state: "idle", stopReason })
 }
 
 /** Map a turn's end flags to the run's stopReason, mirroring finalizeTurn's

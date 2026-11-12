@@ -19,29 +19,29 @@ describe("run-boundary wire methods", () => {
 		// The canonical home for outbound ext-notification wire names: clients
 		// and emitters alike reference AVAILABLE_EXT_NOTIFICATIONS, so an
 		// unregistered method here means the notification cannot be gated on.
-		expect(AVAILABLE_EXT_NOTIFICATIONS.run_start).toBe("_kimchi.dev/run_start")
-		expect(AVAILABLE_EXT_NOTIFICATIONS.run_end).toBe("_kimchi.dev/run_end")
+		expect(AVAILABLE_EXT_NOTIFICATIONS.background_run_start).toBe("_kimchi.dev/background_run_start")
+		expect(AVAILABLE_EXT_NOTIFICATIONS.background_run_end).toBe("_kimchi.dev/background_run_end")
 	})
 })
 
 describe("run-boundary emission", () => {
-	it("run_start carries the v2-shaped running state and reason", () => {
+	it("background_run_start carries the v2-shaped running state and reason", () => {
 		const { conn, sent } = fakeConn()
 		emitRunStart(conn, "session-1", "background-task-complete")
 		expect(sent).toEqual([
 			{
-				method: AVAILABLE_EXT_NOTIFICATIONS.run_start,
+				method: AVAILABLE_EXT_NOTIFICATIONS.background_run_start,
 				params: { sessionId: "session-1", state: "running", reason: "background-task-complete" },
 			},
 		])
 	})
 
-	it("run_end carries the idle state and a v1-named stopReason", () => {
+	it("background_run_end carries the idle state and a v1-named stopReason", () => {
 		const { conn, sent } = fakeConn()
 		emitRunEnd(conn, "session-1", "end_turn")
 		expect(sent).toEqual([
 			{
-				method: AVAILABLE_EXT_NOTIFICATIONS.run_end,
+				method: AVAILABLE_EXT_NOTIFICATIONS.background_run_end,
 				params: { sessionId: "session-1", state: "idle", stopReason: "end_turn" },
 			},
 		])

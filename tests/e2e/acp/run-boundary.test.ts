@@ -2,15 +2,15 @@ import { expect, it } from "vitest"
 import { STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitFor, waitForSessionUpdate } from "./support/scenarios.js"
 
-const RUN_START_METHOD = "_kimchi.dev/run_start"
-const RUN_END_METHOD = "_kimchi.dev/run_end"
+const RUN_START_METHOD = "_kimchi.dev/background_run_start"
+const RUN_END_METHOD = "_kimchi.dev/background_run_end"
 
 // An agent-initiated run (a background-bash exit waking the idle
-// agent) announces its boundary over ACP — run_start with the wake reason
-// BEFORE the run's streamed output, run_end with the stopReason AFTER it —
+// agent) announces its boundary over ACP — background_run_start with the wake reason
+// BEFORE the run's streamed output, background_run_end with the stopReason AFTER it —
 // while prompt-owned turns emit neither.
 it(
-	"background-task completion wake emits run_start (reason) and run_end (stopReason) around its streamed output",
+	"background-task completion wake emits background_run_start (reason) and background_run_end (stopReason) around its streamed output",
 	async () => {
 		const fixture = await startAcpFixture({
 			artifactName: "run-boundary-wake",
@@ -47,7 +47,7 @@ it(
 					update.content.text.includes("The watcher finished"),
 				45_000,
 			)
-			// run_end lands after the run's last chunk.
+			// background_run_end lands after the run's last chunk.
 			await waitFor(
 				() => fixture.client.extNotifications,
 				(notifications) => notifications.some((n) => n.method === RUN_END_METHOD),
@@ -66,8 +66,8 @@ it(
 			})
 			expect(runEnds[0].params).toMatchObject({ sessionId, state: "idle", stopReason: "end_turn" })
 
-			// Ordering on the wire: run_start opens before any of the run's
-			// streamed chunks, run_end closes after its last one. The scripted
+			// Ordering on the wire: background_run_start opens before any of the run's
+			// streamed chunks, background_run_end closes after its last one. The scripted
 			// turn-1 chunk is the only chunk before the boundary; the wake chunk
 			// is the only one inside it.
 			const order = fixture.client.wireArrivalOrder

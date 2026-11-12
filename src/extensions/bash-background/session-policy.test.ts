@@ -31,7 +31,7 @@ describe("resolveBashSessionKind — policy matrix", () => {
 		// (src/modes/acp/server.ts), and `--mode rpc` is the frontend
 		// embedding channel — both have a human driving them. Since #1616 a
 		// turn may END while background commands keep running and the agent
-		// wakes itself with no prompt outstanding (run_start/run_end). Only
+		// wakes itself with no prompt outstanding (background_run_start/background_run_end). Only
 		// clients that opted into that at initialize can show a stop button
 		// for the wake — so the opt-in IS the classification input.
 		setAcpBackgroundRunsOptedIn(true)
@@ -39,7 +39,7 @@ describe("resolveBashSessionKind — policy matrix", () => {
 	})
 
 	it("an rpc client that did NOT opt into background runs keeps the completion guard", () => {
-		// The pre-#1616 guard: without run_start/run_end handling a client
+		// The pre-#1616 guard: without background_run_start/background_run_end handling a client
 		// cannot present an agent-initiated run's stop button, so its turn
 		// waits out background commands and its existing stop button covers
 		// everything — no "ghost runs".

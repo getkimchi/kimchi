@@ -15,12 +15,12 @@
  *    can queue a message at any time, so an explicit
  *    `bash_control(wait: true)` yields to it and a chat turn may settle
  *    while managed commands keep running (completion notifications wake
- *    the agent back up — run_start/run_end tells the client about it).
+ *    the agent back up — background_run_start/background_run_end tells the client about it).
  *  - Unattended: `--print` and `--mode json` one-shot/headless runs,
  *    agent workers (`isAgentWorker()`) — including workers spawned by a
  *    user-facing parent: worker status takes precedence over transport
  *    mode — AND ACP clients that did NOT opt into background runs at
- *    initialize: without run_start/run_end handling those clients cannot
+ *    initialize: without background_run_start/background_run_end handling those clients cannot
  *    show a stop button for an agent-initiated run, so they keep the
  *    pre-#1616 completion guard (a turn cannot end while managed work
  *    lacks a disposition — the client's existing stop button covers it).
@@ -45,7 +45,7 @@ export interface BashSessionKindInputs {
 
 /**
  * Whether the ACP client of THIS PROCESS opted into background runs at
- * initialize (`clientCapabilities._meta["kimchi.dev"].background_runs`).
+ * initialize (`clientCapabilities._meta["kimchi.dev"].backgroundRuns`).
  * One CLI process serves exactly one ACP client, so a process-scoped flag
  * is sound; the TUI never sets it (TUI is always user-facing).
  */
@@ -76,7 +76,7 @@ export function resolveBashSessionKind(inputs: BashSessionKindInputs): BashSessi
 	// "rpc": conversational protocol sessions (ACP installs "rpc"). Since
 	// #1616 such a turn may END while background commands keep running and
 	// the agent wakes itself with NO prompt outstanding — only clients that
-	// opted into background runs (run_start/run_end + their own stop
+	// opted into background runs (background_run_start/background_run_end + their own stop
 	// wiring) can handle that safely. Everyone else keeps the completion
 	// guard — pre-#1616 behavior: a turn waits out its background commands
 	// and the client's existing stop button covers everything.
