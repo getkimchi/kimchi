@@ -677,14 +677,25 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							deliveredFacts.push(fact)
 						}
 					}
-					updateMemoryStatus(ctx, turnSeq === attemptTurn)
+					// The adoption is complete here — record it BEFORE the UI bridge,
+					// the one realistically throwing step, so a settle failure never
+					// leaves the span without its terminal mark or the adoption
+					// unrecorded (a throw after this point keeps the assigned digest;
+					// the status count may lag one turn — cosmetic).
 					mark("memory.digest.adopted", { empty: d === null })
+					updateMemoryStatus(ctx, turnSeq === attemptTurn)
 				} catch (err) {
-					// Log it, and if the failed attempt is still current, clear it
-					// (and the epoch's blocking-wait credit) so the next turn retries
-					// instead of waiting out the abandon bound.
-					console.error("[memory] digest settle failed:", err instanceof Error ? err.message : err)
+					// Log it, and if the failed attempt is still current (a
+					// PRE-adoption throw — today only unreachable guard code, kept as
+					// defense for future statements added above the adoption), close
+					// its span and clear it (and the epoch's blocking-wait credit) so
+					// the next turn retries instead of waiting out the abandon bound.
+					console.error(
+						`[memory] digest settle failed (session ${markSession?.slice(0, 8)} epoch ${attempt.epoch}):`,
+						err instanceof Error ? err.message : String(err),
+					)
 					if (digestAttempt === attempt) {
+						mark("memory.digest.discarded", { reason: "error" })
 						digestAttempt = undefined
 						digestWaited = false
 					}
