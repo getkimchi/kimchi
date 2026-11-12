@@ -1,7 +1,8 @@
 # Watch a pull request locally
 
-`/pr-watch` monitors the current branch's GitHub PR or GitLab MR in this Kimchi
-session. New CI failures or trusted unresolved review feedback wake the agent
+PR watching is off by default. `/pr-watch` monitors the current branch's GitHub
+PR or GitLab MR and enables automatic fixes in this Kimchi session.
+New CI failures or trusted unresolved review feedback wake the agent
 when it is idle. Kimchi investigates, makes a justified fix, runs checks, commits
 and pushes normally. Existing permissions, project trust and repository rules apply.
 

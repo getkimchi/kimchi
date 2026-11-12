@@ -27,7 +27,14 @@ export function formatPRWatchStatus(state: PRMonitorState): string {
 		state.autoFix
 			? "Auto-fix is on: Kimchi may edit, test, commit and push. Normal permissions still apply."
 			: "Auto-fix is off.",
-		"Keep this Kimchi process open to continue watching. Use /pr-watch status or /pr-watch stop.",
+		state.enabled
+			? state.autoFix
+				? "Tip: /pr-watch watch turns off auto-fix. /pr-watch stop stops watching and cancels the current repair."
+				: "Tip: /pr-watch stop stops watching."
+			: null,
+		state.enabled
+			? "Keep this Kimchi process open to continue watching. Use /pr-watch status to check progress."
+			: null,
 	]
 		.filter(Boolean)
 		.join("\n\n")
