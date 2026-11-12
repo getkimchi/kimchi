@@ -348,6 +348,8 @@ describe("memory extension", () => {
 			const { sendMessage, start } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
+			const marksFile = join(mkdtempSync(join(tmpdir(), "kimchi-memory-marks-")), "marks.jsonl")
+			process.env.KIMCHI_SUBMIT_TIMING = marksFile
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
 			const result = await pending
@@ -358,6 +360,9 @@ describe("memory extension", () => {
 			// The abandoned computation lands late.
 			release?.([{ memory: "fact for late", score: 0.7 }])
 			await vi.advanceTimersByTimeAsync(0)
+			// The adoption leaves its terminal mark — every adoption path must,
+			// including the timer-continuation window.
+			expect(recordedMarks(marksFile).some((m) => m.event === "memory.digest.adopted")).toBe(true)
 			// Turn 2 adopts it: no wait, no second search. Turn 2's prompt stays
 			// inside delivered territory (its only content word is "late") so the
 			// detached recall branch is inert — the count then asserts the digest
@@ -368,6 +373,7 @@ describe("memory extension", () => {
 			expect(search).toHaveBeenCalledTimes(1)
 			expect(sendMessage).not.toHaveBeenCalled()
 		} finally {
+			delete process.env.KIMCHI_SUBMIT_TIMING
 			vi.useRealTimers()
 			consoleError.mockRestore()
 		}
