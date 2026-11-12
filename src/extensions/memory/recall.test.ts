@@ -36,6 +36,8 @@ function baseArgs(rig: Rig, overrides: Partial<RecallRunArgs> = {}): RecallRunAr
 		pi: rig.pi,
 		ctx: rig.ctx,
 		search: async () => [],
+		/** per-facet searches receive the facet text */
+		queries: undefined,
 		decideGate: null,
 		deliveredFacts: rig.deliveredFacts,
 		deliveredKeys: rig.deliveredKeys,
@@ -116,6 +118,38 @@ describe("runRecall", () => {
 		expect(rig.emitted[0].error).toBe("store unreachable")
 		expect(rig.sent).toHaveLength(0)
 		expect(rig.deliveredFacts).toEqual([])
+	})
+
+	it("multi-facet lookups run one search per facet and merge hits by best score", async () => {
+		const rig = makeRig()
+		const seen: string[] = []
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				trigger: "step-budget",
+				queries: ["facet-plan", "facet-state"],
+				search: async (q) => {
+					seen.push(q)
+					if (q === "facet-plan") return [hit("shared fact", 0.5), hit("plan-side fact")]
+					return [hit("shared fact", 0.9), hit("state-side fact")]
+				},
+			}),
+		)
+		expect(seen).toEqual(["facet-plan", "facet-state"])
+		expect(outcome).toBe("injected")
+		// merged by text, best score winning
+		const emitted = rig.emitted[0].hits as Array<{ text: string; score: number }>
+		const shared = emitted.find((h) => h.text === "shared fact")
+		expect(shared?.score).toBe(0.9)
+		expect(emitted).toHaveLength(3)
+	})
+
+	it("an undefined result from any facet is an overall no-searcher skip", async () => {
+		const rig = makeRig()
+		const outcome = await runRecall(
+			baseArgs(rig, { queries: ["a", "b"], search: async (q) => (q === "a" ? [hit("x")] : undefined) }),
+		)
+		expect(outcome).toBe("no-searcher")
+		expect(rig.emitted).toHaveLength(0)
 	})
 
 	it("null search result is a traced no-hits, not a silent skip", async () => {

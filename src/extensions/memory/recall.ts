@@ -20,10 +20,18 @@ export interface RecallRunArgs {
 	trigger: string
 	/** The drift signal to embed: prompt+tail for user turns; reasoning head + env receipts for loop triggers. */
 	query: string
+	/**
+	 * Multi-facet lookups: when present, `search` runs once per facet and the
+	 * union of hits (dedup by text, best score wins) feeds selection. The
+	 * blended `query` still drives coverage/gate checks and is what the
+	 * trace records. Loop triggers pass [reasoning head, receipt-1,
+	 * receipt-2]; user-turn recall keeps a single query.
+	 */
+	queries?: readonly string[]
 	pi: ExtensionAPI
 	ctx: ExtensionContext
-	/** Caller-wrapped search (indicator widget + searcher cache + timeout). Null = a search that ran and returned nothing (traced with empty hits); undefined = no backend (skipped silently, like the old path). */
-	search: () => Promise<MemorySearchHit[] | null | undefined>
+	/** Caller-wrapped search (indicator widget + searcher cache + timeout). Null = a search that ran and returned nothing (traced with empty hits); undefined = no backend (skipped silently, like the old path). The argument is the facet query to embed — the caller must use it (multi-facet lookups pass different facet texts). */
+	search: (query: string) => Promise<MemorySearchHit[] | null | undefined>
 	/** Caller-wrapped d3 gate. Null = pre-gate behavior (search whenever uncovered). */
 	decideGate: (() => Promise<boolean>) | null
 	/** Shared delivered state — ALSO the user-turn path's, so cross-path dedupe is by construction. */
@@ -43,7 +51,7 @@ const RECALL_STEER_PREFIX =
  * outcome instead of duplicating the classification.
  */
 export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
-	const { trigger, query, pi, search, decideGate, deliveredFacts, deliveredKeys, emit, ctx } = args
+	const { trigger, query, queries, pi, search, decideGate, deliveredFacts, deliveredKeys, emit, ctx } = args
 	void ctx // kept in the signature: triggered callers wrap `search` with the indicator themselves
 	if (isCovered(query, deliveredFacts)) {
 		console.info("[memory] recall skipped: conversation covered by delivered facts")
@@ -64,9 +72,37 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 		return "gate-skip"
 	}
 	const startedAt = Date.now()
+	// Multi-facet retrieval: one search per facet, union merged by text with
+	// the best score winning. A null result from ANY facet keeps the old
+	// traced-empty-hits contract; undefined from any facet = no backend →
+	// silent skip overall.
+	const facets = queries && queries.length > 0 ? [...queries] : [query]
 	let hits: MemorySearchHit[] | null | undefined
 	try {
-		hits = await search()
+		if (facets.length === 1) {
+			hits = await search(facets[0])
+		} else {
+			// Sequential, not fan-out: the caller's wrapped search carries the
+			// UI indicator + per-search timeout, the backend queues its own
+			// embeds anyway, and partial facets stay cheap (≤3). A null from
+			// any facet keeps the traced-empty-hits contract; undefined from
+			// any facet = no backend → silent skip overall.
+			const merged = new Map<string, MemorySearchHit>()
+			let emptyBackend = false
+			for (const q of facets) {
+				const sub = await search(q)
+				if (sub === undefined) {
+					emptyBackend = true
+					break
+				}
+				for (const h of sub ?? []) {
+					const text = h.memory ?? ""
+					const prior = merged.get(text)
+					if (!prior || (h.score ?? 0) > (prior.score ?? 0)) merged.set(text, h)
+				}
+			}
+			hits = emptyBackend ? undefined : [...merged.values()]
+		}
 	} catch (err) {
 		emit({ trigger, error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - startedAt })
 		return "failed"
@@ -112,28 +148,35 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 }
 
 /**
- * Mid-loop recall query: the latest assistant response's head (the planner
- * voice) plus the last receipts' state. Settled composition — head
- * priority: head cap 400; per kept receipt we retain BOTH its leading
- * state lines and its trailing echoes (the visible state sits at a
- * receipt's head in some loop environments — a pure tail slice crops
- * exactly that); total cap MEMORY_STEP_QUERY_MAX_CHARS (2,000)).
+ * Mid-loop query builder — one facet per retrieval aspect. The blended
+ * composition (reasoning head + each receipt's keep-slice) serves
+ * coverage/gate checks and the trace; the facet array feeds
+ * multi-embedding lookups, one search per aspect, merged by best score.
  */
+const spliceReceipt = (t: string): string => {
+	const tailBudget = Math.floor((MEMORY_STEP_ENV_TAIL_CHARS * 2) / 3)
+	const headBudget = MEMORY_STEP_ENV_TAIL_CHARS - tailBudget
+	if (t.length <= MEMORY_STEP_ENV_TAIL_CHARS) return t
+	return `${t.slice(0, headBudget)}\n…\n${t.slice(-tailBudget)}`
+}
+
+/** Per-aspect facet queries: [reasoning head?, receipt-1, receipt-2] — each
+ * bounded, each a clean embedding topic (the plan voice vs. each visible
+ * state). An empty head means the facet array starts with receipts. */
+export function buildLoopRecallQueries(reasoningText: string, envReceipts: readonly string[]): string[] {
+	const facets: string[] = []
+	const head = reasoningText.slice(0, MEMORY_STEP_REASONING_HEAD_CHARS).trim()
+	if (head) facets.push(head)
+	for (const t of envReceipts.filter((t) => t.length > 0).slice(-2)) {
+		const sliced = spliceReceipt(t).trim()
+		if (sliced) facets.push(sliced)
+	}
+	return facets
+}
+
+/** Blended form for coverage checks, gates, and the trace — same spans. */
 export function buildLoopRecallQuery(reasoningText: string, envReceipts: readonly string[]): string {
-	const head = reasoningText.slice(0, MEMORY_STEP_REASONING_HEAD_CHARS)
-	const receipts = envReceipts
-		.filter((t) => t.length > 0)
-		.slice(-2)
-		.map((t) => {
-			// head 1/3 + tail 2/3 per receipt — the trailing echo log stays
-			// well-fed while the state block at the receipt start survives
-			const tailBudget = Math.floor((MEMORY_STEP_ENV_TAIL_CHARS * 2) / 3)
-			const headBudget = MEMORY_STEP_ENV_TAIL_CHARS - tailBudget
-			if (t.length <= MEMORY_STEP_ENV_TAIL_CHARS) return t
-			return `${t.slice(0, headBudget)}\n…\n${t.slice(-tailBudget)}`
-		})
-	if (receipts.length === 0) return head.slice(0, MEMORY_STEP_QUERY_MAX_CHARS)
-	return `${head}\n${receipts.join("\n")}`.slice(0, MEMORY_STEP_QUERY_MAX_CHARS)
+	return buildLoopRecallQueries(reasoningText, envReceipts).join("\n").slice(0, MEMORY_STEP_QUERY_MAX_CHARS)
 }
 
 // Volatile counters: a counter keyword followed only by counter phrasing
