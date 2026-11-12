@@ -42,6 +42,8 @@ import {
 import { Type } from "typebox"
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createToolContext } from "../../__mocks__/context.js"
+import { getConfig, getToolNamesForType, registerAgents } from "../personas/agent-types.js"
+import { AGENT_RESEARCHER } from "../personas/types.js"
 import { textResult } from "../tool-result.js"
 import { getActiveSubagentToolNames } from "./agent-runner.js"
 import { SubagentResourceLoader } from "./subagent-resource-loader.js"
@@ -404,10 +406,9 @@ describe("subagent web tools — real-session registration", () => {
 	})
 
 	it("keeps web tools registered but inactive on the extensions-disabled allowlist path", async () => {
-		// agent-runner's hard error stops custom agents from ever declaring web
-		// tools with extensions disabled; built-ins on this path (e.g. Debugger)
-		// declare builtin-only names. Either way the allowlist must not activate
-		// web tools even though the inline factories register them.
+		// The runner now never hands web factories to a sealed session; this pins
+		// the allowlist contract itself for defense in depth: whatever IS
+		// registered stays inactive unless allowlisted.
 		const session = await realSubagentSession(subagentWebToolFactories(), {
 			toolNames: ["read", "grep"],
 			noExtensions: true,
@@ -429,5 +430,32 @@ describe("subagent web tools — real-session registration", () => {
 		const session = await realSubagentSession(subagentWebToolFactories())
 		expect(session.getToolDefinition("web_search")).toBeUndefined()
 		expect(session.getToolDefinition("web_fetch")).toBeUndefined()
+	})
+
+	it("closes the loop on the original bug: the REAL embedded Researcher ends with web tools active", async () => {
+		// Uses the real embedded persona registry — not a test double for the
+		// persona — then assembles the session through the exact path agent-runner
+		// uses (loader factories → real session → the same activation function),
+		// proving the full wiring from "Researcher" to active web tools.
+		registerAgents(new Map())
+		const researcherConfig = getConfig(AGENT_RESEARCHER)
+		expect(researcherConfig.extensions).toBe(true)
+		if (researcherConfig.extensions === false) throw new Error("unreachable — asserted above")
+
+		const session = await realSubagentSession(subagentWebToolFactories())
+		const dropped: string[] = []
+		const finalTools = getActiveSubagentToolNames(
+			getToolNamesForType(AGENT_RESEARCHER),
+			session.getActiveToolNames(),
+			researcherConfig.extensions,
+			(name) => session.getToolDefinition(name) !== undefined,
+			undefined,
+			(names) => dropped.push(...names),
+		)
+		session.setActiveToolsByName(finalTools)
+
+		expect(session.getActiveToolNames()).toContain("web_search")
+		expect(session.getActiveToolNames()).toContain("web_fetch")
+		expect(dropped).toEqual([])
 	})
 })

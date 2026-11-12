@@ -142,13 +142,19 @@ vi.mock("../../auto-model/index.js", () => ({
 }))
 
 // The runner spreads subagentWebToolFactories() into the child session's
-// extension list. Mock the module (not resources/store) so these tests stay
-// hermetic against the local machine's settings.json — default empty, with
-// one composition test opting into stub factories. Real registration and
-// resource gating are covered by real-session tests in
-// subagent-resource-loader.test.ts.
+// extension list. Mock the module so these tests stay hermetic against the
+// local machine's settings.json — default empty, with one composition test
+// opting into stub factories. Real registration and resource gating are
+// covered by real-session tests in subagent-resource-loader.test.ts.
 vi.mock("./subagent-web-tools.js", () => ({
 	subagentWebToolFactories: vi.fn(() => []),
+}))
+
+// resources/store reads the local machine's settings.json: mock it so resource
+// gates (extensions.dap, cost-per-pr) are deterministic across machines. All
+// resources on by default; individual tests opt out per resource id.
+vi.mock("../../../resources/store.js", () => ({
+	isResourceEnabled: vi.fn().mockReturnValue(true),
 }))
 
 import {
@@ -162,6 +168,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
+import { isResourceEnabled } from "../../../resources/store.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../agents/subagent-bash-clamp.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
@@ -191,6 +198,7 @@ const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
 const mockGetCurrentPhase = vi.mocked(getCurrentPhase)
+const mockIsResourceEnabled = vi.mocked(isResourceEnabled)
 const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
 
 type SessionEvent = { type: string; [k: string]: unknown }
@@ -540,6 +548,7 @@ describe("runAgent — telemetry extension", () => {
 	})
 
 	it("spreads the web tool factories into the child session's extension list", async () => {
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
 		const webFetchStub: InlineExtension = () => {}
 		const webSearchStub: InlineExtension = () => {}
 		vi.mocked(subagentWebToolFactories).mockReturnValueOnce([webFetchStub, webSearchStub])
@@ -1394,8 +1403,6 @@ describe("runAgent — profile tool access", () => {
 				ReturnType<typeof createAgentSession>
 			>["extensionsResult"],
 		})
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
 			pi: pi as unknown as RunOptions["pi"],
 		})
@@ -1403,8 +1410,6 @@ describe("runAgent — profile tool access", () => {
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "web_search"])
 		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.activeToolNames).toEqual(["read", "web_search"])
 		expect(result.droppedToolNames).toEqual(["grep", "missing_tool"])
-		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("missing_tool"))
-		warnSpy.mockRestore()
 	})
 
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {
@@ -1600,6 +1605,92 @@ describe("runAgent — extensions disabled with non-builtin tools", () => {
 		expect(mockCreateAgentSession).toHaveBeenCalledWith(
 			expect.objectContaining({ tools: ["read", "grep", "debug_state_at"] }),
 		)
+	})
+})
+
+describe("runAgent — web factory gating and fail-fast refinements", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		// Custom (source-set) agent with extensions disabled — the sealed path.
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Hermetic", description: "no extensions", source: "project" }),
+		)
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(subagentWebToolFactories).mockReturnValue([])
+		mockIsResourceEnabled.mockReturnValue(true)
+	})
+
+	it("does not register web tool factories when extensions are disabled", async () => {
+		// Off means off — registration included: the factories the runner spreads
+		// must not even reach the child session's loader on the sealed path.
+		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+		const webFetchStub: InlineExtension = () => {}
+		vi.mocked(subagentWebToolFactories).mockReturnValueOnce([webFetchStub])
+		const session = makeFakeSession({ activeToolNames: ["read", "grep"] })
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(ctorArg?.extensionFactories).not.toContain(webFetchStub)
+	})
+
+	it("treats disallowed_tools as an opt-out, not a registration failure", async () => {
+		// The agent named web_search AND opted it out — the equivalent of
+		// researching nothing on the web. Spawning must succeed: the name is
+		// excluded by choice, not failing to register.
+		mockGetToolNamesForType.mockReturnValue(["read", "web_search"])
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({
+				name: "Hermetic",
+				description: "no extensions",
+				source: "project",
+				disallowedTools: ["web_search"],
+			}),
+		)
+		const session = makeFakeSession({ activeToolNames: ["read"] })
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateAgentSession).toHaveBeenCalled()
+	})
+
+	it("points DAP-tool failures at the extensions.dap resource remedy", async () => {
+		// Debug tools register inline like web tools don't — the only real
+		// blocker here is the resource toggle, so the message must name it.
+		mockGetToolNamesForType.mockReturnValue(["read", "debug_evaluate"])
+		mockIsResourceEnabled.mockImplementation((id) => id !== "extensions.dap")
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow(/extensions\.dap/)
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 })
 

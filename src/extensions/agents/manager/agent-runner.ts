@@ -565,7 +565,10 @@ ${skillLines}`
 		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
-		...subagentWebToolFactories(),
+		// Web tools only exist for extension-enabled sessions: with extensions
+		// disabled the session is contractually hermetic, so don't register the
+		// factories at all (off means off — registration included).
+		...(effectiveExtensions !== false ? subagentWebToolFactories() : []),
 	]
 	if (shouldRegisterDapForTools(toolNames)) {
 		extensionFactories.push(dapExtension)
@@ -621,16 +624,24 @@ ${skillLines}`
 			// registration. Web tools intentionally do NOT qualify: an agent
 			// that wants web tools must enable extensions — fail fast with
 			// guidance instead of silently honoring or silently dropping.
-			// Built-in personas (no `source`) are untouched by this check.
+			// Built-in personas (no `source`) are untouched by this check, and
+			// disallowed_tools wins over everything — an agent that opted a
+			// name out is not failing to register it.
 			const dapRegistrable = shouldRegisterDapForTools(toolNames)
 			const unregistrableTools = toolNames.filter((name) => {
+				if (disallowedSet?.has(name)) return false
 				if (BUILTIN_TOOL_NAMES.includes(name) || name === SKILL_TOOL_NAME) return false
 				if (dapRegistrable && isDapToolName(name)) return false
 				return true
 			})
 			if (unregistrableTools.length > 0) {
+				// DAP-only failures have a different remedy than extension tools:
+				// the debugger registers inline but its resource is disabled.
+				const remedy = unregistrableTools.every(isDapToolName)
+					? `enable the "extensions.dap" resource in settings, enable extensions for this agent, or`
+					: "enable extensions for this agent, or"
 				throw new Error(
-					`Agent "${type}" declares non-builtin tool(s) ${unregistrableTools.map((n) => `"${n}"`).join(", ")} but disables extensions — enable extensions for this agent, or remove these names from its 'tools:' list.`,
+					`Agent "${type}" declares non-builtin tool(s) ${unregistrableTools.map((n) => `"${n}"`).join(", ")} but disables extensions — ${remedy} remove these names from its 'tools:' list.`,
 				)
 			}
 		}
@@ -665,9 +676,6 @@ ${skillLines}`
 			disallowedSet,
 			(names) => {
 				droppedToolNames = names
-				console.warn(
-					`[agent-runner] agent "${type}" requested tool(s) not registered in its session; dropping: ${names.join(", ")}`,
-				)
 			},
 		)
 		// upstream pi: only ACTIVE tools are callable (registered-but-inactive now
