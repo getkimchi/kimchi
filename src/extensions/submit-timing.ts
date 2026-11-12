@@ -16,7 +16,7 @@
  * (`message.firstUpdate`). The memory recall legs (digest / gate / search)
  * are marked from src/extensions/memory/index.ts via the same helper.
  */
-import { appendFileSync } from "node:fs"
+import { appendFileSync, chmodSync, statSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import type {
 	AfterProviderResponseEvent,
@@ -29,6 +29,9 @@ import type {
 
 let seq = 0
 let warned = false
+// Paths whose permissions were already verified/tightened this process —
+// the stat+chmod runs once per path, not per mark.
+const ensuredPrivate = new Set<string>()
 
 /** Append one timing mark; no-op unless KIMCHI_SUBMIT_TIMING is set. */
 export function submitTimingMark(event: string, detail?: Record<string, unknown>): void {
@@ -47,8 +50,15 @@ export function submitTimingMark(event: string, detail?: Record<string, unknown>
 	const line = JSON.stringify({ t: Date.now(), perf: performance.now(), seq: seq++, event, ...detail })
 	try {
 		// 0o600 — the file carries prompt prefixes; match the diagnostics
-		// precedent (work-attribution) rather than umask defaults.
+		// precedent (work-attribution) rather than umask defaults. The mode
+		// applies only when the file is CREATED: a pre-existing looser file
+		// (e.g. `touch`-ed 0644) would expose the prefixes, so tighten it
+		// once per path.
 		appendFileSync(path, `${line}\n`, { mode: 0o600 })
+		if (!ensuredPrivate.has(path)) {
+			ensuredPrivate.add(path)
+			if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600)
+		}
 	} catch {
 		// Diagnostics must never break the turn.
 	}

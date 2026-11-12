@@ -66,6 +66,45 @@ test("extension command submits never get an optimistic echo", async ({ terminal
 	)
 })
 
+test("a handled submit clears its echo — nothing swallows it on screen", async ({ terminal }) => {
+	// An input handler that returns { action: "handled" } swallows the
+	// submission (vision-gate cancel, secret-blocking hook) — no run starts,
+	// no user entry ever renders. The echo painted during the handler's wait
+	// must be removed when preflight reports "handled", otherwise the
+	// swallowed text (a blocked secret is the motivating case) stays painted
+	// in the transcript.
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-echo-handled-"))
+	const extensionPath = join(dir, "handled-input.mjs")
+	writeFileSync(
+		extensionPath,
+		[
+			"export default function handledInput(pi) {",
+			"  pi.on('input', async () => {",
+			"    await new Promise((resolve) => setTimeout(resolve, 2000))",
+			"    return { action: 'handled' }",
+			"  })",
+			"}",
+		].join("\n"),
+	)
+
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "submit-echo-handled-clear",
+			responses: [{ stream: ["unused"] }],
+			extraArgs: ["--extension", extensionPath],
+		},
+		async () => {
+			terminal.submit("swallowed prompt")
+			// The echo paints while the input handler is parked...
+			await expect(terminal.getByText("swallowed prompt")).toBeVisible({ timeout: 1200 })
+			// ...and clears when the handler swallows the submission.
+			await new Promise((resolve) => setTimeout(resolve, 2500))
+			await expect(terminal.getByText("swallowed prompt")).not.toBeVisible()
+		},
+	)
+})
+
 test("hook display messages survive the echo reconcile", async ({ terminal }) => {
 	// The pre-request window is exactly when before_agent_start hooks run; one
 	// that surfaces a displayed message must keep it after the echo clears —

@@ -55,9 +55,11 @@ function hits(...items: Array<{ memory: string; score: number }>): MemorySearche
 }
 
 // The drift recall runs detached from its turn start (the submit-latency
-// fix) — settle its gate/search/delivery before asserting on it.
+// fix) — settle its gate/search/delivery/refire before asserting on it. Ten
+// macrotask turns cover the multi-hop chain (gate, searcher init, search,
+// delivery, coalesced refire) even if a hop gains a real async boundary.
 async function flushRecall(): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, 0))
+	for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 function startEvent(prompt: string): BeforeAgentStartEvent {
@@ -309,12 +311,12 @@ describe("memory extension", () => {
 		}
 	})
 
-	it("degrades to no-memory when the digest search hangs (bounded timeout)", async () => {
+	it("degrades to no-memory when the digest search hangs — and retries the digest next turn", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
-			// Only the digest's search hangs; a later drift recall must still
-			// fire and deliver — the timeout degrades the digest, not the valve.
+			// Only the first search hangs; later calls resolve. A timeout must
+			// NOT cache the failure: the next turn recomputes the digest.
 			const search = vi.fn((query: string) => {
 				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
 				return Promise.resolve([{ memory: `fact for ${query.length}`, score: 0.7 }])
@@ -327,11 +329,17 @@ describe("memory extension", () => {
 			const result = await pending
 			// Degraded to no facts — the notice is still present.
 			expect(result?.systemPrompt).toContain("captured automatically")
+			expect(result?.systemPrompt).not.toContain("fact for")
 			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
-			// The recall valve is untouched: turn 2's drift fires and delivers.
-			await start(startEvent("turn 2 - fresh territory"), fakeCtx)
-			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS)
+			// Retry: turn 2 recomputes the digest into the prefix (no recall —
+			// the digest search already used this prompt).
+			const turn2 = await start(startEvent("turn 2"), fakeCtx)
+			expect(turn2?.systemPrompt).toContain("fact for")
 			expect(search).toHaveBeenCalledTimes(2)
+			// The recall valve is untouched: turn 3's drift fires and delivers.
+			await start(startEvent("turn 3 - fresh territory"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS)
+			expect(search).toHaveBeenCalledTimes(3)
 			expect(sendMessage).toHaveBeenCalledTimes(1)
 		} finally {
 			vi.useRealTimers()
@@ -377,6 +385,85 @@ describe("memory extension", () => {
 			vi.useRealTimers()
 			consoleError.mockRestore()
 		}
+	})
+
+	it("a hung searcher factory degrades per turn and never wedges the session — the next turn retries", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			let createCalls = 0
+			const search = vi.fn(async () => [{ memory: "late-blooming fact", score: 0.8 }])
+			const { sendMessage, start } = await setup(
+				createMemoryExtension({
+					isEnabled: () => true,
+					createSearcher: () => {
+						createCalls += 1
+						// First factory call never settles (wedged backend); the
+						// second one succeeds.
+						return createCalls === 1 ? new Promise(() => {}) : Promise.resolve({ search })
+					},
+				}),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			const result = await pending
+			// Bounded: the turn degrades to the bare notice instead of hanging.
+			expect(result?.systemPrompt).toContain("captured automatically")
+			expect(result?.systemPrompt).not.toContain("late-blooming")
+			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
+			// The wedged factory call did not wedge the session: turn 2 retries
+			// with a FRESH factory call and the digest lands in the prefix.
+			const turn2 = await start(startEvent("turn 2"), fakeCtx)
+			expect(createCalls).toBe(2)
+			expect(turn2?.systemPrompt).toContain("late-blooming fact")
+			expect(sendMessage).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a mid-recall toggle-off suppresses delivery and ledger mutation — the valve still releases", async () => {
+		let releaseSearch: (() => void) | undefined
+		const search = vi
+			.fn()
+			.mockResolvedValueOnce([{ memory: "digest fact", score: 0.7 }])
+			.mockImplementationOnce(
+				() =>
+					new Promise<Array<{ memory: string; score: number }>>((resolve) => {
+						releaseSearch = () => resolve([{ memory: "suppressed fact", score: 0.7 }])
+					}),
+			)
+			.mockResolvedValueOnce([{ memory: "post-reenable fact", score: 0.7 }])
+			.mockResolvedValue([{ memory: "fresh delivered fact", score: 0.7 }])
+		const { sendMessage, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("turn 1"), fakeCtx)
+		await start(startEvent("turn 2 - fresh territory"), fakeCtx)
+		await flushRecall()
+		// The drift recall is in flight (its search unreleased).
+		expect(search).toHaveBeenCalledTimes(2)
+		// Flip the toggle OFF while it is pending, then let the search resolve.
+		setSessionMemoryOverride(fakeCtx.sessionManager, false)
+		releaseSearch?.()
+		await flushRecall()
+		// The mid-recall guard: no delivery, no ledger mutation.
+		expect(sendMessage).not.toHaveBeenCalled()
+		// While disabled: no memory contribution at all.
+		const off = await start(startEvent("turn 3"), fakeCtx)
+		expect(off).toBeUndefined()
+		// Re-enable: the flip resets and recomputes the digest (search 3), and
+		// the released valve lets a later drift deliver (search 4 + steer).
+		setSessionMemoryOverride(fakeCtx.sessionManager, true)
+		const back = await start(startEvent("turn 4"), fakeCtx)
+		expect(back?.systemPrompt).toContain("post-reenable fact")
+		await start(startEvent("turn 5 - brand new territory"), fakeCtx)
+		await flushRecall()
+		expect(search).toHaveBeenCalledTimes(4)
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+		const [message] = sendMessage.mock.calls[0] as [{ content: Array<{ type: string; text: string }> }, ...unknown[]]
+		expect(message.content[0]?.text).toContain("fresh delivered fact")
 	})
 
 	it("honors the --memory CLI flag via getParsedCliArgs", async () => {
@@ -574,6 +661,9 @@ describe("memory extension", () => {
 		const ctx = createContext()
 		await start(startEvent("drift topic 1"), ctx)
 		await start(startEvent("drift topic 2"), ctx)
+		// Recall delivery is detached from the turn start — settle it before
+		// asserting on the status segment.
+		await flushRecall()
 		const calls = vi.mocked(ctx.ui.setStatus).mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
 		expect(calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
 		expect(calls.at(-1)).toEqual([MEMORY_STATUS_KEY, "2"])
@@ -626,6 +716,7 @@ describe("memory extension", () => {
 		const ctx = createContext()
 		await start(startEvent("drift topic 1"), ctx)
 		await start(startEvent("drift topic 2"), ctx)
+		await flushRecall()
 		// The first delivery announced itself — exactly once, pluralized.
 		expect(vi.mocked(ctx.ui.notify).mock.calls.filter((call) => String(call[0]).startsWith("Recalled"))).toEqual([
 			["Recalled 1 memory", "info"],
@@ -744,7 +835,7 @@ describe("memory extension", () => {
 		expect(call?.[1]?.triggerTurn).toBe(false)
 	})
 
-	it("a recall in flight covers the next turn's drift — no stacked search", async () => {
+	it("a drift skipped while a recall is in flight coalesces and refires on settle", async () => {
 		let releaseSearch: (() => void) | undefined
 		const search = vi
 			.fn()
@@ -761,17 +852,25 @@ describe("memory extension", () => {
 		await start(startEvent("turn 1"), fakeCtx)
 		await start(startEvent("turn 2 - fresh territory"), fakeCtx)
 		await flushRecall()
-		// Turn 3 drifts while turn 2's recall is still pending — the in-flight
-		// one already covers the drift.
+		// Turn 3 drifts while turn 2's recall is still pending — no stacked
+		// search, but the skipped drift is queued, not dropped.
 		await start(startEvent("turn 3 - more fresh territory"), fakeCtx)
 		expect(search).toHaveBeenCalledTimes(2)
 		releaseSearch?.()
 		await flushRecall()
+		// Settle → turn-2 delivery went out, and the coalesced turn-3 drift
+		// fired its OWN search (its prompt, which the earlier query never saw).
 		expect(sendMessage).toHaveBeenCalledTimes(1)
-		// The valve is open again: turn 4's drift fires its own recall.
+		expect(search).toHaveBeenCalledTimes(3)
+		expect(String(search.mock.calls[2]?.[0])).toContain("turn 3 - more fresh territory")
+		// Release the coalesced recall too — the valve opens again, and turn
+		// 4's drift fires its own recall.
+		releaseSearch?.()
+		await flushRecall()
+		expect(sendMessage).toHaveBeenCalledTimes(1)
 		await start(startEvent("turn 4 - yet more territory"), fakeCtx)
 		await flushRecall()
-		expect(search).toHaveBeenCalledTimes(3)
+		expect(search).toHaveBeenCalledTimes(4)
 	})
 
 	it("compaction during a pending recall doesn't break delivery", async () => {

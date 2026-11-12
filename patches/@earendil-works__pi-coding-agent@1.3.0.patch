@@ -1,7 +1,10 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 1.3.0
 #
-# Tracking: optimistic-echo hunks: publication pending (upstream issue + PR
-#   planned). tools/bash.js bounded abort/timeout termination: earendil-works/pi#10929
+# Tracking: optimistic-echo hunks: earendil-works/pi#9115 (upstream feature
+#   request for exactly this — submitted-message echo before pre-flight —
+#   closed NOT_PLANNED by upstream, so an upstream PR is unlikely to land and
+#   these hunks are expected to be long-lived; a kimchi-side tracking issue is
+#   pending). tools/bash.js bounded abort/timeout termination: earendil-works/pi#10929
 #   (upstream issue with a minimal reproduction of the never-settling abort and
 #   the proposed shared termination; an upstream PR submitting the equivalent
 #   source change and regression tests is planned against it). The /model
@@ -1936,7 +1939,7 @@ index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99086a9810 100644
+index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..073e7d7204e1b74d116188ae5f7f5d076a23f8f4 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -494,7 +494,11 @@ export class InteractiveMode {
@@ -1952,7 +1955,26 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
                      value: level,
                      label: level,
                  }));
-@@ -1432,8 +1436,64 @@ export class InteractiveMode {
+@@ -915,7 +919,17 @@ export class InteractiveMode {
+         while (true) {
+             const userInput = await this.getUserInput();
+             try {
+-                await this.session.prompt(userInput);
++                await this.session.prompt(userInput, {
++                    // Kimchi patch: clear the optimistic echo when preflight
++                    // swallows the input (vision-gate cancel, blocking hook)
++                    // — no user entry will ever render to replace it, and for
++                    // secret-blocking hooks the blocked text must not stay on
++                    // screen.
++                    preflightResult: (result) => {
++                        if (result === "handled")
++                            this.clearOptimisticEcho();
++                    },
++                });
+             }
+             catch (error) {
+                 const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+@@ -1432,8 +1446,64 @@ export class InteractiveMode {
          if (showDiagnostics) {
              const skillDiagnostics = skillsResult.diagnostics;
              if (skillDiagnostics.length > 0) {
@@ -2019,7 +2041,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
                  this.loadedResourcesContainer.addChild(new Spacer(1));
              }
              const promptDiagnostics = promptsResult.diagnostics;
-@@ -2056,6 +2116,7 @@ export class InteractiveMode {
+@@ -2056,6 +2126,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -2027,7 +2049,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -2101,6 +2162,16 @@ export class InteractiveMode {
+@@ -2101,6 +2172,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -2044,7 +2066,18 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
          };
      }
      /**
-@@ -2727,6 +2798,8 @@ export class InteractiveMode {
+@@ -2416,6 +2497,10 @@ export class InteractiveMode {
+         // Set up handlers on defaultEditor - they use this.editor for text access
+         // so they work correctly regardless of which editor is active
+         this.defaultEditor.onEscape = () => {
++            // Kimchi patch: Esc bails out of a painted optimistic echo too —
++            // if the in-flight run is aborted before the real user entry
++            // renders, nothing else would remove it.
++            this.clearOptimisticEcho();
+             if (this.session.isStreaming) {
+                 this.restoreQueuedMessagesToEditor({ abort: true });
+             }
+@@ -2727,6 +2812,8 @@ export class InteractiveMode {
              // Normal message submission
              // First, move any pending bash components to chat
              this.flushPendingBashComponents();
@@ -2053,7 +2086,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
              if (this.onInputCallback) {
                  this.onInputCallback(text);
              }
-@@ -2791,14 +2864,24 @@ export class InteractiveMode {
+@@ -2791,14 +2878,24 @@ export class InteractiveMode {
                      this.ui.requestRender();
                  }
                  else if (event.entry.type === "compaction") {
@@ -2081,7 +2114,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
                      this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
                      this.addMessageToChat(createCompactionSummaryMessage(event.entry.summary, event.entry.tokensBefore, event.entry.timestamp));
                      if (event.entry.usage) {
-@@ -2830,6 +2913,11 @@ export class InteractiveMode {
+@@ -2830,6 +2927,11 @@ export class InteractiveMode {
                      this.ui.requestRender();
                  }
                  else if (event.message.role === "user") {
@@ -2093,7 +2126,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
                      this.addMessageToChat(event.message);
                      this.updatePendingMessagesDisplay();
                      this.ui.requestRender();
-@@ -3007,15 +3095,24 @@ export class InteractiveMode {
+@@ -3007,15 +3109,24 @@ export class InteractiveMode {
                          throw new Error("Completed compaction is missing from the session context");
                      }
                      this.chatContainer.clear();
@@ -2127,7 +2160,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
                      }
                      this.footer.invalidate();
                  }
-@@ -3150,6 +3247,48 @@ export class InteractiveMode {
+@@ -3150,6 +3261,55 @@ export class InteractiveMode {
          }
          this.chatContainer.addChild(component);
      }
@@ -2139,8 +2172,10 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
 +    // delay fires and never shows the echo); the echo owns its components
 +    // by IDENTITY (anything appended during the window survives), and
 +    // clearOptimisticEcho() removes exactly those when the real entry
-+    // renders, at the next submit, or after a rebuild (indexOf -1 is a
-+    // no-op). At most one optimistic echo exists at a time.
++    // renders, at the next submit, when preflight swallows the input
++    // (handled — vision-gate cancel, blocking hook), or on Esc. After a
++    // rebuild the components are orphans and indexOf -1 is a no-op.
++    // At most one optimistic echo exists at a time.
 +    showOptimisticEcho(text) {
 +        this.clearOptimisticEcho();
 +        // Plain prompts only: commands (builtin or extension), skill blocks,
@@ -2172,11 +2207,16 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
 +            if (index !== -1)
 +                this.chatContainer.removeChild(component);
 +        }
++        // The callers that reconcile via the real entry render right after
++        // — but the handled-preflight and Esc clears have no follow-up
++        // render of their own, and a stale frame would keep the swallowed
++        // text on screen.
++        this.ui.requestRender();
 +    }
      addMessageToChat(message, options) {
          switch (message.role) {
              case "bashExecution": {
-@@ -3420,7 +3559,9 @@ export class InteractiveMode {
+@@ -3420,7 +3580,9 @@ export class InteractiveMode {
          this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `${label}: ${reBilled}`), 1, 0));
      }
      renderInitialMessages() {
@@ -2187,7 +2227,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
          this.renderSessionEntries(entries, {
              updateFooter: true,
              populateHistory: true,
-@@ -3441,7 +3582,7 @@ export class InteractiveMode {
+@@ -3441,7 +3603,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -2196,7 +2236,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -3457,7 +3598,8 @@ export class InteractiveMode {
+@@ -3457,7 +3619,8 @@ export class InteractiveMode {
      }
      rebuildChatFromMessages() {
          this.chatContainer.clear();
@@ -2206,7 +2246,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
      }
      // =========================================================================
      // Key handlers
-@@ -4279,16 +4421,53 @@ export class InteractiveMode {
+@@ -4279,16 +4442,53 @@ export class InteractiveMode {
              return { component: selector, focus: selector.getSettingsList() };
          });
      }
@@ -2262,7 +2302,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
              return;
          }
          this.selectThinkingLevel(level, false);
-@@ -4310,10 +4489,17 @@ export class InteractiveMode {
+@@ -4310,10 +4510,17 @@ export class InteractiveMode {
                  this.selectThinkingLevel(level, persist);
                  done();
              };
@@ -2282,7 +2322,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
              return { component: selector, focus: selector };
          });
      }
-@@ -4322,6 +4508,34 @@ export class InteractiveMode {
+@@ -4322,6 +4529,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -2317,7 +2357,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4453,6 +4667,8 @@ export class InteractiveMode {
+@@ -4453,6 +4688,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -2326,7 +2366,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4470,10 +4686,13 @@ export class InteractiveMode {
+@@ -4470,10 +4707,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -2342,7 +2382,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e25b9d1eb840f5114c0d4d6a60890b99
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5446,7 +5665,12 @@ export class InteractiveMode {
+@@ -5446,7 +5686,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {

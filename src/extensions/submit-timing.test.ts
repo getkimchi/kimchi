@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -96,5 +96,15 @@ describe("submit-timing marks", () => {
 		submitTimingMark("submit.input", { prompt: "secret-ish" })
 		const mode = statSync(file).mode & 0o777
 		expect(mode).toBe(0o600)
+	})
+
+	it("tightens a pre-existing looser file — the mode option only applies at creation", () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-submit-timing-test-"))
+		const file = join(dir, "marks.jsonl")
+		writeFileSync(file, "")
+		chmodSync(file, 0o644)
+		process.env.KIMCHI_SUBMIT_TIMING = file
+		submitTimingMark("submit.input", { prompt: "secret-ish" })
+		expect(statSync(file).mode & 0o777).toBe(0o600)
 	})
 })
