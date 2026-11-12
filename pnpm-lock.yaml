@@ -717,7 +717,7 @@ packages:
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
 
   '@kimchi-dev/kimchi-workflows@0.0.11':
-    resolution: {integrity: sha512-1FlyGpu5Eiu2R2g492bM5OBg0j4lPh7cJXrnhlah2tuhKlV4MfBZxaBGrPoIJ7SQ0SZF2Q/6D181ic2EahtABA==}
+    resolution: {integrity: sha512-mPGIaMiwosrOBp7d0Kn7qxtqaF5vg3/Uv/Jcsr8F/ub7NWhOjYovapjfJV6kqYUupN8+qd1XenZ5QJtHyLJAag==}
     engines: {node: '>=22.19'}
     hasBin: true
     peerDependencies:
