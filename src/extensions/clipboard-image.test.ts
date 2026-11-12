@@ -14,10 +14,11 @@ const {
 	mockInsertTextAtPromptCursor,
 	mockGetNativeClipboard,
 	mockAddImage,
-	mockClearAllImages,
+	mockClearSessionImages,
 	mockSetImageCacheDir,
 	mockExecFile,
 	mockReadClipboardImage,
+	mockResolveImageContentById,
 } = vi.hoisted(() => ({
 	mockSetPendingImageIndicator: vi.fn(),
 	mockSetPasteImageHandler: vi.fn(),
@@ -26,10 +27,11 @@ const {
 	mockInsertTextAtPromptCursor: vi.fn(),
 	mockGetNativeClipboard: vi.fn(),
 	mockAddImage: vi.fn(),
-	mockClearAllImages: vi.fn(),
+	mockClearSessionImages: vi.fn(),
 	mockSetImageCacheDir: vi.fn(),
 	mockExecFile: vi.fn(),
 	mockReadClipboardImage: vi.fn(),
+	mockResolveImageContentById: vi.fn(),
 }))
 
 vi.mock("node:child_process", () => ({
@@ -53,12 +55,13 @@ vi.mock("../utils/clipboard-read.js", () => ({
 }))
 
 vi.mock("../utils/image-registry.js", () => ({
-	addImage: mockAddImage,
-	clearAllImages: mockClearAllImages,
-	setImageCacheDir: mockSetImageCacheDir,
-	// Stateful stand-in for getImageContentById: mockAddImage records into
-	// registryStore so marker references to earlier turns resolve.
-	getImageContentById: (id: number) => registryStore.get(id) ?? null,
+	// The real registry is session-scoped (sessionId first); the mocks adapt
+	// so existing assertions stay about ids, not session plumbing. Session
+	// scoping itself is covered by the registry's own unit tests.
+	addImage: (_sessionId: string, id: number, image: ImageContent) => mockAddImage(id, image),
+	clearSessionImages: mockClearSessionImages,
+	setImageCacheDir: (_sessionId: string, dir: string | null) => mockSetImageCacheDir(dir),
+	resolveImageContentById: mockResolveImageContentById,
 }))
 
 // Backing store for the mocked image registry (addImage writes, resolves read).
@@ -222,10 +225,14 @@ describe("clipboard-image extension", () => {
 		__resetVisionGateForTest()
 		vi.clearAllMocks()
 		// The mocked registry stays stateful across clearAllMocks: addImage records
-		// entries so later marker references resolve via getImageContentById.
+		// entries so later marker references resolve via resolveImageContentById.
 		registryStore.clear()
 		mockAddImage.mockImplementation((id: number, image: ImageContent) => {
 			registryStore.set(id, image)
+		})
+		mockResolveImageContentById.mockImplementation((_sessionId: string, id: number) => {
+			const image = registryStore.get(id)
+			return image ? { kind: "ok", image } : { kind: "unknown" }
 		})
 		vi.useFakeTimers()
 	})
@@ -684,13 +691,13 @@ describe("clipboard-image extension", () => {
 			const p = join(tmpDir, "cat.png")
 			writeFileSync(p, PNG_BYTES)
 			drop(p) // [Image #1]
-			mockClearAllImages.mockClear()
+			mockClearSessionImages.mockClear()
 
 			// An extension reload re-fires session_start for the SAME session —
 			// resetting would delete the live cache and orphan transcript markers.
 			startSession(pi, ctx, "reload")
 
-			expect(mockClearAllImages).not.toHaveBeenCalled()
+			expect(mockClearSessionImages).not.toHaveBeenCalled()
 			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toMatch(/^📎 1 image /)
 			drop(p) // numbering continues, not restarted at #1
 			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
@@ -723,6 +730,30 @@ describe("clipboard-image extension", () => {
 				source: "interactive",
 			})
 			expect(result).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("a detached drop does not re-arm after an accepted submission (drop → delete → submit → retype)", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p) // [Image #1]
+			markersEdited(new Set()) // user deletes the marker — the drop detaches
+
+			// A submission without the marker accepts: the detached drop is pruned
+			// for good instead of pinning its bytes for the rest of the session.
+			const first = await callInput(pi, ctx, { text: "plain text", images: [], source: "interactive" })
+			expect(first).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
+
+			// Retyping the marker as prose in the next draft must NOT resurrect
+			// the detached drop.
+			const second = await callInput(pi, ctx, {
+				text: "prose mentioning [Image #1]",
+				images: [],
+				source: "interactive",
+			})
+			expect(second).toBeUndefined()
 			expect(mockAddImage).not.toHaveBeenCalled()
 		})
 
@@ -856,6 +887,23 @@ describe("clipboard-image extension", () => {
 				expect(mockAddImage).not.toHaveBeenCalled()
 			})
 
+			it("a marker whose cached file is gone warns the user instead of sending silent text", async () => {
+				const { pi, ctx } = startVisionSession()
+				// The id is registered but its cache file is missing — a genuinely
+				// lost attachment, unlike a typo'd marker.
+				mockResolveImageContentById.mockReturnValue({ kind: "missing-file", path: "/cache/1.png" })
+
+				const result = await callInput(pi, ctx, {
+					text: "[Image #1] compare",
+					images: [],
+					source: "interactive",
+				})
+
+				expect(result).toBeUndefined()
+				expect(mockAddImage).not.toHaveBeenCalled()
+				expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("[Image #1]"), "warning")
+			})
+
 			it("a typed marker claims its number for prefix numbering", async () => {
 				const { pi, ctx } = startVisionSession()
 				await callInput(pi, ctx, { text: "what is this?", images: [img("first-turn")], source: "interactive" })
@@ -908,6 +956,33 @@ describe("clipboard-image extension", () => {
 
 			await expect(resultP).resolves.toEqual({ action: "transform", text: "fix please", images: [] })
 			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("vision-gate remove strips pending markers but keeps registry-referenced ones", async () => {
+			const { pi, ctx, resolveDialog } = startGateSession()
+
+			// Earlier turn: attach an image under #1 via the gate's switch path.
+			const first = callInput(pi, ctx, { text: "earlier", images: [img("earlier-turn")], source: "interactive" })
+			resolveDialog(0, { kind: "switch", model: SWITCH_TARGET })
+			await first
+			expect(registryStore.get(1)).toEqual(img("earlier-turn"))
+
+			// Second turn: a typed reference to #1 plus a new pending drop #2.
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
+
+			// Removing the images must strip #2's marker (its attachment is gone)
+			// but leave the typed [Image #1] reference to the still-valid #1 alone.
+			const second = callInput(pi, ctx, {
+				text: "fix [Image #2] like [Image #1]",
+				images: [],
+				source: "interactive",
+			})
+			resolveDialog(1, { kind: "remove" })
+
+			await expect(second).resolves.toEqual({ action: "transform", text: "fix like [Image #1]", images: [] })
 		})
 
 		it("vision-gate cancel retains the drop so a resubmit attaches it once", async () => {
@@ -964,6 +1039,35 @@ describe("clipboard-image extension", () => {
 			const result = await callInput(pi, ctx, { text: "just text", images: [], source: "interactive" })
 			expect(result).toBeUndefined()
 			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("discards a clipboard paste whose read completes after the draft was submitted", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+
+			// The clipboard read stays in flight while the user submits.
+			let resolveRead: (value: { bytes: Uint8Array; mimeType: string } | null) => void = () => {}
+			mockReadClipboardImage.mockReturnValue(
+				new Promise((resolve) => {
+					resolveRead = resolve
+				}),
+			)
+			pasteHandler?.()
+			await settle()
+			await callInput(pi, ctx, { text: "ship it", images: [], source: "interactive" })
+
+			resolveRead({ bytes: Buffer.from([1, 2, 3, 4]), mimeType: "image/png" })
+			await settle()
+
+			// Completing now would insert `[Image #N]` into the cleared editor and
+			// silently attach the image to the NEXT message — discard + notice.
+			expect(mockInsertTextAtPromptCursor).not.toHaveBeenCalled()
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("too late"), "info")
+			// And nothing is pending for the next turn.
+			const result = await callInput(pi, ctx, { text: "next", images: [], source: "interactive" })
+			expect(result).toBeUndefined()
 		})
 
 		it("accepts the paste on a text-only model and shows the hint as an indicator segment, not a chat warning", async () => {
@@ -1279,6 +1383,26 @@ describe("clipboard-image extension", () => {
 			expect(result.text).toBe("[Image #1] hi")
 			expect(result.images).toEqual(images)
 			expect(ctx.ui.custom).not.toHaveBeenCalled()
+		})
+
+		it("does not re-attach registry images for typed [Image #N] text — markers are TUI-only", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+
+			// TUI session registers image #1 through a normal submission.
+			const tuiCtx = makeMockCtx()
+			startSession(pi, tuiCtx)
+			await callInput(pi, tuiCtx, { text: "look", images: [img("registered")], source: "interactive" })
+			expect(registryStore.get(1)).toEqual(img("registered"))
+
+			// On rpc, the same marker text must stay plain text: the inline
+			// marker machinery (drop/paste/registry re-attach) is TUI-only.
+			const rpcCtx = makeMockCtx({ mode: "rpc" })
+			startSession(pi, rpcCtx, "new")
+			const result = await callInput(pi, rpcCtx, { text: "[Image #1] describe it", images: [], source: "rpc" })
+			expect(result).toBeUndefined()
+			expect(mockAddImage).toHaveBeenCalledTimes(1)
+			expect(mockResolveImageContentById).not.toHaveBeenCalled()
 		})
 	})
 
