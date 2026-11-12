@@ -68,14 +68,14 @@ describe("composeAvailableCommands", () => {
 
 		const commands = composeAvailableCommands(skills)
 
-		expect(commands[0]?.name).toBe("bug")
+		expect(commands[0]?.name).toBe("pr-watch")
 		const skillCmds = commands.filter((c) => c.name.startsWith("skill:"))
 		expect(skillCmds.map((c) => c.name)).toEqual(["skill:alpha", "skill:beta"])
 		expect(skillCmds[0]?.input).toEqual({ hint: "Optional prompt to run with this skill loaded." })
 	})
 
 	it("returns only the static palette when a session has no skills", () => {
-		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["bug", "language"])
+		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["pr-watch", "bug", "language"])
 	})
 })
 

@@ -34,6 +34,7 @@ export const SLASH_COMMANDS = {
 	terminal: { hint: "Open a raw SSH shell into a sandbox workspace" },
 	"remote-sessions": { hint: "Browse workspaces and their kimchi sessions" },
 	"pr-reporting": { hint: "PR cost reporting: on, off, or status" },
+	"pr-watch": { hint: "Watch this PR locally and fix CI or review feedback" },
 	tags: { hint: "Manage usage tracking tags" },
 	stats: { hint: "View coding analytics and metrics" },
 	"session-costs": { hint: "Billed cost of this session and your recent sessions" },

@@ -141,6 +141,8 @@ import {
 	substituteTokensDeep,
 	vaultForSession,
 } from "../../extensions/pii-redaction/vault.js"
+import { formatPRWatchStatus, runPRWatchCommand } from "../../extensions/pr-monitor/command.js"
+import { getPRMonitor } from "../../extensions/pr-monitor/index.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
@@ -190,12 +192,14 @@ import {
 	handleMemoryStatus,
 	handleSetMemoryEnabled,
 } from "./ext-methods/memory.js"
+import { handlePRMonitor } from "./ext-methods/pr-monitor.js"
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { SsoFlowManager, type SsoFlowManagerDeps, ssoError } from "./ext-methods/sso.js"
 import { handleSsoCredential } from "./ext-methods/sso-credential.js"
 import { handleSteering } from "./ext-methods/steering.js"
+import { emitExtNotification } from "./ext-notifications.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
@@ -1516,6 +1520,26 @@ export class KimchiAcpAgent implements Agent {
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
+		// Standard command advertisement + text replies work in existing ACP clients.
+		if (/^\/pr-watch(?:\s|$)/.test(text) && images.length === 0) {
+			const monitor = getPRMonitor(entry.session.sessionManager)
+			let reply: string
+			try {
+				if (!monitor) throw new Error("The PR monitor session is unavailable.")
+				reply = formatPRWatchStatus(await runPRWatchCommand(monitor, text.slice("/pr-watch".length)))
+			} catch (error) {
+				reply = `PR watch: ${error instanceof Error ? error.message : String(error)}`
+			}
+			this.send({
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					messageId: `km.${randomUUID()}`,
+					content: { type: "text", text: `${reply}\n\n` },
+				},
+			})
+			return { stopReason: "end_turn" }
+		}
 		// An unsolicited run (e.g. a completion-notification wake) may still be
 		// streaming: the client's previous prompt already resolved, so it
 		// legitimately believes the session is free — but pi rejects a prompt
@@ -1641,6 +1665,14 @@ export class KimchiAcpAgent implements Agent {
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
 		switch (method) {
+			case AVAILABLE_EXT_METHODS.pr_status:
+			case AVAILABLE_EXT_METHODS.set_pr_monitor:
+				return handlePRMonitor(
+					(sessionId) => this.sessions.get(sessionId)?.session,
+					params,
+					method === AVAILABLE_EXT_METHODS.set_pr_monitor,
+					(sessionId, state) => emitExtNotification(this.conn, "_kimchi.dev/pr_update", { sessionId, state }),
+				)
 			case AVAILABLE_EXT_METHODS.probe_mcp_server: {
 				const result = await handleProbeMcpServer(this.mcpProbe, params)
 				return result as Record<keyof ProbeResult, unknown>

@@ -237,6 +237,7 @@ export async function requestJSON(
 	initialURL: URL,
 	signal: AbortSignal,
 	deadline: number,
+	body?: Record<string, unknown>,
 ): Promise<{
 	value: unknown
 	headers: Headers
@@ -263,12 +264,14 @@ export async function requestJSON(
 		for (let redirects = 0; ; redirects++) {
 			sameOrigin(url, origin)
 			const response = await fetch(url, {
-				method: "GET",
+				method: body ? "POST" : "GET",
+				body: body ? JSON.stringify(body) : undefined,
 				redirect: "manual",
 				signal: requestSignal,
 				headers: {
 					Accept: "application/json",
 					"User-Agent": "Kimchi",
+					...(body ? { "Content-Type": "application/json" } : {}),
 					...(repository.token ? { Authorization: `Bearer ${repository.token}` } : {}),
 				},
 			})

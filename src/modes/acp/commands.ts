@@ -17,6 +17,11 @@ type AcpAvailableCommand = AvailableCommand & {
 
 export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 	{
+		name: "pr-watch",
+		description: SLASH_COMMANDS["pr-watch"].hint,
+		input: { hint: "[instructions|watch|status|stop]" },
+	},
+	{
 		name: "bug",
 		description: SLASH_COMMANDS.bug.hint,
 		input: {

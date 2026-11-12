@@ -43,6 +43,8 @@ export const AVAILABLE_EXT_METHODS = {
 	compact_abort: `_${CAPABILITIES_KEY}/compact_abort`,
 	memory_status: `_${CAPABILITIES_KEY}/memory_status`,
 	set_memory_enabled: `_${CAPABILITIES_KEY}/set_memory_enabled`,
+	pr_status: `_${CAPABILITIES_KEY}/pr_status`,
+	set_pr_monitor: `_${CAPABILITIES_KEY}/set_pr_monitor`,
 
 	// Sessionless inbound — no session involved.
 	auth_status: `_${CAPABILITIES_KEY}/auth_status`,
@@ -92,6 +94,7 @@ export const AVAILABLE_EXT_METHODS = {
 } as const
 
 export const AVAILABLE_EXT_NOTIFICATIONS = {
+	pr_update: `_${CAPABILITIES_KEY}/pr_update`,
 	pi_notify: `_${CAPABILITIES_KEY}/pi_notify`,
 	queue_dropped: `_${CAPABILITIES_KEY}/queue_dropped`,
 	project_trust_update: `_${CAPABILITIES_KEY}/project_trust_update`,
