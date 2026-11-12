@@ -6,9 +6,10 @@ import {
 	type RepositoryIdentity,
 	repositoryKey,
 } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
+import type { PullRequestCostReport } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import { calculatePullRequestCosts, type PullRequestCostReport } from "../work-attribution/costs.js"
+import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import { sameWorkAccount } from "../work-attribution/scope.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 import {

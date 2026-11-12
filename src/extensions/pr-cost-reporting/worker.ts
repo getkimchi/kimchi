@@ -5,6 +5,7 @@ import {
 	type ReportingRepository,
 	type RepositoryIdentity,
 } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
+import type { PullRequestCostReport } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
 import { effectiveClaim, type Fact, type OutboxBatch } from "@getkimchi/kimchi-bridge/work/outbox"
 import type { Acknowledgement } from "@getkimchi/kimchi-bridge/work/protocol"
 import { verifyApiKey } from "../../api/organizations.js"
@@ -20,7 +21,6 @@ import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
-import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"

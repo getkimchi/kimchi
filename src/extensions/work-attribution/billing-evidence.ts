@@ -1,3 +1,4 @@
+import type { RequestCostObservation } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
 import { isWorkId } from "../../shared/work-id.js"
 import { BEFORE_PAGE_TIMEOUT_MESSAGE } from "./billing-api.js"
 import {
@@ -10,7 +11,6 @@ import {
 	sameBillingSelector,
 	sameBillingSource,
 } from "./billing-source.js"
-import type { RequestCostObservation } from "./costs.js"
 import { object, type WorkRecord } from "./summary.js"
 
 // What the journals prove about each request's bill, and what a pass may still look up.

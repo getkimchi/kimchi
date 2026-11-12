@@ -5,10 +5,11 @@ import {
 	MAX_PULL_REQUEST_ISSUE_KEYS,
 	savedBranchIssueKeys,
 } from "@getkimchi/kimchi-bridge/work/issue-keys"
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { pullRequestAuthor, pullRequestTitle } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { plainURL } from "../../utils/url.js"
 import { object } from "../work-attribution/summary.js"
-import type { WorkPullRequest, WorkPullRequestLookup } from "./pull-requests.js"
+import type { WorkPullRequestLookup } from "./pull-requests.js"
 
 export interface Repository {
 	provider: "github" | "gitlab"

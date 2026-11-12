@@ -8,11 +8,11 @@ import {
 	repositoryKey,
 	requestAttributions,
 } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
+import type { PullRequestCostReport, RequestCostAllocation } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
 import { pullRequestAuthor, pullRequestTitle, validTime } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
 import { providerId } from "../pull-request-status/provider-records.js"
-import type { PullRequestCostReport, RequestCostAllocation } from "../work-attribution/costs.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, type WorkRecord } from "../work-attribution/summary.js"
 

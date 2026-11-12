@@ -1,7 +1,7 @@
 import type { RepositoryIdentity } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
+import type { PullRequestCostReport } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
 import { buildEvents as build, type CommonEvents } from "@getkimchi/kimchi-bridge/work/kimchi/events"
 import type { IngestEvent } from "@getkimchi/kimchi-bridge/work/protocol"
-import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import { sameWorkAccount } from "../work-attribution/scope.js"
 import type { StoredRecord } from "./ledger/records.js"
 
