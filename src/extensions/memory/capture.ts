@@ -14,7 +14,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionEntry, ToolResultEvent } from "@earendil-works/pi-coding-agent"
 import { getEnvironmentApiKey } from "../../config.js"
 import { defaultMemoryDir } from "./backend.js"
 import type { CaptureMessage } from "./capture-worker.js"
@@ -26,6 +26,7 @@ import {
 	MEMORY_CAPTURE_TOOL_CALL_CHARS,
 	MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS,
 	MEMORY_CAPTURE_TOOL_RESULT_TAIL_CHARS,
+	MEMORY_STEP_ENV_TAIL_CHARS,
 } from "./config.js"
 import { parseBooleanFlag } from "./flags.js"
 import { resolveProjectScope } from "./scope.js"
@@ -43,8 +44,45 @@ export interface MemoryCaptureWiring {
 	resetIncrement(): void
 }
 
-export function wireMemoryCapture(pi: ExtensionAPI, isActive: () => boolean): MemoryCaptureWiring {
+type LoopStepCallback = (toolResultText: string, ctx: ExtensionContext) => void
+
+/** Deliver one received tool result's visible-text tail to the mid-loop
+ * recall producer. Swallows producer errors — capture and the agent loop
+ * outrank a recall. Used by both the capture-enabled and capture-disabled
+ * handler registrations. */
+function deliverLoopStepCallback(
+	event: unknown,
+	ctx: ExtensionContext,
+	onLoopStep: LoopStepCallback | undefined,
+): void {
+	if (!onLoopStep) return
+	try {
+		const result = event as ToolResultEvent
+		const text = result.content
+			.filter((c) => c.type === "text")
+			.map((c) => (c.type === "text" ? c.text : ""))
+			.join("\n")
+		onLoopStep(text.slice(-MEMORY_STEP_ENV_TAIL_CHARS), ctx)
+	} catch (err) {
+		console.error("[memory] loop-step recall producer failed (continuing):", err instanceof Error ? err.message : err)
+	}
+}
+
+export function wireMemoryCapture(
+	pi: ExtensionAPI,
+	isActive: () => boolean,
+	/** Mid-loop recall producer, invoked per received tool_result; recall stays live even when capture is off. */
+	onLoopStep?: LoopStepCallback,
+	/** The calling session's capture id — stamped on spawned job payloads so the
+	 *  worker's completion record can attribute saved counts per session. */
+	session?: string,
+): MemoryCaptureWiring {
 	if (captureDisabled()) {
+		if (onLoopStep) {
+			pi.on("tool_result", (event, ctx) => {
+				if (isActive()) deliverLoopStepCallback(event, ctx, onLoopStep)
+			})
+		}
 		const noop = (): void => {}
 		return { fireIncrement: noop, resetIncrement: noop }
 	}
@@ -62,12 +100,13 @@ export function wireMemoryCapture(pi: ExtensionAPI, isActive: () => boolean): Me
 	// is how long episodes were accumulating until shutdown.
 	const fireIncrement = (ctx: ExtensionContext): void => {
 		if (!isActive()) return
-		incrementalCapture(ctx.sessionManager.getEntries(), incremented, ctx.cwd)
+		incrementalCapture(ctx.sessionManager.getEntries(), incremented, ctx.cwd, undefined, session)
 	}
 	pi.on("turn_end", (_event, ctx) => {
 		fireIncrement(ctx)
 	})
-	pi.on("tool_result", (_event, ctx) => {
+	pi.on("tool_result", (event, ctx) => {
+		deliverLoopStepCallback(event, ctx, onLoopStep)
 		fireIncrement(ctx)
 	})
 	const resetIncrement = (): void => {
@@ -81,7 +120,7 @@ export function wireMemoryCapture(pi: ExtensionAPI, isActive: () => boolean): Me
 		// what the queue already holds — and bounded jobs: a poisoned window
 		// costs its own span, not the session backlog.
 		const tail = extractMessages(ctx.sessionManager.getEntries()).slice(incremented.spawnedCount)
-		captureMessagesTail(tail, ctx.cwd)
+		captureMessagesTail(tail, ctx.cwd, MEMORY_CAPTURE_JOB_MAX_MESSAGES, session)
 	})
 	return { fireIncrement, resetIncrement }
 }
@@ -92,10 +131,11 @@ export function captureMessagesTail(
 	tail: CaptureMessage[],
 	cwd: string,
 	perJobMax = MEMORY_CAPTURE_JOB_MAX_MESSAGES,
+	session?: string,
 ): boolean {
 	let ok = true
 	for (let i = 0; i < tail.length; i += perJobMax) {
-		ok = captureMessages(tail.slice(i, i + perJobMax), cwd) && ok
+		ok = captureMessages(tail.slice(i, i + perJobMax), cwd, session) && ok
 	}
 	return ok
 }
@@ -141,14 +181,16 @@ export function incrementalCapture(
 	state: IncrementalCaptureState,
 	cwd: string,
 	spawn: (messages: CaptureMessage[], cwd: string) => boolean | undefined = captureMessagesTail,
+	session?: string,
 ): void {
 	const messages = extractMessages(entries)
 	if (messages.length - state.spawnedCount < MEMORY_CAPTURE_INCREMENTAL_MESSAGES) return
 	const batch = messages.slice(state.spawnedCount)
-	// Advance the mark only when the job actually landed: a swallowed write
-	// failure must leave the span inside the shutdown tail (no silent loss),
-	// not skip the batch forever on this runtime.
-	if (spawn(batch, cwd) === false) return
+	// The default spawn threads the session's capture id through per-job max
+	// so the worker's completion record can attribute saved counts.
+	if (spawn === captureMessagesTail) {
+		if (captureMessagesTail(batch, cwd, MEMORY_CAPTURE_JOB_MAX_MESSAGES, session) === false) return
+	} else if (spawn(batch, cwd) === false) return
 	state.spawnedCount = messages.length
 }
 
@@ -373,7 +415,7 @@ function captureSessionId(): string {
 	return CAPTURE_SESSION_ID
 }
 
-function captureMessages(messages: CaptureMessage[], cwd: string): boolean {
+function captureMessages(messages: CaptureMessage[], cwd: string, session?: string): boolean {
 	if (captureDisabled() || messages.length === 0) return true
 	try {
 		const dbPath = digestDbPath()
