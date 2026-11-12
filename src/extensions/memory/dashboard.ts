@@ -26,7 +26,15 @@ import { createServer, type ServerResponse } from "node:http"
 import { join } from "node:path"
 import { defaultMemoryDir } from "./backend.js"
 import { CAPTURE_LOCK_STALE_MS } from "./config.js"
-import { listTraceFiles, readTraceEvents, resolveTraceFile, traceFileMtime, tracesDir } from "./trace.js"
+import {
+	listRecallFiles,
+	listTraceFiles,
+	readTraceEvents,
+	resolveRecallFile,
+	resolveTraceFile,
+	traceFileMtime,
+	tracesDir,
+} from "./trace.js"
 
 export interface MemoryDashboardOptions {
 	/** Fixed port; 0/undefined = ephemeral. */
@@ -221,6 +229,46 @@ function summarizeDrain(memoryRoot: string, name: string): DrainSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Recall summaries (retrieval side)
+// ---------------------------------------------------------------------------
+
+interface RecallSummary {
+	name: string
+	mtimeMs: number
+	kind: string | null
+	queryPreview: string
+	hits: number
+	injected: number
+	gateSkip: boolean
+	durationMs: number | null
+	error: string | null
+}
+
+function summarizeRecall(memoryRoot: string, name: string): RecallSummary {
+	const file = join(tracesDir(memoryRoot), name)
+	const events = readTraceEvents(file)
+	let kind: string | null = null
+	let queryPreview = ""
+	let hits = 0
+	let injected = 0
+	let gateSkip = false
+	let durationMs: number | null = null
+	let error: string | null = null
+	for (const event of events) {
+		if (event.type !== "recall") continue
+		if (typeof event.kind === "string") kind = event.kind
+		if (typeof event.query === "string") queryPreview = event.query.slice(0, 80)
+		if (Array.isArray(event.hits)) hits = event.hits.length
+		if (Array.isArray(event.injected)) injected = event.injected.length
+		const gate = event.gate as { lookup?: string } | undefined
+		if (gate?.lookup === "skip") gateSkip = true
+		if (typeof event.durationMs === "number") durationMs = event.durationMs
+		if (typeof event.error === "string") error = event.error
+	}
+	return { name, mtimeMs: traceFileMtime(file), kind, queryPreview, hits, injected, gateSkip, durationMs, error }
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
@@ -260,6 +308,23 @@ export function startMemoryDashboard(options: MemoryDashboardOptions = {}): Prom
 					const file = resolveTraceFile(name, memoryRoot)
 					if (!file) {
 						sendJson(response, 400, { error: "not a trace file" })
+						return
+					}
+					sendJson(response, 200, { name, events: readTraceEvents(file) })
+					return
+				}
+				if (url.pathname === "/api/recalls") {
+					const recalls = listRecallFiles(memoryRoot)
+						.reverse() // newest first
+						.map((name) => summarizeRecall(memoryRoot, name))
+					sendJson(response, 200, recalls)
+					return
+				}
+				if (url.pathname === "/api/recall") {
+					const name = url.searchParams.get("name") ?? ""
+					const file = resolveRecallFile(name, memoryRoot)
+					if (!file) {
+						sendJson(response, 400, { error: "not a recall file" })
 						return
 					}
 					sendJson(response, 200, { name, events: readTraceEvents(file) })
@@ -312,7 +377,7 @@ const DASHBOARD_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kimchi Memory — Extraction Dashboard</title>
+<title>Kimchi Memory Dashboard</title>
 <style>
   :root { color-scheme: dark; }
   body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0d1117; color: #c9d1d9; margin: 0; padding: 16px; font-size: 13px; }
@@ -340,7 +405,7 @@ const DASHBOARD_HTML = `<!doctype html>
 </style>
 </head>
 <body>
-<h1>Kimchi Memory — Extraction Dashboard</h1>
+<h1>Kimchi Memory Dashboard</h1>
 <div class="toolbar">
   <span class="muted" id="status">loading…</span>
   <button id="poll-toggle">pause auto-refresh</button>
@@ -351,6 +416,9 @@ const DASHBOARD_HTML = `<!doctype html>
 
 <h2>Drains</h2>
 <div class="section" id="drains"></div>
+
+<h2>Recalls (retrieval)</h2>
+<div class="section" id="recalls"></div>
 
 <div id="detail"></div>
 
@@ -595,10 +663,96 @@ async function openDrain(name) {
   detail.scrollIntoView({ behavior: "smooth" });
 }
 
+async function renderRecalls() {
+  try {
+    const recalls = await get("/api/recalls");
+    const root = document.getElementById("recalls");
+    root.textContent = "";
+    if (!recalls.length) {
+      el("div", root, "muted", "no recalls traced yet");
+      return;
+    }
+    const t = el("table", root);
+    const head = el("tr", t);
+    for (const h of ["recall", "kind", "hits", "injected", "gate", "ms", "error", "query"]) el("th", head, "", h);
+    for (const r of recalls) {
+      const tr = el("tr", t);
+      const td = el("td", tr);
+      const link = el("span", td, "link", r.name.replace("recall-", "").replace(".jsonl", ""));
+      link.onclick = () => openRecall(r.name);
+      el("td", tr, "muted", r.kind || "?");
+      el("td", tr, "", r.hits);
+      el("td", tr, r.injected ? "ok" : "", r.injected);
+      el("td", tr, r.gateSkip ? "warn" : "muted", r.gateSkip ? "skip" : "");
+      el("td", tr, "muted", r.durationMs !== null ? r.durationMs : "");
+      el("td", tr, r.error ? "bad" : "", r.error ? String(r.error).slice(0, 30) : "");
+      el("td", tr, "muted", r.queryPreview);
+    }
+  } catch (e) {
+    document.getElementById("recalls").textContent = "recalls unavailable: " + e.message;
+  }
+}
+
+async function openRecall(name) {
+  const detail = document.getElementById("detail");
+  detail.textContent = "";
+  let data;
+  try {
+    data = await get("/api/recall?name=" + encodeURIComponent(name));
+  } catch (e) {
+    detail.textContent = "recall unreadable: " + e.message;
+    return;
+  }
+  el("h2", detail, "", "Recall " + name);
+  const events = (data.events || []).filter((e) => e.type === "recall");
+  if (!events.length) {
+    el("div", detail, "muted", "no recall events in this file");
+    return;
+  }
+  for (const ev of events) {
+    const sec = el("div", detail, "section");
+    el("div", sec, "", (ev.kind || "?") + " — " + (ev.hits ? ev.hits.length : 0) + " hits · " + (ev.injected ? ev.injected.length : 0) + " injected" + (ev.durationMs !== undefined ? " · " + ev.durationMs + "ms" : ""));
+    if (ev.error) el("pre", sec, "bad", "error: " + ev.error);
+    if (ev.query !== undefined) {
+      const dq = el("details", sec);
+      el("summary", dq, "", "Query (" + String(ev.query).length + " chars)");
+      el("pre", dq, "", ev.query);
+    }
+    if (Array.isArray(ev.gate)) {
+      el("div", sec, "muted", "digest selector gate answers:");
+      for (const a of ev.gate) {
+        const row = el("div", sec, "q");
+        const p = a.choice === "inject" ? a.injectP : a.keepP;
+        const bar = el("span", row, "bar");
+        bar.style.width = Math.round((p || 0) * 60) + "px";
+        el("span", row, a.choice === "inject" ? "ok" : "muted", a.choice + "  p=" + fmtP(p) + "  " + String(a.text || "").slice(0, 90));
+      }
+    } else if (ev.gate && ev.gate.lookup === "skip") {
+      el("div", sec, "warn", "recall gate judged no archive value — search skipped");
+    }
+    if (Array.isArray(ev.hits) && ev.hits.length) {
+      const dh = el("details", sec);
+      const injectedSet = new Set(ev.injected || []);
+      el("summary", dh, "", "Hits (" + ev.hits.length + ") — green = injected");
+      for (const h of ev.hits) {
+        const cls = injectedSet.has(h.text) ? "ok" : "muted";
+        el("pre", dh, cls, (h.store ? "[" + h.store + "] " : "") + (typeof h.score === "number" ? "score " + h.score.toFixed(3) + " · " : "") + (h.text || ""));
+      }
+    }
+    if (Array.isArray(ev.injected) && ev.injected.length) {
+      el("div", sec, "ok", "Injected (" + ev.injected.length + "):");
+      for (const f of ev.injected) el("pre", sec, "ok", f);
+    }
+    if (ev.composition) el("div", sec, "muted", "composition: " + JSON.stringify(ev.composition));
+  }
+  detail.scrollIntoView({ behavior: "smooth" });
+}
+
 async function refresh() {
   document.getElementById("status").textContent = "updated " + new Date().toLocaleTimeString();
   await renderQueue();
   await renderDrains();
+  await renderRecalls();
 }
 
 refresh();

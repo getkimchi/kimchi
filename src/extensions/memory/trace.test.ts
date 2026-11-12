@@ -2,14 +2,19 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { TRACE_DRAINS_KEPT } from "./config.js"
+import { TRACE_DRAINS_KEPT, TRACE_RECALLS_KEPT } from "./config.js"
 import {
+	createRecallRecorder,
 	createTraceRecorder,
+	listRecallFiles,
 	listTraceFiles,
+	pruneRecallTraces,
 	pruneTraces,
 	readTraceEvents,
+	resolveRecallFile,
 	resolveTraceFile,
 	traceDrainKeep,
+	traceRecallKeep,
 	tracesDir,
 } from "./trace.js"
 
@@ -17,12 +22,14 @@ import {
 // home keeps the suite off the developer's real traces.
 const realHome = process.env.HOME
 const realTrimEnv = process.env.KIMCHI_MEMORY_TRACE_DRAINS
+const realRecallEnv = process.env.KIMCHI_MEMORY_TRACE_RECALLS
 let home: string
 
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "kimchi-memory-trace-"))
 	process.env.HOME = home
 	delete process.env.KIMCHI_MEMORY_TRACE_DRAINS
+	delete process.env.KIMCHI_MEMORY_TRACE_RECALLS
 })
 
 afterEach(() => {
@@ -30,6 +37,8 @@ afterEach(() => {
 	else process.env.HOME = realHome
 	if (realTrimEnv === undefined) delete process.env.KIMCHI_MEMORY_TRACE_DRAINS
 	else process.env.KIMCHI_MEMORY_TRACE_DRAINS = realTrimEnv
+	if (realRecallEnv === undefined) delete process.env.KIMCHI_MEMORY_TRACE_RECALLS
+	else process.env.KIMCHI_MEMORY_TRACE_RECALLS = realRecallEnv
 	rmSync(home, { recursive: true, force: true })
 })
 
@@ -165,5 +174,66 @@ describe("resolveTraceFile", () => {
 		expect(resolveTraceFile("drain-9.json")).toBeNull()
 		expect(resolveTraceFile(`${drainName("0")}`)).toBeNull() // missing file
 		expect(resolveTraceFile("")).toBeNull()
+	})
+})
+
+describe("traceRecallKeep", () => {
+	it("defaults to TRACE_RECALLS_KEPT when the env var is unset", () => {
+		delete process.env.KIMCHI_MEMORY_TRACE_RECALLS
+		expect(traceRecallKeep()).toBe(TRACE_RECALLS_KEPT)
+	})
+
+	it("honors KIMCHI_MEMORY_TRACE_RECALLS, including 0 = off", () => {
+		process.env.KIMCHI_MEMORY_TRACE_RECALLS = "5"
+		expect(traceRecallKeep()).toBe(5)
+		process.env.KIMCHI_MEMORY_TRACE_RECALLS = "0"
+		expect(traceRecallKeep()).toBe(0)
+	})
+})
+
+describe("createRecallRecorder", () => {
+	it("writes recall-*.jsonl files with ts-stamped events", () => {
+		const recorder = createRecallRecorder()
+		expect(recorder).not.toBeNull()
+		expect(recorder?.file).toContain(`${tracesDir()}/recall-`)
+		recorder?.emit({ type: "recall", kind: "tool-search", query: "q", hits: [] })
+		const events = readTraceEvents(recorder?.file as string)
+		expect(events[0]?.type).toBe("recall")
+		expect(events[0]?.kind).toBe("tool-search")
+	})
+
+	it("disambiguates concurrent recalls in the same millisecond", () => {
+		const a = createRecallRecorder()
+		const b = createRecallRecorder()
+		expect(a?.file).not.toBe(b?.file)
+	})
+
+	it("returns null when KIMCHI_MEMORY_TRACE_RECALLS=0", () => {
+		process.env.KIMCHI_MEMORY_TRACE_RECALLS = "0"
+		expect(createRecallRecorder()).toBeNull()
+	})
+
+	it("prunes the recall ring, never the drain files", () => {
+		mkdirSync(tracesDir(), { recursive: true })
+		writeFileSync(join(tracesDir(), drainName("7")), "{}\n")
+		for (let i = 0; i < 5; i++) writeFileSync(join(tracesDir(), `recall-2026-11-12T09-41-0${i}-1-${i}.jsonl`), "{}\n")
+		pruneRecallTraces(2)
+		expect(listRecallFiles()).toHaveLength(2)
+		expect(listTraceFiles()).toEqual([drainName("7")])
+	})
+})
+
+describe("listRecallFiles + resolveRecallFile", () => {
+	it("lists recall files and resolves real ones, rejecting drains and traversal", () => {
+		mkdirSync(tracesDir(), { recursive: true })
+		const recall = "recall-2026-11-12T09-41-01-1234-0.jsonl"
+		writeFileSync(join(tracesDir(), recall), "{}\n")
+		writeFileSync(join(tracesDir(), drainName("6")), "{}\n")
+		expect(listRecallFiles()).toEqual([recall])
+		expect(resolveRecallFile(recall)).toBe(join(tracesDir(), recall))
+		expect(resolveRecallFile("../" + recall)).toBeNull()
+		expect(resolveRecallFile(drainName("6"))).toBeNull()
+		expect(resolveRecallFile("recall-missing.jsonl")).toBeNull()
+		expect(resolveRecallFile("")).toBeNull()
 	})
 })

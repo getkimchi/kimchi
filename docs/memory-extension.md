@@ -46,6 +46,8 @@ Extraction runs at temperature 0 — at the gateway's default temperature, the s
 
 Every drain records a full trace of what it did — one append-only JSONL file per drain at `~/.config/kimchi/memory/traces/drain-<isotime>-<pid>.jsonl`. Tracing is always-on and fail-soft (an unwritable traces dir logs once and the drain continues untraced; it can never break capture), or disabled via `KIMCHI_MEMORY_TRACE_DRAINS=0`. The ring keeps the newest 50 drains (same env var overrides), pruned at worker start. Files record raw, pre-redaction text: they are a local-only debug surface, same exposure class as the memory store directory itself.
 
+The retrieval side writes its own compact traces per event at `~/.config/kimchi/memory/traces/recall-<isotime>-<pid>-<n>.jsonl`: the first-turn digest computation (search hits with scores, the digest selector's per-candidate gate answers when it runs, what facts got injected, composition stats), each progressive-recall turn (query, hits, injected facts — and the gate-skip record when the recall judge rules out a search), each `memory_search` tool call, and failures (`error:` with a partial record). Same always-on/fail-soft contract and raw-text exposure class; `KIMCHI_MEMORY_TRACE_RECALLS=0` disables, and the ring keeps the newest 100 (same env var overrides), pruned at recorder creation.
+
 Event type | Carries
 --- | ---
 `drain_start` | pid, extraction model, enabled gates, the pending job listing
@@ -57,7 +59,7 @@ Event type | Carries
 
 Lines are appended atomically per event and readers drop an unparseable trailing line, so a crashed worker still leaves a partially-readable, fully truthful drain. The trace seam is drain-site only: `chatJson`/`decide` take an optional exchange hook that only the capture worker sets — the session turn path (digest/recall) is never traced and never pays for the possibility.
 
-`kimchi memory dashboard [--port N] [--no-open]` serves a loopback-only web UI over the queue and traces (rejects non-loopback peers): the pending queue with per-job state, quarantine, and capture-lock state; drains with summary stats; and drill-down per drain/job/window to the full API exchanges and per-question decision probabilities. It auto-refreshes every 5s (pausable) and runs until Ctrl+C. It is a sessionless op — it works with the memory feature disabled and is terminal-only (in-session `/memory dashboard` points you at the terminal command).
+`kimchi memory dashboard [--port N] [--no-open]` serves a loopback-only web UI over the queue and traces (rejects non-loopback peers): the pending queue with per-job state, quarantine, and capture-lock state; drains with summary stats; recalls with per-event hit/injection/gate/latency stats; and drill-down per drain/job/window to the full API exchanges and per-question decision probabilities, and per recall to the query, scored hits (injected ones marked), gate answers, and injected facts. It auto-refreshes every 5s (pausable) and runs until Ctrl+C. It is a sessionless op — it works with the memory feature disabled and is terminal-only (in-session `/memory dashboard` points you at the terminal command).
 
 ## Injection policy
 

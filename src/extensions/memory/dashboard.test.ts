@@ -45,7 +45,7 @@ describe("memory dashboard server", () => {
 		const response = await get(url, "/")
 		expect(response.status).toBe(200)
 		expect(response.headers.get("content-type")).toContain("text/html")
-		expect(await response.text()).toContain("Extraction Dashboard")
+		expect(await response.text()).toContain("Kimchi Memory Dashboard")
 	})
 
 	it("/api/queue lists pending jobs with scope/attempts/staged state, quarantine, and lock state", async () => {
@@ -169,5 +169,72 @@ describe("memory dashboard server", () => {
 		// And a real loopback request itself is served (sanity of the wiring).
 		const { url } = await serve()
 		expect((await get(url, "/api/queue")).status).toBe(200)
+	})
+})
+
+describe("memory dashboard — recall (retrieval) endpoints", () => {
+	it("/api/recalls returns recalls newest-first with hit/injection/gate/error summaries", async () => {
+		writeDrain("recall-2026-11-11T09-00-00-111-0.jsonl", [
+			drainEvent({
+				type: "recall",
+				kind: "digest-init",
+				query: "the user's commute",
+				hits: [{ text: "commute is 45 minutes", score: 0.9 }],
+				injected: ["commute is 45 minutes"],
+				durationMs: 42,
+			}),
+		])
+		writeDrain("recall-2026-11-12T09-00-00-222-0.jsonl", [
+			drainEvent({
+				type: "recall",
+				kind: "digest-progressive",
+				query: "where next",
+				gate: { lookup: "skip" },
+				hits: [],
+				injected: [],
+			}),
+		])
+		writeDrain("recall-2026-11-12T09-00-00-333-0.jsonl", [
+			drainEvent({
+				type: "recall",
+				kind: "tool-search",
+				query: "broken",
+				error: "gateway down",
+				hits: [],
+				injected: [],
+				durationMs: 7,
+			}),
+		])
+		const { url } = await serve()
+		const recalls = (await (await get(url, "/api/recalls")).json()) as Array<{
+			name: string
+			kind: string
+			hits: number
+			injected: number
+			gateSkip: boolean
+			error: string | null
+		}>
+		expect(recalls.map((r) => r.name)).toEqual([
+			"recall-2026-11-12T09-00-00-333-0.jsonl",
+			"recall-2026-11-12T09-00-00-222-0.jsonl",
+			"recall-2026-11-11T09-00-00-111-0.jsonl",
+		])
+		expect(recalls[0]).toMatchObject({ kind: "tool-search", error: "gateway down", hits: 0, injected: 0 })
+		expect(recalls[1]).toMatchObject({ kind: "digest-progressive", gateSkip: true })
+		expect(recalls[2]).toMatchObject({ kind: "digest-init", hits: 1, injected: 1 })
+	})
+
+	it("/api/recall serves the full recall record and rejects non-recall names", async () => {
+		writeDrain("recall-2026-11-12T09-00-00-444-0.jsonl", [
+			drainEvent({ type: "recall", kind: "digest-init", query: "q", injected: ["f1"] }),
+		])
+		const { url } = await serve()
+		const ok = await get(url, "/api/recall?name=recall-2026-11-12T09-00-00-444-0.jsonl")
+		expect(ok.status).toBe(200)
+		const body = (await ok.json()) as { events: Array<{ type: string; injected: string[] }> }
+		expect(body.events[0]).toMatchObject({ type: "recall", injected: ["f1"] })
+		for (const name of ["../x.jsonl", "drain-2026-11-12T09-00-00-444.jsonl", "recall-missing.jsonl"]) {
+			expect((await get(url, `/api/recall?name=${encodeURIComponent(name)}`)).status).toBe(400)
+		}
 	})
 })

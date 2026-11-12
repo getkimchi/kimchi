@@ -188,6 +188,7 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_MEMORY_DECISION_GATE",
 	"KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS",
 	"KIMCHI_MEMORY_TRACE_DRAINS",
+	"KIMCHI_MEMORY_TRACE_RECALLS",
 	// capture-worker chat-model default when no model is threaded in
 	"KIMCHI_MODEL",
 	// memory rollout flags (src/extensions/memory/flags.ts)
