@@ -16,7 +16,7 @@
  * Kept in its own module — not `thinking-levels.ts` — to avoid an import
  * cycle: `models.ts` (registry) already imports from `thinking-levels.ts`.
  */
-import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai"
+import type { Api, Model, ThinkingLevelMap, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { getModelThinkingLevels } from "./models.js"
 import { CANONICAL_THINKING_LEVELS } from "./thinking-levels.js"
@@ -25,7 +25,7 @@ import { CANONICAL_THINKING_LEVELS } from "./thinking-levels.js"
 export type ThinkingNoneReason = "no-reasoning" | "curated-none" | "empty-intersection"
 
 export type ThinkingSelection =
-	| { mode: "levels"; selectable: string[] }
+	| { mode: "levels"; selectable: ModelThinkingLevel[] }
 	| { mode: "none"; reasoning: boolean; noneReason: ThinkingNoneReason }
 
 /** Structural subset of pi's Model that selection reads. The dist advisor
@@ -54,7 +54,7 @@ export function thinkingSelection(model: ThinkingSelectionModel | undefined): Th
 	const curated = getModelThinkingLevels(`${model.provider}/${model.id}`)
 	if (curated === undefined) return { mode: "levels", selectable: getSupportedThinkingLevels(model as Model<Api>) }
 	if (curated.length === 0) return { mode: "none", reasoning: true, noneReason: "curated-none" }
-	const piSupported = new Set<string>(getSupportedThinkingLevels(model as Model<Api>))
+	const piSupported = new Set<ModelThinkingLevel>(getSupportedThinkingLevels(model as Model<Api>))
 	const selectable = curated.filter((level) => piSupported.has(level))
 	if (selectable.length === 0) return { mode: "none", reasoning: true, noneReason: "empty-intersection" }
 	return { mode: "levels", selectable }
@@ -69,7 +69,7 @@ const LEVEL_RANK = new Map<string, number>(CANONICAL_THINKING_LEVELS.map((level,
  * effort, so the provider default applies on the wire (the status line
  * renders `on`/`off` from the selection mode, not from this value).
  */
-export function clampToSelection(level: string, selection: ThinkingSelection): string {
+export function clampToSelection(level: ModelThinkingLevel, selection: ThinkingSelection): string {
 	if (selection.mode !== "levels" || selection.selectable.length === 0) return "off"
 	if (selection.selectable.includes(level)) return level
 	const requested = LEVEL_RANK.get(level)
@@ -96,12 +96,12 @@ export interface KimchiThinkingLevelInfo {
 	noneReason: ThinkingNoneReason | null
 	/** Rank-nearest selectable level; "off" when nothing is selectable, so
 	 *  no explicit effort is derived for the request. */
-	clamp: (level: string) => string
+	clamp: (level: ModelThinkingLevel) => string
 }
 
 /** Dist seam: `(model) => info | null`. Null makes the dist fall back to its
  *  own behavior (pure-pi sessions, adversarial input, internal failure). */
-export type KimchiThinkingLevelAdvisor = (model: unknown) => KimchiThinkingLevelInfo | null
+export type KimchiThinkingLevelAdvisor = (model: ModelThinkingLevel) => KimchiThinkingLevelInfo | null
 
 function isSelectionModel(value: unknown): value is ThinkingSelectionModel {
 	return (
@@ -130,7 +130,7 @@ export function installThinkingLevelAdvisor(): void {
 				levels: CANONICAL_THINKING_LEVELS.map((level) => ({ level, selectable: selectableSet.has(level) })),
 				selectable,
 				noneReason: selection.mode === "none" ? selection.noneReason : null,
-				clamp: (level: string) => clampToSelection(level, selection),
+				clamp: (level) => clampToSelection(level, selection),
 			}
 		} catch {
 			return null

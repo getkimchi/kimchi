@@ -1,11 +1,10 @@
-import type { ThinkingLevelMap } from "@earendil-works/pi-ai"
+import type { ThinkingLevelMap, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
 import {
 	CANONICAL_THINKING_LEVELS,
 	deriveThinkingLevelMap,
 	normalizeThinkingLevels,
 	thinkingColumnValue,
-	thinkingLevelName,
 } from "./thinking-levels.js"
 
 const GATEWAY_BASE: ThinkingLevelMap = { off: "none", max: "max" }
@@ -22,8 +21,11 @@ describe("normalizeThinkingLevels", () => {
 	})
 
 	it("filters unknown levels", () => {
-		expect(normalizeThinkingLevels(["low", "turbo", "high", "bogus"])).toEqual(["low", "high"])
-		expect(normalizeThinkingLevels(["nonsense"])).toEqual([])
+		expect(normalizeThinkingLevels(["low", "turbo", "high", "bogus"] as unknown as ModelThinkingLevel[])).toEqual([
+			"low",
+			"high",
+		])
+		expect(normalizeThinkingLevels(["nonsense"] as unknown as ModelThinkingLevel[])).toEqual([])
 		expect(normalizeThinkingLevels([])).toEqual([])
 	})
 
@@ -77,7 +79,7 @@ describe("deriveThinkingLevelMap", () => {
 	})
 
 	it("normalizes scrambled and unknown catalog levels before deriving", () => {
-		expect(deriveThinkingLevelMap(["max", "turbo", "off"], GATEWAY_BASE)).toEqual({
+		expect(deriveThinkingLevelMap(["max", "turbo", "off"] as unknown as ModelThinkingLevel[], GATEWAY_BASE)).toEqual({
 			off: "none",
 			max: "max",
 			minimal: null,
@@ -153,27 +155,5 @@ describe("thinkingColumnValue", () => {
 
 	it("renders an absent field as off for a non-reasoning model (hard fact, not curation)", () => {
 		expect(thinkingColumnValue(undefined, false)).toBe("off")
-	})
-})
-
-describe("thinkingLevelName", () => {
-	it("names every canonical level — exhaustiveness is compile-enforced via the Record key union", () => {
-		// Mirrors the map in thinking-levels.ts; a level added to
-		// CANONICAL_THINKING_LEVELS without a name fails to compile there,
-		// and this pins the user-visible labels ("Extra high" for xhigh is
-		// the label Air and codex-acp use for the tier).
-		expect(CANONICAL_THINKING_LEVELS.map((level) => thinkingLevelName(level))).toEqual([
-			"Off",
-			"Minimal",
-			"Low",
-			"Medium",
-			"High",
-			"Extra high",
-			"Max",
-		])
-	})
-
-	it("falls back to the level id for an unknown value", () => {
-		expect(thinkingLevelName("turbo")).toBe("turbo")
 	})
 })

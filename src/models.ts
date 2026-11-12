@@ -1,6 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
-import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
+import type {
+	AnthropicMessagesCompat,
+	Model,
+	OpenAICompletionsCompat,
+	ThinkingLevelMap,
+	ModelThinkingLevel,
+} from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
@@ -172,7 +178,7 @@ export interface ModelMetadata {
 	 *  array for curated models whose thinking offers no distinct levels
 	 *  (provider default, no level controls), populated with the curated
 	 *  levels otherwise (canonical rank order). */
-	thinking_levels?: string[]
+	thinking_levels?: ModelThinkingLevel[]
 	deprecated_at?: string
 	sunset_at?: string
 	replacement_model?: string
@@ -301,7 +307,7 @@ export interface PiModelConfig {
 	 *  empty array for curated-none ("thinking exists but offers no distinct
 	 *  levels"), populated with the curated levels otherwise. pi's loader
 	 *  ignores the extra key (verified: ModelConfig tolerates unknown fields). */
-	thinkingLevels?: string[]
+	thinkingLevels?: ModelThinkingLevel[]
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
@@ -551,7 +557,7 @@ export function __clearModelDescriptionsForTest(): void {
 	syntheticMarkerKeys().clear()
 }
 
-type ModelThinkingLevelsRegistry = Map<string, string[]>
+type ModelThinkingLevelsRegistry = Map<string, ModelThinkingLevel[]>
 
 function modelThinkingLevelsRegistry(): ModelThinkingLevelsRegistry {
 	const globals = process as typeof process & { __kimchiModelThinkingLevels?: ModelThinkingLevelsRegistry }
@@ -564,13 +570,13 @@ function modelThinkingLevelsRegistry(): ModelThinkingLevelsRegistry {
 /** Register authoritative thinking-level curation, replacing earlier cache
  * data. Pass the empty array for curated-none; normalization keeps unknown
  * levels from masquerading as curation. */
-export function registerModelThinkingLevels(key: string, levels: string[]): void {
+export function registerModelThinkingLevels(key: string, levels: ModelThinkingLevel[]): void {
 	modelThinkingLevelsRegistry().set(key, normalizeThinkingLevels(levels))
 }
 
 /** Thinking-level curation for a model ref — tri-state: undefined when not
  * curated, the empty array for curated-none, the curated levels otherwise. */
-export function getModelThinkingLevels(key: string): string[] | undefined {
+export function getModelThinkingLevels(key: string): ModelThinkingLevel[] | undefined {
 	return modelThinkingLevelsRegistry().get(key)
 }
 
@@ -628,7 +634,9 @@ function registerModelLabels(
 export function registerModelInfoFromProviders(
 	providers: Record<
 		string,
-		{ models?: Array<{ id: string; description?: string; thinkingLevels?: string[]; providerName?: string }> }
+		{
+			models?: Array<{ id: string; description?: string; thinkingLevels?: ModelThinkingLevel[]; providerName?: string }>
+		}
 	>,
 ): void {
 	registerModelLabels(providers)

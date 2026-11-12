@@ -11,49 +11,21 @@
  * otherwise (canonical rank order).
  */
 
-import type { ThinkingLevelMap } from "@earendil-works/pi-ai"
+import type { ModelThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai"
+import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema"
 
-/** Canonical level order: `off < minimal < low < medium < high < xhigh < max`. */
-export const CANONICAL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const
+export const CANONICAL_THINKING_LEVELS = MODEL_THINKING_LEVELS
 
-/** A canonical thinking level as a concrete union. */
-export type CanonicalThinkingLevel = (typeof CANONICAL_THINKING_LEVELS)[number]
-
-/**
- * Display names for the canonical thinking levels. Keyed by the concrete
- * union, so adding a level to CANONICAL_THINKING_LEVELS without a name
- * here fails to compile instead of silently rendering the raw id. "Extra
- * high" for xhigh is the label Air and codex-acp use for the tier in their
- * effort pickers.
- */
-const THINKING_LEVEL_NAMES: Record<CanonicalThinkingLevel, string> = {
-	off: "Off",
-	minimal: "Minimal",
-	low: "Low",
-	medium: "Medium",
-	high: "High",
-	xhigh: "Extra high",
-	max: "Max",
-}
-
-/** Display name for a thinking level, falling back to the level id when unknown. */
-export function thinkingLevelName(level: string): string {
-	// Widening is deliberate: selectable sets are typed string[] even though
-	// their members are canonical by construction.
-	const names = THINKING_LEVEL_NAMES as Record<string, string | undefined>
-	return names[level] ?? level
-}
-
-const LEVEL_RANK = new Map<string, number>(CANONICAL_THINKING_LEVELS.map((level, rank) => [level, rank]))
+const LEVEL_RANK = new Map<ModelThinkingLevel, number>(CANONICAL_THINKING_LEVELS.map((level, rank) => [level, rank]))
 
 /**
  * Filter to known levels and sort by canonical rank. Defensive: the backend
  * guarantees order and completeness, but the flattening layer and models.json
  * cache round-trips shouldn't be trusted blindly.
  */
-export function normalizeThinkingLevels(levels: readonly string[]): string[] {
+export function normalizeThinkingLevels(levels: readonly ModelThinkingLevel[]): ModelThinkingLevel[] {
 	return [...new Set(levels)]
-		.filter((level): level is string => LEVEL_RANK.has(level))
+		.filter((level): level is ModelThinkingLevel => LEVEL_RANK.has(level))
 		.sort((a, b) => {
 			const rankA = LEVEL_RANK.get(a) ?? -1
 			const rankB = LEVEL_RANK.get(b) ?? -1
@@ -61,9 +33,12 @@ export function normalizeThinkingLevels(levels: readonly string[]): string[] {
 		})
 }
 
-const EXPLICIT_ONLY_LEVELS = new Set<string>(["xhigh", "max"])
+const EXPLICIT_ONLY_LEVELS = new Set<ModelThinkingLevel>(["xhigh", "max"])
 
-export function deriveThinkingLevelMap(curatedLevels: readonly string[], base: ThinkingLevelMap): ThinkingLevelMap {
+export function deriveThinkingLevelMap(
+	curatedLevels: readonly ModelThinkingLevel[],
+	base: ThinkingLevelMap,
+): ThinkingLevelMap {
 	const curated = normalizeThinkingLevels(curatedLevels)
 	// Curated-none: thinking exists but offers no distinct levels, so only the
 	// default (off) state stays reachable.
@@ -92,7 +67,7 @@ export function deriveThinkingLevelMap(curatedLevels: readonly string[], base: T
  *   reasoning model renders "not curated" (levels unknown), a non-reasoning
  *   model `off` (a hard fact from the metadata, not a curation inference).
  */
-export function thinkingColumnValue(levels: readonly string[] | undefined, reasoning: boolean): string {
+export function thinkingColumnValue(levels: readonly ModelThinkingLevel[] | undefined, reasoning: boolean): string {
 	if (levels === undefined) return reasoning ? "not curated" : "off"
 	const normalized = normalizeThinkingLevels(levels)
 	if (normalized.length > 0) return normalized.join(", ")
