@@ -30,7 +30,8 @@ function makeKeybindings(overrides: { matches?: (data: string, action: string) =
 
 // Fixture where "\x7f" is bound to deleteCharBackward (default backspace),
 // "\x1b\x7f" to deleteWordBackward (default alt+backspace), "\x1b[3~" to
-// deleteCharForward (default Del key), and "\x1b[H" to cursorLineStart (Home).
+// deleteCharForward (default Del key), "\x1b[H" to cursorLineStart (Home),
+// and "\x1a" to undo (default ctrl+z).
 function makeBackspaceKeybindings(): KeybindingsManager {
 	return makeKeybindings({
 		matches: (data, action) =>
@@ -122,7 +123,7 @@ describe("PromptEditor", () => {
 			expect(editor.getText()).toBe("/tmp/notes.txt")
 		})
 
-		it("leaves incomplete pastes to upstream buffering without calling the handler", () => {
+		it("buffers a paste split across chunks and offers the completed paste to the handler", () => {
 			const { editor } = makeEditor()
 			const seen: string[] = []
 			editor.onImagePathDrop = (text) => {
@@ -130,12 +131,21 @@ describe("PromptEditor", () => {
 				return true
 			}
 			// Opener without closer in this chunk → multi-chunk paste. The drop
-			// handler must not see partial content; upstream buffers it and (when
-			// the closer arrives) inserts the path as plain text.
+			// handler must not see partial content; the editor buffers it itself
+			// and offers the completed paste once the closer arrives (deferring to
+			// upstream would insert the dropped image's raw path as plain text).
 			editor.handleInput(`${OPEN}/tmp/cat`)
 			expect(seen).toEqual([])
 			editor.handleInput(`.png${CLOSE}`)
-			expect(seen).toEqual([])
+			expect(seen).toEqual(["/tmp/cat.png"])
+			expect(editor.getText()).toBe("")
+		})
+
+		it("a rejected split-paste still lands as plain text once completed", () => {
+			const { editor } = makeEditor()
+			editor.onImagePathDrop = () => false
+			editor.handleInput(`${OPEN}/tmp/cat`)
+			editor.handleInput(`.png${CLOSE}`)
 			expect(editor.getText()).toBe("/tmp/cat.png")
 		})
 
@@ -147,12 +157,13 @@ describe("PromptEditor", () => {
 				return true
 			}
 			// A drop coalesced with the beginning of a second (split) paste: the
-			// complete paste is still offered to the handler; only the trailing
-			// incomplete remainder goes to upstream buffering.
+			// complete paste is offered to the handler immediately; the trailing
+			// incomplete remainder is buffered and offered once completed.
 			editor.handleInput(`${OPEN}/tmp/a.png${CLOSE}tail ${OPEN}/tmp/par`)
 			expect(seen).toEqual(["/tmp/a.png"])
 			editor.handleInput(`tial.png${CLOSE}`)
-			expect(editor.getText()).toBe("tail /tmp/partial.png")
+			expect(seen).toEqual(["/tmp/a.png", "/tmp/partial.png"])
+			expect(editor.getText()).toBe("tail ")
 		})
 
 		it("remaps shift+enter in a text segment adjacent to a drop", () => {
@@ -187,6 +198,27 @@ describe("PromptEditor", () => {
 			editor.setText("fix [Image #1]")
 			editor.handleInput("\x7f")
 			expect(editor.getText()).toBe("fix ")
+		})
+
+		it("a single undo restores the whole marker after an atomic delete", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			editor.setText("fix [Image #1]")
+			editor.handleInput("\x7f")
+			expect(editor.getText()).toBe("fix ")
+			// The delete is ONE undo entry (mirroring upstream's `[paste #N]`
+			// deletion) — a single undo (\x1f, the default ctrl+- binding)
+			// brings the entire marker back. Upstream dispatches global keys.
+			editor.handleInput("\x1f")
+			expect(editor.getText()).toBe("fix [Image #1]")
+		})
+
+		it("a single undo restores a marker after atomic word-delete", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			editor.setText("fix [Image #1]")
+			editor.handleInput("\x1b\x7f")
+			expect(editor.getText()).toBe("fix ")
+			editor.handleInput("\x1f")
+			expect(editor.getText()).toBe("fix [Image #1]")
 		})
 
 		it("marker mid-line is deleted atomically once trailing text is gone", () => {

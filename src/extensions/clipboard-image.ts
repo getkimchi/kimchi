@@ -5,7 +5,7 @@ import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { droppedImagePathCandidate } from "../utils/dropped-image-path.js"
 import { buildImageMarker, parseImageMarkers, stripImageMarkers } from "../utils/image-marker.js"
-import { addImage, clearAllImages, getImageContentById, setImageCacheDir } from "../utils/image-registry.js"
+import { addImage, clearSessionImages, resolveImageContentById, setImageCacheDir } from "../utils/image-registry.js"
 import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
 import {
 	insertTextAtPromptCursor,
@@ -40,6 +40,17 @@ let currentCtx: ExtensionContext | null = null
 // not wipe pending state (drops/pastes can predate it); only replacement
 // sessions reset.
 let sessionSeen = false
+// Monotonic epoch bumped whenever pending attachments are cleared (accepted
+// submit, gate remove, session replacement). handlePaste captures it before
+// its async clipboard read and discards a stale completion — otherwise the
+// late insert would drop an `[Image #N]` marker into a cleared editor and
+// silently attach the image to the NEXT message.
+let pasteEpoch = 0
+
+/** Registry scope for this context's session (ids are per-session). */
+function sessionIdOf(ctx: ExtensionContext | null): string {
+	return ctx?.sessionManager?.getSessionId() ?? "default"
+}
 
 /** @internal — test hook resetting module state between unit tests. */
 export function __resetClipboardImageForTest(): void {
@@ -50,6 +61,7 @@ export function __resetClipboardImageForTest(): void {
 	inlineIdHighWater = 0
 	currentCtx = null
 	clipboardHasImage = false
+	pasteEpoch = 0
 }
 // Per-session running counter of images attached to user turns. Resets on
 // session_start so that a new conversation always begins at #1.
@@ -189,6 +201,12 @@ setImageDropHandler((pastedText, cwd) => {
 setImageMarkersEditedHandler(reconcileInlineMarkers)
 
 async function handlePaste(): Promise<void> {
+	// Capture before the async clipboard read: submitting (or replacing the
+	// session) while the read is in flight clears pendingImages. Completing
+	// anyway would insert `[Image #N]` into the cleared editor and silently
+	// attach the image to the NEXT message — discard with a notice instead.
+	const capturedCtx = currentCtx
+	const capturedEpoch = pasteEpoch
 	const { clipboard: native, error } = getNativeClipboard()
 	if (!native && !process.env.KIMCHI_TUI_E2E_CLIPBOARD_IMAGE) {
 		const detail = error ? `: ${error}` : ""
@@ -211,6 +229,11 @@ async function handlePaste(): Promise<void> {
 
 	if (!image) {
 		currentCtx?.ui?.notify("No image found on clipboard", "info")
+		return
+	}
+
+	if (currentCtx !== capturedCtx || pasteEpoch !== capturedEpoch) {
+		currentCtx?.ui?.notify("Clipboard image arrived too late — paste it again to attach it", "info")
 		return
 	}
 
@@ -259,7 +282,13 @@ function updateIndicator(): void {
 export default function clipboardImageExtension(pi: ExtensionAPI): void {
 	registerVisionGateSideEffects({
 		clearPendingAttachments: () => {
+			// Only the vision gate's "remove" outcome reaches this — the
+			// attachments are gone for good, so prune their detached drops too:
+			// a stale removedDrops entry would pin its base64 for the rest of
+			// the session and re-arm on a later draft that mentions `[Image #N]`.
 			pendingImages = []
+			removedDrops = new Map()
+			pasteEpoch++
 			updateIndicator()
 		},
 	})
@@ -283,18 +312,22 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			removedDrops = new Map()
 			imageCounter = 0
 			inlineIdHighWater = 0
+			pasteEpoch++
 			// On-demand sessions never re-probe, so a hint left by a previous
 			// proactive session would advertise an image that was not read again.
 			clipboardHasImage = false
 			// Reset the vision gate's retained state, suppressions, deferred latch,
 			// and dialog ownership so a replacement session starts clean.
 			resetVisionGateState()
-			clearAllImages()
+			// Only the STARTING session's registry is cleared — the ACP server
+			// shares this process across sessions, and a global wipe would
+			// repoint another session's live markers at this session's images.
+			clearSessionImages(sessionIdOf(ctx))
 		}
 		sessionSeen = true
 		const sessionDir = ctx.sessionManager?.getSessionDir?.() ?? null
 		const dir = sessionDir ? join(sessionDir, "image-cache") : null
-		setImageCacheDir(dir)
+		setImageCacheDir(sessionIdOf(ctx), dir)
 		updateIndicator()
 		// Linux shells out to wl-paste/xclip; polling can open transient
 		// surfaces that steal focus on Wayland. macOS matches that on-demand
@@ -332,6 +365,9 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 
 	pi.on("input", async (event, ctx) => {
 		const isInteractiveTui = ctx.mode === "tui" && event.source === "interactive"
+		// Any interactive submission invalidates a clipboard read that is still
+		// in flight: the draft it would complete into is cleared by this submit.
+		if (isInteractiveTui) pasteEpoch++
 		const incoming = event.images ?? []
 
 		// Deferred-Remove suppression: hide the removed paths while the exact
@@ -369,8 +405,13 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// retained merge, so a cancelled gate cannot leave an entry
 		// double-booked in pending+removed, and a re-armed entry flows into
 		// the retained record for the cancel path.
-		const presentMarkers = parseImageMarkers(event.text)
-		reconcileInlineMarkers(presentMarkers)
+		//
+		// The marker machinery is TUI-only: `[Image #N]` drops and editor
+		// markers exist only in the interactive TUI (insertTextAtPromptCursor
+		// no-ops on ACP). Gating the reconcile/registry lookups keeps ACP input
+		// events from re-attaching images for `[Image #N]` prose it types.
+		const presentMarkers = isInteractiveTui ? parseImageMarkers(event.text) : new Set<number>()
+		if (isInteractiveTui) reconcileInlineMarkers(presentMarkers)
 
 		// Gather every attachment source before any marker/registry mutation.
 		// Retention merges a prior cancelled/intercepted submission: same draft
@@ -388,11 +429,14 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// Attach inline entries whose marker survived; entries without a
 		// surviving marker stay parked in `removedDrops` (retained-record
 		// copies of a previously cancelled attempt can reach here without
-		// touching pendingImages).
-		const keptPasted: PendingImage[] = []
+		// touching pendingImages). Keep these pending-sourced entries apart
+		// from registry re-attachments below — a gate "remove" strips only the
+		// pending ones' markers; a typed `[Image #N]` referencing a valid
+		// earlier attachment must survive removal of an unrelated pending drop.
+		const keptPending: PendingImage[] = []
 		for (const p of record.pasted) {
 			if (p.inlineId === null || presentMarkers.has(p.inlineId)) {
-				keptPasted.push(p)
+				keptPending.push(p)
 			} else {
 				removedDrops.set(p.inlineId, p)
 			}
@@ -401,16 +445,40 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// A `[Image #N]` marker that matches neither a live drop nor a re-armed
 		// one references an earlier turn's attachment: resolve it against the
 		// on-disk registry so sending `[Image #3] describe it` re-attaches the
-		// image the marker was sent with. Unknown ids stay plain text.
+		// image the marker was sent with. Unknown ids stay plain text — but a
+		// miss on a REGISTERED id means a lost attachment, which the user must
+		// hear about instead of silently sending the marker alone.
+		const registryAttached: PendingImage[] = []
 		for (const id of presentMarkers) {
-			if (keptPasted.some((p) => p.inlineId === id)) continue
-			const image = getImageContentById(id)
-			if (image) keptPasted.push({ image, inlineId: id })
+			if (keptPending.some((p) => p.inlineId === id)) continue
+			const resolved = resolveImageContentById(sessionIdOf(ctx), id)
+			if (resolved.kind === "ok") {
+				registryAttached.push({ image: resolved.image, inlineId: id })
+				continue
+			}
+			if (resolved.kind === "unknown") {
+				// Most likely typed prose. One quiet log line; no UI noise.
+				console.warn(`[clipboard-image] [Image #${id}] has no registered image for this session — leaving it as text`)
+			} else {
+				console.error(
+					`[clipboard-image] [Image #${id}] could not be re-attached: ${
+						resolved.kind === "missing-file" ? "cached file missing" : "cached file unreadable"
+					} (${resolved.path})`,
+					resolved.kind === "read-error" ? resolved.error : "",
+				)
+				currentCtx?.ui?.notify(`[Image #${id}] could not be attached — its cached image is gone`, "warning")
+			}
 		}
+		const keptPasted: PendingImage[] = [...keptPending, ...registryAttached]
 
 		const totalImages = record.incoming.length + keptPasted.length + record.paths.size
 		if (totalImages === 0) {
-			if (isInteractiveTui) clearRetainedSubmission()
+			if (isInteractiveTui) {
+				clearRetainedSubmission()
+				// Same staleness prune as the accepted-submission branch below: an
+				// image-free submit still closes every detached drop for good.
+				removedDrops = new Map()
+			}
 			if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
 			return
 		}
@@ -421,11 +489,12 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			if (outcome.kind === "remove") {
 				if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
 				// Original trimmed text, no images, no registry or counter mutation.
-				// Inline `[Image #N]` markers for the removed pending images are
-				// stripped too — they reference attachments that are gone. Typed
-				// path text stays in place (existing behavior). An empty text
-				// consumes the submission.
-				const inlineIds = keptPasted.flatMap((p) => (p.inlineId === null ? [] : [p.inlineId]))
+				// Inline `[Image #N]` markers for the removed PENDING images are
+				// stripped — they reference attachments that are gone. Markers
+				// re-attached from the registry reference earlier turns' images
+				// that still exist, so they stay. Typed path text stays in place
+				// (existing behavior). An empty text consumes the submission.
+				const inlineIds = keptPending.flatMap((p) => (p.inlineId === null ? [] : [p.inlineId]))
 				const trimmed = stripImageMarkers(event.text, inlineIds).trim()
 				return trimmed ? { action: "transform" as const, text: trimmed, images: [] } : { action: "handled" as const }
 			}
@@ -443,6 +512,11 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			...[...record.paths.values()].map((image) => ({ image, inlineId: null })),
 		]
 		pendingImages = []
+		// Accepted submission: detached drops are stale for good. Keeping them
+		// would pin their base64 for the session's lifetime and let a later
+		// draft containing the literal `[Image #N]` re-arm an image the user
+		// deliberately detached (typing the marker as prose would attach it).
+		removedDrops = new Map()
 		updateIndicator()
 
 		// An inline `[Image #N]` marker still present in the draft keeps the
@@ -468,7 +542,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 				prefixIds.push(id)
 			}
 			imageCounter = Math.max(imageCounter, id)
-			addImage(id, p.image)
+			addImage(sessionIdOf(ctx), id, p.image)
 			return { id, image: p.image }
 		})
 		const prefix = buildImageMarkerPrefix(prefixIds)

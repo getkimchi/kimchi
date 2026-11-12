@@ -50,6 +50,13 @@ export class PromptEditor extends CustomEditor {
 	 * a fully restored marker (e.g. undo) re-arms it.
 	 */
 	onImageMarkersEdited?: (presentIds: Set<number>) => void
+	/**
+	 * Buffer for a bracketed paste whose opener arrived without its closer in
+	 * the same input chunk. We cannot defer this to upstream: upstream completes
+	 * multi-chunk pastes internally as plain text insertion, bypassing
+	 * onImagePathDrop — the dropped image's raw path would land in the draft.
+	 */
+	private pendingBracketedPaste: string | null = null
 
 	constructor(tui: TUI, editorTheme: EditorTheme, keybindings: KeybindingsManager, appTheme: Theme) {
 		super(tui, editorTheme, keybindings)
@@ -138,6 +145,13 @@ export class PromptEditor extends CustomEditor {
 	}
 
 	private dispatchInput(data: string): void {
+		// A bracketed paste split across chunks resumes here: glue the
+		// continuation onto the buffered opener so routeBracketedPastes sees the
+		// completed paste in full.
+		if (this.pendingBracketedPaste !== null) {
+			data = this.pendingBracketedPaste + data
+			this.pendingBracketedPaste = null
+		}
 		// tmux and some terminals send \x1b\r for Shift+Enter. Upstream parses
 		// it as alt+enter when kitty protocol is not active, so app.message.followUp
 		// intercepts it before Editor.handleInput can create a newline. Route it
@@ -159,13 +173,38 @@ export class PromptEditor extends CustomEditor {
 		if (this.kb.matches(data, "tui.editor.cursorRight") && this.jumpOverImageMarker(data, true)) return
 		if (this.kb.matches(data, "tui.editor.cursorLeft") && this.jumpOverImageMarker(data, false)) return
 		const dropHandler = this.onImagePathDrop
-		if (dropHandler && this.routeBracketedPastes(data, dropHandler)) return
+		if (dropHandler) {
+			this.routeBracketedPastes(data, dropHandler)
+			return
+		}
 		super.handleInput(data)
 	}
 
 	/** The set of `[Image #N]` marker numbers currently in the draft. */
 	private imageMarkersPresent(): Set<number> {
 		return parseImageMarkers(this.getLines().join("\n"))
+	}
+
+	/**
+	 * pi-tui keeps undo control private, and its char-delete handler pushes one
+	 * undo snapshot per replayed character — an unbracketed replay would make a
+	 * 10-char marker take 10 undos to restore. Bracket the replay with a single
+	 * pre-delete snapshot and swallow the intermediate ones so the delete lands
+	 * as one undo entry, mirroring upstream's atomic `[paste #N]` deletion.
+	 */
+	private withSingleUndoSnapshot(run: () => void): void {
+		const privates = this as unknown as { pushUndoSnapshot: () => void }
+		privates.pushUndoSnapshot()
+		privates.pushUndoSnapshot = () => {}
+		try {
+			run()
+		} finally {
+			// Remove the instance shadow; the prototype method is used again.
+			// (delete is required — assigning undefined would keep a broken
+			// own-property shadow over the prototype method.)
+			// biome-ignore lint/performance/noDelete: see comment above
+			delete (privates as Record<string, unknown>).pushUndoSnapshot
+		}
 	}
 
 	/**
@@ -190,9 +229,11 @@ export class PromptEditor extends CustomEditor {
 		// let upstream do the plain word-wise delete instead.
 		const replay = isWordBackspace && this.kb.matches("\x7f", "tui.editor.deleteCharBackward") ? "\x7f" : backspaceData
 		if (isWordBackspace && replay !== "\x7f") return false
-		for (let i = 0; i < marker.length; i++) {
-			super.handleInput(replay)
-		}
+		this.withSingleUndoSnapshot(() => {
+			for (let i = 0; i < marker.length; i++) {
+				super.handleInput(replay)
+			}
+		})
 		return true
 	}
 
@@ -215,9 +256,11 @@ export class PromptEditor extends CustomEditor {
 				: null
 			: deleteData
 		if (replay === null) return false
-		for (let i = 0; i < marker.length; i++) {
-			super.handleInput(replay)
-		}
+		this.withSingleUndoSnapshot(() => {
+			for (let i = 0; i < marker.length; i++) {
+				super.handleInput(replay)
+			}
+		})
 		return true
 	}
 
@@ -244,15 +287,12 @@ export class PromptEditor extends CustomEditor {
 	 * processed first, unhandled pastes are re-emitted with their bracket
 	 * escapes intact, and bytes after the paste are processed last.
 	 *
-	 * Returns true when `data` was fully routed (every segment processed, even
-	 * when no paste was consumed). Returns false only when upstream should
-	 * process `data` itself: nothing but an incomplete paste (opener without a
-	 * closer in the same chunk) that upstream's multi-chunk buffering must
-	 * handle unchanged. A chunk that starts with complete segments and ENDS
-	 * with an incomplete paste is still routed — only the incomplete remainder
-	 * is handed to upstream's buffering.
+	 * An incomplete paste (opener without a closer) is buffered in
+	 * pendingBracketedPaste and completed by the next chunk. Deferring
+	 * multi-chunk pastes to upstream's own buffering would bypass the drop
+	 * handler — upstream completes them internally as plain text insertion.
 	 */
-	private routeBracketedPastes(data: string, dropHandler: (pastedText: string) => boolean): boolean {
+	private routeBracketedPastes(data: string, dropHandler: (pastedText: string) => boolean): void {
 		const OPEN = "\x1b[200~"
 		const CLOSE = "\x1b[201~"
 		// Tokenize first — complete text/paste segments in order. An opener with
@@ -279,8 +319,12 @@ export class PromptEditor extends CustomEditor {
 			segments.push({ pasted: rest.slice(open + OPEN.length, close), text: "" })
 			rest = rest.slice(close + CLOSE.length)
 		}
-		// A lone incomplete paste leaves the whole chunk to upstream buffering.
-		if (segments.length === 0) return false
+		// A lone incomplete paste is held for the continuation chunk instead of
+		// going to upstream's buffering (which would swallow the drop).
+		if (segments.length === 0) {
+			this.pendingBracketedPaste = data
+			return
+		}
 		for (const segment of segments) {
 			if (segment.pasted === null) {
 				if (segment.text.length > 0) this.handleTextSegment(segment.text)
@@ -290,8 +334,9 @@ export class PromptEditor extends CustomEditor {
 				super.handleInput(`${OPEN}${segment.pasted}${CLOSE}`)
 			}
 		}
-		if (remainder !== null) super.handleInput(remainder)
-		return true
+		// A chunk ending mid-paste buffers the tail too — handing it to upstream
+		// would let the next chunk complete there and bypass the drop handler.
+		if (remainder !== null) this.pendingBracketedPaste = remainder
 	}
 
 	/**
