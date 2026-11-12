@@ -542,5 +542,21 @@
 			"kind": "blocked",
 			"message": "Ferment state guard"
 		}
+	},
+	{
+		"tool": "codemode",
+		"message": "Script failed\nWall time 0.1 seconds\nOutput:\n\nScript error:\nReferenceError: x is not defined",
+		"expect": {
+			"kind": "failure",
+			"message": "Codemode script error"
+		}
+	},
+	{
+		"tool": "codemode",
+		"message": "Script failed\nWall time 2.4 seconds\nOutput:\nstep one done\nstep two done\nstep three failed mid-way\n\nScript error:\nTypeError: Cannot read properties of undefined (reading 'map')",
+		"expect": {
+			"kind": "failure",
+			"message": "Codemode script error"
+		}
 	}
 ]
