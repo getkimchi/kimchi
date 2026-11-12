@@ -96,6 +96,10 @@ import {
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
 import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
+import {
+	isAcpBackgroundRunsOptedIn,
+	setAcpBackgroundRunsOptedIn,
+} from "../../extensions/bash-background/session-policy.js"
 import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
 import { readE2eSeam } from "../../extensions/e2e-seam.js"
 import { getRawErrorMessage } from "../../extensions/error-preservation.js"
@@ -165,6 +169,8 @@ import { TurnArtifactBuffer } from "./artifact-links.js"
 import {
 	ADVERTISED_CAPABILITIES,
 	AVAILABLE_EXT_METHODS,
+	BACKGROUND_RUNS_CAPABILITY,
+	getClientOptedIntoBackgroundRuns,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
 } from "./capabilities.js"
@@ -627,6 +633,12 @@ export class KimchiAcpAgent implements Agent {
 		setAcpClientInfo(request.clientInfo ?? { name: "unknown", version: "0.0.0" })
 
 		this.clientCapabilities = request.clientCapabilities
+		// One CLI process = one ACP client: the opt-in steers BOTH the wire
+		// (run_start/run_end emission below and in the session event
+		// subscriber) and the bash-background session policy (turns yielding
+		// live commands vs. the completion guard) for every session this
+		// server creates.
+		setAcpBackgroundRunsOptedIn(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
 
 		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
@@ -699,6 +711,13 @@ export class KimchiAcpAgent implements Agent {
 					// as `resource_link` chunks carrying
 					// `_meta["kimchi.dev"].type = "artifact"`.
 					artifacts: true,
+					// Advertises the background-runs GATE: clients that opt in at
+					// initialize with the same key get async background runs plus
+					// run_start/run_end; everyone else keeps the completion guard
+					// (pre-#1616) so no client sees a ghost run without a stop
+					// button. Note the agent NEEDS this flag advertised only so
+					// clients feature-detect the gate; emission is opt-in gated.
+					[BACKGROUND_RUNS_CAPABILITY]: true,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
@@ -2251,7 +2270,10 @@ export class KimchiAcpAgent implements Agent {
 					entry.unsolicitedTurn = createTurnContext()
 					// Announce the agent-initiated run BEFORE its streamed output
 					// (v1 bridge for the v2 Background Work RFD state transition).
-					emitRunStart(this.conn, sessionId, runStartReason)
+					// Opted-in clients only: a non-opted client should have had the
+					// completion guard hold its turn open — never reach here — and
+					// must not learn about runs it cannot present.
+					if (isAcpBackgroundRunsOptedIn()) emitRunStart(this.conn, sessionId, runStartReason)
 					if (wakeCancel) {
 						// Cancel raced the wake ramp: no unsolicitedTurn existed to
 						// mark when it arrived, so latch+apply here — otherwise the
@@ -2300,15 +2322,18 @@ export class KimchiAcpAgent implements Agent {
 					this.emitUsageUpdate(entry.session, unsolicited.usage)
 					// Close the run boundary AFTER the last streamed output, mirroring
 					// finalizeTurn's stopReason mapping for prompt-owned turns.
-					emitRunEnd(
-						this.conn,
-						sessionId,
-						runStopReasonFromFlags({
-							cancelled: unsolicited.cancelled,
-							lastAssistantError: unsolicited.lastAssistantError,
-							refused: unsolicited.refused,
-						}),
-					)
+					// Symmetric with run_start: non-opted clients never see it.
+					if (isAcpBackgroundRunsOptedIn()) {
+						emitRunEnd(
+							this.conn,
+							sessionId,
+							runStopReasonFromFlags({
+								cancelled: unsolicited.cancelled,
+								lastAssistantError: unsolicited.lastAssistantError,
+								refused: unsolicited.refused,
+							}),
+						)
+					}
 				}
 				return
 			}

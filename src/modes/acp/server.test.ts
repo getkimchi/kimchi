@@ -45,6 +45,10 @@ import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
 import { setSessionState } from "../../extensions/bash-background/session-registry.js"
+import {
+	resetAcpBackgroundRunsOptedInForTest,
+	setAcpBackgroundRunsOptedIn,
+} from "../../extensions/bash-background/session-policy.js"
 import feedbackExtension from "../../extensions/feedback/index.js"
 import {
 	isProjectScopeAllowed,
@@ -7013,7 +7017,12 @@ describe("generated artifacts (live turns)", () => {
 			clientCapabilities: {},
 			clientInfo: { name: "test", version: "0" },
 		})
-		expect(response.agentCapabilities?._meta?.["kimchi.dev"]).toMatchObject({ artifacts: true })
+		expect(response.agentCapabilities?._meta?.["kimchi.dev"]).toMatchObject({
+			artifacts: true,
+			// Clients feature-detect the background-runs gate through this flag
+			// before deciding whether to opt in at initialize.
+			background_runs: true,
+		})
 	})
 })
 
@@ -8084,6 +8093,10 @@ describe("run boundary notifications", () => {
 	const RUN_END = "_kimchi.dev/run_end"
 
 	async function startRunBoundarySession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+		// Background-runs opt-in: these tests exercise run boundaries, which
+		// only fire for clients that opted in at initialize. The unit fabric
+		// skips initialize, so set the same process flag it would set there.
+		setAcpBackgroundRunsOptedIn(true)
 		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
@@ -8092,6 +8105,10 @@ describe("run boundary notifications", () => {
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		return agent
 	}
+
+	afterEach(() => {
+		resetAcpBackgroundRunsOptedInForTest()
+	})
 
 	it("closes the boundary once before a prompt that waited out the run starts", async () => {
 		let releaseIdle!: () => void
@@ -8212,6 +8229,46 @@ describe("run boundary notifications", () => {
 		expect(extNotifications.filter((n) => n.method === RUN_END)).toEqual([
 			{ method: RUN_END, params: { sessionId: "session-rb-ramp", state: "idle", stopReason: "cancelled" } },
 		])
+	})
+
+	it("emits no run boundary for a client that did not opt into background runs at initialize", async () => {
+		// The default: no initialize opt-in (initialize never ran in this test
+		// fabric, and the flag defaults to false). An unsophisticated client
+		// must never learn about an agent-initiated run it cannot present —
+		// and its kept completion guard of pre-#1616 means the turn wouldn't
+		// have ended anyway.
+		const fake = new FakeAgentSession("session-rb-gated")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		fake.emit({ type: "agent_start" })
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(0)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toHaveLength(0)
+	})
+
+	it("an initialize opt-in unlocked run boundaries start-to-end for that process", async () => {
+		setAcpBackgroundRunsOptedIn(true)
+		const fake = new FakeAgentSession("session-rb-opted")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		fake.emit({ type: "agent_start" })
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+
+		expect(extNotifications.filter((n) => n.method === RUN_START)).toHaveLength(1)
+		expect(extNotifications.filter((n) => n.method === RUN_END)).toHaveLength(1)
 	})
 })
 

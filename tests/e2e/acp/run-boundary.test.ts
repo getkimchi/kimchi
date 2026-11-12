@@ -95,6 +95,7 @@ it(
 	async () => {
 		const fixture = await startAcpFixture({
 			artifactName: "run-boundary-prompt-owned",
+			clientCapabilities: OPT_IN_CAPABILITIES,
 			responses: [{ stream: ["Plain answer. "] }],
 		})
 		try {

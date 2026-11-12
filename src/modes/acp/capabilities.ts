@@ -118,6 +118,26 @@ export function getClientSupportsMethod(capabilities: ClientCapabilities | undef
 }
 
 /**
+ * Client opt-in key for background runs, in
+ * `clientCapabilities._meta["kimchi.dev"]` at initialize. Opted-in clients
+ * get async background runs: a prompt turn may END while bash commands keep
+ * running, the agent wakes itself on process exit (no prompt outstanding),
+ * and run_start/run_end bracket that wake so the client can own the stop
+ * button. Clients that do NOT opt in keep the pre-#1616 completion guard:
+ * the turn waits out its background commands, so the client's existing stop
+ * button covers everything and prompts never park mid-run. The agent
+ * advertises the same key in its own capabilities _meta so clients can
+ * feature-detect the gate.
+ */
+export const BACKGROUND_RUNS_CAPABILITY = "background_runs"
+
+/** True when the client opted into background runs at initialize. */
+export function getClientOptedIntoBackgroundRuns(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[BACKGROUND_RUNS_CAPABILITY] === true
+}
+
+/**
  * A `_meta` payload namespaced under the kimchi.dev capability key — the
  * shape `kimchiDevMetaOf` produces and `_meta` readers consume.
  */

@@ -591,6 +591,11 @@ function mergeCapabilities(
 	// Baseline matches `verify-acp.mjs`: fs.read/write off. Tests layer
 	// `override` on top. `_meta` nests inside `clientCapabilities` per ACP —
 	// that's where `_meta["kimchi.dev"].pi_*` capability checks look for it.
+	// Background-runs opt-in by default: the fixture's client mimics a
+	// modern client (Studio), which DOES handle run_start/run_end. Tests for
+	// the pre-#1616 completion-guard fallback must say so explicitly.
+	const meta = clientMeta ?? override?._meta
+	const kimchiDev = { background_runs: true, ...((meta?.["kimchi.dev"] as Record<string, unknown> | undefined) ?? {}) }
 	return {
 		...override,
 		fs: {
@@ -598,7 +603,7 @@ function mergeCapabilities(
 			writeTextFile: false,
 			...(override?.fs ?? {}),
 		},
-		_meta: clientMeta ?? override?._meta,
+		_meta: { ...meta, "kimchi.dev": kimchiDev },
 	}
 }
 
