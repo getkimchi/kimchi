@@ -378,6 +378,15 @@ describe("extractMessages (user + gated assistant)", () => {
 		const entry = msgEntry("assistant", [{ type: "thinking", text: "only reasoning" }])
 		expect(extractMessages([entry])).toEqual([{ role: "assistant", content: "[internal reasoning]: only reasoning" }])
 	})
+
+	it("captures openai-flavored thinking parts whose text lives under the thinking field", () => {
+		// kimi-k3 emits { type: "thinking", thinking: "...", thinkingSignature: "reasoning_content" }
+		// — field name `thinking`, not `text`, unlike anthropic-flavored parts.
+		const entry = msgEntry("assistant", [{ type: "thinking", thinking: "bulbasaur first — grass beats the early gym" }])
+		expect(extractMessages([entry])).toEqual([
+			{ role: "assistant", content: "[internal reasoning]: bulbasaur first — grass beats the early gym" },
+		])
+	})
 })
 
 describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)", () => {

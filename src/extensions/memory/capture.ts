@@ -353,7 +353,11 @@ export function thinkingText(content: unknown): string {
 	for (const part of content) {
 		if (typeof part !== "object" || part === null) continue
 		if ((part as { type?: string }).type !== "thinking") continue
-		const text = (part as { text?: string }).text ?? ""
+		// Provider-dependent payload: anthropic-flavored parts put reasoning
+		// text under `text`; openai-flavored reasoning_content parts put the
+		// same content under `thinking`.
+		const typed = part as { text?: string; thinking?: string }
+		const text = typed.text ?? typed.thinking ?? ""
 		if (text.trim()) parts.push(text)
 	}
 	return parts.join("\n\n").slice(0, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS)
