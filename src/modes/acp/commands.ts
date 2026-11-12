@@ -24,6 +24,13 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		},
 	},
 	{
+		name: "compact",
+		description: SLASH_COMMANDS.compact.hint,
+		input: {
+			hint: "Optional guidance for what to keep in the summary.",
+		},
+	},
+	{
 		name: "language",
 		description: SLASH_COMMANDS.language.hint,
 		input: {
@@ -31,6 +38,25 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		},
 	},
 ]
+
+/** The advertised name of the manual compaction command. */
+export const COMPACT_COMMAND_NAME = "compact"
+
+/**
+ * Parse a prompt invoking the compaction command: "/compact" alone or
+ * "/compact <free-text instructions>" (the text after the command maps onto
+ * compact()'s customInstructions). Follows the ACP command contract — the
+ * name must be followed by whitespace or the end of the block, so
+ * "/compactfoo" is NOT the command and stays an ordinary prompt. Returns
+ * undefined for anything else.
+ */
+export function tryParseCompactCommand(text: string): { instructions?: string } | undefined {
+	if (text === `/${COMPACT_COMMAND_NAME}`) return {}
+	const prefix = `/${COMPACT_COMMAND_NAME} `
+	if (!text.startsWith(prefix)) return undefined
+	const instructions = text.slice(prefix.length).trim()
+	return instructions ? { instructions } : {}
+}
 
 /** Full session palette: static commands first, then skill commands. */
 export function composeAvailableCommands(skillCommands: ReadonlyMap<string, AcpSkillInfo>): AvailableCommand[] {

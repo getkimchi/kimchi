@@ -29,6 +29,7 @@ import {
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	type CompactionResult,
 	type ExtensionContext,
 	type ExtensionUIContext,
 	estimateTokens,
@@ -459,6 +460,21 @@ class FakeAgentSession {
 	setThinkingLevel(level: string): void {
 		this.setThinkingLevelCalls.push(level)
 		this.thinkingLevel = level
+	}
+
+	// Compaction seam for the /compact command: the gate prompt() reads, the
+	// call tape the command routes through handleCompact, and the impl tests
+	// override for terminal-outcome variants.
+	isCompacting = false
+	compactCalls: Array<{ instructions?: string; force?: boolean }> = []
+	compactImpl: (instructions?: string, force?: boolean) => Promise<CompactionResult> = async () => ({
+		summary: "fake compaction summary",
+		firstKeptEntryId: "entry-1",
+		tokensBefore: 12_345,
+	})
+	async compact(instructions?: string, force?: boolean): Promise<CompactionResult> {
+		this.compactCalls.push({ instructions, force })
+		return this.compactImpl(instructions, force)
 	}
 
 	async abort(): Promise<void> {
@@ -9574,6 +9590,118 @@ describe("setSessionConfigOption", () => {
 			// refreshed list the client replaces its state with drops the option.
 			expect(res.configOptions?.find((o) => o.id === "reasoning_effort")).toBeUndefined()
 			expect(res.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("test/plain")
+		})
+	})
+
+	describe("compact command", () => {
+		function makeRecordingAgent(fake: FakeAgentSession): {
+			agent: KimchiAcpAgent
+			updates: SessionNotification[]
+		} {
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			return { agent, updates }
+		}
+
+		it("advertises the compact command in the session palette", async () => {
+			const fake = new FakeAgentSession("test-session-compact-advertise")
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			await flushDeferredCommands()
+
+			const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const palette = update?.update as { availableCommands: Array<Record<string, unknown>> }
+			expect(palette.availableCommands.find((c) => c.name === "compact")).toMatchObject({
+				name: "compact",
+				description: expect.any(String),
+				input: { hint: expect.any(String) },
+			})
+		})
+
+		it("runs compaction for a /compact prompt without a model turn", async () => {
+			const fake = new FakeAgentSession("test-session-compact-run")
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.prompt({
+				sessionId: "test-session-compact-run",
+				prompt: [{ type: "text", text: "/compact" }],
+			})
+
+			expect(fake.compactCalls).toEqual([{ instructions: undefined, force: false }])
+			expect(fake.promptCalls).toEqual([])
+			expect(res.stopReason).toBe("end_turn")
+			const userEcho = updates.find((u) => u.update.sessionUpdate === "user_message_chunk")
+			expect((userEcho?.update as { content: { text: string } }).content.text).toBe("/compact")
+			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+			expect((outcome?.update as { content: { text: string } }).content.text).toContain("Context compacted")
+		})
+
+		it("passes free text after /compact as the compaction instructions", async () => {
+			const fake = new FakeAgentSession("test-session-compact-args")
+			const { agent } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-args",
+				prompt: [{ type: "text", text: "/compact keep the API notes" }],
+			})
+
+			expect(fake.compactCalls).toEqual([{ instructions: "keep the API notes", force: false }])
+		})
+
+		it("does not treat /compactfoo as the command", async () => {
+			const fake = new FakeAgentSession("test-session-compact-prefix")
+			const { agent } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-prefix",
+				prompt: [{ type: "text", text: "/compactfoo now" }],
+			})
+
+			expect(fake.compactCalls).toEqual([])
+			expect(fake.promptCalls.map((c) => c.prompt)).toEqual(["/compactfoo now"])
+		})
+
+		it("reports a cancelled compaction as stopReason cancelled", async () => {
+			const fake = new FakeAgentSession("test-session-compact-cancelled")
+			fake.compactImpl = async () => {
+				throw new Error("Compaction cancelled")
+			}
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.prompt({
+				sessionId: "test-session-compact-cancelled",
+				prompt: [{ type: "text", text: "/compact" }],
+			})
+
+			expect(res.stopReason).toBe("cancelled")
+			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+			expect((outcome?.update as { content: { text: string } }).content.text).toContain("Compaction cancelled")
+		})
+
+		it("reports an expected compaction no-op as a failed outcome with end_turn", async () => {
+			const fake = new FakeAgentSession("test-session-compact-noop")
+			fake.compactImpl = async () => {
+				throw new Error("Nothing to compact")
+			}
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.prompt({
+				sessionId: "test-session-compact-noop",
+				prompt: [{ type: "text", text: "/compact" }],
+			})
+
+			expect(res.stopReason).toBe("end_turn")
+			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+			expect((outcome?.update as { content: { text: string } }).content.text).toContain("Nothing to compact")
 		})
 	})
 

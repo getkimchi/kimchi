@@ -176,9 +176,14 @@ import {
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
 } from "./capabilities.js"
-import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
+import {
+	composeAvailableCommands,
+	createCommandsRefresher,
+	discoverSkillCommandsMap,
+	tryParseCompactCommand,
+} from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
-import { handleCompact } from "./ext-methods/compact.js"
+import { type CompactResponse, handleCompact } from "./ext-methods/compact.js"
 import { handleCompactAbort } from "./ext-methods/compact-abort.js"
 import { handleFeedback } from "./ext-methods/feedback.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
@@ -1571,6 +1576,15 @@ export class KimchiAcpAgent implements Agent {
 			// state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
 		}
+		// A prompt whose first text block starts with "/compact" invokes the
+		// locally-handled compaction command (advertised in availableCommands)
+		// instead of a model turn: parse per the ACP command contract (exact
+		// name, whitespace or end), then drive the same handler as the
+		// _kimchi.dev/compact ext method.
+		const compactCommand = tryParseCompactCommand(text)
+		if (compactCommand) {
+			return await this.runCompactCommand(params.sessionId, text, compactCommand, pending)
+		}
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
@@ -1637,6 +1651,47 @@ export class KimchiAcpAgent implements Agent {
 			},
 		)
 		return result
+	}
+
+	/**
+	 * Run the locally-handled /compact command. The prompt's first text block
+	 * is "/compact" (optionally followed by free-text instructions) per the
+	 * ACP command contract, so the turn never reaches the model: surface the
+	 * invocation as a live-only user message (the runtime records only the
+	 * summary, so the command text itself would otherwise never appear), run
+	 * the same handler as the _kimchi.dev/compact ext method (progress streams
+	 * through the agent_activity notifications, the usage gauge refreshes via
+	 * the compaction_end event), and report the terminal outcome as an
+	 * assistant message — the same locally-decided-outcome pattern as the
+	 * vision gate.
+	 */
+	private async runCompactCommand(
+		sessionId: string,
+		text: string,
+		args: { instructions?: string },
+		pending: PendingPrompt,
+	): Promise<PromptResponse> {
+		if (pending.cancelled) return { stopReason: "cancelled" }
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "user_message_chunk",
+				content: { type: "text", text },
+			},
+		})
+		const outcome = await handleCompact((id) => this.getSessionTurnTarget(id), {
+			sessionId,
+			instructions: args.instructions,
+		})
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "agent_message_chunk",
+				messageId: `km.${randomUUID()}`,
+				content: { type: "text", text: compactOutcomeText(outcome) },
+			},
+		})
+		return { stopReason: outcome.status === "cancelled" ? "cancelled" : "end_turn" }
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
@@ -3943,6 +3998,16 @@ function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode):
 	const thinking = buildThinkingConfigOption(session)
 	if (thinking) options.push(thinking)
 	return options
+}
+
+/** The assistant-facing text for a /compact command outcome. Trailing blank
+ *  line keeps the message visually separate when a client concatenates
+ *  chunks — same convention as the vision-gate warning. */
+function compactOutcomeText(outcome: CompactResponse): string {
+	if (outcome.status === "completed") {
+		return `Context compacted.${outcome.summary ? ` Summary:\n\n${outcome.summary}` : ""}\n\n`
+	}
+	return `Compaction ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""}\n\n`
 }
 
 // Checks model PRESENCE only — pi resolves a non-null model object even on
