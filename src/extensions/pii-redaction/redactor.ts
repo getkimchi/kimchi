@@ -451,7 +451,6 @@ export async function collectDetections(
 	const active: EngineDetection[] = []
 	for (const r of results) {
 		for (const d of r.detections) {
-			if (excluded.has(d.entityType)) continue
 			// Attribution correction (correctness-001): the engine claims
 			// realistic-length sk-ant- keys as OPENAI_KEY long before the
 			// custom-anchored ANTHROPIC_KEY pattern gets a turn. Real Anthropic
@@ -459,6 +458,8 @@ export async function collectDetections(
 			// so without this relabel the label fix below is a no-op for real
 			// keys. Fire only on the distinct prefix — never on content alone.
 			const entityType = d.entityType === "OPENAI_KEY" && d.text.startsWith("sk-ant-") ? "ANTHROPIC_KEY" : d.entityType
+			// Exclusion check uses the corrected label (correctness-007).
+			if (excluded.has(entityType)) continue
 			if (isNonIdentifyingDetection(entityType, d.text)) continue
 			if (isBase64ShadowDrop(entityType, text, d.start, d.end)) continue
 			active.push({ entityType, start: d.start, end: d.end, text: d.text })
