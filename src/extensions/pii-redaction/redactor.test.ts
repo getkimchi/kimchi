@@ -10,6 +10,8 @@ import { getRedactionConfig } from "./config.js"
 import { getDefaultExcludedEntities } from "./entity-tiers.js"
 import {
 	applyCustomPatterns,
+	collectDetections,
+	createRedactionEngine,
 	getRedactionConfigError,
 	isBase64ShadowDrop,
 	isGenericLocalPart,
@@ -397,6 +399,14 @@ describe("redactText — custom secret patterns", () => {
 		expect(result).not.toContain(key)
 		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
 		expect(result).not.toContain("[REDACTED-OPENAI_KEY]")
+	})
+
+	it("honors user exclusions on the relabeled label (correctness-007)", async () => {
+		const key = "sk-ant-api03-" + "a1B2c3D4e5F6g7H8".repeat(6)
+		const text = `claude key: ${key}`
+		const engine = createRedactionEngine(getDefaultExcludedEntities().filter((e) => e !== "ANTHROPIC_KEY"))
+		const dropped = await collectDetections(text, engine, new Set(["ANTHROPIC_KEY"]))
+		expect(dropped.map((d) => d.entityType)).not.toContain("ANTHROPIC_KEY")
 	})
 
 	it("redacts standalone GitHub tokens whole (ghp_ numeric tails, mixed PATs)", async () => {
