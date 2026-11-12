@@ -481,7 +481,9 @@ describe("extractAssistantFacts (cautious agent-aware pass)", () => {
 		const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string) as {
 			messages: Array<{ content: string }>
 		}
-		expect(body.messages[0]?.content).toContain("AI agent, not the user")
+		expect(body.messages[0]?.content).toContain('Messages marked "assistant" were produced by an AI agent')
+		expect(body.messages[0]?.content).toContain("NOTES TO FUTURE SELF")
+		expect(body.messages[0]?.content).toContain("EVIDENCE-GROUNDED CONCLUSIONS")
 	})
 
 	it("the scoped variant swaps the respond line for the scope-tag section", async () => {
