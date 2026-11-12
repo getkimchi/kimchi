@@ -1259,7 +1259,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
 				llm: makeFakeLlm(transcripts),
 				createBackend: () => Promise.resolve(fake.backend),
-				decision: { gate: makeFakeD3({ triageP: 0.1 }), enabled: new Set(["triage"]) },
+				decision: { gate: makeFakeD3({ triageP: 0.1 }), enabled: new Set(["valuation"]) },
 			})
 			const events = drainEvents()
 			// No pre-extraction gate call — extraction went straight to the window.
@@ -2322,7 +2322,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			createBackend: () => Promise.resolve(fake.backend),
 			decision: {
 				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetchImpl(0.05) },
-				enabled: new Set(["triage"]),
+				enabled: new Set(["valuation"]),
 			},
 		})
 		// A low d3 durable score no longer short-circuits extraction.
@@ -3433,9 +3433,6 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 				}),
 				{ status: 200 },
 			)
-		// The triage stub answers "definitely not durable" — a tool-evidence
-		// window must never reach it.
-		const triageFetch = neverDurableTriage()
 		const job = join(pendingDir(), "tooljob.json")
 		writeFileSync(
 			job,
@@ -3450,14 +3447,9 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
 			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
 			createBackend: () => Promise.resolve(backend),
-			decision: {
-				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
-				enabled: new Set(["triage"]),
-			},
 		})
 		expect(stored).toEqual(["items ts is milliseconds"])
 		expect(captured).toBe(1)
-		expect(triageFetch).not.toHaveBeenCalled()
 	})
 
 	it("flag ON + plain window: extraction runs without any triage call (triage retired)", async () => {
@@ -3481,18 +3473,12 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 					{ status: 200 },
 				),
 		)
-		const triageFetch = neverDurableTriage()
 		const job = join(pendingDir(), "plainjob.json")
 		writeFileSync(job, JSON.stringify({ messages: [msg("user", "ok thanks")], project: null }))
 		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
 			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
 			createBackend: () => Promise.resolve(backend),
-			decision: {
-				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
-				enabled: new Set(["triage"]),
-			},
 		})
-		expect(triageFetch).not.toHaveBeenCalled()
 		expect(extractFetch).toHaveBeenCalled()
 		expect(stored).toEqual(["the dog is named Freya"])
 		expect(captured).toBe(1)
@@ -3532,7 +3518,7 @@ describe("always-extract (triage retired) — KIMCHI_MEMORY_CAPTURE_TOOL_TURNS w
 			createBackend: () => Promise.resolve(backend),
 			decision: {
 				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
-				enabled: new Set(["triage"]),
+				enabled: new Set(["valuation"]),
 			},
 		})
 		expect(triageFetch).not.toHaveBeenCalled()
