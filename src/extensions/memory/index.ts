@@ -266,7 +266,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// an ACP server hosts concurrent sessions in one process, and their
 		// captures must not merge into one record entry.
 		const captureId = deps.captureId ?? randomUUID()
-		wireMemoryCapture(pi, memoryActive, captureId)
+		const captureWiring = wireMemoryCapture(pi, memoryActive, captureId)
 
 		// Timing marks are stamped with this session's id — per instance for
 		// the same reason as captureId: module state cannot tell concurrent
@@ -372,6 +372,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// Lever 3: mid-session incremental capture — the runtime mark makes
 		// batches non-overlapping; the worker's hash ledger dedupes restarts.
 		let incrementalState = createIncrementalCaptureState()
+
 		// The session's working directory, captured at the first agent start —
 		// scopes retrieval to the project store (see createScopedSearcher).
 		let sessionCwd: string | undefined
@@ -659,6 +660,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					// The flip emptied the ledger — drop any stale count.
 					updateMemoryStatus(ctx)
 					clearSavedStatus(ctx)
+
 				}
 				lastActive = active
 			}
@@ -677,8 +679,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				}
 			}
 			// Lever 3: drain new content as it accumulates (sync, cheap — reads
-			// the in-memory entries and spawns a detached worker past the mark).
-			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState, ctx.cwd, captureId)
+			// the in-memory entries and spawns a detached worker past the mark),
+			// — the same increment the turn_end/tool_result hooks evaluate;
+			// all three producers share the wiring-owned mark.
+			captureWiring.fireIncrement(ctx)
 
 			// Capture feedback: read the drain's completion record (per-session
 			// counts) — bump the segment's saved half.
@@ -883,9 +887,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			deliveredKeys.clear()
 			deliveredFacts.length = 0
 			pendingRecallQuery = undefined
-			// Post-compaction entries restructure — re-derive the incremental mark
-			// from zero; the worker's ledger dedupes the re-passed messages.
-			incrementalState = createIncrementalCaptureState()
+			captureWiring.resetIncrement()
 			// The ledger reset means nothing is in context — clear the count
 			// until the next agent start recomputes the digest.
 			updateMemoryStatus(ctx)

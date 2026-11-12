@@ -2480,6 +2480,80 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		expect(existsSync(pendingDir) ? readdirSync(pendingDir) : []).toHaveLength(0)
 		expect(spawn).not.toHaveBeenCalled()
 	})
+
+	const entries = (n: number, startAt = 0): SessionEntry[] =>
+		Array.from(
+			{ length: n },
+			(_, i) => ({ type: "message", message: { role: "user", content: `m${startAt + i}` } }) as unknown as SessionEntry,
+		)
+	const mockSpawn = () => {
+		const child = new EventEmitter() as unknown as ChildProcess
+		child.unref = vi.fn()
+		vi.mocked(spawn).mockImplementation(() => child)
+	}
+
+	it("turn_end and tool_result drive the same non-overlapping increment", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => true)
+		mockSpawn()
+		const ctx = createContext({ sessionManager: { getEntries: () => entries(12) } })
+		const turnEnd = getHandler("turn_end")
+		const toolResult = getHandler("tool_result")
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending") as string
+
+		turnEnd({ type: "turn_end" }, ctx)
+		expect(readdirSync(pendingDir)).toHaveLength(1)
+
+		// Same entries again: the mark already covered them — no requeue.
+		toolResult({ type: "tool_result" }, ctx)
+		turnEnd({ type: "turn_end" }, ctx)
+		expect(readdirSync(pendingDir)).toHaveLength(1)
+
+		// More entries land: the next hook sees only the new span.
+		const ctx2 = createContext({ sessionManager: { getEntries: () => entries(25) } })
+		toolResult({ type: "tool_result" }, ctx2)
+		expect(readdirSync(pendingDir)).toHaveLength(2)
+	})
+
+	it("shutdown captures only the tail past the incremental mark", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => true)
+		mockSpawn()
+		const atTwelve = createContext({ sessionManager: { getEntries: () => entries(12) } })
+		const atFifteen = createContext({ sessionManager: { getEntries: () => entries(15) } })
+		getHandler("turn_end")({ type: "turn_end" }, atTwelve)
+		getHandler("session_shutdown")({ type: "session_shutdown" }, atFifteen)
+
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending") as string
+		const jobs = readdirSync(pendingDir)
+		expect(jobs).toHaveLength(2)
+		const messages = jobs.flatMap(
+			(name) => (JSON.parse(readFileSync(join(pendingDir, name), "utf-8")) as { messages: CaptureMessage[] }).messages,
+		)
+		// 12 from the increment + 3 tail — no message is queued twice.
+		expect(messages).toHaveLength(15)
+		expect(new Set(messages.map((m) => m.content)).size).toBe(15)
+	})
+
+	it("shutdown splits a long session tail into bounded jobs", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => true)
+		mockSpawn()
+		const ctx = createContext({ sessionManager: { getEntries: () => entries(75) } })
+		getHandler("session_shutdown")({ type: "session_shutdown" }, ctx)
+
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending") as string
+		const jobs = readdirSync(pendingDir)
+		// 75 messages / ≤30 per job → 3 jobs: 30+30+15.
+		expect(jobs).toHaveLength(3)
+		const sizes = jobs
+			.map(
+				(name) =>
+					(JSON.parse(readFileSync(join(pendingDir, name), "utf-8")) as { messages: CaptureMessage[] }).messages.length,
+			)
+			.sort((a, b) => a - b)
+		expect(sizes).toEqual([15, 30, 30])
+	})
 })
 
 describe("messageHash v2 scoping", () => {
@@ -3582,5 +3656,24 @@ describe("valuation context threading (KIMCHI_MEMORY_VALUATION_CONTEXT)", () => 
 		expect(bodies.length).toBeGreaterThan(0)
 		expect(bodies[0]).not.toContain("The dog is named Freya")
 		expect(bodies[0]).not.toContain("already holds these memories")
+	})
+})
+
+describe("incrementalCapture — spawn failure keeps the mark", () => {
+	const msgEntry = (content: string) =>
+		({ type: "message", message: { role: "user", content } }) as unknown as SessionEntry
+
+	it("a false-returning spawn leaves the span for the next evaluation", () => {
+		const state = createIncrementalCaptureState()
+		const spawnFailing = vi.fn().mockReturnValue(false)
+		const entries = Array.from({ length: 10 }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, state, "/test/cwd", spawnFailing)
+		expect(spawnFailing).toHaveBeenCalledTimes(1)
+		expect(state.spawnedCount).toBe(0)
+		// Recovering spawn re-attempts the SAME batch — nothing is lost.
+		const spawnOk = vi.fn().mockReturnValue(true)
+		incrementalCapture(entries, state, "/test/cwd", spawnOk)
+		expect((spawnOk.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(10)
+		expect(state.spawnedCount).toBe(10)
 	})
 })

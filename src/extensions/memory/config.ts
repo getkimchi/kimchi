@@ -92,6 +92,14 @@ export const MEMORY_CAPTURE_INCREMENTAL_MESSAGES = 10
 export const UNKNOWN_CAPTURE_SESSION_ID = "(unknown-session)"
 
 /**
+ * Max captured messages per shutdown job: long sessions split their
+ * remainder into bounded jobs instead of one monolith. Smaller jobs
+ * mean a worker crash or poisoned window drops only its own span
+ * (quarantined), and the backlog keeps draining job by job.
+ */
+export const MEMORY_CAPTURE_JOB_MAX_MESSAGES = 30
+
+/**
  * Capture drain lock staleness: a held lock whose mtime is older than this
  * is considered compromised and stealable. Must exceed the worst-case
  * legitimate drain duration (several jobs, minutes each).

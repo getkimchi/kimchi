@@ -14,7 +14,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { getEnvironmentApiKey } from "../../config.js"
 import { defaultMemoryDir } from "./backend.js"
 import type { CaptureMessage } from "./capture-worker.js"
@@ -22,6 +22,7 @@ import {
 	digestDbPath,
 	MEMORY_CAPTURE_ASSISTANT_MAX_CHARS,
 	MEMORY_CAPTURE_INCREMENTAL_MESSAGES,
+	MEMORY_CAPTURE_JOB_MAX_MESSAGES,
 	MEMORY_CAPTURE_TOOL_CALL_CHARS,
 	MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS,
 	MEMORY_CAPTURE_TOOL_RESULT_TAIL_CHARS,
@@ -29,19 +30,72 @@ import {
 import { parseBooleanFlag } from "./flags.js"
 import { resolveProjectScope } from "./scope.js"
 
-/** `session` — the calling session's capture id (per extension instance,
- *  NOT module-level: an ACP server hosts concurrent sessions in one
- *  process and their captures must not merge into one record entry). */
-export function wireMemoryCapture(pi: ExtensionAPI, isActive: () => boolean, session: string): void {
-	if (captureDisabled()) return
+/**
+ * The accessors the session-turn handler needs from the capture wiring:
+ * evaluate the non-overlapping increment at agent starts, and reset the
+ * mark after compaction. Ownership rule: the extension registers ONE
+ * handler per event, and `before_agent_start`/`session_compact` belong to
+ * the session-turn handler (index.ts) — the capture wiring owns only
+ * `turn_end`/`tool_result`/shutdown so it never shadows them.
+ */
+export interface MemoryCaptureWiring {
+	fireIncrement(ctx: ExtensionContext): void
+	resetIncrement(): void
+}
+
+export function wireMemoryCapture(pi: ExtensionAPI, isActive: () => boolean): MemoryCaptureWiring {
+	if (captureDisabled()) {
+		const noop = (): void => {}
+		return { fireIncrement: noop, resetIncrement: noop }
+	}
+	// The incremental mark is wiring-owned: the producer hooks below and the
+	// tail-capture at shutdown must agree on what the queue already has, so
+	// nothing lands twice in pending/.
+	const incremented: IncrementalCaptureState = createIncrementalCaptureState()
 	pi.on("session_before_compact", (event, ctx) => {
 		if (!isActive()) return
 		captureMessages(extractMessages(event.branchEntries), ctx.cwd, session)
 	})
+	// Mid-loop producers: evaluate the same non-overlapping increment at turn
+	// end (human-paced sessions) and after every tool step (agentic loops) —
+	// before_agent_start alone never fires inside a 70-step tool loop, which
+	// is how long episodes were accumulating until shutdown.
+	const fireIncrement = (ctx: ExtensionContext): void => {
+		if (!isActive()) return
+		incrementalCapture(ctx.sessionManager.getEntries(), incremented, ctx.cwd)
+	}
+	pi.on("turn_end", (_event, ctx) => {
+		fireIncrement(ctx)
+	})
+	pi.on("tool_result", (_event, ctx) => {
+		fireIncrement(ctx)
+	})
+	const resetIncrement = (): void => {
+		// Post-compaction entries restructure — re-derive the mark from zero;
+		// the worker's ledger dedupes anything the queue already passed.
+		incremented.spawnedCount = 0
+	}
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (!isActive()) return
-		captureMessages(extractMessages(ctx.sessionManager.getEntries()), ctx.cwd, session)
+		// Only the tail past the incremental mark — never a second copy of
+		// what the queue already holds — and bounded jobs: a poisoned window
+		// costs its own span, not the session backlog.
+		const tail = extractMessages(ctx.sessionManager.getEntries()).slice(incremented.spawnedCount)
+		captureMessagesTail(tail, ctx.cwd)
 	})
+	return { fireIncrement, resetIncrement }
+}
+
+/** Write the shutdown tail as bounded jobs: chunks of at most
+ * MEMORY_CAPTURE_JOB_MAX_MESSAGES, each its own hash-named file. */
+export function captureMessagesTail(
+	tail: CaptureMessage[],
+	cwd: string,
+	perJobMax = MEMORY_CAPTURE_JOB_MAX_MESSAGES,
+): void {
+	for (let i = 0; i < tail.length; i += perJobMax) {
+		captureMessages(tail.slice(i, i + perJobMax), cwd)
+	}
 }
 
 /**
@@ -84,15 +138,16 @@ export function incrementalCapture(
 	entries: readonly SessionEntry[],
 	state: IncrementalCaptureState,
 	cwd: string,
-	session: string,
-	spawn: (messages: CaptureMessage[], cwd: string) => void = (messages, jobCwd) =>
-		captureMessages(messages, jobCwd, session),
+	spawn: (messages: CaptureMessage[], cwd: string) => boolean | undefined = captureMessages,
 ): void {
 	const messages = extractMessages(entries)
 	if (messages.length - state.spawnedCount < MEMORY_CAPTURE_INCREMENTAL_MESSAGES) return
 	const batch = messages.slice(state.spawnedCount)
+	// Advance the mark only when the job actually landed: a swallowed write
+	// failure must leave the span inside the shutdown tail (no silent loss),
+	// not skip the batch forever on this runtime.
+	if (spawn(batch, cwd) === false) return
 	state.spawnedCount = messages.length
-	spawn(batch, cwd)
 }
 
 export function extractMessages(entries: readonly SessionEntry[]): CaptureMessage[] {
@@ -312,8 +367,8 @@ function captureSessionId(): string {
 	return CAPTURE_SESSION_ID
 }
 
-function captureMessages(messages: CaptureMessage[], cwd: string, session: string): void {
-	if (captureDisabled() || messages.length === 0) return
+function captureMessages(messages: CaptureMessage[], cwd: string): boolean {
+	if (captureDisabled() || messages.length === 0) return true
 	try {
 		const dbPath = digestDbPath()
 		const pendingDir = join(defaultMemoryDir(), "pending")
@@ -330,8 +385,10 @@ function captureMessages(messages: CaptureMessage[], cwd: string, session: strin
 		writeFileSync(tmp, JSON.stringify({ messages, project, session }))
 		renameSync(tmp, jobFile)
 		spawnCaptureWorker(jobFile, dbPath)
+		return true
 	} catch (err) {
 		console.error("[memory] capture scheduling failed:", err instanceof Error ? err.message : err)
+		return false
 	}
 }
 
