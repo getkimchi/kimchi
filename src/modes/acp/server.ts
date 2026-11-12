@@ -3453,7 +3453,7 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 		category: "mode",
 		description: hasOrgPolicyRestrictions()
 			? `Control tool execution permissions. Allowed modes: ${allowed.map(({ mode }) => mode).join(", ")}`
-			: "Control tool execution permissions: default (prompt for writes), plan (read-only), auto (classifier-gated), yolo (no restrictions)",
+			: "Control tool execution permissions: default (prompt for writes), plan (read-only), auto (classifier-gated), yolo (auto-approve; deny rules enforced unless --dangerously-skip-permissions)",
 		currentValue: currentMode,
 		options: allowed.map(({ mode, label, description }) => ({
 			name: label,

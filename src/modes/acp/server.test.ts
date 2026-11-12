@@ -9900,6 +9900,56 @@ describe("ACP mode controller integration with permissions extension", () => {
 		await agent.unstable_closeSession({ sessionId })
 	})
 
+	it("regression: yolo mode via ACP blocks blocklisted commands (deny rules beat approval-skip)", async () => {
+		// Clean env state
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionId = "test-yolo-deny-session"
+		const cwd = "/tmp"
+
+		// User blocklist injected through the session CLI-flag seam
+		const harness = await createPermissionsHarness(["write", "read", "bash"], { "deny-tool": "bash(gh *)" })
+
+		const fake = new FakeAgentSession(sessionId)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd, mcpServers: [] })
+
+		const mockCtx = createMockContext(sessionId, cwd)
+		await harness.fireSessionStart(mockCtx)
+
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "yolo",
+		})
+
+		const controller = getSessionPermissionFlagController(sessionId)
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
+
+		const bashToolEvent = {
+			toolName: "bash",
+			input: { command: "gh --version" },
+		}
+
+		const result = (await harness.fireToolCall(bashToolEvent, mockCtx)) as
+			| { block: boolean; reason: string }
+			| undefined
+
+		// The user's blocklist wins over YOLO's approval-skip on the ACP surface too
+		expect(result).toBeDefined()
+		expect(result?.block).toBe(true)
+		expect(result?.reason).toBe("Denied by rule bash(gh *) [cli]")
+
+		// Cleanup
+		await agent.unstable_closeSession({ sessionId })
+	})
+
 	it("setSessionConfigOption emits exactly one config_option_update when permissions extension is active", async () => {
 		// Regression test for the double-notification bug:
 		// setSessionConfigOption -> controller.setMode fires the ACP notification subscriber.

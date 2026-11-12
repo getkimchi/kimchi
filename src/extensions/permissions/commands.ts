@@ -129,7 +129,10 @@ async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise
 		{ mode: "default" as const, label: "default — ask before each tool call" },
 		{ mode: "plan" as const, label: "plan — read-only exploration" },
 		{ mode: "auto" as const, label: "auto — run freely, classifier guards the rest" },
-		{ mode: "yolo" as const, label: "yolo — run freely, no classifier (DANGER)" },
+		{
+			mode: "yolo" as const,
+			label: "yolo — run freely, no classifier; deny rules enforced unless --dangerously-skip-permissions (DANGER)",
+		},
 	].filter((o) => isModeAllowed(o.mode))
 
 	const choice = await ctx.ui.select(

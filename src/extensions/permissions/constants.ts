@@ -33,7 +33,8 @@ export const PERMISSION_MODE_META: Record<PermissionMode, PermissionModeMeta> = 
 	yolo: {
 		label: "YOLO",
 		tuiLabel: "yolo",
-		description: "No permissions asked (use in sandboxed environments)",
+		description:
+			"Auto-approves; deny rules still enforced unless --dangerously-skip-permissions is set (sandboxed environments)",
 		color: "error",
 	},
 }
