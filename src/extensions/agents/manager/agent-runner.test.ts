@@ -163,6 +163,14 @@ vi.mock("../worker-report.js", async (importOriginal) => {
 // list. The extension's own behaviour is covered by src/extensions/mcp.
 vi.mock("../../mcp/index.js", () => ({
 	createKimchiMcpAdapterExtension: vi.fn(() => () => {}),
+// The runner spreads subagentWebToolFactories() into the child session's
+// extension list. Mock the module (not resources/store) so these tests stay
+// hermetic against the local machine's settings.json — default empty, with
+// one composition test opting into stub factories. Real registration and
+// resource gating are covered by real-session tests in
+// subagent-resource-loader.test.ts.
+vi.mock("./subagent-web-tools.js", () => ({
+	subagentWebToolFactories: vi.fn(() => []),
 }))
 
 import {
@@ -208,6 +216,7 @@ import {
 } from "./agent-runner.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { formatRunResultText } from "./result-text.js"
+import { subagentWebToolFactories } from "./subagent-web-tools.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
 const mockGetConfig = vi.mocked(getConfig)
@@ -573,6 +582,27 @@ describe("runAgent — telemetry extension", () => {
 		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
 		expect(concreteFactories).not.toContain(autoRoutingExtension)
 		expect(autoFactories).toContain(autoRoutingExtension)
+	})
+
+	it("spreads the web tool factories into the child session's extension list", async () => {
+		const webFetchStub: InlineExtension = () => {}
+		const webSearchStub: InlineExtension = () => {}
+		vi.mocked(subagentWebToolFactories).mockReturnValueOnce([webFetchStub, webSearchStub])
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(ctorArg?.extensionFactories).toContain(webFetchStub)
+		expect(ctorArg?.extensionFactories).toContain(webSearchStub)
 	})
 
 	it("adds the dap extension when the persona requests debug tools", async () => {
@@ -1415,7 +1445,7 @@ describe("runAgent — profile tool access", () => {
 		])
 	})
 
-	it("omits requested tools that are absent from the subagent registry", async () => {
+	it("omits requested tools that are absent from the subagent registry and reports them as dropped", async () => {
 		mockGetToolNamesForType.mockReturnValue(["read", "grep", "missing_tool"])
 		const session = makeFakeSession({
 			activeToolNames: ["read", "web_search"],
@@ -1427,13 +1457,17 @@ describe("runAgent — profile tool access", () => {
 				ReturnType<typeof createAgentSession>
 			>["extensionsResult"],
 		})
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
-		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "web_search"])
 		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.activeToolNames).toEqual(["read", "web_search"])
+		expect(result.droppedToolNames).toEqual(["grep", "missing_tool"])
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("missing_tool"))
+		warnSpy.mockRestore()
 	})
 
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {
@@ -2728,17 +2762,21 @@ describe("resumeAgent — inactivity steering", () => {
 
 describe("formatRunResultText", () => {
 	it("appends the auto-loaded skills note to the response", () => {
-		expect(formatRunResultText("done", undefined, [{ name: "pdf", matched: "ext:.pdf" }])).toBe(
-			"done\n\nSkills auto-loaded from task brief: pdf (ext:.pdf)",
-		)
+		expect(
+			formatRunResultText({ responseText: "done", autoLoadedSkills: [{ name: "pdf", matched: "ext:.pdf" }] }),
+		).toBe("done\n\nSkills auto-loaded from task brief: pdf (ext:.pdf)")
 	})
 
 	it("keeps the plan pointer first and joins multiple skills", () => {
 		expect(
-			formatRunResultText("done", "/plans/x.md", [
-				{ name: "pdf", matched: "ext:.pdf" },
-				{ name: "docx", matched: "kw:word doc" },
-			]),
+			formatRunResultText({
+				responseText: "done",
+				planPath: "/plans/x.md",
+				autoLoadedSkills: [
+					{ name: "pdf", matched: "ext:.pdf" },
+					{ name: "docx", matched: "kw:word doc" },
+				],
+			}),
 		).toBe(
 			"done\n\nPlan saved to: /plans/x.md\n\nSkills auto-loaded from task brief: pdf (ext:.pdf), docx (kw:word doc)",
 		)
