@@ -300,13 +300,13 @@ describe("kimchi config region", () => {
 		})
 	})
 
-	it("lists only the default region when EU is experimental-gated", async () => {
+	it("lists us and eu without the flag; self-hosted stays experimental-gated", async () => {
 		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
 
 		expect(exit).toBe(0)
-		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States)")
+		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States), eu (Europe)")
 	})
 
 	it("notes the KIMCHI_REGION env override when it is in effect", async () => {
@@ -544,6 +544,15 @@ describe("kimchi config set/get language", () => {
 
 		expect(await runConfig(["set", "language", "auto"])).toBe(0)
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "fr"'))
+	})
+
+	it('names the project value "auto" when a trusted project config unpins over the global write', async () => {
+		// Project sets "auto" → loadConfig resolves to unset; the warning must not say "undefined".
+		vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>)
+
+		expect(await runConfig(["set", "language", "ko"])).toBe(0)
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "auto"'))
+		expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("undefined"))
 	})
 
 	it.each(["", "   ", "x".repeat(41)])("rejects invalid value %j (exit 2, no write)", async (raw) => {

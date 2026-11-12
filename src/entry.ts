@@ -8,11 +8,12 @@
 
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, resolve } from "node:path"
+import { resolve } from "node:path"
 import { pickPackageDirForBinary, resolveValidatedAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { installProxyAgent } from "./http/proxy.js"
 import { installPasteInterceptor } from "./paste-interceptor.js"
 import { isProxyMode, runProxy } from "./ssh-proxy.js"
+import { isPackagedBinaryExecPath } from "./update/paths.js"
 
 // Must happen before installPasteInterceptor / installProxyAgent touch stdin/stdout.
 // SSH ProxyCommand wires stdin/stdout as a raw binary pipe — any bytes written
@@ -74,44 +75,25 @@ installProxyAgent()
 // --bytecode` (and --minify) reject TLA in bundled modules, so the async tail
 // of startup lives in an explicit main().
 async function main(): Promise<void> {
-	// Instrument global fetch (user-agent + idle timeout) BEFORE the auto-update
-	// fetches below: under Bun the wrapper is the only layer that bounds a
-	// stalled connection, and an unbounded stall in the update download would
-	// hang launch until the OS TCP timeout (~11 min). Must run after
-	// installProxyAgent() — its undici.install() replaces globalThis.fetch and
-	// would wipe the wrapper. Dynamic import: the wrapper's settings resolution
-	// transitively imports pi-mono, which must not load before PI_PACKAGE_DIR is
-	// set above. The billing hook attaches later, in cli.ts, once config loading
-	// is available.
+	// Instrument global fetch (user-agent + idle timeout) before any config or
+	// update fetches: under Bun the wrapper is the only layer that bounds a
+	// stalled connection. Must run after installProxyAgent() — its
+	// undici.install() replaces globalThis.fetch and would wipe the wrapper.
+	// Dynamic import: the wrapper's settings resolution transitively imports
+	// pi-mono, which must not load before PI_PACKAGE_DIR is set above. The
+	// billing hook attaches later, in cli.ts, once config loading is available.
 	{
 		const { installGlobalFetchInstrumentation } = await import("./http/instrument-fetch.js")
 		const { getVersion } = await import("./utils.js")
 		installGlobalFetchInstrumentation({ userAgent: `kimchi/${getVersion()}` })
 	}
 
-	// Phase 2 of the auto-update plan: on-launch update check + swap. Dynamic
-	// import keeps the network deps in ./update/workflow.js out of every test
-	// that touches entry.ts. The call never throws (see auto-update.ts).
-	//
-	// The deadline is managed INSIDE maybeAutoUpdateOnLaunch: only the
-	// checkForUpdate phase is raced against the timeout. Once we commit to
-	// applyUpdate it is awaited fully — a Promise.race here would abandon
-	// the install mid-swap, letting cli.js boot while files are still being
-	// copied/renamed.
-	const { maybeAutoUpdateOnLaunch } = await import("./update/auto-update.js")
-	try {
-		await maybeAutoUpdateOnLaunch()
-	} catch (err) {
-		console.warn(`[kimchi-auto-update] failed: ${err instanceof Error ? err.message : err}`)
-	}
-
 	// Register the embedded QuickJS wasm path (set by binary-entry.ts from a Bun file
 	// import) with pi-mono's config module — only relevant in the compiled binary.
 	// The binary name gate keeps an externally-set env var from being honored in
-	// dev/source launches (same guard as maybeAutoUpdateOnLaunch).
+	// dev/source launches (same packaged-binary guard as the background updater).
 	// Dynamic import: pi-mono must not load before PI_PACKAGE_DIR is set above.
-	const compiledBinName = process.platform === "win32" ? "kimchi.exe" : "kimchi"
-	if (process.env.KIMCHI_QUICKJS_WASM_PATH && basename(process.execPath) === compiledBinName) {
+	if (process.env.KIMCHI_QUICKJS_WASM_PATH && isPackagedBinaryExecPath(process.execPath)) {
 		const { setEmbeddedQuickJSWasmPath } = await import("@earendil-works/pi-coding-agent")
 		setEmbeddedQuickJSWasmPath(process.env.KIMCHI_QUICKJS_WASM_PATH)
 	}

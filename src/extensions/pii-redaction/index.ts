@@ -30,7 +30,7 @@
  */
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
-import { isRedactionEnabled } from "./config.js"
+import { getRedactionRenderMode, isRedactionEnabled } from "./config.js"
 import { emitRedactionFacts, type RedactionSurface } from "./redaction-events.js"
 import {
 	emptyRedactionReport,
@@ -38,6 +38,21 @@ import {
 	type RedactionMeasurement,
 	redactObjectStringsMeasured,
 } from "./redactor.js"
+import { installVaultLifecycle, substituteTokens, type TokenVault, vaultForPaint, vaultForSession } from "./vault.js"
+
+/**
+ * Resolve the session's token vault for a hook, or undefined when the
+ * rendering policy is markers (default). A missing session identity always
+ * redacts to markers — markers degrade gracefully in every downstream
+ * surface; a token without its vault would render as dead text.
+ */
+function hookVault(ctx: unknown): TokenVault | undefined {
+	if (getRedactionRenderMode() !== "tokens") return undefined
+	const sessionId = (
+		ctx as { sessionManager?: { getSessionId?: () => string } } | undefined
+	)?.sessionManager?.getSessionId?.()
+	return vaultForSession(sessionId)
+}
 
 /** Cache of redacted messages, keyed by original message reference. */
 const redactionCache = new WeakMap<object, object>()
@@ -58,8 +73,28 @@ function surfaceForRole(role: unknown): RedactionSurface | undefined {
 }
 
 const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
+	// Vault lifecycle: one reversible-token vault per session when the
+	// configured render mode is "tokens" (markers mode creates nothing).
+	installVaultLifecycle(pi, () => isRedactionEnabled() && getRedactionRenderMode() === "tokens")
+
+	// TUI presentation substitution: the upstream paint path passes the
+	// FULL text of each message block through this transformer on every
+	// repaint (streaming or final), so substituting complete tokens here
+	// shows originals to the local user while the stored transcript stays
+	// tokenized. Markers mode has no active vault → passthrough. Unknown
+	// tokens (never allocated, foreign-session, post-restart) pass through
+	// verbatim — substitution must never be a wrong transformation. The
+	// stored message never changes.
+	if (typeof pi.registerMarkdownTransformer === "function") {
+		pi.registerMarkdownTransformer((markdown: string) => {
+			const vault = vaultForPaint()
+			if (!vault) return markdown
+			return substituteTokens(vault, markdown)
+		})
+	}
+
 	// 1. Redact assistant messages before they are stored.
-	pi.on("message_end", async (event: unknown) => {
+	pi.on("message_end", async (event: unknown, ctx: unknown) => {
 		// Non-throwing gate: a broken settings block must not reject the hook
 		// (the extension runner discards rejected results — unredacted storage).
 		if (!isRedactionEnabled()) return
@@ -71,7 +106,7 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		if (!message || typeof message !== "object") return
 
 		// Redact the message content (deep-walk all strings).
-		const { redacted, report } = await redactObjectStringsMeasured(message)
+		const { redacted, report } = await redactObjectStringsMeasured(message, hookVault(ctx))
 		// Emit redaction facts labelled by message role. message_end fires for
 		// user and assistant messages (and system messages — redacted for
 		// storage hygiene but never emitted, since they are not user data).
@@ -93,7 +128,7 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	// deep walk finds only markers and nets to zero. Handlers registered
 	// after this one in the tool_result chain see redacted `details` — the
 	// same contract tool-output-externalizer documents for content.
-	pi.on("tool_result", async (event: unknown) => {
+	pi.on("tool_result", async (event: unknown, ctx: unknown) => {
 		// Non-throwing gate: a broken settings block must not reject the hook
 		// (the extension runner discards rejected results — unredacted storage).
 		if (!isRedactionEnabled()) return
@@ -125,7 +160,7 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 							if (block === null || typeof block !== "object") return block
 							const b = block as Record<string, unknown>
 							if (b.type === "text" && typeof b.text === "string") {
-								const { redacted, report } = await redactObjectStringsMeasured(b.text)
+								const { redacted, report } = await redactObjectStringsMeasured(b.text, hookVault(ctx))
 								mergeReports(aggregate, report)
 								return { ...b, text: redacted }
 							}
@@ -134,7 +169,7 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 					)
 				: undefined,
 			hasDetails
-				? redactObjectStringsMeasured(evt.details).catch((err: unknown) => {
+				? redactObjectStringsMeasured(evt.details, hookVault(ctx)).catch((err: unknown) => {
 						// Log here: the failure signal would otherwise only resurface
 						// (mis-attributed to message_end) when the later walk re-scrubs
 						// the kept original details — or not at all if redaction is
@@ -163,7 +198,7 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
 	// 3. Redact user messages before the LLM request, using a cache so
 	//    previously-redacted messages are not re-scanned.
-	pi.on("before_provider_request", async (event: unknown) => {
+	pi.on("before_provider_request", async (event: unknown, ctx: unknown) => {
 		const payload = (event as Record<string, unknown> | null)?.payload as Record<string, unknown> | null
 		if (!payload || typeof payload !== "object") return
 
@@ -173,6 +208,12 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		// Non-throwing gate: a broken settings block must not reject the hook
 		// (the extension runner discards rejected results — unredacted storage).
 		if (!isRedactionEnabled()) return
+
+		// The vault is resolved once per hook invocation — every message in
+		// this payload allocates into the same session vault, so a value is
+		// the same token whether it first appeared in a tool result or the
+		// user's next message.
+		const vault = hookVault(ctx)
 
 		// Walk messages: system messages pass through unchanged, non-system
 		// messages are redacted (or fetched from cache if already redacted).
@@ -192,7 +233,7 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				let inFlight = redactionInFlight.get(msg)
 				const isEmitter = !inFlight
 				if (!inFlight) {
-					inFlight = redactObjectStringsMeasured(msg) as Promise<RedactionMeasurement<object>>
+					inFlight = redactObjectStringsMeasured(msg, vault) as Promise<RedactionMeasurement<object>>
 					redactionInFlight.set(msg, inFlight)
 					inFlight.finally(() => redactionInFlight.delete(msg)).catch(() => {})
 				}

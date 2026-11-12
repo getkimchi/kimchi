@@ -33,7 +33,7 @@ import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
  * paths — the old text misdirected SSO users to the API-key setup.
  */
 export const MEMORY_CREDENTIALS_ERROR =
-	"memory backend requires gateway credentials — set KIMCHI_API_KEY or run `kimchi setup` (API key), or sign in with CAST AI SSO"
+	"memory backend requires gateway credentials — set KIMCHI_API_KEY or run `kimchi setup` (API key), or sign in with Kimchi SSO"
 
 export const MEMORY_EMBEDDING_MODEL = "bge-m3"
 export const MEMORY_EMBEDDING_DIMS = 1024

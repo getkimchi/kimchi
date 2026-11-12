@@ -23,6 +23,16 @@ let authorizationCodeGrants = 0
 // a fresh authorization-code flow, which clears both flags).
 let oauthManualRevoked = false
 const transportKind = process.env.KIMCHI_MCP_FIXTURE_TRANSPORT ?? "stdio"
+// MCP 2026-07-28 (stateless, modern era): no initialize handshake, per-request
+// `_meta` envelope, `server/discover`, cacheable list results, and an MRTR
+// (SEP-2322) elicitation round on tools/call. Hand-rolled on raw HTTP because
+// the pinned legacy SDK cannot speak this revision.
+const modernEra = transportKind === "modern-http"
+const MODERN_PROTOCOL_VERSION = "2026-07-28"
+const MODERN_META_KEYS = {
+	protocolVersion: "io.modelcontextprotocol/protocolVersion",
+	serverInfo: "io.modelcontextprotocol/serverInfo",
+}
 const expectedBearerToken = process.env.KIMCHI_MCP_FIXTURE_BEARER_TOKEN
 const oauthEnabled = process.env.KIMCHI_MCP_FIXTURE_OAUTH === "1"
 const oauthPreauthorized = process.env.KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED === "1"
@@ -61,9 +71,56 @@ const oauthRefreshToken = "kimchi-e2e-oauth-refresh-token"
 const googleLike = scenario === "oauth-google-like"
 const googleLikeConsentedClients = new Set()
 const googleLikeIssuedRefreshTokens = new Set()
+// oauth-rotating-refresh: single-use rotating refresh tokens. Every accepted
+// refresh grant retires the presented token and mints a new one; presenting a
+// retired token is rejected with the invalid_grant description the production
+// server sends ("Unknown or invalid refresh token"), which reproduces the
+// cross-process refresh race two sessions sharing one stored token can hit.
+const rotatingRefreshInitial = oauthRefreshToken
+const rotatingRefreshRetired = new Set()
+let rotatingRefreshCurrent = rotatingRefreshInitial
+let rotatingRefreshGrantCount = 0
+// One mint site for rotated refresh tokens so the retired-set bookkeeping
+// cannot drift between mint paths.
+function mintRefreshToken() {
+	return `kimchi-e2e-rt-${randomUUID()}`
+}
+// Diagnosis-only fingerprint: deterministic, cannot recover the token.
+function tokenFingerprint(token) {
+	return token === undefined ? undefined : createHash("sha256").update(token).digest("hex").slice(0, 8)
+}
 const fixtureBehavior = process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR
 	? JSON.parse(process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR)
 	: {}
+
+// Shared tool catalog entry for both the legacy SDK server and the modern-era
+// stateless handler, so the two transports cannot drift.
+const ECHO_TOOL = {
+	name: "echo",
+	title: "Fixture echo",
+	description: "Echo deterministic text for Kimchi MCP end-to-end tests",
+	inputSchema: {
+		type: "object",
+		properties: {
+			message: { type: "string", description: "Text returned by the fixture" },
+		},
+		required: ["message"],
+		additionalProperties: false,
+	},
+	annotations: { readOnlyHint: true },
+}
+
+function unconfiguredToolError(name, args) {
+	return {
+		isError: true,
+		content: [
+			{
+				type: "text",
+				text: `No MCP fixture response configured for ${name} with arguments ${JSON.stringify(args ?? {})}`,
+			},
+		],
+	}
+}
 
 function findToolBehavior(name, args) {
 	return fixtureBehavior.tools?.find(
@@ -86,6 +143,11 @@ function createFixtureServer() {
 		{ name: "kimchi-mcp-e2e-fixture", version: "1.0.0" },
 		{ capabilities: { tools: {}, resources: {} } },
 	)
+	// tools-change: the catalog grows only after rotate_tools runs, and the
+	// change notification is sent WITHOUT advertising tools.listChanged - the
+	// relay shape (Studio slack-wrapper, gateways aggregating plugin servers)
+	// the harness must still consume to refresh tool metadata.
+	let catalogRotated = false
 
 	server.oninitialized = () =>
 		record("initialized", {
@@ -108,20 +170,7 @@ function createFixtureServer() {
 				: []
 		return {
 			tools: [
-				{
-					name: "echo",
-					title: "Fixture echo",
-					description: "Echo deterministic text for Kimchi MCP end-to-end tests",
-					inputSchema: {
-						type: "object",
-						properties: {
-							message: { type: "string", description: "Text returned by the fixture" },
-						},
-						required: ["message"],
-						additionalProperties: false,
-					},
-					annotations: { readOnlyHint: true },
-				},
+				ECHO_TOOL,
 				{
 					name: "fail",
 					description: "Return a deterministic MCP tool error for Kimchi end-to-end tests",
@@ -151,6 +200,25 @@ function createFixtureServer() {
 								name: "revoke_auth",
 								description: "Revoke the fixture's stored OAuth access token",
 								inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							},
+						]
+					: []),
+				...(scenario === "tools-change"
+					? [
+							{
+								name: "rotate_tools",
+								description: "Add late_tool to the fixture catalog and emit notifications/tools/list_changed",
+								inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							},
+						]
+					: []),
+				...(scenario === "tools-change" && catalogRotated
+					? [
+							{
+								name: "late_tool",
+								description: "Fixture tool that appears only after the notification-driven refresh",
+								inputSchema: { type: "object", properties: {}, additionalProperties: false },
+								annotations: { readOnlyHint: true },
 							},
 						]
 					: []),
@@ -195,6 +263,14 @@ function createFixtureServer() {
 	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const { name, arguments: args } = request.params
 		record("tool_called", { name, arguments: args ?? {} })
+		if (scenario === "tools-change" && name === "rotate_tools") {
+			catalogRotated = true
+			await server.sendToolListChanged()
+			record("tool_list_changed_sent", {})
+			return {
+				content: [{ type: "text", text: "Fixture catalog rotated; late_tool is now available." }],
+			}
+		}
 		if (scenario === "oauth-manual-revoke" && name === "revoke_auth") {
 			oauthManualRevoked = true
 			record("oauth_manual_revoke", {})
@@ -228,18 +304,179 @@ function createFixtureServer() {
 			}
 		}
 
-		return {
-			isError: true,
-			content: [
-				{
-					type: "text",
-					text: `No MCP fixture response configured for ${name} with arguments ${JSON.stringify(args ?? {})}`,
-				},
-			],
-		}
+		return unconfiguredToolError(name, args)
 	})
 
 	return server
+}
+
+// Stateless 2026-07-28 (modern era) fixture. Every request is self-describing:
+// no initialize handshake, `server/discover` advertises the modern revision,
+// list results carry cache hints, and tools/call can answer with an MRTR
+// input_required round (elicitation) driven by `behavior.mrtr`.
+async function runModernHttpFixture() {
+	// Opaque MRTR round tokens minted per input_required answer cycle.
+	const mrtrRequestStates = new Map()
+	const httpServer = createServer(async (request, response) => {
+		try {
+			const url = new URL(request.url ?? "/", "http://fixture.invalid")
+			if (request.method !== "POST" || url.pathname !== "/mcp") {
+				sendJson(response, 405, { error: "modern fixture answers POST /mcp only" })
+				return
+			}
+			const message = await readJsonBody(request)
+			const { id, method, params } = message ?? {}
+			const metaVersion = params?._meta?.[MODERN_META_KEYS.protocolVersion] ?? null
+			record("modern_request", {
+				method,
+				protocolVersion: metaVersion,
+				hasInputResponses: params?.inputResponses !== undefined,
+			})
+
+			const reply = (result) => sendJson(response, 200, { jsonrpc: "2.0", id, result })
+			const replyError = (code, errorMessage) =>
+				sendJson(response, 200, { jsonrpc: "2.0", id, error: { code, message: errorMessage } })
+			const complete = (result) =>
+				reply({
+					resultType: "complete",
+					_meta: { [MODERN_META_KEYS.serverInfo]: { name: "kimchi-mcp-e2e-fixture", version: "1.0.0" } },
+					...result,
+				})
+
+			// A 2026-07-28-only server rejects every legacy-era request: the per-request
+			// envelope is what carries the protocol version. An envelope-less
+			// `initialize` is the legacy handshake - answer method-not-found so legacy
+			// clients see the expected signal - while any other envelope-less method
+			// gets the unsupported-version error.
+			if (metaVersion === null && method !== "initialize") {
+				replyError(
+					-32022,
+					`Unsupported protocol version: ${String(method)} carries no io.modelcontextprotocol/protocolVersion _meta envelope`,
+				)
+				return
+			}
+
+			switch (method) {
+				case "server/discover": {
+					record("modern_discover_served")
+					complete({ supportedVersions: [MODERN_PROTOCOL_VERSION], capabilities: { tools: {} } })
+					return
+				}
+				case "tools/list": {
+					record("tools_listed")
+					complete({
+						ttlMs: 300_000,
+						cacheScope: "private",
+						tools: [
+							ECHO_TOOL,
+							...(fixtureBehavior.catalogTools ?? []),
+							...(fixtureBehavior.mrtr
+								? [
+										{
+											name: fixtureBehavior.mrtr.name,
+											title: "Fixture MRTR confirmation",
+											description: "Requires an MRTR elicitation round before completing",
+											inputSchema: { type: "object", properties: {}, additionalProperties: true },
+										},
+									]
+								: []),
+						],
+					})
+					return
+				}
+				case "tools/call": {
+					const { name, arguments: args } = params ?? {}
+					record("tool_called", { name, arguments: args ?? {} })
+					const mrtr = fixtureBehavior.mrtr
+					if (mrtr && name === mrtr.name) {
+						// Opaque per-round token minted by the fixture and looked up on the
+						// retry, so an argument reorder can never silently re-trigger the
+						// elicitation round (failures stay observable, not timeout-shaped).
+						const confirm = params?.inputResponses?.confirm
+						const accepted =
+							confirm && typeof confirm === "object" && confirm.action === "accept" && confirm.content?.confirm === true
+						const minted = mrtrRequestStates.get(params?.requestState)
+						if (minted?.name === name && accepted && minted.open) {
+							minted.open = false
+							record("modern_tool_completed", { name, requestStateVerified: true })
+							complete({ ...mrtr.result })
+							return
+						}
+						// A declined/cancelled elicitation answer must not re-prompt: a client
+						// that keeps declining would loop forever. Complete with a
+						// cancellation-shaped error so the decline/cancel path is testable.
+						if (confirm && typeof confirm === "object") {
+							if (minted?.name === name && minted.open) minted.open = false
+							record("modern_tool_cancelled", { name, action: confirm.action ?? null })
+							complete({
+								isError: true,
+								content: [{ type: "text", text: `elicitation for "${name}" was ${confirm.action ?? "declined"}` }],
+							})
+							return
+						}
+						const requestState = randomUUID()
+						mrtrRequestStates.set(requestState, { name, open: true })
+						record("modern_tool_input_required", { name })
+						reply({
+							resultType: "input_required",
+							inputRequests: {
+								confirm: {
+									method: "elicitation/create",
+									params: {
+										message: mrtr.message,
+										requestedSchema: {
+											type: "object",
+											properties: { confirm: { type: "boolean", description: "Confirm to continue" } },
+											required: ["confirm"],
+										},
+									},
+								},
+							},
+							requestState,
+						})
+						return
+					}
+					const behavior = findToolBehavior(name, args)
+					if (behavior?.response.type === "result") {
+						complete({ ...behavior.response.value })
+						return
+					}
+					complete(unconfiguredToolError(name, args))
+					return
+				}
+				default: {
+					// A modern-only server implements no initialize handshake and no
+					// legacy-only methods: everything unknown is method-not-found.
+					if (method === "initialize") record("modern_initialize_rejected")
+					replyError(-32601, `Method not found: ${String(method)}`)
+				}
+			}
+		} catch (error) {
+			record("http_error", { message: error instanceof Error ? error.message : String(error) })
+			if (!response.headersSent) sendJson(response, 500, { error: "fixture server error" })
+			else response.end()
+		}
+	})
+
+	await new Promise((resolve, reject) => {
+		httpServer.once("error", reject)
+		httpServer.listen(0, "127.0.0.1", resolve)
+	})
+	const address = httpServer.address()
+	if (!address || typeof address === "string") throw new Error("Fixture HTTP server did not get a TCP address")
+	const origin = `http://127.0.0.1:${address.port}`
+	record("http_listening", { url: `${origin}/mcp` })
+
+	const shutdown = async (signal) => {
+		record("process_stopping", { signal })
+		// Idle keep-alive sockets would hold close() past the runner's SIGKILL
+		// grace; drop them so teardown is deterministic.
+		httpServer.closeIdleConnections()
+		await new Promise((resolve) => httpServer.close(resolve))
+		process.exit(0)
+	}
+	process.once("SIGTERM", () => void shutdown("SIGTERM"))
+	process.once("SIGINT", () => void shutdown("SIGINT"))
 }
 
 async function readBody(request) {
@@ -487,6 +724,7 @@ async function runHttpFixture() {
 					const expiresIn =
 						scenario === "oauth-expiring" ||
 						scenario === "oauth-split-issuer-flaky-prm" ||
+						scenario === "oauth-rotating-refresh" ||
 						(scenario === "oauth-refresh-revoked" && authorizationCodeGrants === 0) ||
 						googleLike
 							? 1
@@ -495,8 +733,13 @@ async function runHttpFixture() {
 					oauthManualRevoked = false
 					authorizationCodes.delete(code)
 					let refreshTokenValue = oauthRefreshToken
+					if (scenario === "oauth-rotating-refresh") {
+						rotatingRefreshRetired.add(rotatingRefreshCurrent)
+						rotatingRefreshCurrent = mintRefreshToken()
+						refreshTokenValue = rotatingRefreshCurrent
+					}
 					if (googleLike) {
-						refreshTokenValue = authorization.googleLikeGrantRefreshToken ? `kimchi-e2e-rt-${randomUUID()}` : undefined
+						refreshTokenValue = authorization.googleLikeGrantRefreshToken ? mintRefreshToken() : undefined
 						if (refreshTokenValue) googleLikeIssuedRefreshTokens.add(refreshTokenValue)
 					}
 					record("oauth_token_issued", {
@@ -524,6 +767,57 @@ async function runHttpFixture() {
 				if (grantType === "refresh_token" && scenario === "oauth-manual-revoke" && oauthManualRevoked) {
 					record("oauth_refresh_rejected", {})
 					sendJson(response, 400, { error: "invalid_grant" })
+					return
+				}
+				if (grantType === "refresh_token" && scenario === "oauth-rotating-refresh") {
+					// Deterministic rotation race: park the first refresh grant so a
+					// concurrent session's grant rotates the token while this one is
+					// in flight, and the parked grant is then rejected as stale.
+					// Deterministic rotation races: park chosen refresh grants so a
+					// concurrent session's grant rotates the token while a parked one is
+					// in flight, and the parked grant is then rejected as stale.
+					// delayFirstRefreshGrantMs parks grant #1; delayRefreshGrantsAt parks
+					// the listed 1-based grant indices (delayRefreshGrantMs overrides the
+					// delay length for those).
+					const delayMs = fixtureBehavior.delayRefreshGrantMs ?? fixtureBehavior.delayFirstRefreshGrantMs
+					if (delayMs !== undefined) {
+						rotatingRefreshGrantCount += 1
+						const parkThis = Array.isArray(fixtureBehavior.delayRefreshGrantsAt)
+							? fixtureBehavior.delayRefreshGrantsAt.includes(rotatingRefreshGrantCount)
+							: rotatingRefreshGrantCount === 1
+						if (parkThis) await delay(delayMs)
+					}
+					const presented = params.get("refresh_token")
+					if (presented === rotatingRefreshCurrent) {
+						rotatingRefreshRetired.add(presented)
+						rotatingRefreshCurrent = mintRefreshToken()
+						record("oauth_token_issued", {
+							grantType,
+							expiresIn: 1,
+							rotated: true,
+							minted: tokenFingerprint(rotatingRefreshCurrent),
+						})
+						oauthAccessTokenExpiresAt = Date.now() + 1_000
+						sendJson(response, 200, {
+							access_token: oauthAccessToken,
+							token_type: "Bearer",
+							expires_in: 1,
+							refresh_token: rotatingRefreshCurrent,
+							scope: "mcp:tools",
+						})
+						return
+					}
+					// Present only a fingerprint: the event log must never carry
+					// token values, but diagnosis needs to know WHICH token lost.
+					record("oauth_refresh_rejected", {
+						stale: rotatingRefreshRetired.has(presented),
+						presented: tokenFingerprint(presented),
+						current: tokenFingerprint(rotatingRefreshCurrent),
+					})
+					sendJson(response, 400, {
+						error: "invalid_grant",
+						error_description: "Unknown or invalid refresh token",
+					})
 					return
 				}
 				if (
@@ -657,4 +951,5 @@ else if (fixtureBehavior.startup?.type === "hang") {
 	process.stdin.once("end", () => process.exit(0))
 	process.once("SIGTERM", () => process.exit(0))
 } else if (transportKind === "http" || transportKind === "sse") await runHttpFixture()
+else if (modernEra) await runModernHttpFixture()
 else await createFixtureServer().connect(new StdioServerTransport())

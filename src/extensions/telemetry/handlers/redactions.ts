@@ -28,7 +28,7 @@ export const REDACTION_TELEMETRY_RECORDS = {
 } as const
 
 /** Attribute keys this handler is allowed to emit (allowlist, steer-style). */
-const REDACTED_ATTR_KEYS = ["surface", "entity_type", "count", "strings_scanned", "is_subagent"] as const
+const REDACTED_ATTR_KEYS = ["surface", "entity_type", "category", "count", "strings_scanned", "is_subagent"] as const
 const ENGINE_DEGRADED_ATTR_KEYS = ["surface", "failures", "is_subagent"] as const
 const SESSION_AFFECTED_ATTR_KEYS = ["is_subagent"] as const
 
@@ -49,6 +49,13 @@ function parseSurface(raw: unknown): RedactionSurface | undefined {
  * payload text off the wire and bounds attribute cardinality.
  */
 const ENTITY_TYPE_RE = /^[A-Z0-9_]+$/
+
+/**
+ * Category keys are produced by the harness's catalog (or "custom" for
+ * unattributed markers): lowercase, underscore-separated, bounded. The
+ * server-side contract treats anything else as absent.
+ */
+const CATEGORY_RE = /^[a-z_]{1,32}$/
 
 function toPositiveInt(raw: unknown): number | undefined {
 	return typeof raw === "number" && Number.isFinite(raw) && Number.isInteger(raw) && raw > 0 ? raw : undefined
@@ -93,9 +100,12 @@ export function createRedactionHandlers() {
 					is_subagent: payload.is_subagent === true,
 				})
 			}
+			const category =
+				typeof payload.category === "string" && CATEGORY_RE.test(payload.category) ? payload.category : "custom"
 			ctx.emit(REDACTION_TELEMETRY_RECORDS.REDACTED, {
 				surface,
 				entity_type: payload.entity_type,
+				category,
 				count,
 				strings_scanned: stringsScanned,
 				is_subagent: payload.is_subagent === true,

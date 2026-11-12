@@ -66,6 +66,7 @@ import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import { installAutoModelAdapters } from "./extensions/auto-model/adapters.js"
 import autoModelRoutingExtension from "./extensions/auto-model/index.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
+import backgroundUpdateExtension from "./extensions/background-update.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import { coupleBashControlToolArg } from "./extensions/bash-background/tool-coupling.js"
@@ -143,7 +144,7 @@ import promptSummaryExtension from "./extensions/prompt-summary.js"
 import pullRequestStatusExtension from "./extensions/pull-request-status/index.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
-import refusedTurnsExtension from "./extensions/refused-turns.js"
+import refusedTurnsExtension, { applyRefusalNoticeRenderingPatch } from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -181,6 +182,7 @@ import toolOutputExternalizerExtension from "./extensions/tool-output-externaliz
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
+import undecodableImageSanitizerExtension from "./extensions/undecodable-image-sanitizer.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
@@ -217,7 +219,7 @@ import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
-import { runSetupWizard } from "./setup-wizard.js"
+import { runSetupWizard, shouldRunSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { applyTelemetryPolicy } from "./telemetry-policy.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
@@ -240,6 +242,10 @@ installPiNativeCompatibilityShim()
 // suppressed / sanitized before reaching the terminal. Must run before any
 // InteractiveMode instance is constructed.
 applyInteractiveErrorSurfacePatch()
+// Carve AssistantMessageComponent's rendering for refused turns: print the
+// notice as warning-colored plain text instead of markdown. Must run before any
+// component instance is constructed.
+applyRefusalNoticeRenderingPatch()
 applyInteractiveModelSessionPatch()
 // No-op pi's install/update ping (pi.dev/api/report-install) on the
 // InteractiveMode prototype — belt-and-braces on top of PI_TELEMETRY=0 in
@@ -247,19 +253,24 @@ applyInteractiveModelSessionPatch()
 applyPiTelemetryPatch()
 
 function getSubcommand(args: string[]): string {
+	const sub = args[0]
+	if (sub && !sub.startsWith("-")) {
+		// Telemetry allowlist: names reported as the `subcommand` label in the
+		// app_started event (getSubcommand's only consumer, below). This is NOT a
+		// dispatch table — dispatch happens independently in dispatchSubcommand()
+		// via the command registry. The list intentionally includes labels that are
+		// not registry commands (logout, doctor, skills, telemetry) so those
+		// invocations report their own label instead of the generic "harness"; `mcp`
+		// appears here for the same telemetry-accuracy reason even though it is also
+		// a registered command.
+		// Checked BEFORE the help/version flags: a known subcommand invocation
+		// (`kimchi env --help`) reports the subcommand, not "help" — the flags
+		// belong to the subcommand, not to the harness.
+		if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory", "env"].includes(sub))
+			return sub
+	}
 	if (args.includes("--version") || args.includes("-v")) return "version"
 	if (args.includes("--help") || args.includes("-h")) return "help"
-	const sub = args[0]
-	if (!sub || sub.startsWith("-")) return "harness"
-	// Telemetry allowlist: names reported as the `subcommand` label in the
-	// app_started event (getSubcommand's only consumer, below). This is NOT a
-	// dispatch table — dispatch happens independently in dispatchSubcommand()
-	// via the command registry. The list intentionally includes labels that are
-	// not registry commands (logout, doctor, skills, telemetry) so those
-	// invocations report their own label instead of the generic "harness"; `mcp`
-	// appears here for the same telemetry-accuracy reason even though it is also
-	// a registered command.
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory"].includes(sub)) return sub
 	return "harness"
 }
 
@@ -556,7 +567,19 @@ async function cliMain(): Promise<void> {
 			let skillPaths = config.skillPaths ?? []
 
 			if (needsSkillsSetup || needsMigrationCheck) {
-				if (!process.stdin.isTTY) {
+				// Only open the wizard in a genuinely interactive session. stdin
+				// being a TTY is not sufficient: subprocesses spawned by harnesses
+				// (bench drivers, tmux panes, editor integrations) inherit the
+				// parent's TTY stdin while their stdout is piped away — the wizard
+				// then waits forever on input that can never arrive. See also
+				// --print / ACP: those are non-interactive even on a full TTY.
+				const interactiveLaunch = shouldRunSetupWizard({
+					stdinIsTTY: process.stdin.isTTY === true,
+					stdoutIsTTY: process.stdout.isTTY === true,
+					acpMode: IS_ACP_MODE,
+					printMode: hasPrintFlag(originalArgs),
+				})
+				if (!interactiveLaunch) {
 					if (needsSkillsSetup) {
 						skillPaths = DEFAULT_SKILL_PATHS
 						writeSkillPaths(skillPaths)
@@ -880,6 +903,7 @@ async function cliMain(): Promise<void> {
 				settingsTrustSyncExtension,
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,
+				backgroundUpdateExtension,
 				packageInstallGuardExtension,
 				sessionNameExtension(),
 				shutdownMarkerExtension,
@@ -1018,7 +1042,14 @@ async function cliMain(): Promise<void> {
 				modelGuardExtension,
 				orphanToolResultRepairExtension,
 				orphanToolResultSanitizerExtension,
+				// Order matters: refused-turns rewrites a refused assistant message into
+				// a normally-stopped notice (text + REFUSAL_MARKER) before
+				// interactive-error-surface's message_end runs below, so the refusal never
+				// passes through gateway classification, sanitization, or the Retrying
+				// placeholder. Keep refused-turns ahead of interactive-error-surface in
+				// this list.
 				refusedTurnsExtension,
+				undecodableImageSanitizerExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,
 				piiRedactionExtension,

@@ -49,7 +49,7 @@ test("auth menus offer OpenAI Codex and show one Kimchi provider", async ({ term
 
 			const kimchiRows = viewText(terminal)
 				.split("\n")
-				.filter((line) => line.includes("CAST AI (SSO)") && line.includes("configured"))
+				.filter((line) => line.includes("Sign in with SSO") && line.includes("configured"))
 			expect(kimchiRows).toHaveLength(1)
 			trace.step("one Kimchi credential row visible")
 		},

@@ -1,19 +1,41 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { listWorkspacesMock, pickWorkspaceMock, getQuotaUsageMock, verifyApiKeyMock } = vi.hoisted(() => ({
+const {
+	listWorkspacesMock,
+	pickWorkspaceMock,
+	getQuotaUsageMock,
+	verifyApiKeyMock,
+	openWorkspaceSetupMock,
+	loadWorkspaceFileMock,
+	listWorkspaceTemplatesMock,
+} = vi.hoisted(() => ({
 	listWorkspacesMock: vi.fn(),
 	pickWorkspaceMock: vi.fn(),
 	getQuotaUsageMock: vi.fn(),
 	verifyApiKeyMock: vi.fn(),
+	openWorkspaceSetupMock: vi.fn(),
+	loadWorkspaceFileMock: vi.fn(),
+	listWorkspaceTemplatesMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
 vi.mock("../../../sandbox/cloud/quota.js", () => ({ getQuotaUsage: getQuotaUsageMock }))
+// Real WorkspaceFileError class stays (importOriginal) so instanceof checks
+// in production code behave as in reality.
+vi.mock("../../../sandbox/cloud/workspace-file.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../sandbox/cloud/workspace-file.js")>()),
+	loadWorkspaceFile: loadWorkspaceFileMock,
+}))
 vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }))
+vi.mock("../ui/workspace-setup.js", () => ({ openWorkspaceSetup: openWorkspaceSetupMock }))
+vi.mock("../../../sandbox/cloud/workspace-templates.js", () => ({
+	listWorkspaceTemplates: listWorkspaceTemplatesMock,
+}))
 
 import type { QuotaUsage, Workspace } from "../../../sandbox/cloud/types.js"
+import { WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import type { TeleportContext } from "../types.js"
 import type { WorkspaceRow } from "../ui/workspaces-table.js"
 import { TeleportRefusal } from "./errors.js"
@@ -84,6 +106,9 @@ beforeEach(() => {
 	pickWorkspaceMock.mockReset()
 	getQuotaUsageMock.mockReset().mockResolvedValue(undefined)
 	verifyApiKeyMock.mockReset().mockResolvedValue({ organizationId: "org-1", userId: "user-1" })
+	openWorkspaceSetupMock.mockReset().mockResolvedValue({ action: "create", name: "proj", spec: undefined })
+	loadWorkspaceFileMock.mockReset().mockReturnValue(undefined)
+	listWorkspaceTemplatesMock.mockReset().mockResolvedValue([])
 })
 
 describe("isUuid", () => {
@@ -258,15 +283,110 @@ describe("resolveWorkspaceRef", () => {
 		expect(pickWorkspaceMock.mock.calls[0][2]).toMatchObject({ allowNew: false, hideSessions: true })
 	})
 
-	it("picker 'new' with onEmpty=mint → fresh id, no name, isNew:true", async () => {
+	it("picker 'new' with onEmpty=mint → fresh id, no name, isNew:true, setup from the dialog", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
 		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		openWorkspaceSetupMock.mockResolvedValue({
+			action: "create",
+			name: "my-box",
+			spec: { resources: { cpu: "500m" } },
+		})
 		const { ctx } = makeCtx()
 		const resolved = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(resolved.id).toMatch(/^[0-9a-f-]{36}$/i)
 		expect(resolved.id).not.toBe(UUID_A)
-		expect(resolved.name).toBeUndefined()
+		expect(resolved.name).toBeUndefined() // display name rides `setup.name`
 		expect(resolved.isNew).toBe(true)
+		expect(resolved.setup).toEqual({ name: "my-box", spec: { resources: { cpu: "500m" } } })
+	})
+
+	it("picker 'new' prefills the setup dialog with the cwd basename and parsed file", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		loadWorkspaceFileMock.mockReturnValue({ resources: { memory: "2Gi" } })
+		const { ctx } = makeCtx() // cwd: /work/proj
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(openWorkspaceSetupMock).toHaveBeenCalledOnce()
+		expect(openWorkspaceSetupMock.mock.calls[0][1]).toEqual({
+			name: "proj",
+			file: { resources: { memory: "2Gi" } },
+		})
+		// No templates configured → the dialog gets an empty catalog.
+		expect(openWorkspaceSetupMock.mock.calls[0][2]).toEqual([])
+	})
+
+	it("fetches org templates with the shared orgId and passes them to the dialog", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		const templates = [{ id: "t1", name: "team-stack", description: "Team defaults" }]
+		listWorkspaceTemplatesMock.mockResolvedValue(templates)
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(listWorkspaceTemplatesMock).toHaveBeenCalledWith(ctx.apiKey, {
+			endpoint: ctx.endpoint,
+			signal: ctx.signal,
+			orgId: "org-1",
+		})
+		expect(openWorkspaceSetupMock.mock.calls[0][2]).toBe(templates)
+	})
+
+	it("degrades to manual configuration when the template fetch fails", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		listWorkspaceTemplatesMock.mockRejectedValue(new Error("boom"))
+		const { ctx, ui } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Could not load workspace templates"), "warning")
+		expect(openWorkspaceSetupMock).toHaveBeenCalledOnce()
+		expect(openWorkspaceSetupMock.mock.calls[0][2]).toEqual([])
+	})
+
+	it("setup dialog template selection resolves into setup.templateName (no spec)", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		listWorkspaceTemplatesMock.mockResolvedValue([{ id: "t1", name: "team-stack", description: "" }])
+		openWorkspaceSetupMock.mockResolvedValue({ action: "create", name: "my-box", templateName: "team-stack" })
+		const { ctx } = makeCtx()
+		const resolved = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(resolved.isNew).toBe(true)
+		expect(resolved.setup).toEqual({ name: "my-box", templateName: "team-stack" })
+		expect(resolved.setup).not.toHaveProperty("spec")
+	})
+
+	it("setup dialog cancelled → TeleportRefusal('cancelled')", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		openWorkspaceSetupMock.mockResolvedValue(undefined)
+		const { ctx } = makeCtx()
+		await expect(resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })).rejects.toMatchObject({
+			name: "TeleportRefusal",
+			message: "cancelled",
+		})
+	})
+
+	it("picker 'select' never opens the setup dialog", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(openWorkspaceSetupMock).not.toHaveBeenCalled()
+	})
+
+	it("a broken kimchi_workspace.yaml refuses before the setup dialog opens", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
+		loadWorkspaceFileMock.mockImplementation(() => {
+			throw new WorkspaceFileError(
+				"Could not parse /work/proj/kimchi_workspace.yaml: bad",
+				"/work/proj/kimchi_workspace.yaml",
+			)
+		})
+		const { ctx, ui } = makeCtx()
+		await expect(resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })).rejects.toBeInstanceOf(
+			TeleportRefusal,
+		)
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Could not parse"), "error")
+		expect(openWorkspaceSetupMock).not.toHaveBeenCalled()
 	})
 
 	it("picker cancelled → TeleportRefusal('cancelled')", async () => {

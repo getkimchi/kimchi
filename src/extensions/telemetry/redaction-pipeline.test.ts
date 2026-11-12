@@ -111,6 +111,7 @@ describe("pii-redaction → telemetry OTLP pipeline (shared bus)", () => {
 		expect(names).toContain("pii_redaction.redacted")
 		const redacted = events.filter((e) => e.eventName === "pii_redaction.redacted")
 		expect(redacted.map((e) => e.attrs.entity_type)).toEqual(["EMAIL_ADDRESS"])
+		expect(redacted.map((e) => e.attrs.category)).toEqual(["emails"])
 	})
 
 	it("subscription exists: telemetry factory registers a handler for the redaction channel", () => {

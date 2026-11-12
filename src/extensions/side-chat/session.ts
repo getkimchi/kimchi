@@ -4,7 +4,7 @@
  * The child is seeded with the main session's context at the branch point
  * (the leaf when the side chat started), then runs independently with
  * read-only tools so it can inspect code without racing the main agent's
- * edits. Seeding follows dbachelder/pi-btw (MIT): an in-memory
+ * edits. Seeding uses an in-memory
  * SessionManager pre-filled with the parent's projected messages. `/wrap`
  * drafts in a second, tool-less session that sees only the side thread.
  */
@@ -142,7 +142,7 @@ export interface WrapUpRun {
 
 /**
  * Draft a steering message from the side thread in a separate, tool-less
- * session that sees only `thread` (as dbachelder/pi-btw's summarize does) —
+ * session that sees only `thread` —
  * not the main-session context the side chat inherited, and not the side
  * session itself, whose history stays untouched.
  */

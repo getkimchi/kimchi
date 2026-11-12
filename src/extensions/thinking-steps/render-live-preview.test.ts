@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { installVaultLifecycle, resetTokenVaults, tokenFor, vaultForSession } from "../pii-redaction/vault.js"
 import {
 	clearStepDerivationCacheForTesting,
 	deriveThinkingSteps,
 	getStepDerivationCacheSizeForTesting,
 } from "./parse.js"
 import { LIVE_PREVIEW_TAIL_CHARS, renderThinkingStepsLines, tailRawLines, tailRawLinesFromBlocks } from "./render.js"
-import type { ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
+import type { DerivedThinkingStep, ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
 
 const theme: ThinkingThemeLike = {
 	fg: (_color, text) => text,
@@ -27,6 +30,71 @@ function renderCollapsedActive(text: string, nowMs = 1000, width = 80, cacheOwne
 		cacheOwner,
 	})
 }
+
+describe("paint substitution (pii-redaction token mode)", () => {
+	beforeEach(() => {
+		resetTokenVaults()
+	})
+	afterEach(() => {
+		resetTokenVaults()
+	})
+
+	// Install the production vault lifecycle and fire its session_start for
+	// one session id — exactly what sets the TUI paint vault the renderers
+	// consult (vaultForPaint), without standing up the whole extension.
+	async function paintTokenFor(original: string): Promise<string> {
+		const { api, emit } = createExtensionApi()
+		installVaultLifecycle(api, () => true)
+		await emit("session_start", {}, createContext({ sessionManager: { getSessionId: () => "paint" } }))
+		const vault = vaultForSession("paint")
+		if (!vault) throw new Error("paint vault missing")
+		return tokenFor(vault, "EMAIL_ADDRESS", original)
+	}
+
+	const step = (summary: string, body: string): DerivedThinkingStep => ({
+		id: "s1",
+		contentIndex: 0,
+		blockIndex: 0,
+		stepIndex: 0,
+		summary,
+		body,
+		role: "default",
+		icon: "•",
+	})
+
+	it("substitutes vault-known tokens in expanded step bodies and collapsed summaries", async () => {
+		const original = "[EMAIL_ADDRESS_17]"
+		const token = await paintTokenFor(original)
+		const blocks = makeBlocks(`user mail is ${token}`)
+		const steps = [step(`mail ${token}`, `user mail is ${token}`)]
+
+		const expanded = renderThinkingStepsLines(theme, 80, { mode: "expanded", blocks, steps, isActive: false }).join(
+			"\n",
+		)
+		expect(expanded).toContain(original)
+		expect(expanded).not.toContain(token)
+
+		const collapsed = renderThinkingStepsLines(theme, 80, { mode: "collapsed", blocks, steps, isActive: false }).join(
+			"\n",
+		)
+		expect(collapsed).toContain(original)
+		expect(collapsed).not.toContain(token)
+	})
+
+	it("substitutes the collapsed live preview tail (tailRawLinesFromBlocks)", async () => {
+		const original = "[EMAIL_ADDRESS_16]"
+		const token = await paintTokenFor(original)
+		const rendered = renderCollapsedActive(`typing ${token}`).join("\n")
+		expect(rendered).toContain(original)
+		expect(rendered).not.toContain(token)
+	})
+
+	it("renders tokens verbatim with no vault (markers mode / post-restart)", () => {
+		const token = "[EMAIL_ADDRESS_99]"
+		const rendered = renderCollapsedActive(`typing ${token}`).join("\n")
+		expect(rendered).toContain(token)
+	})
+})
 
 describe("tailRawLines", () => {
 	it("returns the text unchanged when it has fewer lines than the limit", () => {
@@ -315,6 +383,46 @@ describe("deriveThinkingSteps caching", () => {
 		expect(steps.length).toBeGreaterThan(0)
 		expect(steps[0]?.summary).toBeTruthy()
 		expect(elapsedMs).toBeLessThan(300) // warm-up reduces variance; 300ms is safe headroom
+	})
+
+	it("derives an unterminated long step without quadratic backtracking", () => {
+		// Same size, same 16 KB summary cap, same amount of work: the only difference is
+		// whether runs end at a period or run into a newline. The old matcher
+		// (`[^.!?\n]+(?:[.!?]+|$)`) backtracked from every start position on the latter.
+		// Ratio, not an absolute bound, so a slow runner moves both sides together:
+		// 32x before the linear split, 1.4x after.
+		const measure = (text: string) => {
+			clearStepDerivationCacheForTesting()
+			deriveThinkingSteps(makeBlocks(text))
+			clearStepDerivationCacheForTesting()
+			const start = performance.now()
+			deriveThinkingSteps(makeBlocks(text))
+			return performance.now() - start
+		}
+		const open = "analyzing the diff output and comparing results ".repeat(8000)
+		const punctuated = "analyzing the diff output, comparing results. ".repeat(8000)
+		measure(open) // warm both shapes so JIT state is shared
+		measure(punctuated)
+		const openMs = measure(open)
+		const punctuatedMs = measure(punctuated)
+		expect(openMs).toBeLessThan(Math.max(punctuatedMs * 8, 5))
+	})
+
+	it("summarizes a newline-terminated step like the same step without one", () => {
+		// The split changed which sentence fragments reach the summarizer, so pin the
+		// observable result rather than the fragment list.
+		const bodies = [
+			"The build failed because boom. Then the suite stayed red.",
+			"reviewing the diff\nrunning the tests\nThe build failed because boom\nwrapping up.",
+		]
+		for (const body of bodies) {
+			clearStepDerivationCacheForTesting()
+			const withoutNewline = deriveThinkingSteps(makeBlocks(body))[0]
+			clearStepDerivationCacheForTesting()
+			const withNewline = deriveThinkingSteps(makeBlocks(`${body}\n`))[0]
+			expect(withNewline?.summary).toBe(withoutNewline?.summary)
+			expect(withNewline?.hasExplicitFailure).toBe(withoutNewline?.hasExplicitFailure)
+		}
 	})
 
 	it("does not retain snapshots of the growing final step", () => {

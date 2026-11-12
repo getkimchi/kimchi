@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
+import { getSupportedThinkingLevels, type ModelThinkingLevel } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -223,7 +223,7 @@ describe("updateModelsConfig", () => {
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
-				thinkingLevelMap: { off: "none", max: "max" },
+				thinkingLevelMap: { off: "none", max: "max", minimal: null, medium: null, xhigh: null },
 				// Curated levels persist for the /model and list_models displays.
 				thinkingLevels: ["off", "low", "high", "max"],
 			},
@@ -346,8 +346,11 @@ describe("updateModelsConfig", () => {
 		expect(model.thinkingLevelMap).toEqual({
 			off: "none",
 			max: "max",
+			minimal: null,
+			medium: null,
+			xhigh: null,
 		})
-		expect(getSupportedThinkingLevels(model)).toContain("max")
+		expect(getSupportedThinkingLevels(model)).toEqual(["off", "low", "high", "max"])
 	})
 
 	it("routes claude-* models from non-anthropic providers through openai-completions with compat flags", async () => {
@@ -1920,5 +1923,154 @@ describe("openai Responses API routing", () => {
 		for (const model of [...kimi, ...claude]) {
 			expect(model.api).toBeUndefined()
 		}
+	})
+})
+
+describe("curated thinking levels drive the engine thinkingLevelMap", () => {
+	type ChatModelConfig = Extract<ProviderModelConfig, { type?: "chat" }>
+
+	function metadata(slug: string, thinkingLevels: string[] | undefined, provider = "ai-enabler"): unknown {
+		return {
+			slug,
+			display_name: slug,
+			provider,
+			reasoning: true,
+			input_modalities: ["text"],
+			is_serverless: false,
+			limits: { context_window: 128_000, max_output_tokens: 16_384 },
+			...(thinkingLevels === undefined ? {} : { thinking_levels: thinkingLevels }),
+		}
+	}
+
+	function providerModels(models: unknown[], block = "kimchi-dev"): ChatModelConfig[] {
+		const { providers } = buildModelsConfig(models as never, "https://example.invalid")
+		return (providers[block]?.models ?? []) as ChatModelConfig[]
+	}
+
+	function supportedLevels(model: ChatModelConfig): ModelThinkingLevel[] {
+		// The engine derives capability from reasoning + thinkingLevelMap alone.
+		return getSupportedThinkingLevels({
+			...model,
+			api: "openai-completions",
+			provider: "kimchi-dev",
+			baseUrl: "https://example.invalid/openai/v1",
+		})
+	}
+
+	it("offers exactly the curated levels the engine supports", () => {
+		// The curated empty array is the one asymmetry: thinking exists but no
+		// distinct levels are reachable, so only the default (off) state survives.
+		const fixtures = [
+			{ curated: ["off", "low", "high", "max"], supported: ["off", "low", "high", "max"] },
+			{ curated: ["low", "high", "max"], supported: ["low", "high", "max"] },
+			{ curated: ["off", "medium", "high"], supported: ["off", "medium", "high"] },
+			{ curated: [], supported: ["off"] },
+		]
+		for (const { curated, supported } of fixtures) {
+			const [model] = providerModels([metadata("m", curated)])
+			expect(supportedLevels(model)).toEqual(supported)
+		}
+	})
+
+	it("nulls the levels the catalog omits while keeping base translations", () => {
+		const [model] = providerModels([metadata("m", ["off", "low", "high", "max"])])
+		expect(model.thinkingLevelMap).toEqual({
+			off: "none",
+			max: "max",
+			minimal: null,
+			medium: null,
+			xhigh: null,
+		})
+	})
+
+	it("makes curated xhigh selectable without offering it to uncurated models", () => {
+		const [curated] = providerModels([metadata("m", ["high", "xhigh"])])
+		expect(supportedLevels(curated)).toEqual(["high", "xhigh"])
+
+		const [xhighOnly] = providerModels([metadata("m", ["xhigh"])])
+		expect(supportedLevels(xhighOnly)).toEqual(["xhigh"])
+
+		const [uncurated] = providerModels([metadata("m", undefined)])
+		expect(supportedLevels(uncurated)).not.toContain("xhigh")
+	})
+
+	it("cannot disable thinking when the catalog does not curate off", () => {
+		const [model] = providerModels([metadata("m", ["low", "high", "max"])])
+		expect(model.thinkingLevelMap).toEqual({
+			off: null,
+			minimal: null,
+			medium: null,
+			xhigh: null,
+			max: "max",
+		})
+	})
+
+	it("suppresses reasoning_effort for the curated empty array only", () => {
+		const [curatedNone] = providerModels([metadata("m", [])])
+		expect(curatedNone.compat).toEqual({ supportsReasoningEffort: false })
+
+		const [curated] = providerModels([metadata("m", ["low"])])
+		expect(curated.compat).toBeUndefined()
+	})
+
+	it("treats a list of only unknown levels exactly like the curated empty array", () => {
+		// The persisted thinkingLevels is the normalized list, so a fresh fetch must
+		// already behave the way the models.json round-trip will.
+		const [unknownOnly] = providerModels([metadata("m", ["turbo"])])
+		const [curatedNone] = providerModels([metadata("m", [])])
+		expect(unknownOnly).toEqual(curatedNone)
+		expect(unknownOnly.compat).toEqual({ supportsReasoningEffort: false })
+	})
+
+	it("keeps uncurated models on the base map", () => {
+		const [model] = providerModels([metadata("m", undefined)])
+		expect(model.thinkingLevelMap).toEqual({ off: "none", max: "max" })
+		expect(supportedLevels(model)).toEqual(["off", "minimal", "low", "medium", "high", "max"])
+	})
+
+	it("gives uncurated custom models the gateway base map (same gateway dialect)", () => {
+		const [model] = providerModels([metadata("m", undefined, "custom")], "kimchi-dev/custom")
+		expect(model.thinkingLevelMap).toEqual({ off: "none", max: "max" })
+		expect(supportedLevels(model)).toEqual(["off", "minimal", "low", "medium", "high", "max"])
+	})
+
+	it("applies the base map to the custom provider entry (same gateway dialect)", () => {
+		const [model] = providerModels([metadata("m", ["off", "low", "high", "max"], "custom")], "kimchi-dev/custom")
+		expect(model.thinkingLevelMap).toEqual({
+			off: "none",
+			max: "max",
+			minimal: null,
+			medium: null,
+			xhigh: null,
+		})
+		expect(supportedLevels(model)).toEqual(["off", "low", "high", "max"])
+	})
+
+	it("leaves openai and anthropic thinkingLevelMap output unchanged", () => {
+		const openai = providerModels(
+			[
+				metadata("gpt-5.1", ["low", "high"], "openai"),
+				metadata("o3", ["low", "high"], "openai"),
+				metadata("gpt-5", [], "openai"),
+			],
+			"kimchi-dev/openai",
+		)
+		expect(openai.map((m) => m.thinkingLevelMap)).toEqual([
+			{ off: "none" },
+			{ off: null, minimal: null },
+			{ off: null },
+		])
+		expect(openai.map((m) => m.compat)).toEqual([undefined, undefined, undefined])
+
+		const upstream = ANTHROPIC_MODELS["claude-sonnet-4-6"]
+		// Without the catalog entry both sides would be undefined and the
+		// comparison below would pass without checking anything.
+		expect(upstream).toBeDefined()
+		const [anthropic] = providerModels(
+			[metadata("claude-sonnet-4-6", ["low", "high"], "anthropic")],
+			"kimchi-dev/anthropic",
+		)
+		expect(anthropic.thinkingLevelMap).toEqual(upstream?.thinkingLevelMap)
+		expect(anthropic.compat).toEqual(upstream?.compat)
 	})
 })

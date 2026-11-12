@@ -522,3 +522,33 @@ describe("model_retired", () => {
 		expect(classifyLLMGatewayError("The model was not found, please check the model name")).toBeUndefined()
 	})
 })
+
+describe("quoted status codes", () => {
+	// The gateway returns string-valued codes ("code":"400"); a quoted status
+	// must classify exactly like the numeric form instead of falling through
+	// to "unclassified" (which leaks the raw JSON to the user).
+	it("classifies a string-valued 400 gateway verdict as bad_request", () => {
+		const error = classifyLLMGatewayError(
+			'{"error":{"type":"invalid_request_error","message":"An exception occurred while loading IMAGE data at index 0: cannot identify image file <_io.BytesIO object>","retryable":false,"code":"400"}}',
+		)
+		expect(error?.reason).toBe("bad_request")
+		expect(error?.retryable).toBe(false)
+		expect(error?.isInfrastructure).toBe(false)
+		expect(error?.httpStatusCode).toBe(400)
+	})
+
+	it("classifies a quoted 429 as rate_limit even without rate-limit prose", () => {
+		const error = classifyLLMGatewayError('{"error":{"message":"upstream refused","code":"429"}}')
+		expect(error?.reason).toBe("rate_limit")
+		expect(error?.httpStatusCode).toBe(429)
+	})
+
+	it("classifies a quoted 410 as model_retired", () => {
+		const error = classifyLLMGatewayError('{"error":{"message":"gone","code":"410"}}')
+		expect(error?.reason).toBe("model_retired")
+	})
+
+	it("does not misread a longer number that merely starts with a status code", () => {
+		expect(classifyLLMGatewayError('{"error":{"message":"refused","code":"4001"}}')).toBeUndefined()
+	})
+})

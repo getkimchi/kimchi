@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { ERROR_FG, ORANGE_FG, RST, RST_FG, SUCCESS_FG } from "../../ansi.js"
+import { EXEC_DEREF_TOOLS, substituteTokensDeep, vaultForSession } from "../pii-redaction/vault.js"
 import { highlightCode } from "../tool-rendering.js"
 import { withWorkingHidden } from "../ui.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "./prompter.js"
@@ -175,11 +176,30 @@ function joinScopeLabels(labels: string[]): string {
 	return `${labels.slice(0, MAX_DISCLOSED).join(" + ")} + ${labels.length - MAX_DISCLOSED} more`
 }
 
+/**
+ * The approval prompt must show the content execution will ACTUALLY run
+ * (docs/pii-redaction-tokens.md): byte-faithful tools (bash, MCP…)
+ * execute the literal token, so their input stays untouched; edit/write
+ * dereference vault tokens at execute time (EXEC_DEREF_TOOLS), so the
+ * prompt shows the original — the bytes the approval truly lands. No
+ * vault (markers mode, dead session) → input untransformed.
+ */
+export function mirrorApprovalInput(
+	toolName: string,
+	input: Record<string, unknown>,
+	sessionId: string | undefined,
+): Record<string, unknown> {
+	if (!EXEC_DEREF_TOOLS.has(toolName.toLowerCase())) return input
+	const vault = vaultForSession(sessionId)
+	return vault ? (substituteTokensDeep(vault, input) as Record<string, unknown>) : input
+}
+
 export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOutcome> {
 	const { ctx, toolName, input, subtitle, riskScore } = opts
 	if (!ctx.hasUI) return { kind: "deny" }
 
-	const callDescription = await describeCallHighlighted(toolName, input)
+	const displayInput = mirrorApprovalInput(toolName, input, ctx.sessionManager?.getSessionId?.())
+	const callDescription = await describeCallHighlighted(toolName, displayInput)
 
 	const lines: string[] = []
 	const termWidth = process.stdout.columns || 80

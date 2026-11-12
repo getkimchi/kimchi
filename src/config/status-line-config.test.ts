@@ -54,8 +54,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 16 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(16)
+	it("has 17 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(17)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -85,6 +85,7 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"dap",
 			"work-pr",
 			"shells",
+			"memory",
 		].sort()
 		expect(ids).toEqual(expected)
 	})
@@ -102,11 +103,19 @@ describe("STATUS_LINE_ELEMENTS", () => {
 		}
 	})
 
-	it("marks lsp, dap and work-pr as defaultVisible (shown unless hidden, no pin needed)", () => {
-		for (const id of ["lsp", "dap", "work-pr"] as const) {
+	it("marks work-pr and shells as defaultVisible (shown unless hidden, no pin needed)", () => {
+		for (const id of ["work-pr", "shells"] as const) {
 			const el = STATUS_LINE_ELEMENTS.find((element) => element.id === id)
 			expect(el).toBeDefined()
 			expect(el).toMatchObject({ defaultVisible: true })
+		}
+	})
+
+	it("marks lsp, dap and memory as pin-to-show — hidden by default, opted in via pinned", () => {
+		for (const id of ["lsp", "dap", "memory"] as const) {
+			const el = STATUS_LINE_ELEMENTS.find((element) => element.id === id)
+			expect(el).toBeDefined()
+			expect(el?.defaultVisible).not.toBe(true)
 		}
 	})
 })
@@ -241,7 +250,7 @@ describe("isStatusLineElementPinned", () => {
 	})
 })
 
-// ─── hidden config (opt-out for defaultVisible elements: lsp, dap) ─────────
+// ─── hidden config (opt-out for defaultVisible elements: work-pr, shells) ───
 
 describe("status line hidden config", () => {
 	it("defaults hidden to [] when no statusLine key exists", () => {
@@ -249,49 +258,54 @@ describe("status line hidden config", () => {
 		expect(readStatusLineConfig().hidden).toEqual([])
 	})
 
-	it("defaults hidden to [] when only pinned is stored — old configs keep lsp/dap visible", () => {
+	it("defaults hidden to [] when only pinned is stored — old configs keep work-pr/shells visible", () => {
 		seed(JSON.stringify({ statusLine: { pinned: ["context"] } }, null, 2))
 		expect(readStatusLineConfig().hidden).toEqual([])
 	})
 
 	it("parses stored hidden entries and drops unknown ids", () => {
-		seed(JSON.stringify({ statusLine: { hidden: ["lsp", "nosuchthing", "dap", 42] } }, null, 2))
-		expect(readStatusLineConfig().hidden).toEqual(["lsp", "dap"])
+		seed(JSON.stringify({ statusLine: { hidden: ["work-pr", "nosuchthing", "shells", 42] } }, null, 2))
+		expect(readStatusLineConfig().hidden).toEqual(["work-pr", "shells"])
 	})
 
-	it("accepts work-pr in hidden (opt-out, like lsp/dap)", () => {
+	it("accepts work-pr in hidden (opt-out for defaultVisible elements)", () => {
 		seed(JSON.stringify({ statusLine: { hidden: ["work-pr"] } }, null, 2))
 		expect(readStatusLineConfig().hidden).toEqual(["work-pr"])
 	})
 
 	it("drops non-defaultVisible ids from hidden — hiding them would be silently inert", () => {
-		seed(JSON.stringify({ statusLine: { hidden: ["lsp", "context", "phase"] } }, null, 2))
-		expect(readStatusLineConfig().hidden).toEqual(["lsp"])
+		seed(JSON.stringify({ statusLine: { hidden: ["work-pr", "context", "phase"] } }, null, 2))
+		expect(readStatusLineConfig().hidden).toEqual(["work-pr"])
+	})
+
+	it("drops lsp/dap from hidden — they are pin-to-show now; old hide entries are inert", () => {
+		seed(JSON.stringify({ statusLine: { hidden: ["lsp", "dap"] } }, null, 2))
+		expect(readStatusLineConfig().hidden).toEqual([])
 	})
 
 	it("hides and re-shows an element without touching pinned", () => {
 		seed(JSON.stringify({ statusLine: { pinned: ["context"] } }, null, 2))
-		setStatusLineElementHidden("lsp", true)
-		expect(isStatusLineElementHidden("lsp")).toBe(true)
+		setStatusLineElementHidden("work-pr", true)
+		expect(isStatusLineElementHidden("work-pr")).toBe(true)
 		expect(readStatusLineConfig().pinned).toEqual(["context"])
-		setStatusLineElementHidden("lsp", false)
-		expect(isStatusLineElementHidden("lsp")).toBe(false)
+		setStatusLineElementHidden("work-pr", false)
+		expect(isStatusLineElementHidden("work-pr")).toBe(false)
 		expect(readStatusLineConfig().pinned).toEqual(["context"])
 	})
 
 	it("is idempotent and hides elements independently", () => {
-		setStatusLineElementHidden("lsp", true)
-		setStatusLineElementHidden("lsp", true)
-		expect(readStatusLineConfig().hidden).toEqual(["lsp"])
-		setStatusLineElementHidden("dap", true)
-		expect(readStatusLineConfig().hidden).toEqual(expect.arrayContaining(["lsp", "dap"]))
+		setStatusLineElementHidden("work-pr", true)
+		setStatusLineElementHidden("work-pr", true)
+		expect(readStatusLineConfig().hidden).toEqual(["work-pr"])
+		setStatusLineElementHidden("shells", true)
+		expect(readStatusLineConfig().hidden).toEqual(expect.arrayContaining(["work-pr", "shells"]))
 	})
 
 	it("pin and hidden writes preserve each other", () => {
-		setStatusLineElementHidden("dap", true)
+		setStatusLineElementHidden("shells", true)
 		setStatusLineElementPinned("phase", true)
 		expect(readStatusLineConfig().pinned).toContain("phase")
-		expect(readStatusLineConfig().hidden).toContain("dap")
+		expect(readStatusLineConfig().hidden).toContain("shells")
 	})
 })
 

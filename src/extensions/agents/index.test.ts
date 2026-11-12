@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getParsedCliArgs } from "../../cli-args.js"
 import {
@@ -220,6 +223,12 @@ vi.mock("../orchestration/model-registry/index.js", () => ({
 	MODEL_CAPABILITIES: {},
 }))
 
+// Project-scope agent dirs are trust-gated; test fixtures are trusted fixtures.
+vi.mock("../../project-scope-trust.js", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	isProjectScopeAllowed: vi.fn().mockReturnValue(true),
+}))
+
 vi.mock("../orchestration/model-roles.js", () => ({
 	getAllowedMultiModelRefs: vi
 		.fn()
@@ -254,6 +263,7 @@ import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { RemoteAgentSession } from "./manager/remote-agent-session.js"
 import { clearHandoff, peekHandoff, stageHandoff } from "./manager/subagent-handoff.js"
 import type { RemoteRunState } from "./remote-run-persistence.js"
+import { applyAndEmitLoaded } from "./settings.js"
 import type { Theme } from "./ui/agent-widget.js"
 
 type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>
@@ -2454,5 +2464,76 @@ describe("local agents survive session replacement (fork/new)", () => {
 
 		expect(manager2.adoptRecords).not.toHaveBeenCalled()
 		expect(peekHandoff()).toBeDefined()
+	})
+})
+
+describe("Agent tool session-cwd agent resolution", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+	})
+
+	it("resolves project agents against ctx.cwd, not process.cwd() (issue #1677)", async () => {
+		// Regression: the Agent tool executed reloadCustomAgents() with no
+		// argument, which defaulted to process.cwd() — dropping session project
+		// agents whenever the session cwd differed from the launch directory
+		// (ACP sessions, worktrees). The custom type then fell back to
+		// General-Purpose with every built-in tool.
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-agent-cwd-"))
+		mkdirSync(join(projectDir, ".kimchi", "agents"), { recursive: true })
+		writeFileSync(
+			join(projectDir, ".kimchi", "agents", "issue1677-reviewer.md"),
+			"---\ndescription: reviewer for cwd regression test\ntools: read\n---\n\nReview things.\n",
+		)
+
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = {
+			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
+			cwd: projectDir,
+		}
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-cwd",
+			{
+				prompt: "review this change",
+				description: "cwd regression test",
+				subagent_type: "issue1677-reviewer",
+				run_in_background: true,
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
+		// spawn(pi, ctx, subagentType, prompt, options) — the third argument must
+		// be the project agent's type, not the general-purpose fallback.
+		expect(managerInstance.spawn.mock.calls[0][2]).toBe("issue1677-reviewer")
+		expect(result.content[0]?.text ?? "").not.toContain("Unknown agent type")
+	})
+
+	it("applies project agent settings from the session cwd on session_start", async () => {
+		// Settings half of the cwd fix: .kimchi/agents.json must be read from
+		// the session's project, not the launch directory (an ACP server hosts
+		// sessions in several projects; the bootstrap call ran at process cwd).
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const sessionCwd = "/tmp/issue1677-session-project"
+
+		const ctx = { cwd: sessionCwd, sessionManager: { getBranch: () => [] } }
+		for (const handler of pi._handlers.get("session_start") ?? []) await handler(undefined, ctx)
+
+		expect(vi.mocked(applyAndEmitLoaded).mock.calls.some((c) => c[2] === sessionCwd)).toBe(true)
 	})
 })

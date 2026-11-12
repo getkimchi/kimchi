@@ -190,7 +190,7 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	yolo: {
 		type: "boolean",
-		description: "Start in yolo mode (run freely, no classifier - DANGER)",
+		description: "Start in yolo mode (run freely, no classifier; deny rules still apply - DANGER)",
 	},
 	"dangerously-skip-permissions": {
 		type: "boolean",
@@ -223,6 +223,10 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	verbose: {
 		type: "boolean",
 		description: "Force verbose startup (overrides quietStartup)",
+	},
+	"no-auto-update": {
+		type: "boolean",
+		description: "Skip background updates for this session",
 	},
 	help: {
 		type: "boolean",
@@ -265,6 +269,7 @@ export interface SessionCliArgs {
 		"bash-process-limit"?: string
 		"mcp-config"?: string
 		verbose?: boolean
+		"no-auto-update"?: boolean
 	}
 	positionals: string[]
 }
@@ -344,6 +349,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"bash-process-limit",
 	"mcp-config",
 	"verbose",
+	"no-auto-update",
 ] as const satisfies ReadonlyArray<keyof SessionCliArgs["options"]>
 
 /** Parse args without caching. Exported for tests. */

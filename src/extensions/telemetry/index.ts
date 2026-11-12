@@ -40,6 +40,7 @@ import {
 } from "../loop-guard-events.js"
 import { PERMISSION_EVENTS, type PermissionToolDecisionPayload } from "../permissions/permissions-events.js"
 import { PII_REDACTION_EVENTS } from "../pii-redaction/redaction-events.js"
+import { SIDE_CHAT_EVENTS } from "../side-chat/side-chat-events.js"
 import { STEER_EVENTS } from "../steer-events.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
@@ -51,6 +52,13 @@ import {
 	handleSessionShutdown,
 	handleSessionStart,
 } from "./handlers/session.js"
+import {
+	handleSideChatMessageSent,
+	handleSideChatStarted,
+	handleSideChatThreadCounts,
+	SIDE_CHAT_HISTORY_REOPENED_EVENT,
+	SIDE_CHAT_WRAPPED_EVENT,
+} from "./handlers/side-chat.js"
 import { handleSteerAborted, handleSteerFired, handleSteerOutcome } from "./handlers/steers.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { getAcpAttributes } from "./handlers/utils.js"
@@ -822,6 +830,25 @@ function onToolDecision(ctx: TelemetryContext, raw: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Side-chat domain event handlers (subscribed via pi.events)
+// ---------------------------------------------------------------------------
+
+function onSideChatStarted(ctx: TelemetryContext, raw: unknown): void {
+	if (!isCtxEnabled(ctx)) return
+	handleSideChatStarted(ctx, raw)
+}
+
+function onSideChatMessageSent(ctx: TelemetryContext, raw: unknown): void {
+	if (!isCtxEnabled(ctx)) return
+	handleSideChatMessageSent(ctx, raw)
+}
+
+function onSideChatThreadCounts(ctx: TelemetryContext, raw: unknown, eventName: string): void {
+	if (!isCtxEnabled(ctx)) return
+	handleSideChatThreadCounts(ctx, raw, eventName)
+}
+
+// ---------------------------------------------------------------------------
 // Workflow domain event handler (subscribed via pi.events)
 // ---------------------------------------------------------------------------
 
@@ -972,6 +999,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		// publishes one fact per gated tool decision; telemetry translates them
 		// into `claude_code.tool_decision` OTLP records (the acceptance signal).
 		pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (raw) => onToolDecision(telemetryCtx, raw))
+
+		// Subscribe to side-chat lifecycle events. The side-chat extension
+		// publishes open/message/reopen/wrap facts; telemetry translates them
+		// into the side_chat.* OTLP records (PostHog-only usage analytics).
+		pi.events.on(SIDE_CHAT_EVENTS.STARTED, (raw) => onSideChatStarted(telemetryCtx, raw))
+		pi.events.on(SIDE_CHAT_EVENTS.MESSAGE_SENT, (raw) => onSideChatMessageSent(telemetryCtx, raw))
+		pi.events.on(SIDE_CHAT_EVENTS.HISTORY_REOPENED, (raw) =>
+			onSideChatThreadCounts(telemetryCtx, raw, SIDE_CHAT_HISTORY_REOPENED_EVENT),
+		)
+		pi.events.on(SIDE_CHAT_EVENTS.WRAPPED, (raw) => onSideChatThreadCounts(telemetryCtx, raw, SIDE_CHAT_WRAPPED_EVENT))
 
 		// Workflow domain events (kimchi-workflows): one envelope channel covers the whole contract.
 		pi.events.on(WORKFLOW_TELEMETRY_CHANNEL, (raw) => onWorkflowTelemetry(telemetryCtx, raw))

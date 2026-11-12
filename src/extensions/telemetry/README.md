@@ -150,6 +150,19 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 
 > **Privacy:** Loop-guard events carry only structured fields — `detector` (which loop detector fired), `count` (per-session warn count), and `is_subagent`. Raw tool args, command text, and the human-readable reason string are intentionally **not** emitted, to avoid leaking user data or secrets.
 
+## Side Chat Events
+
+The side-chat extension publishes lifecycle facts on the `side-chat:*` pi.events channels (`side-chat-events.ts`); this handler (`handlers/side-chat.ts`) translates them into the `side_chat.*` OTLP records. PostHog-only usage analytics (acceptance signals for the `/btw` side chat) — no ClickHouse sink.
+
+| Event | Meaning | Attributes |
+|---|---|---|
+| `side_chat.started` | A side chat opens (`/btw` open / `/btw new`) | `quoted_selection` *(opened with a quoted transcript selection)*, `turn_index`, `model` |
+| `side_chat.message_sent` | User sends a question into the side chat | `quoted_selection` *(message carries a quoted selection)*, `message_index` *(1-based count of user messages in this side chat, the one being reported included — continues across a `/btw history` reopen)*, `turn_index`, `model` |
+| `side_chat.history_reopened` | `/btw history` (or the ≡ panel list) reopens a past side chat | `message_count_user`, `message_count_assistant` *(of the reopened thread)*, `turn_index`, `model` |
+| `side_chat.wrapped` | `/wrap` steering prompt is enqueued to the main agent | `message_count_user`, `message_count_assistant` *(of the wrapped thread)*, `turn_index`, `model` |
+
+> **Privacy / semantics:** side-chat events carry only booleans and counts — prompts, quoted text, side-chat titles, and file paths are never emitted. `message_index` counts only the side chat's own user messages (the first question is 1); the thread counts on `history_reopened` / `wrapped` cover the side thread alone, never the inherited main-session context. `wrapped` fires when the reviewed `/wrap` draft is enqueued to the main agent — the draft text itself is not exported. Join to chat_completions/routing via `(session.id, turn_index)`.
+
 ## Steer / Nudge Events
 
 Guard and nudge extensions publish semantic facts on the `steer:fired` / `steer:outcome` / `steer:aborted` pi.events channels (`steer-events.ts`); this handler (`handlers/steers.ts`) forwards them to OTLP on an attribute allowlist. Payload content, tool args, command text, file paths, and free text are never transmitted — payloads are structured fields only.

@@ -14,7 +14,7 @@
 
 import { expect, test } from "@microsoft/tui-test"
 import { waitForText, waitForTurnToSettle } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { pinStatusLineElements, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -79,6 +79,11 @@ test("LSP activates mid-session when the agent scaffolds a Python project in an 
 				{ stream: ["The language server is active."] },
 			],
 			env: { KIMCHI_LSP_BINARIES: "pyright-langserver" },
+			seedHome: (homeDir) => {
+				// The lsp segment is opt-in (hidden by default): pin it so the
+				// activated-server status flips into the footer mid-session.
+				pinStatusLineElements(homeDir, "lsp")
+			},
 		},
 		async (fixture, trace) => {
 			// Turn 1: the agent scaffolds the project. The marker write

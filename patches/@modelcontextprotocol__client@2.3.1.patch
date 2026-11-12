@@ -1,4 +1,4 @@
-# Patch: OAuth Accept headers for spec-strict gateways (@modelcontextprotocol/client 2.3.1)
+# Patch: OAuth Accept headers and tools/list_changed consumption (@modelcontextprotocol/client 2.3.1)
 #
 # Tracking:
 #   - Spec-strict MCP gateways (e.g. agentgateway v1.5.0) answer 406 when the
@@ -19,7 +19,29 @@
 #     stored-issuer checks; upstream issue pending at
 #     https://github.com/modelcontextprotocol/typescript-sdk (remove when
 #     upstream only falls back when metadata is absent)
+#   - tools/list_changed consumption: servers that emit the notification
+#     without advertising the tools.listChanged capability (the Studio
+#     slack-wrapper and gateways aggregating plugin servers) had the
+#     notification silently dropped — handler registration was gated on the
+#     advertised capability. Kimchi's adapter always passes listChanged
+#     config, so a received notification is now always consumed: handlers
+#     register on config alone (tools, prompts, resources), while the
+#     modern-connection subscriptions/listen filter still only asks for what
+#     the server advertises. Upstream issue pending at
+#     https://github.com/modelcontextprotocol/typescript-sdk (remove when
+#     upstream decouples handler registration from the advertised capability)
+#     Accepted bound: consumption is debounced by the SDK default
+#     (debounceMs 300, trailing) — a notification storm is capped at ~3
+#     refreshes/sec per list type. There is no cumulative session cap, and a
+#     sustained sub-300ms stream starves the refresh entirely (a trailing
+#     debounce that keeps resetting never fires). Both are accepted for now;
+#     revisit with a max-deferral backstop if a chatty server class needs one.
 # Changes:
+#   - dist/index.{mjs,cjs} _setupListChangedHandlers and the modern connect
+#     path: register list_changed handlers from ClientOptions alone instead
+#     of requiring the advertised capability; the auto-opened subscription
+#     filter keeps the advertised-capability gate. See the tools/list_changed
+#     consumption tracking entry above.
 #   - dist/index.{mjs,cjs} tryMetadataDiscovery: add Accept
 #     "application/json, text/event-stream" (covers RFC 9728 protected-resource
 #     metadata).
@@ -36,7 +58,7 @@
 #     MCP origin; 404 and other failures keep the fallback. See the transient
 #     metadata errors tracking entry above.
 diff --git a/dist/index.cjs b/dist/index.cjs
-index 71cf63076b073284aa14f63cd41efa653e8def0f..44b2eb056fb3a319ac95a6b6085dd38d5ace84c1 100644
+index 71cf63076b073284aa14f63cd41efa653e8def0f..664e2339e773a6ad6cf7410b77b2ebc5f6fc8c29 100644
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
 @@ -1017,7 +1017,7 @@ function buildWellKnownPath(wellKnownPrefix, pathname = "", options = {}) {
@@ -76,8 +98,59 @@ index 71cf63076b073284aa14f63cd41efa653e8def0f..44b2eb056fb3a319ac95a6b6085dd38d
  		body: JSON.stringify(submittedMetadata)
  	});
  	if (!response.ok) throw new RegistrationRejectedError({
+@@ -3213,17 +3216,20 @@ var Client = class extends require_src.Protocol {
+ 	/**
+ 	* Set up handlers for list changed notifications based on config and server capabilities.
+ 	* This should only be called after initialization when server capabilities are known.
+-	* Handlers are silently skipped if the server doesn't advertise the corresponding listChanged capability.
++	* Handlers are registered whenever the consumer passes a listChanged config: a
++	* notification received from a server that did not advertise the capability is
++	* still consumed (the advertised capability only gates the modern-connection
++	* subscription request).
+ 	* @internal
+ 	*/
+ 	_setupListChangedHandlers(config) {
+-		if (config.tools && this._serverCapabilities?.tools?.listChanged) this._setupListChangedHandler("tools", "notifications/tools/list_changed", config.tools, async () => {
++		if (config.tools) this._setupListChangedHandler("tools", "notifications/tools/list_changed", config.tools, async () => {
+ 			return (await this.listTools(void 0, { cacheMode: "refresh" })).tools;
+ 		});
+-		if (config.prompts && this._serverCapabilities?.prompts?.listChanged) this._setupListChangedHandler("prompts", "notifications/prompts/list_changed", config.prompts, async () => {
++		if (config.prompts) this._setupListChangedHandler("prompts", "notifications/prompts/list_changed", config.prompts, async () => {
+ 			return (await this.listPrompts(void 0, { cacheMode: "refresh" })).prompts;
+ 		});
+-		if (config.resources && this._serverCapabilities?.resources?.listChanged) this._setupListChangedHandler("resources", "notifications/resources/list_changed", config.resources, async () => {
++		if (config.resources) this._setupListChangedHandler("resources", "notifications/resources/list_changed", config.resources, async () => {
+ 			return (await this.listResources(void 0, { cacheMode: "refresh" })).resources;
+ 		});
+ 	}
+@@ -3427,9 +3433,9 @@ var Client = class extends require_src.Protocol {
+ 			const config = this._listChangedConfig;
+ 			const advertised = this._serverCapabilities;
+ 			const effective = {
+-				...config.tools && advertised?.tools?.listChanged && { tools: config.tools },
+-				...config.prompts && advertised?.prompts?.listChanged && { prompts: config.prompts },
+-				...config.resources && advertised?.resources?.listChanged && { resources: config.resources }
++				...config.tools && { tools: config.tools },
++				...config.prompts && { prompts: config.prompts },
++				...config.resources && { resources: config.resources }
+ 			};
+ 			let handlersRegistered = true;
+ 			try {
+@@ -3439,9 +3445,9 @@ var Client = class extends require_src.Protocol {
+ 				this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+ 			}
+ 			const filter = handlersRegistered ? {
+-				...effective.tools && { toolsListChanged: true },
+-				...effective.prompts && { promptsListChanged: true },
+-				...effective.resources && { resourcesListChanged: true }
++				...effective.tools && advertised?.tools?.listChanged && { toolsListChanged: true },
++				...effective.prompts && advertised?.prompts?.listChanged && { promptsListChanged: true },
++				...effective.resources && advertised?.resources?.listChanged && { resourcesListChanged: true }
+ 			} : {};
+ 			if (Object.keys(filter).length > 0) {
+ 				const ackAbort = new AbortController();
 diff --git a/dist/index.mjs b/dist/index.mjs
-index c1a09a82b8121d6a1b038ccc6d02bae46d55dbcf..3bb01da06b459c9c979f1fd0c51616561dbc0261 100644
+index c1a09a82b8121d6a1b038ccc6d02bae46d55dbcf..c7d8a08c529247b7c9080bfae0f5a8157c13e89e 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
 @@ -1014,7 +1014,7 @@ function buildWellKnownPath(wellKnownPrefix, pathname = "", options = {}) {
@@ -117,3 +190,54 @@ index c1a09a82b8121d6a1b038ccc6d02bae46d55dbcf..3bb01da06b459c9c979f1fd0c5161656
  		body: JSON.stringify(submittedMetadata)
  	});
  	if (!response.ok) throw new RegistrationRejectedError({
+@@ -3210,17 +3213,20 @@ var Client = class extends Protocol {
+ 	/**
+ 	* Set up handlers for list changed notifications based on config and server capabilities.
+ 	* This should only be called after initialization when server capabilities are known.
+-	* Handlers are silently skipped if the server doesn't advertise the corresponding listChanged capability.
++	* Handlers are registered whenever the consumer passes a listChanged config: a
++	* notification received from a server that did not advertise the capability is
++	* still consumed (the advertised capability only gates the modern-connection
++	* subscription request).
+ 	* @internal
+ 	*/
+ 	_setupListChangedHandlers(config) {
+-		if (config.tools && this._serverCapabilities?.tools?.listChanged) this._setupListChangedHandler("tools", "notifications/tools/list_changed", config.tools, async () => {
++		if (config.tools) this._setupListChangedHandler("tools", "notifications/tools/list_changed", config.tools, async () => {
+ 			return (await this.listTools(void 0, { cacheMode: "refresh" })).tools;
+ 		});
+-		if (config.prompts && this._serverCapabilities?.prompts?.listChanged) this._setupListChangedHandler("prompts", "notifications/prompts/list_changed", config.prompts, async () => {
++		if (config.prompts) this._setupListChangedHandler("prompts", "notifications/prompts/list_changed", config.prompts, async () => {
+ 			return (await this.listPrompts(void 0, { cacheMode: "refresh" })).prompts;
+ 		});
+-		if (config.resources && this._serverCapabilities?.resources?.listChanged) this._setupListChangedHandler("resources", "notifications/resources/list_changed", config.resources, async () => {
++		if (config.resources) this._setupListChangedHandler("resources", "notifications/resources/list_changed", config.resources, async () => {
+ 			return (await this.listResources(void 0, { cacheMode: "refresh" })).resources;
+ 		});
+ 	}
+@@ -3424,9 +3430,9 @@ var Client = class extends Protocol {
+ 			const config = this._listChangedConfig;
+ 			const advertised = this._serverCapabilities;
+ 			const effective = {
+-				...config.tools && advertised?.tools?.listChanged && { tools: config.tools },
+-				...config.prompts && advertised?.prompts?.listChanged && { prompts: config.prompts },
+-				...config.resources && advertised?.resources?.listChanged && { resources: config.resources }
++				...config.tools && { tools: config.tools },
++				...config.prompts && { prompts: config.prompts },
++				...config.resources && { resources: config.resources }
+ 			};
+ 			let handlersRegistered = true;
+ 			try {
+@@ -3436,9 +3442,9 @@ var Client = class extends Protocol {
+ 				this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+ 			}
+ 			const filter = handlersRegistered ? {
+-				...effective.tools && { toolsListChanged: true },
+-				...effective.prompts && { promptsListChanged: true },
+-				...effective.resources && { resourcesListChanged: true }
++				...effective.tools && advertised?.tools?.listChanged && { toolsListChanged: true },
++				...effective.prompts && advertised?.prompts?.listChanged && { promptsListChanged: true },
++				...effective.resources && advertised?.resources?.listChanged && { resourcesListChanged: true }
+ 			} : {};
+ 			if (Object.keys(filter).length > 0) {
+ 				const ackAbort = new AbortController();

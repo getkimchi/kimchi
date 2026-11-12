@@ -249,12 +249,27 @@ it(
 				sessionId,
 				prompt: [{ type: "text", text: "Start a command and wait for it" }],
 			})
-			await waitForSessionUpdate(
+			const waitCard = await waitForSessionUpdate(
 				fixture,
 				sessionId,
+				// rawInput carries the enrichment the harness adds for cohort
+				// waits (commands/elapsedSeconds), so match the wait flag, not
+				// the exact object.
 				(update) =>
-					update.sessionUpdate === "tool_call" && JSON.stringify(update.rawInput) === JSON.stringify({ wait: true }),
+					update.sessionUpdate === "tool_call" &&
+					typeof update.rawInput === "object" &&
+					update.rawInput !== null &&
+					"wait" in update.rawInput &&
+					update.rawInput.wait === true,
 			)
+			// The enrichment must actually have fired for THIS wait: the full
+			// running cohort (the spawned sleep) plus the wait's own elapsed
+			// wait budget. Asserting only the flag would pass even if the
+			// enrichment regressed to a no-op.
+			const waitInput = (waitCard as { rawInput?: { commands?: { command?: string }[]; elapsedSeconds?: number } })
+				.rawInput
+			expect(waitInput?.commands).toEqual([expect.objectContaining({ command: "echo alive && sleep 90" })])
+			expect(typeof waitInput?.elapsedSeconds).toBe("number")
 			await fixture.conn.cancel({ sessionId })
 			expect((await pending).stopReason).toBe("cancelled")
 			expect((await prompt(fixture, sessionId, "Inspect the command, then stop it")).stopReason).toBe("end_turn")
@@ -512,7 +527,10 @@ it(
 							id: "spawn",
 							function: {
 								name: "bash",
-								arguments: JSON.stringify({ command: 'sleep 25 && echo "ACP-STEER-"DONE-9b2e' }),
+								// 8 s: still outlives the whole exchange (the scripted turns add ~4 s) while
+								// leaving room inside the 30 s test budget; at 25 s the test passed with
+								// only 200-700 ms to spare and timed out on loaded runners.
+								arguments: JSON.stringify({ command: 'sleep 8 && echo "ACP-STEER-"DONE-9b2e' }),
 							},
 						},
 					],

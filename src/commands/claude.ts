@@ -20,7 +20,20 @@ export async function runClaude(args: string[]): Promise<number> {
 		if (!prepped) return 1
 
 		const telemetryEnabled = isTelemetryEnabled()
-		return await runForeground("claude", args, claudeCodeEnv(prepped.apiKey, undefined, { telemetryEnabled }))
+		// Claude Code applies the settings.json `env` block over the process env, so
+		// a "1" written there by an earlier `kimchi setup-tools` would beat the shell
+		// value (#1507). `--settings` outranks settings.json; a `--settings` the user
+		// passes in `args` comes later and replaces this one.
+		const betas = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+		const claudeArgs =
+			betas === undefined
+				? args
+				: ["--settings", JSON.stringify({ env: { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: betas } }), ...args]
+		return await runForeground(
+			"claude",
+			claudeArgs,
+			claudeCodeEnv(prepped.apiKey, undefined, { telemetryEnabled, userEnv: process.env }),
+		)
 	} catch (err) {
 		console.error("kimchi claude:", err instanceof Error ? err.message : String(err))
 		return 1

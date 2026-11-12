@@ -42,6 +42,32 @@ export const AVAILABLE_EXT_METHODS = {
 
 	// Sessionless inbound — no session involved.
 	auth_status: `_${CAPABILITIES_KEY}/auth_status`,
+	// Cast AI SSO login: stepwise, sessionless flow driven by the client —
+	// begin returns the authorize URL without opening a browser, await waits
+	// for the browser leg and settles either directly (single org) or with
+	// the org list for an in-app pick (select_org completes it), cancel
+	// aborts. Advertised to clients via `_meta["kimchi.dev"].sso`.
+	sso_begin: `_${CAPABILITIES_KEY}/sso_begin`,
+	sso_await: `_${CAPABILITIES_KEY}/sso_await`,
+	sso_select_org: `_${CAPABILITIES_KEY}/sso_select_org`,
+	sso_cancel: `_${CAPABILITIES_KEY}/sso_cancel`,
+	// Post-SSO credential export (LLM-4134, ticket #643): returns the current
+	// valid org-scoped OAuth bearer for the canonical kimchi-dev entry — the
+	// same token the harness itself sends as `Authorization: Bearer` (verified
+	// accepted by /v1/me and /v1/organizations; X-API-Key is rejected).
+	// Refreshed with the harness's lazy-refresh discipline;
+	// SSO_NOT_AUTHENTICATED for non-SSO sessions.
+	// SECURITY: this hands out a LIVE bearer with no user interaction, unlike
+	// the sso_* login flow. Clients must OPT IN by declaring `sso_credential:
+	// true` in their initialize `_meta["kimchi.dev"]` capabilities — the agent
+	// refuses the method (methodNotFound) otherwise, so a network-exposed ACP
+	// transport (socket, port-forward, remote container) is not a
+	// credential-harvest endpoint by default. Every export is logged
+	// server-side (org + expiry only, never the token). If the ACP server ever
+	// gains a non-local transport, this opt-in seam must trip a security
+	// review before the method stays servable.
+	sso_credential: `_${CAPABILITIES_KEY}/sso_credential`,
+
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
 	import_discover: `_${CAPABILITIES_KEY}/import_discover`,
 	import_apply: `_${CAPABILITIES_KEY}/import_apply`,

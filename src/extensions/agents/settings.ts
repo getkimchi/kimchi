@@ -94,7 +94,7 @@ function readSettingsFile(path: string): SubagentsSettings {
 }
 
 /** Load merged settings: global provides defaults, project overrides (gated on project trust). */
-export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
+export function loadSettings(cwd: string): SubagentsSettings {
 	// An untrusted repo's .kimchi/agents.json must not override the user's
 	// global agent settings.
 	const project = isProjectScopeAllowed(cwd) ? readSettingsFile(projectPath(cwd)) : {}
@@ -105,7 +105,7 @@ export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
  * Write project-local settings. Global is never touched from code.
  * Returns `true` on success, `false` if the write (or mkdir) failed.
  */
-export function saveSettings(s: SubagentsSettings, cwd: string = process.cwd()): boolean {
+export function saveSettings(s: SubagentsSettings, cwd: string): boolean {
 	const path = projectPath(cwd)
 	try {
 		mkdirSync(dirname(path), { recursive: true })
@@ -140,11 +140,7 @@ export function persistToastFor(
  * Load merged settings, apply them to in-memory state, and emit the
  * `subagents:settings_loaded` lifecycle event. Returns the loaded settings.
  */
-export function applyAndEmitLoaded(
-	appliers: SettingsAppliers,
-	emit: SettingsEmit,
-	cwd: string = process.cwd(),
-): SubagentsSettings {
+export function applyAndEmitLoaded(appliers: SettingsAppliers, emit: SettingsEmit, cwd: string): SubagentsSettings {
 	const settings = loadSettings(cwd)
 	applySettings(settings, appliers)
 	emit("subagents:settings_loaded", { settings })
@@ -159,7 +155,7 @@ export function saveAndEmitChanged(
 	snapshot: SubagentsSettings,
 	successMsg: string,
 	emit: SettingsEmit,
-	cwd: string = process.cwd(),
+	cwd: string,
 ): { message: string; level: "info" | "warning" } {
 	const persisted = saveSettings(snapshot, cwd)
 	emit("subagents:settings_changed", { settings: snapshot, persisted })

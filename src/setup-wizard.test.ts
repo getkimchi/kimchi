@@ -46,8 +46,66 @@ import {
 	extractExistingFrontmatter,
 	migrateCommandToPrompt,
 	runSetupWizard,
+	shouldRunSetupWizard,
 	toSkillName,
 } from "./setup-wizard.js"
+
+describe("shouldRunSetupWizard", () => {
+	it("runs only on a full, interactive TTY without --print or ACP", () => {
+		expect(
+			shouldRunSetupWizard({
+				stdinIsTTY: true,
+				stdoutIsTTY: true,
+				acpMode: false,
+				printMode: false,
+			}),
+		).toBe(true)
+	})
+
+	it("skips when stdin is not a TTY", () => {
+		expect(
+			shouldRunSetupWizard({
+				stdinIsTTY: false,
+				stdoutIsTTY: true,
+				acpMode: false,
+				printMode: false,
+			}),
+		).toBe(false)
+	})
+
+	it("skips when stdout is not a TTY (bench spawn with TTY stdin)", () => {
+		expect(
+			shouldRunSetupWizard({
+				stdinIsTTY: true,
+				stdoutIsTTY: false,
+				acpMode: false,
+				printMode: false,
+			}),
+		).toBe(false)
+	})
+
+	it("skips in ACP mode", () => {
+		expect(
+			shouldRunSetupWizard({
+				stdinIsTTY: true,
+				stdoutIsTTY: true,
+				acpMode: true,
+				printMode: false,
+			}),
+		).toBe(false)
+	})
+
+	it("skips in --print mode even on a full TTY", () => {
+		expect(
+			shouldRunSetupWizard({
+				stdinIsTTY: true,
+				stdoutIsTTY: true,
+				acpMode: false,
+				printMode: true,
+			}),
+		).toBe(false)
+	})
+})
 
 beforeEach(() => {
 	clackMock.cancel.mockClear()

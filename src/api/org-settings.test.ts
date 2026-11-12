@@ -136,6 +136,24 @@ describe("parseOrgPolicy", () => {
 		expect(parseOrgPolicy({ kimchiResources: ["KIMCHI_RESOURCE_POLICY_ON"] })).toBeUndefined()
 	})
 
+	it("passes the kimchiRedaction wire value through verbatim", () => {
+		const redaction = {
+			categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+			entities: { PHONE_NUMBER: "KIMCHI_REDACTION_STATE_ON" },
+			customEntities: [{ name: "ACME_ID", category: "identity_documents", pattern: "E\\d{6}" }],
+		}
+		expect(parseOrgPolicy({ kimchiRedaction: redaction })).toEqual({ redaction })
+	})
+
+	it("accepts the snake_case kimchi_redaction field and drops malformed/empty values", () => {
+		const redaction = { categories: { secrets: "KIMCHI_REDACTION_STATE_OFF" } }
+		expect(parseOrgPolicy({ kimchi_redaction: redaction })).toEqual({ redaction })
+		expect(parseOrgPolicy({ kimchiRedaction: {} })).toBeUndefined()
+		expect(parseOrgPolicy({ kimchiRedaction: "nope" })).toBeUndefined()
+		expect(parseOrgPolicy({ kimchiRedaction: null })).toBeUndefined()
+		expect(parseOrgPolicy({ kimchiRedaction: [] })).toBeUndefined()
+	})
+
 	it("keeps the resources map alongside the other policy fields", () => {
 		expect(
 			parseOrgPolicy({

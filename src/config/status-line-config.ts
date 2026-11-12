@@ -19,6 +19,7 @@ export type StatusLineElementId =
 	| "dap"
 	| "work-pr"
 	| "shells"
+	| "memory"
 
 export type StatusLineConfig = { pinned: StatusLineElementId[]; hidden: StatusLineElementId[] }
 
@@ -110,13 +111,11 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		id: "lsp",
 		label: "LSP",
 		description: "Language-server state (detected / not installed / failed)",
-		defaultVisible: true,
 	},
 	{
 		id: "dap",
 		label: "DAP",
 		description: "Debug-adapter state (detected / not installed)",
-		defaultVisible: true,
 	},
 	{
 		id: "work-pr",
@@ -129,6 +128,11 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		label: "Shells",
 		description: "Running background Bash commands (shown while any run)",
 		defaultVisible: true,
+	},
+	{
+		id: "memory",
+		label: "Memory",
+		description: "Recalled/saved memory counts (off by default — pin to show)",
 	},
 ]
 

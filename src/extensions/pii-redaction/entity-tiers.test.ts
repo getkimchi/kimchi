@@ -1,6 +1,16 @@
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { getDefaultExcludedEntities, getEntityTier, isKnownEntity } from "./entity-tiers.js"
+import {
+	getDefaultExcludedEntities,
+	getEntityCategory,
+	getEntityDefaultOn,
+	getEntityTier,
+	isKnownEntity,
+	isRedactionCategory,
+	listRedactionCatalog,
+	listRegisteredEntities,
+	REDACTION_CATEGORIES,
+} from "./entity-tiers.js"
 import { applyCustomPatterns, CUSTOM_PATTERN_NAMES, createRedactionEngine, detectAndCompose } from "./redactor.js"
 
 // Fixture values are assembled at runtime — see redactor.test.ts for why
@@ -120,6 +130,94 @@ describe("entity tier registry", () => {
 		for (const name of CUSTOM_PATTERN_NAMES) {
 			expect(isKnownEntity(name), `custom pattern "${name}" is not registered in entity-tiers`).toBe(true)
 		}
+	})
+
+	it("every registered entity except GUID has exactly one category; every category member is registered", () => {
+		const catalog = listRedactionCatalog()
+		expect(catalog.length).toBeGreaterThan(100)
+		// Reverse direction too: a future tier-array addition forgotten in
+		// CATEGORY_GROUPS must fail here — it would silently become
+		// non-configurable (local toggle throws, telemetry attributes "custom").
+		const cataloged = new Set(catalog.map((e) => e.entity))
+		for (const name of listRegisteredEntities()) {
+			if (name === "GUID") continue
+			expect(cataloged.has(name), `${name} is registered but has no category entry`).toBe(true)
+		}
+		// Sorted by entity name (stable wire for the console), no duplicates.
+		expect(catalog.map((e) => e.entity)).toEqual([...catalog.map((e) => e.entity)].sort((a, b) => a.localeCompare(b)))
+		for (let i = 1; i < catalog.length; i++) {
+			expect(catalog[i].entity).not.toBe(catalog[i - 1].entity)
+		}
+		// Members are registered, tiers match the registry, categories known.
+		for (const entry of catalog) {
+			expect(isKnownEntity(entry.entity), entry.entity).toBe(true)
+			expect(getEntityTier(entry.entity), entry.entity).toBe(entry.tier)
+			expect(isRedactionCategory(entry.category), entry.entity).toBe(true)
+			expect(getEntityCategory(entry.entity)).toBe(entry.category)
+			expect(getEntityDefaultOn(entry.entity)).toBe(entry.defaultOn)
+		}
+		// GUID is never configurable: not in the catalog, no category.
+		expect(catalog.some((e) => e.entity === "GUID")).toBe(false)
+		expect(getEntityCategory("GUID")).toBeUndefined()
+		expect(getEntityDefaultOn("GUID")).toBe(false)
+		// Nine categories, all populated.
+		expect(REDACTION_CATEGORIES).toHaveLength(9)
+		for (const category of REDACTION_CATEGORIES) {
+			expect(catalog.filter((e) => e.category === category).length, category).toBeGreaterThan(0)
+		}
+	})
+
+	it("effective defaults match today's redaction behavior for the edge members", () => {
+		// Default-on: checksum, anchored, engine-kept bare shapes, anchored customs.
+		for (const name of [
+			"CREDIT_CARD",
+			"IBAN_CODE",
+			"EMAIL_ADDRESS",
+			"IP_ADDRESS",
+			"MAC_ADDRESS",
+			"GITHUB_TOKEN",
+			"AWS_SECRET_KEY", // anchored custom only — covered by default
+			"GENERIC_SECRET",
+			"TELEGRAM_BOT_TOKEN",
+			"OKTA_TOKEN",
+			"SECRET_FIELD",
+			"LOCAL_PATH",
+			"URL_WITH_CREDENTIALS",
+			"REDIS_URL_WITH_PASSWORD",
+		]) {
+			expect(getEntityDefaultOn(name), name).toBe(true)
+		}
+		// Default-off: bare shapes, inert anchor-required entities.
+		for (const name of [
+			"PHONE_NUMBER",
+			"DATE_TIME",
+			"US_SSN",
+			"CRYPTO",
+			"PERSON",
+			"LOCATION",
+			"ORGANIZATION",
+			"URL",
+			"ELASTICSEARCH_URL",
+			"MONGODB_SRV",
+			"DATABASE_CONNECTION_STRING",
+			"AZURE_CONNECTION_STRING",
+			"ABA_ROUTING_NUMBER",
+		]) {
+			expect(getEntityDefaultOn(name), name).toBe(false)
+		}
+		// Category spot checks across the nine buckets.
+		expect(getEntityCategory("EMAIL_ADDRESS")).toBe("emails")
+		expect(getEntityCategory("PHONE_NUMBER")).toBe("phones")
+		expect(getEntityCategory("IP_ADDRESS")).toBe("network")
+		expect(getEntityCategory("LOCAL_PATH")).toBe("local_paths")
+		expect(getEntityCategory("CREDIT_CARD")).toBe("financial")
+		expect(getEntityCategory("US_SSN")).toBe("identity_documents")
+		expect(getEntityCategory("US_NPI")).toBe("identity_documents")
+		expect(getEntityCategory("PERSON")).toBe("personal_details")
+		expect(getEntityCategory("UK_POSTCODE")).toBe("personal_details")
+		expect(getEntityCategory("URL_WITH_CREDENTIALS")).toBe("credentialed_urls")
+		expect(getEntityCategory("GITHUB_TOKEN")).toBe("secrets")
+		expect(getEntityCategory("AZURE_CONNECTION_STRING")).toBe("secrets")
 	})
 
 	it("covers every entity the bundled engine can emit today", async () => {

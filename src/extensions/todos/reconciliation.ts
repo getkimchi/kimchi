@@ -16,20 +16,22 @@ import { getTodoScopeKey } from "./scope.js"
 import { getTodoScopeVersion, getWorkToolCalls } from "./store.js"
 import type { TodoScope } from "./types.js"
 
-/** Latest received user-input revision per session. Advanced on every
- *  genuine user message (interactive or rpc source — never extension
- *  injections, reminders, or replayed history) via the SDK input event —
- *  receive semantics, not acceptance; see todos/index.ts. */
+/** Latest delivered user-input revision per session. Advanced when a
+ *  genuine user message enters history (message_start) — delivery
+ *  semantics: an input that was received but whose message never lands
+ *  (swallowed by a later input handler, a dropped queue entry) never gets
+ *  a revision, so a pending check always names input the model has seen.
+ *  See todos/index.ts. */
 const inputRevisions = new Map<string, number>()
 
-/** Advance and return the session's input revision (newest received input). */
+/** Advance and return the session's input revision (newest delivered input). */
 export function advanceInputRevision(sessionId: string): number {
 	const next = (inputRevisions.get(sessionId) ?? 0) + 1
 	inputRevisions.set(sessionId, next)
 	return next
 }
 
-/** Current input revision for the session (0 before any user input). */
+/** Current input revision for the session (0 before any delivered input). */
 export function getInputRevision(sessionId: string): number {
 	return inputRevisions.get(sessionId) ?? 0
 }
@@ -64,7 +66,7 @@ export function getScopeReconciliation(scope: TodoScope, sessionId: string): Sco
 }
 
 /** True when the scope's current list was reconciled against the session's
- *  latest accepted user input, and nothing has invalidated that since:
+ *  latest delivered user input, and nothing has invalidated that since:
  *  no newer input (which changes what must be reconciled), no successful
  *  work tool completing afterward (which can outpace the list — including
  *  work admitted before the reconciliation but finished after), and no
@@ -101,8 +103,8 @@ export function clearScopeReconciliations(sessionId: string): void {
 
 /** Input revisions captured when todo tool calls were admitted (at the
  *  tool_call hook). A write acknowledges only the revision that was
- *  accepted when its call was admitted — newer user input arriving while
- *  the call was executing keeps its check pending. */
+ *  delivered when its call was admitted — a user message entering history
+ *  while the call was executing keeps its check pending. */
 const admittedInputRevisions = new Map<string, Map<string, number>>()
 
 export function recordAdmittedInputRevision(sessionId: string, toolCallId: string, revision: number): void {

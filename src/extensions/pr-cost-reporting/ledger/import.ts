@@ -276,7 +276,9 @@ function importJournalFiles(
 	const result: ImportResult = { files: [], anomalies: [], problems: [], imported: 0, skipped: 0 }
 	const backend = backendFor(agentDir)
 	const start = until === undefined ? 0 : Math.max(0, journals.indexOf(stopped.get(agentDir) ?? ""))
-	for (const path of [...journals.slice(start), ...journals.slice(0, start)]) {
+	const ordered = [...journals.slice(start), ...journals.slice(0, start)]
+	for (let journalIndex = 0; journalIndex < ordered.length; journalIndex += 1) {
+		const path = ordered[journalIndex]
 		checkBudget?.()
 		const cursor = backend.getJournalCursor(path)
 		// A journal with saved problems is re-read from the start once per process: the note describes an
@@ -438,9 +440,15 @@ function importJournalFiles(
 			skipped: entries.length - imported,
 		})
 		// Unchanged journals cost a stat each; only journals that imported spend the slice.
+		// A finished pass is not pending: the clock can expire with journals left in the
+		// list that are already consumed (an untouched journal costs a stat and skips before
+		// this point), so ask whether any unvisited journal still has unread bytes instead of
+		// assuming it does. A loaded machine reaches this with small journals routinely.
 		if (until !== undefined && Date.now() >= until) {
-			result.pending = true
-			stopped.set(agentDir, path)
+			if (ordered.slice(journalIndex + 1).some((remaining) => hasUnreadJournalBytes(backend, remaining))) {
+				result.pending = true
+				stopped.set(agentDir, path)
+			}
 			break
 		}
 	}
@@ -457,6 +465,22 @@ function importJournalFiles(
 			}
 		}
 	return result
+}
+
+/**
+ * Whether a journal this pass has not reached yet still holds unread bytes. Used at the slice
+ * deadline to tell "more work is left" from "the clock ran out after the work was done": an
+ * untouched journal costs one stat, which only happens on the budget-exhausted path.
+ */
+function hasUnreadJournalBytes(backend: RecordBackend, path: string): boolean {
+	const cursor = backend.getJournalCursor(path)
+	if (!cursor) return true
+	try {
+		return statSync(path).size > cursor.offset
+	} catch {
+		// A vanished journal needs a sweep pass to forget it, so treat it as outstanding work.
+		return true
+	}
 }
 
 /**
@@ -494,6 +518,26 @@ export async function importJournals(agentDir: string, options: ImportOptions = 
 export function importJournalSlice(agentDir: string, checkBudget?: () => void): boolean {
 	const options = { checkBudget, until: Date.now() + IMPORT_SLICE_MS }
 	return importJournalFiles(agentDir, syncWorkJournals(agentDir), options, true).pending === true
+}
+
+/**
+ * Cheap change probe for pass gates: one line per journal carrying the identity
+ * prepareJournal uses to decide a file needs work (path list + dev/ino + size + mtime), without
+ * opening or hashing anything. A tick matching the last pass's probe line-for-line has no new
+ * legacy input to import; any append, rewrite, deletion, or creation differs.
+ */
+export function legacyInputSignature(agentDir: string): string {
+	const parts: string[] = []
+	for (const path of syncWorkJournals(agentDir)) {
+		try {
+			const info = statSync(path)
+			parts.push(`${path}:${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`)
+		} catch (error) {
+			if (!object(error) || error.code !== "ENOENT") throw error
+			parts.push(`${path}:gone`)
+		}
+	}
+	return parts.join("\n")
 }
 
 /** One session's journal in full, so a resumed legacy session keeps its work before the background import arrives. */

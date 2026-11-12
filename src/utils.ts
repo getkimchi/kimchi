@@ -31,6 +31,13 @@ function readHeadBranch(cwd: string): HeadBranch | { confident: false } {
 					if (!pointer.startsWith("gitdir:")) return { confident: false }
 					gitDirectory = resolve(directory, pointer.slice("gitdir:".length).trim())
 				}
+				// The reftable backend stores the real HEAD in its tables and leaves a spec-mandated
+				// `ref: refs/heads/.invalid` stub on disk, which would parse below as a confident
+				// branch. The backend's marker file is present in the repository and in each linked
+				// worktree's git directory; when found, only Git can answer.
+				if (lstatSync(join(gitDirectory, "reftable", "tables.list"), { throwIfNoEntry: false })) {
+					return { confident: false }
+				}
 				const head = readFileSync(join(gitDirectory, "HEAD"), "utf8").trim()
 				const ref = /^ref: (.+)$/.exec(head)
 				// A ref outside refs/heads/ has no short form worth guessing; ask Git.

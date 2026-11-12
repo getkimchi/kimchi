@@ -23,10 +23,14 @@ const mcpClient = vi.hoisted(() => {
 			return { tools: state.tools }
 		}
 	}
-	return { Client, state }
+	class RegistrationRejectedError extends Error {}
+	return { Client, RegistrationRejectedError, state }
 })
 
-vi.mock("@modelcontextprotocol/client", () => ({ Client: mcpClient.Client }))
+vi.mock("@modelcontextprotocol/client", () => ({
+	Client: mcpClient.Client,
+	RegistrationRejectedError: mcpClient.RegistrationRejectedError,
+}))
 
 vi.mock("pi-mcp-adapter", () => ({
 	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
@@ -294,6 +298,7 @@ describe("UpstreamMcpProbe", () => {
 			tools: [],
 			needsAuth: true,
 			error: "OAuth authentication timed out after 300 seconds",
+			authReason: "OAuth authentication timed out after 300 seconds",
 		})
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
 		expect(vi.getTimerCount()).toBe(0)
@@ -331,8 +336,82 @@ describe("UpstreamMcpProbe", () => {
 
 		await expect(
 			new UpstreamMcpProbe().probeTools(`auth-${authenticate}`, { url: "https://example.test/mcp" }, { authenticate }),
-		).resolves.toEqual({ tools: [], needsAuth: true, error: expectedError })
+		).resolves.toEqual({ tools: [], needsAuth: true, error: expectedError, authReason: "Authorization required" })
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
+	})
+
+	const dcrMessage =
+		"Dynamic Client Registration rejected (HTTP 400): Bad Request. This server only accepts pre-registered OAuth clients. If the provider gave you a client ID, set oauth.clientId (and oauth.clientSecret if required) for this server."
+
+	it("classifies a registration rejection on an auth-required result, including non-interactive probes", async () => {
+		upstream.gatewayExecute.mockResolvedValue(gatewayResult({ error: "auth_required", message: dcrMessage }))
+
+		const result = await new UpstreamMcpProbe().probeTools("dcr-auth-required", { url: "https://example.test/mcp" })
+
+		expect(result).toEqual({
+			tools: [],
+			needsAuth: true,
+			error: null,
+			authReason: dcrMessage,
+			errorCode: "dcr_rejected",
+		})
+	})
+
+	it("classifies a registration rejection surfaced as a connection error", async () => {
+		upstream.gatewayExecute.mockResolvedValue(gatewayResult({ error: "connect_failed", message: dcrMessage }))
+
+		const result = await new UpstreamMcpProbe().probeTools("dcr-connect-error", { url: "https://example.test/mcp" })
+
+		expect(result).toEqual({ tools: [], needsAuth: false, error: dcrMessage, errorCode: "dcr_rejected" })
+	})
+
+	it("classifies a registration rejection thrown by the adapter during connect", async () => {
+		upstream.gatewayExecute.mockRejectedValue(new Error(dcrMessage))
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			"dcr-thrown",
+			{ url: "https://example.test/mcp" },
+			{ authenticate: true },
+		)
+
+		expect(result).toEqual({ tools: [], needsAuth: false, error: dcrMessage, errorCode: "dcr_rejected" })
+		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
+	})
+
+	it("classifies a typed RegistrationRejectedError even when its message has no marker", async () => {
+		upstream.gatewayExecute.mockRejectedValue(
+			new mcpClient.RegistrationRejectedError("HTTP 400: invalid registration response"),
+		)
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			"dcr-typed-thrown",
+			{ url: "https://example.test/mcp" },
+			{ authenticate: true },
+		)
+
+		expect(result).toEqual({
+			tools: [],
+			needsAuth: false,
+			error: "HTTP 400: invalid registration response",
+			errorCode: "dcr_rejected",
+		})
+	})
+
+	it("classifies the SDK metadata-discovery variant as dcr_rejected", async () => {
+		const metadataMessage = "Incompatible auth server: does not support dynamic client registration"
+		upstream.gatewayExecute.mockResolvedValue(gatewayResult({ error: "connect_failed", message: metadataMessage }))
+
+		const result = await new UpstreamMcpProbe().probeTools("dcr-metadata", { url: "https://example.test/mcp" })
+
+		expect(result).toEqual({ tools: [], needsAuth: false, error: metadataMessage, errorCode: "dcr_rejected" })
+	})
+
+	it("leaves non-registration connection errors unclassified", async () => {
+		upstream.gatewayExecute.mockResolvedValue(gatewayResult({ error: "connect_failed", message: "ECONNREFUSED" }))
+
+		const result = await new UpstreamMcpProbe().probeTools("plain-connect-error", { url: "https://example.test/mcp" })
+
+		expect(result).toEqual({ tools: [], needsAuth: false, error: "ECONNREFUSED" })
 	})
 
 	it("keeps explicit auth oauth declared when custom headers are configured", async () => {
@@ -346,7 +425,12 @@ describe("UpstreamMcpProbe", () => {
 
 		// Upstream supportsOAuth returns true for explicit auth:"oauth" BEFORE its
 		// headers check; headers only suppress implicit auto-detection.
-		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: true, error: null })
+		expect(result).toEqual({
+			tools: [{ name: "search" }],
+			needsAuth: true,
+			error: null,
+			authReason: "The server declares OAuth but no stored credentials match this URL",
+		})
 		expect(upstream.mcpAuth).not.toHaveBeenCalled()
 	})
 
@@ -445,6 +529,7 @@ describe("UpstreamMcpProbe", () => {
 			tools: [],
 			needsAuth: true,
 			error: "OAuth authentication timed out after 300 seconds",
+			authReason: "OAuth authentication timed out after 300 seconds",
 		})
 		// The aborted auth signal rejected the hook, unwinding the parked flow.
 		await expect(capturedUi?.input("consent")).rejects.toThrow(/OAuth authentication timed out after 300 seconds/)
@@ -459,7 +544,12 @@ describe("UpstreamMcpProbe", () => {
 			{ authenticate: false },
 		)
 
-		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: true, error: null })
+		expect(result).toEqual({
+			tools: [{ name: "search" }],
+			needsAuth: true,
+			error: null,
+			authReason: "The server declares OAuth but no stored credentials match this URL",
+		})
 		expect(upstream.mcpAuth).not.toHaveBeenCalled()
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
 	})
@@ -492,6 +582,7 @@ describe("UpstreamMcpProbe", () => {
 			tools: [],
 			needsAuth: true,
 			error: "Interactive OAuth did not complete (consent denied or cancelled)",
+			authReason: "Interactive OAuth did not complete (consent denied or cancelled)",
 		})
 	})
 
@@ -512,6 +603,7 @@ describe("UpstreamMcpProbe", () => {
 			tools: [{ name: "search" }],
 			needsAuth: true,
 			error: "Interactive OAuth did not complete (consent denied or cancelled)",
+			authReason: "Interactive OAuth did not complete (consent denied or cancelled)",
 		})
 	})
 
@@ -590,6 +682,7 @@ describe("UpstreamMcpProbe", () => {
 				tools: [{ name: "search" }],
 				needsAuth: true,
 				error: "pi-mcp-adapter did not register its mcp-auth command",
+				authReason: "pi-mcp-adapter did not register its mcp-auth command",
 			})
 		} finally {
 			warn.mockRestore()
@@ -621,7 +714,7 @@ describe("UpstreamMcpProbe", () => {
 		expect(upstream.mcpAuth).not.toHaveBeenCalled()
 	})
 
-	it("does not run the OAuth flow under a throwaway probe name", async () => {
+	it("never runs the OAuth flow under a throwaway name for a background probe of a URL-mismatched server", async () => {
 		mcpClient.state.tools = [{ name: "search" }]
 		const name = "different-url-auth"
 		const storedUrl = "https://old.example.test/mcp"
@@ -632,16 +725,120 @@ describe("UpstreamMcpProbe", () => {
 		const result = await new UpstreamMcpProbe().probeTools(
 			name,
 			{ url: probedUrl, auth: "oauth" },
-			{ authenticate: true },
+			{ authenticate: false },
 		)
 
-		// Never drive a browser consent the finally-block logout would discard.
+		// A throwaway probe can never open a browser (its credentials would be
+		// deleted by the finally-block logout), and the stored entry stays put.
+		expect(upstream.options?.config?.settings?.autoAuth).toBe(false)
 		expect(upstream.mcpAuth).not.toHaveBeenCalled()
-		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: true, error: null })
+		expect(result).toEqual({
+			tools: [{ name: "search" }],
+			needsAuth: true,
+			error: null,
+			authReason: "The server declares OAuth but no stored credentials match this URL",
+		})
 		const [probeName] = configuredServerNames()
 		expect(probeName).toMatch(/^__probe_[0-9a-f-]{36}$/)
 		expect(upstream.logout).toHaveBeenCalledWith(`logout ${probeName}`, expect.anything())
 		expect(inspectMcpOAuthTokensForUrl(name, storedUrl).status).toBe("present")
+	})
+
+	it("Connect re-authenticates a URL-mismatched entry under the durable name so the fresh login survives", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+		const name = "different-url-connect"
+		const storedUrl = "https://old-connect.example.test/mcp"
+		const probedUrl = "https://new-connect.example.test/mcp"
+		credentialAccount.value = { status: "present", serverUrl: storedUrl }
+		updateMcpOAuthTokensForUrl(name, storedUrl, { accessToken: "stale-token" })
+		upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
+			if (typeof params === "object" && params !== null && "connect" in params) {
+				// 401-at-connect server: attemptAutoAuth completes the consent inside
+				// connect and the adapter rebinds the entry to the new URL.
+				updateMcpOAuthTokensForUrl(name, probedUrl, { accessToken: "fresh-token" })
+				return gatewayResult({ tools: ["search"] })
+			}
+			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
+		})
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			name,
+			{ url: probedUrl, auth: "oauth" },
+			{ authenticate: true },
+		)
+
+		expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: false, error: null })
+		expect(configuredServerNames()).toEqual([name])
+		expect(upstream.options?.config?.settings?.autoAuth).toBe(true)
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+		expect(upstream.logout).not.toHaveBeenCalled()
+		expect(inspectMcpOAuthTokensForUrl(name, probedUrl).status).toBe("present")
+	})
+
+	it("a denied consent during an explicit-Connect overwrite keeps the durable entry and reports needs-auth", async () => {
+		// Accepted post-condition for a mid-overwrite cancellation: the adapter
+		// may already have rebound the entry to the new URL (client-info-only,
+		// old tokens reset), but the probe must never isolate or delete that
+		// entry — the next background probe then reports needs-auth normally.
+		const url = "https://drivemcp.example.test/mcp"
+		const staleUrl = "https://drivemcp.example.test/o/mcp"
+		updateMcpOAuthTokensForUrl("MCP-Denied", staleUrl, { accessToken: "stale-access", expiresAt: 1 })
+		upstream.mcpAuth.mockResolvedValue(undefined)
+
+		const result = await new UpstreamMcpProbe().probeTools("MCP-Denied", { url, oauth: {} }, { authenticate: true })
+
+		expect(upstream.mcpAuth).toHaveBeenCalledOnce()
+		expect(upstream.mcpAuth.mock.calls[0]?.[0]?.toString().trim()).toBe("MCP-Denied")
+		expect(upstream.logout).not.toHaveBeenCalled()
+		expect(result.needsAuth).toBe(true)
+		expect(result.error).toContain("denied")
+	})
+
+	it("blocks sign-in under an unverifiable account with a recovery message when authenticate=true", async () => {
+		mcpClient.state.tools = [{ name: "search" }]
+		const name = "unverifiable-connect"
+		credentialAccount.value = { status: "unavailable" }
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			name,
+			{ url: "https://drivemcp.example.test/mcp", auth: "oauth" },
+			{ authenticate: true },
+		)
+
+		// Never open a browser under a throwaway name: its credentials are
+		// deleted on cleanup, which is exactly the "connected but keeps asking
+		// to sign in" loop this protects against.
+		expect(upstream.options?.config?.settings?.autoAuth).toBe(false)
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+		const [probeName] = configuredServerNames()
+		expect(probeName).toMatch(/^__probe_[0-9a-f-]{36}$/)
+		expect(upstream.logout).toHaveBeenCalledWith(`logout ${probeName}`, expect.anything())
+		expect(result).toEqual({
+			tools: [{ name: "search" }],
+			needsAuth: true,
+			error: `Stored credentials for "${name}" could not be verified, so sign-in was skipped to protect them. Retry, or run "kimchi mcp forget-grant ${name}" and sign in again.`,
+			authReason: `Stored credentials for "${name}" could not be verified, so sign-in was skipped to protect them. Retry, or run "kimchi mcp forget-grant ${name}" and sign in again.`,
+		})
+	})
+
+	it("spells out the recovery path when a bare-URL server with an unverifiable account reports auth_required", async () => {
+		const name = "unverifiable-bare-url"
+		credentialAccount.value = { status: "unavailable" }
+		upstream.gatewayExecute.mockResolvedValue(
+			gatewayResult({ error: "auth_required", message: "Authorization required" }),
+		)
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			name,
+			{ url: "https://drivemcp.example.test/mcp" },
+			{ authenticate: true },
+		)
+
+		expect(upstream.options?.config?.settings?.autoAuth).toBe(false)
+		expect(upstream.mcpAuth).not.toHaveBeenCalled()
+		expect(result.needsAuth).toBe(true)
+		expect(result.authReason).toBe("Authorization required")
+		expect(result.error).toContain(`"kimchi mcp forget-grant ${name}"`)
 	})
 
 	it("keeps a stdio server with auth oauth on the connected path", async () => {
@@ -743,6 +940,7 @@ describe("UpstreamMcpProbe", () => {
 			needsAuth: true,
 			keychainDenied: true,
 			error: expected.message,
+			authReason: expected.message,
 		})
 		expect(upstream.sessionStart).not.toHaveBeenCalled()
 		expect(upstream.logout).not.toHaveBeenCalled()
@@ -762,6 +960,7 @@ describe("UpstreamMcpProbe", () => {
 			needsAuth: true,
 			keychainDenied: true,
 			error: expected.message,
+			authReason: expected.message,
 		})
 		expect(upstream.sessionStart).not.toHaveBeenCalled()
 		expect(upstream.logout).not.toHaveBeenCalled()
@@ -785,7 +984,7 @@ describe("UpstreamMcpProbe", () => {
 		credentialAccount.value = { status: "present", serverUrl: storedUrl }
 		updateMcpOAuthTokensForUrl(name, storedUrl, { accessToken: "preserve-me" })
 
-		await new UpstreamMcpProbe().probeTools(name, { url: probedUrl }, { authenticate: true })
+		await new UpstreamMcpProbe().probeTools(name, { url: probedUrl }, { authenticate: false })
 
 		const [probeName] = configuredServerNames()
 		expect(probeName).toMatch(/^__probe_[0-9a-f-]{36}$/)
@@ -801,7 +1000,7 @@ describe("UpstreamMcpProbe", () => {
 		upstream.gatewayExecute.mockRejectedValue(new Error("connect failed"))
 
 		await expect(
-			new UpstreamMcpProbe().probeTools(name, { url: "https://new.example.test/mcp" }, { authenticate: true }),
+			new UpstreamMcpProbe().probeTools(name, { url: "https://new.example.test/mcp" }, { authenticate: false }),
 		).rejects.toThrow("connect failed")
 
 		const [probeName] = configuredServerNames()
@@ -923,6 +1122,7 @@ describe("UpstreamMcpProbe", () => {
 			tools: [],
 			needsAuth: true,
 			error: "OAuth authentication timed out after 300 seconds",
+			authReason: "OAuth authentication timed out after 300 seconds",
 		})
 		// The aborted auth signal rejected the hook, unwinding the parked flow.
 		await expect(capturedUi?.input("paste the code")).rejects.toThrow(
@@ -960,6 +1160,7 @@ describe("UpstreamMcpProbe", () => {
 			expect(result).toEqual({
 				tools: [{ name: "search" }],
 				needsAuth: true,
+				authReason: "consent denied: insufficient scope",
 				error: "consent denied: insufficient scope",
 			})
 		} finally {
@@ -978,7 +1179,12 @@ describe("UpstreamMcpProbe", () => {
 			const result = await new UpstreamMcpProbe().probeTools(name, { url, auth: "oauth" }, { authenticate: true })
 
 			// A denied consent must not make the already-captured catalog disappear.
-			expect(result).toEqual({ tools: [{ name: "search" }], needsAuth: true, error: "OAuth authentication cancelled" })
+			expect(result).toEqual({
+				tools: [{ name: "search" }],
+				needsAuth: true,
+				error: "OAuth authentication cancelled",
+				authReason: "OAuth authentication cancelled",
+			})
 			expect(warn).toHaveBeenCalledWith(
 				`MCP probe: interactive OAuth for "${name}" failed: OAuth authentication cancelled`,
 			)

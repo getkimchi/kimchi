@@ -35,8 +35,13 @@ async function harness() {
 	await fire("session_start")
 	const request = async () => {
 		manager.appendMessage({ role: "user", content: "Verify and compare inputs", timestamp: 1 })
-		// Genuine user input advances the session's input revision.
+		// Genuine user input is recorded at receipt; the revision advances
+		// when its message enters history.
 		await fire("input", { type: "input", text: "Verify and compare inputs", source: "interactive" })
+		await fire("message_start", {
+			type: "message_start",
+			message: { role: "user", content: "Verify and compare inputs" },
+		})
 	}
 	await request()
 	const write = (todos: TodoDraft[]) => {

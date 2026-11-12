@@ -3,12 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const probeTools = vi.hoisted(() => vi.fn())
 const verifyMcpKeyringRuntime = vi.hoisted(() => vi.fn())
 const forgetMcpOAuthGrant = vi.hoisted(() => vi.fn())
+const inspectMcpOAuthGrant = vi.hoisted(() => vi.fn())
 
-vi.mock("../extensions/mcp/probe.js", () => ({
-	UpstreamMcpProbe: class {
-		probeTools = probeTools
-	},
-}))
+vi.mock("../extensions/mcp/probe.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../extensions/mcp/probe.js")>()
+	return {
+		...actual,
+		UpstreamMcpProbe: class {
+			probeTools = probeTools
+		},
+	}
+})
 
 vi.mock("../extensions/mcp/keyring-require-bridge.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof KeyringBridge>()
@@ -16,6 +21,8 @@ vi.mock("../extensions/mcp/keyring-require-bridge.js", async (importOriginal) =>
 })
 
 vi.mock("../extensions/mcp/forget-oauth-grant.js", () => ({ forgetMcpOAuthGrant }))
+
+vi.mock("../extensions/mcp/inspect-oauth-grant.js", () => ({ inspectMcpOAuthGrant }))
 
 import type * as KeyringBridge from "../extensions/mcp/keyring-require-bridge.js"
 import { McpKeychainDeniedError, McpKeychainUnavailableError } from "../extensions/mcp/keyring-require-bridge.js"
@@ -252,6 +259,25 @@ describe("kimchi mcp probe", () => {
 		expect(output.json).toEqual({ tools: [], needsAuth: false, error })
 	})
 
+	it("keeps the probe's errorCode classification on the error exit", async () => {
+		probeTools.mockResolvedValue({
+			tools: [],
+			needsAuth: false,
+			error: "Incompatible auth server: does not support dynamic client registration",
+			errorCode: "dcr_rejected" as const,
+		})
+		mockStdin(input())
+		const output = captureStdout()
+
+		expect(await runMcp(["probe", "--json"])).toBe(1)
+		expect(output.json).toEqual({
+			tools: [],
+			needsAuth: false,
+			error: "Incompatible auth server: does not support dynamic client registration",
+			errorCode: "dcr_rejected",
+		})
+	})
+
 	it("returns an error when the upstream probe rejects", async () => {
 		probeTools.mockRejectedValue(new Error("probe crashed"))
 		mockStdin(input())
@@ -444,5 +470,89 @@ describe("kimchi mcp forget-grant", () => {
 		const output = captureStdout()
 		expect(await runMcp(["forget-grant", "granola", "--json"])).toBe(1)
 		expect(output.json).toEqual({ ok: false, name: "granola", error: "I/O exploded", reason: "error" })
+	})
+})
+
+describe("kimchi mcp inspect-grant", () => {
+	beforeEach(() => {
+		inspectMcpOAuthGrant.mockReset()
+		inspectMcpOAuthGrant.mockReturnValue({
+			found: true,
+			serverUrl: "https://example.test/mcp",
+			tokens: { hasAccessToken: true, hasRefreshToken: true, expiresAt: 1_800_000_000, expiresInSec: 3600 },
+		})
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("requires JSON mode", async () => {
+		const output = captureStdout()
+		expect(await runMcp(["inspect-grant", "granola"])).toBe(1)
+		expect(output.json).toEqual(expect.objectContaining({ ok: false, reason: "invalid-input" }))
+		expect(inspectMcpOAuthGrant).not.toHaveBeenCalled()
+	})
+
+	it("requires exactly one server name", async () => {
+		const missing = captureStdout()
+		expect(await runMcp(["inspect-grant", "--json"])).toBe(1)
+		expect(missing.json.reason).toBe("invalid-input")
+		const extra = captureStdout()
+		expect(await runMcp(["inspect-grant", "a", "b", "--json"])).toBe(1)
+		expect(extra.json.reason).toBe("invalid-input")
+		expect(inspectMcpOAuthGrant).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		"foo/bar",
+		"foo\\bar",
+		"foo..bar",
+		"..",
+		"--name=granola",
+		"-x",
+	])("rejects unsafe server name or flag %j", async (name) => {
+		const output = captureStdout()
+		expect(await runMcp(["inspect-grant", name, "--json"])).toBe(1)
+		expect(output.json.reason).toBe("invalid-input")
+		expect(inspectMcpOAuthGrant).not.toHaveBeenCalled()
+	})
+
+	it("prints the presence-only view of the grant", async () => {
+		const output = captureStdout()
+		expect(await runMcp(["inspect-grant", "granola", "--json"])).toBe(0)
+		expect(inspectMcpOAuthGrant).toHaveBeenCalledWith("granola")
+		expect(output.json).toEqual({
+			ok: true,
+			name: "granola",
+			found: true,
+			serverUrl: "https://example.test/mcp",
+			tokens: { hasAccessToken: true, hasRefreshToken: true, expiresAt: 1_800_000_000, expiresInSec: 3600 },
+		})
+	})
+
+	it("succeeds with found=false when no grant exists", async () => {
+		inspectMcpOAuthGrant.mockReturnValue({ found: false })
+		const output = captureStdout()
+		expect(await runMcp(["inspect-grant", "granola", "--json"])).toBe(0)
+		expect(output.json).toEqual({ ok: true, name: "granola", found: false })
+	})
+
+	it("reports a consent denial as a distinct outcome", async () => {
+		inspectMcpOAuthGrant.mockImplementation(() => {
+			throw new McpKeychainDeniedError("sha256-x")
+		})
+		const output = captureStdout()
+		expect(await runMcp(["inspect-grant", "granola", "--json"])).toBe(1)
+		expect(output.json).toEqual(expect.objectContaining({ ok: false, name: "granola", reason: "denied" }))
+	})
+
+	it("reports an unverifiable grant read as a generic error", async () => {
+		inspectMcpOAuthGrant.mockImplementation(() => {
+			throw new Error("could not be read (keychain unavailable or locked)")
+		})
+		const output = captureStdout()
+		expect(await runMcp(["inspect-grant", "granola", "--json"])).toBe(1)
+		expect(output.json).toEqual(expect.objectContaining({ ok: false, name: "granola", reason: "error" }))
 	})
 })

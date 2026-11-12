@@ -11,9 +11,11 @@ import {
 	handleCheckinReplay,
 	hasEffectivePendingCheckin,
 	hasStalenessGateOpened,
+	isGateBlockedToolCall,
 	markCheckinPending,
 	markStalenessGateOpened,
 	reconcileCheckinScope,
+	recordGateBlockedToolCall,
 	recordStalenessOpening,
 	reportConfirmMismatch,
 	resetScopeEpoch,
@@ -215,5 +217,38 @@ describe("check-in gate bookkeeping", () => {
 		unsubscribe()
 		markCheckinPending([GLOBAL_TODO_SCOPE], "s", 2)
 		expect(listener).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("gate-blocked tool call registry", () => {
+	beforeEach(() => {
+		__resetCheckinGate()
+	})
+
+	it("records blocked tool calls and answers across sessions without collisions", () => {
+		recordGateBlockedToolCall("s1", "call-1")
+		recordGateBlockedToolCall("s2", "call-2")
+
+		expect(isGateBlockedToolCall("call-1")).toBe(true)
+		expect(isGateBlockedToolCall("call-2")).toBe(true)
+		expect(isGateBlockedToolCall("call-3")).toBe(false)
+	})
+
+	it("disposes entries with their owning session only", () => {
+		recordGateBlockedToolCall("s1", "call-1")
+		recordGateBlockedToolCall("s2", "call-2")
+
+		disposeCheckinGateSession("s1")
+
+		expect(isGateBlockedToolCall("call-1")).toBe(false)
+		expect(isGateBlockedToolCall("call-2")).toBe(true)
+	})
+
+	it("replay clears the registry with the rest of the volatile gate state", () => {
+		recordGateBlockedToolCall("s", "call-1")
+
+		handleCheckinReplay("s")
+
+		expect(isGateBlockedToolCall("call-1")).toBe(false)
 	})
 })

@@ -13,11 +13,17 @@ import { join, relative, sep } from "node:path"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { createMemoryBackend, defaultMemoryDir, normalizeMem0SearchResults } from "./backend.js"
-import { MEMORY_RESOURCE_ID, MEMORY_USER_ID } from "./config.js"
+import { MEMORY_RESOURCE_ID, MEMORY_USER_ID, UNKNOWN_CAPTURE_SESSION_ID } from "./config.js"
 import { batchChoice, type DecisionGateOptions, systemoneEndpoint } from "./decision-gate.js"
 import { consolidateQuestion, consolidateState } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
 import { resolveProjectScope, sanitizeScopeId } from "./scope.js"
+
+/** Pluralized "memory"/"memories" for user-facing strings (the team's
+ *  terminology; code identifiers keep "facts"). */
+export function memoryCountText(n: number): string {
+	return `${n} ${n === 1 ? "memory" : "memories"}`
+}
 
 // --- shared types -------------------------------------------------------------
 
@@ -503,6 +509,10 @@ export interface AdminRunOptions {
 	confirm?: (message: string) => Promise<boolean>
 	/** Session-scoped memory toggle for enable|disable (interactive surfaces only). */
 	memoryState?: MemoryStateHandle
+	/** The calling session's capture id — excluded from the overview's
+	 *  "Last session" line. Omitted by sessionless surfaces (CLI, ACP
+	 *  store overview). */
+	captureSessionId?: string
 	/** Test seams. */
 	deps?: AdminDeps
 }
@@ -528,7 +538,7 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 	try {
 		switch (parsed.op) {
 			case "overview":
-				return withMode(await opOverview(deps, options.memoryState), useJson)
+				return withMode(await opOverview(deps, options.memoryState, options.captureSessionId), useJson)
 			case "list":
 				return withMode(await opList(parsed, deps), useJson)
 			case "search":
@@ -629,10 +639,45 @@ export interface MemoryOverview {
 	 * moved aside after POISON_JOB_MAX_ATTEMPTS drains). */
 	failedJobs: number
 	ledgerEntries: number
+	/** The most recent capture completion from ANOTHER session — the
+	 *  "Last session: stored N memories" line. Null when no other session
+	 *  has recorded a capture. */
+	lastCapture: { factsAdded: number; updatedAt: number } | null
+}
+
+/** The most recent other-session entry in the worker's completion record —
+ *  the "Last session" line's data. Excludes the calling process's own
+ *  capture session so a session's own incremental captures never read as
+ *  "last session". Degrades to null (fail-open). */
+function lastCaptureExcluding(
+	memoryRoot: string,
+	excludeSessionId?: string,
+): { factsAdded: number; updatedAt: number } | null {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(memoryRoot, "capture-completions.json"), "utf-8"))
+		const sessions =
+			parsed && typeof parsed === "object" && !Array.isArray(parsed)
+				? (parsed as { sessions?: unknown }).sessions
+				: undefined
+		if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) return null
+		let best: { factsAdded: number; updatedAt: number } | null = null
+		for (const [id, entry] of Object.entries(sessions as Record<string, unknown>)) {
+			// The pre-upgrade sentinel is never "some other session" — skip it
+			// alongside the calling session's own entry.
+			if (id === UNKNOWN_CAPTURE_SESSION_ID || id === excludeSessionId || !entry || typeof entry !== "object") continue
+			const factsAdded = (entry as { factsAdded?: unknown }).factsAdded
+			const updatedAt = (entry as { updatedAt?: unknown }).updatedAt
+			if (typeof factsAdded !== "number" || factsAdded <= 0 || typeof updatedAt !== "number") continue
+			if (!best || updatedAt > best.updatedAt) best = { factsAdded, updatedAt }
+		}
+		return best
+	} catch {
+		return null
+	}
 }
 
 /** Structured overview data — the data half of the overview rendering, shared with the ACP memory_status ext-method. */
-export async function adminOverview(deps?: AdminDeps): Promise<MemoryOverview> {
+export async function adminOverview(deps?: AdminDeps, captureSessionId?: string): Promise<MemoryOverview> {
 	const resolved = resolveDeps(deps)
 	const stores = listStores(resolved.memoryRoot)
 	const entries = await Promise.all(
@@ -651,16 +696,26 @@ export async function adminOverview(deps?: AdminDeps): Promise<MemoryOverview> {
 		pendingJobs: countDirEntries(join(resolved.memoryRoot, "pending")),
 		failedJobs: countDirEntries(join(resolved.memoryRoot, "failed")),
 		ledgerEntries: ledgerEntryCount(join(resolved.memoryRoot, "captured-hashes.json")),
+		lastCapture: lastCaptureExcluding(resolved.memoryRoot, captureSessionId),
 	}
 }
 
-async function opOverview(deps: ResolvedDeps, memoryState?: MemoryStateHandle): Promise<Omit<AdminResult, "useJson">> {
-	const data = await adminOverview(deps)
+async function opOverview(
+	deps: ResolvedDeps,
+	memoryState?: MemoryStateHandle,
+	captureSessionId?: string,
+): Promise<Omit<AdminResult, "useJson">> {
+	const data = await adminOverview(deps, captureSessionId)
 
 	const lines: string[] = []
 	if (memoryState) {
 		lines.push(memoryState.read() === false ? "Memory: disabled (this session)" : "Memory: enabled")
 	}
+	lines.push(
+		data.lastCapture
+			? `Last session: stored ${memoryCountText(data.lastCapture.factsAdded)}`
+			: "Last session: no captures recorded yet",
+	)
 	lines.push(`Memory storage: ${data.root}`, "")
 	if (data.stores.length === 0) {
 		lines.push("No memories stored yet.")

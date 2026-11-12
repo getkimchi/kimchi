@@ -18,16 +18,27 @@ import * as eventBuilder from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
 import * as outbox from "./ledger/outbox.js"
 import { backendFor, readRecords } from "./ledger/records.js"
+import * as queue from "./queue.js"
 import {
+	HOLD_EXPIRY_MS,
 	pendingFrozenSnapshots,
 	queueSnapshots,
+	readPendingBody,
 	readReportingState,
+	recordReportingError,
 	setReportingEnabled,
 	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
 import { accountKey, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
 import { statusText } from "./status.js"
-import { deliverEvents, deliverSnapshots, LIMIT_RETRY_MS, reconcileReporting, serverLimit } from "./worker.js"
+import {
+	deliverEvents,
+	deliverSnapshots,
+	LIMIT_RETRY_MS,
+	reconcileReporting,
+	resetReportingPassGates,
+	serverLimit,
+} from "./worker.js"
 
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
@@ -167,6 +178,52 @@ async function seedLinked(priced = true) {
 }
 
 describe("account-fenced reporting delivery", () => {
+	it("verifies the credential once per pass for a multi-entry queue", async () => {
+		const extra = (id: string): RepositorySnapshot => ({
+			...content,
+			content: {
+				...content.content,
+				repository: { provider: "github", host: "github.com", id },
+			},
+		})
+		await queueSnapshots(directory, [extra("43"), extra("44")])
+		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+		const verifies = http.mock.calls.filter(([input]) => String(input).endsWith("api-keys:verify"))
+		const uploads = http.mock.calls.filter(([input]) => !String(input).endsWith("api-keys:verify"))
+		expect(verifies).toHaveLength(1)
+		expect(uploads).toHaveLength(3)
+	})
+
+	it("replays a cached verify failure within the pass without repeating the request", async () => {
+		http.mockReset().mockImplementation(async (input, init) => {
+			if (String(input).endsWith("api-keys:verify")) return new Response("nope", { status: 403 })
+			return Response.json({
+				status: "accepted",
+				revision: JSON.parse(String(init?.body)).revision,
+				receivedAt: new Date().toISOString(),
+			})
+		})
+		const extra = (id: string): RepositorySnapshot => ({
+			...content,
+			content: {
+				...content.content,
+				repository: { provider: "github", host: "github.com", id },
+			},
+		})
+		await queueSnapshots(directory, [extra("43")])
+		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+		const verifies = http.mock.calls.filter(([input]) => String(input).endsWith("api-keys:verify"))
+		expect(verifies).toHaveLength(1)
+		// Both entries took the identical 403 defer: same error text, same 4xx-hour backoff.
+		const entries = Object.values((await readReportingState(directory)).entries)
+		expect(entries).toHaveLength(2)
+		for (const entry of entries) {
+			expect(entry.lastError).toBe(
+				"PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)",
+			)
+			expect(entry.retryAt).toBeGreaterThan(Date.now() + 30 * 60_000)
+		}
+	})
 	it("makes no authentication request when the event outbox is empty", async () => {
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(http).not.toHaveBeenCalled()
@@ -432,7 +489,9 @@ describe("account-fenced reporting delivery", () => {
 	})
 
 	it("delivers frozen legacy bytes when an older writer replaces the queue during verification", async () => {
-		const original = JSON.stringify(Object.values((await readReportingState(directory)).entries)[0].pending)
+		const original = JSON.stringify(
+			readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0]),
+		)
 		let replaced = false
 		const bodies: string[] = []
 		http.mockImplementation(async (input, init) => {
@@ -460,17 +519,19 @@ describe("account-fenced reporting delivery", () => {
 		})
 		await deliver()
 		expect(bodies).toEqual([original])
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toMatchObject({
+		expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])).toMatchObject({
 			revision: "2",
 			requests: [{ allocation: { kind: "unknown" } }],
 		})
 		await deliver()
 		expect(posts().map((snapshot) => snapshot.revision)).toEqual(["1", "2"])
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
+		expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])).toBeUndefined()
 	})
 
 	it("retries the original frozen body after a lost ACK even when a newer revision was accepted", async () => {
-		const original = JSON.stringify(Object.values((await readReportingState(directory)).entries)[0].pending)
+		const original = JSON.stringify(
+			readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0]),
+		)
 		const bodies: string[] = []
 		http.mockImplementation(async (input, init) => {
 			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
@@ -490,7 +551,7 @@ describe("account-fenced reporting delivery", () => {
 		await deliver()
 		await deliver()
 		expect(bodies.map((body) => JSON.parse(body).revision)).toEqual(["1", "2"])
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
+		expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])).toBeUndefined()
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + UPLOAD_INTERVAL_MS)
 		await deliver()
 		expect(bodies.map((body) => JSON.parse(body).revision)).toEqual(["1", "2", "1"])
@@ -518,7 +579,9 @@ describe("account-fenced reporting delivery", () => {
 					},
 				},
 			])
-			replacement = JSON.stringify(Object.values((await readReportingState(directory)).entries)[0].pending)
+			replacement = JSON.stringify(
+				readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0]),
+			)
 			return records
 		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
@@ -531,23 +594,24 @@ describe("account-fenced reporting delivery", () => {
 
 	it("recovers a durable frozen ACK when legacy file cleanup fails without resending", async () => {
 		const path = join(directory, "pr-cost-reporting/state.json")
-		const original = await readFile(path)
 		const write = durableFiles.writeFileDurably
 		const cleanup = vi.spyOn(durableFiles, "writeFileDurably").mockImplementation(async (target, body, check) => {
 			if (
 				target === path &&
-				!Object.values(JSON.parse(String(body)).entries).some((entry) => (entry as { pending?: unknown }).pending)
+				!Object.values(JSON.parse(String(body)).entries).some((entry) => (entry as { pendingId?: unknown }).pendingId)
 			)
 				throw new Error("legacy cleanup failed")
 			return write(target, body, check)
 		})
 		await deliver()
 		expect(posts()).toHaveLength(1)
-		expect(await readFile(path)).toEqual(original)
+		// The acknowledgement's cleanup write failed, so the live entry still points at its
+		// frozen note; the receipt on that note is what keeps the next pass from resending.
+		expect(Object.values((await readReportingState(directory)).entries)[0].pendingId).toBeDefined()
 		cleanup.mockRestore()
 		await deliver()
 		expect(posts()).toHaveLength(1)
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
+		expect(Object.values((await readReportingState(directory)).entries)[0].pendingId).toBeUndefined()
 	})
 
 	it("captures work before a PR exists and captures its later PR without writing legacy inventory", async () => {
@@ -712,7 +776,7 @@ describe("account-fenced reporting delivery", () => {
 		)
 		await deliver()
 		expect(http).toHaveBeenCalledTimes(2)
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeDefined()
+		expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])).toBeDefined()
 	})
 	it("retains a newer snapshot when the older in-flight snapshot is acknowledged", async () => {
 		http.mockImplementation(async (input) => {
@@ -723,7 +787,9 @@ describe("account-fenced reporting delivery", () => {
 			return Response.json({ status: "accepted", revision: "1", receivedAt: new Date().toISOString() })
 		})
 		await deliver()
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending?.revision).toBe("2")
+		expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])?.revision).toBe(
+			"2",
+		)
 	})
 	it("bounds an unfinished response body and keeps the snapshot for retry", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
@@ -737,7 +803,7 @@ describe("account-fenced reporting delivery", () => {
 			await vi.waitFor(() => expect(http).toHaveBeenCalledTimes(2))
 			await vi.advanceTimersByTimeAsync(5001)
 			await running
-			expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeDefined()
+			expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])).toBeDefined()
 		} finally {
 			vi.useRealTimers()
 		}
@@ -773,7 +839,7 @@ describe("account-fenced reporting delivery", () => {
 		})
 		await deliver()
 		expect(http).toHaveBeenCalledTimes(2)
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
+		expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])).toBeUndefined()
 	})
 	it.each([
 		"user",
@@ -791,7 +857,7 @@ describe("account-fenced reporting delivery", () => {
 		})
 		await deliver()
 		expect(http).toHaveBeenCalledOnce()
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeDefined()
+		expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])).toBeDefined()
 	})
 	// The server rejected this body for its size; the queue halves it and retries, down to a floor.
 	it("halves a body the server rejects with 413 and retries the trimmed replacement", async () => {
@@ -838,11 +904,16 @@ describe("account-fenced reporting delivery", () => {
 		expect(frozenBody().requests.length).toBe(16)
 		// Trimmed requests accumulate across halvings, so the server sees the total omissions.
 		expect(frozenBody().coverage.trimmedRequests).toBe(24)
-		// At the floor the body no longer shrinks; the rejection defers like any other.
+		// At the floor the body cannot shrink further: the 413 is a settled refusal — the entry is
+		// dead-lettered instead of deferred onto an ever-stretching retry clock.
 		await deliver()
 		const entry = Object.values((await readReportingState(directory)).entries)[0]
-		expect(entry.lastError).toBe("PR reporting returned HTTP 413")
+		expect(entry.dead).toMatchObject({ status: 413, reason: "PR reporting returned HTTP 413" })
 		expect(frozenBody().requests.length).toBe(16)
+		// A settled body is never selected again: the next pass uploads nothing at all.
+		http.mockClear()
+		await deliver()
+		expect(http).not.toHaveBeenCalled()
 	})
 
 	it("does not trim a queued body when the verify call itself rejects with 413", async () => {
@@ -929,7 +1000,7 @@ describe("account-fenced reporting delivery", () => {
 		expect(backend.readNotePage("legacy-pr-cost-snapshots", "", 100)).toHaveLength(0)
 		expect(backend.readNotePage("legacy-pr-cost-snapshot-receipts", "", 100)).toHaveLength(1)
 		const entry = Object.values((await readReportingState(directory)).entries)[0]
-		expect(entry.pending).toBeUndefined()
+		expect(readPendingBody(directory, entry)).toBeUndefined()
 		// The trimmed ack keeps membership for the requests it left out, which the server retains.
 		expect(entry.requestHashes).toHaveLength(40)
 	})
@@ -996,6 +1067,41 @@ describe("account-fenced reporting delivery", () => {
 		expect(backendFor(directory).readNotePage("legacy-pr-cost-snapshot-receipts", "", 100)).toHaveLength(1)
 	})
 
+	it("carries an account pause learned mid-pass into the pass-gate stamp input", async () => {
+		// The pause is learned DURING delivery: the pass-start state snapshot the gate stamp reads
+		// cannot contain it, so the delivery result must carry it back — otherwise sibling rows of
+		// the paused account re-open the full pass on every tick until the pause thaws.
+		await queueSnapshots(directory, [content])
+		http.mockImplementation(async (_input) =>
+			String(_input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: Response.json(
+						{
+							code: 8,
+							message: "PR cost reporting resource limit exceeded",
+							details: [
+								{
+									"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+									reason: "PR_COST_LIMIT",
+									domain: "ai-optimizer",
+									metadata: { scope: "organization", limit: "requests", current: "40", maximum: "20" },
+								},
+							],
+						},
+						{ status: 429 },
+					),
+		)
+		const result = await deliver()
+		const key = accountKey(content.account)
+		// The pause landed in the queue's durable map with its thaw deadline...
+		await expect(readReportingState(directory)).resolves.toMatchObject({
+			paused: { [key]: { retryAt: expect.any(Number) } },
+		})
+		// ...and the delivery result mirrors it for the stamp, with the same deadline.
+		expect(result?.paused).toEqual([{ account: key, retryAt: expect.any(Number) }])
+		expect(result?.paused[0].retryAt).toBeGreaterThan(Date.now())
+	})
+
 	it("treats a body deleted mid-delivery as settled and continues the pass", async () => {
 		await queueSnapshots(directory, [content])
 		let deleted = false
@@ -1032,7 +1138,7 @@ describe("account-fenced reporting delivery", () => {
 		expect(http).not.toHaveBeenCalled()
 	})
 	// Other 4xx responses, such as an endpoint that is not deployed yet, cannot be fixed by retrying.
-	it.each([404, 400, 403])("backs off for hours after a permanent HTTP %s rejection", async (status) => {
+	it.each([400, 403])("backs off for hours after a permanent HTTP %s rejection", async (status) => {
 		vi.spyOn(Math, "random").mockReturnValue(0.5)
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
@@ -1057,13 +1163,199 @@ describe("account-fenced reporting delivery", () => {
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
 				? Response.json({ organizationId: org, userId: user })
-				: new Response(null, { status: 404 }),
+				: new Response(null, { status: 400 }),
 		)
 		const before = Date.now()
 		await deliver()
 		const entry = Object.values((await readReportingState(directory)).entries)[0]
 		expect(Math.round((entry.retryAt - before) / 60_000)).toBe(minutes)
 	})
+	it("settles a 410 upload rejection on the first refusal and never selects that body again", async () => {
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status: 410 }),
+		)
+		await deliver()
+		const settled = Object.values((await readReportingState(directory)).entries)[0]
+		// The entry keeps its claims for the record, but retry bookkeeping stopped at the mark:
+		// retryAt stays at zero, so only the dead-letter flag keeps it out of delivery.
+		expect(settled.dead).toMatchObject({ status: 410, reason: "PR reporting returned HTTP 410" })
+		expect(settled.retryAt).toBe(0)
+		http.mockClear()
+		await deliver()
+		expect(http).not.toHaveBeenCalled()
+	})
+
+	it("defers a lone 404 through a server-skew window, then settles on the third spaced refusal", async () => {
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status: 404 }),
+		)
+		await deliver()
+		let entry = Object.values((await readReportingState(directory)).entries)[0]
+		// One 404 can be an undeployed or rolled-back route while api-keys:verify still answers;
+		// that recovers in minutes, so the first refusals defer like any other permanent 4xx.
+		expect(entry.dead).toBeUndefined()
+		expect(entry.retryAt).toBeGreaterThan(Date.now())
+		vi.spyOn(Date, "now").mockReturnValue(entry.retryAt + 1)
+		await deliver()
+		entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.dead).toBeUndefined()
+		expect(entry.retryAt).toBeGreaterThan(Date.now() - 1)
+		// The third spaced refusal is durable: the repository or organization is gone, so the body
+		// settles instead of stretching its retry clock toward a year.
+		vi.spyOn(Date, "now").mockReturnValue(entry.retryAt + 1)
+		await deliver()
+		entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.dead).toMatchObject({ status: 404, reason: "PR reporting returned HTTP 404" })
+		// The settle mark replaces retry bookkeeping: the last defer's deadline stays recorded but
+		// nothing is due again — the dead flag, not retryAt, keeps the body out of selection.
+		expect(entry.dead?.at).toBeGreaterThan(0)
+		vi.spyOn(Date, "now").mockRestore()
+		http.mockClear()
+		await deliver()
+		expect(http).not.toHaveBeenCalled()
+	})
+
+	it("never settles a lone 404 on the back of unrelated failures", async () => {
+		// Two 500s defer like any transient failure; the 404 that follows is still this body's
+		// FIRST spaced refusal. The old attempts-based rule settled it anyway — attempts counts
+		// defers of every cause — so only a 404-specific counter may drive settlement.
+		let call = 0
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status: ++call <= 2 ? 500 : 404 }),
+		)
+		const endState = async () => Object.values((await readReportingState(directory)).entries)[0]
+		// Jump past both the retry deadline and the five-minute upload window (a 500's ~30 s
+		// backoff alone would still sit inside the window and skip the next attempt).
+		const whenDue = (entry: { retryAt: number }) => entry.retryAt + 6 * 60_000
+		await deliver()
+		let entry = await endState()
+		expect(entry.dead).toBeUndefined()
+		expect(entry.attempts).toBe(1)
+		expect(entry.defer404s ?? 0).toBe(0)
+		vi.spyOn(Date, "now").mockReturnValue(whenDue(entry))
+		await deliver()
+		entry = await endState()
+		expect(entry.dead).toBeUndefined()
+		expect(entry.attempts).toBe(2)
+		expect(entry.defer404s ?? 0).toBe(0)
+		vi.spyOn(Date, "now").mockReturnValue(whenDue(entry))
+		await deliver()
+		// The third attempt answers 404, but it is this body's first spaced one: defer, not settle.
+		entry = await endState()
+		expect(entry.dead).toBeUndefined()
+		expect(entry.defer404s).toBe(1)
+		// Two more spaced 404s reach the third refusal and settle the body.
+		vi.spyOn(Date, "now").mockReturnValue(whenDue(entry))
+		await deliver()
+		entry = await endState()
+		expect(entry.defer404s).toBe(2)
+		vi.spyOn(Date, "now").mockReturnValue(whenDue(entry))
+		await deliver()
+		expect((await endState()).dead).toMatchObject({ status: 404 })
+		vi.spyOn(Date, "now").mockRestore()
+	})
+
+	it("never counts verify-endpoint 404s toward the spaced-refusal settle rule", async () => {
+		// The verify route answering 404 is not the snapshot route refusing this body: only an
+		// attempted upload's 404 may push a body toward settlement. Two verify 404s followed by
+		// one upload 404 must leave the body alive at defer404s = 1, not settled.
+		let verifyFails = 2
+		http.mockImplementation(async (input) => {
+			if (String(input).endsWith("api-keys:verify")) {
+				if (verifyFails > 0) {
+					verifyFails--
+					return new Response(null, { status: 404 })
+				}
+				return Response.json({ organizationId: org, userId: user })
+			}
+			return new Response(null, { status: 404 })
+		})
+		const endState = async () => Object.values((await readReportingState(directory)).entries)[0]
+		const whenDue = (entry: { retryAt: number }) => entry.retryAt + 6 * 60_000
+		await deliver()
+		let entry = await endState()
+		expect(entry.dead).toBeUndefined()
+		expect(entry.defer404s ?? 0).toBe(0)
+		vi.spyOn(Date, "now").mockReturnValue(whenDue(entry))
+		await deliver()
+		entry = await endState()
+		expect(entry.dead).toBeUndefined()
+		expect(entry.defer404s ?? 0).toBe(0)
+		vi.spyOn(Date, "now").mockReturnValue(whenDue(entry))
+		await deliver()
+		// Verify now succeeds and the upload itself answers 404: the body's FIRST spaced refusal.
+		entry = await endState()
+		expect(entry.dead).toBeUndefined()
+		expect(entry.defer404s).toBe(1)
+		vi.spyOn(Date, "now").mockRestore()
+	})
+
+	it("lets a fresh capture of the same repository start clean after its earlier body was settled", async () => {
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status: 404 }),
+		)
+		// Settle the seed body first (third spaced 404), then recapture.
+		const endState = async () => Object.values((await readReportingState(directory)).entries)[0]
+		await deliver()
+		let seed = await endState()
+		expect(seed.dead).toBeUndefined()
+		vi.spyOn(Date, "now").mockReturnValue(seed.retryAt + 1)
+		await deliver()
+		seed = await endState()
+		vi.spyOn(Date, "now").mockReturnValue(seed.retryAt + 1)
+		await deliver()
+		expect((await endState()).dead?.status).toBe(404)
+		vi.spyOn(Date, "now").mockRestore()
+		// Fresh evidence for the same key starts a new lifecycle; the settled mark never follows it.
+		await queueSnapshots(directory, [
+			{
+				account: content.account,
+				content: {
+					...content.content,
+					requests: [
+						...content.content.requests,
+						{
+							requestId: "44444444-4444-4444-8444-444444444444",
+							billingRecordIds: [],
+							startedAt: "2026-10-04T12:30:00Z",
+							allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+						},
+					],
+					coverage: { observedRequests: 2, unpricedRequests: 2, historyComplete: true },
+				},
+			},
+		])
+		http.mockImplementation(async (input, init) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: Response.json({
+						status: "accepted",
+						revision: JSON.parse(String(init?.body)).revision,
+						receivedAt: new Date().toISOString(),
+					}),
+		)
+		http.mockClear()
+		await deliver()
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.dead).toBeUndefined()
+		expect(readPendingBody(directory, entry)).toBeUndefined()
+		expect(entry.lastAcknowledgedAt).toBeDefined()
+		// The settled frozen note is still on disk with its claims; its permanently-refused bytes
+		// must never be uploaded again — only the fresh body (revision 2) may go out.
+		const uploads = http.mock.calls
+			.filter(([input]) => String(input).endsWith("/pr-cost-snapshots"))
+			.map(([, init]) => JSON.parse(String(init?.body)))
+		expect(uploads.map((body) => body.revision)).toEqual(["2"])
+	})
+
 	it.each([408, 503])("keeps retrying HTTP %s within a minute", async (status) => {
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
@@ -1111,7 +1403,9 @@ describe("account-fenced reporting delivery", () => {
 		expect(retryAt - Date.now()).toBeLessThanOrEqual(LIMIT_RETRY_MS)
 	})
 	it("cancels an in-flight upload when another instance opts out and retains its payload", async () => {
-		const pending = JSON.stringify(Object.values((await readReportingState(directory)).entries)[0].pending)
+		const pending = JSON.stringify(
+			readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0]),
+		)
 		let sent: (() => void) | undefined
 		const sending = new Promise<void>((resolve) => {
 			sent = resolve
@@ -1128,7 +1422,7 @@ describe("account-fenced reporting delivery", () => {
 		await setReportingEnabled(directory, false)
 		await running
 		const state = await readReportingState(directory)
-		expect(JSON.stringify(Object.values(state.entries)[0].pending)).toBe(pending)
+		expect(JSON.stringify(readPendingBody(directory, Object.values(state.entries)[0]))).toBe(pending)
 		expect(Object.values(state.entries)[0].requestHashes).toHaveLength(1)
 	})
 	it("keeps a malformed acknowledgement pending and never records response content", async () => {
@@ -1144,7 +1438,7 @@ describe("account-fenced reporting delivery", () => {
 		)
 		await deliver()
 		const state = await readReportingState(directory)
-		expect(Object.values(state.entries)[0].pending).toBeDefined()
+		expect(readPendingBody(directory, Object.values(state.entries)[0])).toBeDefined()
 		expect(JSON.stringify(state)).not.toContain("secret")
 	})
 	it("explains a role that cannot upload and retries it slowly", async () => {
@@ -1165,7 +1459,7 @@ describe("account-fenced reporting delivery", () => {
 		respond(accepted)
 		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
 		expect(posts()).toHaveLength(1)
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
+		expect(readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0])).toBeUndefined()
 	})
 	it("does not hold a directory watch during delivery", async () => {
 		const watching = vi.spyOn(fs, "watch")
@@ -1328,7 +1622,7 @@ describe("server limits", () => {
 		})
 		expect((entry?.retryAt ?? 0) - before).toBeGreaterThanOrEqual(LIMIT_RETRY_MS)
 		expect((entry?.retryAt ?? 0) - Date.now()).toBeLessThanOrEqual(LIMIT_RETRY_MS)
-		expect((await entryFor("43"))?.pending).toBeUndefined()
+		expect(readPendingBody(directory, await entryFor("43"))).toBeUndefined()
 		const state = await readReportingState(directory)
 		expect(JSON.stringify(state)).not.toContain("resource limit exceeded")
 		expect(unwrapped(statusText(state, undefined).text)).toContain(
@@ -1369,11 +1663,13 @@ describe("server limits", () => {
 		expect(state.paused).toBeUndefined()
 		expect(await entryFor("42")).toMatchObject({ limit: { current: 250001, maximum: 250000 } })
 		expect((await entryFor("42"))?.limit?.scope).toBeUndefined()
-		expect((await entryFor("43"))?.pending).toBeUndefined()
+		expect(readPendingBody(directory, await entryFor("43"))).toBeUndefined()
 	})
 	it("retains a rejected legacy body at cutover and retries its exact bytes after the limit wait", async () => {
 		await queueSnapshots(directory, [inventory([requestId, second])])
-		const original = JSON.stringify(Object.values((await readReportingState(directory)).entries)[0].pending)
+		const original = JSON.stringify(
+			readPendingBody(directory, Object.values((await readReportingState(directory)).entries)[0]),
+		)
 		let full = true
 		respond((payload) => (full ? limited("snapshot", "requests", "2", "1") : accepted(payload)))
 		await deliver()
@@ -1730,6 +2026,278 @@ describe("idle reporting passes", () => {
 		expect(blockingRead).not.toHaveBeenCalled()
 		expect(posts()).toHaveLength(1)
 	})
+})
+
+describe("gated quiet passes", () => {
+	beforeEach(resetReportingPassGates)
+
+	it("stays quiet between due times, honors opt-outs, and fires the deferred retry at its stamped time", async () => {
+		await seedLinked()
+		let refuse = true
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: refuse
+					? new Response(null, { status: 500 })
+					: Response.json({ status: "accepted", revision: "1", receivedAt: new Date().toISOString() }),
+		)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const freeze = vi.spyOn(queue, "freezeSnapshots")
+		await run()
+		expect(posts()).toHaveLength(1)
+		const [frozen] = await pendingFrozenSnapshots(directory, () => {}, Date.now() - 1)
+		if (!frozen) throw new Error("a deferred snapshot must wait between pass gates")
+		// The pass's own deferral bookkeeping is absorbed into the stamp: nothing the pass did not
+		// write itself changed on disk, so the very next tick runs no full cycle at all.
+		const settled = freeze.mock.calls.length
+		await run()
+		expect(freeze.mock.calls.length).toBe(settled)
+		expect(posts()).toHaveLength(1)
+		// Opting out is a write from outside the pass: it re-opens one pass and then stays quiet.
+		await setReportingEnabled(directory, false)
+		vi.spyOn(Date, "now").mockReturnValue(frozen.entry.retryAt + 1000)
+		await run()
+		expect(freeze.mock.calls.length).toBeGreaterThan(settled)
+		const disabled = freeze.mock.calls.length
+		await run()
+		expect(freeze.mock.calls.length).toBe(disabled)
+		expect(posts()).toHaveLength(1)
+		// Re-enabled and past the stamped retry time, the due snapshot goes out.
+		await setReportingEnabled(directory, true)
+		refuse = false
+		await run()
+		expect(freeze.mock.calls.length).toBeGreaterThan(disabled)
+		expect(posts()).toHaveLength(2)
+	})
+
+	it("re-opens for a foreign queue write, not for a content-identical rewrite", async () => {
+		await seedLinked()
+		let refuse = true
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: refuse
+					? new Response(null, { status: 500 })
+					: Response.json({ status: "accepted", revision: "1", receivedAt: new Date().toISOString() }),
+		)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const freeze = vi.spyOn(queue, "freezeSnapshots")
+		await run()
+		const settled = freeze.mock.calls.length
+		await run()
+		expect(freeze.mock.calls.length).toBe(settled)
+		expect(posts()).toHaveLength(1)
+		// A content-identical rewrite (an editor touch, a sync tool) moves no real state: the tick
+		// stays quiet — only real writes move the version the gate reads.
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		await writeFile(path, await readFile(path))
+		await run()
+		expect(freeze.mock.calls.length).toBe(settled)
+		// A foreign write — any session's real queue change — bumps the version the stamp keeps:
+		// the next pass runs fully and sees the retry as due at its stamped time.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000)
+		refuse = false
+		await recordReportingError(directory, "foreign writer")
+		await run()
+		expect(freeze.mock.calls.length).toBeGreaterThan(settled)
+		expect(posts()).toHaveLength(2)
+	})
+})
+
+it("releases a hold whose evidence stayed incomplete past the expiry horizon", async () => {
+	// Directly age the queue file: the hold is a week+ old and no completing evidence ever arrived.
+	const file = join(directory, "pr-cost-reporting", "state.json")
+	const state = JSON.parse(await readFile(file, "utf8"))
+	const [seeded] = Object.values(state.entries) as {
+		held?: boolean
+		heldAt?: number
+	}[]
+	seeded.held = true
+	seeded.heldAt = Date.now() - HOLD_EXPIRY_MS - 60_000
+	await writeFile(file, `${JSON.stringify(state)}\n`)
+	// The same capture passes again: an expired hold releases instead of re-parking the entry.
+	await queueSnapshots(directory, [content])
+	let entry = Object.values((await readReportingState(directory)).entries)[0]
+	expect(entry.held).toBeUndefined()
+	expect(entry.heldAt).toBeUndefined()
+	await deliver()
+	entry = Object.values((await readReportingState(directory)).entries)[0]
+	expect(readPendingBody(directory, entry)).toBeUndefined()
+	expect(entry.lastAcknowledgedAt).toBeDefined()
+})
+
+it("keeps a fresh hold parked while its evidence looks incomplete", async () => {
+	// Same evidence, but the capture admits its inventory is incomplete: the entry is held.
+	await queueSnapshots(directory, [{ account: content.account, content: content.content, incomplete: true }])
+	const entry = Object.values((await readReportingState(directory)).entries)[0]
+	expect(entry.held).toBe(true)
+	expect(entry.heldAt).toBeDefined()
+	http.mockClear()
+	await deliver()
+	expect(http).not.toHaveBeenCalled()
+})
+
+it("sleeps between a failing snapshot's own retry deadlines instead of chasing its bookkeeping", async () => {
+	vi.spyOn(Math, "random").mockReturnValue(0.5)
+	http.mockImplementation(async (input) =>
+		String(input).endsWith("api-keys:verify")
+			? Response.json({ organizationId: org, userId: user })
+			: new Response(null, { status: 500 }),
+	)
+	const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+	const freeze = vi.spyOn(queue, "freezeSnapshots")
+	await run()
+	expect(posts()).toHaveLength(1)
+	let entry = Object.values((await readReportingState(directory)).entries)[0]
+	const firstRetryAt = entry.retryAt
+	// The pass's own deferral bookkeeping (attempts/retryAt in state.json, ledger commits) moved
+	// the version signals the gate reads; its stamp absorbs them: the very next tick is quiet.
+	const settled = freeze.mock.calls.length
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	expect(posts()).toHaveLength(1)
+	// A retry's clock is the later of backoff and the upload window after the last attempt;
+	// middling ticks stay quiet both ways.
+	vi.spyOn(Date, "now").mockReturnValue(firstRetryAt + 1)
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	const wake = Math.max(firstRetryAt, (entry.uploadedAt ?? 0) + UPLOAD_INTERVAL_MS) + 1
+	// At the entry's own schedule exactly one pass runs and retries; its failure re-parks later.
+	vi.spyOn(Date, "now").mockReturnValue(wake)
+	await run()
+	expect(freeze.mock.calls.length).toBeGreaterThan(settled)
+	expect(posts()).toHaveLength(2)
+	entry = Object.values((await readReportingState(directory)).entries)[0]
+	expect(entry.retryAt).toBeGreaterThan(firstRetryAt)
+	const reSettled = freeze.mock.calls.length
+	await run()
+	expect(freeze.mock.calls.length).toBe(reSettled)
+})
+
+it("a 413-trimmed body is due again on the next pass instead of riding the attempt's own window", async () => {
+	// The trim REPLACES the frozen row: attempts/retryAt reset to zero and the upload-window
+	// clock clears, so the halved body retries immediately — the stamp must not keep the
+	// attempt's own rejected-window picture, or the gate would sit on a body the queue says
+	// is due for minutes (and, for a capped-limit trim, for a limit-length backoff).
+	const requests = [
+		content.content.requests[0],
+		...Array.from({ length: 39 }, (_, index) => ({
+			requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+			billingRecordIds: [],
+			startedAt: "2026-10-04T12:00:00Z",
+			allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+		})),
+	]
+	await queueSnapshots(directory, [
+		{
+			account: content.account,
+			content: {
+				repository: content.content.repository,
+				pullRequests: [],
+				requests,
+				coverage: { observedRequests: requests.length, unpricedRequests: requests.length, historyComplete: true },
+			},
+		},
+	])
+	http.mockImplementation(async (input) =>
+		String(input).endsWith("api-keys:verify")
+			? Response.json({ organizationId: org, userId: user })
+			: new Response(null, { status: 413 }),
+	)
+	const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+	const freeze = vi.spyOn(queue, "freezeSnapshots")
+	await run()
+	expect(posts()).toHaveLength(1) // original body rejected
+	// Next tick: the trimmed row is due NOW — the gate opens even though the attempt itself
+	// just happened (its window would otherwise hold a fresh upload shut for five minutes).
+	const afterTrim = freeze.mock.calls.length
+	await run()
+	expect(posts()).toHaveLength(2) // 40 requests halved to 20, retried immediately
+	expect(freeze.mock.calls.length).toBeGreaterThan(afterTrim)
+	// Still above the trim floor: second 413 halves 20 -> 16 and is due immediately again.
+	const afterSecond = freeze.mock.calls.length
+	await run()
+	expect(posts()).toHaveLength(3)
+	expect(freeze.mock.calls.length).toBeGreaterThan(afterSecond)
+	// At the floor the body settles (dead-letter — dead-letter PR on this stack base); the pass
+	// after THAT is finally quiet — each immediate reopen up to here traced a due trim, not churn.
+	const settled = freeze.mock.calls.length
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+})
+
+it("stamps an event upload parked on backoff at its deadline instead of ticking until it drains", async () => {
+	resetReportingPassGates()
+	const batch = {
+		id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		accountKey: accountKey(content.account),
+		body: new TextEncoder().encode("{}"),
+		eventIds: [],
+		createdAt: Date.now(),
+		orderKey: "",
+	}
+	backendFor(directory).insertOutboxBatch(batch)
+	// The schedule note every failed upload leaves behind: parked for an hour, bound to the
+	// queue's current legacy-snapshot resume marker (the note is dropped for any other).
+	const resume = backendFor(directory).getNote("agent", "legacy-snapshot-resume")
+	backendFor(directory).putNote(
+		"pr-cost-delivery",
+		accountKey(content.account),
+		JSON.stringify({ batchId: batch.id, attempts: 1, retryAt: Date.now() + 60 * 60_000, resume }),
+	)
+	respond(accepted)
+	const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+	const freeze = vi.spyOn(queue, "freezeSnapshots")
+	let quiet = freeze.mock.calls.length
+	for (let absorbing = 0; absorbing < 8; absorbing++) {
+		await run()
+		if (freeze.mock.calls.length === quiet) break
+		quiet = freeze.mock.calls.length
+	}
+	const settled = quiet
+	// Before the parked upload's deadline: ticks run no cycle at all — the outbox's own
+	// backoff note, not a full scan, says when to worry about it again.
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	// Past its deadline the pass re-opens and the upload goes out.
+	vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61 * 60_000)
+	await run()
+	expect(freeze.mock.calls.length).toBeGreaterThan(settled)
+})
+
+it("wakes at a hold's expiry deadline, even with no other change to report", async () => {
+	// Directly age the queue file: the hold reaches its horizon one minute from now.
+	const file = join(directory, "pr-cost-reporting", "state.json")
+	const state = JSON.parse(await readFile(file, "utf8"))
+	const [seeded] = Object.values(state.entries) as {
+		held?: boolean
+		heldAt?: number
+	}[]
+	seeded.held = true
+	seeded.heldAt = Date.now() - HOLD_EXPIRY_MS + 60_000
+	await writeFile(file, `${JSON.stringify(state)}\n`)
+	const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+	const freeze = vi.spyOn(queue, "freezeSnapshots")
+	let quiet = freeze.mock.calls.length
+	for (let absorbing = 0; absorbing < 8; absorbing++) {
+		await run()
+		if (freeze.mock.calls.length === quiet) break
+		quiet = freeze.mock.calls.length
+	}
+	const settled = quiet
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	// The deadline wakes one pass: it releases the hold and the parked upload finally lands.
+	vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 60_000)
+	await run()
+	expect(freeze.mock.calls.length).toBeGreaterThan(settled)
+	const entry = Object.values((await readReportingState(directory)).entries)[0]
+	expect(entry.held).toBeUndefined()
+	expect(entry.lastAcknowledgedAt).toBeDefined()
 })
 
 describe("journals with a torn final append", () => {

@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto"
+import { basename } from "node:path"
 import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
 import { getQuotaUsage } from "../../../sandbox/cloud/quota.js"
-import type { Workspace } from "../../../sandbox/cloud/types.js"
+import type { Workspace, WorkspaceSpecConfig, WorkspaceTemplateSummary } from "../../../sandbox/cloud/types.js"
+import type { WorkspaceFileConfig } from "../../../sandbox/cloud/workspace-file.js"
+import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
+import { listWorkspaceTemplates } from "../../../sandbox/cloud/workspace-templates.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { TeleportContext } from "../types.js"
+import { openWorkspaceSetup } from "../ui/workspace-setup.js"
 import { pickWorkspace } from "../ui/workspaces-panel.js"
 import type { WorkspaceRow } from "../ui/workspaces-table.js"
-import { refuse, TeleportRefusal } from "./errors.js"
+import { refuse, TeleportRefusal, warn } from "./errors.js"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -51,6 +56,21 @@ export interface ResolvedWorkspace {
 	 * mismatch.
 	 */
 	isNew: boolean
+	/**
+	 * Set only when the setup dialog ran (picker "new"): the user-confirmed
+	 * workspace configuration. Presence tells teleport NOT to re-read
+	 * kimchi_workspace.yaml — the dialog owns the result (a cleared form means
+	 * org defaults, deliberately not file defaults). `name` is the confirmed
+	 * display name; undefined falls back to the cwd basename downstream.
+	 * Exactly one of `spec` (manual configuration) / `templateName` (org
+	 * template, expanded server-side at creation) is set — the wire rejects
+	 * both.
+	 */
+	setup?: {
+		name?: string
+		spec?: WorkspaceSpecConfig
+		templateName?: string
+	}
 }
 
 export async function resolveWorkspaceRef(
@@ -134,8 +154,51 @@ export async function resolveWorkspaceRef(
 		throw new TeleportRefusal(opts.cancelledMessage ?? "cancelled")
 	}
 	if (choice.action === "new") {
-		return { id: randomUUID(), isNew: true }
+		return mintViaSetupDialog(ctx, orgId, opts)
 	}
 	const picked = workspaces.find((w) => w.id === choice.row.id)
 	return { id: choice.row.id, name: picked?.name, isNew: false }
+}
+
+/**
+ * Picker "new" → interactive workspace setup dialog. The dialog prefills
+ * from kimchi_workspace.yaml (a broken file refuses here, same UX as the
+ * file-based mint path) and offers the organization's workspace templates as
+ * ready-made configurations. Its confirmed result — display name plus either
+ * a validated spec (manual) or the selected template name (server expands it
+ * at creation) — rides the resolved workspace as `setup`.
+ */
+async function mintViaSetupDialog(ctx: TeleportContext, orgId: string, opts: ResolveOpts): Promise<ResolvedWorkspace> {
+	let file: WorkspaceFileConfig | undefined
+	try {
+		file = loadWorkspaceFile(ctx.cwd)
+	} catch (err) {
+		if (err instanceof WorkspaceFileError) refuse(ctx, err.message)
+		throw err
+	}
+	// Template catalog for the dialog's source list — best-effort: a failed
+	// listing degrades to manual configuration (the dialog then opens straight
+	// on the form) instead of blocking workspace creation.
+	let templates: WorkspaceTemplateSummary[] = []
+	try {
+		templates = await listWorkspaceTemplates(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId })
+	} catch (err) {
+		if (!ctx.signal?.aborted) {
+			warn(
+				ctx,
+				`Could not load workspace templates — configure manually. (${err instanceof Error ? err.message : String(err)})`,
+			)
+		}
+	}
+	const setupResult = await openWorkspaceSetup(ctx, { name: basename(ctx.cwd) || "kimchi", file }, templates)
+	if (!setupResult || setupResult.action === "cancel") {
+		throw new TeleportRefusal(opts.cancelledMessage ?? "cancelled")
+	}
+	const setup: NonNullable<ResolvedWorkspace["setup"]> = { name: setupResult.name }
+	if (setupResult.templateName) {
+		setup.templateName = setupResult.templateName
+	} else {
+		setup.spec = setupResult.spec
+	}
+	return { id: randomUUID(), isNew: true, setup }
 }

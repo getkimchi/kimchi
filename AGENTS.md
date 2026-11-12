@@ -28,7 +28,7 @@ Org policy is fetched at startup and held for the session; each field has one en
 ## Development patterns
 
 - **Auto-formatting**: `lint:fix` runs automatically after file edits (PostToolUse hook) — don't run manually
-- **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
+- **Pre-push**: `.husky/pre-push` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
 ## Reference docs
@@ -39,15 +39,18 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/acp-model-attribution.md](docs/acp-model-attribution.md) — per-message model/provider attribution on ACP blocks
 - [docs/agents.md](docs/agents.md) — agent infrastructure (workers, subagents, ferment planning pipeline)
 - [docs/artifacts.md](docs/artifacts.md) — generated-file artifacts: declaring them from tools (`details.artifacts`), detection, emission and replay
+- [docs/auto-update.md](docs/auto-update.md) — background auto-update: ticks, gates, updater lock, update result, manual path
 - [docs/bash-commands.md](docs/bash-commands.md) — inspecting running background bash commands
 - [docs/bash-tool-guard.md](docs/bash-tool-guard.md) — bash command safety guard and its taxonomy
 - [docs/event-bus.md](docs/event-bus.md) — global UI event bus channels
+- [docs/pii-redaction-policy.md](docs/pii-redaction-policy.md) — redaction categories/entities, local and org-managed policy, custom regex entities
 - [docs/extensions/dap.md](docs/extensions/dap.md) — DAP debugger integration
 - [docs/ferment.md](docs/ferment.md) · [docs/ferment-v2.md](docs/ferment-v2.md) · [docs/ferment-storage-schema.md](docs/ferment-storage-schema.md) — autonomous project execution: concept, runtime, storage
 - [docs/hooks.md](docs/hooks.md) — lifecycle hooks (lint:fix, session-end, compaction timeout guard, work tracking)
 - [docs/mcp-e2e-testing.md](docs/mcp-e2e-testing.md) — MCP end-to-end testing approach (live creds, real preconditions)
 - [docs/memory-extension.md](docs/memory-extension.md) · [docs/memory-residency.md](docs/memory-residency.md) — memory: LLM-extraction pipeline, disk-backed residency and display budget
 - [docs/model-routing.md](docs/model-routing.md) — auto model routing (incl. multi-model: main/author/verifier)
+- [docs/pii-redaction-tokens.md](docs/pii-redaction-tokens.md) — reversible redaction tokens (`redaction.renderMode: "tokens"`), vault lifetime, surface guarantee matrix
 - [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
 - [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
 - [docs/response-language.md](docs/response-language.md) — reply-language rule and the `language` pin (`kimchi config set language`, `/language`)
@@ -93,7 +96,7 @@ Use the bundled `kimchi-tmux` when developing or verifying harness commands, men
 
 ## Dual-surface parity (TUI ↔ ACP)
 
-The harness ships two user-facing surfaces: the interactive TUI (`src/modes/interactive/`) and the ACP server (`src/modes/acp/`, JSON-RPC/IDE integration), each with its own e2e suite (`pnpm run test:e2e:tui` / `pnpm run test:e2e:acp`). Most harness changes must work on both surfaces — forgetting the ACP side is a recurring source of drift and follow-up `fix(acp):` PRs.
+The harness ships two user-facing surfaces: the interactive TUI (upstream `InteractiveMode` from `@earendil-works/pi-coding-agent`, patched at runtime via `src/cli.ts` + `src/extensions/`) and the ACP server (`src/modes/acp/`, JSON-RPC/IDE integration), each with its own e2e suite (`pnpm run test:e2e:tui` / `pnpm run test:e2e:acp`). Most harness changes must work on both surfaces — forgetting the ACP side is a recurring source of drift and follow-up `fix(acp):` PRs.
 
 **Whenever you change the harness, check whether ACP needs a parallel change — before you consider the task done.** A change is ACP-relevant until proven otherwise if it touches:
 

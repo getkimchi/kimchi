@@ -17,6 +17,7 @@ import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
+import { getActiveAnchor } from "../shared/active-anchor.js"
 import { thinkingSelection } from "../thinking-selection.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -37,6 +38,8 @@ export type SegmentId =
 	| "dap"
 	| "work-pr"
 	| "shells"
+	| "memory"
+	| "work-tree"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -226,7 +229,7 @@ export function buildScriptPayload(
 		},
 		credits: billing?.amount ?? null,
 		budget: billing?.budget ?? null,
-		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd },
+		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd, anchor_dir: getActiveAnchor() ?? null },
 		status,
 		session: {
 			cost_usd: costUsd,
@@ -445,11 +448,13 @@ function joinSegments(segments: Segment[], sep: string): string {
 const SHED_ORDER: SegmentId[] = [
 	"dap",
 	"lsp",
+	"work-tree",
 	"work-pr",
 	"team",
 	"tags",
 	"phase",
 	"usage",
+	"memory",
 	"shells",
 	"agents",
 	"thinking",
@@ -666,8 +671,8 @@ function buildPermissionsSegment(
 	return { id: "permissions", text: mode, width: visibleWidth(mode) }
 }
 
-function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
-	if (hidden) return null
+function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
 	const dapStatus = statusLineData.getExtensionStatuses().get("dap")
 	if (!dapStatus) return null
 	// Same label/value styling as the LSP segment: dim the "DAP:" label,
@@ -680,8 +685,8 @@ function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvide
 	return { id: "dap", text, width: visibleWidth(text) }
 }
 
-function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
-	if (hidden) return null
+function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
 	const lspStatus = statusLineData.getExtensionStatuses().get("lsp")
 	if (!lspStatus) return null
 	// Style "LSP:" as dimmed label, server names as accent. Preserve the
@@ -710,7 +715,7 @@ const WORK_PR_STATUS = /^(?:([^ ]+) · )?(PR|MR) ([#!]\d+)(?: (.+))?$/
  * Only the PR number stands out, accented and underlined as the link; the label and state stay muted. The state
  * is extra detail, so the compaction ladder drops it first (`PR #7 open` → `PR #7`).
  *
- * Extension-status-driven like lsp/dap: renders whenever the pull-request-status
+ * Extension-status-driven: renders whenever the pull-request-status
  * extension sets a status, unless the user opted out via `hidden`.
  */
 function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
@@ -722,7 +727,7 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	const statusBranch = match?.[1] ?? (!status.includes(" ") ? status : undefined)
 	if (statusBranch) {
 		// Git's watcher updates before the next provider poll; never render a link for the old checkout.
-		const branch = statusLineData.getGitBranch()
+		const branch = statuses.get("work-branch") ?? statusLineData.getGitBranch()
 		if (!branch || branch === "detached") return null
 		if (branch !== statusBranch) {
 			const text = accentText(theme, branch)
@@ -745,6 +750,15 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	if (!state) return { id: "work-pr", text: compact, width: visibleWidth(compact) }
 	const text = `${compact} ${dimText(theme, state)}`
 	return { id: "work-pr", text, width: visibleWidth(text), raw: { kind: "work-pr", compact } }
+}
+
+/** The linked worktree the session's commands run in, as the PR status extension sets it. */
+function buildWorkTreeSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const status = statusLineData.getExtensionStatuses().get("work-tree")
+	if (!status) return null
+	// Directory only: the branch lives in the work-pr segment next to this one.
+	const text = `${dimText(theme, "⎇")} ${dimText(theme, status)}`
+	return { id: "work-tree", text, width: visibleWidth(text) }
 }
 
 function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {
@@ -778,6 +792,34 @@ function buildShellsSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	if (!Number.isInteger(count) || count <= 0) return null
 	const text = accentText(theme, `${count} shell${count === 1 ? "" : "s"}`)
 	return { id: "shells", text, width: visibleWidth(text) }
+}
+
+/** Extension status key the memory extension sets to the number of recalled
+ *  facts currently in context (cleared when the delivery ledger empties or
+ *  the session toggle disables memory). */
+export const MEMORY_STATUS_KEY = "memory"
+
+/** Extension status key for the session's own stored-fact count (set when
+ *  an incremental capture commits; grows per session). */
+export const MEMORY_SAVED_STATUS_KEY = "memory-saved"
+
+/** Extension-status-driven like shells, but pinned-only (off by default):
+ *  renders the recalled/saved counts after memory first delivers or
+ *  captures something, only when the user pinned the element. Each half
+ *  renders only when its value is present. */
+function buildMemorySegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const statuses = statusLineData.getExtensionStatuses()
+	const recalled = Number(statuses.get(MEMORY_STATUS_KEY))
+	const saved = Number(statuses.get(MEMORY_SAVED_STATUS_KEY))
+	const showRecalled = Number.isInteger(recalled) && recalled > 0
+	const showSaved = Number.isInteger(saved) && saved > 0
+	if (!showRecalled && !showSaved) return null
+	const parts: string[] = []
+	if (showRecalled) parts.push(`${accentText(theme, String(recalled))} ${dimText(theme, "recalled")}`)
+	if (showSaved) parts.push(`${accentText(theme, String(saved))} ${dimText(theme, "saved")}`)
+	const text = `${dimText(theme, "memory:")} ${parts.join(` ${dimText(theme, "·")} `)}`
+	return { id: "memory", text, width: visibleWidth(text) }
 }
 
 function buildFermentSegment(
@@ -835,7 +877,7 @@ export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 	// Opt-out set for defaultVisible, extension-status-driven segments
-	// (lsp/dap/work-pr): they render whenever their extension sets a status, so
+	// (work-pr/shells): they render whenever their extension sets a status, so
 	// the customize UI hides them here instead of through pinning.
 	hidden: ReadonlySet<SegmentId> = new Set<SegmentId>(),
 ): Segment[] {
@@ -855,9 +897,11 @@ export function buildStatusLineSegments(
 		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
-		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
-		buildDapSegment(theme, statusLineData, hidden.has("dap")),
+		buildLspSegment(theme, statusLineData, pinned.has("lsp")),
+		buildDapSegment(theme, statusLineData, pinned.has("dap")),
+		buildWorkTreeSegment(theme, statusLineData),
 		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
+		buildMemorySegment(theme, statusLineData, pinned.has("memory")),
 		buildAgentsSegment(theme, pinned.has("agents")),
 		buildShellsSegment(theme, statusLineData, hidden.has("shells")),
 	].filter((s): s is Segment => s !== null)
@@ -906,14 +950,20 @@ export class StatusLine implements Component {
 		return this.theme.fg("warning", text)
 	}
 
-	private updateAvailableSegment(): { text: string; width: number } | null {
+	private updateSegment(): { text: string; width: number } | null {
 		// Info-line segment (rendered above the status line), NOT one of the
 		// status-line `Segment`s above — it has no SegmentId because it never
-		// participates in compaction.
-		const text = this.statusLineData.getExtensionStatuses().get("update-available")
-		if (!text) return null
-		const segText = this.theme.fg("accent", text)
-		return { text: segText, width: visibleWidth(text) }
+		// participates in compaction. The installed outcome (background-update
+		// extension) replaces the nag (startup-update extension) when both are
+		// set — same slot, success styling.
+		const statuses = this.statusLineData.getExtensionStatuses()
+		const installedText = statuses.get("update-installed")
+		if (installedText) {
+			return { text: this.theme.fg("success", installedText), width: visibleWidth(installedText) }
+		}
+		const nagText = statuses.get("update-available")
+		if (!nagText) return null
+		return { text: this.theme.fg("accent", nagText), width: visibleWidth(nagText) }
 	}
 
 	render(width: number): string[] {
@@ -983,7 +1033,7 @@ export class StatusLine implements Component {
 	private buildInfoLine(width: number): string {
 		let line = ""
 		const permissionsWarningText = this.permissionsWarning()
-		const updateSeg = this.updateAvailableSegment()
+		const updateSeg = this.updateSegment()
 
 		let remainingWidth = width
 		if (permissionsWarningText) {

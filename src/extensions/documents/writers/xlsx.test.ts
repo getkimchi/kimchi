@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { createPinnedClock } from "../clock.js"
 import { extractXlsx } from "../extractors/xlsx.js"
 import { openOoxml } from "../ooxml/package.js"
@@ -53,8 +53,17 @@ describe("writeXlsx", () => {
 	})
 
 	it("is byte-identical across two runs with the clock pinned", async () => {
-		const [a, b] = await Promise.all([writeXlsx(spec, { clock }), writeXlsx(spec, { clock })])
-		expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true)
+		// Move the wall clock between runs so only the clock seam can date entries.
+		vi.useFakeTimers({ toFake: ["Date"] })
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"))
+			const a = await writeXlsx(spec, { clock })
+			vi.setSystemTime(new Date("2026-06-01T12:34:56.000Z"))
+			const b = await writeXlsx(spec, { clock })
+			expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("sets fullCalcOnLoad and no calcChain", async () => {
