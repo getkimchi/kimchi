@@ -23,6 +23,10 @@
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { resolveBashProcessLimitSeconds } from "../../cli-args.js"
 import { SHELLS_STATUS_KEY } from "../../components/status-line.js"
+import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
+} from "../../shared/bash-background-settle.js"
 import { bashToolDescription } from "../bash-tool-guard.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
@@ -33,6 +37,7 @@ import { createReviewCoordinator } from "./review-coordinator.js"
 import { bashSessionKindFromContext } from "./session-policy.js"
 import { getSessionState, setSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
+import { findUnsettledHandoffs } from "./unsettled-handoffs.js"
 
 /**
  * Handoff override for e2e rigs (KIMCHI_E2E_BASH_HANDOFF_SECONDS), honored
@@ -81,6 +86,27 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event: SessionStartEvent, sessionCtx) => {
 		panel?.close()
 		panel = undefined
+		// Reconcile unsettled handoffs BEFORE installing fresh state: a
+		// harness that died mid-run left handoffs with no recorded exit, and
+		// replay/hydration would restore those rows as running forever.
+		// Settle each as failed through the same transcript record the live
+		// settle uses — transcript-only, no wire emission on this path (the
+		// client rendering the reload is where the flip becomes visible).
+		// Handles the PREVIOUS live state still tracks are skipped: a
+		// session_start on an already-active session (reload, /resume of the
+		// current session) must not settle processes that are actually fine.
+		const sessionId = sessionCtx.sessionManager.getSessionId()
+		const priorState = getSessionState(sessionId)
+		for (const call of findUnsettledHandoffs(sessionCtx.sessionManager.getEntries())) {
+			if (priorState?.registry.getEntry(call.handle) !== undefined) continue
+			const settle: BashBackgroundSettleData = {
+				toolCallId: call.toolCallId,
+				isError: true,
+				text: "",
+				details: { handle: call.handle, exited: false, exitCode: null, reason: "harness restarted" },
+			}
+			pi.appendEntry(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE, settle)
+		}
 		// Fresh state per session so handles from a previous session can't
 		// be reused, and so a resumed/forked session gets a clean process
 		// table and lifecycle coordination (per-command handoffs + bounded
@@ -93,7 +119,7 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		// control tool (wait release) and the completion guard share it.
 		const sessionKind = bashSessionKindFromContext(sessionCtx)
 		const state = { registry, coordinator, delivery, limitSeconds, sessionKind, cwd: sessionCtx.cwd }
-		setSessionState(sessionCtx.sessionManager.getSessionId(), state)
+		setSessionState(sessionId, state)
 
 		// Footer indicator: publish the running-command count while any run,
 		// cleared at zero (the footer hides the segment then). Reset first so a

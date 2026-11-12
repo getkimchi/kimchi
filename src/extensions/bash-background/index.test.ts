@@ -9,9 +9,10 @@
  * steer into the closing session. The extension must UNPUBLISH the
  * session state before awaiting the drain.
  */
-import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
+import type { KeybindingsManager, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { BASH_BACKGROUND_SETTLE_MESSAGE_TYPE } from "../../shared/bash-background-settle.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
@@ -293,5 +294,106 @@ describe("bashBackgroundExtension — production description composition", () =>
 			dispose.mockRestore()
 			vi.useRealTimers()
 		}
+	})
+})
+
+describe("bashBackgroundExtension — unsettled-handoff reconcile on session_start", () => {
+	let seq = 0
+	const handoffResult = (toolCallId: string, handle: string): SessionEntry =>
+		({
+			type: "message",
+			id: `t${++seq}`,
+			parentId: null,
+			timestamp: "",
+			message: { role: "toolResult", toolCallId, content: [], details: { handoff: true, handle, exited: false } },
+		}) as unknown as SessionEntry
+	const settleEntry = (toolCallId: string): SessionEntry =>
+		({
+			type: "custom",
+			id: `t${++seq}`,
+			parentId: null,
+			timestamp: "",
+			customType: BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+			data: { toolCallId, isError: false, text: "", details: { exited: true, exitCode: 0 } },
+		}) as unknown as SessionEntry
+
+	/** Context whose sessionManager replays `entries` plus whatever the rig's
+	 *  appendEntry mock has recorded, so a second session_start sees its own
+	 *  settles (idempotency). Assert on rig.getAppendedEntries. */
+	function reconcilingContext(rig: ReturnType<typeof createExtensionApi>, entries: SessionEntry[]) {
+		return createContext({
+			cwd: "/tmp",
+			sessionManager: {
+				getSessionId: () => "reconcile-session",
+				getEntries: () => [
+					...entries,
+					...rig
+						.getAppendedEntries<{ toolCallId: string }>(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE)
+						.map((payload) => settleEntry(payload.toolCallId)),
+				],
+			},
+		})
+	}
+
+	afterEach(() => {
+		setSessionState("reconcile-session", undefined)
+	})
+
+	it("settles an unsettled handoff as failed exactly once", async () => {
+		const rig = createExtensionApi()
+		bashBackgroundExtension(rig.api)
+		const entries = [handoffResult("call-1", "h-1")]
+		const ctx = reconcilingContext(rig, entries)
+
+		await rig.emit("session_start", {}, ctx)
+		const settles = () => rig.getAppendedEntries(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE)
+		expect(settles()).toHaveLength(1)
+		expect(settles()[0]).toMatchObject({
+			toolCallId: "call-1",
+			isError: true,
+			text: "",
+			details: { handle: "h-1", exited: false, exitCode: null, reason: "harness restarted" },
+		})
+
+		// Reload sees its own settle: no second record.
+		await rig.emit("session_start", {}, ctx)
+		expect(settles()).toHaveLength(1)
+
+		await rig.emit("session_shutdown", {}, ctx)
+	})
+
+	it("leaves an already-settled handoff alone", async () => {
+		const rig = createExtensionApi()
+		bashBackgroundExtension(rig.api)
+		const entries = [handoffResult("call-1", "h-1"), settleEntry("call-1")]
+		const ctx = reconcilingContext(rig, entries)
+
+		await rig.emit("session_start", {}, ctx)
+		expect(rig.getAppendedEntries(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE)).toHaveLength(0)
+
+		await rig.emit("session_shutdown", {}, ctx)
+	})
+
+	it("never settles a handle the previous live registry still tracks", async () => {
+		const rig = createExtensionApi()
+		bashBackgroundExtension(rig.api)
+		const entries: SessionEntry[] = []
+		const ctx = reconcilingContext(rig, entries)
+
+		// Live session with a running process, then a transcript handoff for
+		// its handle appears (as it does once the tool result lands), then a
+		// reload of the SAME active session fires session_start again: the
+		// prior registry still owns the handle, so reconcile skips it.
+		await rig.emit("session_start", {}, ctx)
+		const state = getSessionState("reconcile-session")
+		if (!state) throw new Error("Missing session state")
+		const ops = createFakeOps()
+		const handle = state.registry.spawn(ops, "sleep 60", "/tmp", undefined, { limitSeconds: 60 })
+		entries.push(handoffResult("call-1", handle))
+
+		await rig.emit("session_start", {}, ctx)
+		expect(rig.getAppendedEntries(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE)).toHaveLength(0)
+
+		await rig.emit("session_shutdown", {}, ctx)
 	})
 })
