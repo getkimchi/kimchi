@@ -93,10 +93,7 @@ import {
 } from "./inject.js"
 import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 import { migrateAgentMemory } from "./migrate-agent-memory.js"
-import { markHarnessSteer } from "../steer-marker.js"
-import { submitTimingMark } from "../submit-timing.js"
-import { buildLoopRecallQuery, runRecall, stateFingerprint } from "./recall.js"
->>>>>>> 3635035d1 (feat(memory): state-revisit recall trigger via state fingerprints)
+import { buildLoopRecallQueries, buildLoopRecallQuery, runRecall, stateFingerprint } from "./recall.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
 import { authoredEnabled, createMemorySaveTool, createMemorySearchTool } from "./tools.js"
@@ -365,20 +362,21 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				.then(async () => {
 					if (generation !== loopRecallGeneration) return
 					if (recallFailed || !memoryActive()) return
-					const query = buildLoopRecallQuery(
-						lastAssistantReasoning(ctx),
-						revisitTail !== undefined ? [revisitTail] : lastLoopEnvTails,
-					)
+					const reasoning = lastAssistantReasoning(ctx)
+					const receipts = revisitTail !== undefined ? [revisitTail] : lastLoopEnvTails
+					const query = buildLoopRecallQuery(reasoning, receipts)
+					const queries = buildLoopRecallQueries(reasoning, receipts)
 					if (!query) return
 					const outcome = await runRecall({
 						trigger,
 						query,
+						queries,
 						pi,
 						ctx,
-						search: async () => {
+						search: async (q) => {
 							const s = await getSearcher()
 							if (!s) return undefined
-							return withTimeout(s.search(query), MEMORY_SEARCH_TIMEOUT_MS, "loop recall search")
+							return withTimeout(s.search(q), MEMORY_SEARCH_TIMEOUT_MS, "loop recall search")
 						},
 						decideGate: makeRecallGate(query),
 						deliveredFacts,
@@ -912,11 +910,11 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					query: recent,
 					pi,
 					ctx,
-					search: async () => {
-						return withRecallIndicator(ctx, event.prompt, async () => {
+					search: async (q) => {
+						return withRecallIndicator(ctx, async () => {
 							const s = await getSearcher()
 							if (!s) return undefined
-							return withTimeout(s.search(recent), MEMORY_SEARCH_TIMEOUT_MS, "turn recall search")
+							return withTimeout(s.search(q), MEMORY_SEARCH_TIMEOUT_MS, "turn recall search")
 						})
 					},
 					decideGate: makeRecallGate(recent),
