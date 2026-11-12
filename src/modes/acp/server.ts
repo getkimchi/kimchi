@@ -209,6 +209,7 @@ import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
 	backgroundHandoffHandle,
 	type HeldBackgroundToolCall,
 	holdAndWatchBackgroundToolCall,
@@ -2767,6 +2768,22 @@ export class KimchiAcpAgent implements Agent {
 							displayContent: (sid, content) => this.displayContent(sid, content),
 							displayRecord: (sid, value) => this.displayRecord(sid, value),
 							isCurrent: () => this.sessions.get(sessionId) === entry,
+							persistSettle: (piToolCallId, outcome) => {
+								// A no-trigger custom message: appended to the transcript
+								// (session file), invisible in context, never wakes a turn.
+								// Replay pairs it back to the call by toolCallId. Test
+								// session fakes may not implement sendCustomMessage — the
+								// wire flip already told the live client, so degrading
+								// to wire-only is correct, never a settle failure.
+								entry.session
+									.sendCustomMessage?.({
+										customType: BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+										content: outcome.text.length > 0 ? [{ type: "text", text: outcome.text }] : [],
+										display: false,
+										details: { toolCallId: piToolCallId, isError: outcome.isError, details: outcome.details },
+									})
+									?.catch((err: unknown) => console.error("bash-background settle persist failed:", err))
+							},
 						},
 						sessionId,
 						entry.heldBackgroundToolCalls,
@@ -2832,6 +2849,7 @@ export class KimchiAcpAgent implements Agent {
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
 		const replayWaitTargets = collectBashControlWaitTargets(entries)
+		const settles = collectBashBackgroundSettles(entries)
 		// Turn-scoped, matching the live path: artifacts accumulate across
 		// the turn's assistant messages and flush once per turn, attached to
 		// the turn's last text block id — right before the next user message,
@@ -2881,6 +2899,7 @@ export class KimchiAcpAgent implements Agent {
 					msg.content,
 					toolResults,
 					replayWaitTargets,
+					settles,
 					this.sessions.get(sessionId),
 					modelAttributionFrom(msg),
 				)
@@ -2950,8 +2969,9 @@ export class KimchiAcpAgent implements Agent {
 	private replayAssistantBlocks(
 		sessionId: string,
 		content: AssistantMessage["content"],
-		toolResults: Map<string, ReplayToolResult>,
+		toolResults: Map<string, ReplayToolResult[]>,
 		replayWaitTargets: Map<string, BashControlBackgroundCommand[][]>,
+		settles: Map<string, ReplayToolResult[]>,
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
 	): string | undefined {
@@ -3041,7 +3061,7 @@ export class KimchiAcpAgent implements Agent {
 				if (!upstreamId || !name) continue
 				const args = (tc.arguments ?? {}) as Record<string, unknown>
 				if (isHiddenToolCall(name, args)) continue
-				const result = toolResults.get(upstreamId)
+				const result = takeReplayToolResult(toolResults, upstreamId)
 				// The recorded wait targets (custom entry, FIFO per id like the
 				// results) restore the historical cohort as _meta — the recorded
 				// args alone cannot name what a handle-less wait blocked on.
@@ -3061,6 +3081,13 @@ export class KimchiAcpAgent implements Agent {
 					result && handoffHandle !== undefined && heldAcpId === undefined
 						? normalizeUnheldHandoffResult(result)
 						: result
+				// A persisted settle overrides the pre-exit handoff for a call replayed
+				// terminal: without it a FAILED process replays as completed with no
+				// exit outcome, because the handoff records isError false and no exit
+				// code. Consumed FIFO like the results — a recycled id's settle
+				// belongs to the block whose handoff it settled.
+				const settleResult = heldAcpId === undefined ? takeReplayToolResult(settles, upstreamId) : undefined
+				const finalResult = settleResult ?? replayResult
 				const acpToolCallId = heldAcpId
 					? heldAcpId.acpToolCallId
 					: record
@@ -3071,7 +3098,13 @@ export class KimchiAcpAgent implements Agent {
 				// in_progress would hang the client's spinner forever on replay —
 				// except a held background process, whose exit watcher owns finality.
 				const status: "in_progress" | "completed" | "failed" =
-					heldAcpId !== undefined ? "in_progress" : result ? (result.isError ? "failed" : "completed") : "failed"
+					heldAcpId !== undefined
+						? "in_progress"
+						: finalResult
+							? finalResult.isError
+								? "failed"
+								: "completed"
+							: "failed"
 				this.send({
 					sessionId,
 					update: buildToolCall({
@@ -3093,11 +3126,8 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						content: this.displayContent(sessionId, replayResult ? toolResultContent(replayResult) : []),
-						rawOutput: this.displayOptionalRecord(
-							sessionId,
-							replayResult ? wireSafeToolResult(replayResult) : undefined,
-						),
+						content: this.displayContent(sessionId, finalResult ? toolResultContent(finalResult) : []),
+						rawOutput: this.displayOptionalRecord(sessionId, finalResult ? wireSafeToolResult(finalResult) : undefined),
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -4462,8 +4492,13 @@ function takeReplayWaitTargets(
 	return out
 }
 
-function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
-	const out = new Map<string, ReplayToolResult>()
+// The queue is first-match-consumed per id: the model may recycle a pi id
+// (a handed-off bash call, then a NEW call reusing the same id), and a
+// last-wins map would pair the handed-off call's block with the recycled
+// call's result — replaying a still-running call as completed, showing
+// another call's content.
+function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult[]> {
+	const out = new Map<string, ReplayToolResult[]>()
 	for (const entry of entries) {
 		if (!entry || typeof entry !== "object") continue
 		const e = entry as { type?: unknown; message?: unknown }
@@ -4479,12 +4514,51 @@ function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
 			  }
 			| undefined
 		if (m?.role !== "toolResult" || typeof m.toolCallId !== "string") continue
-		out.set(m.toolCallId, {
+		const queued = out.get(m.toolCallId) ?? []
+		queued.push({
 			content: m.content,
 			isError: m.isError === true,
 			details: m.details,
 			toolName: typeof m.toolName === "string" ? m.toolName : undefined,
 		})
+		out.set(m.toolCallId, queued)
+	}
+	return out
+}
+
+/** Consumed first-match from collectToolResults' per-id queue. */
+function takeReplayToolResult(toolResults: Map<string, ReplayToolResult[]>, id: string): ReplayToolResult | undefined {
+	const queued = toolResults.get(id)
+	return queued && queued.length > 0 ? queued.shift() : undefined
+}
+
+/**
+ * Settle outcomes persisted for held background calls (custom_message entries
+ * under BASH_BACKGROUND_SETTLE_MESSAGE_TYPE), queued per id exactly like
+ * results: a recycled id's settle belongs to the block whose handoff it
+ * settled, so replay consumes them FIFO off the block walk too.
+ */
+function collectBashBackgroundSettles(entries: unknown[]): Map<string, ReplayToolResult[]> {
+	const out = new Map<string, ReplayToolResult[]>()
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue
+		const e = entry as { type?: unknown; customType?: unknown; content?: unknown; details?: unknown }
+		if (e.type !== "custom_message" || e.customType !== BASH_BACKGROUND_SETTLE_MESSAGE_TYPE) continue
+		const d = e.details as { toolCallId?: unknown; isError?: unknown; details?: unknown } | undefined
+		if (typeof d?.toolCallId !== "string") continue
+		const text = Array.isArray(e.content)
+			? e.content
+					.map((c) => (c && typeof c === "object" ? (c as { text?: unknown }).text : undefined))
+					.filter((t): t is string => typeof t === "string" && t.length > 0)
+					.join("\n")
+			: ""
+		const queued = out.get(d.toolCallId) ?? []
+		queued.push({
+			content: text.length > 0 ? [{ type: "text", text }] : [],
+			isError: d.isError === true,
+			details: d.details,
+		})
+		out.set(d.toolCallId, queued)
 	}
 	return out
 }

@@ -28,7 +28,28 @@ export type BackgroundToolCallContext = {
 	displayRecord: (sessionId: string, value: Record<string, unknown>) => Record<string, unknown>
 	/** True while the calling session record is still the live one. */
 	isCurrent: () => boolean
+	/**
+	 * Persist the settle outcome into the session transcript. The wire
+	 * flip alone is ephemeral: without this, a reload replays the call from
+	 * its recorded PRE-EXIT handoff result — a failed process restarting to
+	 * "completed" — because nothing in history knows the exit happened.
+	 */
+	persistSettle: (piToolCallId: string, outcome: BashBackgroundSettleOutcome) => void
 }
+
+/** Terminal settle fact persisted to the transcript (custom message carrying
+ *  BASH_BACKGROUND_SETTLE_MESSAGE_TYPE); replay pairs it back to the call. */
+export type BashBackgroundSettleOutcome = {
+	/** exitCode 0 with no stop reason reads as success; anything else failed. */
+	isError: boolean
+	/** Captured final output (empty when the process produced none). */
+	text: string
+	/** Terminal BackgroundBashToolDetails — the same shape the wire flip sends. */
+	details: BackgroundBashToolDetails
+}
+
+/** Custom transcript message type carrying a held call's settle outcome. */
+export const BASH_BACKGROUND_SETTLE_MESSAGE_TYPE = "bash-background-settle"
 
 /**
  * Read the process-registry handle off a backgrounded bash result: the
@@ -173,12 +194,16 @@ function settleHeldBackgroundToolCall(
 		reason,
 		...(display ? { display } : {}),
 	}
+	const status = exitCode === 0 && reason === null ? ("completed" as const) : ("failed" as const)
+	// Persist BEFORE the wire flip: if this harness process dies between the
+	// two, the transcript must still carry the outcome for a future replay.
+	ctx.persistSettle(call.piToolCallId, { isError: status === "failed", text, details })
 	ctx.send({
 		sessionId,
 		update: buildToolCallUpdate({
 			toolCallId: call.acpToolCallId,
 			piToolCallId: call.piToolCallId,
-			status: exitCode === 0 && reason === null ? "completed" : "failed",
+			status,
 			content: ctx.displayContent(sessionId, content) ?? [],
 			rawOutput: ctx.displayRecord(sessionId, {
 				content: text.length > 0 ? [{ type: "text", text }] : [],

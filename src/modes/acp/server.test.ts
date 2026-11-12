@@ -14450,4 +14450,143 @@ describe("KimchiAcpAgent background bash handoff", () => {
 		expect(details?.exited).toBeUndefined()
 		expect(details?.exitCode).toBeNull()
 	})
+
+	it("replays the persisted settle outcome on reload: a failed process replays failed with its exit code, not completed", async () => {
+		// Cross-process reload shape: the transcript holds the pre-exit handoff
+		// result (isError false, no exit code — a JSON.stringify would pin this
+		// as "completed, exitCode: null") PLUS the settle the exit watcher
+		// persisted. Nobody is holding the process in this harness session, so
+		// replay must present the settle's terminal outcome.
+		fake.branch = [
+			userTextEntry("run it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-tc-1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle: "h-dead", exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			{
+				type: "custom_message",
+				id: "st-tc-1",
+				parentId: "tr-tc-1",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-background-settle",
+				display: false,
+				content: [{ type: "text", text: "boom" }],
+				details: {
+					toolCallId: "tc-1",
+					isError: true,
+					details: { handle: "h-dead", exited: true, exitCode: 3, reason: null },
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		const replayCalls = toolCalls()
+		expect(replayCalls).toHaveLength(1)
+		expect(replayCalls[0]?.status).toBe("failed")
+		const replayed = updatesFor(replayCalls[0]?.toolCallId ?? "")
+		expect(replayed.some((u) => u.status === "completed")).toBe(false)
+		const last = replayed[replayed.length - 1]
+		expect(last?.status).toBe("failed")
+		expect(last?.rawOutput?.details).toMatchObject({ exited: true, exitCode: 3 })
+		expect(JSON.stringify(last?.rawOutput)).toContain("boom")
+	})
+
+	it("pairs results to blocks first-match-consumed when the model recycles the same upstream toolCallId", async () => {
+		// Transcript order from a live session: call A (tc-1) handed off, the
+		// watcher settled it with a failure, then the model RECYCLED tc-1 for an
+		// unrelated read. Block A must end up with the handoff settle's outcome;
+		// block B with its own result — never cross-paired.
+		fake.branch = [
+			userTextEntry("run two", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-a",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle: "h-dead", exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			{
+				type: "custom_message",
+				id: "st-a",
+				parentId: "tr-a",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-background-settle",
+				display: false,
+				content: [{ type: "text", text: "boom" }],
+				details: {
+					toolCallId: "tc-1",
+					isError: true,
+					details: { handle: "h-dead", exited: true, exitCode: 3, reason: null },
+				},
+			},
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "read", arguments: { path: "/tmp/unrelated.txt" } }],
+				"a2",
+				"st-a",
+			),
+			{
+				type: "message",
+				id: "tr-b",
+				parentId: "a2",
+				timestamp: "2026-05-09T00:00:06Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "read",
+					content: [{ type: "text", text: "file body" }],
+					isError: false,
+					timestamp: 0,
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		const replayCalls = toolCalls()
+		expect(replayCalls).toHaveLength(2)
+		// Block A: the handed-off call replays failed FROM THE SETTLE…
+		const bashId = replayCalls[0]?.toolCallId ?? ""
+		expect(replayCalls[0]?.status).toBe("failed")
+		expect(JSON.stringify(updatesFor(bashId).map((u) => u.rawOutput))).toContain("boom")
+		// …never the recycled call's outcome, and never "completed".
+		expect(JSON.stringify(updatesFor(bashId).map((u) => u.rawOutput))).not.toContain("file body")
+		// Block B: the recycled id's call replays completed with ITS OWN content.
+		const readId = replayCalls[1]?.toolCallId ?? ""
+		expect(readId).not.toBe(bashId)
+		expect(replayCalls[1]?.status).toBe("completed")
+		expect(JSON.stringify(updatesFor(readId).map((u) => u.rawOutput))).toContain("file body")
+		expect(JSON.stringify(updatesFor(readId).map((u) => u.rawOutput))).not.toContain("boom")
+	})
 })
