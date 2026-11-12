@@ -458,7 +458,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		const inlineTaken = new Set<number>(presentMarkers)
 		let nextFree = imageCounter + 1
 		const prefixIds: number[] = []
-		const images: ImageContent[] = prepared.map((p) => {
+		const entries: { id: number; image: ImageContent }[] = prepared.map((p) => {
 			let id: number
 			if (p.inlineId !== null && presentMarkers.has(p.inlineId)) {
 				id = p.inlineId
@@ -469,12 +469,25 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			}
 			imageCounter = Math.max(imageCounter, id)
 			addImage(id, p.image)
-			return p.image
+			return { id, image: p.image }
 		})
 		const prefix = buildImageMarkerPrefix(prefixIds)
 		const trimmed = event.text.trimStart()
 		const text = prefix ? (trimmed ? `${prefix} ${trimmed}` : prefix) : trimmed
 		clearRetainedSubmission()
+
+		// The wire format is text first, then image blocks in array order —
+		// nothing explicitly binds a marker to its image, so the model pairs
+		// them positionally (first marker in the text ← first image block).
+		// Emit images in the order their markers first appear in the final
+		// text so a draft that mentions markers out of attach order (or a
+		// drop re-armed to the end of pendingImages after a delete+undo)
+		// still attributes the right image to the right number.
+		const byMarkerPosition = (e: { id: number }): number => {
+			const pos = text.indexOf(buildImageMarker(e.id))
+			return pos === -1 ? Number.MAX_SAFE_INTEGER : pos
+		}
+		const images = [...entries].sort((a, b) => byMarkerPosition(a) - byMarkerPosition(b)).map((e) => e.image)
 
 		return { action: "transform" as const, text, images }
 	})

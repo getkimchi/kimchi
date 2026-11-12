@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
@@ -595,6 +595,48 @@ describe("clipboard-image extension", () => {
 			expect(result.action).toBe("transform")
 			expect(result.text).toBe("[Image #1] what's this?")
 			expect(result.images).toHaveLength(1)
+		})
+
+		it("submit images follow draft marker order, not attach order (delete+undo re-arm reorders pending)", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p1 = join(tmpDir, "a.png")
+			const p2 = join(tmpDir, "b.png")
+			writeFileSync(p1, PNG_BYTES)
+			writeFileSync(p2, PNG_BYTES)
+			drop(p1) // [Image #1] — crab in the transcript scenario
+			drop(p2) // [Image #2] — gopher
+			markersEdited(new Set([2])) // delete [Image #1] (detaches)
+			markersEdited(new Set([1, 2])) // undo: #1 re-arms at the END of pending
+
+			const result = (await callInput(pi, ctx, {
+				text: "[Image #1] what is this? [Image #2] and this?",
+				images: [],
+				source: "interactive",
+			})) as { action?: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			// The wire format pairs image blocks positionally with marker mentions:
+			// #1's bytes must come first even though its entry was re-armed last.
+			expect(Buffer.from(result.images[0].data, "base64")).toEqual(readFileSync(p1))
+			expect(Buffer.from(result.images[1].data, "base64")).toEqual(readFileSync(p2))
+		})
+
+		it("submit images follow marker mention order when the draft mentions them out of attach order", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p1 = join(tmpDir, "a.png")
+			const p2 = join(tmpDir, "b.png")
+			writeFileSync(p1, PNG_BYTES)
+			writeFileSync(p2, PNG_BYTES)
+			drop(p1) // [Image #1]
+			drop(p2) // [Image #2]
+
+			const result = (await callInput(pi, ctx, {
+				text: "[Image #2] first mention, [Image #1] second",
+				images: [],
+				source: "interactive",
+			})) as { action?: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(Buffer.from(result.images[0].data, "base64")).toEqual(readFileSync(p2))
+			expect(Buffer.from(result.images[1].data, "base64")).toEqual(readFileSync(p1))
 		})
 
 		it("numbers a fresh drop monotonically — a deleted marker's id is never reused", async () => {
