@@ -646,35 +646,49 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// the current turn (the status segment still updates; it is idempotent).
 			const attemptTurn = turnSeq
 			const settled = computeDigest(query).then((d) => {
-				if (digestAttempt !== attempt) {
-					mark("memory.digest.discarded", { reason: "stale" })
-					return
-				}
-				if (attempt.epoch !== digestEpoch) {
-					mark("memory.digest.discarded", { reason: "epoch" })
-					return
-				}
-				if (!memoryActive()) {
-					// The toggle flipped without a turn observing it (e.g. off/on
-					// entirely between starts): clear the tombstone and the epoch's
-					// blocking-wait credit so the next active start retries
-					// immediately instead of waiting out the abandon bound.
-					mark("memory.digest.discarded", { reason: "inactive" })
+				// The settle handler must hold the "never rejects" contract on its
+				// own: on the detached path nothing awaits this promise, so a throw
+				// in the callback would be an unhandled rejection.
+				try {
+					if (digestAttempt !== attempt) {
+						mark("memory.digest.discarded", { reason: "stale" })
+						return
+					}
+					if (attempt.epoch !== digestEpoch) {
+						mark("memory.digest.discarded", { reason: "epoch" })
+						return
+					}
+					if (!memoryActive()) {
+						// The toggle flipped without a turn observing it (e.g. off/on
+						// entirely between starts): clear the tombstone and the epoch's
+						// blocking-wait credit so the next active start retries
+						// immediately instead of waiting out the abandon bound.
+						mark("memory.digest.discarded", { reason: "inactive" })
+						digestAttempt = undefined
+						digestWaited = false
+						return
+					}
 					digestAttempt = undefined
-					digestWaited = false
-					return
-				}
-				digestAttempt = undefined
-				digest = d
-				if (d) {
-					// Seed the ledger: the digest's facts are already in context.
-					for (const fact of d.facts) {
-						deliveredKeys.add(factKey(fact))
-						deliveredFacts.push(fact)
+					digest = d
+					if (d) {
+						// Seed the ledger: the digest's facts are already in context.
+						for (const fact of d.facts) {
+							deliveredKeys.add(factKey(fact))
+							deliveredFacts.push(fact)
+						}
+					}
+					updateMemoryStatus(ctx, turnSeq === attemptTurn)
+					mark("memory.digest.adopted", { empty: d === null })
+				} catch (err) {
+					// Log it, and if the failed attempt is still current, clear it
+					// (and the epoch's blocking-wait credit) so the next turn retries
+					// instead of waiting out the abandon bound.
+					console.error("[memory] digest settle failed:", err instanceof Error ? err.message : err)
+					if (digestAttempt === attempt) {
+						digestAttempt = undefined
+						digestWaited = false
 					}
 				}
-				updateMemoryStatus(ctx, turnSeq === attemptTurn)
-				mark("memory.digest.adopted", { empty: d === null })
 			})
 			return { settled }
 		}

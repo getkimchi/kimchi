@@ -337,6 +337,8 @@ describe("memory extension", () => {
 	it("a digest that outlives its wait is adopted on the next turn - no second computation", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		// Declared outside the try: the finally must be able to clean it up.
+		const marksDir = mkdtempSync(join(tmpdir(), "kimchi-memory-marks-"))
 		try {
 			let release: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
 			const search = vi.fn(
@@ -348,8 +350,9 @@ describe("memory extension", () => {
 			const { sendMessage, start } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
-			const marksFile = join(mkdtempSync(join(tmpdir(), "kimchi-memory-marks-")), "marks.jsonl")
+			const marksFile = join(marksDir, "marks.jsonl")
 			process.env.KIMCHI_SUBMIT_TIMING = marksFile
+			vi.mocked(fakeCtx.ui.notify).mockClear()
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
 			const result = await pending
@@ -360,6 +363,9 @@ describe("memory extension", () => {
 			// The abandoned computation lands late.
 			release?.([{ memory: "fact for late", score: 0.7 }])
 			await vi.advanceTimersByTimeAsync(0)
+			// The settle still belongs to the starting turn (turn 2 has not run):
+			// the recall notify fires, once.
+			expect(vi.mocked(fakeCtx.ui.notify)).toHaveBeenCalledTimes(1)
 			// The adoption leaves its terminal mark — every adoption path must,
 			// including the timer-continuation window.
 			expect(recordedMarks(marksFile).some((m) => m.event === "memory.digest.adopted")).toBe(true)
@@ -373,7 +379,45 @@ describe("memory extension", () => {
 			expect(search).toHaveBeenCalledTimes(1)
 			expect(sendMessage).not.toHaveBeenCalled()
 		} finally {
+			rmSync(marksDir, { recursive: true, force: true })
 			delete process.env.KIMCHI_SUBMIT_TIMING
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a digest settling during a later turn updates the status but suppresses the mid-turn recall notify", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						resolvers.push(resolve)
+					}),
+			)
+			const ctx = createContext()
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), ctx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			// Turn 2 runs (and finishes) while the attempt is still in flight; its
+			// own drift recall (resolvers[1]) stays pending and is harmless here.
+			await start(startEvent("turn 2 - new territory"), ctx)
+			// The settle lands AFTER turn 2 started — the attempt no longer
+			// belongs to the current turn, so the popup must not fire mid-turn.
+			resolvers[0]?.([{ memory: "late fact", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			expect(vi.mocked(ctx.ui.notify)).not.toHaveBeenCalled()
+			// The status segment still updates — the count is current.
+			expect(vi.mocked(ctx.ui.setStatus).mock.calls.some((c) => c[0] === MEMORY_STATUS_KEY && c[1] === "1")).toBe(true)
+			// And the digest is adopted for the next turn.
+			const turn3 = await start(startEvent("turn 3"), ctx)
+			expect(turn3?.systemPrompt).toContain("late fact")
+		} finally {
 			vi.useRealTimers()
 			consoleError.mockRestore()
 		}
@@ -434,6 +478,8 @@ describe("memory extension", () => {
 	it("a late digest is discarded when a compaction intervened", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		// Declared outside the try: the finally must be able to clean it up.
+		const marksDir = mkdtempSync(join(tmpdir(), "kimchi-memory-marks-"))
 		try {
 			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
 			const search = vi.fn(
@@ -445,7 +491,7 @@ describe("memory extension", () => {
 			const { start, getHandler } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
-			const marksFile = join(mkdtempSync(join(tmpdir(), "kimchi-memory-marks-")), "marks.jsonl")
+			const marksFile = join(marksDir, "marks.jsonl")
 			process.env.KIMCHI_SUBMIT_TIMING = marksFile
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
@@ -466,6 +512,7 @@ describe("memory extension", () => {
 			expect(search).toHaveBeenCalledTimes(2)
 			expect(result?.systemPrompt).not.toContain("stale fact")
 		} finally {
+			rmSync(marksDir, { recursive: true, force: true })
 			delete process.env.KIMCHI_SUBMIT_TIMING
 			vi.useRealTimers()
 			consoleError.mockRestore()
@@ -475,6 +522,8 @@ describe("memory extension", () => {
 	it("a late digest is discarded when memory was toggled off and on while it was in flight", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		// Declared outside the try: the finally must be able to clean it up.
+		const marksDir = mkdtempSync(join(tmpdir(), "kimchi-memory-marks-"))
 		try {
 			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
 			const search = vi.fn(
@@ -486,7 +535,7 @@ describe("memory extension", () => {
 			const { start } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
-			const marksFile = join(mkdtempSync(join(tmpdir(), "kimchi-memory-marks-")), "marks.jsonl")
+			const marksFile = join(marksDir, "marks.jsonl")
 			process.env.KIMCHI_SUBMIT_TIMING = marksFile
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
@@ -507,6 +556,7 @@ describe("memory extension", () => {
 			expect(search).toHaveBeenCalledTimes(2)
 			expect(result?.systemPrompt).not.toContain("stale fact")
 		} finally {
+			rmSync(marksDir, { recursive: true, force: true })
 			delete process.env.KIMCHI_SUBMIT_TIMING
 			setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
 			vi.useRealTimers()
