@@ -45,8 +45,8 @@ import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
 import {
-	resetAcpBackgroundRunsOptedInForTest,
-	setAcpBackgroundRunsOptedIn,
+	resetBackgroundRunsPermittedForTest,
+	setBackgroundRunsPermitted,
 } from "../../extensions/bash-background/session-policy.js"
 import { setSessionState } from "../../extensions/bash-background/session-registry.js"
 import feedbackExtension from "../../extensions/feedback/index.js"
@@ -8096,7 +8096,7 @@ describe("run boundary notifications", () => {
 		// Background-runs opt-in: these tests exercise run boundaries, which
 		// only fire for clients that opted in at initialize. The unit fabric
 		// skips initialize, so set the same process flag it would set there.
-		setAcpBackgroundRunsOptedIn(true)
+		setBackgroundRunsPermitted(true)
 		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
@@ -8107,7 +8107,7 @@ describe("run boundary notifications", () => {
 	}
 
 	afterEach(() => {
-		resetAcpBackgroundRunsOptedInForTest()
+		resetBackgroundRunsPermittedForTest()
 	})
 
 	it("closes the boundary once before a prompt that waited out the run starts", async () => {
@@ -8232,11 +8232,12 @@ describe("run boundary notifications", () => {
 	})
 
 	it("emits no run boundary for a client that did not opt into background runs at initialize", async () => {
-		// The default: no initialize opt-in (initialize never ran in this test
-		// fabric, and the flag defaults to false). An unsophisticated client
-		// must never learn about an agent-initiated run it cannot present —
-		// and its kept completion guard of pre-#1616 means the turn wouldn't
-		// have ended anyway.
+		// Model what initialize would write for a client without the
+		// backgroundRuns capability (initialize never runs in this test
+		// fabric). An unsophisticated client must never learn about an
+		// agent-initiated run it cannot present — and the completion guard
+		// it keeps means the turn wouldn't have ended anyway.
+		setBackgroundRunsPermitted(false)
 		const fake = new FakeAgentSession("session-rb-gated")
 		const { conn, extNotifications } = makeRecordingConn()
 		const agent = new KimchiAcpAgent(conn, {
@@ -8254,7 +8255,7 @@ describe("run boundary notifications", () => {
 	})
 
 	it("an initialize opt-in unlocked run boundaries start-to-end for that process", async () => {
-		setAcpBackgroundRunsOptedIn(true)
+		setBackgroundRunsPermitted(true)
 		const fake = new FakeAgentSession("session-rb-opted")
 		const { conn, extNotifications } = makeRecordingConn()
 		const agent = new KimchiAcpAgent(conn, {

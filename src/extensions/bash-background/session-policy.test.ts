@@ -12,13 +12,13 @@
  */
 import { afterEach, describe, expect, it } from "vitest"
 import {
-	resetAcpBackgroundRunsOptedInForTest,
+	resetBackgroundRunsPermittedForTest,
 	resolveBashSessionKind,
-	setAcpBackgroundRunsOptedIn,
+	setBackgroundRunsPermitted,
 } from "./session-policy.js"
 
 afterEach(() => {
-	resetAcpBackgroundRunsOptedInForTest()
+	resetBackgroundRunsPermittedForTest()
 })
 
 describe("resolveBashSessionKind — policy matrix", () => {
@@ -26,35 +26,40 @@ describe("resolveBashSessionKind — policy matrix", () => {
 		expect(resolveBashSessionKind({ mode: "tui", isWorker: false })).toBe("user-facing")
 	})
 
-	it("conversational RPC/ACP sessions are user-facing ONLY when the client opted into background runs", () => {
-		// The ACP server installs mode "rpc" for its sessions
-		// (src/modes/acp/server.ts), and `--mode rpc` is the frontend
-		// embedding channel — both have a human driving them. Since #1616 a
-		// turn may END while background commands keep running and the agent
-		// wakes itself with no prompt outstanding (background_run_start/background_run_end). Only
-		// clients that opted into that at initialize can show a stop button
-		// for the wake — so the opt-in IS the classification input.
-		setAcpBackgroundRunsOptedIn(true)
+	it("rpc sessions are user-facing when background runs are permitted (the bare-RPC default)", () => {
+		// The historical premise: the rpc channel means a conversational
+		// frontend with a human driving it (the ACP server installs mode
+		// "rpc"; `--mode rpc` embeds frontends such as studio). A host that
+		// never declares background-run wiring — bare RPC included — keeps
+		// this contract, since nothing mutates the flag.
 		expect(resolveBashSessionKind({ mode: "rpc", isWorker: false })).toBe("user-facing")
 	})
 
-	it("an rpc client that did NOT opt into background runs keeps the completion guard", () => {
-		// The pre-#1616 guard: without background_run_start/background_run_end handling a client
-		// cannot present an agent-initiated run's stop button, so its turn
-		// waits out background commands and its existing stop button covers
-		// everything — no "ghost runs".
+	it("an rpc client without background-run permission keeps the completion guard", () => {
+		// A client that cannot render background_run_start/background_run_end and stop an
+		// agent-initiated run must not see turns END mid-run: the
+		// completion guard makes its turn wait out background commands,
+		// and its existing stop button covers everything — no ghost runs.
+		setBackgroundRunsPermitted(false)
 		expect(resolveBashSessionKind({ mode: "rpc", isWorker: false })).toBe("unattended")
 	})
 
-	it("TUI sessions stay user-facing regardless of the ACP opt-in flag", () => {
+	it("TUI sessions stay user-facing regardless of the permission flag", () => {
+		setBackgroundRunsPermitted(false)
 		expect(resolveBashSessionKind({ mode: "tui", isWorker: false })).toBe("user-facing")
 	})
 
-	it("print one-shot output is unattended", () => {
+	it("print one-shot output is unattended under either flag state", () => {
+		setBackgroundRunsPermitted(true)
+		expect(resolveBashSessionKind({ mode: "print", isWorker: false })).toBe("unattended")
+		setBackgroundRunsPermitted(false)
 		expect(resolveBashSessionKind({ mode: "print", isWorker: false })).toBe("unattended")
 	})
 
-	it("json protocol output is unattended", () => {
+	it("json protocol output is unattended under either flag state", () => {
+		setBackgroundRunsPermitted(true)
+		expect(resolveBashSessionKind({ mode: "json", isWorker: false })).toBe("unattended")
+		setBackgroundRunsPermitted(false)
 		expect(resolveBashSessionKind({ mode: "json", isWorker: false })).toBe("unattended")
 	})
 
@@ -63,7 +68,7 @@ describe("resolveBashSessionKind — policy matrix", () => {
 		// but the worker context must win: its "user" is the orchestrating
 		// agent, not a human waiting on a chat turn. Even an opted-in ACP
 		// client cannot upgrade a worker.
-		setAcpBackgroundRunsOptedIn(true)
+		setBackgroundRunsPermitted(true)
 		expect(resolveBashSessionKind({ mode: "tui", isWorker: true })).toBe("unattended")
 		expect(resolveBashSessionKind({ mode: "rpc", isWorker: true })).toBe("unattended")
 	})

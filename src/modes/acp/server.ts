@@ -96,8 +96,8 @@ import {
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
 import {
-	isAcpBackgroundRunsOptedIn,
-	setAcpBackgroundRunsOptedIn,
+	getBackgroundRunsPermitted,
+	setBackgroundRunsPermitted,
 } from "../../extensions/bash-background/session-policy.js"
 import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
 import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
@@ -638,7 +638,7 @@ export class KimchiAcpAgent implements Agent {
 		// subscriber) and the bash-background session policy (turns yielding
 		// live commands vs. the completion guard) for every session this
 		// server creates.
-		setAcpBackgroundRunsOptedIn(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
+		setBackgroundRunsPermitted(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
 
 		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
@@ -2273,7 +2273,7 @@ export class KimchiAcpAgent implements Agent {
 					// Opted-in clients only: a non-opted client should have had the
 					// completion guard hold its turn open — never reach here — and
 					// must not learn about runs it cannot present.
-					if (isAcpBackgroundRunsOptedIn()) emitRunStart(this.conn, sessionId, runStartReason)
+					if (getBackgroundRunsPermitted()) emitRunStart(this.conn, sessionId, runStartReason)
 					if (wakeCancel) {
 						// Cancel raced the wake ramp: no unsolicitedTurn existed to
 						// mark when it arrived, so latch+apply here — otherwise the
@@ -2323,7 +2323,7 @@ export class KimchiAcpAgent implements Agent {
 					// Close the run boundary AFTER the last streamed output, mirroring
 					// finalizeTurn's stopReason mapping for prompt-owned turns.
 					// Symmetric with background_run_start: non-opted clients never see it.
-					if (isAcpBackgroundRunsOptedIn()) {
+					if (getBackgroundRunsPermitted()) {
 						emitRunEnd(
 							this.conn,
 							sessionId,

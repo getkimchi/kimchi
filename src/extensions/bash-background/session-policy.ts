@@ -44,26 +44,28 @@ export interface BashSessionKindInputs {
 }
 
 /**
- * Whether the ACP client of THIS PROCESS opted into background runs at
- * initialize (`clientCapabilities._meta["kimchi.dev"].backgroundRuns`).
- * One CLI process serves exactly one ACP client, so a process-scoped flag
- * is sound; the TUI never sets it (TUI is always user-facing).
+ * Whether this process's client can track agent-initiated runs such that
+ * a turn may END while managed commands keep running: it renders run
+ * start/end and offers its own stop. Default true — the historical rpc
+ * premise (a conversational frontend with a human driving it); hosts add
+ * the wiring deliberately. Only consulted for rpc-mode sessions; the TUI
+ * never reads it and print/json never reach it.
  */
-let acpBackgroundRunsOptedIn = false
+let backgroundRunsPermitted = true
 
-/** Called once from the ACP server's initialize handler with the client opt-in. */
-export function setAcpBackgroundRunsOptedIn(optedIn: boolean): void {
-	acpBackgroundRunsOptedIn = optedIn
+/** Called once per embedding host (e.g. the ACP server at initialize). */
+export function setBackgroundRunsPermitted(permitted: boolean): void {
+	backgroundRunsPermitted = permitted
 }
 
-/** The ACP client of this process opted into background runs (default false). */
-export function isAcpBackgroundRunsOptedIn(): boolean {
-	return acpBackgroundRunsOptedIn
+/** Whether rpc-mode sessions may end turns while background runs continue (default true). */
+export function getBackgroundRunsPermitted(): boolean {
+	return backgroundRunsPermitted
 }
 
-/** Test hook: restore the no-opt-in default between cases. */
-export function resetAcpBackgroundRunsOptedInForTest(): void {
-	acpBackgroundRunsOptedIn = false
+/** Test hook: restore the historical default between cases. */
+export function resetBackgroundRunsPermittedForTest(): void {
+	backgroundRunsPermitted = true
 }
 
 /** Resolve the session kind for one session, once. */
@@ -73,15 +75,17 @@ export function resolveBashSessionKind(inputs: BashSessionKindInputs): BashSessi
 	if (inputs.isWorker) return "unattended"
 	// "tui": interactive terminal — a human is always present.
 	if (inputs.mode === "tui") return "user-facing"
-	// "rpc": conversational protocol sessions (ACP installs "rpc"). Since
-	// #1616 such a turn may END while background commands keep running and
-	// the agent wakes itself with NO prompt outstanding — only clients that
-	// opted into background runs (background_run_start/background_run_end + their own stop
-	// wiring) can handle that safely. Everyone else keeps the completion
-	// guard — pre-#1616 behavior: a turn waits out its background commands
-	// and the client's existing stop button covers everything.
-	if (inputs.mode === "rpc") return isAcpBackgroundRunsOptedIn() ? "user-facing" : "unattended"
-	// "print"/"json": one-shot headless output.
+	// "rpc": conversational protocol sessions (ACP installs "rpc"; bare
+	// `--mode rpc` is the embedding channel for frontends with a human
+	// driving them). A turn may END while background commands keep running
+	// only when the client permits background runs — rendering run
+	// start/end and wiring its own stop. Hosts that never declare the
+	// wiring (bare RPC: nothing mutates the flag) keep the historical
+	// user-facing contract. Everyone else keeps the completion guard: a
+	// turn waits out its background commands and the client's existing
+	// stop button covers everything.
+	if (inputs.mode === "rpc") return getBackgroundRunsPermitted() ? "user-facing" : "unattended"
+	// "print"/"json": one-shot headless output — never user-facing.
 	return "unattended"
 }
 
