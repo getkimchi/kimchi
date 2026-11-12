@@ -386,7 +386,29 @@ export interface TurnRecall {
  * undefined when nothing new clears the bar — the normal outcome when the
  * conversation stays inside delivered territory.
  */
-export function buildTurnRecall(hits: MemorySearchHit[], deliveredKeys: ReadonlySet<string>): TurnRecall | undefined {
+/**
+ * Self-echo filter: a candidate whose CONTENT words are (almost) all already
+ * in the query that retrieved it carries no new information — semantic
+ * similarity makes such echoes score top-of-list while adding nothing
+ * (observed live: a fact replicating the query's own echo slice line).
+ * Reuses the coverage gate's stopword-filtered content words; skip when
+ * ≥85% of the candidate's content words appear in the query text.
+ */
+export function isSelfEcho(text: string, query: string): boolean {
+	if (!text || !query) return false
+	const cw = new Set(contentWords(text))
+	if (cw.size === 0) return false
+	const qw = new Set(contentWords(query))
+	let inside = 0
+	for (const w of cw) if (qw.has(w)) inside += 1
+	return inside / cw.size >= 0.85
+}
+
+export function buildTurnRecall(
+	hits: MemorySearchHit[],
+	deliveredKeys: ReadonlySet<string>,
+	query: string,
+): TurnRecall | undefined {
 	const composition: DigestComposition = {
 		facts: 0,
 		considered: 0,
@@ -406,6 +428,10 @@ export function buildTurnRecall(hits: MemorySearchHit[], deliveredKeys: Readonly
 			continue
 		}
 		if (deliveredKeys.has(factKey(candidate.text))) continue
+		if (isSelfEcho(candidate.text, query)) {
+			composition.selectorSkipped += 1
+			continue
+		}
 		if (kept.length >= TURN_RECALL_MAX_FACTS) {
 			composition.overCap += 1
 			continue

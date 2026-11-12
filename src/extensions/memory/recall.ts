@@ -115,7 +115,7 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 	// agent event.
 	let recall: ReturnType<typeof buildTurnRecall>
 	try {
-		recall = list.length > 0 ? buildTurnRecall(list, deliveredKeys) : undefined
+		recall = list.length > 0 ? buildTurnRecall(list, deliveredKeys, query) : undefined
 		if (recall) {
 			for (const fact of recall.facts) {
 				deliveredKeys.add(factKey(fact))
