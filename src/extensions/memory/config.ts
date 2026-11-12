@@ -42,6 +42,17 @@ export const DIGEST_MAX_TOKENS = 2_000
 export const MEMORY_CAPTURE_WINDOW_CHARS = 2_000
 
 /**
+ * Length cap for a single stored fact, enforced before the store add —
+ * the embedder's context is 8192 tokens and an extraction occasionally
+ * emitted monster facts (an observed 8193-token embed input caused a
+ * deterministic 400 loop). The extraction contract says short
+ * self-contained sentences; anything over this is skipped and counted,
+ * never truncated (a truncated fact risks storing a misleading
+ * half-sentence). ≈500 tokens at typical tokenization.
+ */
+export const MEMORY_FACT_MAX_CHARS = 2_000
+
+/**
  * Parallel extraction calls across the whole drain (the pipelined worker's
  * phase B) — the LLM phase is the throughput bottleneck, so windows from
  * ALL pending jobs extract in one bounded-concurrency queue instead of
@@ -114,6 +125,7 @@ export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 12 * 60_000
 export const POISON_JOB_MAX_ATTEMPTS = 2
 
 /**
+<<<<<<< Updated upstream
  * Cross-drain attempt cap for a WHOLly-transient failing job: a sustained
  * gateway outage (retry-exhausted 5xx) makes every drain re-run the same
  * windows and the drain gate blocks on pending-until-empty forever — the
@@ -125,6 +137,18 @@ export const POISON_JOB_MAX_ATTEMPTS = 2
  * pacing knob is needed.
  */
 export const TRANSIENT_JOB_MAX_ATTEMPTS = 10
+
+/**
+ * Drains a capture job with a failing COMMIT (add/embedder — the store
+ * side, not extraction) gets before quarantine. Higher than the poison
+ * cap: extraction staging already made a retry a cheap re-add (no LLM
+ * re-paid), and commit failures are likelier transient (embedder
+ * outages, timeouts) than deterministic — the October incident's
+ * unbounded re-drain loop is bounded here instead. Quarantined jobs keep
+ * their staged facts in failed/ for the same manual mv-back requeue as
+ * poison jobs.
+ */
+export const ADD_FAILURE_MAX_ATTEMPTS = 5
 
 /**
  * How long quarantined jobs are kept in failed/ for post-mortems before
@@ -215,6 +239,16 @@ export const MEMORY_REQUEST_TIMEOUT_MS = 60_000
 /** Gate condition A: skip retrieval when this fraction of the recent
  * conversation's content words are already covered by delivered facts. */
 export const GATE_MIN_COVERAGE = 0.3
+
+/**
+ * Drain traces kept under `traces/` (ring buffer, newest first) — the
+ * `kimchi memory dashboard` data source. Tracing is always-on and
+ * fail-soft; KIMCHI_MEMORY_TRACE_DRAINS overrides this, 0 disables
+ * tracing entirely. A drain file is typically a few hundred KB (raw
+ * windows + prompts), so 50 drains covers days-to-weeks of activity
+ * within a bounded footprint.
+ */
+export const TRACE_DRAINS_KEPT = 50
 
 const CHARS_PER_TOKEN = 4
 

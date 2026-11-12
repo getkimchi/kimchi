@@ -20,6 +20,8 @@
 import { GATEWAY_ORGANIZATION_HEADER } from "../../auth/gateway-credentials.js"
 import { fetchWithRetry, isRetryableStatus } from "../../utils/http.js"
 import { mapWithConcurrency } from "./map-concurrency.js"
+import type { OnExchange } from "./trace.js"
+import { recordUsage, type UsageKind } from "./usage-ledger.js"
 
 /** Usage-tracking tag for billing attribution (matches memory:extraction). */
 export const MEMORY_DECISION_TAG = "memory:decision"
@@ -71,6 +73,11 @@ export interface DecisionGateOptions {
 	timeoutMs?: number
 	/** Retry budget on retryable statuses (429/5xx family). */
 	maxRetries?: number
+	/** Optional observability hook receiving the exact request body and the
+	 * parsed response (and error/status on failure). Only the capture worker
+	 * sets it (drain tracing) — the session turn path passes no hook and
+	 * changes no behavior. */
+	onExchange?: OnExchange
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
 	/** Drain watchdog signal — abort rejects in-flight gate calls so a hung
@@ -116,6 +123,7 @@ export async function decide(
 	gate: DecisionGateOptions,
 	state: string,
 	questions: Record<string, ChoiceQuestion>,
+	kind: UsageKind = "d3",
 ): Promise<DecisionResponse> {
 	const names = Object.keys(questions)
 	if (names.length === 0) throw new DecisionGateError("decide() called with no questions")
@@ -123,6 +131,14 @@ export async function decide(
 		throw new DecisionGateError(
 			`decide() got ${names.length} questions; the gateway caps at ${DECISION_QUESTION_CAP} — batch via batchChoice()`,
 		)
+	}
+	const requestBody = {
+		model: gate.model ?? "d3",
+		state,
+		questions,
+		// Same payload field the /tags extension sets on session LLM
+		// requests, so billing attributes this traffic.
+		tags: [MEMORY_DECISION_TAG],
 	}
 	const response = await fetchWithRetry(
 		gate.endpoint,
@@ -133,14 +149,7 @@ export async function decide(
 				authorization: `Bearer ${gate.apiKey}`,
 				...(gate.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: gate.organizationId } : {}),
 			},
-			body: JSON.stringify({
-				model: gate.model ?? "d3",
-				state,
-				questions,
-				// Same payload field the /tags extension sets on session LLM
-				// requests, so billing attributes this traffic.
-				tags: [MEMORY_DECISION_TAG],
-			}),
+			body: JSON.stringify(requestBody),
 		},
 		{
 			fetchImpl: gate.fetchImpl,
@@ -148,33 +157,76 @@ export async function decide(
 			retry: { maxRetries: gate.maxRetries ?? 2 },
 			signal: gate.abortSignal,
 		},
-	)
+	).catch((err: unknown) => {
+		// Timeout / network failure after the retry budget — a failed row
+		// keeps the outage visible in the local ledger (zero tokens: no
+		// usage came back).
+		recordUsage({ kind, model: gate.model ?? "d3", failed: true })
+		gate.onExchange?.({
+			request: requestBody,
+			error: err instanceof Error ? err.message : String(err),
+		})
+		throw err
+	})
 	if (!response.ok) {
+		recordUsage({ kind, model: gate.model ?? "d3", failed: true })
+		gate.onExchange?.({ request: requestBody, error: `HTTP ${response.status}`, status: response.status })
 		throw new DecisionGateError(
 			`systemone rejected the request: HTTP ${response.status}${isRetryableStatus(response.status) ? " (transient)" : ""}`,
 		)
 	}
-	const body = (await response.json()) as Partial<DecisionResponse>
+	const body = (await response.json().catch((err: unknown) => {
+		// Malformed response body — same failure-recording pattern as the
+		// other failure branches: ledger row + trace error, then throw.
+		recordUsage({ kind, model: gate.model ?? "d3", failed: true })
+		gate.onExchange?.({
+			request: requestBody,
+			error: `unparseable response body: ${err instanceof Error ? err.message : String(err)}`,
+		})
+		throw err
+	})) as Partial<DecisionResponse>
 	if (typeof body !== "object" || body === null || typeof body.answers !== "object" || body.answers === null) {
+		recordUsage({ kind, model: gate.model ?? "d3", failed: true })
 		throw new DecisionGateError("systemone response has no answers object")
 	}
 	for (const name of names) {
 		const answer = body.answers[name]
 		if (!isChoiceAnswer(answer)) {
+			recordUsage({ kind, model: gate.model ?? "d3", failed: true })
 			throw new DecisionGateError(`systemone response is missing a parseable answer for question ${name}`)
 		}
 	}
+	// d3 is input-token-only (output_tokens=0 by contract) — the row also
+	// records the per-call question count for spend-per-question analysis.
+	const model = typeof body.model === "string" ? body.model : (gate.model ?? "d3")
+	const usage =
+		typeof body.usage === "object" && body.usage !== null
+			? {
+					input_tokens: typeof body.usage.input_tokens === "number" ? body.usage.input_tokens : 0,
+					output_tokens: typeof body.usage.output_tokens === "number" ? body.usage.output_tokens : 0,
+				}
+			: { input_tokens: 0, output_tokens: 0 }
+	recordUsage({
+		kind,
+		model,
+		inputTokens: usage.input_tokens,
+		outputTokens: usage.output_tokens,
+		questions: names.length,
+	})
+	gate.onExchange?.({
+		request: requestBody,
+		response: {
+			id: typeof body.id === "string" ? body.id : "",
+			model,
+			answers: body.answers,
+			usage,
+		},
+	})
 	return {
 		id: typeof body.id === "string" ? body.id : "",
-		model: typeof body.model === "string" ? body.model : (gate.model ?? "d3"),
+		model,
 		answers: body.answers as Record<string, ChoiceAnswer>,
-		usage:
-			typeof body.usage === "object" && body.usage !== null
-				? {
-						input_tokens: typeof body.usage.input_tokens === "number" ? body.usage.input_tokens : 0,
-						output_tokens: typeof body.usage.output_tokens === "number" ? body.usage.output_tokens : 0,
-					}
-				: { input_tokens: 0, output_tokens: 0 },
+		usage,
 	}
 }
 
@@ -191,6 +243,7 @@ export async function batchChoice(
 	buildQuestion: (itemText: string, index: number) => ChoiceQuestion,
 	onBatch?: (batchIndex: number, response: DecisionResponse) => void,
 	batchSize = DECISION_BATCH_SIZE,
+	kind?: UsageKind,
 ): Promise<ChoiceAnswer[]> {
 	// Chunk first, then run the independent chunk calls in bounded parallel;
 	// answers stay in item order via the start index, never arrival order.
@@ -202,7 +255,7 @@ export async function batchChoice(
 		for (const [i, text] of slice.entries()) {
 			questions[`item_${start + i + 1}`] = buildQuestion(text, start + i)
 		}
-		const response = await decide(gate, state, questions)
+		const response = await decide(gate, state, questions, kind)
 		onBatch?.(batchIndex, response)
 		return { start, response }
 	})

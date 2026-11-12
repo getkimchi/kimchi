@@ -86,6 +86,7 @@ export type AdminCommand =
 	| { op: "delete"; ids: string[] }
 	| { op: "reset"; scope: ScopeFilter; yes: boolean }
 	| { op: "consolidate"; scope: ScopeFilter; yes: boolean }
+	| { op: "dashboard"; port?: number; noOpen: boolean }
 	| { op: "set-enabled"; enabled: boolean }
 	| { op: "usage-error"; message: string }
 
@@ -101,6 +102,12 @@ export const USAGE = `usage: memory [list|search|delete|reset|consolidate|enable
           One-shot d3-assisted cleanup: classifies every fact as unique /
           complementary / exact_twin / near_twin and deletes the redundant
           copies. Reports first; deletes only with --yes (or confirmed).
+  dashboard [--port N] [--no-open]
+          Web dashboard for the capture pipeline: the pending queue, and
+          every drained job with per-phase detail — the full request text
+          and complete response for each extraction/supersede API call,
+          and every d3 decision question with its probabilities.
+          Terminal-only (runs a localhost server until Ctrl+C).
   enable | disable
           Toggle memory for the current interactive session only. Resets on
           restart; the persistent feature switch is
@@ -112,7 +119,16 @@ export const USAGE = `usage: memory [list|search|delete|reset|consolidate|enable
 
 // --- grammar ------------------------------------------------------------------
 
-const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset", "consolidate", "enable", "disable"])
+const KNOWN_SUBCOMMANDS = new Set([
+	"list",
+	"search",
+	"delete",
+	"reset",
+	"consolidate",
+	"dashboard",
+	"enable",
+	"disable",
+])
 const DEFAULT_LIST_LIMIT = 50
 
 export { DEFAULT_LIST_LIMIT }
@@ -123,7 +139,7 @@ interface ParsedFlags {
 	positionals: string[]
 }
 
-const VALUE_FLAGS = new Set(["--scope", "--project", "--limit", "--offset"])
+const VALUE_FLAGS = new Set(["--scope", "--project", "--limit", "--offset", "--port"])
 
 function parseFlagTokens(rest: string[]): ParsedFlags | { error: string } {
 	const values: Record<string, string> = {}
@@ -139,6 +155,8 @@ function parseFlagTokens(rest: string[]): ParsedFlags | { error: string } {
 			bools.add("json")
 		} else if (token === "--yes") {
 			bools.add("yes")
+		} else if (token === "--no-open") {
+			bools.add("no-open")
 		} else if (token.startsWith("--")) {
 			return { error: `unknown flag ${token}` }
 		} else {
@@ -272,6 +290,19 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 			return { op: "usage-error", message: `${sub} takes no arguments — it toggles the current session's memory only` }
 		}
 		return { op: "set-enabled", enabled: sub === "enable" }
+	}
+	// Dashboard: sessionless store op (works with the feature disabled),
+	// no scope, no positionals — checked before the scope parse so it never
+	// pays the git probe either.
+	if (sub === "dashboard") {
+		if (flags.positionals.length > 0) {
+			return { op: "usage-error", message: "dashboard takes no positional arguments" }
+		}
+		const port = flags.values.port === undefined ? undefined : parseNonNegativeInt(flags.values.port, "--port")
+		if (typeof port === "object") {
+			return { op: "usage-error", message: port.error }
+		}
+		return { op: "dashboard", port, noOpen: flags.bools.has("no-open") }
 	}
 	// Only list, search, and consolidate consume the parsed scope — overview
 	// and delete get the unresolved local marker instead of paying the git
@@ -517,6 +548,10 @@ export interface AdminRunOptions {
 	 *  "Last session" line. Omitted by sessionless surfaces (CLI, ACP
 	 *  store overview). */
 	captureSessionId?: string
+	/** Terminal-only dashboard launcher — supplied by the CLI surface
+	 * (commands/memory.ts); in-session callers omit it and /memory
+	 * dashboard answers with the terminal-only hint. */
+	launchDashboard?: (options: { port?: number; openBrowser: boolean }) => Promise<Omit<AdminResult, "useJson">>
 	/** Test seams. */
 	deps?: AdminDeps
 }
@@ -553,6 +588,17 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 				return withMode(await opReset(parsed, options, deps), false)
 			case "consolidate":
 				return withMode(await opConsolidate(parsed, options, deps, options.deps), false)
+			case "dashboard":
+				return withMode(
+					options.launchDashboard
+						? await options.launchDashboard({ port: parsed.port, openBrowser: !parsed.noOpen })
+						: result({
+								text: "`memory dashboard` is terminal-only: run `kimchi memory dashboard [--port N] [--no-open]` in a terminal.",
+								code: 1,
+								data: { error: "dashboard is terminal-only" },
+							}),
+					false,
+				)
 			case "set-enabled":
 				return withMode(opSetEnabled(parsed, options), false)
 		}
@@ -640,8 +686,9 @@ export interface MemoryOverview {
 	root: string
 	stores: Array<{ scope: string; facts: number; sizeBytes: number }>
 	pendingJobs: number
-	/** Quarantined poison capture jobs (deterministic extraction failures,
-	 * moved aside after POISON_JOB_MAX_ATTEMPTS drains). */
+	/** Quarantined capture jobs — deterministic extraction poison and
+	 * add-failed commits (both moved aside after their attempt caps;
+	 * requeue by mv back into pending/). */
 	failedJobs: number
 	ledgerEntries: number
 	/** The most recent capture completion from ANOTHER session — the
@@ -995,6 +1042,9 @@ async function opConsolidate(
 				consolidateState(items.map((item) => item.memory)),
 				items.map((item) => item.memory),
 				consolidateQuestion,
+				undefined,
+				undefined,
+				"admin",
 			)
 		} catch (err) {
 			lines.push(

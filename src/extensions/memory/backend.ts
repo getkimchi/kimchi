@@ -129,6 +129,8 @@ async function fetchAvailableModelIds(
 	}
 }
 
+import { recordUsage } from "./usage-ledger.js"
+
 export const MEMORY_EMBEDDING_TAG = "memory:embedding"
 
 /**
@@ -177,6 +179,9 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 			headers = new Headers(init?.headers)
 			if (!headers.has(GATEWAY_ORGANIZATION_HEADER)) headers.set(GATEWAY_ORGANIZATION_HEADER, state.organizationId)
 		}
+		// The embedding model id from the tagged request body (the local usage
+		// ledger row's model field).
+		let embeddingModel: string | undefined
 		if (url.includes("/embeddings")) {
 			// The OpenAI SDK default is a ~10-minute per-attempt timeout and
 			// mem0's embedder constructor never sets one (see OpenAIEmbedder in
@@ -194,15 +199,23 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 				const body = JSON.parse(String(init.body)) as Record<string, unknown> & { tags?: string[] }
 				const tags = Array.isArray(body.tags) ? [...body.tags] : []
 				if (!tags.includes(MEMORY_EMBEDDING_TAG)) tags.push(MEMORY_EMBEDDING_TAG)
+				if (typeof body.model === "string") embeddingModel = body.model
 				const taggedBody = JSON.stringify({ ...body, tags })
-				return headers
-					? original(input, { ...init, headers, body: taggedBody, signal })
-					: original(input, { ...init, body: taggedBody, signal })
+				return recordEmbeddingUsage(
+					url,
+					embeddingModel,
+					await (headers
+						? original(input, { ...init, headers, body: taggedBody, signal })
+						: original(input, { ...init, body: taggedBody, signal })),
+				)
 			} catch {
 				// Not a JSON body — pass through untouched
 			}
 		}
-		return headers ? original(input, { ...init, headers, signal }) : original(input, { ...init, signal })
+		const response = await (headers
+			? original(input, { ...init, headers, signal })
+			: original(input, { ...init, signal }))
+		return recordEmbeddingUsage(url, embeddingModel, response)
 	}
 	intercepted._memoryGatewayIntercepted = true
 	globalThis.fetch = intercepted
@@ -218,6 +231,31 @@ function requestOrigin(url: string): string | undefined {
 
 /** Storage paths live in config.ts (config is backend's dependency direction); re-exported for existing importers. */
 export { defaultMemoryDir, memoryDbPath } from "./config.js"
+
+/** Record the local usage-ledger row for a gateway embedding response.
+ * Usage is read from a CLONE so the SDK's consumer still gets the body;
+ * the clone is read asynchronously so the interceptor never blocks the
+ * embedding on ledger I/O. Fail-soft by contract (see usage-ledger.ts):
+ * recording must never break an embedding. */
+function recordEmbeddingUsage(url: string, model: string | undefined, response: Response): Response {
+	if (!url.includes("/embeddings")) return response
+	if (!response.ok) {
+		recordUsage({ kind: "embedding", model, failed: true })
+		return response
+	}
+	response
+		.clone()
+		.json()
+		.then((parsed) => {
+			const usage = parsed as { usage?: { prompt_tokens?: number; total_tokens?: number } }
+			recordUsage({ kind: "embedding", model, inputTokens: usage.usage?.prompt_tokens })
+		})
+		.catch(() => {
+			// Non-JSON or unreadable clone — nothing to record; the original
+			// response is returned intact either way.
+		})
+	return response
+}
 
 /**
  * Per-project store path: `projects/<owner>/<name>/memory.db` under the

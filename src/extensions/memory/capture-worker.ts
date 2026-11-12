@@ -24,15 +24,22 @@
  *      the drain budget any external driver gives the capture pass. A
  *      failed window retries once; a second failure leaves its hashes
  *      unmarked for a future drain.
+ *      Windows that extract successfully are STAGED to the job file here
+ *      (facts + window hashes): an add/embedder failure in phase C re-adds
+ *      staged facts on the next drain instead of re-paying extraction —
+ *      the October incident's retry multiplier. Staged coverage is
+ *      file-local; the shared ledger is only written at commit.
  *   C. Sequential commit in job order (chronological — supersede
  *      correctness depends on newer facts arriving after older ones), then
  *      ONE batched supersede judge pass per store across the whole drain
  *      (MEMORY_SUPERSEDE_BATCH_FACTS caps the judge prompt) — a single
  *      chronological view makes cross-session conflicts explicit.
  *
- * Idempotence: message hashes are recorded only after a window fully
- * processes, so a crashed run resumes where it stopped and a re-spawned
- * duplicate job is a no-op.
+ * Idempotence: a window's extraction cost is paid at most once — its facts
+ * and hashes are staged to the job file immediately after extraction, so a
+ * crashed run resumes where it stopped, a re-spawned duplicate job is a
+ * no-op, and a persistently failing store re-adds without re-extracting
+ * (bounded by ADD_FAILURE_MAX_ATTEMPTS before quarantine).
  */
 import { createHash } from "node:crypto"
 import {
@@ -60,10 +67,12 @@ import {
 	resolveExtractionModel,
 } from "./backend.js"
 import {
+	ADD_FAILURE_MAX_ATTEMPTS,
 	EXTRACTION_DERIVED_TAG,
 	MEMORY_CAPTURE_WINDOW_CHARS,
 	MEMORY_DRAIN_CONCURRENCY,
 	MEMORY_DRAIN_HARD_TIMEOUT_MS,
+	MEMORY_FACT_MAX_CHARS,
 	MEMORY_SUPERSEDE_BATCH_FACTS,
 	MEMORY_USER_ID,
 	PENDING_JOB_MAX_AGE_MS,
@@ -87,6 +96,8 @@ import {
 } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
 import { createDecisionSupersedeJudge, findSupersededIds, type SupersedeJudge } from "./supersede.js"
+import { createTraceRecorder, type OnExchange, pruneTraces, type TraceRecorder } from "./trace.js"
+import { recordUsage, type UsageKind } from "./usage-ledger.js"
 
 export interface CaptureMessage {
 	role: "user" | "assistant"
@@ -119,6 +130,46 @@ export function messageHash(message: CaptureMessage, scope?: { session?: string;
 	}
 	const prefix = `v2:${scope.session ?? ""}:${scope.project ?? "personal"}`
 	return createHash("sha1").update(`${prefix}:${message.role}:${message.content}`).digest("hex")
+}
+
+/** Extract-once staging, persisted additively on the job JSON after phase
+ * B: the facts a job's successfully-extracted windows produced, plus those
+ * windows' message hashes (already hash-marked at staging time). A later
+ * drain re-adds the staged facts without re-extracting; windows whose
+ * extraction previously failed are absent from windowHashes and keep
+ * retrying under the pre-staging retry/poison semantics. Older builds
+ * ignore the field; jobs without it behave exactly as before. */
+export interface StagedExtraction {
+	personalFacts: string[]
+	projectFacts: string[]
+	/** Message hashes of every window whose extraction succeeded (or was
+	 * triaged out as empty) — the staging-time hash-mark record. */
+	windowHashes: string[]
+}
+
+/** Validate an unknown job.staged value; ANY garbage degrades to "not
+ * staged" so the drain re-extracts (the fail-safe direction: at most a
+ * wasted call, never a lost fact). Every field must be a string-only array
+ * — a record with even one non-string entry (e.g. readable windowHashes but
+ * a corrupted fact) must not count as coverage while silently dropping
+ * that fact. */
+function parseStaged(value: unknown): StagedExtraction | undefined {
+	if (typeof value !== "object" || value === null) return undefined
+	const staged = value as Record<string, unknown>
+	if (
+		!Array.isArray(staged.windowHashes) ||
+		!Array.isArray(staged.personalFacts) ||
+		!Array.isArray(staged.projectFacts)
+	)
+		return undefined
+	const allStrings = (input: unknown[]): input is string[] => input.every((item) => typeof item === "string")
+	if (!allStrings(staged.personalFacts) || !allStrings(staged.projectFacts) || !allStrings(staged.windowHashes))
+		return undefined
+	return {
+		personalFacts: staged.personalFacts,
+		projectFacts: staged.projectFacts,
+		windowHashes: staged.windowHashes,
+	}
 }
 
 /**
@@ -300,6 +351,10 @@ interface GatewayLlmOptions {
 	/** SSO org routing header value — set only for OAuth (SSO) login. */
 	organizationId?: string
 	model: string
+	/** Optional observability hook around each chat/completions call — the
+	 * capture drain's trace recorder (api events: full system/user/request
+	 * text and the complete response). Never set by session code. */
+	onExchange?: OnExchange
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
 	/** Drain watchdog signal — when aborted, every in-flight gate/extraction
@@ -334,8 +389,24 @@ export async function chatJson(
 	options: GatewayLlmOptions,
 	system: string,
 	user: string,
+	kind: UsageKind,
 	maxAttempts = 4,
 ): Promise<string> {
+	const requestBody = {
+		model: options.model,
+		// Deterministic extraction: needle facts must not appear or
+		// disappear between runs of the same haystack (validated: the
+		// gateway default temperature changed captured facts per run).
+		temperature: 0,
+		// Usage-tracking tag — the same payload field the /tags extension
+		// sets on session LLM requests — so billing can attribute
+		// background memory traffic.
+		tags: ["memory:extraction"],
+		messages: [
+			{ role: "system", content: system },
+			{ role: "user", content: user },
+		],
+	}
 	const response = await fetchWithRetry(
 		// Relative join (no leading slash) so the gateway's base path
 		// (https://llm.kimchi.dev/openai/v1) is preserved.
@@ -347,21 +418,7 @@ export async function chatJson(
 				authorization: `Bearer ${options.apiKey}`,
 				...(options.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: options.organizationId } : {}),
 			},
-			body: JSON.stringify({
-				model: options.model,
-				// Deterministic extraction: needle facts must not appear or
-				// disappear between runs of the same haystack (validated: the
-				// gateway default temperature changed captured facts per run).
-				temperature: 0,
-				// Usage-tracking tag — the same payload field the /tags extension
-				// sets on session LLM requests — so billing can attribute
-				// background memory traffic.
-				tags: ["memory:extraction"],
-				messages: [
-					{ role: "system", content: system },
-					{ role: "user", content: user },
-				],
-			}),
+			body: JSON.stringify(requestBody),
 		},
 		{
 			fetchImpl: options.fetchImpl,
@@ -369,8 +426,24 @@ export async function chatJson(
 			retry: { maxRetries: maxAttempts - 1 },
 			signal: options.abortSignal,
 		},
-	)
+	).catch((err: unknown) => {
+		// Timeout / network failure after the retry budget — attempts were
+		// made but no usage came back; a failed row keeps the outage visible
+		// in the local ledger.
+		recordUsage({ kind, model: options.model, failed: true })
+		options.onExchange?.({
+			request: { model: options.model, system, user },
+			error: err instanceof Error ? err.message : String(err),
+		})
+		throw err
+	})
 	if (!response.ok) {
+		recordUsage({ kind, model: options.model, failed: true })
+		options.onExchange?.({
+			request: { model: options.model, system, user },
+			error: `HTTP ${response.status}`,
+			status: response.status,
+		})
 		// fetchWithRetry returns retryable statuses only after exhausting its
 		// budget (still transient); anything else failed deterministically.
 		if (isRetryableStatus(response.status)) {
@@ -378,9 +451,46 @@ export async function chatJson(
 		}
 		throw new PoisonExtractionError(`gateway rejected the request: HTTP ${response.status}`)
 	}
-	const body = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
+	const body = (await response.json().catch((err: unknown) => {
+		// Malformed response body — same failure-recording pattern as the
+		// other failure branches above: ledger row + trace error, then throw.
+		recordUsage({ kind, model: options.model, failed: true })
+		options.onExchange?.({
+			request: { model: options.model, system, user },
+			error: `unparseable response body: ${err instanceof Error ? err.message : String(err)}`,
+		})
+		throw err
+	})) as {
+		choices?: Array<{ message?: { content?: string } }>
+		usage?: { prompt_tokens?: number; completion_tokens?: number }
+	}
 	const content = body.choices?.[0]?.message?.content
-	if (typeof content !== "string") throw new Error("completion response has no message content")
+	if (typeof content !== "string") {
+		recordUsage({ kind, model: options.model, failed: true })
+		options.onExchange?.({
+			request: { model: options.model, system, user },
+			error: "completion response has no message content",
+		})
+		throw new Error("completion response has no message content")
+	}
+	// The completion response carries standard OpenAI usage; absent usage
+	// records the row without counts rather than dropping it.
+	recordUsage({
+		kind,
+		model: options.model,
+		inputTokens: body.usage?.prompt_tokens,
+		outputTokens: body.usage?.completion_tokens,
+	})
+	options.onExchange?.({
+		request: { model: options.model, system, user },
+		response: {
+			content,
+			usage: {
+				inputTokens: body.usage?.prompt_tokens ?? null,
+				outputTokens: body.usage?.completion_tokens ?? null,
+			},
+		},
+	})
 	return content
 }
 
@@ -430,9 +540,14 @@ export async function chatWithRetry<T>(
 	system: string,
 	user: string,
 	parse: (text: string) => T,
+	kind: UsageKind,
+	/** Fires when the first (non-strict) response was unparseable and the
+	 * strict-JSON retry is about to be sent — the drain traceer's
+	 * strict-json-retry phase event. */
+	onStrictRetry?: () => void,
 ): Promise<T> {
 	for (let attempt = 0; ; attempt++) {
-		const text = await chatJson(llm, attempt === 0 ? system : system + STRICT_JSON_RETRY_SUFFIX, user)
+		const text = await chatJson(llm, attempt === 0 ? system : system + STRICT_JSON_RETRY_SUFFIX, user, kind)
 		try {
 			return parse(text)
 		} catch (err) {
@@ -441,6 +556,7 @@ export async function chatWithRetry<T>(
 					cause: err,
 				})
 			}
+			onStrictRetry?.()
 			console.error("[memory-capture] response not parseable, retrying with strict prompt:", text.slice(0, 80))
 		}
 	}
@@ -469,17 +585,68 @@ function scopedPrompt(basePrompt: string, scopeContextLine: string | null | unde
 	return `${stripped}${SCOPE_TAG_SECTION}${scopeContextLine}`
 }
 
+/**
+ * Per-window context for drain trace events — the job file basename +
+ * zero-based window index the api/phase events anchor to.
+ */
+interface TraceCtx {
+	job: string
+	window: number
+	trace: TraceRecorder
+}
+
+/** The event-context slice (without the recorder) as the hooks inject it. */
+function traceEventContext(ctx: TraceCtx): Record<string, unknown> {
+	return { job: ctx.job, window: ctx.window }
+}
+
+type TraceApiKind =
+	| "extraction-user"
+	| "extraction-assistant"
+	| "supersede-chat"
+	| "triage"
+	| "valuation"
+	| "supersede-d3"
+
+/** Clone llm options with the exchange hook bound to an api event
+ * carrying the given kind + event context (job/window or store). */
+function withLlmApiHook(
+	llm: GatewayLlmOptions,
+	kind: TraceApiKind,
+	context: Record<string, unknown>,
+	trace: TraceRecorder,
+): GatewayLlmOptions {
+	return {
+		...llm,
+		onExchange: (exchange) => trace.emit({ type: "api", kind, ...context, ...exchange }),
+	}
+}
+
+/** Same, for the d3 decision-gate calls. */
+function withGateApiHook(
+	gate: DecisionGateOptions,
+	kind: TraceApiKind,
+	context: Record<string, unknown>,
+	trace: TraceRecorder,
+): DecisionGateOptions {
+	return {
+		...gate,
+		onExchange: (exchange) => trace.emit({ type: "api", kind, ...context, ...exchange }),
+	}
+}
+
 async function extractFacts(
 	llm: GatewayLlmOptions,
 	window: CaptureMessage[],
 	scopeContextLine: string | null | undefined,
+	traceCtx?: TraceCtx,
 ): Promise<TaggedFacts> {
 	// Two passes: user-stated facts (the validated prompt), then cautious
 	// assistant-established facts (agent-aware: engagement evidence required).
 	// Sequential within the window — the pipeline's window-level concurrency
 	// (4) already bounds the instantaneous call rate.
-	const userFacts = await extractUserFacts(llm, window, scopeContextLine)
-	const assistantFacts = await extractAssistantFacts(llm, window, scopeContextLine)
+	const userFacts = await extractUserFacts(llm, window, scopeContextLine, traceCtx)
+	const assistantFacts = await extractAssistantFacts(llm, window, scopeContextLine, traceCtx)
 	// The assistant pass never emits task facts (its prompt is conversation-
 	// scoped on purpose) — the lane passes through untransformed.
 	return {
@@ -493,6 +660,7 @@ async function extractUserFacts(
 	llm: GatewayLlmOptions,
 	window: CaptureMessage[],
 	scopeContextLine: string | null | undefined,
+	traceCtx?: TraceCtx,
 ): Promise<TaggedFacts> {
 	const transcript = renderWindow(window)
 	const taskScope = taskScopeEnabled()
@@ -502,8 +670,23 @@ async function extractUserFacts(
 			(receiptsEnabled() ? RECEIPTS_EXTRACTION_SUFFIX : ""),
 		scopeContextLine,
 	)
-	return chatWithRetry(llm, system, transcript, (text) =>
-		parseTaggedFacts(text, scopeContextLine ? "project" : "personal", { taskScope }),
+	const llmTraced = traceCtx ? withLlmApiHook(llm, "extraction-user", traceEventContext(traceCtx), traceCtx.trace) : llm
+	return chatWithRetry(
+		llmTraced,
+		system,
+		transcript,
+		(text) => parseTaggedFacts(text, scopeContextLine ? "project" : "personal", { taskScope }),
+		"extraction",
+		traceCtx
+			? () =>
+					traceCtx.trace.emit({
+						type: "phase",
+						phase: "strict-json-retry",
+						kind: "extraction-user",
+						job: traceCtx.job,
+						window: traceCtx.window,
+					})
+			: undefined,
 	)
 }
 
@@ -523,6 +706,7 @@ export async function extractAssistantFacts(
 	llm: GatewayLlmOptions,
 	window: CaptureMessage[],
 	scopeContextLine: string | null | undefined,
+	traceCtx?: TraceCtx,
 ): Promise<TaggedFacts> {
 	// Pure-user windows are the common case — no assistant pass, no extra call.
 	if (!window.some((m) => m.role === "assistant")) return { personal: [], project: [] }
@@ -531,8 +715,25 @@ export async function extractAssistantFacts(
 		ASSISTANT_FACTS_SYSTEM_PROMPT + (factClassesEnabled() ? FACT_CLASS_EXTRACTION_SUFFIX : ""),
 		scopeContextLine,
 	)
-	return chatWithRetry(llm, system, transcript, (text) =>
-		parseTaggedFacts(text, scopeContextLine ? "project" : "personal"),
+	const llmTraced = traceCtx
+		? withLlmApiHook(llm, "extraction-assistant", traceEventContext(traceCtx), traceCtx.trace)
+		: llm
+	return chatWithRetry(
+		llmTraced,
+		system,
+		transcript,
+		(text) => parseTaggedFacts(text, scopeContextLine ? "project" : "personal"),
+		"extraction",
+		traceCtx
+			? () =>
+					traceCtx.trace.emit({
+						type: "phase",
+						phase: "strict-json-retry",
+						kind: "extraction-assistant",
+						job: traceCtx.job,
+						window: traceCtx.window,
+					})
+			: undefined,
 	)
 }
 
@@ -757,14 +958,20 @@ export async function applyDerivedTags(plans: JobPlan[], llm: GatewayLlmOptions)
 	for (let offset = 0; offset < unique.length; offset += MEMORY_SUPERSEDE_BATCH_FACTS) {
 		const batch = unique.slice(offset, offset + MEMORY_SUPERSEDE_BATCH_FACTS)
 		try {
-			const indexes = await chatWithRetry(llm, FACT_CLASS_CLASSIFIER_PROMPT, JSON.stringify(batch), (text) => {
-				const start = text.indexOf("{")
-				const end = text.lastIndexOf("}")
-				if (start === -1 || end === -1) throw new Error("no JSON object")
-				const parsed = JSON.parse(text.slice(start, end + 1)) as { derived?: unknown }
-				if (!Array.isArray(parsed.derived)) throw new Error("derived must be an array")
-				return parsed.derived.filter((i): i is number => typeof i === "number" && Number.isInteger(i))
-			})
+			const indexes = await chatWithRetry(
+				llm,
+				FACT_CLASS_CLASSIFIER_PROMPT,
+				JSON.stringify(batch),
+				(text) => {
+					const start = text.indexOf("{")
+					const end = text.lastIndexOf("}")
+					if (start === -1 || end === -1) throw new Error("no JSON object")
+					const parsed = JSON.parse(text.slice(start, end + 1)) as { derived?: unknown }
+					if (!Array.isArray(parsed.derived)) throw new Error("derived must be an array")
+					return parsed.derived.filter((i): i is number => typeof i === "number" && Number.isInteger(i))
+				},
+				"extraction",
+			)
 			for (const i of indexes) {
 				if (i >= 0 && i < batch.length) derived.add(batch[i] as string)
 			}
@@ -824,7 +1031,13 @@ export const NON_DURABLE_FACT_PATTERNS: RegExp[] = [
  * Applied after credential redaction, before the dedupe comparisons.
  */
 export function isDurableFact(text: string): boolean {
-	return !NON_DURABLE_FACT_PATTERNS.some((pattern) => pattern.test(text))
+	return matchNonDurablePattern(text) === null
+}
+
+/** The first session-state pattern `text` hits, or null when durable —
+ * the drain tracer records the matched pattern for each skip. */
+export function matchNonDurablePattern(text: string): RegExp | null {
+	return NON_DURABLE_FACT_PATTERNS.find((pattern) => pattern.test(text)) ?? null
 }
 
 /**
@@ -1100,6 +1313,28 @@ export function isAttributedNearDuplicate(incoming: string, candidates: Iterable
 }
 
 /**
+ * Reporting variant of isAttributedNearDuplicate: returns the matched
+ * candidate's score and text (the twin the incoming fact collapsed onto),
+ * or null when there is no match — the drain tracer records both.
+ */
+export function attributedNearDuplicateMatch(
+	incoming: string,
+	candidates: Iterable<{ text: string; tokens: Set<string> }>,
+): { score: number; twin: string } | null {
+	if (!ATTRIBUTION_MARKER.test(incoming)) return null
+	const tokens = factTokens(stripAttribution(incoming))
+	if (tokens.size === 0) return null
+	let best: { score: number; twin: string } | null = null
+	for (const candidate of candidates) {
+		const score = tokenJaccard(tokens, candidate.tokens)
+		if (score >= ATTRIBUTED_NEAR_DUP_THRESHOLD && (best === null || score > best.score)) {
+			best = { score, twin: candidate.text }
+		}
+	}
+	return best
+}
+
+/**
  * The normalized text of every stored fact for the memory user — the
  * exact-duplicate guard's lookup set. One local SQLite read (mem0 getAll;
  * no embedding or LLM calls). Degrades to an empty set on failure so the
@@ -1108,10 +1343,11 @@ export function isAttributedNearDuplicate(incoming: string, candidates: Iterable
 interface ExistingFacts {
 	/** Normalized text of every stored fact — the exact-duplicate guard. */
 	texts: Set<string>
-	/** Token sets of every stored fact — the attributed near-duplicate guard
-	 * (assistant-pass twins re-phrase the user-pass fact, so text equality
-	 * never fires). Built once per store per job; hundreds of entries, cheap. */
-	tokenSets: Set<string>[]
+	/** Token sets paired with their normalized text — the attributed
+	 * near-duplicate guard (assistant-pass twins re-phrase the user-pass
+	 * fact, so text equality never fires) and the tracer's twin report.
+	 * Built once per store per job; hundreds of entries, cheap. */
+	entries: Array<{ text: string; tokens: Set<string> }>
 	/** Raw stored texts, store order — the gated valuation digest
 	 * (KIMCHI_MEMORY_VALUATION_CONTEXT); normalizing would tell the gate
 	 * lies like casing changes. */
@@ -1128,22 +1364,22 @@ async function existingFacts(backend: Backend): Promise<ExistingFacts> {
 	try {
 		const { results } = await backend.getAll({ filters: { user_id: MEMORY_USER_ID } })
 		const texts = new Set<string>()
-		const tokenSets: Set<string>[] = []
+		const entries: Array<{ text: string; tokens: Set<string> }> = []
 		const rawTexts: string[] = []
 		for (const item of results) {
 			const normalized = normalizeFactText(item.memory)
 			if (normalized.length === 0) continue
 			texts.add(normalized)
-			tokenSets.push(factTokens(normalized))
+			entries.push({ text: normalized, tokens: factTokens(normalized) })
 			rawTexts.push(item.memory)
 		}
-		return { texts, tokenSets, rawTexts }
+		return { texts, entries, rawTexts }
 	} catch (err) {
 		console.error(
 			"[memory-capture] duplicate guard unavailable, adding without dedupe:",
 			err instanceof Error ? err.message : err,
 		)
-		return { texts: new Set(), tokenSets: [], rawTexts: [] }
+		return { texts: new Set(), entries: [], rawTexts: [] }
 	}
 }
 
@@ -1165,6 +1401,10 @@ export interface RunCaptureWorkerOptions {
 	abortSignal?: AbortSignal
 	/** Injectable for tests — overrides MEMORY_DRAIN_HARD_TIMEOUT_MS. */
 	drainTimeoutMs?: number
+	/** Injectable for tests — the drain trace recorder. `null` disables
+	 * tracing explicitly; when absent the drain creates one itself
+	 * (honouring KIMCHI_MEMORY_TRACE_DRAINS). */
+	trace?: TraceRecorder | null
 }
 
 /** The d3 gate context for this drain: flagged-on gates get a live endpoint;
@@ -1221,6 +1461,11 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	// entire run; later spawns wait — see lock.ts.
 	const release = await acquireCaptureLock(defaultMemoryDir())
 	try {
+		// Per-drain tracer (null when tracing is off) + ring enforcement of
+		// the trace store — both fail-soft, see trace.ts. An injected
+		// options.trace (tests) wins and skips the default creation.
+		const trace = options.trace !== undefined ? options.trace : createTraceRecorder()
+		if (trace) pruneTraces()
 		// Dead-man switch: a worker hung on LLM calls otherwise holds the
 		// lock forever — the live mtime refresh never goes stale, so nothing
 		// can steal it.
@@ -1234,7 +1479,7 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		const budget = options.drainTimeoutMs ?? MEMORY_DRAIN_HARD_TIMEOUT_MS
 		const watchdog = setTimeout(() => abort.abort(new DrainWatchdogError(budget)), budget)
 		try {
-			return await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal })
+			return await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal, trace })
 		} finally {
 			clearTimeout(watchdog)
 		}
@@ -1261,9 +1506,15 @@ export class DrainWatchdogError extends Error {
 /** One pending job's drain plan: windows to extract plus accumulated fact lists (exported for tests — applyDerivedTags consumes it). */
 export interface JobPlan {
 	jobFile: string
-	/** Raw parsed job JSON — re-serialized with the bumped counter when
-	 * attempt bookkeeping (poison or transient) persists a failed drain. */
-	jobObject: CaptureJob & { drainAttempts?: number; transientAttempts?: number }
+	/** Raw parsed job JSON — re-serialized with the bumped counters when
+	 * attempt bookkeeping (poison, transient, or add-failure) persists a
+	 * failed drain. */
+	jobObject: CaptureJob & {
+		drainAttempts?: number
+		transientAttempts?: number
+		addAttempts?: number
+		staged?: StagedExtraction
+	}
 	project: CaptureJob["project"]
 	/** Session id from the job — scopes the hashes marked at commit. */
 	session: string | undefined
@@ -1272,12 +1523,19 @@ export interface JobPlan {
 	/** Cross-drain transient bookkeeping (wholly-transient failing drains),
 	 * persisted alongside drainAttempts. */
 	transientAttempts: number
+	/** Cross-drain add-failure bookkeeping (commit/store failures),
+	 * persisted on the job JSON. */
+	addAttempts: number
 	windows: CaptureMessage[][]
 	personalFacts: string[]
 	projectFacts: string[]
 	/** Windows whose extraction succeeded — hash-marked at commit (a failed
 	 * window's hashes stay unmarked for a future drain). */
 	extractedWindows: CaptureMessage[][]
+	/** Staged facts from a previous drain (undefined on a first-time job);
+	 * planJob seeds personalFacts/projectFacts from it, so phase B appends to
+	 * the carryover and the staging step re-persists the merged set. */
+	staged: StagedExtraction | undefined
 	/** Phase-B failure classes — poisoned counts toward quarantine. */
 	poisonedWindowCount: number
 	transientWindowCount: number
@@ -1300,6 +1558,8 @@ export function windowHasToolEvidence(window: CaptureMessage[]): boolean {
 interface ExtractionTask {
 	plan: JobPlan
 	window: CaptureMessage[]
+	/** Zero-based index within plan.windows — the trace context anchor. */
+	index: number
 }
 
 /** Per-window phase-B outcome — the poison/transient split drives the
@@ -1314,7 +1574,9 @@ const EMPTY_TAGGED: TaggedFacts = { personal: [], project: [] }
  * module header): A — sequential claim pass; B — parallel extraction; C —
  * sequential commit plus one batched supersede judge pass per store. A
  * failed job logs and the drain continues; its file remains for the next
- * spawn's retry.
+ * spawn's retry. When `options.trace` carries a recorder, every phase
+ * emits trace events (drain_start → job/api/phase → job_end → drain_end)
+ * for the `kimchi memory dashboard` drill-down.
  */
 async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions): Promise<number> {
 	// Drain-span instrumentation: the bench's only cost signal used to be
@@ -1326,6 +1588,8 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	let tExtract = tStart
 	let tDerived = tStart
 	let tCommit = tStart
+	const drainStarted = tStart
+	const trace = options.trace ?? null
 	const pendingDir = join(defaultMemoryDir(), "pending")
 	mkdirSync(pendingDir, { recursive: true })
 	sweepStaleJobs(pendingDir)
@@ -1363,6 +1627,29 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	if (options.abortSignal && decision.gate) decision.gate.abortSignal = options.abortSignal
 	const createBackend = options.createBackend ?? defaultCaptureBackend
 
+	// Drain trace: one event stream per drain (see trace.ts). drain_start
+	// + one job event per claimed job open the record.
+	trace?.emit({
+		type: "drain_start",
+		pid: process.pid,
+		model: llm.model,
+		gates: [...decision.enabled],
+		jobFiles: jobFiles.map((file) => basename(file)),
+	})
+	for (const plan of plans) {
+		trace?.emit({
+			type: "job",
+			job: basename(plan.jobFile),
+			project: plan.project?.id ?? null,
+			session: plan.session ?? null,
+			messages: plan.jobObject.messages.length,
+			windows: plan.windows.length,
+			drainAttempts: plan.drainAttempts,
+			addAttempts: plan.addAttempts,
+			stagedWindows: plan.staged?.windowHashes.length ?? 0,
+		})
+	}
+
 	// Valuation gate (spike E2/E6/E8): post-extraction keep/discard judged by
 	// the decision model, batched ≤30 facts/call. Built once per drain and
 	// deps-injected into commitPlan; a null gate keeps the pre-gate behavior
@@ -1371,17 +1658,34 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const valuationGate = (() => {
 		if (!decision.enabled.has("valuation") || !decision.gate) return undefined
 		const gate = decision.gate
-		return async (facts: string[], existing?: string[]): Promise<Set<string>> => {
+		return async (facts: string[], existing?: string[], job?: string): Promise<Set<string>> => {
 			const discard = new Set<string>()
 			if (facts.length === 0) return discard
 			// KIMCHI_MEMORY_VALUATION_CONTEXT: with the store's fact list in the
 			// state, the same keep/discard contract runs WITH context — the
 			// batch sees what a dup would duplicate and what a conflict would
 			// contradict (paraphrase dups being the measured failure class).
-			const answers = await batchChoice(gate, buildValuationState(existing), facts, valuationQuestion)
+			const gateTraced = trace !== null && job !== undefined ? withGateApiHook(gate, "valuation", { job }, trace) : gate
+			const answers = await batchChoice(
+				gateTraced,
+				buildValuationState(existing),
+				facts,
+				valuationQuestion,
+				undefined,
+				undefined,
+				"valuation",
+			)
 			for (const [i, fact] of facts.entries()) {
-				if (isValuationDiscard(answers[i])) {
+				const verdict = answers[i]
+				if (isValuationDiscard(verdict)) {
 					discard.add(fact)
+					trace?.emit({
+						type: "phase",
+						phase: "valuation-discard",
+						job: job ?? "",
+						fact,
+						probability: verdict?.probabilities.discard ?? 0,
+					})
 				}
 			}
 			return discard
@@ -1391,11 +1695,19 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// Phase B — parallel extraction across the whole drain. Tasks run in
 	// (job, window) order and the results preserve it, so facts distribute
 	// back onto their plan chronologically.
-	const tasks: ExtractionTask[] = plans.flatMap((plan) => plan.windows.map((window) => ({ plan, window })))
+	const tasks: ExtractionTask[] = plans.flatMap((plan) =>
+		plan.windows.map((window, index) => ({ plan, window, index })),
+	)
 	const drainConcurrency = Math.max(1, Number(process.env.KIMCHI_MEMORY_DRAIN_CONCURRENCY) || MEMORY_DRAIN_CONCURRENCY)
 	const extractTask = async (task: ExtractionTask): Promise<ExtractionOutcome> => {
 		try {
-			return { ok: true, facts: await extractFacts(llm, task.window, task.plan.project?.contextLine ?? null) }
+			const traceCtx: TraceCtx | undefined = trace
+				? { job: basename(task.plan.jobFile), window: task.index, trace }
+				: undefined
+			return {
+				ok: true,
+				facts: await extractFacts(llm, task.window, task.plan.project?.contextLine ?? null, traceCtx),
+			}
 		} catch (err) {
 			// The drain watchdog's abort is NOT a transient window failure:
 			// fold it through the fail-soft path and the drain would exit 0
@@ -1435,9 +1747,15 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			// under KIMCHI_MEMORY_CAPTURE_TOOL_TURNS; OFF → bit-identical.
 			if (windowHasToolEvidence(task.window)) return false
 			try {
-				const response = await decide(gate, renderWindow(task.window), triageQuestion())
+				const job = basename(task.plan.jobFile)
+				const gateTraced = trace ? withGateApiHook(gate, "triage", { job, window: task.index }, trace) : gate
+				const response = await decide(gateTraced, renderWindow(task.window), triageQuestion(), "triage")
 				const pDurable = response.answers.has_durable_fact?.probabilities.yes
-				return typeof pDurable === "number" && pDurable < TRIAGE_DURABLE_MIN_P
+				const skip = typeof pDurable === "number" && pDurable < TRIAGE_DURABLE_MIN_P
+				if (skip) {
+					trace?.emit({ type: "phase", phase: "triage-skip", job, window: task.index, probability: pDurable })
+				}
+				return skip
 			} catch (err) {
 				console.error(
 					"[memory-capture] triage gate failed, extracting window (fail-open):",
@@ -1517,6 +1835,26 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			}
 		}
 	}
+	for (const plan of plans) {
+		// Nothing new to stage (a fully-staged job's facts are already in
+		// its file; a plan with zero ok windows has nothing durable yet).
+		if (plan.extractedWindows.length === 0) continue
+		const staged: StagedExtraction = {
+			personalFacts: plan.personalFacts,
+			projectFacts: plan.projectFacts,
+			windowHashes: [
+				...(plan.staged?.windowHashes ?? []),
+				...plan.extractedWindows.flatMap((window) =>
+					window.map((message) =>
+						plan.session === undefined
+							? messageHash(message)
+							: messageHash(message, { session: plan.session, project: plan.project?.id ?? null }),
+					),
+				),
+			],
+		}
+		if (!stageExtraction(plan, staged)) continue // logged inside; facts still commit this drain
+	}
 
 	// Derived-fact classification (KIMCHI_MEMORY_FACT_CLASSES) — one batched
 	// call over the whole drain's facts, in place, before commit so the
@@ -1554,9 +1892,11 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// 503 storm). Phase-B failure counts are zero for these, so the
 	// bookkeeping below must count them separately.
 	const commitFailed = new Set<JobPlan>()
+	let skippedOversized = 0
+	let addQuarantined = 0
 	for (const plan of plans) {
 		try {
-			const added = await commitPlan(plan, personalBackend, projectBackends, createBackend, valuationGate)
+			const added = await commitPlan(plan, personalBackend, projectBackends, createBackend, valuationGate, trace)
 			personalAdded.push(...added.personal)
 			for (const [projectId, facts] of added.project) {
 				projectAdded.set(projectId, [...(projectAdded.get(projectId) ?? []), ...facts])
@@ -1569,6 +1909,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 				const key = plan.session ?? UNKNOWN_CAPTURE_SESSION_ID
 				savedBySession.set(key, (savedBySession.get(key) ?? 0) + added.captured)
 			}
+			skippedOversized += added.skippedOversized
 		} catch (err) {
 			failed += 1
 			commitFailed.add(plan)
@@ -1576,15 +1917,39 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 				`[memory-capture] job ${basename(plan.jobFile)} failed (file left for retry):`,
 				err instanceof Error ? err.message : err,
 			)
+			// Bounded retries: a failing commit re-adds staged facts (no LLM
+			// re-paid) but still pays embedder round-trips — after
+			// ADD_FAILURE_MAX_ATTEMPTS drains the job quarantines to failed/.
+			if (recordAddFailureAttempt(plan)) {
+				addQuarantined += 1
+				trace?.emit({
+					type: "job_end",
+					job: basename(plan.jobFile),
+					outcome: "quarantined",
+					reason: "add-failure",
+					attempts: plan.addAttempts,
+				})
+			} else {
+				trace?.emit({
+					type: "job_end",
+					job: basename(plan.jobFile),
+					outcome: "kept-for-retry",
+					reason: "commit-failure",
+					attempts: plan.addAttempts,
+				})
+			}
 		}
 	}
 	if (triagedOut > 0) {
 		console.info(`[memory-capture] ${triagedOut} window(s) skipped by triage (judged non-durable)`)
 	}
-	if (skippedNonDurable > 0 || skippedByValuation > 0 || redacted > 0) {
+	if (skippedNonDurable > 0 || skippedByValuation > 0 || redacted > 0 || skippedOversized > 0) {
 		console.info(
-			`[memory-capture] ${skippedNonDurable} non-durable fact(s) skipped, ${skippedByValuation} fact(s) discarded by valuation, ${redacted} fact(s) redacted`,
+			`[memory-capture] ${skippedNonDurable} non-durable fact(s) skipped, ${skippedByValuation} fact(s) discarded by valuation, ${redacted} fact(s) redacted, ${skippedOversized} oversized fact(s) skipped`,
 		)
+	}
+	if (addQuarantined > 0) {
+		console.info(`[memory-capture] ${addQuarantined} add-failed job(s) quarantined to failed/`)
 	}
 
 	// Cross-drain failure bookkeeping: every job left behind gets counted.
@@ -1599,7 +1964,16 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	for (const plan of plans) {
 		if (!existsSync(plan.jobFile)) continue
 		if (plan.poisonedWindowCount > 0) {
-			if (recordFailedAttempt(plan, "poison")) quarantined += 1
+			if (recordFailedAttempt(plan, "poison")) {
+				quarantined += 1
+				trace?.emit({
+					type: "job_end",
+					job: basename(plan.jobFile),
+					outcome: "quarantined",
+					reason: "poison",
+					attempts: plan.drainAttempts + 1,
+				})
+			}
 		} else if (plan.transientWindowCount > 0 || commitFailed.has(plan)) {
 			if (recordFailedAttempt(plan, "transient")) quarantined += 1
 		}
@@ -1617,17 +1991,28 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	//
 	// The d3 judge (spike E7 Part A) replaces the chat judge when enabled;
 	// its criteria text is the spike-validated conservative contract.
-	const chatJudge: SupersedeJudge = async (facts, candidates) => {
-		const prompt = `NEW FACTS:\n${facts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
-			.map((c) => `${c.id}: ${c.memory}`)
-			.join("\n")}`
-		return chatWithRetry(llm, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray)
+	const makeSupersedeJudge = (store: string): SupersedeJudge => {
+		if (decision.enabled.has("supersede") && decision.gate) {
+			const gate = trace ? withGateApiHook(decision.gate, "supersede-d3", { store }, trace) : decision.gate
+			return createDecisionSupersedeJudge(gate)
+		}
+		return async (facts, candidates) => {
+			const prompt = `NEW FACTS:\n${facts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
+				.map((c) => `${c.id}: ${c.memory}`)
+				.join("\n")}`
+			const llmTraced = trace ? withLlmApiHook(llm, "supersede-chat", { store }, trace) : llm
+			return chatWithRetry(llmTraced, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray, "supersede")
+		}
 	}
-	const supersedeJudge: SupersedeJudge =
-		decision.enabled.has("supersede") && decision.gate ? createDecisionSupersedeJudge(decision.gate) : chatJudge
-	await runBatchedSupersede(personalBackend, personalAdded, supersedeJudge)
+	await runBatchedSupersede(personalBackend, personalAdded, makeSupersedeJudge("personal"), {
+		trace,
+		store: "personal",
+	})
 	for (const [projectId, backend] of projectBackends) {
-		await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], supersedeJudge)
+		await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], makeSupersedeJudge(projectId), {
+			trace,
+			store: projectId,
+		})
 	}
 	// One summary line per drain — the bench's per-wave cost signal.
 	console.info(
@@ -1638,6 +2023,21 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// surfacing. Written before any throw — the successful part's counts are
 	// real even when some jobs failed.
 	writeCaptureCompletions(savedBySession)
+
+	trace?.emit({
+		type: "drain_end",
+		durationMs: Date.now() - drainStarted,
+		jobs: plans.length,
+		captured,
+		triagedOut,
+		skippedNonDurable,
+		skippedByValuation,
+		redacted,
+		skippedOversized,
+		failed,
+		addQuarantined,
+		poisonQuarantined: quarantined,
+	})
 
 	// Watchdog re-check: the later phases (derived classification, valuation,
 	// supersede) swallow abort errors as fail-open — an abort there must not
@@ -1707,11 +2107,19 @@ function sweepJobsDir(dir: string, maxAgeMs: number, label: string): void {
  * dedupe here. Returns null when nothing is fresh (the job file is
  * removed); throws on a poison job (also removed). */
 function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): JobPlan | null {
-	let job: CaptureJob & { drainAttempts?: number; transientAttempts?: number }
+	let job: CaptureJob & {
+		drainAttempts?: number
+		transientAttempts?: number
+		addAttempts?: number
+		staged?: StagedExtraction
+	}
 	try {
 		job = JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob & {
 			drainAttempts?: number
 			transientAttempts?: number
+			addAttempts?: number
+			staged?: StagedExtraction
+
 		}
 	} catch (err) {
 		// Poison job: an unparseable file can never be processed — remove it
@@ -1724,6 +2132,8 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		rmSync(jobFile, { force: true })
 		throw new Error("job file has no messages array, removed")
 	}
+	const staged = parseStaged(job.staged)
+	const stagedHashes = new Set(staged?.windowHashes ?? [])
 	const fresh = job.messages.filter((m) => {
 		if (!m.content.trim()) return false
 		// Pre-upgrade jobs without a session field fall back to the legacy
@@ -1732,13 +2142,26 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 			job.session === undefined
 				? messageHash(m)
 				: messageHash(m, { session: job.session, project: job.project?.id ?? null })
+		// Staged coverage counts as captured even before the (commit-gated)
+		// ledger save: the window's facts are already durable in this job
+		// file, so a crash between the staged write and the eventual commit
+		// re-adds without re-extracting. The claim applies either way — this
+		// job owns the message, so an overlapping job in the same drain
+		// dedupes against it instead of re-extracting the same content.
 		if (hashes.has(hash) || claimed.has(hash)) return false
 		claimed.add(hash)
+		if (stagedHashes.has(hash)) return false
 		return true
 	})
 	if (fresh.length === 0) {
-		rmSync(jobFile, { force: true })
-		return null
+		// A fully-staged job must NOT take the remove-and-null path — its
+		// facts are not committed yet. windows: [] means "nothing left to
+		// extract"; commitPlan's deletion condition (0 === 0) then fires only
+		// after a successful add, and the add-failure cap quarantines it.
+		if (staged === undefined) {
+			rmSync(jobFile, { force: true })
+			return null
+		}
 	}
 	// Failure bookkeeping rides on the job JSON, defaulting to a fresh job.
 	const toAttempt = (v: number | undefined): number =>
@@ -1750,13 +2173,99 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		session: job.session,
 		drainAttempts: toAttempt(job.drainAttempts),
 		transientAttempts: toAttempt(job.transientAttempts),
+		addAttempts: toAttempt(job.addAttempts),
 		windows: windowByBudget(fresh),
-		personalFacts: [],
-		projectFacts: [],
+		personalFacts: [...(staged?.personalFacts ?? [])],
+		projectFacts: [...(staged?.projectFacts ?? [])],
 		extractedWindows: [],
+		staged,
 		poisonedWindowCount: 0,
 		transientWindowCount: 0,
 	}
+}
+
+/** Atomically persist a plan's staged extraction to its job file (tmp+
+ * rename, original mtime restored so mtime-sorted drain order and the
+ * sweep keep their semantics — the recordPoisonAttempt technique). Also
+ * updates plan.jobObject so later rewrites (poison and add-attempt
+ * bookkeeping) preserve the staged data. Fail-soft: returns false without
+ * marking anything when the write fails — the facts still commit this
+ * drain, and a persistently failing commit reverts to pre-staging
+ * behavior (re-extract on retry). */
+function stageExtraction(plan: JobPlan, staged: StagedExtraction): boolean {
+	try {
+		const mtime = statSync(plan.jobFile).mtime
+		const tmp = `${plan.jobFile}.${process.pid}.tmp`
+		writeFileSync(tmp, `${JSON.stringify({ ...plan.jobObject, staged }, null, 0)}\n`, "utf-8")
+		renameSync(tmp, plan.jobFile)
+		try {
+			utimesSync(plan.jobFile, new Date(), mtime)
+		} catch (err) {
+			console.warn(
+				"[memory-capture] could not restore job mtime after staging (drain order / sweep age may shift):",
+				err instanceof Error ? err.message : err,
+			)
+		}
+		plan.jobObject.staged = staged
+		plan.staged = staged
+		return true
+	} catch (err) {
+		console.warn(
+			`[memory-capture] could not stage extraction for ${basename(plan.jobFile)} (a failed commit may re-extract on retry):`,
+			err instanceof Error ? err.message : err,
+		)
+		return false
+	}
+}
+
+/**
+ * Cross-drain add-failure accounting for one failed commit (add/embedder —
+ * the store side). Mirrors recordPoisonAttempt but caps at
+ * ADD_FAILURE_MAX_ATTEMPTS: with extract-once staging a retry is a cheap
+ * re-add (the LLM was already paid), so commit failures get more rope
+ * than deterministic extraction poison before the same failed/-quarantine
+ * (staged facts preserved for the manual mv-back requeue). Never throws:
+ * bookkeeping must not break a drain.
+ */
+function recordAddFailureAttempt(plan: JobPlan): boolean {
+	try {
+		if (!existsSync(plan.jobFile)) return false // already committed-and-removed or quarantined this drain
+		const attempts = plan.addAttempts + 1
+		// Persist the count BEFORE the cap decision — a requeued job keeps its
+		// history, same rationale as recordPoisonAttempt.
+		const mtime = statSync(plan.jobFile).mtime
+		const tmp = `${plan.jobFile}.${process.pid}.tmp`
+		writeFileSync(tmp, `${JSON.stringify({ ...plan.jobObject, addAttempts: attempts }, null, 0)}\n`, "utf-8")
+		renameSync(tmp, plan.jobFile)
+		try {
+			utimesSync(plan.jobFile, new Date(), mtime)
+		} catch (err) {
+			console.warn(
+				"[memory-capture] could not restore job mtime (drain order / sweep age may shift):",
+				err instanceof Error ? err.message : err,
+			)
+		}
+		if (attempts >= ADD_FAILURE_MAX_ATTEMPTS) {
+			const failedDir = failedJobsDir()
+			mkdirSync(failedDir, { recursive: true })
+			renameSync(plan.jobFile, join(failedDir, basename(plan.jobFile)))
+			console.error(
+				`[memory-capture] quarantined add-failed job after ${attempts} attempts: ${basename(plan.jobFile)} → failed/ (staged facts preserved; requeue: mv back into pending/)`,
+			)
+			return true
+		}
+		// Mirror the persisted count onto the in-memory plan: a later rewrite
+		// in the same drain (poison bookkeeping) spreads plan.jobObject and
+		// must not erase it.
+		plan.jobObject.addAttempts = attempts
+		plan.addAttempts = attempts
+	} catch (err) {
+		console.warn(
+			`[memory-capture] add-failure bookkeeping failed for ${basename(plan.jobFile)} (retrying without counting):`,
+			err instanceof Error ? err.message : err,
+		)
+	}
+	return false
 }
 
 /**
@@ -1845,17 +2354,33 @@ export function routeTaskFacts(
 	return { toProject: [], toPersonal: taskFacts }
 }
 
+/** Extract the stored memory id from a backend.add result when the store
+ * reports one (mem0: { results: [{ id, ... }] }) — for the trace's
+ * store-add event. Tolerates any result shape (tests' minimal backends). */
+function addedMemoryId(result: unknown): string | null {
+	if (typeof result !== "object" || result === null) return null
+	const results = (result as { results?: unknown }).results
+	if (!Array.isArray(results)) return null
+	const first: unknown = results[0]
+	if (typeof first !== "object" || first === null) return null
+	const id = (first as { id?: unknown }).id
+	return typeof id === "string" && id.length > 0 ? id : null
+}
+
 /** Commit one job's extracted facts (phase C): adds per store with the
  * exact-duplicate guard (idempotent adds — a crash between add and
  * hash-mark does not double-add on the retry drain), hash-marks its
  * extracted windows, saves the ledger, removes the job file. Throws on a
- * store failure — the file stays and the next drain reprocesses it. */
+ * store failure — the file stays and the next drain reprocesses it.
+ * Every store decision emits a `phase` trace event when a recorder is
+ * passed — the dashboard's "why wasn't my fact stored" answer. */
 async function commitPlan(
 	plan: JobPlan,
 	personalBackend: Backend,
 	projectBackends: Map<string, Backend>,
 	createBackend: (dbPath: string) => Promise<CaptureBackend>,
-	valueGate?: (facts: string[], existing?: string[]) => Promise<Set<string>>,
+	valueGate?: (facts: string[], existing?: string[], job?: string) => Promise<Set<string>>,
+	trace?: TraceRecorder | null,
 ): Promise<{
 	captured: number
 	personal: string[]
@@ -1863,20 +2388,23 @@ async function commitPlan(
 	skippedNonDurable: number
 	skippedByValuation: number
 	redacted: number
+	skippedOversized: number
 }> {
+	const jobName = basename(plan.jobFile)
 	let captured = 0
 	let skippedNonDurable = 0
 	let skippedByValuation = 0
 	let redacted = 0
 	const strictNoise = strictNoiseEnabled()
-	const addAll = async (backend: Backend, facts: string[]): Promise<string[]> => {
+	let skippedOversized = 0
+	const addAll = async (backend: Backend, facts: string[], store: string): Promise<string[]> => {
 		if (facts.length === 0) return []
 		const existing = await existingFacts(backend)
 		const added: string[] = []
 		// Token sets of facts added earlier in this drain — an assistant-pass
 		// twin of a fact the user pass already produced collapses here, before
 		// either reaches the store.
-		const addedTokenSets: Set<string>[] = []
+		const addedEntries: Array<{ text: string; tokens: Set<string> }> = []
 		// Phase 1: redact (the session-export PII redactor — src/extensions/
 		// pii-redaction — same engine and [REDACTED-TYPE] markers as JSONL/HTML
 		// exports, applied before dedupe so with/without-credential forms
@@ -1884,9 +2412,32 @@ async function commitPlan(
 		const eligible: string[] = []
 		for (const rawFact of facts) {
 			const fact = await redactText(rawFact)
-			if (fact !== rawFact) redacted += 1
-			if (!keepForStore(fact, { strictNoise })) {
+			if (fact !== rawFact) {
+				redacted += 1
+				trace?.emit({ type: "phase", phase: "redaction", job: jobName, store, before: rawFact, after: fact })
+			}
+			const matchedPattern =
+				matchNonDurablePattern(fact) ??
+				(strictNoise ? (STRICT_NOISE_FACT_PATTERNS.find((p) => p.test(fact)) ?? null) : null)
+			if (matchedPattern !== null) {
 				skippedNonDurable += 1
+				trace?.emit({
+					type: "phase",
+					phase: "durability-skip",
+					job: jobName,
+					store,
+					fact,
+					pattern: matchedPattern.source,
+				})
+				continue
+			}
+			// The embedder's context is 8192 tokens; a monster fact (observed:
+			// an 8193-token embed input) deterministically 400s every add. The
+			// extraction contract says short self-contained sentences — skip
+			// and count, never truncate.
+			if (fact.length > MEMORY_FACT_MAX_CHARS) {
+				skippedOversized += 1
+				trace?.emit({ type: "phase", phase: "oversized-skip", job: jobName, store, fact, length: fact.length })
 				continue
 			}
 			eligible.push(fact)
@@ -1901,7 +2452,11 @@ async function commitPlan(
 				// this addAll — judging new facts against what is already known,
 				// which is exactly the duplicate/paraphrase judgment a blind
 				// per-fact verdict cannot make (KIMCHI_MEMORY_VALUATION_CONTEXT).
-				valuationDiscard = await valueGate(eligible, valuationContextEnabled() ? existing.rawTexts : undefined)
+				valuationDiscard = await valueGate(
+					eligible,
+					valuationContextEnabled() ? existing.rawTexts : undefined,
+					jobName,
+				)
 			} catch (err) {
 				console.error("[memory-capture] valuation gate failed, keeping this job's facts (fail-open):", err)
 				valuationDiscard = undefined
@@ -1913,20 +2468,36 @@ async function commitPlan(
 				continue
 			}
 			const normalized = normalizeFactText(fact)
-			if (existing.texts.has(normalized)) continue
-			if (isAttributedNearDuplicate(normalized, [...existing.tokenSets, ...addedTokenSets])) continue
-			await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+			if (existing.texts.has(normalized)) {
+				trace?.emit({ type: "phase", phase: "exact-dup-skip", job: jobName, store, fact })
+				continue
+			}
+			const nearMatch = attributedNearDuplicateMatch(normalized, [...existing.entries, ...addedEntries])
+			if (nearMatch) {
+				trace?.emit({
+					type: "phase",
+					phase: "near-dup-skip",
+					job: jobName,
+					store,
+					fact,
+					score: nearMatch.score,
+					twin: nearMatch.twin,
+				})
+				continue
+			}
+			const result = await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+			trace?.emit({ type: "phase", phase: "store-add", job: jobName, store, fact, id: addedMemoryId(result) })
 			// The same fact can be returned twice within one job's extraction —
 			// track it so the second occurrence is skipped here, not just
 			// left for a later drain to dedupe against the store.
 			existing.texts.add(normalized)
-			addedTokenSets.push(factTokens(normalized))
+			addedEntries.push({ text: normalized, tokens: factTokens(normalized) })
 			added.push(fact)
 			captured += 1
 		}
 		return added
 	}
-	const personal = await addAll(personalBackend, plan.personalFacts)
+	const personal = await addAll(personalBackend, plan.personalFacts, "personal")
 	const project = new Map<string, string[]>()
 	if (plan.project) {
 		let projectBackend = projectBackends.get(plan.project.id)
@@ -1934,9 +2505,13 @@ async function commitPlan(
 			projectBackend = await createBackend(projectDbPath(plan.project.id))
 			projectBackends.set(plan.project.id, projectBackend)
 		}
-		project.set(plan.project.id, await addAll(projectBackend, plan.projectFacts))
+		project.set(plan.project.id, await addAll(projectBackend, plan.projectFacts, plan.project.id))
 	}
 	// Mark only the successfully extracted windows — a crash resumes here.
+	// Staged windows (a prior drain's extraction, re-committed now) mark
+	// here too: the ledger save is commit-gated so pre-staging binaries never
+	// see uncommitted coverage, while this build's no-re-extract guarantee
+	// is carried by the job file's staged.windowHashes either way.
 	const hashes = loadHashes()
 	for (const window of plan.extractedWindows) {
 		for (const message of window) {
@@ -1947,6 +2522,7 @@ async function commitPlan(
 			)
 		}
 	}
+	for (const hash of plan.staged?.windowHashes ?? []) hashes.add(hash)
 	saveHashes(hashes)
 	// Delete the job file only when every window was extracted — a window
 	// that failed both attempts stays unmarked so the next drain retries it,
@@ -1954,25 +2530,57 @@ async function commitPlan(
 	// drops the already-hashed messages and reprocesses only the failed ones.
 	if (plan.extractedWindows.length === plan.windows.length) {
 		rmSync(plan.jobFile, { force: true })
+		trace?.emit({
+			type: "job_end",
+			job: jobName,
+			outcome: "committed",
+			captured,
+			skippedNonDurable,
+			skippedByValuation,
+			redacted,
+			skippedOversized,
+		})
 	} else {
 		console.warn(
 			`[memory-capture] job ${basename(plan.jobFile)} kept for retry: ${plan.windows.length - plan.extractedWindows.length} window(s) failed extraction`,
 		)
+		trace?.emit({
+			type: "job_end",
+			job: jobName,
+			outcome: "kept-for-retry",
+			failedWindows: plan.windows.length - plan.extractedWindows.length,
+		})
 	}
-	return { captured, personal, project, skippedNonDurable, skippedByValuation, redacted }
+	return { captured, personal, project, skippedNonDurable, skippedByValuation, redacted, skippedOversized }
 }
 
 /** One batched supersede judge pass per store: the drain's added facts in
  * ≤MEMORY_SUPERSEDE_BATCH_FACTS chunks, each chunk's facts listed
  * chronologically (they arrive in job order). A judge failure logs and
  * leaves the conflicts in place — the adds are already committed and
- * supersede is a quality pass, not a correctness invariant. */
-async function runBatchedSupersede(backend: Backend, newFacts: string[], judge: SupersedeJudge): Promise<void> {
+ * supersede is a quality pass, not a correctness invariant. When `ctx`
+ * carries a trace recorder, candidate searches and deletions emit phase
+ * events for the dashboard. */
+async function runBatchedSupersede(
+	backend: Backend,
+	newFacts: string[],
+	judge: SupersedeJudge,
+	ctx?: { trace: TraceRecorder | null; store: string },
+): Promise<void> {
 	if (newFacts.length === 0) return
-	const searchAll = async (query: string) =>
-		normalizeMem0SearchResults(
+	const searchAll = async (query: string) => {
+		const hits = normalizeMem0SearchResults(
 			await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: SUPERSEDE_SEARCH_TOPK }),
 		)
+		ctx?.trace?.emit({
+			type: "phase",
+			phase: "supersede-search",
+			store: ctx.store,
+			query,
+			hits: hits.map((hit) => hit.id),
+		})
+		return hits
+	}
 	const instrumented: SupersedeJudge = async (facts, candidates) => {
 		const deleted = await judge(facts, candidates)
 		// The diagnostic that separates the supersede failure modes on a
@@ -1981,6 +2589,18 @@ async function runBatchedSupersede(backend: Backend, newFacts: string[], judge: 
 		console.info(
 			`[memory-capture] supersede judge: ${facts.length} new fact(s), ${candidates.length} candidate(s), ${deleted.length} deleted`,
 		)
+		if (ctx?.trace) {
+			const byId = new Map(candidates.map((candidate) => [candidate.id, candidate.memory]))
+			for (const id of deleted) {
+				ctx.trace.emit({
+					type: "phase",
+					phase: "supersede-delete",
+					store: ctx.store,
+					id,
+					deleted: byId.get(id) ?? null,
+				})
+			}
+		}
 		return deleted
 	}
 	for (let start = 0; start < newFacts.length; start += MEMORY_SUPERSEDE_BATCH_FACTS) {

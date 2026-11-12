@@ -625,7 +625,15 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							// the threshold rule here instead of stalling the attempt to the abandon
 							// bound (the doc comment always promised this timeout).
 							const answers = await withTimeout(
-								batchChoice(decision.gate, digestState(query), candidates, digestQuestion),
+								batchChoice(
+									decision.gate,
+									digestState(query),
+									candidates,
+									digestQuestion,
+									undefined,
+									undefined,
+									"digest",
+								),
 								MEMORY_PRE_REQUEST_TIMEOUT_MS,
 								"digest selection gate",
 							)
