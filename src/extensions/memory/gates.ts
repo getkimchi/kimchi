@@ -178,7 +178,7 @@ export function triageVerdict(answers: Partial<Record<TriageQuestionName, Choice
 
 /** Fact valuation: keep this extracted fact? (E2/E6/E8) */
 export const VALUATION_STATE =
-	"A memory system extracted the following candidate facts from a user's assistant sessions. Judge each one independently for long-term value."
+	"A memory system extracted these candidate facts from an agent's past sessions. Future sessions of this agent retrieve each memory by semantic similarity with their current task. Judge each fact on one dimension only: would knowing it in advance help a future session do its work better?"
 
 /**
  * Env flag (KIMCHI_MEMORY_GATE_NOISE_CLASSES, default OFF): append the
@@ -220,7 +220,7 @@ export function buildValuationState(existing?: string[]): string {
 export function valuationQuestion(fact: string, index: number): ChoiceQuestion {
 	return {
 		type: "choice",
-		instructions: `Candidate memory fact ${index + 1}: "${fact}" — should a long-term memory system KEEP this fact?`,
+		instructions: `Candidate memory fact ${index + 1}: "${fact}" — would knowing it in advance help a future session of this agent complete its task?`,
 		criteria: {
 			keep:
 				"Durable from ANY source: user-stated (stable preference, decision with rationale, correction, personal context, possession with purpose, itemized value, dated event/plan) OR assistant-provided fact the user engaged with (asked, accepted, acted on, referred back: schedules, rotations, recipes, numbers, recommendations) OR lasting project convention" +
