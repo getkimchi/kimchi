@@ -95,6 +95,7 @@ import {
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
+import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
 import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
 import { readE2eSeam } from "../../extensions/e2e-seam.js"
 import { getRawErrorMessage } from "../../extensions/error-preservation.js"
@@ -199,7 +200,18 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
-import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
+import {
+	BASH_CONTROL_WAIT_META_KEY,
+	BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE,
+	type BashControlBackgroundCommand,
+	type BashControlWaitTargetsData,
+	bashControlWaitMeta,
+	buildToolCall,
+	buildToolCallUpdate,
+	describeToolCall,
+	isHiddenToolCall,
+	resolveBashControlWaitInfo,
+} from "./tool-calls/utils.js"
 import {
 	buildPathTrustInfo,
 	buildProjectTrustUpdate,
@@ -1965,6 +1977,16 @@ export class KimchiAcpAgent implements Agent {
 	private displayArgs(sessionId: string, toolName: string, args: Record<string, unknown>): Record<string, unknown> {
 		return EXEC_DEREF_TOOLS.has(toolName) ? this.displayRecord(sessionId, args) : args
 	}
+	/**
+	 * Display for tool-call ARGS mirrors execution (edit/write dereference,
+	 * see displayArgs). rawInput is never enriched with live session state:
+	 * it MUST stay exactly what the agent wrote — registry-resolved context
+	 * (e.g. the cohort behind a bash_control wait) is metadata by
+	 * definition and rides _meta["kimchi.dev"] via buildToolCallShape.
+	 * Beware the replay direction: pairing live registry state with
+	 * historical args fabricates targets a past wait never had, so
+	 * history/replay paths pass no registry to the shape builder.
+	 */
 	private displayRecord(sessionId: string, value: Record<string, unknown>): Record<string, unknown> {
 		const vault = vaultForSession(sessionId)
 		return vault ? (substituteTokensDeep(vault, value) as Record<string, unknown>) : value
@@ -2286,6 +2308,7 @@ export class KimchiAcpAgent implements Agent {
 							// executing yet, so ACP status is `pending`, not `in_progress`.
 							status: "pending",
 							cwd: entry.cwd,
+							bashControlRegistry: getBashSessionState(sessionId)?.registry,
 						})
 						this.send({ sessionId, update })
 						turn.announcedToolCallIds.add(block.id)
@@ -2358,6 +2381,7 @@ export class KimchiAcpAgent implements Agent {
 						kind,
 						locations,
 						rawInput,
+						_meta: bashControlWaitMeta(toolCall.name, rawInput, getBashSessionState(sessionId)?.registry),
 						// Arguments are complete but the call hasn't been approved or
 						// started executing yet, so ACP status stays `pending`.
 						status: "pending",
@@ -2502,6 +2526,7 @@ export class KimchiAcpAgent implements Agent {
 						rawInput,
 						status: "in_progress",
 						cwd: entry.cwd,
+						bashControlRegistry: getBashSessionState(sessionId)?.registry,
 					})
 					// No pending notification was sent (back-compat) → emit tool_call as before
 					this.send({ sessionId, update })
@@ -2549,6 +2574,26 @@ export class KimchiAcpAgent implements Agent {
 				// stash is consumed here even on error so ids can't leak.
 				const stashed = turn.toolCallArgs.get(event.toolCallId)
 				turn.toolCallArgs.delete(event.toolCallId)
+				// The wait targets ARE a fact, not live context: the registry
+				// holding them dies with the session, so record which background
+				// commands this completed bash_control actually resolved against
+				// as a metadata-only custom entry (pi's `type: "custom"` —
+				// transcript for replays, NEVER model context, never triggers a
+				// turn). Replay threads them back into _meta. Nothing to record
+				// when nothing resolves.
+				const registry = getBashSessionState(sessionId)?.registry
+				if (stashed?.toolName === "bash_control" && registry) {
+					try {
+						const waitInfo = resolveBashControlWaitInfo(stashed.args as Record<string, unknown>, registry)
+						if (waitInfo) {
+							const data: BashControlWaitTargetsData = { toolCallId: event.toolCallId, commands: waitInfo.commands }
+							entry.session.sessionManager.appendCustomEntry(BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE, data)
+						}
+					} catch (err) {
+						// Never fail an execution-end on a recording miss.
+						console.error("bash-control wait targets persist failed:", err)
+					}
+				}
 				if (!event.isError && stashed) {
 					turn.artifactBuffer.collectFromToolCall({
 						toolName: stashed.toolName,
@@ -2640,6 +2685,7 @@ export class KimchiAcpAgent implements Agent {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
+		const replayWaitTargets = collectBashControlWaitTargets(entries)
 		// Turn-scoped, matching the live path: artifacts accumulate across
 		// the turn's assistant messages and flush once per turn, attached to
 		// the turn's last text block id — right before the next user message,
@@ -2688,6 +2734,7 @@ export class KimchiAcpAgent implements Agent {
 					sessionId,
 					msg.content,
 					toolResults,
+					replayWaitTargets,
 					this.sessions.get(sessionId),
 					modelAttributionFrom(msg),
 				)
@@ -2758,6 +2805,7 @@ export class KimchiAcpAgent implements Agent {
 		sessionId: string,
 		content: AssistantMessage["content"],
 		toolResults: Map<string, ReplayToolResult>,
+		replayWaitTargets: Map<string, BashControlBackgroundCommand[][]>,
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
 	): string | undefined {
@@ -2849,6 +2897,10 @@ export class KimchiAcpAgent implements Agent {
 				if (isHiddenToolCall(name, args)) continue
 				const acpToolCallId = record ? this.getOrAllocateAcpToolCallId(record, upstreamId, name) : upstreamId
 				const result = toolResults.get(upstreamId)
+				// The recorded wait targets (custom entry, FIFO per id like the
+				// results) restore the historical cohort as _meta — the recorded
+				// args alone cannot name what a handle-less wait blocked on.
+				const waitTargets = takeReplayWaitTargets(replayWaitTargets, upstreamId)
 				// No persisted result → the call never finished (interrupted mid
 				// turn). "failed" is the closest terminal status; leaving the call
 				// in_progress would hang the client's spinner forever on replay.
@@ -2860,7 +2912,11 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
+						// Historical args stay as recorded: live-registry info
+						// here would name today's cohort as this old wait's targets.
+						// The recorded cohort (if any) comes back via _meta below.
 						rawInput: this.displayArgs(sessionId, name, args),
+						_meta: waitTargets.length > 0 ? { [BASH_CONTROL_WAIT_META_KEY]: { commands: waitTargets } } : undefined,
 						cwd: record?.cwd,
 					}),
 				})
@@ -4196,6 +4252,46 @@ type ReplayToolResult = {
 // outcome (status + content) in O(1). Tool results land as separate message
 // entries in the JSONL — without this map we'd have to scan forward inside
 // the walker on every toolCall, turning replay into O(N²).
+/**
+ * Wait-target records persisted for completed bash_control calls (metadata
+ * CustomEntry rows under BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE), queued per
+ * pi toolCallId like tool results: a recycled id's targets belong to the
+ * wait block whose completion recorded them.
+ */
+function isBashControlWaitTargetsData(data: unknown): data is BashControlWaitTargetsData {
+	if (!data || typeof data !== "object") return false
+	const d = data as { toolCallId?: unknown; commands?: unknown }
+	return typeof d.toolCallId === "string" && Array.isArray(d.commands)
+}
+
+// SessionManagerEntry isn't re-exported by the pi package root, but the
+// branch entry type is exactly what getBranch returns — derived, zero cast.
+type BranchEntry = ReturnType<SessionManager["getBranch"]>[number]
+
+function collectBashControlWaitTargets(entries: BranchEntry[]): Map<string, BashControlBackgroundCommand[][]> {
+	const out = new Map<string, BashControlBackgroundCommand[][]>()
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE) continue
+		if (!isBashControlWaitTargetsData(entry.data)) continue
+		const queued = out.get(entry.data.toolCallId) ?? []
+		queued.push(entry.data.commands)
+		out.set(entry.data.toolCallId, queued)
+	}
+	return out
+}
+
+/** FIFO-consume one queued wait-target record for a pi toolCallId. */
+function takeReplayWaitTargets(
+	map: Map<string, BashControlBackgroundCommand[][]>,
+	toolCallId: string,
+): BashControlBackgroundCommand[] {
+	const queued = map.get(toolCallId)
+	if (!queued || queued.length === 0) return []
+	const out = queued.shift() ?? []
+	if (queued.length === 0) map.delete(toolCallId)
+	return out
+}
+
 function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
 	const out = new Map<string, ReplayToolResult>()
 	for (const entry of entries) {

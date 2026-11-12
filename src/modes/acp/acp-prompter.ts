@@ -1,5 +1,6 @@
 import type { AgentSideConnection, PermissionOption, ToolCall } from "@agentclientprotocol/sdk"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
+import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
 import { EXEC_DEREF_TOOLS, substituteTokensDeep, vaultForSession } from "../../extensions/pii-redaction/vault.js"
@@ -50,6 +51,11 @@ export function createAcpPermissionPrompter(
 				rawInput,
 				status: "pending",
 				cwd,
+				// The approval card must mirror the tool_call stream events: the
+				// wait's target cohort rides _meta via this same builder, fed the
+				// same live registry — approving an un-adorned call while the
+				// timeline names its cohort would show two different actions.
+				bashControlRegistry: getBashSessionState(sessionId)?.registry,
 			})
 			const response = await requestWithAbort(conn.requestPermission({ sessionId, toolCall, options }), req.signal)
 

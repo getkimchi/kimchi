@@ -44,6 +44,7 @@ import {
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
+import { setSessionState } from "../../extensions/bash-background/session-registry.js"
 import feedbackExtension from "../../extensions/feedback/index.js"
 import {
 	isProjectScopeAllowed,
@@ -13614,5 +13615,192 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		expect(textsOf(updates, "token-replay-dead", "user_message_chunk").join("")).toBe(`my mail is ${token}`)
 		expect(textsOf(updates, "token-replay-dead", "agent_thought_chunk").join("")).toBe(`user wrote ${token}`)
 		expect(textsOf(updates, "token-replay-dead", "agent_message_chunk").join("")).toBe(`got it, ${token} noted`)
+	})
+})
+
+describe("bash_control wait info placement", () => {
+	// A wait's target cohort is LIVE-registry state: it rides _meta while
+	// the wait is happening, is recorded as a metadata custom entry when
+	// the call completes, and replay threads the recorded entry back into
+	// _meta. rawInput stays exactly what the agent wrote on every path, and
+	// a replayed wait never samples today's cohort.
+	const oneRunning = () =>
+		({
+			registry: {
+				displaySnapshot: () => undefined,
+				listDisplaySnapshots: () => [
+					{ handle: "bh-1", state: "running", command: "sleep 60", startedAt: Date.now(), observedAt: Date.now() },
+				],
+			},
+			limitSeconds: 60,
+			sessionKind: "on-demand",
+		}) as unknown as Parameters<typeof setSessionState>[1]
+
+	afterEach(() => {
+		setSessionState("enrich-live", undefined)
+		setSessionState("enrich-replay", undefined)
+		setSessionState("enrich-replay-recorded", undefined)
+		setSessionState("wait-persist", undefined)
+	})
+
+	it("threads the live cohort into _meta on the args-complete update", async () => {
+		const fake = new FakeAgentSession("enrich-live")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-w1", name: "bash_control", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { id: "tc-w1", name: "bash_control", arguments: { wait: true } },
+				} as never,
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+		const { conn, updates } = makeRecordingConn()
+		setSessionState("enrich-live", oneRunning())
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await agent.prompt({ sessionId: "enrich-live", prompt: [{ type: "text", text: "wait" }] })
+
+		const argsUpdate = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				typeof (u.update as { rawInput?: unknown }).rawInput === "object",
+		)
+		expect((argsUpdate?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
+		const meta = (argsUpdate?.update as { _meta?: { bashControlWait?: { commands?: { command?: string }[] } } })._meta
+		expect(meta?.bashControlWait?.commands).toEqual([expect.objectContaining({ command: "sleep 60" })])
+	})
+
+	it("never samples today's cohort for a replayed historical wait without a recorded entry", async () => {
+		const fake = new FakeAgentSession("enrich-replay")
+		fake.branch = [
+			userTextEntry("wait for the build", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-w2", name: "bash_control", arguments: { wait: true } }],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-w2", "bash_control", "All processes exited", false),
+		]
+		const { conn, updates } = makeRecordingConn()
+		setSessionState("enrich-replay", oneRunning())
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			sessionLoader: async () => asSession(fake),
+		})
+		await agent.loadSession({ sessionId: "enrich-replay", cwd: "/tmp", mcpServers: [] })
+
+		const replayed = updates.find((u) => u.update.sessionUpdate === "tool_call")
+		expect(replayed?.update.sessionUpdate).toBe("tool_call")
+		expect((replayed?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
+		expect((replayed?.update as { _meta?: { bashControlWait?: unknown } })._meta?.bashControlWait).toBeUndefined()
+	})
+
+	it("records the resolved wait targets as a metadata custom entry when the call completes", async () => {
+		const fake = new FakeAgentSession("wait-persist")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-p1",
+				toolName: "bash_control",
+				args: { wait: true },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-p1",
+				toolName: "bash_control",
+				result: { content: [{ type: "text", text: "waited" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		const { conn, updates } = makeRecordingConn()
+		setSessionState("wait-persist", oneRunning())
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await agent.prompt({ sessionId: "wait-persist", prompt: [{ type: "text", text: "wait" }] })
+
+		const recorded = fake.branch.find(
+			(e) =>
+				typeof e === "object" &&
+				e !== null &&
+				(e as { type?: string }).type === "custom" &&
+				(e as { customType?: string }).customType === "bash-control-wait-targets",
+		)
+		expect((recorded as { data?: unknown })?.data).toEqual({
+			toolCallId: "tc-p1",
+			commands: [{ command: "sleep 60", startedAt: expect.any(String) }],
+		})
+		expect(updates.length).toBeGreaterThan(0)
+	})
+
+	it("replay threads recorded wait targets into _meta and keeps rawInput as agent input", async () => {
+		const fake = new FakeAgentSession("enrich-replay-recorded")
+		fake.branch = [
+			userTextEntry("wait for the build", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-w3", name: "bash_control", arguments: { wait: true } }],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-w3", "bash_control", "All processes exited", false),
+			{
+				type: "custom",
+				id: "wt-w3",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-control-wait-targets",
+				data: {
+					toolCallId: "tc-w3",
+					commands: [{ command: "npm test", startedAt: "2026-05-09T00:00:00.000Z" }],
+				},
+			},
+		]
+		const { conn, updates } = makeRecordingConn()
+		setSessionState("enrich-replay-recorded", oneRunning())
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			sessionLoader: async () => asSession(fake),
+		})
+		await agent.loadSession({ sessionId: "enrich-replay-recorded", cwd: "/tmp", mcpServers: [] })
+
+		const replayed = updates.find((u) => u.update.sessionUpdate === "tool_call")
+		expect(replayed?.update.sessionUpdate).toBe("tool_call")
+		expect((replayed?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
+		expect(
+			(replayed?.update as { _meta?: { bashControlWait?: { commands?: unknown[] } } })._meta?.bashControlWait,
+		).toEqual({
+			commands: [{ command: "npm test", startedAt: "2026-05-09T00:00:00.000Z" }],
+		})
 	})
 })

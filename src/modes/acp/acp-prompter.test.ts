@@ -2,6 +2,7 @@ import type { AgentSideConnection, ToolCall } from "@agentclientprotocol/sdk"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../../extensions/__mocks__/context.js"
 import { createExtensionApi } from "../../extensions/__mocks__/extension-api.js"
+import { setSessionState } from "../../extensions/bash-background/session-registry.js"
 import {
 	installVaultLifecycle,
 	resetTokenVaults,
@@ -162,5 +163,49 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 		expect(sent).toHaveLength(1)
 		expect(sent[0]?.toolCall.rawInput).toEqual({ command: `mail ${token}` })
 		expect(sent[0]?.toolCall.title).toBe(`mail ${token}`)
+	})
+
+	it("bash_control wait prompts keep rawInput as agent input; live cohort rides _meta when a registry is live", async () => {
+		setSessionState("sess-wait", {
+			registry: {
+				displaySnapshot: () => ({
+					handle: "h1",
+					state: "running",
+					command: "sleep 60",
+					startedAt: Date.now() - 1000,
+					observedAt: Date.now(),
+				}),
+				listDisplaySnapshots: () => [
+					{ handle: "h1", state: "running", command: "sleep 60", startedAt: Date.now() - 1000, observedAt: Date.now() },
+				],
+			},
+			limitSeconds: 60,
+			sessionKind: "on-demand",
+		} as never)
+		try {
+			const sent: Array<{ sessionId: string; toolCall: ToolCall }> = []
+			const conn = {
+				requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+					sent.push(payload)
+					return { outcome: { outcome: "cancelled" } }
+				}),
+			} as unknown as AgentSideConnection
+			const prompter = createAcpPermissionPrompter(conn, "sess-wait", {} as never, () => "acp-1")
+			await prompter.request({
+				...baseReq,
+				toolName: "bash_control",
+				input: { wait: true, handles: ["h1"] },
+			})
+			expect(sent).toHaveLength(1)
+			expect(sent[0]?.toolCall.rawInput).toEqual({ wait: true, handles: ["h1"] })
+			expect(
+				(sent[0]?.toolCall._meta as { bashControlWait?: { commands?: unknown[] } } | undefined)?.bashControlWait,
+			).toEqual({
+				commands: [expect.objectContaining({ command: "sleep 60" })],
+				elapsedSeconds: expect.any(Number),
+			})
+		} finally {
+			setSessionState("sess-wait", undefined)
+		}
 	})
 })
