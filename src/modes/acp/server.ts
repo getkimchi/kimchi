@@ -210,6 +210,7 @@ import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEch
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
 	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
 	backgroundHandoffHandle,
 	type HeldBackgroundToolCall,
 	holdAndWatchBackgroundToolCall,
@@ -2769,20 +2770,24 @@ export class KimchiAcpAgent implements Agent {
 							displayRecord: (sid, value) => this.displayRecord(sid, value),
 							isCurrent: () => this.sessions.get(sessionId) === entry,
 							persistSettle: (piToolCallId, outcome) => {
-								// A no-trigger custom message: appended to the transcript
-								// (session file), invisible in context, never wakes a turn.
-								// Replay pairs it back to the call by toolCallId. Test
-								// session fakes may not implement sendCustomMessage — the
-								// wire flip already told the live client, so degrading
-								// to wire-only is correct, never a settle failure.
-								entry.session
-									.sendCustomMessage?.({
-										customType: BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
-										content: outcome.text.length > 0 ? [{ type: "text", text: outcome.text }] : [],
-										display: false,
-										details: { toolCallId: piToolCallId, isError: outcome.isError, details: outcome.details },
-									})
-									?.catch((err: unknown) => console.error("bash-background settle persist failed:", err))
+								// A metadata-only CustomEntry (pi's `type: "custom"`):
+								// written to the session file, ignored by
+								// buildSessionContext — NEVER injected into model
+								// context and never triggers or steers a turn. This is
+								// a recorded FACT for future replays, not a message.
+								// The wire flip already told the live client: a persist
+								// failure degrades to wire-only, never a settle failure.
+								try {
+									const data: BashBackgroundSettleData = {
+										toolCallId: piToolCallId,
+										isError: outcome.isError,
+										text: outcome.text,
+										details: outcome.details,
+									}
+									entry.session.sessionManager.appendCustomEntry(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE, data)
+								} catch (err) {
+									console.error("bash-background settle persist failed:", err)
+								}
 							},
 						},
 						sessionId,
@@ -4533,32 +4538,36 @@ function takeReplayToolResult(toolResults: Map<string, ReplayToolResult[]>, id: 
 }
 
 /**
- * Settle outcomes persisted for held background calls (custom_message entries
- * under BASH_BACKGROUND_SETTLE_MESSAGE_TYPE), queued per id exactly like
- * results: a recycled id's settle belongs to the block whose handoff it
- * settled, so replay consumes them FIFO off the block walk too.
+ * Settle outcomes persisted for held background calls (metadata-only
+ * CustomEntry records — `type: "custom"` — under
+ * BASH_BACKGROUND_SETTLE_MESSAGE_TYPE), queued per id exactly like results:
+ * a recycled id's settle belongs to the block whose handoff it settled, so
+ * replay consumes them FIFO off the block walk too.
  */
-function collectBashBackgroundSettles(entries: unknown[]): Map<string, ReplayToolResult[]> {
+/**
+ * Guard for the persisted settle payload — the write site pins the shape at
+ * BashBackgroundSettleData, but transcripts are untrusted IO, so replay
+ * validates before consuming (details is forwarded as-is, mirroring the
+ * BashBackgroundSettleOutcome contract).
+ */
+function isBashBackgroundSettleData(data: unknown): data is BashBackgroundSettleData {
+	if (!data || typeof data !== "object") return false
+	const d = data as { toolCallId?: unknown; isError?: unknown; text?: unknown }
+	return typeof d.toolCallId === "string" && typeof d.isError === "boolean" && typeof d.text === "string"
+}
+
+function collectBashBackgroundSettles(entries: BranchEntry[]): Map<string, ReplayToolResult[]> {
 	const out = new Map<string, ReplayToolResult[]>()
 	for (const entry of entries) {
-		if (!entry || typeof entry !== "object") continue
-		const e = entry as { type?: unknown; customType?: unknown; content?: unknown; details?: unknown }
-		if (e.type !== "custom_message" || e.customType !== BASH_BACKGROUND_SETTLE_MESSAGE_TYPE) continue
-		const d = e.details as { toolCallId?: unknown; isError?: unknown; details?: unknown } | undefined
-		if (typeof d?.toolCallId !== "string") continue
-		const text = Array.isArray(e.content)
-			? e.content
-					.map((c) => (c && typeof c === "object" ? (c as { text?: unknown }).text : undefined))
-					.filter((t): t is string => typeof t === "string" && t.length > 0)
-					.join("\n")
-			: ""
-		const queued = out.get(d.toolCallId) ?? []
+		if (entry.type !== "custom" || entry.customType !== BASH_BACKGROUND_SETTLE_MESSAGE_TYPE) continue
+		if (!isBashBackgroundSettleData(entry.data)) continue
+		const queued = out.get(entry.data.toolCallId) ?? []
 		queued.push({
-			content: text.length > 0 ? [{ type: "text", text }] : [],
-			isError: d.isError === true,
-			details: d.details,
+			content: entry.data.text.length > 0 ? [{ type: "text", text: entry.data.text }] : [],
+			isError: entry.data.isError,
+			details: entry.data.details,
 		})
-		out.set(d.toolCallId, queued)
+		out.set(entry.data.toolCallId, queued)
 	}
 	return out
 }

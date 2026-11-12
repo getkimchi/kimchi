@@ -37,8 +37,10 @@ export type BackgroundToolCallContext = {
 	persistSettle: (piToolCallId: string, outcome: BashBackgroundSettleOutcome) => void
 }
 
-/** Terminal settle fact persisted to the transcript (custom message carrying
- *  BASH_BACKGROUND_SETTLE_MESSAGE_TYPE); replay pairs it back to the call. */
+/** Terminal settle fact persisted to the transcript as a metadata-only
+ *  CustomEntry (`type: "custom"` under BASH_BACKGROUND_SETTLE_MESSAGE_TYPE):
+ *  a recorded FACT for future replays — it never enters model context and
+ *  never triggers or steers a turn. */
 export type BashBackgroundSettleOutcome = {
 	/** exitCode 0 with no stop reason reads as success; anything else failed. */
 	isError: boolean
@@ -50,6 +52,13 @@ export type BashBackgroundSettleOutcome = {
 
 /** Custom transcript message type carrying a held call's settle outcome. */
 export const BASH_BACKGROUND_SETTLE_MESSAGE_TYPE = "bash-background-settle"
+
+/** Persisted payload of a settle CustomEntry: the outcome plus the pi
+ *  toolCallId of the held call it settles (write site: persistSettle in
+ *  server.ts's watch context). */
+export interface BashBackgroundSettleData extends BashBackgroundSettleOutcome {
+	toolCallId: string
+}
 
 /**
  * Read the process-registry handle off a backgrounded bash result: the

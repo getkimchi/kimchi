@@ -14480,16 +14480,15 @@ describe("KimchiAcpAgent background bash handoff", () => {
 				},
 			},
 			{
-				type: "custom_message",
+				type: "custom",
 				id: "st-tc-1",
 				parentId: "tr-tc-1",
 				timestamp: "2026-05-09T00:00:05Z",
 				customType: "bash-background-settle",
-				display: false,
-				content: [{ type: "text", text: "boom" }],
-				details: {
+				data: {
 					toolCallId: "tc-1",
 					isError: true,
+					text: "boom",
 					details: { handle: "h-dead", exited: true, exitCode: 3, reason: null },
 				},
 			},
@@ -14537,16 +14536,15 @@ describe("KimchiAcpAgent background bash handoff", () => {
 				},
 			},
 			{
-				type: "custom_message",
+				type: "custom",
 				id: "st-a",
 				parentId: "tr-a",
 				timestamp: "2026-05-09T00:00:05Z",
 				customType: "bash-background-settle",
-				display: false,
-				content: [{ type: "text", text: "boom" }],
-				details: {
+				data: {
 					toolCallId: "tc-1",
 					isError: true,
+					text: "boom",
 					details: { handle: "h-dead", exited: true, exitCode: 3, reason: null },
 				},
 			},
