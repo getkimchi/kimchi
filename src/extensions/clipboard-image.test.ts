@@ -19,6 +19,8 @@ const {
 	mockExecFile,
 	mockReadClipboardImage,
 	mockResolveImageContentById,
+	mockRemoveSessionScope,
+	mockRestoreSessionImages,
 } = vi.hoisted(() => ({
 	mockSetPendingImageIndicator: vi.fn(),
 	mockSetPasteImageHandler: vi.fn(),
@@ -32,6 +34,8 @@ const {
 	mockExecFile: vi.fn(),
 	mockReadClipboardImage: vi.fn(),
 	mockResolveImageContentById: vi.fn(),
+	mockRemoveSessionScope: vi.fn(),
+	mockRestoreSessionImages: vi.fn(() => 0),
 }))
 
 vi.mock("node:child_process", () => ({
@@ -62,13 +66,21 @@ vi.mock("../utils/image-registry.js", () => ({
 	clearSessionImages: mockClearSessionImages,
 	setImageCacheDir: (_sessionId: string, dir: string | null) => mockSetImageCacheDir(dir),
 	resolveImageContentById: mockResolveImageContentById,
+	removeSessionScope: mockRemoveSessionScope,
+	restoreSessionImages: (_sessionId: string) => mockRestoreSessionImages(),
 }))
 
 // Backing store for the mocked image registry (addImage writes, resolves read).
 const registryStore = new Map<number, ImageContent>()
 
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext, InputEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	InputEvent,
+	SessionShutdownEvent,
+	SessionStartEvent,
+} from "@earendil-works/pi-coding-agent"
 import { PNG_SIGNATURE, RIFF_SIGNATURE, WEBP_SIGNATURE } from "../utils/image-utils.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
@@ -190,16 +202,16 @@ describe("clipboard-image extension", () => {
 	// beforeAll and assert it in a dedicated test so failures are attributed.
 	let pasteHandler: (() => void) | undefined
 	let dropHandler: ((text: string, cwd: string) => boolean) | undefined
-	let markersEditedHandler: ((present: Set<number>) => void) | undefined
-	function markersEdited(present: Set<number>): void {
+	let markersEditedHandler: ((present: Set<number>, cause?: "atomic-marker-delete") => void) | undefined
+	function markersEdited(present: Set<number>, cause?: "atomic-marker-delete"): void {
 		if (!markersEditedHandler) throw new Error("markers-edited handler not registered")
-		markersEditedHandler(present)
+		markersEditedHandler(present, cause)
 	}
 	beforeAll(() => {
 		pasteHandler = mockSetPasteImageHandler.mock.calls[0]?.[0] as (() => void) | undefined
 		dropHandler = mockSetImageDropHandler.mock.calls[0]?.[0] as ((text: string, cwd: string) => boolean) | undefined
 		markersEditedHandler = mockSetImageMarkersEditedHandler.mock.calls[0]?.[0] as
-			| ((present: Set<number>) => void)
+			| ((present: Set<number>, cause?: "atomic-marker-delete") => void)
 			| undefined
 	})
 
@@ -224,6 +236,9 @@ describe("clipboard-image extension", () => {
 		getHandler<unknown, void>(resetPi, "session_shutdown")(void 0, makeMockCtx())
 		__resetVisionGateForTest()
 		vi.clearAllMocks()
+		// clearAllMocks keeps mockReturnValue implementations — re-pin defaults
+		// so a mockReturnValue from one test cannot leak into the next.
+		mockRestoreSessionImages.mockReturnValue(0)
 		// The mocked registry stays stateful across clearAllMocks: addImage records
 		// entries so later marker references resolve via resolveImageContentById.
 		registryStore.clear()
@@ -1902,6 +1917,303 @@ describe("clipboard-image extension", () => {
 			expect(submitted).toMatchObject({ action: "transform", text: "[Image #1] next" })
 			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
 			expect(spies.hasImage).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("shared-process isolation (ACP) and resume", () => {
+		const PNG_BYTES = Buffer.from(PNG_SIGNATURE)
+		let tmpDir: string
+
+		beforeEach(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), "drop-img-acp-"))
+		})
+
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true })
+		})
+
+		function drop(text: string): boolean {
+			if (!dropHandler) throw new Error("drop handler not registered")
+			return dropHandler(text, "/tmp")
+		}
+
+		function makeRpcCtx(): ExtensionContext {
+			return makeMockCtx({
+				mode: "rpc",
+				sessionManager: { getSessionId: () => "rpc-session", getSessionDir: () => "" },
+			})
+		}
+
+		it("a non-TUI session_start does not reset the TUI session's pending drops or numbering", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const tuiCtx = makeMockCtx()
+			startSession(pi, tuiCtx)
+			const p1 = join(tmpDir, "a.png")
+			writeFileSync(p1, PNG_BYTES)
+			expect(drop(p1)).toBe(true) // [Image #1]
+
+			// The ACP server shares this process via shared extension factories:
+			// an unrelated rpc session starting must not wipe the TUI session's
+			// pending drops or restart its marker numbering.
+			startSession(pi, makeRpcCtx(), "new")
+
+			const p2 = join(tmpDir, "b.png")
+			writeFileSync(p2, PNG_BYTES)
+			expect(drop(p2)).toBe(true)
+			expect(mockInsertTextAtPromptCursor).toHaveBeenLastCalledWith("[Image #2]")
+
+			const result = (await callInput(pi, tuiCtx, {
+				text: "[Image #1] and [Image #2]",
+				images: [],
+				source: "interactive",
+			})) as { action: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(2)
+		})
+
+		it("an rpc submission does not see, park, or clear the TUI session's pending drops", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const tuiCtx = makeMockCtx()
+			startSession(pi, tuiCtx)
+			const p1 = join(tmpDir, "a.png")
+			writeFileSync(p1, PNG_BYTES)
+			expect(drop(p1)).toBe(true) // [Image #1], pending
+
+			const rpcCtx = makeRpcCtx()
+			startSession(pi, rpcCtx, "new")
+			await callInput(pi, rpcCtx, { text: "hi", images: [img("acp-img")], source: "rpc" })
+
+			// The TUI drop survived the rpc submit and still attaches by marker.
+			const result = (await callInput(pi, tuiCtx, {
+				text: "[Image #1]",
+				images: [],
+				source: "interactive",
+			})) as { action: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(1)
+
+			// TUI numbering was not renumbered by the rpc session's own #1.
+			const p2 = join(tmpDir, "b.png")
+			writeFileSync(p2, PNG_BYTES)
+			expect(drop(p2)).toBe(true)
+			expect(mockInsertTextAtPromptCursor).toHaveBeenLastCalledWith("[Image #2]")
+		})
+
+		it("resume keeps the registry and continues numbering instead of wiping (regression)", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+			await callInput(pi, ctx, { text: "look", images: [img("registered")], source: "interactive" })
+			expect(registryStore.get(1)).toEqual(img("registered"))
+			mockClearSessionImages.mockClear()
+
+			startSession(pi, ctx, "resume")
+			expect(mockClearSessionImages).not.toHaveBeenCalled()
+
+			// Numbering continues: a fresh drop takes #2, not a recycled #1 that
+			// would silently overwrite the transcript's [Image #1] registry entry.
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			expect(drop(p)).toBe(true)
+			expect(mockInsertTextAtPromptCursor).toHaveBeenLastCalledWith("[Image #2]")
+
+			// The earlier turn's marker still re-attaches.
+			const result = (await callInput(pi, ctx, {
+				text: "[Image #1] again",
+				images: [],
+				source: "interactive",
+			})) as { action: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(1)
+		})
+
+		it("resume after a process restart continues numbering from the manifest restore", () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			// A relaunched process has no in-memory scope; the registry rebuilds
+			// ids 1..3 from the on-disk manifest on session_start.
+			mockRestoreSessionImages.mockReturnValue(3)
+			startSession(pi, ctx, "resume")
+
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			expect(drop(p)).toBe(true)
+			expect(mockInsertTextAtPromptCursor).toHaveBeenLastCalledWith("[Image #4]")
+		})
+
+		it("session_shutdown frees the closing session's registry scope (memory only)", () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+			getHandler<SessionShutdownEvent, void>(pi, "session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
+			expect(mockRemoveSessionScope).toHaveBeenCalledWith("test-session")
+		})
+
+		it("an atomic marker deletion restores the dropped path and suppresses its re-attach", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			expect(drop(p)).toBe(true) // [Image #1]
+			mockInsertTextAtPromptCursor.mockClear()
+
+			// Deleting the marker gives the consumed path text back (undo still
+			// restores the marker itself via the editor's undo stack).
+			markersEdited(new Set(), "atomic-marker-delete")
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith(p)
+
+			// The restored path must not re-attach via the typed-path extractor —
+			// the user deleted the image; the text is all they asked for.
+			await expect(
+				callInput(pi, ctx, { text: `why won't ${p} load?`, images: [], source: "interactive" }),
+			).resolves.toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
+
+			// One-shot: referencing the same path in a later draft attaches normally.
+			const second = (await callInput(pi, ctx, {
+				text: `show ${p}`,
+				images: [],
+				source: "interactive",
+			})) as { action: string; images: ImageContent[] }
+			expect(second.action).toBe("transform")
+			expect(second.images).toHaveLength(1)
+		})
+
+		it("a non-atomic detach (bulk delete) does not restore path text", () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			startSession(pi, makeMockCtx())
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			expect(drop(p)).toBe(true)
+			mockInsertTextAtPromptCursor.mockClear()
+
+			markersEdited(new Set())
+			expect(mockInsertTextAtPromptCursor).not.toHaveBeenCalled()
+		})
+
+		it("a first-start resume keeps drops made before session_start (no wipe)", async () => {
+			__resetClipboardImageForTest()
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			// `--resume` relaunch: the prompt renders before session_start and
+			// accepts the drop — the resume branch must not wipe it (36e7eb5e).
+			expect(drop(p)).toBe(true) // [Image #1]
+			startSession(pi, ctx, "resume")
+
+			const result = (await callInput(pi, ctx, {
+				text: "[Image #1] what's this?",
+				images: [],
+				source: "interactive",
+			})) as { action: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(1)
+			expect(Buffer.from(result.images[0].data, "base64")).toEqual(readFileSync(p))
+		})
+
+		it("a first-start resume renumbers a pending drop that collides with a restored registry id", async () => {
+			__resetClipboardImageForTest()
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			// The resumed session's manifest claims [Image #1] from an earlier turn.
+			registryStore.set(1, img("oldturn"))
+			mockRestoreSessionImages.mockReturnValue(1)
+			// But the user already dropped a fresh image before session_start fired.
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			expect(drop(p)).toBe(true) // draft shows [Image #1] (mock insert)
+			vi.mocked(ctx.ui.getEditorText).mockReturnValue("[Image #1]")
+
+			startSession(pi, ctx, "resume")
+
+			// The pending drop is renumbered above the restored range and its
+			// draft marker rewritten — submitting the unchanged draft must not
+			// silently attach the EARLIER turn's image.
+			expect(ctx.ui.setEditorText).toHaveBeenCalledWith("[Image #2]")
+			const result = (await callInput(pi, ctx, {
+				text: "[Image #2]",
+				images: [],
+				source: "interactive",
+			})) as { action: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(1)
+			expect(Buffer.from(result.images[0].data, "base64")).toEqual(readFileSync(p))
+			expect(registryStore.get(1)).toEqual(img("oldturn"))
+		})
+
+		it("an rpc resume continues numbering from the restored manifest (no metadata/bytes desync)", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			// A relaunched ACP server: the manifest claims ids 1..2 but the
+			// in-memory counter is gone. Attaching must continue at #3 — writing
+			// #1 would skip the existing file and bind new metadata to old bytes.
+			mockRestoreSessionImages.mockReturnValue(2)
+			startSession(pi, makeRpcCtx(), "resume")
+			const result = (await callInput(pi, makeRpcCtx(), {
+				text: "hi",
+				images: [img("new")],
+				source: "rpc",
+			})) as { action: string; text: string }
+			expect(result.text).toBe("[Image #3] hi")
+		})
+
+		it("a cancelled vision gate keeps the detach suppression armed for the retry", async () => {
+			const harness = startGateSession() // text-only model
+			const p1 = join(tmpDir, "a.png")
+			const p2 = join(tmpDir, "b.png")
+			writeFileSync(p1, PNG_BYTES)
+			writeFileSync(p2, PNG_BYTES)
+			drop(p1) // [Image #1]
+			markersEdited(new Set(), "atomic-marker-delete") // detach → path restored + suppressed
+			drop(p2) // [Image #2], still pending
+
+			const text = `why won't ${p1} load? [Image #2]`
+			const first = callInput(harness.pi, harness.ctx, { text, images: [], source: "interactive" })
+			harness.resolveDialog(0, { kind: "cancel" })
+			await expect(first).resolves.toEqual({ action: "handled" })
+
+			// Retry the same draft: the suppression survived the cancel, so p1
+			// is still filtered out and only the live marker attaches.
+			const retry = callInput(harness.pi, harness.ctx, { text, images: [], source: "interactive" })
+			harness.resolveDialog(1, { kind: "switch", model: SWITCH_TARGET })
+			const result = (await retry) as { action: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(1)
+			expect(Buffer.from(result.images[0].data, "base64")).toEqual(readFileSync(p2))
+		})
+
+		it("parks at most 5 detached drops, pruning the oldest", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+			for (let i = 1; i <= 6; i++) {
+				const p = join(tmpDir, `img${i}.png`)
+				writeFileSync(p, PNG_BYTES)
+				expect(drop(p)).toBe(true) // [Image #1]..[Image #6]
+			}
+			markersEdited(new Set()) // detach all six → #1 pruned (cap)
+			markersEdited(new Set([1, 2, 3, 4, 5, 6])) // re-arm: only #2..#6 survive
+
+			const result = (await callInput(pi, ctx, {
+				text: "[Image #1] [Image #2] [Image #3] [Image #4] [Image #5] [Image #6]",
+				images: [],
+				source: "interactive",
+			})) as { action: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			// #1 was pruned from removedDrops and never registered — prose.
+			expect(result.images).toHaveLength(5)
 		})
 	})
 })

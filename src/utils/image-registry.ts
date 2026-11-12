@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import type { ImageContent } from "@earendil-works/pi-ai"
 
 const EXT_MAP: Record<string, string> = {
@@ -37,6 +37,44 @@ interface SessionScope {
 	entries: Map<number, ImageRegistryEntry>
 }
 const scopes = new Map<string, SessionScope>()
+
+/**
+ * Durable record of a session's registry, written next to the cached images
+ * on every addImage. It is what lets a RESUMED session keep its transcript's
+ * `[Image #N]` markers resolvable after the in-memory scope was lost (the
+ * scope is reaped on session_shutdown, and the whole map dies with the
+ * process). Without it, resume had to wipe the registry to stay consistent —
+ * dead-ending every marker in the resumed transcript.
+ */
+const MANIFEST_FILE = "manifest.json"
+
+interface ManifestEntry {
+	file: string
+	mimeType: string
+	sha1: string
+}
+
+function writeManifest(scope: SessionScope): void {
+	if (!scope.cacheDir) return
+	const manifest: Record<string, ManifestEntry> = {}
+	for (const entry of scope.entries.values()) {
+		manifest[String(entry.id)] = { file: basename(entry.path), mimeType: entry.mimeType, sha1: entry.sha1 }
+	}
+	// Atomic via tmp+rename: a torn manifest would make restoreSessionImages
+	// under-report the max id, and the next attachment's skip-if-exists write
+	// would then bind new metadata to the previous image's bytes.
+	const tmpPath = join(scope.cacheDir, `${MANIFEST_FILE}.tmp`)
+	writeFileSync(tmpPath, JSON.stringify(manifest))
+	renameSync(tmpPath, join(scope.cacheDir, MANIFEST_FILE))
+}
+
+function readManifest(cacheDir: string): Record<string, ManifestEntry> {
+	try {
+		return JSON.parse(readFileSync(join(cacheDir, MANIFEST_FILE), "utf8")) as Record<string, ManifestEntry>
+	} catch {
+		return {}
+	}
+}
 
 function scopeFor(sessionId: string): SessionScope {
 	let scope = scopes.get(sessionId)
@@ -86,6 +124,7 @@ export function addImage(sessionId: string, id: number, image: ImageContent): Im
 	}
 	const entry: ImageRegistryEntry = { id, path, mimeType: image.mimeType, sha1, sessionId }
 	scope.entries.set(id, entry)
+	writeManifest(scope)
 	return entry
 }
 
@@ -158,6 +197,40 @@ export function clearSessionImages(sessionId: string): void {
 	}
 	// Recreate the directory so subsequent adds work.
 	if (scope.cacheDir) mkdirSync(scope.cacheDir, { recursive: true })
+}
+
+/**
+ * Rebuild a session's entries from its on-disk manifest after the in-memory
+ * scope was lost (reaped on session_shutdown or dropped with the process).
+ * No-op when the scope already has entries or no manifest exists. Returns
+ * the highest known id so the caller can continue numbering past the
+ * transcript's markers — a drop on a resumed session must never restart at
+ * #1 and collide with a live `[Image #N]`.
+ */
+export function restoreSessionImages(sessionId: string): number {
+	const scope = scopes.get(sessionId)
+	if (!scope?.cacheDir) return 0
+	if (scope.entries.size > 0) return Math.max(...scope.entries.keys())
+	const manifest = readManifest(scope.cacheDir)
+	let max = 0
+	for (const [idText, m] of Object.entries(manifest)) {
+		const id = Number(idText)
+		const path = join(scope.cacheDir, m.file)
+		if (!existsSync(path)) continue
+		scope.entries.set(id, { id, path, mimeType: m.mimeType, sha1: m.sha1, sessionId })
+		if (id > max) max = id
+	}
+	return max
+}
+
+/**
+ * Drop a session's in-memory scope. Cache files and the manifest stay on
+ * disk — a later session_start restores them via restoreSessionImages.
+ * Called on session_shutdown so a long-lived ACP server does not pin every
+ * closed session's entries for the process lifetime.
+ */
+export function removeSessionScope(sessionId: string): void {
+	scopes.delete(sessionId)
 }
 
 /** @internal — test hook dropping every session scope between unit tests. */

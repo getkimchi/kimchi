@@ -116,6 +116,34 @@ describe("PromptEditor", () => {
 			expect(editor.getText()).toBe("")
 		})
 
+		it("an orphaned paste opener flushes as plain text on the next keypress (no livelock)", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			editor.onImagePathDrop = () => true
+			// Opener without a closer: buffered, waiting for a continuation that
+			// never comes (dropped bytes / flaky terminal). A control-only chunk
+			// (a backspace) must break the buffer instead of vanishing into it.
+			editor.handleInput(`${OPEN}/tmp/cat`)
+			editor.handleInput("\x7f")
+			// The opener is flushed as plain text (minus the escape, which would
+			// livelock upstream's own paste buffering), then backspace applies.
+			expect(editor.getText()).toBe("/tmp/ca")
+			// The drop machinery is live again for a well-formed paste.
+			editor.handleInput(`${OPEN}/tmp/a.png${CLOSE}`)
+			expect(editor.getText()).toBe("/tmp/ca")
+		})
+
+		it("a bare CR/LF chunk while a paste is buffered glues as payload, not an abort", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			editor.onImagePathDrop = () => false // never consumed: plain prose paste
+			editor.handleInput(`${OPEN}line one`)
+			// A chunk boundary inside a newline run of the PAYLOAD: gluing must
+			// continue — aborting here would de-atomize the paste.
+			editor.handleInput("\r")
+			editor.handleInput(`line two${CLOSE}`)
+			expect(editor.getText()).toContain("line one")
+			expect(editor.getText()).toContain("line two")
+		})
+
 		it("re-emits unhandled pastes intact while still consuming handled ones", () => {
 			const { editor } = makeEditor()
 			editor.onImagePathDrop = (text) => text.endsWith(".png")
@@ -233,6 +261,30 @@ describe("PromptEditor", () => {
 			editor.handleInput("\x7f")
 			expect(editor.getText()).toBe("see ")
 			expect(edits).toEqual([new Set()])
+		})
+
+		it("shift+delete before a marker deletes it atomically (mirrors shift+backspace)", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits: Set<number>[] = []
+			editor.onImageMarkersEdited = (ids) => edits.push(ids)
+			editor.setText("[Image #1] fix")
+			editor.handleInput("\x1b[H") // cursor to line start
+			editor.handleInput("\x1b[3;2~") // shift+delete (kitty sequence)
+			expect(editor.getText()).toBe(" fix")
+			expect(edits).toEqual([new Set()])
+		})
+
+		it("reports atomic-marker-delete as the cause when a marker is deleted, and no cause otherwise", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const causes: (string | undefined)[] = []
+			editor.onImageMarkersEdited = (_ids, cause) => causes.push(cause)
+			editor.setText("fix [Image #1]")
+			editor.handleInput("\x7f") // atomic marker delete
+			editor.setText("fix ")
+			editor.handleInput("\x1b") // harmless non-edit (no marker change expected)
+			editor.setText("fix [Image #2]") // marker appears via setText — not an atomic delete
+			editor.handleInput("x") // plain typing changes nothing marker-wise
+			expect(causes).toEqual(["atomic-marker-delete"])
 		})
 
 		it("ordinary backspace is unaffected when there is no trailing marker", () => {

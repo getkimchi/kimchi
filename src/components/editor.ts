@@ -49,7 +49,7 @@ export class PromptEditor extends CustomEditor {
 	 * a vanished marker detaches its image (indicator updates immediately),
 	 * a fully restored marker (e.g. undo) re-arms it.
 	 */
-	onImageMarkersEdited?: (presentIds: Set<number>) => void
+	onImageMarkersEdited?: (presentIds: Set<number>, cause?: "atomic-marker-delete") => void
 	/**
 	 * Buffer for a bracketed paste whose opener arrived without its closer in
 	 * the same input chunk. We cannot defer this to upstream: upstream completes
@@ -57,6 +57,8 @@ export class PromptEditor extends CustomEditor {
 	 * onImagePathDrop — the dropped image's raw path would land in the draft.
 	 */
 	private pendingBracketedPaste: string | null = null
+	/** Set when the current dispatchInput consumed a marker atomically. */
+	private atomicMarkerDeleteRan = false
 
 	constructor(tui: TUI, editorTheme: EditorTheme, keybindings: KeybindingsManager, appTheme: Theme) {
 		super(tui, editorTheme, keybindings)
@@ -137,10 +139,11 @@ export class PromptEditor extends CustomEditor {
 			return
 		}
 		const markersBefore = this.imageMarkersPresent()
+		this.atomicMarkerDeleteRan = false
 		this.dispatchInput(data)
 		const markersAfter = this.imageMarkersPresent()
 		if (!setsEqual(markersBefore, markersAfter)) {
-			this.onImageMarkersEdited?.(markersAfter)
+			this.onImageMarkersEdited?.(markersAfter, this.atomicMarkerDeleteRan ? "atomic-marker-delete" : undefined)
 		}
 	}
 
@@ -149,8 +152,29 @@ export class PromptEditor extends CustomEditor {
 		// continuation onto the buffered opener so routeBracketedPastes sees the
 		// completed paste in full.
 		if (this.pendingBracketedPaste !== null) {
-			data = this.pendingBracketedPaste + data
-			this.pendingBracketedPaste = null
+			// A control-only chunk (a keypress, not paste bytes) means the paste's
+			// closer is never coming: without an abort path every further
+			// keystroke — backspace, arrows, Enter — would glue onto the buffer
+			// and vanish. Flush the buffered partial paste as plain text (minus
+			// the opener escape, which would drop upstream's own paste buffering
+			// into the same livelock) and let the keypress through.
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping terminal CSI escape sequences is the point
+			const withoutCsi = data.replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, "")
+			// Bare CR/LF chunks are glued as continuation, not aborted: a chunk
+			// boundary can legitimately land inside a newline run of the paste
+			// payload. Any OTHER control-only chunk (arrows, backspace, escape)
+			// breaks the buffer — that is also the user's escape hatch.
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: control-only input means a keypress, not paste bytes
+			const isControlOnlyKeypress = !/[^\x00-\x1f\x7f]/.test(withoutCsi) && !/^[\r\n]+$/.test(data)
+			if (!data.includes("\x1b[201~") && isControlOnlyKeypress) {
+				const buffered = this.pendingBracketedPaste
+				this.pendingBracketedPaste = null
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping the paste opener escape is the point
+				super.handleInput(buffered.replace(/^\x1b\[200~/, ""))
+			} else {
+				data = this.pendingBracketedPaste + data
+				this.pendingBracketedPaste = null
+			}
 		}
 		// tmux and some terminals send \x1b\r for Shift+Enter. Upstream parses
 		// it as alt+enter when kitty protocol is not active, so app.message.followUp
@@ -166,10 +190,13 @@ export class PromptEditor extends CustomEditor {
 		const isCharBackspace =
 			this.kb.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, "shift+backspace")
 		const isWordBackspace = this.kb.matches(data, "tui.editor.deleteWordBackward")
-		if ((isCharBackspace || isWordBackspace) && this.deleteTrailingImageMarker(data, isWordBackspace)) return
-		const isCharForwardDelete = this.kb.matches(data, "tui.editor.deleteCharForward")
+		if ((isCharBackspace || isWordBackspace) && this.deleteImageMarker(data, isWordBackspace, false)) return
+		// shift+delete mirrors upstream's forward-delete fallback (and the
+		// shift+backspace side above) so it cannot char-delete INTO a marker.
+		const isCharForwardDelete =
+			this.kb.matches(data, "tui.editor.deleteCharForward") || matchesKey(data, "shift+delete")
 		const isWordForwardDelete = this.kb.matches(data, "tui.editor.deleteWordForward")
-		if ((isCharForwardDelete || isWordForwardDelete) && this.deleteHeadingImageMarker(data, isWordForwardDelete)) return
+		if ((isCharForwardDelete || isWordForwardDelete) && this.deleteImageMarker(data, isWordForwardDelete, true)) return
 		if (this.kb.matches(data, "tui.editor.cursorRight") && this.jumpOverImageMarker(data, true)) return
 		if (this.kb.matches(data, "tui.editor.cursorLeft") && this.jumpOverImageMarker(data, false)) return
 		const dropHandler = this.onImagePathDrop
@@ -180,9 +207,15 @@ export class PromptEditor extends CustomEditor {
 		super.handleInput(data)
 	}
 
-	/** The set of `[Image #N]` marker numbers currently in the draft. */
+	/**
+	 * The set of `[Image #N]` marker numbers currently in the draft. Cheap
+	 * substring precheck first: handleInput runs this twice per keystroke and
+	 * most drafts never contain a marker, so the full regex only pays when a
+	 * marker could exist.
+	 */
 	private imageMarkersPresent(): Set<number> {
-		return parseImageMarkers(this.getLines().join("\n"))
+		const text = this.getLines().join("\n")
+		return text.includes("[Image #") ? parseImageMarkers(text) : new Set()
 	}
 
 	/**
@@ -208,54 +241,29 @@ export class PromptEditor extends CustomEditor {
 	}
 
 	/**
-	 * Backspace (char- or word-wise) immediately after an `[Image #N]` marker
-	 * deletes the whole marker in one keystroke (mirrors upstream's atomic
-	 * `[paste #N]` deletion — pi-tui's private marker segmentation can't cover
-	 * custom marker formats, so we re-emit a single-character backspace once
-	 * per marker character through upstream's own handler and keep
-	 * cursor/render handling entirely upstream-owned; replaying a
-	 * word-backspace verbatim would stop mid-marker at its inner boundary).
-	 * Detaching the pending image flows through onImageMarkersEdited.
+	 * Char- or word-wise delete (backward or forward) against an `[Image #N]`
+	 * marker deletes the whole marker in one keystroke (mirrors upstream's
+	 * atomic `[paste #N]` deletion — pi-tui's private marker segmentation
+	 * can't cover custom marker formats, so we re-emit a single-character
+	 * delete once per marker character through upstream's own handler and keep
+	 * cursor/render handling entirely upstream-owned). A word-wise delete is
+	 * replayed as single-char deletes (\x7f backward, \x1b[3~ forward) so it
+	 * cannot stop mid-marker; if the user's keybindings moved the char-delete
+	 * action off that sequence the interception bails out and upstream's plain
+	 * word-wise delete applies. Detaching the pending image flows through
+	 * onImageMarkersEdited with the "atomic-marker-delete" cause.
 	 */
-	private deleteTrailingImageMarker(backspaceData: string, isWordBackspace: boolean): boolean {
+	private deleteImageMarker(deleteData: string, isWord: boolean, forward: boolean): boolean {
 		const { line, col } = this.getCursor()
-		if (col === 0) return false
-		const beforeCursor = (this.getLines()[line] ?? "").slice(0, col)
-		const marker = trailingImageMarker(beforeCursor)
+		if (!forward && col === 0) return false
+		const text = this.getLines()[line] ?? ""
+		const marker = forward ? leadingImageMarker(text.slice(col)) : trailingImageMarker(text.slice(0, col))
 		if (!marker) return false
-		// Word-backspace is replayed as single-char backspaces (\x7f) so the
-		// whole marker goes in one atomic pass instead of stopping at "#1]".
-		// Remapping edge: if \x7f no longer means char-backspace, bail out and
-		// let upstream do the plain word-wise delete instead.
-		const replay = isWordBackspace && this.kb.matches("\x7f", "tui.editor.deleteCharBackward") ? "\x7f" : backspaceData
-		if (isWordBackspace && replay !== "\x7f") return false
-		this.withSingleUndoSnapshot(() => {
-			for (let i = 0; i < marker.length; i++) {
-				super.handleInput(replay)
-			}
-		})
-		return true
-	}
-
-	/**
-	 * Forward-delete (Del / ctrl+d / alt+d) with the cursor directly before an
-	 * `[Image #N]` marker deletes the whole marker in one keystroke — the
-	 * mirror of deleteTrailingImageMarker. Word-forward (alt+d) is replayed as
-	 * single-char forward-deletes (\x1b[3~) so it cannot stop mid-marker; if
-	 * the user's keybindings moved delete-forward away from that sequence the
-	 * interception bails out and upstream's plain word-wise delete applies.
-	 */
-	private deleteHeadingImageMarker(deleteData: string, isWordForward: boolean): boolean {
-		const { line, col } = this.getCursor()
-		const afterCursor = (this.getLines()[line] ?? "").slice(col)
-		const marker = leadingImageMarker(afterCursor)
-		if (!marker) return false
-		const replay = isWordForward
-			? this.kb.matches("\x1b[3~", "tui.editor.deleteCharForward")
-				? "\x1b[3~"
-				: null
-			: deleteData
+		const charSeq = forward ? "\x1b[3~" : "\x7f"
+		const action = forward ? "tui.editor.deleteCharForward" : "tui.editor.deleteCharBackward"
+		const replay = isWord ? (this.kb.matches(charSeq, action) ? charSeq : null) : deleteData
 		if (replay === null) return false
+		this.atomicMarkerDeleteRan = true
 		this.withSingleUndoSnapshot(() => {
 			for (let i = 0; i < marker.length; i++) {
 				super.handleInput(replay)
@@ -296,8 +304,10 @@ export class PromptEditor extends CustomEditor {
 		const OPEN = "\x1b[200~"
 		const CLOSE = "\x1b[201~"
 		// Tokenize first — complete text/paste segments in order. An opener with
-		// no closer captures the rest of the chunk into `remainder`, which
-		// upstream buffers unchanged for the next chunk(s) to complete.
+		// no closer captures the rest of the chunk into `remainder`, which WE
+		// buffer in pendingBracketedPaste for the next chunk(s) — upstream never
+		// sees it (its internal completion would bypass the drop handler).
+		// dispatchInput aborts the buffer on a control-only chunk.
 		const segments: { pasted: string | null; text: string }[] = []
 		let rest = data
 		let remainder: string | null = null

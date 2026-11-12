@@ -1,11 +1,23 @@
 import { join } from "node:path"
 import type { ImageContent } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	SessionShutdownEvent,
+	SessionStartEvent,
+} from "@earendil-works/pi-coding-agent"
 import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { droppedImagePathCandidate } from "../utils/dropped-image-path.js"
 import { buildImageMarker, parseImageMarkers, stripImageMarkers } from "../utils/image-marker.js"
-import { addImage, clearSessionImages, resolveImageContentById, setImageCacheDir } from "../utils/image-registry.js"
+import {
+	addImage,
+	clearSessionImages,
+	removeSessionScope,
+	resolveImageContentById,
+	restoreSessionImages,
+	setImageCacheDir,
+} from "../utils/image-registry.js"
 import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
 import {
 	insertTextAtPromptCursor,
@@ -46,10 +58,27 @@ let sessionSeen = false
 // late insert would drop an `[Image #N]` marker into a cleared editor and
 // silently attach the image to the NEXT message.
 let pasteEpoch = 0
+// Paths restored into the draft by an atomic marker deletion. The typed-path
+// extractor must not re-attach them at the next submit — the user deleted
+// the marker; the restored path text is what they got back, not a new
+// attachment request. One-shot: consumed by the first submit that sees the
+// path; typing the same path again later attaches normally.
+let detachedPathSuppression = new Set<string>()
 
-/** Registry scope for this context's session (ids are per-session). */
+/**
+ * Registry scope for this context's session (ids are per-session). Falls
+ * back to the session dir, then to a shared "default" that should never be
+ * hit — pi-coding-agent always wires a sessionManager; if it stopped, every
+ * session would collapse into one scope and corrupt each other's markers,
+ * which is exactly what the per-session scoping exists to prevent.
+ */
 function sessionIdOf(ctx: ExtensionContext | null): string {
-	return ctx?.sessionManager?.getSessionId() ?? "default"
+	return ctx?.sessionManager?.getSessionId() ?? ctx?.sessionManager?.getSessionDir?.() ?? "default"
+}
+
+/** Make a session id safe as a path component of the cache dir. */
+function sanitizeSessionId(sessionId: string): string {
+	return sessionId.replace(/[^A-Za-z0-9_-]/g, "_")
 }
 
 /** @internal — test hook resetting module state between unit tests. */
@@ -57,22 +86,35 @@ export function __resetClipboardImageForTest(): void {
 	sessionSeen = false
 	pendingImages = []
 	removedDrops = new Map()
-	imageCounter = 0
+	detachedPathSuppression = new Set()
+	imageCounters.clear()
 	inlineIdHighWater = 0
 	currentCtx = null
 	clipboardHasImage = false
 	pasteEpoch = 0
 }
-// Per-session running counter of images attached to user turns. Resets on
-// session_start so that a new conversation always begins at #1.
-let imageCounter = 0
-// Highest inline id assigned this session (draft or submit). Deleting a
-// marker detaches its drop but never frees the number — a fresh drop must
-// never collide with a live pending id (which would corrupt the registry:
-// addImage would skip the file write but overwrite the entry's metadata).
+// Running counter of images attached to user turns, keyed by session id —
+// the ACP server hosts several sessions in one process via shared extension
+// factories, and marker numbering must be monotonic PER SESSION: a global
+// counter would let session B's attachments renumber the markers a
+// concurrently open session A shows in its transcript. Resets on a
+// replacement session_start so a new conversation begins at #1.
+const imageCounters = new Map<string, number>()
+function imageCounterOf(sessionId: string): number {
+	return imageCounters.get(sessionId) ?? 0
+}
+function bumpImageCounter(sessionId: string, id: number): void {
+	imageCounters.set(sessionId, Math.max(imageCounterOf(sessionId), id))
+}
+// Highest inline id assigned in this TUI session (draft or submit).
+// Deleting a marker detaches its drop but never frees the number — a fresh
+// drop must never collide with a live pending id (which would corrupt the
+// registry: addImage would skip the file write but overwrite the entry's
+// metadata). Only the TUI assigns inline ids, and the TUI hosts one session
+// per process, so this single global is not a cross-session channel.
 let inlineIdHighWater = 0
 function nextInlineId(): number {
-	inlineIdHighWater = Math.max(inlineIdHighWater, imageCounter) + 1
+	inlineIdHighWater = Math.max(inlineIdHighWater, imageCounterOf(sessionIdOf(currentCtx))) + 1
 	return inlineIdHighWater
 }
 
@@ -136,31 +178,79 @@ function buildImageMarkerPrefix(ids: number[]): string {
 }
 
 /**
+ * Cap on parked detached drops. Parking exists for undo recovery, which is
+ * a short window — an unbounded map would pin every detached image's base64
+ * for the session's lifetime (and the indicator only counts pending entries,
+ * so the pining is invisible). Oldest entries are pruned first.
+ */
+const MAX_REMOVED_DROPS = 5
+
+function parkRemovedDrop(entry: PendingImage & { inlineId: number }): void {
+	removedDrops.set(entry.inlineId, entry)
+	while (removedDrops.size > MAX_REMOVED_DROPS) {
+		const oldest = removedDrops.keys().next().value
+		if (oldest === undefined) break
+		removedDrops.delete(oldest)
+	}
+}
+
+/**
+ * A drop/paste made BEFORE this session's start (first-start window) can
+ * sit in the draft with an inline id that a manifest restore just claimed
+ * for an earlier turn's image. Left alone, submitting the unchanged marker
+ * would attach the OLD image while the user's fresh drop silently detaches
+ * (worse: registry metadata would be overwritten while the file write is
+ * skipped — bytes/metadata desync). Renumber the pending drop AND its draft
+ * marker above the restored range instead.
+ */
+function renumberCollidingPendingDrops(ctx: ExtensionContext, sessionId: string): void {
+	const colliding = pendingImages.filter((p) => p.inlineId !== null && p.inlineId <= imageCounterOf(sessionId))
+	if (colliding.length === 0) return
+	let draft = ctx.ui.getEditorText()
+	let changed = false
+	for (const p of colliding) {
+		// Only an id the restored registry actually RESOLVES is a collision —
+		// ids above it (or gaps the manifest never claimed) are free.
+		if (p.inlineId === null || resolveImageContentById(sessionId, p.inlineId).kind === "unknown") continue
+		const marker = buildImageMarker(p.inlineId)
+		if (!draft.includes(marker)) continue
+		const fresh = nextInlineId()
+		draft = draft.replace(marker, buildImageMarker(fresh))
+		p.inlineId = fresh
+		changed = true
+	}
+	if (changed) ctx.ui.setEditorText(draft)
+}
+
+/**
  * The single detach/re-arm reconcile, used by the editor's markers-edited
  * channel AND by submit (a setEditorText restore bypasses that channel):
  * a pending drop whose `[Image #N]` marker vanished from the draft detaches
  * into `removedDrops` (the indicator follows the draft); a parked drop whose
  * marker is complete again re-arms into pending — unless a live pending drop
  * already owns that id (a re-typed marker is not an owner transfer).
+ * Returns the entries detached by this call.
  */
-function reconcileInlineMarkers(present: Set<number>): void {
-	let changed = false
+function reconcileInlineMarkers(present: Set<number>): PendingImage[] {
+	const detached: PendingImage[] = []
 	for (let i = pendingImages.length - 1; i >= 0; i--) {
 		const p = pendingImages[i]
 		if (p && p.inlineId !== null && !present.has(p.inlineId)) {
 			pendingImages.splice(i, 1)
-			removedDrops.set(p.inlineId, p)
-			changed = true
+			parkRemovedDrop(p as PendingImage & { inlineId: number })
+			detached.push(p)
 		}
 	}
+	let rearmed = false
 	for (const [id, entry] of [...removedDrops]) {
 		if (present.has(id) && !pendingImages.some((p) => p.inlineId === id)) {
 			pendingImages.push(entry)
 			removedDrops.delete(id)
-			changed = true
+			rearmed = true
 		}
 	}
-	if (changed) updateIndicator()
+	if (detached.length > 0 || rearmed) updateIndicator()
+	return detached
 }
 
 setPasteImageHandler(() => {
@@ -197,8 +287,23 @@ setImageDropHandler((pastedText, cwd) => {
  * Marker-set sync: every edit that changes which `[Image #N]` markers are in
  * the draft (backspace, bulk delete, undo, kill-ring yank, plain typing) is
  * reported by the editor and reconciled live — see reconcileInlineMarkers.
+ *
+ * When the detach came from an atomic marker deletion, restore the drop's
+ * original path text at the cursor: a dropped path is consumed into a
+ * marker, and deleting the marker must not make that text unrecoverable
+ * (undo still restores the marker itself). Bulk deletes (ctrl+u and friends)
+ * do NOT restore — the user asked to clear the draft wholesale.
  */
-setImageMarkersEditedHandler(reconcileInlineMarkers)
+setImageMarkersEditedHandler((present, cause) => {
+	const detached = reconcileInlineMarkers(present)
+	if (cause !== "atomic-marker-delete") return
+	for (const entry of detached) {
+		if (entry.sourcePath) {
+			detachedPathSuppression.add(entry.sourcePath)
+			insertTextAtPromptCursor(entry.sourcePath)
+		}
+	}
+})
 
 async function handlePaste(): Promise<void> {
 	// Capture before the async clipboard read: submitting (or replacing the
@@ -298,36 +403,80 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
-		currentCtx = ctx
-		// Only a REPLACEMENT session starts clean. The very first session_start
-		// can fire moments AFTER the editor already accepted a paste/drop (the
-		// prompt renders before the session finishes starting); clearing then
-		// would silently lose attachments the user already made. An extension
-		// reload re-fires session_start for the SAME session (reason "reload"):
-		// resetting there would wipe live pending drops, restart numbering at
-		// #1 (colliding with transcript markers) and delete the live image
-		// cache — so "reload" never counts as a replacement.
-		if (sessionSeen && event.reason !== "reload") {
-			pendingImages = []
-			removedDrops = new Map()
-			imageCounter = 0
-			inlineIdHighWater = 0
-			pasteEpoch++
-			// On-demand sessions never re-probe, so a hint left by a previous
-			// proactive session would advertise an image that was not read again.
-			clipboardHasImage = false
-			// Reset the vision gate's retained state, suppressions, deferred latch,
-			// and dialog ownership so a replacement session starts clean.
-			resetVisionGateState()
-			// Only the STARTING session's registry is cleared — the ACP server
-			// shares this process across sessions, and a global wipe would
-			// repoint another session's live markers at this session's images.
-			clearSessionImages(sessionIdOf(ctx))
-		}
-		sessionSeen = true
+		const sessionId = sessionIdOf(ctx)
 		const sessionDir = ctx.sessionManager?.getSessionDir?.() ?? null
-		const dir = sessionDir ? join(sessionDir, "image-cache") : null
-		setImageCacheDir(sessionIdOf(ctx), dir)
+		// Per-SESSION cache dir, not one image-cache dir per sessionDir: a fork
+		// creates a new session in the SAME directory, and a shared cache dir
+		// would let the fork's fresh `[Image #1]` file collide with the
+		// parent's on disk.
+		setImageCacheDir(sessionId, sessionDir ? join(sessionDir, `image-cache-${sanitizeSessionId(sessionId)}`) : null)
+
+		// The inline-marker machinery (pending drops, detached-marker parking,
+		// inline numbering, vision-gate state) is TUI-only: the ACP surface has
+		// no prompt editor to render markers into. Gating the RESET matters as
+		// much as gating the producers — the ACP server hosts many sessions in
+		// one process, and a non-TUI session_start resetting these globals
+		// would renumber a concurrently open TUI session's draft markers.
+		if (ctx.mode === "tui") {
+			currentCtx = ctx
+			// Only a REPLACEMENT session starts clean. The very first
+			// session_start can fire moments AFTER the editor already accepted a
+			// paste/drop (the prompt renders before the session finishes
+			// starting); clearing then would silently lose attachments the user
+			// already made. An extension reload re-fires session_start for the
+			// SAME session (reason "reload"): resetting there would wipe live
+			// pending drops, restart numbering at #1 (colliding with transcript
+			// markers) and delete the live image cache — so "reload" never counts
+			// as a replacement. A RESUMED session also keeps its registry and
+			// numbering: its transcript's `[Image #N]` markers must stay
+			// resolvable, and a new drop must not restart at #1 over them.
+			if (sessionSeen && event.reason !== "reload" && event.reason !== "resume") {
+				pendingImages = []
+				removedDrops = new Map()
+				detachedPathSuppression = new Set()
+				imageCounters.delete(sessionId)
+				inlineIdHighWater = 0
+				pasteEpoch++
+				// On-demand sessions never re-probe, so a hint left by a previous
+				// proactive session would advertise an image that was not read again.
+				clipboardHasImage = false
+				// Reset the vision gate's retained state, suppressions, deferred
+				// latch, and dialog ownership so a replacement session starts clean.
+				resetVisionGateState()
+				// Only the STARTING session's registry is cleared — the ACP server
+				// shares this process across sessions, and a global wipe would
+				// repoint another session's live markers at this session's images.
+				clearSessionImages(sessionId)
+			} else if (sessionSeen && event.reason === "resume") {
+				// In-process resume (the editor is rebuilt with a fresh draft):
+				// pending drops and parked detaches from the previous editing
+				// session do not carry over, but the registry and numbering MUST —
+				// the restored transcript's markers reference them. Pending drops
+				// made before this FIRST session_start (a `--resume` relaunch
+				// where the prompt renders first) stay — the first start never
+				// wipes (see commit 36e7eb5e).
+				pendingImages = []
+				removedDrops = new Map()
+				detachedPathSuppression = new Set()
+				pasteEpoch++
+				clipboardHasImage = false
+				resetVisionGateState()
+			}
+			sessionSeen = true
+		}
+		// Continue numbering past the ids the on-disk manifest already claims,
+		// for ANY mode: after a process restart the counters restart at 0, and
+		// attaching under an id whose file already exists would durably bind
+		// the new attachment's metadata to the previous image's bytes (addImage
+		// skips the write). No-op when the manifest is absent or the scope is
+		// live. (`new`/`fork` replacement: the reset above wiped scope+manifest
+		// first, so this restores nothing.)
+		const restoredMax = restoreSessionImages(sessionId)
+		imageCounters.set(sessionId, Math.max(imageCounterOf(sessionId), restoredMax))
+		if (ctx.mode === "tui") {
+			inlineIdHighWater = Math.max(inlineIdHighWater, imageCounterOf(sessionId))
+			renumberCollidingPendingDrops(ctx, sessionId)
+		}
 		updateIndicator()
 		// Linux shells out to wl-paste/xclip; polling can open transient
 		// surfaces that steal focus on Wayland. macOS matches that on-demand
@@ -342,13 +491,22 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		}
 	})
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event: SessionShutdownEvent, ctx) => {
 		if (clipboardPollId !== null) {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
-		currentCtx = null
-		resetVisionGateState()
+		// The gate state and the editor context are TUI-owned: an ACP session
+		// ending must not reset a concurrently open TUI session's vision gate.
+		if (ctx.mode === "tui") {
+			currentCtx = null
+			resetVisionGateState()
+		}
+		// Memory only: free the closed session's registry scope so a
+		// long-lived ACP server does not pin every closed session's entries.
+		// Cache files and the manifest stay on disk; a later session_start
+		// restores them via restoreSessionImages.
+		removeSessionScope(sessionIdOf(ctx))
 	})
 
 	pi.on("agent_end", (_event, ctx) => {
@@ -386,7 +544,23 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// Path images are appended after pasted/attached ones so existing
 		// marker numbering is unchanged.
 		const extractPaths = isInteractiveTui || modelSupportsImages(ctx.model)
-		const freshMatches = extractPaths ? extractTypedImagePaths(event.text, ctx.cwd) : []
+		let freshMatches = extractPaths ? extractTypedImagePaths(event.text, ctx.cwd) : []
+		// Filter out atomically-detached paths restored into the draft — but do
+		// NOT consume the suppression yet: only a TERMINAL outcome (accepted or
+		// gate-remove submit) consumes it, mirroring the gate's own
+		// getPathSuppression/consumePathSuppression arming discipline. A
+		// cancelled gate retry must find it still armed.
+		const restoreSuppressed = new Set<string>()
+		if (isInteractiveTui && detachedPathSuppression.size > 0) {
+			freshMatches = freshMatches.filter((m) => {
+				if (!detachedPathSuppression.has(m.resolvedPath)) return true
+				restoreSuppressed.add(m.resolvedPath)
+				return false
+			})
+		}
+		const consumeRestoreSuppression = (): void => {
+			for (const path of restoreSuppressed) detachedPathSuppression.delete(path)
+		}
 		const pathMatches: PathAttachment[] = (
 			suppressedPaths ? freshMatches.filter((m) => !suppressedPaths.has(m.resolvedPath)) : freshMatches
 		).map((match) => ({
@@ -417,10 +591,12 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// Retention merges a prior cancelled/intercepted submission: same draft
 		// reuses retained attachments (no duplicate paths); a changed draft
 		// refreshes path attachments while explicit incoming/pasted survive.
+		// Pending drops are TUI-only: an ACP submit must neither see another
+		// session's pending entries nor park them (its presentMarkers are ∅).
 		const record = mergeRetainedSubmission({
 			text: event.text,
 			incoming,
-			pending: pendingImages,
+			pending: isInteractiveTui ? pendingImages : [],
 			pathMatches,
 			retained: isInteractiveTui ? getRetainedSubmission() : null,
 			generation: gateGeneration,
@@ -438,7 +614,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			if (p.inlineId === null || presentMarkers.has(p.inlineId)) {
 				keptPending.push(p)
 			} else {
-				removedDrops.set(p.inlineId, p)
+				parkRemovedDrop(p as PendingImage & { inlineId: number })
 			}
 		}
 
@@ -466,7 +642,9 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 					} (${resolved.path})`,
 					resolved.kind === "read-error" ? resolved.error : "",
 				)
-				currentCtx?.ui?.notify(`[Image #${id}] could not be attached — its cached image is gone`, "warning")
+				// Notify through THIS event's ctx, not the global currentCtx: in a
+				// shared process the warning belongs to the session submitting now.
+				ctx.ui?.notify(`[Image #${id}] could not be attached — its cached image is gone`, "warning")
 			}
 		}
 		const keptPasted: PendingImage[] = [...keptPending, ...registryAttached]
@@ -480,6 +658,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 				removedDrops = new Map()
 			}
 			if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
+			consumeRestoreSuppression()
 			return
 		}
 
@@ -488,6 +667,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			if (outcome.kind === "handled") return { action: "handled" as const }
 			if (outcome.kind === "remove") {
 				if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
+				consumeRestoreSuppression()
 				// Original trimmed text, no images, no registry or counter mutation.
 				// Inline `[Image #N]` markers for the removed PENDING images are
 				// stripped — they reference attachments that are gone. Markers
@@ -501,6 +681,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			// proceed: checked switch succeeded — submit on the new model below.
 		}
 		if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
+		consumeRestoreSuppression()
 
 		// Accepted submission: commit markers/registry/counter from the merged
 		// record, transferring retained attachments into the transform exactly
@@ -511,12 +692,15 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			...keptPasted.map((p) => ({ image: p.image, inlineId: p.inlineId })),
 			...[...record.paths.values()].map((image) => ({ image, inlineId: null })),
 		]
-		pendingImages = []
 		// Accepted submission: detached drops are stale for good. Keeping them
 		// would pin their base64 for the session's lifetime and let a later
 		// draft containing the literal `[Image #N]` re-arm an image the user
 		// deliberately detached (typing the marker as prose would attach it).
-		removedDrops = new Map()
+		// TUI-only state: a non-TUI submit (shared process) must not clear it.
+		if (isInteractiveTui) {
+			pendingImages = []
+			removedDrops = new Map()
+		}
 		updateIndicator()
 
 		// An inline `[Image #N]` marker still present in the draft keeps the
@@ -529,8 +713,9 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// Every marker id mentioned in the draft is claimed — including typed
 		// markers that resolved via the registry or matched nothing at all —
 		// so prefix-numbered attachments never collide with visible markers.
+		const sessionId = sessionIdOf(ctx)
 		const inlineTaken = new Set<number>(presentMarkers)
-		let nextFree = imageCounter + 1
+		let nextFree = imageCounterOf(sessionId) + 1
 		const prefixIds: number[] = []
 		const entries: { id: number; image: ImageContent }[] = prepared.map((p) => {
 			let id: number
@@ -541,8 +726,8 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 				id = nextFree++
 				prefixIds.push(id)
 			}
-			imageCounter = Math.max(imageCounter, id)
-			addImage(sessionIdOf(ctx), id, p.image)
+			bumpImageCounter(sessionId, id)
+			addImage(sessionId, id, p.image)
 			return { id, image: p.image }
 		})
 		const prefix = buildImageMarkerPrefix(prefixIds)

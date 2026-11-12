@@ -261,10 +261,15 @@ export function setImageDropHandler(handler: (pastedText: string, cwd: string) =
 
 // Registered by the clipboard-image extension: notified with the full set of
 // `[Image #N]` markers whenever an edit changes them, so pending drops can be
-// detached (or a restored marker re-armed) immediately.
-let imageMarkersEditedHandler: ((presentIds: Set<number>) => void) | undefined
+// detached (or a restored marker re-armed) immediately. The optional cause
+// tells the extension HOW the markers changed: "atomic-marker-delete" means
+// the user deleted one whole marker with (shift+)backspace/forward-delete,
+// which lets the extension restore the consumed drop's path text in place.
+let imageMarkersEditedHandler: ((presentIds: Set<number>, cause?: "atomic-marker-delete") => void) | undefined
 
-export function setImageMarkersEditedHandler(handler: (presentIds: Set<number>) => void): void {
+export function setImageMarkersEditedHandler(
+	handler: (presentIds: Set<number>, cause?: "atomic-marker-delete") => void,
+): void {
 	imageMarkersEditedHandler = handler
 }
 
