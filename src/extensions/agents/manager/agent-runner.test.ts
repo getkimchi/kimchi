@@ -1530,6 +1530,71 @@ describe("runAgent — profile tool access", () => {
 })
 
 describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
+describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
+describe("getActiveSubagentToolNames — tool filter rules", () => {
+	const allRegistered =
+		(names: string[]) =>
+		(name: string): boolean =>
+			names.includes(name)
+
+	it("keeps requested builtins and retained registered extension tools; drops unrequested builtins and orchestrator tools", () => {
+		const active = getActiveSubagentToolNames(
+			["read", "grep"],
+			["read", "edit", "web_search", "Agent"],
+			true,
+			allRegistered(["read", "grep", "edit", "web_search", "Agent"]),
+		)
+
+		expect(active).toEqual(["read", "grep", "web_search"])
+	})
+
+	it("reports requested tools that are absent from the subagent registry, in request order", () => {
+		const dropped: string[] = []
+		const active = getActiveSubagentToolNames(
+			["read", "web_search", "missing_tool"],
+			["read"],
+			true,
+			allRegistered(["read"]),
+			undefined,
+			(names) => dropped.push(...names),
+		)
+
+		expect(active).toEqual(["read"])
+		expect(dropped).toEqual(["web_search", "missing_tool"])
+	})
+
+	it("does not report tools nobody requested that happen to be unregistered", () => {
+		const dropped: string[] = []
+		const active = getActiveSubagentToolNames(
+			["read"],
+			["read", "ghost_tool"],
+			true,
+			allRegistered(["read"]),
+			undefined,
+			(names) => dropped.push(...names),
+		)
+
+		expect(active).toEqual(["read"])
+		expect(dropped).toEqual([])
+	})
+
+	it("does not report disallowed tools — disallowed is a choice, not a missing registration", () => {
+		const dropped: string[] = []
+		const active = getActiveSubagentToolNames(
+			["read", "web_fetch"],
+			["read"],
+			true,
+			allRegistered(["read"]),
+			new Set(["web_fetch"]),
+			(names) => dropped.push(...names),
+		)
+
+		expect(active).toEqual(["read"])
+		expect(dropped).toEqual([])
+	})
+})
+
+describe("runAgent — extensions disabled with non-builtin tools", () => {
 	let ctx: ReturnType<typeof makeFakeCtx>
 	let pi: ReturnType<typeof makeFakePi>
 
