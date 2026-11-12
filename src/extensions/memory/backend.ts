@@ -372,6 +372,30 @@ export function disableMem0Telemetry(): void {
 	}
 }
 
+/** The id stamped on a telemetry-disabled instance (never leaves the machine). */
+export const LOCAL_TELEMETRY_ID = "kimchi-local"
+
+/**
+ * Stop mem0's first call from writing its telemetry id into the store.
+ *
+ * mem0 resolves a telemetry id lazily and persists it (DELETE + INSERT on the
+ * vector store's migrations table) synchronously on the calling thread. With
+ * telemetry off the id is never used, but the write still runs, and when
+ * another process (a capture worker, a second session) holds the store's
+ * write lock the SQLite busy_timeout (5 s) freezes the whole event loop —
+ * measured as a 5 s stall on the first search of a session. Setting a
+ * non-default id makes mem0 skip the lookup and the write.
+ *
+ * Must run in the same tick as `new Memory(...)`: mem0 starts its async init
+ * in the constructor and reads the id after its first await, so assigning
+ * after any await is too late. An explicit MEM0_TELEMETRY opt-in keeps mem0's
+ * own id, so an operator's analytics stay distinct per install.
+ */
+export function skipTelemetryIdWrite(memory: { telemetryId: string }): void {
+	if (process.env.MEM0_TELEMETRY?.toLowerCase() !== "false") return
+	memory.telemetryId = LOCAL_TELEMETRY_ID
+}
+
 /**
  * Construct the memory backend. Requires the Bun runtime (the SQLite store
  * loads better-sqlite3, which resolves to our bun:sqlite shim). The
@@ -399,5 +423,7 @@ export async function createMemoryBackend(
 	disableMem0Telemetry()
 	tagEmbeddingRequests(config.llmEndpoint, credentials.organizationId)
 	const { Memory } = await import("mem0ai/oss")
-	return new Memory(buildMemoryConfig(options, config))
+	const memory = new Memory(buildMemoryConfig(options, config))
+	skipTelemetryIdWrite(memory)
+	return memory
 }

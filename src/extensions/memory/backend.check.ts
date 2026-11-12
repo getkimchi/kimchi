@@ -125,6 +125,32 @@ async function partB(): Promise<void> {
 	}
 }
 
+async function partD(): Promise<void> {
+	console.log("\n--- PART D: first search does not write to the store (no stall behind a held write lock) ---")
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-memory-check-d-"))
+	try {
+		const dbPath = join(dir, "memory.db")
+		const seed = await createMemoryBackend({ dbPath })
+		await seed.add("I use pnpm.", { userId: "check-user", infer: false })
+		// A second connection holds the write lock, as a capture worker would.
+		const { Database } = await import("bun:sqlite")
+		const holder = new Database(dbPath)
+		holder.exec("BEGIN IMMEDIATE")
+		try {
+			const t0 = Date.now()
+			const fresh = await createMemoryBackend({ dbPath })
+			await fresh.search("package manager", { filters: { user_id: "check-user" } })
+			const ms = Date.now() - t0
+			check("first search under a held write lock is not blocked by busy_timeout", ms < 2000, `${ms}ms`)
+		} finally {
+			holder.exec("ROLLBACK")
+			holder.close()
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+}
+
 async function partC(): Promise<void> {
 	console.log("\n--- PART C: storage concurrency (parallel writers + readers, one store) ---")
 	const dir = mkdtempSync(join(tmpdir(), "kimchi-memory-check-c-"))
@@ -155,6 +181,7 @@ async function main(): Promise<void> {
 	await partA()
 	await partB()
 	await partC()
+	await partD()
 	console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`)
 	process.exitCode = failures === 0 ? 0 : 1
 }
