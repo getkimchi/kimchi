@@ -44,11 +44,15 @@ import {
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
+import { createFakeOps, type FakeOps } from "../../extensions/bash-background/__mocks__/fake-bash-ops.js"
+import { createProcessRegistry, type ProcessRegistry } from "../../extensions/bash-background/process-registry.js"
+import { createReviewCoordinator } from "../../extensions/bash-background/review-coordinator.js"
 import {
 	resetBackgroundRunsPermittedForTest,
 	setBackgroundRunsPermitted,
 } from "../../extensions/bash-background/session-policy.js"
-import { setSessionState } from "../../extensions/bash-background/session-registry.js"
+import { type BashSessionState, setSessionState } from "../../extensions/bash-background/session-registry.js"
+import { createTerminalDelivery } from "../../extensions/bash-background/terminal-delivery.js"
 import feedbackExtension from "../../extensions/feedback/index.js"
 import {
 	isProjectScopeAllowed,
@@ -14002,5 +14006,585 @@ describe("bash_control wait info placement", () => {
 		).toEqual({
 			commands: [{ command: "npm test", startedAt: "2026-05-09T00:00:00.000Z" }],
 		})
+	})
+})
+// Backgrounded bash handoff on the ACP wire: a backgrounded bash tool
+// result (details.handoff === true + a live process-registry handle) keeps
+// its ACP tool_call `in_progress` — held on the SessionRecord, so it
+// survives across turns — until the process exits, when the exit watcher
+// flips it to the final status carrying the exit outcome (completed on exit
+// 0, failed otherwise). Replays in the same harness process overlay a
+// still-running call under the SAME ACP id; recycled upstream ids get fresh
+// ACP ids so they can never collide with a held call.
+describe("KimchiAcpAgent background bash handoff", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+	let ops: FakeOps
+	let registry: ProcessRegistry
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-bg")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+		// Wire the bash-background extension's session-scoped state with fake
+		// exec plumbing so a handoff result references a live registry handle
+		// whose exit this test drives directly.
+		ops = createFakeOps()
+		registry = createProcessRegistry()
+		const state: BashSessionState = {
+			registry,
+			coordinator: createReviewCoordinator({ registry, handoffSeconds: 2 }),
+			delivery: createTerminalDelivery(),
+			limitSeconds: 600,
+			sessionKind: "user-facing",
+			cwd: "/tmp",
+		}
+		setSessionState(sessionId, state)
+	})
+
+	afterEach(async () => {
+		setSessionState(sessionId, undefined)
+		await registry.shutdown().catch(() => {})
+		try {
+			await agent.unstable_closeSession({ sessionId })
+		} catch {
+			// already closed
+		}
+		try {
+			await agent.shutdown()
+		} catch {
+			// already down
+		}
+	})
+
+	/** Spawn a fake background exec and return its registry handle. */
+	const spawnBackgroundSleep = (command = "sleep 900"): string =>
+		registry.spawn(ops, command, "/tmp", undefined, { limitSeconds: 600 })
+
+	/** The bash-background tool result shape at handoff: `handoff === true` + live handle. */
+	const handoffResult = (handle: string) => ({
+		content: [{ type: "text" as const, text: "Command handed off; still running in the background." }],
+		details: { handle, exited: false, exitCode: null, handoff: true },
+	})
+
+	/** Run one turn that launches a backgrounded bash call holding `handle`. */
+	const promptWithHandoff = async (
+		handle: string,
+		opts: { alsoEmit?: () => void; agentEnd?: boolean } = {},
+	): Promise<{ status?: string; stopReason?: string }> => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				args: { command: "sleep 900" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				result: handoffResult(handle),
+				isError: false,
+			})
+			opts.alsoEmit?.()
+			if (opts.agentEnd !== false) fake.emit(agentEnd())
+		}
+		return agent.prompt({ sessionId, prompt: [{ type: "text", text: "run it" }] })
+	}
+
+	/** Wire shape used by tool_call / tool_call_update assertions. */
+	type ToolCallWireUpdate = {
+		toolCallId: string
+		status?: string
+		title?: string
+		rawInput?: unknown
+		rawOutput?: { content?: Array<{ type: string; text?: string }>; details?: Record<string, unknown> }
+	}
+	const toolCalls = (): ToolCallWireUpdate[] =>
+		updates.filter((u) => u.update.sessionUpdate === "tool_call").map((u) => u.update as unknown as ToolCallWireUpdate)
+	const toolCallUpdates = (): ToolCallWireUpdate[] =>
+		updates
+			.filter((u) => u.update.sessionUpdate === "tool_call_update")
+			.map((u) => u.update as unknown as ToolCallWireUpdate)
+	const updatesFor = (acpId: string) => toolCallUpdates().filter((u) => u.toolCallId === acpId)
+	const isTerminal = (u: ToolCallWireUpdate) => u.status === "completed" || u.status === "failed"
+
+	it("keeps a backgrounded tool call in_progress at handoff — no terminal status while the process lives, and the turn still ends", async () => {
+		const handle = spawnBackgroundSleep()
+
+		const res = await promptWithHandoff(handle)
+		// Turn accounting is unaffected: the turn ends with the process running.
+		expect(res.stopReason).toBe("end_turn")
+
+		expect(toolCalls()).toHaveLength(1)
+		const acpId = toolCalls()[0]?.toolCallId ?? ""
+		const callUpdates = updatesFor(acpId)
+		// The handoff result went out as in_progress, carrying the handoff payload.
+		const handoffUpdate = callUpdates.find((u) => u.rawOutput?.details?.handoff === true)
+		expect(handoffUpdate?.status).toBe("in_progress")
+		expect((handoffUpdate?.rawOutput?.details as { handle?: string }).handle).toBe(handle)
+		// No terminal update of any kind: the call stays open until the exit.
+		expect(callUpdates.some(isTerminal)).toBe(false)
+		// A second turn that does NOT touch the background process.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "and?" }] })).stopReason).toBe("end_turn")
+		// Still open after a second, unrelated turn.
+		expect(updatesFor(acpId).some(isTerminal)).toBe(false)
+	})
+
+	it("allocates a fresh ACP id when the model recycles the upstream toolCallId after a handoff", async () => {
+		const handle = spawnBackgroundSleep()
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				args: { command: "sleep 900" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				result: handoffResult(handle),
+				isError: false,
+			})
+			// The model recycles the same upstream id for an unrelated call.
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-1",
+				toolName: "read",
+				args: { path: "/tmp/unrelated.txt" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-1",
+				toolName: "read",
+				result: { content: [{ type: "text", text: "file body" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run it" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		expect(toolCalls()).toHaveLength(2)
+		const [bashCall, readCall] = toolCalls()
+		// Recycled upstream id → FRESH ACP id; no collision with the held call.
+		expect(readCall.toolCallId).not.toBe(bashCall.toolCallId)
+		// The recycled call settles with its OWN terminal update…
+		expect(updatesFor(readCall.toolCallId).some((u) => u.status === "completed")).toBe(true)
+		// …while the held call stays open, untouched by the recycled id.
+		expect(updatesFor(bashCall.toolCallId).some(isTerminal)).toBe(false)
+	})
+
+	it("flips a held tool call to completed with the exit outcome when the process exits with code 0 — even after the owning turn has finalized", async () => {
+		const handle = spawnBackgroundSleep()
+
+		const res = await promptWithHandoff(handle)
+		expect(res.stopReason).toBe("end_turn")
+		const acpId = toolCalls()[0]?.toolCallId ?? ""
+		expect(updatesFor(acpId).some(isTerminal)).toBe(false)
+
+		// The process exits AFTER the turn ended (the common background case).
+		ops.emitMatching("sleep", "final marker output\n")
+		await ops.exitMatching("sleep", 0)
+
+		await waitFor(() => updatesFor(acpId).some((u) => u.status === "completed"))
+		const finals = updatesFor(acpId).filter((u) => u.status === "completed")
+		// Exactly one final update — the exit watcher owns finality.
+		expect(finals).toHaveLength(1)
+		expect(finals[0]?.rawOutput?.details).toMatchObject({ handle, exited: true, exitCode: 0, reason: null })
+		// The exit output lands as the final content and in rawOutput.
+		expect(JSON.stringify(finals[0]?.rawOutput)).toContain("final marker output")
+		// No failed update anywhere before or after the completion.
+		expect(updatesFor(acpId).some((u) => u.status === "failed")).toBe(false)
+	})
+
+	it("flips a held tool call to failed with the exit code when the process exits non-zero", async () => {
+		const handle = spawnBackgroundSleep()
+
+		const res = await promptWithHandoff(handle)
+		expect(res.stopReason).toBe("end_turn")
+		const acpId = toolCalls()[0]?.toolCallId ?? ""
+
+		ops.emitMatching("sleep", "crashing hard\n")
+		await ops.exitMatching("sleep", 2)
+
+		await waitFor(() => updatesFor(acpId).some((u) => u.status === "failed"))
+		const finals = updatesFor(acpId).filter((u) => u.status === "failed")
+		expect(finals).toHaveLength(1)
+		expect(finals[0]?.rawOutput?.details).toMatchObject({ handle, exited: true, exitCode: 2 })
+		expect(updatesFor(acpId).some((u) => u.status === "completed")).toBe(false)
+	})
+
+	it("steers a turn with a held background process exactly as before, and the steer does not settle the held call", async () => {
+		const handle = spawnBackgroundSleep()
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				args: { command: "sleep 900" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				result: handoffResult(handle),
+				isError: false,
+			})
+			// Keep the turn active until the steer has been queued via the ext
+			// method — pi then ends the turn as usual.
+			await waitFor(() => fake.pendingSteers.length > 0)
+			fake.emit(agentEnd())
+		}
+		const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "run it" }] })
+		// entry.turn is assigned after an await (skill-command parse) inside
+		// prompt() — retry the steer until the turn is firmly active. A
+		// promptRequired response queues nothing, so retries are safe.
+		let steerStatus = "promptRequired"
+		const steerDeadline = Date.now() + 2000
+		while (steerStatus !== "injected" && Date.now() < steerDeadline) {
+			const res = (await agent.extMethod(AVAILABLE_EXT_METHODS.steering, {
+				sessionId,
+				prompt: "while it runs: add a note",
+			})) as { status: string }
+			steerStatus = res.status
+			if (steerStatus !== "injected") await delay(10)
+		}
+		expect(steerStatus).toBe("injected")
+		expect((await pending).stopReason).toBe("end_turn")
+		expect(fake.pendingSteers).toContain("while it runs: add a note")
+
+		// The steer had no effect on the held call: still open until the exit.
+		const acpId = toolCalls()[0]?.toolCallId ?? ""
+		expect(updatesFor(acpId).some(isTerminal)).toBe(false)
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(acpId).some((u) => u.status === "completed"))
+	})
+
+	it("publishes the handoff result as a TERMINAL update, never a hold, when the session has no live process registry", async () => {
+		// Simulate the extension being gone: no session state for the session.
+		// Without a registry no exit watcher could ever settle a hold, so the
+		// result must take the normal terminal path — a client must never
+		// receive an in_progress that nothing will settle.
+		setSessionState(sessionId, undefined)
+		const handle = "handle-without-registry"
+
+		const res = await promptWithHandoff(handle)
+		expect(res.stopReason).toBe("end_turn")
+
+		const acpId = toolCalls()[0]?.toolCallId ?? ""
+		const handoffUpdate = updatesFor(acpId).find((u) => u.rawOutput?.details?.handoff === true)
+		expect(handoffUpdate?.status).toBe("completed")
+	})
+
+	it("settles the previous hold when the same handle is handed off twice, and the new hold owns the exit", async () => {
+		const handle = spawnBackgroundSleep()
+
+		await promptWithHandoff(handle)
+		const firstAcpId = toolCalls()[0]?.toolCallId ?? ""
+		expect(updatesFor(firstAcpId).some(isTerminal)).toBe(false)
+
+		// A second tool result hands off the SAME registry handle (e.g. a
+		// foreground/re-background cycle re-tracking one process).
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-2",
+				toolName: "bash",
+				args: { command: "sleep 900" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-2",
+				toolName: "bash",
+				result: handoffResult(handle),
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "track it again" }] })).stopReason).toBe(
+			"end_turn",
+		)
+
+		// The superseded hold was settled best-effort — no dangling spinner.
+		const superseded = updatesFor(firstAcpId).find(isTerminal)
+		expect(superseded?.status).toBe("failed")
+		expect(superseded?.rawOutput?.details?.reason).toBe("tracking superseded by a new handoff")
+
+		// The new hold is a live in_progress card under a FRESH ACP id.
+		const secondAcpId = toolCalls()[1]?.toolCallId ?? ""
+		expect(secondAcpId).not.toBe(firstAcpId)
+		expect(updatesFor(secondAcpId).some((u) => u.status === "in_progress")).toBe(true)
+		expect(updatesFor(secondAcpId).some(isTerminal)).toBe(false)
+
+		// … and the exit settles the new hold with the real outcome.
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(secondAcpId).some((u) => u.status === "completed"))
+	})
+
+	it("replays a still-running background call as in_progress under the SAME ACP id on reload in the same harness process, and the exit still settles it afterwards", async () => {
+		const handle = spawnBackgroundSleep()
+
+		const res = await promptWithHandoff(handle)
+		expect(res.stopReason).toBe("end_turn")
+		const heldAcpId = toolCalls()[0]?.toolCallId ?? ""
+
+		// The persisted branch, as pi would record it: the recorded result of
+		// the backgrounded call is its pre-exit handoff (details.handoff).
+		fake.branch = [
+			userTextEntry("run it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-tc-1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle, exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+		]
+
+		// Client reload, same harness process: loadSession hits the already
+		// loaded session and replays its transcript.
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		const replayCalls = toolCalls()
+		expect(replayCalls).toHaveLength(1)
+		// The replayed call stays RUNNING under the one identifier the client
+		// already knows — the client never sees the call flip across its reload.
+		expect(replayCalls[0]?.toolCallId).toBe(heldAcpId)
+		expect(replayCalls[0]?.status).toBe("in_progress")
+		const replayUpdates = updatesFor(heldAcpId)
+		expect(replayUpdates[0]?.status).toBe("in_progress")
+		expect(replayUpdates.some(isTerminal)).toBe(false)
+
+		// The exit watcher still owns finality after the reload.
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(heldAcpId).some((u) => u.status === "completed"))
+	})
+
+	it("replays an exited background call as a terminal status, not in_progress, when the hold settled before the reload", async () => {
+		const handle = spawnBackgroundSleep()
+
+		const res = await promptWithHandoff(handle)
+		expect(res.stopReason).toBe("end_turn")
+		const heldAcpId = toolCalls()[0]?.toolCallId ?? ""
+
+		// The process exits BEFORE the reload: the hold settles, so a later
+		// replay must present the call as terminal (no dangling spinner).
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(heldAcpId).some((u) => u.status === "completed"))
+
+		fake.branch = [
+			userTextEntry("run it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-tc-1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle, exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		const replayCalls = toolCalls()
+		expect(replayCalls).toHaveLength(1)
+		// Held state was retired by the settle: replay falls back to a fresh id …
+		expect(replayCalls[0]?.toolCallId).not.toBe(heldAcpId)
+		// … and a TERMINAL status — the recorded result is the handoff, but the
+		// process is no longer held, so replaying in_progress would spin forever.
+		expect(replayCalls[0]?.status).toBe("completed")
+		const replayed = updatesFor(replayCalls[0]?.toolCallId ?? "")
+		expect(replayed.some((u) => u.status === "in_progress")).toBe(false)
+		// The in-flight markers are normalized away so the terminal status and
+		// the details payload cannot contradict each other on the wire.
+		const details = replayed[replayed.length - 1]?.rawOutput?.details
+		expect(details?.handoff).toBeUndefined()
+		expect(details?.exited).toBeUndefined()
+		expect(details?.exitCode).toBeNull()
+	})
+
+	it("replays the persisted settle outcome on reload: a failed process replays failed with its exit code, not completed", async () => {
+		// Cross-process reload shape: the transcript holds the pre-exit handoff
+		// result (isError false, no exit code — a JSON.stringify would pin this
+		// as "completed, exitCode: null") PLUS the settle the exit watcher
+		// persisted. Nobody is holding the process in this harness session, so
+		// replay must present the settle's terminal outcome.
+		fake.branch = [
+			userTextEntry("run it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-tc-1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle: "h-dead", exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			{
+				type: "custom",
+				id: "st-tc-1",
+				parentId: "tr-tc-1",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-background-settle",
+				data: {
+					toolCallId: "tc-1",
+					isError: true,
+					text: "boom",
+					details: { handle: "h-dead", exited: true, exitCode: 3, reason: null },
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		const replayCalls = toolCalls()
+		expect(replayCalls).toHaveLength(1)
+		expect(replayCalls[0]?.status).toBe("failed")
+		const replayed = updatesFor(replayCalls[0]?.toolCallId ?? "")
+		expect(replayed.some((u) => u.status === "completed")).toBe(false)
+		const last = replayed[replayed.length - 1]
+		expect(last?.status).toBe("failed")
+		expect(last?.rawOutput?.details).toMatchObject({ exited: true, exitCode: 3 })
+		expect(JSON.stringify(last?.rawOutput)).toContain("boom")
+	})
+
+	it("pairs results to blocks first-match-consumed when the model recycles the same upstream toolCallId", async () => {
+		// Transcript order from a live session: call A (tc-1) handed off, the
+		// watcher settled it with a failure, then the model RECYCLED tc-1 for an
+		// unrelated read. Block A must end up with the handoff settle's outcome;
+		// block B with its own result — never cross-paired.
+		fake.branch = [
+			userTextEntry("run two", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-a",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle: "h-dead", exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			{
+				type: "custom",
+				id: "st-a",
+				parentId: "tr-a",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-background-settle",
+				data: {
+					toolCallId: "tc-1",
+					isError: true,
+					text: "boom",
+					details: { handle: "h-dead", exited: true, exitCode: 3, reason: null },
+				},
+			},
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "read", arguments: { path: "/tmp/unrelated.txt" } }],
+				"a2",
+				"st-a",
+			),
+			{
+				type: "message",
+				id: "tr-b",
+				parentId: "a2",
+				timestamp: "2026-05-09T00:00:06Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "read",
+					content: [{ type: "text", text: "file body" }],
+					isError: false,
+					timestamp: 0,
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		const replayCalls = toolCalls()
+		expect(replayCalls).toHaveLength(2)
+		// Block A: the handed-off call replays failed FROM THE SETTLE…
+		const bashId = replayCalls[0]?.toolCallId ?? ""
+		expect(replayCalls[0]?.status).toBe("failed")
+		expect(JSON.stringify(updatesFor(bashId).map((u) => u.rawOutput))).toContain("boom")
+		// …never the recycled call's outcome, and never "completed".
+		expect(JSON.stringify(updatesFor(bashId).map((u) => u.rawOutput))).not.toContain("file body")
+		// Block B: the recycled id's call replays completed with ITS OWN content.
+		const readId = replayCalls[1]?.toolCallId ?? ""
+		expect(readId).not.toBe(bashId)
+		expect(replayCalls[1]?.status).toBe("completed")
+		expect(JSON.stringify(updatesFor(readId).map((u) => u.rawOutput))).toContain("file body")
+		expect(JSON.stringify(updatesFor(readId).map((u) => u.rawOutput))).not.toContain("boom")
 	})
 })

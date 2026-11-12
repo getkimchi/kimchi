@@ -209,6 +209,15 @@ import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
+	backgroundHandoffHandle,
+	type HeldBackgroundToolCall,
+	holdAndWatchBackgroundToolCall,
+	liveBackgroundHandoffHandle,
+	normalizeUnheldHandoffResult,
+} from "./tool-calls/background.js"
+import {
 	BASH_CONTROL_WAIT_META_KEY,
 	BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE,
 	type BashControlBackgroundCommand,
@@ -506,6 +515,23 @@ type SessionRecord = {
 	 * ACP id, so collisions across compaction boundaries are disambiguated.
 	 */
 	toolCallIdMap: Map<string, string>
+	/**
+	 * Background bash processes still running for this session, keyed by their
+	 * process-registry handle — each mapped to the ACP toolCallId whose
+	 * `tool_call` stays `in_progress` until the process exits (the ACP v2
+	 * Background Work RFD's entity model: work that outlives the turn stays on
+	 * the tool call that started it).
+	 *
+	 * SessionRecord scope — NOT TurnContext: a background process outlives the
+	 * turn that launched it. The upstream-id mapping in `toolCallIdMap` IS
+	 * retired at the handoff (the pi id can be recycled by the model without
+	 * colliding with the held ACP id), so no id-collision window opens. Settled
+	 * (deleted + final tool_call_update) by the exit watcher; see
+	 * {@link ./tool-calls/background.js#watchBackgroundProcessExit}. Replays reuse the held
+	 * ACP id so a client reload in the same harness process sees the call still
+	 * running under the one identifier it already knows.
+	 */
+	heldBackgroundToolCalls: Map<string, HeldBackgroundToolCall>
 	previousQueue?: {
 		steering: string[]
 		followUp: string[]
@@ -991,6 +1017,7 @@ export class KimchiAcpAgent implements Agent {
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				heldBackgroundToolCalls: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
 				ownFlagController,
@@ -1309,6 +1336,7 @@ export class KimchiAcpAgent implements Agent {
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				heldBackgroundToolCalls: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
 				ownFlagController,
@@ -2711,6 +2739,64 @@ export class KimchiAcpAgent implements Agent {
 							return fileChangeToDiffContent({ ...change, path: resolveToolPath(change.path, entry.cwd) })
 						})
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
+				// Backgrounded bash handoff: the process is still alive — this tool
+				// result is the pre-exit handoff, not the outcome. The ACP tool_call
+				// therefore reports `in_progress` (NOT a terminal status) and stays open
+				// until the exit watcher flips it to its final status with the exit
+				// outcome — mirroring the v2 Background Work RFD's entity model. Turn
+				// accounting is unaffected (finalizeTurn never inspects open tool
+				// calls), so steering and turn end behave unchanged. Without a live
+				// registry the gate declines the hold and the result takes the normal
+				// terminal path — nothing holds a call it could never settle.
+				const handoffHandle = event.isError ? undefined : liveBackgroundHandoffHandle(sessionId, event.result)
+				if (handoffHandle !== undefined) {
+					const runningUpdate: SessionUpdate = buildToolCallUpdate({
+						toolCallId: acpToolCallId,
+						piToolCallId: event.toolCallId,
+						status: "in_progress",
+						content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
+						rawOutput: this.displayOptionalRecord(sessionId, wireSafeToolResult(event.result)),
+					})
+					this.send({ sessionId, update: runningUpdate })
+					// Retire the upstream-id mapping exactly as a completed call would:
+					// the model may recycle the pi id later and a recycled id must get a
+					// FRESH ACP id, never the held one. Turn-scoped state goes too — the
+					// owning turn may finalize while the process is still running.
+					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
+					holdAndWatchBackgroundToolCall(
+						{
+							send: (notification) => this.send(notification),
+							displayContent: (sid, content) => this.displayContent(sid, content),
+							displayRecord: (sid, value) => this.displayRecord(sid, value),
+							isCurrent: () => this.sessions.get(sessionId) === entry,
+							persistSettle: (piToolCallId, outcome) => {
+								// A metadata-only CustomEntry (pi's `type: "custom"`):
+								// written to the session file, ignored by
+								// buildSessionContext — NEVER injected into model
+								// context and never triggers or steers a turn. This is
+								// a recorded FACT for future replays, not a message.
+								// The wire flip already told the live client: a persist
+								// failure degrades to wire-only, never a settle failure.
+								try {
+									const data: BashBackgroundSettleData = {
+										toolCallId: piToolCallId,
+										isError: outcome.isError,
+										text: outcome.text,
+										details: outcome.details,
+									}
+									entry.session.sessionManager.appendCustomEntry(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE, data)
+								} catch (err) {
+									console.error("bash-background settle persist failed:", err)
+								}
+							},
+						},
+						sessionId,
+						entry.heldBackgroundToolCalls,
+						handoffHandle,
+						{ acpToolCallId, piToolCallId: event.toolCallId },
+					)
+					return
+				}
 				const update: SessionUpdate = buildToolCallUpdate({
 					toolCallId: acpToolCallId,
 					piToolCallId: event.toolCallId,
@@ -2768,6 +2854,7 @@ export class KimchiAcpAgent implements Agent {
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
 		const replayWaitTargets = collectBashControlWaitTargets(entries)
+		const settles = collectBashBackgroundSettles(entries)
 		// Turn-scoped, matching the live path: artifacts accumulate across
 		// the turn's assistant messages and flush once per turn, attached to
 		// the turn's last text block id — right before the next user message,
@@ -2817,6 +2904,7 @@ export class KimchiAcpAgent implements Agent {
 					msg.content,
 					toolResults,
 					replayWaitTargets,
+					settles,
 					this.sessions.get(sessionId),
 					modelAttributionFrom(msg),
 				)
@@ -2886,8 +2974,9 @@ export class KimchiAcpAgent implements Agent {
 	private replayAssistantBlocks(
 		sessionId: string,
 		content: AssistantMessage["content"],
-		toolResults: Map<string, ReplayToolResult>,
+		toolResults: Map<string, ReplayToolResult[]>,
 		replayWaitTargets: Map<string, BashControlBackgroundCommand[][]>,
+		settles: Map<string, ReplayToolResult[]>,
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
 	): string | undefined {
@@ -2977,16 +3066,50 @@ export class KimchiAcpAgent implements Agent {
 				if (!upstreamId || !name) continue
 				const args = (tc.arguments ?? {}) as Record<string, unknown>
 				if (isHiddenToolCall(name, args)) continue
-				const acpToolCallId = record ? this.getOrAllocateAcpToolCallId(record, upstreamId, name) : upstreamId
-				const result = toolResults.get(upstreamId)
+				const result = takeReplayToolResult(toolResults, upstreamId)
 				// The recorded wait targets (custom entry, FIFO per id like the
 				// results) restore the historical cohort as _meta — the recorded
 				// args alone cannot name what a handle-less wait blocked on.
 				const waitTargets = takeReplayWaitTargets(replayWaitTargets, upstreamId)
+				// Background reload overlay: the recorded result of a backgrounded
+				// bash call is its pre-exit HANDOFF. When the process is still running
+				// in this harness process (registry and held map are in-process), replay
+				// presents the call as STILL RUNNING under the same ACP id the live flow
+				// handed out — the exit watcher flips it to its final status when the
+				// process exits, and the client never sees a running process flip back
+				// and forth across its reload. An UN-held handoff result (cross-process
+				// reload, fresh record) falls back to the recorded terminal status, so
+				// its replayed details are normalized to not contradict that status.
+				const handoffHandle = result ? backgroundHandoffHandle(result) : undefined
+				const heldAcpId = handoffHandle !== undefined ? record?.heldBackgroundToolCalls.get(handoffHandle) : undefined
+				const replayResult =
+					result && handoffHandle !== undefined && heldAcpId === undefined
+						? normalizeUnheldHandoffResult(result)
+						: result
+				// A persisted settle overrides the pre-exit handoff for a call replayed
+				// terminal: without it a FAILED process replays as completed with no
+				// exit outcome, because the handoff records isError false and no exit
+				// code. Consumed FIFO like the results — a recycled id's settle
+				// belongs to the block whose handoff it settled.
+				const settleResult = heldAcpId === undefined ? takeReplayToolResult(settles, upstreamId) : undefined
+				const finalResult = settleResult ?? replayResult
+				const acpToolCallId = heldAcpId
+					? heldAcpId.acpToolCallId
+					: record
+						? this.getOrAllocateAcpToolCallId(record, upstreamId, name)
+						: upstreamId
 				// No persisted result → the call never finished (interrupted mid
 				// turn). "failed" is the closest terminal status; leaving the call
-				// in_progress would hang the client's spinner forever on replay.
-				const status: "completed" | "failed" = result ? (result.isError ? "failed" : "completed") : "failed"
+				// in_progress would hang the client's spinner forever on replay —
+				// except a held background process, whose exit watcher owns finality.
+				const status: "in_progress" | "completed" | "failed" =
+					heldAcpId !== undefined
+						? "in_progress"
+						: finalResult
+							? finalResult.isError
+								? "failed"
+								: "completed"
+							: "failed"
 				this.send({
 					sessionId,
 					update: buildToolCall({
@@ -3008,8 +3131,8 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						content: this.displayContent(sessionId, result ? toolResultContent(result) : []),
-						rawOutput: this.displayOptionalRecord(sessionId, result ? wireSafeToolResult(result) : undefined),
+						content: this.displayContent(sessionId, finalResult ? toolResultContent(finalResult) : []),
+						rawOutput: this.displayOptionalRecord(sessionId, finalResult ? wireSafeToolResult(finalResult) : undefined),
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -4374,8 +4497,13 @@ function takeReplayWaitTargets(
 	return out
 }
 
-function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
-	const out = new Map<string, ReplayToolResult>()
+// The queue is first-match-consumed per id: the model may recycle a pi id
+// (a handed-off bash call, then a NEW call reusing the same id), and a
+// last-wins map would pair the handed-off call's block with the recycled
+// call's result — replaying a still-running call as completed, showing
+// another call's content.
+function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult[]> {
+	const out = new Map<string, ReplayToolResult[]>()
 	for (const entry of entries) {
 		if (!entry || typeof entry !== "object") continue
 		const e = entry as { type?: unknown; message?: unknown }
@@ -4391,12 +4519,55 @@ function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
 			  }
 			| undefined
 		if (m?.role !== "toolResult" || typeof m.toolCallId !== "string") continue
-		out.set(m.toolCallId, {
+		const queued = out.get(m.toolCallId) ?? []
+		queued.push({
 			content: m.content,
 			isError: m.isError === true,
 			details: m.details,
 			toolName: typeof m.toolName === "string" ? m.toolName : undefined,
 		})
+		out.set(m.toolCallId, queued)
+	}
+	return out
+}
+
+/** Consumed first-match from collectToolResults' per-id queue. */
+function takeReplayToolResult(toolResults: Map<string, ReplayToolResult[]>, id: string): ReplayToolResult | undefined {
+	const queued = toolResults.get(id)
+	return queued && queued.length > 0 ? queued.shift() : undefined
+}
+
+/**
+ * Settle outcomes persisted for held background calls (metadata-only
+ * CustomEntry records — `type: "custom"` — under
+ * BASH_BACKGROUND_SETTLE_MESSAGE_TYPE), queued per id exactly like results:
+ * a recycled id's settle belongs to the block whose handoff it settled, so
+ * replay consumes them FIFO off the block walk too.
+ */
+/**
+ * Guard for the persisted settle payload — the write site pins the shape at
+ * BashBackgroundSettleData, but transcripts are untrusted IO, so replay
+ * validates before consuming (details is forwarded as-is, mirroring the
+ * BashBackgroundSettleOutcome contract).
+ */
+function isBashBackgroundSettleData(data: unknown): data is BashBackgroundSettleData {
+	if (!data || typeof data !== "object") return false
+	const d = data as { toolCallId?: unknown; isError?: unknown; text?: unknown }
+	return typeof d.toolCallId === "string" && typeof d.isError === "boolean" && typeof d.text === "string"
+}
+
+function collectBashBackgroundSettles(entries: BranchEntry[]): Map<string, ReplayToolResult[]> {
+	const out = new Map<string, ReplayToolResult[]>()
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== BASH_BACKGROUND_SETTLE_MESSAGE_TYPE) continue
+		if (!isBashBackgroundSettleData(entry.data)) continue
+		const queued = out.get(entry.data.toolCallId) ?? []
+		queued.push({
+			content: entry.data.text.length > 0 ? [{ type: "text", text: entry.data.text }] : [],
+			isError: entry.data.isError,
+			details: entry.data.details,
+		})
+		out.set(entry.data.toolCallId, queued)
 	}
 	return out
 }
