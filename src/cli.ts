@@ -60,6 +60,7 @@ import { discoverEnvironmentModels, installEnvironmentModels } from "./environme
 import activityExtension from "./extensions/activity.js"
 import idleGcExtension from "./extensions/adaptive-gc.js"
 import agentsExtension from "./extensions/agents/index.js"
+import { WEB_TOOL_MANAGED_FACTORIES } from "./extensions/agents/manager/subagent-web-tools.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import { artifactRecorderExtension } from "./extensions/artifacts/recorder.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
@@ -183,8 +184,6 @@ import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import undecodableImageSanitizerExtension from "./extensions/undecodable-image-sanitizer.js"
-import webFetchExtension from "./extensions/web-fetch/index.js"
-import webSearchExtension from "./extensions/web-search/index.js"
 import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
 import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
 import {
@@ -1030,9 +1029,8 @@ async function cliMain(): Promise<void> {
 				surveysExtension(),
 				toolRenderingExtension,
 				toolGroupingExtension,
+				...enabledExtensionFactories(WEB_TOOL_MANAGED_FACTORIES),
 				...enabledExtensionFactories([
-					{ id: "tools.web_fetch", factory: webFetchExtension },
-					{ id: "tools.web_search", factory: webSearchExtension },
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
 					{ id: SIDE_CHAT_RESOURCE_ID, factory: sideChatExtension },
 				] satisfies ManagedExtensionFactory[]),

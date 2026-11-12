@@ -141,6 +141,16 @@ vi.mock("../../auto-model/index.js", () => ({
 	createAutoModelRoutingExtension: vi.fn(() => () => {}),
 }))
 
+// The runner spreads subagentWebToolFactories() into the child session's
+// extension list. Mock the module (not resources/store) so these tests stay
+// hermetic against the local machine's settings.json — default empty, with
+// one composition test opting into stub factories. Real registration and
+// resource gating are covered by real-session tests in
+// subagent-resource-loader.test.ts.
+vi.mock("./subagent-web-tools.js", () => ({
+	subagentWebToolFactories: vi.fn(() => []),
+}))
+
 import {
 	type AgentSession,
 	type BeforeProviderHeadersEvent,
@@ -163,9 +173,10 @@ import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
-import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
+import { getActiveSubagentToolNames, type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { formatRunResultText } from "./result-text.js"
+import { subagentWebToolFactories } from "./subagent-web-tools.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
 const mockGetConfig = vi.mocked(getConfig)
@@ -526,6 +537,27 @@ describe("runAgent — telemetry extension", () => {
 		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
 		expect(concreteFactories).not.toContain(autoRoutingExtension)
 		expect(autoFactories).toContain(autoRoutingExtension)
+	})
+
+	it("spreads the web tool factories into the child session's extension list", async () => {
+		const webFetchStub: InlineExtension = () => {}
+		const webSearchStub: InlineExtension = () => {}
+		vi.mocked(subagentWebToolFactories).mockReturnValueOnce([webFetchStub, webSearchStub])
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(ctorArg?.extensionFactories).toContain(webFetchStub)
+		expect(ctorArg?.extensionFactories).toContain(webSearchStub)
 	})
 
 	it("adds the dap extension when the persona requests debug tools", async () => {
@@ -1350,7 +1382,7 @@ describe("runAgent — profile tool access", () => {
 		])
 	})
 
-	it("omits requested tools that are absent from the subagent registry", async () => {
+	it("omits requested tools that are absent from the subagent registry and reports them as dropped", async () => {
 		mockGetToolNamesForType.mockReturnValue(["read", "grep", "missing_tool"])
 		const session = makeFakeSession({
 			activeToolNames: ["read", "web_search"],
@@ -1362,13 +1394,17 @@ describe("runAgent — profile tool access", () => {
 				ReturnType<typeof createAgentSession>
 			>["extensionsResult"],
 		})
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
-		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "web_search"])
 		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.activeToolNames).toEqual(["read", "web_search"])
+		expect(result.droppedToolNames).toEqual(["grep", "missing_tool"])
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("missing_tool"))
+		warnSpy.mockRestore()
 	})
 
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {
@@ -1427,6 +1463,143 @@ describe("runAgent — profile tool access", () => {
 		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("grep")
 		expect(calledWith).toContain("web_search")
+	})
+})
+
+describe("getActiveSubagentToolNames — tool filter rules", () => {
+	const allRegistered =
+		(names: string[]) =>
+		(name: string): boolean =>
+			names.includes(name)
+
+	it("keeps requested builtins and retained registered extension tools; drops unrequested builtins and orchestrator tools", () => {
+		const active = getActiveSubagentToolNames(
+			["read", "grep"],
+			["read", "edit", "web_search", "Agent"],
+			true,
+			allRegistered(["read", "grep", "edit", "web_search", "Agent"]),
+		)
+
+		expect(active).toEqual(["read", "grep", "web_search"])
+	})
+
+	it("reports requested tools that are absent from the subagent registry, in request order", () => {
+		const dropped: string[] = []
+		const active = getActiveSubagentToolNames(
+			["read", "web_search", "missing_tool"],
+			["read"],
+			true,
+			allRegistered(["read"]),
+			undefined,
+			(names) => dropped.push(...names),
+		)
+
+		expect(active).toEqual(["read"])
+		expect(dropped).toEqual(["web_search", "missing_tool"])
+	})
+
+	it("does not report tools nobody requested that happen to be unregistered", () => {
+		const dropped: string[] = []
+		const active = getActiveSubagentToolNames(
+			["read"],
+			["read", "ghost_tool"],
+			true,
+			allRegistered(["read", "ghost_tool"].filter((n) => n !== "ghost_tool")),
+			undefined,
+			(names) => dropped.push(...names),
+		)
+
+		expect(active).toEqual(["read"])
+		expect(dropped).toEqual([])
+	})
+
+	it("does not report disallowed tools — disallowed is a choice, not a missing registration", () => {
+		const dropped: string[] = []
+		const active = getActiveSubagentToolNames(
+			["read", "web_fetch"],
+			["read"],
+			true,
+			allRegistered(["read"]),
+			new Set(["web_fetch"]),
+			(names) => dropped.push(...names),
+		)
+
+		expect(active).toEqual(["read"])
+		expect(dropped).toEqual([])
+	})
+})
+
+describe("runAgent — extensions disabled with non-builtin tools", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Hermetic", description: "no extensions", source: "project" }),
+		)
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("fails fast with an actionable error instead of silently dropping the tools", async () => {
+		mockGetToolNamesForType.mockReturnValue(["read", "web_search"])
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow(/disables extensions/)
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("spawns normally with the tools allowlist when the list is builtin-only", async () => {
+		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(expect.objectContaining({ tools: ["read", "grep"] }))
+	})
+
+	it("leaves built-in personas (no source) untouched even with non-builtin tools", async () => {
+		// The hard-error check guards custom agents only: the built-in Debugger
+		// persona declares debug_/step_ tools with extensions disabled and must
+		// keep spawning exactly as before, regardless of resource state.
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Debugger", description: "debug persona" }))
+		mockGetToolNamesForType.mockReturnValue(["read", "grep", "debug_state_at"])
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep", "debug_state_at"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Debugger", "inspect runtime state", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(
+			expect.objectContaining({ tools: ["read", "grep", "debug_state_at"] }),
+		)
 	})
 })
 
@@ -2517,24 +2690,38 @@ describe("resumeAgent — inactivity steering", () => {
 
 describe("formatRunResultText", () => {
 	it("appends the auto-loaded skills note to the response", () => {
-		expect(formatRunResultText("done", undefined, [{ name: "pdf", matched: "ext:.pdf" }])).toBe(
-			"done\n\nSkills auto-loaded from task brief: pdf (ext:.pdf)",
-		)
+		expect(
+			formatRunResultText({ responseText: "done", autoLoadedSkills: [{ name: "pdf", matched: "ext:.pdf" }] }),
+		).toBe("done\n\nSkills auto-loaded from task brief: pdf (ext:.pdf)")
 	})
 
 	it("keeps the plan pointer first and joins multiple skills", () => {
 		expect(
-			formatRunResultText("done", "/plans/x.md", [
-				{ name: "pdf", matched: "ext:.pdf" },
-				{ name: "docx", matched: "kw:word doc" },
-			]),
+			formatRunResultText({
+				responseText: "done",
+				planPath: "/plans/x.md",
+				autoLoadedSkills: [
+					{ name: "pdf", matched: "ext:.pdf" },
+					{ name: "docx", matched: "kw:word doc" },
+				],
+			}),
 		).toBe(
 			"done\n\nPlan saved to: /plans/x.md\n\nSkills auto-loaded from task brief: pdf (ext:.pdf), docx (kw:word doc)",
 		)
 	})
 
 	it("leaves plain responses untouched when nothing was auto-loaded", () => {
-		expect(formatRunResultText("plain", undefined, undefined)).toBe("plain")
-		expect(formatRunResultText("plain", "/plans/x.md", [])).toBe("plain\n\nPlan saved to: /plans/x.md")
+		expect(formatRunResultText({ responseText: "plain" })).toBe("plain")
+		expect(formatRunResultText({ responseText: "plain", planPath: "/plans/x.md" })).toBe(
+			"plain\n\nPlan saved to: /plans/x.md",
+		)
+	})
+
+	it("appends a warning when requested tools were dropped as unregistered", () => {
+		expect(formatRunResultText({ responseText: "done", droppedToolNames: ["web_search"] })).toBe(
+			"done\n\nWarning: requested tool(s) were dropped because they are not registered in the subagent session: web_search. Check the agent's tools list or enable the extension that provides them.",
+		)
+		expect(formatRunResultText({ responseText: "done" })).toBe("done")
+		expect(formatRunResultText({ responseText: "done", droppedToolNames: [] })).toBe("done")
 	})
 })

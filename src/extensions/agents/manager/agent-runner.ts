@@ -59,6 +59,7 @@ import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension }
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { SubagentResourceLoader } from "./subagent-resource-loader.js"
+import { subagentWebToolFactories } from "./subagent-web-tools.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
 /**
@@ -72,6 +73,11 @@ import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type Lifet
  */
 const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
 
+/** The native skill-loading tool name, appendable to a subagent's tool list
+ *  when its skills config entails it. Not part of BUILTIN_TOOL_NAMES (which
+ *  mirrors upstream's builtin set). */
+const SKILL_TOOL_NAME = "Skill"
+
 function isExcludedSubagentToolName(name: string, disallowedSet?: Set<string>): boolean {
 	return EXCLUDED_TOOL_NAMES.includes(name) || disallowedSet?.has(name) === true
 }
@@ -80,16 +86,33 @@ function getPromptToolNames(toolNames: string[], disallowedSet?: Set<string>): s
 	return toolNames.filter((name) => !isExcludedSubagentToolName(name, disallowedSet))
 }
 
-function getActiveSubagentToolNames(
+/**
+ * Resolve a subagent's final active tool set from its persona's requested
+ * names plus the child session's registered extension tools.
+ *
+ * `onDroppedUnregistered` (optional) receives the requested tool names that
+ * have no registration in the child session — e.g. a persona or custom-agent
+ * `tools:` list naming a tool no extension registered. Disallowed names are
+ * NOT reported: being denied is a deliberate choice, not a missing tool.
+ */
+export function getActiveSubagentToolNames(
 	requestedToolNames: string[],
 	currentActiveToolNames: string[],
 	extensions: true | string[],
 	isRegisteredToolName: (name: string) => boolean,
 	disallowedSet?: Set<string>,
+	onDroppedUnregistered?: (names: string[]) => void,
 ): string[] {
 	const requestedToolNameSet = new Set(requestedToolNames)
 	const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
 	const candidates = new Set([...requestedToolNames, ...currentActiveToolNames])
+
+	if (onDroppedUnregistered) {
+		const dropped = requestedToolNames.filter(
+			(name) => !isExcludedSubagentToolName(name, disallowedSet) && !isRegisteredToolName(name),
+		)
+		if (dropped.length > 0) onDroppedUnregistered(dropped)
+	}
 
 	return [...candidates].filter((name) => {
 		if (isExcludedSubagentToolName(name, disallowedSet)) return false
@@ -268,6 +291,10 @@ export interface RunResult {
 	/** Skills auto-loaded into the system prompt because the task brief
 	 *  matched their declared triggers. */
 	autoLoadedSkills?: SkillTriggerHit[]
+	/** Requested tool names dropped because the subagent session had no
+	 *  registration for them (e.g. a `tools:` list naming a tool no extension
+	 *  registered). Surfaced as a warning on the Agent tool's result text. */
+	droppedToolNames?: string[]
 }
 
 function collectResponseText(session: AgentSession) {
@@ -436,8 +463,8 @@ Use the Skill tool to load a skill's full instructions when its description matc
 ${skillLines}`
 			// Add the Skill tool to the available tools (unless disallowed by persona config)
 			const disallowed = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
-			if (!toolNames.includes("Skill") && !disallowed?.has("Skill")) {
-				toolNames = [...toolNames, "Skill"]
+			if (!toolNames.includes(SKILL_TOOL_NAME) && !disallowed?.has(SKILL_TOOL_NAME)) {
+				toolNames = [...toolNames, SKILL_TOOL_NAME]
 			}
 		}
 	}
@@ -538,6 +565,7 @@ ${skillLines}`
 		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
+		...subagentWebToolFactories(),
 	]
 	if (shouldRegisterDapForTools(toolNames)) {
 		extensionFactories.push(dapExtension)
@@ -585,6 +613,27 @@ ${skillLines}`
 		modelRuntime,
 	}
 	if (effectiveExtensions === false) {
+		if (agentConfig?.source != null) {
+			// Fail fast for CUSTOM agents (source set by the user-agent loader):
+			// with extensions disabled, declared tools are honored only if the
+			// child session can actually register them — the upstream builtin
+			// set, the native Skill tool, or the DAP debugger's inline
+			// registration. Web tools intentionally do NOT qualify: an agent
+			// that wants web tools must enable extensions — fail fast with
+			// guidance instead of silently honoring or silently dropping.
+			// Built-in personas (no `source`) are untouched by this check.
+			const dapRegistrable = shouldRegisterDapForTools(toolNames)
+			const unregistrableTools = toolNames.filter((name) => {
+				if (BUILTIN_TOOL_NAMES.includes(name) || name === SKILL_TOOL_NAME) return false
+				if (dapRegistrable && isDapToolName(name)) return false
+				return true
+			})
+			if (unregistrableTools.length > 0) {
+				throw new Error(
+					`Agent "${type}" declares non-builtin tool(s) ${unregistrableTools.map((n) => `"${n}"`).join(", ")} but disables extensions — enable extensions for this agent, or remove these names from its 'tools:' list.`,
+				)
+			}
+		}
 		sessionOpts.tools = toolNames
 	}
 	if (thinkingLevel) {
@@ -602,6 +651,11 @@ ${skillLines}`
 		},
 	})
 
+	// Requested-but-unregistered tool names (e.g. a `tools:` list naming a tool
+	// no extension registered in the child session) — filled during tool
+	// resolution below, surfaced as a warning on the run result.
+	let droppedToolNames: string[] | undefined
+
 	if (effectiveExtensions !== false) {
 		const activeTools = getActiveSubagentToolNames(
 			toolNames,
@@ -609,6 +663,12 @@ ${skillLines}`
 			effectiveExtensions,
 			(name) => session.getToolDefinition(name) !== undefined,
 			disallowedSet,
+			(names) => {
+				droppedToolNames = names
+				console.warn(
+					`[agent-runner] agent "${type}" requested tool(s) not registered in its session; dropping: ${names.join(", ")}`,
+				)
+			},
 		)
 		// upstream pi: only ACTIVE tools are callable (registered-but-inactive now
 		// fails tool lookup at execution time). The report tool registers for a
@@ -891,6 +951,7 @@ ${skillLines}`
 		maxTurns: effectiveMaxTurns,
 		planPath,
 		autoLoadedSkills,
+		droppedToolNames,
 	}
 }
 
@@ -1128,6 +1189,10 @@ export function getAgentConversation(session: AgentSession): string {
 // The extension registers its tools on the child's session_start, and the SDK
 // activates them because their names are in the session's tool allowlist.
 // Honors the extensions.dap /resources toggle: off means off for subagents too.
+export function isDapToolName(name: string): boolean {
+	return name.startsWith("debug_") || name.startsWith("step_")
+}
+
 export function shouldRegisterDapForTools(toolNames: readonly string[]): boolean {
-	return isResourceEnabled("extensions.dap") && toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))
+	return isResourceEnabled("extensions.dap") && toolNames.some(isDapToolName)
 }
