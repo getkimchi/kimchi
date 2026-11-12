@@ -82,14 +82,12 @@ import {
 	UNKNOWN_CAPTURE_SESSION_ID,
 	TRANSIENT_JOB_MAX_ATTEMPTS,
 } from "./config.js"
-import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
+import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, systemoneEndpoint } from "./decision-gate.js"
 import { factClassesEnabled, parseBooleanFlag } from "./flags.js"
 import type { DecisionGateKind } from "./gates.js"
 import {
 	buildValuationState,
 	parseDecisionGateFlag,
-	triageQuestions,
-	triageVerdict,
 	VALUATION_DISCARD_MIN_P,
 	valuationContextEnabled,
 	valuationQuestion,
@@ -706,7 +704,7 @@ async function extractUserFacts(
 
 export const ASSISTANT_FACTS_SYSTEM_PROMPT = `You maintain the user's memory store, extracting durable knowledge carried by ASSISTANT messages.
 
-Messages marked "assistant" were produced by an AI agent. Lines prefixed "[internal reasoning]:" are that agent's own chain-of-thought from the same turn — treat them with the same class rules, capturing only durable, evidence-backed conclusions; never the deliberation trail itself. Capture assistant content in these three classes, each as a short self-contained sentence:
+Messages marked "assistant" were produced by an AI agent. A note naming the conversation's own tooling (a skill's usage rules, CLI flags, prompt instructions, file paths of this session) is harness framing, never content — class (2)/(3) govern ONLY the operated world outside the conversation. Lines prefixed "[internal reasoning]:" are that agent's own chain-of-thought from the same turn. The deliberation trail itself is never content — but a conclusion the agent CONFIRMS by later observation, or that summarizes repeated observations, IS class (2)/(3): distil it into one operative sentence anchored to the confirming observation. e.g. reasoning that says "down didn't move me three presses running; last row of the map is a hard wall" yields "the room's bottom row is a hard wall boundary — three down-presses produced no movement at step 20-22". A corrected earlier belief counts too: "mat is actually at bottom-left, not bottom-right". Capture assistant content in these three classes, each as a short self-contained sentence:
 (1) ENGAGED CONTENT — an answer or fact the USER actively engaged with: the user asked a question it directly answers, or accepted, thanked, acted on, or referred back to it (schedules, recipes, recommendations, numbers). Write it with natural attribution to the conversation (e.g. "the user's classic omelette recipe uses 3 eggs, per the assistant's answer the user accepted").
 (2) NOTES TO FUTURE SELF — a tactical note, lesson, identified failure pattern, or verified rule of the environment being operated: this IS the memory content — distill each into one self-contained sentence in the operative wording used ("retrying with backoff recovered the upload — the direct call stalls past 60s").
 (3) EVIDENCE-GROUNDED CONCLUSIONS — a rule or mechanic verified by an observed outcome IN the conversation (including narrative operation logs describing an action and its observed result), anchored to its evidence ("the endpoint rejects payloads above 8KB — five oversized salts errored while the batched 4KB ones passed").
@@ -1568,19 +1566,6 @@ export interface JobPlan {
 	transientWindowCount: number
 }
 
-/**
- * Whether a window carries tool-work evidence: [tool] attempt records can
- * only appear in extraction transcripts under KIMCHI_MEMORY_CAPTURE_TOOL_TURNS,
- * so a single flag-check on the content marker suffices (flag OFF → no such
- * records anywhere → bit-identical behavior for both consumers).
- */
-export function windowHasToolEvidence(window: CaptureMessage[]): boolean {
-	return (
-		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS === "1" &&
-		window.some((m) => m.role === "assistant" && m.content.startsWith("[tool] "))
-	)
-}
-
 /** One extraction unit for phase B: a window with a pointer back to its plan. */
 interface ExtractionTask {
 	plan: JobPlan
@@ -1592,9 +1577,6 @@ interface ExtractionTask {
 /** Per-window phase-B outcome — the poison/transient split drives the
  * inline retry round (transient only) and cross-drain quarantine. */
 type ExtractionOutcome = { ok: true; facts: TaggedFacts } | { ok: false; kind: "poison" | "transient" }
-
-/** Shared empty result — consumers only spread the arrays, so reuse is safe. */
-const EMPTY_TAGGED: TaggedFacts = { personal: [], project: [] }
 
 /**
  * Process every pending capture job, pipelined in three phases (see the
@@ -1757,72 +1739,16 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		}
 	}
 
-	// Triage gate: five per-window d3 questions (four gating content classes +
-	// one trace-only signal). A window below the durable bar on EVERY gate class
-	// skips extraction; its outcome is ok/empty so the claim phase hash-marks
-	// it like an extracted-empty window — a triaged-out window must never
-	// re-enter a later drain. Per-window gate failure degrades to extraction
-	// (fail-open). The multi-class split (2026-11-12) replaced the single
-	// has_durable_fact question, which crushed evidence-grounded assistant
-	// conclusions at p≈0.05–0.24.
-	let results: ExtractionOutcome[]
-	let triagedOut = 0
-	if (decision.enabled.has("triage") && decision.gate) {
-		const gate = decision.gate
-		const skips = await mapWithConcurrency(tasks, drainConcurrency, async (task) => {
-			// Tool-evidence windows bypass the d3 triage: the gate is a skip
-			// OPTIMIZATION calibrated on conversational text — A/B on the
-			// sonnet runs shows it scores tool records ([tool] action +
-			// receipt pairs) p_durable ≈ 0.01–0.2 regardless of question
-			// framing, while their content (schema dumps, unit forensics)
-			// is exactly class-(d) task knowledge. [tool] records exist only
-			// under KIMCHI_MEMORY_CAPTURE_TOOL_TURNS; OFF → bit-identical.
-			if (windowHasToolEvidence(task.window)) return false
-			try {
-				const job = basename(task.plan.jobFile)
-				const gateTraced = trace ? withGateApiHook(gate, "triage", { job, window: task.index }, trace) : gate
-				const response = await decide(gateTraced, renderWindow(task.window), triageQuestions(), "triage")
-				const verdict = triageVerdict(response.answers)
-				if (verdict.skip) {
-					trace?.emit({
-						type: "phase",
-						phase: "triage-skip",
-						job,
-						window: task.index,
-						probability: verdict.maxP,
-						topClass: verdict.topClass,
-						probabilities: verdict.probabilities,
-					})
-				}
-				return verdict.skip
-			} catch (err) {
-				console.error(
-					"[memory-capture] triage gate failed, extracting window (fail-open):",
-					err instanceof Error ? err.message : err,
-				)
-				return false
-			}
-		})
-		const runTasks: ExtractionTask[] = []
-		results = new Array(tasks.length)
-		for (let i = 0; i < tasks.length; i++) {
-			if (skips[i]) {
-				results[i] = { ok: true, facts: EMPTY_TAGGED }
-				triagedOut += 1
-			} else {
-				runTasks.push(tasks[i] as ExtractionTask)
-			}
-		}
-		const runResults = await mapWithConcurrency(runTasks, drainConcurrency, extractTask)
-		for (let i = 0, k = 0; i < tasks.length; i++) {
-			if (!skips[i]) {
-				results[i] = runResults[k] as ExtractionOutcome
-				k += 1
-			}
-		}
-	} else {
-		results = await mapWithConcurrency(tasks, drainConcurrency, extractTask)
-	}
+	// No pre-extraction gate: every window extracts. The d3 triage split
+	// (2026-11-12, removable 2026-11-12) was retired the same day — with the
+	// reasoning lane, essentially every window carries tool/reasoning content
+	// the triage bypass already exempted, and the gate's only effect on the
+	// rest was to waste a decision call judging classes it could not score.
+	// Post-extraction valuation remains the discard control. Windows that
+	// extract to [] are hash-marked in the claim phase like any empty window,
+	// so an extracted-empty window never re-enters a later drain.
+	const results = await mapWithConcurrency(tasks, drainConcurrency, extractTask)
+	const triagedOut = 0
 	// One retry round for transient failures — the pre-pipeline drain relied
 	// on a later superset job re-carrying the messages; the claim pass now
 	// dedupes those, so the retry lives here instead. Poisoned windows sit
@@ -1978,9 +1904,6 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 				})
 			}
 		}
-	}
-	if (triagedOut > 0) {
-		console.info(`[memory-capture] ${triagedOut} window(s) skipped by triage (judged non-durable)`)
 	}
 	if (skippedNonDurable > 0 || skippedByValuation > 0 || redacted > 0 || skippedOversized > 0) {
 		console.info(

@@ -39,7 +39,11 @@ export const DIGEST_MAX_TOKENS = 2_000
  * whole: it is coherent context and within the gateway's comfortable
  * range. See docs/memory-extension.md.
  */
-export const MEMORY_CAPTURE_WINDOW_CHARS = 2_000
+// Per-window character budget for extraction. 8k chars (~2k tokens) is
+// nothing against extraction-model context windows and lets one call see a
+// complete episode arc — hypothesis, attempts, outcome, conclusion —
+// instead of fragments cut before a conclusion was visible.
+export const MEMORY_CAPTURE_WINDOW_CHARS = 8_000
 
 /**
  * Length cap for a single stored fact, enforced before the store add —
