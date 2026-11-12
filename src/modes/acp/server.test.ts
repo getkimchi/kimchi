@@ -44,11 +44,11 @@ import {
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
-import { setSessionState } from "../../extensions/bash-background/session-registry.js"
 import {
 	resetAcpBackgroundRunsOptedInForTest,
 	setAcpBackgroundRunsOptedIn,
 } from "../../extensions/bash-background/session-policy.js"
+import { setSessionState } from "../../extensions/bash-background/session-registry.js"
 import feedbackExtension from "../../extensions/feedback/index.js"
 import {
 	isProjectScopeAllowed,
