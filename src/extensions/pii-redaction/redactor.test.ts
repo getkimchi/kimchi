@@ -390,6 +390,15 @@ describe("redactText — custom secret patterns", () => {
 		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
 	})
 
+	it("relates realistic-length sk-ant- keys to ANTHROPIC_KEY even when the engine claims them (correctness-001)", async () => {
+		const key = "sk-ant-api03-" + "a1B2c3D4e5F6g7H8".repeat(6)
+		const text = `claude key: ${key}`
+		const result = await redactText(text)
+		expect(result).not.toContain(key)
+		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
+		expect(result).not.toContain("[REDACTED-OPENAI_KEY]")
+	})
+
 	it("redacts standalone GitHub tokens whole (ghp_ numeric tails, mixed PATs)", async () => {
 		const result = await redactText(`Token ${fx.ghpToken} leaked`)
 		expectRedacted(result, fx.ghpToken, "GITHUB_TOKEN")
@@ -1250,6 +1259,21 @@ describe("base64-shadow suppression", () => {
 		const result = await redactText(`ACCESS_KEY_ID=${longKey}`)
 		expect(result).not.toContain(longKey)
 		expect(result).toContain("[REDACTED-ALIBABA_CLOUD_KEY]")
+	})
+
+	it("shadow-entity keys in prose, URL paths, and marker-laden strings stay redacted", async () => {
+		const gcp = "AIza" + "SyD4kN8pQr2tW5xZ9bC1eF3hJ6mL0nP4qR7sT5u"
+		const prose = await redactText(`the gcp key ${gcp} leaked`)
+		expect(prose).not.toContain(gcp)
+		expect(prose).toContain("[REDACTED-GCP_API_KEY]")
+		// A URL path separator is not base64 evidence (correctness-003).
+		const url = "https://example.com/v1/" + gcp + "/resource"
+		const apiCall = await redactText(`curl ${url}`)
+		expect(apiCall).not.toContain(gcp)
+		// Marker text breaks base64 runs: fixture strings keep redacting.
+		const laden = `[REDACTED-GCP_API_KEY]iVBORw0KGgo${gcp}SUQmCC==`
+		const twice = await redactText(laden)
+		expect(twice).not.toContain(gcp)
 	})
 })
 
