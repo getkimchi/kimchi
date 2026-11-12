@@ -65,6 +65,7 @@ import {
 	DIGEST_SCORE_THRESHOLD,
 	MEMORY_PRE_REQUEST_TIMEOUT_MS,
 	MEMORY_SEARCH_TIMEOUT_MS,
+	MEMORY_STATE_FINGERPRINT_CAP,
 	MEMORY_USER_ID,
 	stepRecallInterval,
 	TURN_RECALL_QUERY_MAX_CHARS,
@@ -93,7 +94,8 @@ import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 import { migrateAgentMemory } from "./migrate-agent-memory.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { submitTimingMark } from "../submit-timing.js"
-import { buildLoopRecallQuery, runRecall } from "./recall.js"
+import { buildLoopRecallQuery, runRecall, stateFingerprint } from "./recall.js"
+>>>>>>> 3635035d1 (feat(memory): state-revisit recall trigger via state fingerprints)
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
 import { authoredEnabled, createMemorySaveTool, createMemorySearchTool } from "./tools.js"
@@ -274,6 +276,12 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		let loopEvalPending = false
 		let loopRecallGeneration = 0
 		let lastLoopEnvTails: string[] = []
+		// State-revisit detector: fingerprints of received tool-result state,
+		// capped for session lifetime; when a fingerprint repeats, one revisit
+		// evaluation is queued (at most once per repeated state).
+		let seenFingerprints = new Set<string>()
+		let revisitFired = new Set<string>()
+		let pendingRevisitTail: string | undefined
 		// Serializes mid-loop evaluations so a slow gate search can't stack.
 		let loopRecallChain: Promise<void> = Promise.resolve()
 		const resetLoopRecallState = (): void => {
@@ -285,6 +293,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// generation check handles what was queued.
 			loopRecallGeneration++
 			lastLoopEnvTails = []
+			seenFingerprints = new Set()
+			revisitFired = new Set()
+			pendingRevisitTail = undefined
 		}
 
 		/**
@@ -300,31 +311,58 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			loopStepCount++
 			if (toolResultText) {
 				lastLoopEnvTails = [...lastLoopEnvTails, toolResultText].slice(-2)
+				// State-revisit detection: a receipt whose fingerprint repeats
+				// queues at most one revisit evaluation.
+				const fp = stateFingerprint(toolResultText)
+				if (fp) {
+					if (seenFingerprints.has(fp)) {
+						if (!revisitFired.has(fp)) {
+							revisitFired.add(fp)
+							pendingRevisitTail = toolResultText
+						}
+					} else if (seenFingerprints.size < MEMORY_STATE_FINGERPRINT_CAP) {
+						seenFingerprints.add(fp)
+					}
+				}
 			}
 			maybeScheduleLoopRecall(ctx)
 		}
 
 		/**
-		 * Enqueue one step-budget evaluation when a full window has passed
-		 * since the last consumption (an injection OR a completed evaluation).
-		 * Coalescing = at most one evaluation in flight; a window that fell
+		 * Enqueue one mid-loop evaluation. Two triggers share the chain:
+		 *   step-budget — when a full window passed since the last consumption
+		 *   state-revisit — when a repeated state fingerprint is pending
+		 *     (fires at once; revisit is the decision-relevant moment)
+		 * Coalescing = at most one evaluation in flight; a trigger that fell
 		 * eligible DURING an in-flight evaluation is picked up by the
-		 * re-check after completion — tool results can land far faster than
-		 * a d3 gate round-trip.
+		 * re-check after completion — results can land far faster than a
+		 * d3 gate round-trip.
 		 */
 		function maybeScheduleLoopRecall(ctx: ExtensionContext): void {
 			if (loopEvalPending || recallFailed) return
 			const lastConsumption = Math.max(lastRecallAtStep, lastRecallEvalAtStep)
-			if (loopStepCount - lastConsumption < stepRecallInterval(process.env)) return
+			const stepDue = loopStepCount - lastConsumption >= stepRecallInterval(process.env)
+			const revisitTail = pendingRevisitTail
+			let trigger: "step-budget" | "state-revisit"
+			if (revisitTail !== undefined) {
+				trigger = "state-revisit"
+			} else if (stepDue) {
+				trigger = "step-budget"
+			} else {
+				return
+			}
+			pendingRevisitTail = undefined
 			loopEvalPending = true
 			const generation = loopRecallGeneration
-			const scheduledAt = loopStepCount
-			lastRecallEvalAtStep = scheduledAt
+			lastRecallEvalAtStep = loopStepCount
 			loopRecallChain = loopRecallChain
 				.then(async () => {
 					if (generation !== loopRecallGeneration) return
 					if (recallFailed || !memoryActive()) return
-					const query = buildLoopRecallQuery(lastAssistantText(ctx), lastLoopEnvTails)
+					const query = buildLoopRecallQuery(
+						lastAssistantText(ctx),
+						revisitTail !== undefined ? [revisitTail] : lastLoopEnvTails,
+					)
 					if (!query) return
 					const outcome = await runRecall({
 						trigger: "step-budget",
@@ -343,10 +381,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							createRecallRecorder()?.emit({ type: "recall", kind: "digest-progressive", query, ...partial }),
 					})
 					if (outcome === "injected") {
-						// Anchor on the trigger boundary, not completion time —
-						// steps that kept arriving while the gate ran must not
-						// quietly extend the suppression window past it.
-						lastRecallAtStep = scheduledAt
+						// Anchor on the scheduling boundary, not completion time —
+						// steps arriving while the gate ran must not quietly
+						// stretch the suppression window past the trigger.
+						lastRecallAtStep = lastRecallEvalAtStep
 					} else if (outcome === "failed") {
 						recallFailed = true
 						logDegrade(

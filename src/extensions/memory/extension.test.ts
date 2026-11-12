@@ -1654,4 +1654,39 @@ describe("mid-loop recall (step-budget trigger)", () => {
 		await flushChain()
 		expect(sendMessage.mock.calls.length).toBe(2)
 	})
+
+	it("state-revisit: a repeated state fires one revisit evaluation exactly once", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		const state = (room: string, step: number) => `step ${step}\nroom: ${room}\ninventory: key`
+		fireToolResults(tri, 1, "")
+		tri(toolResultEvent(state("grey hall", 1)) as never, fakeCtx)
+		tri(toolResultEvent(state("white cell", 2)) as never, fakeCtx)
+		tri(toolResultEvent(state("grey hall", 3)) as never, fakeCtx) // revisit
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		// A third pass through the same room fires nothing — once per state.
+		tri(toolResultEvent(state("grey hall", 4)) as never, fakeCtx)
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+	})
+
+	it("state-revisit: strictly-unique states fire nothing", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		fireToolResults(tri, 1, "")
+		tri(toolResultEvent("room: alpha\ninventory: key") as never, fakeCtx)
+		tri(toolResultEvent("room: beta\ninventory: key") as never, fakeCtx)
+		tri(toolResultEvent("room: gamma\ninventory: key") as never, fakeCtx)
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+	})
 })

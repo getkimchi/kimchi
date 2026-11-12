@@ -7,6 +7,7 @@
  * this module is pure orchestration over injected callbacks and is unit
  * -tested with mock searchers/decisions.
  */
+import { createHash } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { markHarnessSteer } from "../steer-marker.js"
 import { MEMORY_STEP_ENV_TAIL_CHARS, MEMORY_STEP_REASONING_HEAD_CHARS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
@@ -124,4 +125,27 @@ export function buildLoopRecallQuery(reasoningText: string, envTails: readonly s
 		.map((t) => t.slice(-MEMORY_STEP_ENV_TAIL_CHARS))
 	if (tails.length === 0) return head.slice(0, TURN_RECALL_QUERY_MAX_CHARS)
 	return `${head}\n${tails.join("\n")}`.slice(0, TURN_RECALL_QUERY_MAX_CHARS)
+}
+
+// Volatile counters: a counter keyword followed only by counter phrasing
+// then its number — "step 3", "attempt 2 of 4", "retries left: 1",
+// "remaining: 9". Anything beyond this narrow bridge (e.g. "arc step state
+// 60" — a path label, not a counter readout) keeps its digits, so state
+// lines with numbers in them never collide after stripping.
+const VOLATILE_COUNTER =
+	/(\b(?:steps?|attempts?|iterations?|ticks?|turns?|elapsed|remaining|countdown|retries|retry)\b)(?:\s*(?:#|no\.?|number|left|of)\s*|:)?\s*\d+/gi
+
+/** Stable fingerprint of a tool result's state text, or undefined for
+ * blank content. Domain-neutral: whitespace normalization plus
+ * volatile-counter stripping — precise on approximate text, deliberately
+ * cheap on missed revisits. */
+export function stateFingerprint(text: string): string | undefined {
+	const stable = text
+		.split("\n")
+		.map((line) => line.replace(VOLATILE_COUNTER, "$1#"))
+		.map((line) => line.replace(/[ \t]+/g, " ").trim())
+		.filter((line) => line.length > 0)
+		.join("\n")
+	if (!stable) return undefined
+	return createHash("sha256").update(stable).digest("hex").slice(0, 16)
 }

@@ -123,6 +123,9 @@ export const MEMORY_STEP_REASONING_HEAD_CHARS = 400
 /** Chars of each retained tool-result state tail kept for a mid-loop recall query. */
 export const MEMORY_STEP_ENV_TAIL_CHARS = 600
 
+/** Max distinct state fingerprints remembered per session for state-revisit detection. */
+export const MEMORY_STATE_FINGERPRINT_CAP = 512
+
 /** Tool steps between mid-loop recall evaluations; env override. */
 export function stepRecallInterval(env: NodeJS.ProcessEnv = process.env): number {
 	const raw = Number.parseInt(env.KIMCHI_MEMORY_STEP_RECALL_INTERVAL ?? "", 10)
