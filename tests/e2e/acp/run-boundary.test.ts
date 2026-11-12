@@ -93,9 +93,10 @@ it(
 it(
 	"prompt-owned turns emit no run-boundary notification",
 	async () => {
+		// The fixture's client opts into background runs by default (it
+		// mimics Studio); a prompt-owned turn must still emit no boundary.
 		const fixture = await startAcpFixture({
 			artifactName: "run-boundary-prompt-owned",
-			clientCapabilities: OPT_IN_CAPABILITIES,
 			responses: [{ stream: ["Plain answer. "] }],
 		})
 		try {

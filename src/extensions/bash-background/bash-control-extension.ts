@@ -595,12 +595,15 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 				// payload in the conversation (appended, no inference wake)
 				// instead of triggering a turn.
 				const triggerTurn = runTerminated === undefined
-				if (triggerTurn) {
+				if (triggerTurn && sessionId !== undefined) {
 					// Label the run this wake may start (v1 bridge for the v2
 					// Background Work RFD state transition). No-op when the batch
 					// continues an already-running turn: the ACP server consumes
 					// and discards the reason on that turn's next agent_start.
-					registerUnsolicitedRunReason(state.delivery.sessionId, "background-task-complete")
+					// The key MUST be the pi session id (the ACP server consumes by
+					// its own session id) — delivery.sessionId is a per-object
+					// correlation id, never a session identity.
+					registerUnsolicitedRunReason(sessionId, "background-task-complete")
 				}
 				const details: BashExitMessageDetails = {
 					deliveryId,
