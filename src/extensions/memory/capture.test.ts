@@ -380,11 +380,12 @@ describe("extractMessages (user + gated assistant)", () => {
 	})
 
 	it("captures openai-flavored thinking parts whose text lives under the thinking field", () => {
-		// kimi-k3 emits { type: "thinking", thinking: "...", thinkingSignature: "reasoning_content" }
+		// reasoning_content parts arrive as
+		// { type: "thinking", thinking: "...", thinkingSignature: "reasoning_content" }
 		// — field name `thinking`, not `text`, unlike anthropic-flavored parts.
-		const entry = msgEntry("assistant", [{ type: "thinking", thinking: "bulbasaur first — grass beats the early gym" }])
+		const entry = msgEntry("assistant", [{ type: "thinking", thinking: "one action per batch of ticks" }])
 		expect(extractMessages([entry])).toEqual([
-			{ role: "assistant", content: "[internal reasoning]: bulbasaur first — grass beats the early gym" },
+			{ role: "assistant", content: "[internal reasoning]: one action per batch of ticks" },
 		])
 	})
 })
