@@ -150,14 +150,17 @@ function snapshotElapsedSeconds(snapshot: ProcessDisplaySnapshot): number {
 	return Math.max(0, Math.floor((end - snapshot.startedAt) / 1000))
 }
 
-/**
- * _meta["kimchi.dev"] key carrying the registry-resolved background
- * processes behind a `bash_control` call (waits most of all).
- */
+/** Flat tool-call _meta key carrying the registry-resolved cohort behind a `bash_control` call (waits most of all). */
 export const BASH_CONTROL_WAIT_META_KEY = "bashControlWait"
 
 /** Transcript custom-entry type recording a completed wait's targets. */
 export const BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE = "bash-control-wait-targets"
+
+/** Data persisted under BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE — the cohort a completed bash_control resolved for its wait. No elapsedSeconds: a finished wait has no running clock. */
+export interface BashControlWaitTargetsData {
+	toolCallId: string
+	commands: BashControlBackgroundCommand[]
+}
 
 /**
  * Registry-resolved info behind a `bash_control` call, as a flat `_meta`

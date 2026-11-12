@@ -197,6 +197,7 @@ import {
 	BASH_CONTROL_WAIT_META_KEY,
 	BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE,
 	type BashControlBackgroundCommand,
+	type BashControlWaitTargetsData,
 	bashControlWaitMeta,
 	buildToolCall,
 	buildToolCallUpdate,
@@ -2551,10 +2552,8 @@ export class KimchiAcpAgent implements Agent {
 					try {
 						const waitInfo = resolveBashControlWaitInfo(stashed.args as Record<string, unknown>, registry)
 						if (waitInfo) {
-							entry.session.sessionManager.appendCustomEntry(BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE, {
-								toolCallId: event.toolCallId,
-								commands: waitInfo.commands,
-							})
+							const data: BashControlWaitTargetsData = { toolCallId: event.toolCallId, commands: waitInfo.commands }
+							entry.session.sessionManager.appendCustomEntry(BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE, data)
 						}
 					} catch (err) {
 						// Never fail an execution-end on a recording miss.
@@ -4196,17 +4195,24 @@ type ReplayToolResult = {
  * pi toolCallId like tool results: a recycled id's targets belong to the
  * wait block whose completion recorded them.
  */
-function collectBashControlWaitTargets(entries: unknown[]): Map<string, BashControlBackgroundCommand[][]> {
+function isBashControlWaitTargetsData(data: unknown): data is BashControlWaitTargetsData {
+	if (!data || typeof data !== "object") return false
+	const d = data as { toolCallId?: unknown; commands?: unknown }
+	return typeof d.toolCallId === "string" && Array.isArray(d.commands)
+}
+
+// SessionManagerEntry isn't re-exported by the pi package root, but the
+// branch entry type is exactly what getBranch returns — derived, zero cast.
+type BranchEntry = ReturnType<SessionManager["getBranch"]>[number]
+
+function collectBashControlWaitTargets(entries: BranchEntry[]): Map<string, BashControlBackgroundCommand[][]> {
 	const out = new Map<string, BashControlBackgroundCommand[][]>()
 	for (const entry of entries) {
-		if (!entry || typeof entry !== "object") continue
-		const e = entry as { type?: unknown; customType?: unknown; data?: unknown }
-		if (e.type !== "custom" || e.customType !== BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE) continue
-		const d = e.data as { toolCallId?: unknown; commands?: unknown } | undefined
-		if (typeof d?.toolCallId !== "string" || !Array.isArray(d.commands)) continue
-		const queued = out.get(d.toolCallId) ?? []
-		queued.push(d.commands as BashControlBackgroundCommand[])
-		out.set(d.toolCallId, queued)
+		if (entry.type !== "custom" || entry.customType !== BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE) continue
+		if (!isBashControlWaitTargetsData(entry.data)) continue
+		const queued = out.get(entry.data.toolCallId) ?? []
+		queued.push(entry.data.commands)
+		out.set(entry.data.toolCallId, queued)
 	}
 	return out
 }
