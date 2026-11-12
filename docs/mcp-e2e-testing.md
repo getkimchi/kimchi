@@ -139,3 +139,20 @@ An empty `mcp: {}` deliberately exercises production defaults only when the work
 Use a focused co-located unit or integration test for parsing, configuration normalization, or a protocol branch that does not need a user workflow. Use the fixture-backed TUI or ACP suite when the risk crosses process, transport, model, cache, OAuth, or content-forwarding boundaries.
 
 A real external MCP smoke test can be useful for optional manual or scheduled compatibility checking. The live authorize-URL check above runs on pull requests but is not a required merge check — it asserts deterministic OAuth error contracts only, so its signal is trustworthy when it fails, but a maintainer decides whether a provider outage warrants `skip-live-mcp`. Credentialed external tests — sign-in, consent, and token renewal against real accounts — are non-gating by design; external availability, credentials, and server changes make them unsuitable as the primary regression suite, and the local fixture remains the source of deterministic CI evidence.
+
+
+### Compiled-adapter integration tests
+
+A third lane exists for OAuth/auth-mechanics behavior that lives inside the
+vendored `pi-mcp-adapter` itself: a co-located vitest test (for example
+`src/extensions/mcp/oauth-rotation.test.ts`) that imports the adapter's
+compiled `dist/*.js` modules by relative path and drives them against the
+repository fixture server. Use it when the behavior under test cannot be
+reached through the public subpaths and cannot inject a second concurrent
+credential-cache holder through the TUI surface. This lane couples to the
+adapter's dist file layout — re-verify the imports at every adapter version
+bump — and note that the runtime itself loads the package's TypeScript
+sources (the `exports` map resolves `.` to `./index.ts`), so the dist files
+driven here are mirrors that the patch pipeline must keep behaviorally
+identical to the `.ts` sections. It seeds credentials through the adapter's
+real `startAuth`/`completeAuth` flow so the stored entry matches production.

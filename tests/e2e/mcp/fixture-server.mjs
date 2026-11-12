@@ -71,6 +71,24 @@ const oauthRefreshToken = "kimchi-e2e-oauth-refresh-token"
 const googleLike = scenario === "oauth-google-like"
 const googleLikeConsentedClients = new Set()
 const googleLikeIssuedRefreshTokens = new Set()
+// oauth-rotating-refresh: single-use rotating refresh tokens. Every accepted
+// refresh grant retires the presented token and mints a new one; presenting a
+// retired token is rejected with the invalid_grant description the production
+// server sends ("Unknown or invalid refresh token"), which reproduces the
+// cross-process refresh race two sessions sharing one stored token can hit.
+const rotatingRefreshInitial = oauthRefreshToken
+const rotatingRefreshRetired = new Set()
+let rotatingRefreshCurrent = rotatingRefreshInitial
+let rotatingRefreshGrantCount = 0
+// One mint site for rotated refresh tokens so the retired-set bookkeeping
+// cannot drift between mint paths.
+function mintRefreshToken() {
+	return `kimchi-e2e-rt-${randomUUID()}`
+}
+// Diagnosis-only fingerprint: deterministic, cannot recover the token.
+function tokenFingerprint(token) {
+	return token === undefined ? undefined : createHash("sha256").update(token).digest("hex").slice(0, 8)
+}
 const fixtureBehavior = process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR
 	? JSON.parse(process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR)
 	: {}
@@ -706,6 +724,7 @@ async function runHttpFixture() {
 					const expiresIn =
 						scenario === "oauth-expiring" ||
 						scenario === "oauth-split-issuer-flaky-prm" ||
+						scenario === "oauth-rotating-refresh" ||
 						(scenario === "oauth-refresh-revoked" && authorizationCodeGrants === 0) ||
 						googleLike
 							? 1
@@ -714,8 +733,13 @@ async function runHttpFixture() {
 					oauthManualRevoked = false
 					authorizationCodes.delete(code)
 					let refreshTokenValue = oauthRefreshToken
+					if (scenario === "oauth-rotating-refresh") {
+						rotatingRefreshRetired.add(rotatingRefreshCurrent)
+						rotatingRefreshCurrent = mintRefreshToken()
+						refreshTokenValue = rotatingRefreshCurrent
+					}
 					if (googleLike) {
-						refreshTokenValue = authorization.googleLikeGrantRefreshToken ? `kimchi-e2e-rt-${randomUUID()}` : undefined
+						refreshTokenValue = authorization.googleLikeGrantRefreshToken ? mintRefreshToken() : undefined
 						if (refreshTokenValue) googleLikeIssuedRefreshTokens.add(refreshTokenValue)
 					}
 					record("oauth_token_issued", {
@@ -743,6 +767,57 @@ async function runHttpFixture() {
 				if (grantType === "refresh_token" && scenario === "oauth-manual-revoke" && oauthManualRevoked) {
 					record("oauth_refresh_rejected", {})
 					sendJson(response, 400, { error: "invalid_grant" })
+					return
+				}
+				if (grantType === "refresh_token" && scenario === "oauth-rotating-refresh") {
+					// Deterministic rotation race: park the first refresh grant so a
+					// concurrent session's grant rotates the token while this one is
+					// in flight, and the parked grant is then rejected as stale.
+					// Deterministic rotation races: park chosen refresh grants so a
+					// concurrent session's grant rotates the token while a parked one is
+					// in flight, and the parked grant is then rejected as stale.
+					// delayFirstRefreshGrantMs parks grant #1; delayRefreshGrantsAt parks
+					// the listed 1-based grant indices (delayRefreshGrantMs overrides the
+					// delay length for those).
+					const delayMs = fixtureBehavior.delayRefreshGrantMs ?? fixtureBehavior.delayFirstRefreshGrantMs
+					if (delayMs !== undefined) {
+						rotatingRefreshGrantCount += 1
+						const parkThis = Array.isArray(fixtureBehavior.delayRefreshGrantsAt)
+							? fixtureBehavior.delayRefreshGrantsAt.includes(rotatingRefreshGrantCount)
+							: rotatingRefreshGrantCount === 1
+						if (parkThis) await delay(delayMs)
+					}
+					const presented = params.get("refresh_token")
+					if (presented === rotatingRefreshCurrent) {
+						rotatingRefreshRetired.add(presented)
+						rotatingRefreshCurrent = mintRefreshToken()
+						record("oauth_token_issued", {
+							grantType,
+							expiresIn: 1,
+							rotated: true,
+							minted: tokenFingerprint(rotatingRefreshCurrent),
+						})
+						oauthAccessTokenExpiresAt = Date.now() + 1_000
+						sendJson(response, 200, {
+							access_token: oauthAccessToken,
+							token_type: "Bearer",
+							expires_in: 1,
+							refresh_token: rotatingRefreshCurrent,
+							scope: "mcp:tools",
+						})
+						return
+					}
+					// Present only a fingerprint: the event log must never carry
+					// token values, but diagnosis needs to know WHICH token lost.
+					record("oauth_refresh_rejected", {
+						stale: rotatingRefreshRetired.has(presented),
+						presented: tokenFingerprint(presented),
+						current: tokenFingerprint(rotatingRefreshCurrent),
+					})
+					sendJson(response, 400, {
+						error: "invalid_grant",
+						error_description: "Unknown or invalid refresh token",
+					})
 					return
 				}
 				if (

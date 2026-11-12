@@ -11,7 +11,9 @@
  *
  * Provisioned through the environment:
  *   GOOGLE_MCP_TEST_CLIENT_ID       OAuth client id (public)
- *   GOOGLE_MCP_TEST_CLIENT_SECRET   OAuth client secret (secret)
+ *   GOOGLE_MCP_TEST_CLIENT_SECRET   OAuth client secret (secret; optional
+ *                                   for providers that register public
+ *                                   clients, e.g. via dynamic registration)
  *   GOOGLE_MCP_TEST_REFRESH_TOKEN   a refresh token issued to the test
  *                                   account (secret; see
  *                                   docs/mcp-live-testing-setup.md)
@@ -25,12 +27,18 @@
  *   GOOGLE_MCP_TEST_EXPECTED_SCOPE  optional scope the renewed credential
  *                                   must still carry
  *
- * The check runs two renewal cycles: the first proves the seeded (expired)
+ * The check runs three renewal cycles: the first proves the seeded (expired)
  * token renews silently and one real tool call returns data; the second
  * force-expires the refreshed token and proves the renewed credential itself
  * renews again — so a corrupted stored-credential rewrite cannot hide behind
- * the first refresh. The stored scope is asserted so a silently narrowed
- * grant fails here, not later when a tool stops working.
+ * the first refresh. The third runs two probes CONCURRENTLY against the one
+ * shared credential store — the cross-session contention the refresh-rotation
+ * fix covers: if the provider rotates refresh tokens per grant (the production
+ * failure mode), one grant loses the race and must recover from shared storage
+ * without a browser consent; if it does not rotate, the cycle still proves
+ * concurrent use of one stored credential cannot corrupt it. The stored scope
+ * is asserted so a silently narrowed grant fails here, not later when a tool
+ * stops working.
  *
  * The refresh token never appears in output: only booleans, tool counts,
  * and expiry timestamps are printed. The child's stderr is captured and,
@@ -143,7 +151,7 @@ async function runProbe({ homeDir, binDir, serverUrl, clientId, clientSecret, ca
 	child.stdout.on("data", (chunk) => stdout.push(String(chunk)))
 	child.stderr.on("data", (chunk) => stderr.push(String(chunk)))
 	child.stdin.end(
-		`${JSON.stringify({ name: SERVER_NAME, server: { url: serverUrl, auth: "oauth", oauth: { clientId, clientSecret } } })}\n`,
+		`${JSON.stringify({ name: SERVER_NAME, server: { url: serverUrl, auth: "oauth", oauth: { clientId, ...(clientSecret === undefined ? {} : { clientSecret }) } } })}\n`,
 	)
 	const exited = new Promise((resolveExit) => child.once("exit", (code, signal) => resolveExit({ code, signal })))
 	let timedOut = false
@@ -222,7 +230,6 @@ async function main() {
 	}
 	for (const [name, value] of [
 		["GOOGLE_MCP_TEST_CLIENT_ID", clientId],
-		["GOOGLE_MCP_TEST_CLIENT_SECRET", clientSecret],
 		["GOOGLE_MCP_TEST_REFRESH_TOKEN", refreshToken],
 	]) {
 		if (!value) {
@@ -240,9 +247,9 @@ async function main() {
 		const seeded = readStoredCredential(keyringDir)
 		console.log(`seeded credential: server=${serverUrl} expiresAt=${seeded.tokens.expiresAt} (in the past)`)
 
-		const call = { tool: callTool, args: callArgs }
+		const call = callTool ? { tool: callTool, args: callArgs } : null
 		const first = await runProbe({ homeDir, binDir, serverUrl, clientId, clientSecret, call })
-		const firstFailures = assessProbe("cycle-1", first, keyringDir, { expectedScope, callRequested: true })
+		const firstFailures = assessProbe("cycle-1", first, keyringDir, { expectedScope, callRequested: call !== null })
 		if (firstFailures.length > 0 && first.childOutput)
 			console.error(`child output (redacted):\n${redactChildOutput(first.childOutput)}`)
 		if (firstFailures.length > 0) {
@@ -257,7 +264,7 @@ async function main() {
 		console.log("forced the refreshed credential back into the past for the second renewal cycle")
 
 		const second = await runProbe({ homeDir, binDir, serverUrl, clientId, clientSecret, call })
-		const secondFailures = assessProbe("cycle-2", second, keyringDir, { expectedScope, callRequested: true })
+		const secondFailures = assessProbe("cycle-2", second, keyringDir, { expectedScope, callRequested: call !== null })
 		if (secondFailures.length > 0 && second.childOutput)
 			console.error(`child output (redacted):\n${redactChildOutput(second.childOutput)}`)
 		if (secondFailures.length > 0) {
@@ -265,8 +272,43 @@ async function main() {
 			return 1
 		}
 
+		if (!forceExpiry(keyringDir)) {
+			console.error("FAIL could not force the stored credential back into the past for the concurrent cycle")
+			return 1
+		}
+		console.log("forced the refreshed credential back into the past for the concurrent renewal cycle")
+		const beforeRace = readStoredCredential(keyringDir)
+		// Same homeDir (one shared credential store), separate browser-recording
+		// binDirs so each probe's consent-open count is its own.
+		const [raceA, raceB] = await Promise.all([
+			runProbe({ homeDir, binDir: join(homeDir, "browser-bin-race-a"), serverUrl, clientId, clientSecret, call }),
+			runProbe({ homeDir, binDir: join(homeDir, "browser-bin-race-b"), serverUrl, clientId, clientSecret, call }),
+		])
+		const raceAFailures = assessProbe("cycle-3a", raceA, keyringDir, { expectedScope, callRequested: call !== null })
+		const raceBFailures = assessProbe("cycle-3b", raceB, keyringDir, { expectedScope, callRequested: call !== null })
+		for (const [label, probe, failures] of [
+			["cycle-3a", raceA, raceAFailures],
+			["cycle-3b", raceB, raceBFailures],
+		]) {
+			if (failures.length > 0 && probe.childOutput)
+				console.error(`${label} child output (redacted):\n${redactChildOutput(probe.childOutput)}`)
+			for (const failure of failures) console.error(`FAIL ${label}: ${failure}`)
+		}
+		if (raceAFailures.length > 0 || raceBFailures.length > 0) return 1
+		const afterRace = readStoredCredential(keyringDir)
+		const rotated =
+			beforeRace?.tokens?.refreshToken !== undefined &&
+			beforeRace.tokens.refreshToken !== afterRace?.tokens?.refreshToken
 		console.log(
-			"PASS expired token renewed silently twice: tools listed, tool call returned data, no browser consent, expiry advanced, scope retained",
+			`concurrent cycle: provider ${
+				rotated
+					? "rotated the refresh token during the race — the full rotation-recovery path was exercised"
+					: "kept the refresh token across concurrent grants — contention path exercised, no per-grant rotation"
+			}`,
+		)
+
+		console.log(
+			"PASS expired token renewed silently twice and recovered from concurrent renewal: tools listed, tool call returned data, no browser consent, expiry advanced, scope retained",
 		)
 		return 0
 	} finally {
