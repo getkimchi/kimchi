@@ -1197,7 +1197,7 @@ export function getAgentConversation(session: AgentSession): string {
 // The extension registers its tools on the child's session_start, and the SDK
 // activates them because their names are in the session's tool allowlist.
 // Honors the extensions.dap /resources toggle: off means off for subagents too.
-export function isDapToolName(name: string): boolean {
+function isDapToolName(name: string): boolean {
 	return name.startsWith("debug_") || name.startsWith("step_")
 }
 
