@@ -66,6 +66,7 @@ import {
 	MEMORY_PRE_REQUEST_TIMEOUT_MS,
 	MEMORY_SEARCH_TIMEOUT_MS,
 	MEMORY_STATE_FINGERPRINT_CAP,
+	MEMORY_STEP_ENV_RECEIPT_KEEP_CHARS,
 	MEMORY_USER_ID,
 	stepRecallInterval,
 	TURN_RECALL_QUERY_MAX_CHARS,
@@ -310,7 +311,12 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			if (recallFailed) return
 			loopStepCount++
 			if (toolResultText) {
-				lastLoopEnvTails = [...lastLoopEnvTails, toolResultText].slice(-2)
+				lastLoopEnvTails = [
+					...lastLoopEnvTails,
+					// Bounded retention — fingerprints see the kept span; per-use
+					// query slicing happens in buildLoopRecallQuery.
+					toolResultText.slice(0, MEMORY_STEP_ENV_RECEIPT_KEEP_CHARS),
+				].slice(-2)
 				// State-revisit detection: a receipt whose fingerprint repeats
 				// queues at most one revisit evaluation.
 				const fp = stateFingerprint(toolResultText)
@@ -360,7 +366,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					if (generation !== loopRecallGeneration) return
 					if (recallFailed || !memoryActive()) return
 					const query = buildLoopRecallQuery(
-						lastAssistantText(ctx),
+						lastAssistantReasoning(ctx),
 						revisitTail !== undefined ? [revisitTail] : lastLoopEnvTails,
 					)
 					if (!query) return
@@ -1034,6 +1040,36 @@ function lastAssistantText(ctx: ExtensionContext): string {
 	} catch {
 		// Entries unavailable (e.g. in-memory session) — the prompt alone
 		// grounds this turn's gate.
+	}
+	return ""
+}
+
+/** Mid-loop reasoning head: text when present, else the thinking lane.
+ * Reasoning-lane agents deliberate in thinking blocks — an empty text
+ * lane collapses the loop query to bare env echoes (shot evidence from
+ * live traces: queries of just `pressed: down×6 | step 19`). Mirrors
+ * the capture lane's thinkingText: read `text ?? thinking` per block. */
+function lastAssistantReasoning(ctx: ExtensionContext): string {
+	const text = lastAssistantText(ctx)
+	if (text.trim()) return text
+	try {
+		const entries = ctx.sessionManager.getEntries()
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i]
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue
+			const content = entry.message.content
+			if (!Array.isArray(content)) return ""
+			const lines: string[] = []
+			for (const block of content as Array<{ type?: string; text?: string; thinking?: string }>) {
+				if (block?.type === "thinking") {
+					const thinking = block.thinking ?? block.text
+					if (thinking) lines.push(thinking)
+				}
+			}
+			return lines.join("\n")
+		}
+	} catch {
+		// Same tolerance as lastAssistantText.
 	}
 	return ""
 }

@@ -123,6 +123,17 @@ export const MEMORY_STEP_REASONING_HEAD_CHARS = 400
 /** Chars of each retained tool-result state tail kept for a mid-loop recall query. */
 export const MEMORY_STEP_ENV_TAIL_CHARS = 600
 
+/**
+ * Total character budget for a mid-loop recall query. Separate from
+ * TURN_RECALL_QUERY_MAX_CHARS (1,000): the loop query must carry the
+ * reasoning head PLUS observable context; at 1,000 the embedding
+ * collapsed to an input-echo line and recalls landed topic-broad.
+ */
+export const MEMORY_STEP_QUERY_MAX_CHARS = 2_000
+
+/** Characters retained per kept receipt-side state slice (head+tail total, before truncation). */
+export const MEMORY_STEP_ENV_RECEIPT_KEEP_CHARS = 4_096
+
 /** Max distinct state fingerprints remembered per session for state-revisit detection. */
 export const MEMORY_STATE_FINGERPRINT_CAP = 512
 
