@@ -64,11 +64,17 @@ async function flushRecall(settled: () => void): Promise<void> {
 	await vi.waitFor(settled, { interval: 10, timeout: 2_000 })
 }
 
-// Absence checks cannot poll — drain the pending microtask chain with one
-// macrotask (a timer callback never runs before the microtask queue
-// empties), then assert that nothing fired.
+// Absence checks cannot poll — drain the pending chain with a few macrotask
+// turns (each timer callback runs only after the microtask queue empties,
+// and a timer scheduled during the first drain gets its own hop before the
+// assertion runs), then assert that nothing fired.
 async function settle(): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, 0))
+	for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/** Last recorded call for one status/widget key — the settle signal the recall chain leaves behind. */
+function lastCallFor(calls: ReadonlyArray<readonly [string, ...unknown[]]>, key: string) {
+	return calls.filter((call) => call[0] === key).at(-1)
 }
 
 function startEvent(prompt: string): BeforeAgentStartEvent {
@@ -472,8 +478,6 @@ describe("memory extension", () => {
 			expect(search).toHaveBeenCalledTimes(4)
 			expect(sendMessage).toHaveBeenCalledTimes(1)
 		})
-		expect(search).toHaveBeenCalledTimes(4)
-		expect(sendMessage).toHaveBeenCalledTimes(1)
 		const [message] = sendMessage.mock.calls[0] as [{ content: Array<{ type: string; text: string }> }, ...unknown[]]
 		expect(message.content[0]?.text).toContain("fresh delivered fact")
 	})
@@ -676,16 +680,10 @@ describe("memory extension", () => {
 		// Recall delivery is detached from the turn start — settle it before
 		// asserting on the status segment.
 		await flushRecall(() =>
-			expect(
-				vi
-					.mocked(ctx.ui.setStatus)
-					.mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
-					.at(-1),
-			).toEqual([MEMORY_STATUS_KEY, "2"]),
+			expect(lastCallFor(vi.mocked(ctx.ui.setStatus).mock.calls, MEMORY_STATUS_KEY)).toEqual([MEMORY_STATUS_KEY, "2"]),
 		)
 		const calls = vi.mocked(ctx.ui.setStatus).mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
 		expect(calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
-		expect(calls.at(-1)).toEqual([MEMORY_STATUS_KEY, "2"])
 	})
 
 	it("clears the memory status when the session toggle disables memory", async () => {
@@ -736,12 +734,7 @@ describe("memory extension", () => {
 		await start(startEvent("drift topic 1"), ctx)
 		await start(startEvent("drift topic 2"), ctx)
 		await flushRecall(() =>
-			expect(
-				vi
-					.mocked(ctx.ui.setStatus)
-					.mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
-					.at(-1),
-			).toEqual([MEMORY_STATUS_KEY, "2"]),
+			expect(lastCallFor(vi.mocked(ctx.ui.setStatus).mock.calls, MEMORY_STATUS_KEY)).toEqual([MEMORY_STATUS_KEY, "2"]),
 		)
 		// The first delivery announced itself — exactly once, pluralized.
 		expect(vi.mocked(ctx.ui.notify).mock.calls.filter((call) => String(call[0]).startsWith("Recalled"))).toEqual([
@@ -782,20 +775,16 @@ describe("memory extension", () => {
 		// finally guard must still clear the indicator.
 		await start(startEvent("what do I bake?"), ctx)
 		await flushRecall(() =>
-			expect(
-				vi
-					.mocked(ctx.ui.setWidget)
-					.mock.calls.slice(callsBeforeTurn2)
-					.filter((call) => call[0] === "memory-recall")
-					.at(-1),
-			).toEqual(["memory-recall", undefined]),
+			expect(lastCallFor(vi.mocked(ctx.ui.setWidget).mock.calls.slice(callsBeforeTurn2), "memory-recall")).toEqual([
+				"memory-recall",
+				undefined,
+			]),
 		)
 		const recallCalls = vi
 			.mocked(ctx.ui.setWidget)
 			.mock.calls.slice(callsBeforeTurn2)
 			.filter((call) => call[0] === "memory-recall")
 		expect(recallCalls.some((call) => call[1] !== undefined)).toBe(true)
-		expect(recallCalls.at(-1)).toEqual(["memory-recall", undefined])
 	})
 
 	it("never touches the widget API without a UI (headless / ACP)", async () => {
@@ -859,7 +848,6 @@ describe("memory extension", () => {
 		// The handler returned (system prompt intact) with the drift search
 		// still pending — nothing between Enter and the turn's request.
 		expect(turn2?.systemPrompt).toContain("seed fact")
-		expect(search).toHaveBeenCalledTimes(2)
 		expect(sendMessage).not.toHaveBeenCalled()
 		releaseSearch?.()
 		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(1))
@@ -896,8 +884,6 @@ describe("memory extension", () => {
 		})
 		// Settle → turn-2 delivery went out, and the coalesced turn-3 drift
 		// fired its OWN search (its prompt, which the earlier query never saw).
-		expect(sendMessage).toHaveBeenCalledTimes(1)
-		expect(search).toHaveBeenCalledTimes(3)
 		expect(String(search.mock.calls[2]?.[0])).toContain("turn 3 - more fresh territory")
 		// Release the coalesced recall too — the valve opens again, and turn
 		// 4's drift fires its own recall.
@@ -1238,7 +1224,6 @@ describe("memory extension — digest selection gate", () => {
 			await start(startEvent("turn 1"), fakeCtx)
 			await start(startEvent("turn 2 - drift"), fakeCtx)
 			await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
-			expect(search).toHaveBeenCalledTimes(2)
 			expect(consoleError.mock.calls.some((call) => String(call[0]).includes("recall gating failed"))).toBe(true)
 		} finally {
 			consoleError.mockRestore()

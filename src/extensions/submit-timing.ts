@@ -3,8 +3,10 @@
  *
  * Enabled only when KIMCHI_SUBMIT_TIMING points at an ABSOLUTE file path: every
  * mark is one JSONL line `{ ...detail, t, perf, seq, event, session }` (t =
- * wall-clock epoch ms, perf = performance.now(), session = the session id
- * captured at session_start so a shared file splits per session). The path
+ * wall-clock epoch ms, perf = performance.now(), session = the emitting
+ * session's id, so a shared file splits per session — absent on lines written
+ * before this field existed, and it correlates each prompt prefix to one
+ * named session, so share the file accordingly). The path
  * must be absolute so marks can
  * never land inside the checked-out project (a relative value is ignored with
  * one error line). The file is created 0o600 and carries the first 80 chars
@@ -36,16 +38,19 @@ let seq = 0
 let warned = false
 // A write failure must not warn per mark — once is enough to be heard.
 let warnedWrite = false
-// Marks carry the session id once session_start has run; until then a
-// process-level id attributes the early marks (and the single-session CLI,
-// where every mark belongs to the one session, exactly).
+// The same goes for a tightening failure, which otherwise leaves prompt
+// prefixes in a world-readable file with zero signal.
+let warnedPerms = false
+// Fallback attribution for callers that cannot pass their own session id;
+// the extension instances stamp their marks per session (see below), so
+// this only covers marks emitted before any session_start in the process.
 let sessionId: string = randomUUID()
 // Paths whose permissions were already verified/tightened this process —
 // the stat+chmod runs once per path, not per mark.
 const ensuredPrivate = new Set<string>()
 
 /** Append one timing mark; no-op unless KIMCHI_SUBMIT_TIMING is set. */
-export function submitTimingMark(event: string, detail?: Record<string, unknown>): void {
+export function submitTimingMark(event: string, detail?: Record<string, unknown>, session?: string): void {
 	const path = process.env.KIMCHI_SUBMIT_TIMING
 	if (!path) return
 	// Absolute only — a relative value would write into the checked-out
@@ -59,14 +64,16 @@ export function submitTimingMark(event: string, detail?: Record<string, unknown>
 		return
 	}
 	// Reserved keys AFTER the spread — a detail key named t/perf/seq/event
-	// (or session) must not shadow the envelope.
+	// (or session) must not shadow the envelope. An explicit session wins
+	// (per-instance capture); the module fallback only covers pre-session
+	// marks.
 	const line = JSON.stringify({
 		...detail,
 		t: Date.now(),
 		perf: performance.now(),
 		seq: seq++,
 		event,
-		session: sessionId,
+		session: session ?? sessionId,
 	})
 	try {
 		appendFileSync(path, `${line}\n`, { mode: 0o600 })
@@ -76,7 +83,7 @@ export function submitTimingMark(event: string, detail?: Record<string, unknown>
 		if (!warnedWrite) {
 			warnedWrite = true
 			console.error(
-				`[submit-timing] cannot write marks to ${path}: ${error instanceof Error ? error.message : String(error)}`,
+				`[submit-timing] cannot write marks to ${path} (a partial record may remain): ${error instanceof Error ? error.message : String(error)}`,
 			)
 		}
 		return
@@ -84,42 +91,52 @@ export function submitTimingMark(event: string, detail?: Record<string, unknown>
 	// 0o600 — the file carries prompt prefixes; match the diagnostics
 	// precedent (work-attribution) rather than umask defaults. The mode
 	// applies only when the file is CREATED: a pre-existing looser file
-	// (e.g. `touch`-ed 0644) would expose the prefixes, so tighten it
-	// once per path. Best effort — the write already succeeded.
+	// (e.g. `touch`-ed 0644) would expose the prefixes, so tighten it once
+	// per path. A failure retries on later marks (a transient swap can
+	// heal) and warns once — a silently loose file is the one failure here
+	// that quietly keeps the prefixes exposed.
 	if (!ensuredPrivate.has(path)) {
-		ensuredPrivate.add(path)
 		try {
 			if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600)
-		} catch {
-			// Tightening failed; the marks are still being written.
+			ensuredPrivate.add(path)
+		} catch (error) {
+			if (!warnedPerms) {
+				warnedPerms = true
+				console.error(
+					`[submit-timing] cannot tighten ${path} to 0o600 — marks (prompt prefixes) remain readable by others: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
 		}
 	}
 }
 
 export default function submitTimingExtension(pi: ExtensionAPI): void {
 	let sawFirstUpdate = false
+	// This instance's session id — per instance, NOT module state: the ACP
+	// server hosts concurrent sessions in one process, and a shared marks
+	// file only splits per session if each instance stamps its own id (the
+	// module-level fallback cannot tell sessions apart).
+	let instanceSession: string | undefined
+	const mark = (event: string, detail?: Record<string, unknown>) => submitTimingMark(event, detail, instanceSession)
 
-	// Stamp marks with the session id so a shared marks file (the ACP server
-	// hosts concurrent sessions in one process) can be split per session.
 	pi.on("session_start", (_event, ctx: ExtensionContext) => {
-		sessionId = ctx.sessionManager.getSessionId()
-		submitTimingMark("session.start")
+		instanceSession = ctx.sessionManager.getSessionId()
+		sessionId = instanceSession
+		mark("session.start")
 	})
 
-	pi.on("input", (event: InputEvent) =>
-		submitTimingMark("submit.input", { source: event.source, prompt: event.text.slice(0, 80) }),
-	)
+	pi.on("input", (event: InputEvent) => mark("submit.input", { source: event.source, prompt: event.text.slice(0, 80) }))
 
-	pi.on("before_agent_start", (event) => submitTimingMark("agent.beforeStart", { messageType: event.messageType }))
+	pi.on("before_agent_start", (event) => mark("agent.beforeStart", { messageType: event.messageType }))
 
-	pi.on("turn_start", () => submitTimingMark("turn.start"))
+	pi.on("turn_start", () => mark("turn.start"))
 
 	pi.on("message_start", (event: MessageStartEvent) => {
 		if (event.message.role === "assistant") {
 			sawFirstUpdate = false
-			submitTimingMark("message.assistantStart")
+			mark("message.assistantStart")
 		} else {
-			submitTimingMark("message.entryStart", { role: event.message.role })
+			mark("message.entryStart", { role: event.message.role })
 		}
 	})
 
@@ -128,18 +145,18 @@ export default function submitTimingExtension(pi: ExtensionAPI): void {
 	pi.on("message_update", (event: MessageUpdateEvent) => {
 		if (sawFirstUpdate || event.message.role !== "assistant") return
 		sawFirstUpdate = true
-		submitTimingMark("message.firstUpdate")
+		mark("message.firstUpdate")
 	})
 
 	pi.on("message_end", (event: MessageEndEvent) => {
-		if (event.message.role === "assistant") submitTimingMark("message.assistantEnd")
+		if (event.message.role === "assistant") mark("message.assistantEnd")
 	})
 
-	pi.on("turn_end", () => submitTimingMark("turn.end"))
+	pi.on("turn_end", () => mark("turn.end"))
 
-	pi.on("before_provider_request", () => submitTimingMark("provider.request"))
+	pi.on("before_provider_request", () => mark("provider.request"))
 
 	pi.on("after_provider_response", (event: AfterProviderResponseEvent) =>
-		submitTimingMark("provider.response", { status: event.status }),
+		mark("provider.response", { status: event.status }),
 	)
 }

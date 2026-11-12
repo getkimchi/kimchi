@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import submitTimingExtension, { submitTimingMark } from "./submit-timing.js"
 
@@ -17,7 +18,6 @@ describe("submit-timing marks", () => {
 	it("is a no-op without KIMCHI_SUBMIT_TIMING", () => {
 		const dir = mkdtempSync(join(tmpdir(), "kimchi-submit-timing-test-"))
 		const file = join(dir, "marks.jsonl")
-		process.env.KIMCHI_SUBMIT_TIMING = file
 		delete process.env.KIMCHI_SUBMIT_TIMING
 		expect(() => submitTimingMark("test.event", { some: "detail" })).not.toThrow()
 		// The no-op that matters: no file materialized at the would-be path.
@@ -135,12 +135,40 @@ describe("submit-timing marks", () => {
 		const dir = mkdtempSync(join(tmpdir(), "kimchi-submit-timing-test-"))
 		const file = join(dir, "marks.jsonl")
 		process.env.KIMCHI_SUBMIT_TIMING = file
-		await emit("session_start", { type: "session_start" }, {
-			sessionManager: { getSessionId: () => "sess-42" },
-		} as Parameters<typeof emit>[2])
+		await emit(
+			"session_start",
+			{ type: "session_start" },
+			createContext({ sessionManager: { getSessionId: () => "sess-42" } }),
+		)
 		const [line] = readFileSync(file, "utf-8").split("\n")
 		const mark = JSON.parse(line ?? "") as Record<string, unknown>
 		expect(mark.event).toBe("session.start")
 		expect(mark.session).toBe("sess-42")
+	})
+
+	it("attributes marks per extension instance — a later session start cannot claim an in-flight turn", async () => {
+		const { api: apiA, emit: emitA } = createExtensionApi()
+		const { api: apiB, emit: emitB } = createExtensionApi()
+		submitTimingExtension(apiA)
+		submitTimingExtension(apiB)
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-submit-timing-test-"))
+		const file = join(dir, "marks.jsonl")
+		process.env.KIMCHI_SUBMIT_TIMING = file
+		const ctxA = createContext({ sessionManager: { getSessionId: () => "sess-a" } })
+		await emitA("session_start", { type: "session_start" }, ctxA)
+		await emitB(
+			"session_start",
+			{ type: "session_start" },
+			createContext({ sessionManager: { getSessionId: () => "sess-b" } }),
+		)
+		// Session A's turn continues after session B started — the ACP
+		// concurrency case: its marks must still carry A's id.
+		await emitA("input", { source: "interactive", text: "still session a" }, ctxA)
+		const lines = readFileSync(file, "utf-8")
+			.split("\n")
+			.filter((line) => line !== "")
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+		expect(lines.filter((line) => line.event === "submit.input")).toHaveLength(1)
+		expect(lines.find((line) => line.event === "submit.input")?.session).toBe("sess-a")
 	})
 })

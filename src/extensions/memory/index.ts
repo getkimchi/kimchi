@@ -260,6 +260,13 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		const captureId = deps.captureId ?? randomUUID()
 		wireMemoryCapture(pi, memoryActive, captureId)
 
+		// Timing marks are stamped with this session's id — per instance for
+		// the same reason as captureId: module state cannot tell concurrent
+		// ACP sessions apart. Captured lazily at the first agent start; marks
+		// before that (there are none today) fall back to the process id.
+		let markSession: string | undefined
+		const mark = (event: string, detail?: Record<string, unknown>) => submitTimingMark(event, detail, markSession)
+
 		// In-session management — the same grammar as `kimchi memory` (admin.ts).
 		// list|search open the interactive MemoryPanel (page through facts,
 		// delete by selection) in TUI mode; everything else — including rpc/ACP
@@ -565,6 +572,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// upstream pi: the event fires for extension-triggered runs too and is a
 			// union — memory digests/recall key off user prompts only.
 			if (event.messageType !== "user") return
+			markSession ??= ctx.sessionManager.getSessionId()
 			clearMemoryView(ctx)
 			// Capture the session cwd once — scopes retrieval to the project store.
 			sessionCwd ??= ctx.cwd
@@ -623,7 +631,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// Turn 1 (awaited): the prefix carries the digest from the very first
 			// request, so later turns never see a prompt change.
 			if (digest === undefined) {
-				submitTimingMark("memory.digest.begin")
+				mark("memory.digest.begin")
 				// Wrap the outcome so a withTimeout null (timed out) stays
 				// distinguishable from a computeDigest null (empty store): a
 				// timeout leaves digest UNDEFINED and the next turn retries — the
@@ -636,7 +644,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						"digest computation",
 					),
 				)
-				submitTimingMark("memory.digest.end", outcome === null ? { timedOut: true } : undefined)
+				mark("memory.digest.end", outcome === null ? { timedOut: true } : undefined)
 				if (outcome === null) {
 					// Timed out — degrade this turn with the bare notice and retry
 					// on the next agent start (digest stays undefined).
@@ -685,16 +693,16 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							const decision = resolveDecision()
 							if (decision.enabled.has("recall") && decision.gate) {
 								try {
-									submitTimingMark("memory.gate.begin")
+									mark("memory.gate.begin")
 									const judged = await withTimeout(
 										decide(decision.gate, recallState(deliveredFacts.join("\n"), recent), recallQuestion()),
 										MEMORY_PRE_REQUEST_TIMEOUT_MS,
 										"recall gating",
 									)
-									submitTimingMark("memory.gate.end", { skip: judged?.answers.lookup?.choice === "skip" })
+									mark("memory.gate.end", { skip: judged?.answers.lookup?.choice === "skip" })
 									if (judged?.answers.lookup?.choice === "skip") skipSearch = true
 								} catch (err) {
-									submitTimingMark("memory.gate.end", { errored: true })
+									mark("memory.gate.end", { errored: true })
 									console.error(
 										`[memory] recall gating failed, searching anyway (pre-gate behavior):`,
 										err instanceof Error ? err.message : err,
@@ -705,21 +713,21 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 								console.info("[memory] turn recall skipped: decision gate judged no archive value")
 								return
 							}
-							submitTimingMark("memory.search.begin")
+							mark("memory.search.begin")
 							searchSpanOpen = true
 							// Bounded: a never-settling searcher factory must not wedge
 							// recallInFlight (and the indicator) for the whole session —
 							// a timeout here skips this recall; the next turn retries.
 							const s = await withTimeout(getSearcher(), MEMORY_PRE_REQUEST_TIMEOUT_MS, "searcher init")
 							if (!s) {
-								submitTimingMark("memory.search.end", { skipped: "no searcher" })
+								mark("memory.search.end", { skipped: "no searcher" })
 								searchSpanOpen = false
 								return
 							}
-							submitTimingMark("memory.searcher.ready")
+							mark("memory.searcher.ready")
 							const hits = await withTimeout(s.search(recent), MEMORY_SEARCH_TIMEOUT_MS, "turn recall search")
 							searchSpanOpen = false
-							submitTimingMark("memory.search.end")
+							mark("memory.search.end")
 							const recall = hits ? buildTurnRecall(hits, deliveredKeys) : undefined
 							if (recall) {
 								// The recall started before this turn's request; the
@@ -755,7 +763,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							}
 						})
 					} catch (err) {
-						if (searchSpanOpen) submitTimingMark("memory.search.end", { errored: true })
+						if (searchSpanOpen) mark("memory.search.end", { errored: true })
 						recallFailed = true
 						logDegrade("turn recall failed, disabling progressive recall for this session", err)
 					} finally {
