@@ -119,6 +119,13 @@ If the change is ACP-relevant:
 
 If the change is genuinely TUI-only, say so explicitly in the PR summary. A silent skip is the failure mode this rule exists to catch.
 
+## ACP wire compatibility
+
+Agent-side changes must not leak onto the ACP wire in ways plain clients never opted into — the rules are [docs/acp-compat.md](docs/acp-compat.md); read it before touching anything visible on the wire. The leaks almost never start in the ACP server itself: the path runs `src/extensions/**` → pi events → ACP notifications, so a feature that never touches `src/modes/acp/` can still change what a client sees (the original incidents were extension-side wakes and message projections). Extension-only PRs are not exempt.
+
+- **Review rule:** a PR touching `src/modes/acp/**`, any pi-event→ACP-notification path, or any extension behavior with a wire side effect must state in its body: *what does a client that opts into nothing see change in the main turn, between turns, and on replay?* Answer "nothing", or name the opt-in gate (`clientCapabilities._meta` key echoed at initialize).
+- **Verification stance:** the ACP e2e suite proves serialization, not survival under partial-view clients (the reference client accepts anything). Current verification is the [acp-compat](docs/acp-compat.md) checklist + `pnpm run check:acp-wire` + review. For anything touching turn lifecycle, a manual smoke run against a real client is recommended (not gateable yet); a real smoke lane is separate future work.
+
 ## Code clean-up checklist
 
 AI agents often introduce a few recurring issues (likely picked up from existing code patterns). Before finishing a PR, review the diff for these and clean them up:

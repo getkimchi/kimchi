@@ -36,29 +36,6 @@ Kimchi is licensed under the **Apache License 2.0**. By contributing, you agree 
 4. **Pass CI.** Run `pnpm run check` and `pnpm run test` locally before opening a PR. PRs that fail CI will not be reviewed.
 5. **Fill in the PR template.** Every field in the template exists for a reason. PRs with blank or placeholder descriptions will be closed.
 
-## ACP wire compatibility
-
-Kimchi serves ACP clients it does not control, so agent-side changes must not leak
-onto the ACP wire in ways plain clients never opted into (see
-[docs/acp-compat.md](docs/acp-compat.md) for the rules).
-
-The wire leaks almost never start in the ACP server itself: the path runs
-`src/extensions/**` → pi events → ACP notifications, so a feature that never
-touches `src/modes/acp/` can still change what a client sees (the original
-incidents were extension-side wakes and message projections). Extension-only
-PRs are not exempt.
-
-- **Review rule:** a PR touching `src/modes/acp/**`, any pi-event→ACP-notification
-  path, or any extension behavior with a wire side effect must state in its body: *what does a client that opts into nothing see change
-  in the main turn, between turns, and on replay?* Answer "nothing", or name the
-  opt-in gate (`clientCapabilities._meta` key echoed at initialize).
-- **Verification stance:** the ACP e2e suite proves serialization, not survival under
-  partial-view clients (the reference client accepts anything). Clients that implement
-  only part of the protocol are the risk class. Current verification is the
-  [docs/acp-compat.md](docs/acp-compat.md) checklist + `pnpm run check:acp-wire` +
-  review. For anything touching turn lifecycle, a manual smoke run against a real
-  client is recommended (not gateable yet); a real smoke lane is separate future work.
-
 ## What we will and won't accept
 
 **Likely to be accepted:**

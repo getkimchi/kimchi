@@ -150,7 +150,7 @@ when v2 stabilizes.)
 - **Client-side fixes.** Clients are outside this repo; their breakage taught the rule.
 - **TS-side schema lint for ToolCall extras.** SDK types already constrain shape; the
   failures were semantic placement.
-- **Real-client smoke matrix.** See the verification stance in `CONTRIBUTING.md`.
+- **Real-client smoke matrix.** See the verification stance in `AGENTS.md`.
 
 ## Evidence lineage
 
