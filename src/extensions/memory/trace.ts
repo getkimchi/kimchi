@@ -25,14 +25,15 @@
  * entirely). Files record raw, pre-redaction text — a local-only debug
  * surface, same exposure class as the memory store directory itself.
  *
- * Scope: the capture DRAIN only. The session turn path (digest/recall via
- * inject.ts) shares chatJson/decide but never receives a trace hook, so
- * session traffic is never traced and never pays for the possibility.
+ * Scope: capture drains AND the session recall path (digest computation,
+ * turn recall, memory_search calls). Recall traces are one compact record
+ * per event — the raw chat/d3 request-response traffic stays exclusive to
+ * drains so session traffic never pays drain-scale bytes.
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { basename, join, resolve, sep } from "node:path"
 import { defaultMemoryDir } from "./backend.js"
-import { TRACE_DRAINS_KEPT } from "./config.js"
+import { TRACE_DRAINS_KEPT, TRACE_RECALLS_KEPT } from "./config.js"
 
 /** Drain trace directory — exported for the dashboard and tests. The
  * `root` override exists for the dashboard's injected memory root
@@ -232,4 +233,98 @@ export function traceFileMtime(file: string): number {
 	} catch {
 		return 0
 	}
+}
+
+/**
+ * Recall traces — the retrieval side: `recall-<isotime>-<pid>-<n>.jsonl`,
+ * one small file per digest computation, turn recall/search, or
+ * memory_search call. Same fail-soft contract as drain traces. Recall
+ * events fire per prompt, so the ring defaults to a hundred files and
+ * KIMCHI_MEMORY_TRACE_RECALLS overrides (0 disables).
+ */
+let recallFileCounter = 0
+
+/** How many recall traces the ring keeps (KIMCHI_MEMORY_TRACE_RECALLS). */
+export function traceRecallKeep(): number {
+	const raw = process.env.KIMCHI_MEMORY_TRACE_RECALLS
+	if (raw === undefined || raw.trim() === "") return TRACE_RECALLS_KEPT
+	const parsed = Number(raw)
+	if (!Number.isFinite(parsed) || parsed < 0) return TRACE_RECALLS_KEPT
+	return Math.floor(parsed)
+}
+
+/** Create the recorder for one recall event; null when disabled or the
+ * traces dir is unwritable. Prunes the recall ring on creation so the
+ * directory cannot grow unboundedly between dashboard visits. */
+export function createRecallRecorder(): TraceRecorder | null {
+	if (traceRecallKeep() === 0) return null
+	try {
+		const dir = tracesDir()
+		mkdirSync(dir, { recursive: true })
+		const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+		const file = join(dir, `recall-${stamp}-${process.pid}-${recallFileCounter++}.jsonl`)
+		pruneRecallTraces()
+		return {
+			file,
+			emit(event) {
+				try {
+					const line = { ts: new Date().toISOString(), ...event }
+					appendFileSync(file, `${JSON.stringify(line)}\n`, "utf-8")
+				} catch (err) {
+					traceBrokenWarning(err, "recall")
+				}
+			},
+		}
+	} catch (err) {
+		traceBrokenWarning(err, "recall")
+		return null
+	}
+}
+
+/** Ring enforcement for recall files (name-sorted = chronological). */
+export function pruneRecallTraces(keep = traceRecallKeep()): void {
+	if (keep <= 0) return
+	try {
+		const dir = tracesDir()
+		if (!existsSync(dir)) return
+		const files = readdirSync(dir)
+			.filter((name) => name.startsWith("recall-") && name.endsWith(".jsonl"))
+			.sort()
+		for (const name of files.slice(0, Math.max(0, files.length - keep))) {
+			try {
+				rmSync(join(dir, name), { force: true })
+			} catch (err) {
+				traceBrokenWarning(err, "recall ring")
+			}
+		}
+	} catch (err) {
+		traceBrokenWarning(err, "recall ring")
+	}
+}
+
+/** Oldest-to-newest recall file listing (names only) — the dashboard's
+ * /api/recalls source. */
+export function listRecallFiles(root?: string): string[] {
+	try {
+		const dir = tracesDir(root)
+		if (!existsSync(dir)) return []
+		return readdirSync(dir)
+			.filter((name) => name.startsWith("recall-") && name.endsWith(".jsonl"))
+			.sort()
+	} catch {
+		return []
+	}
+}
+
+/** Resolve a dashboard-supplied recall filename to an absolute path inside
+ * `traces/` — same traversal defense as resolveTraceFile. */
+export function resolveRecallFile(name: string, root: string = defaultMemoryDir()): string | null {
+	if (typeof name !== "string" || name.length === 0) return null
+	if (basename(name) !== name) return null
+	if (!name.startsWith("recall-") || !name.endsWith(".jsonl")) return null
+	const dir = resolve(tracesDir(root))
+	const resolved = resolve(dir, name)
+	if (!resolved.startsWith(dir + sep)) return null
+	if (!existsSync(resolved)) return null
+	return resolved
 }

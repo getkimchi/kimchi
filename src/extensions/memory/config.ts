@@ -250,6 +250,15 @@ export const GATE_MIN_COVERAGE = 0.3
  */
 export const TRACE_DRAINS_KEPT = 50
 
+/**
+ * Recall traces kept under `traces/` (ring buffer, newest first) — the
+ * retrieval-side companion to drain traces: one small JSONL per digest
+ * computation, turn recall, or memory_search call. Files are a few KB
+ * (query + hit list), so a hundred covers days of interactive sessions.
+ * KIMCHI_MEMORY_TRACE_RECALLS overrides this; 0 disables recall tracing.
+ */
+export const TRACE_RECALLS_KEPT = 100
+
 const CHARS_PER_TOKEN = 4
 
 export function tokensEstimated(chars: number): number {

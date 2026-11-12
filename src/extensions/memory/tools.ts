@@ -6,6 +6,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { redactText } from "../pii-redaction/redactor.js"
+import { createRecallRecorder } from "./trace.js"
 
 export { authoredEnabled } from "./flags.js"
 
@@ -105,7 +106,17 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 					"Memory is currently disabled for this session — the user can turn it back on with /memory enable.",
 				)
 			}
+			const startedAt = Date.now()
 			const hits = await deps.search(params.query)
+			// Recall trace: one compact record per search — the dashboard's
+			// retrieval visibility. Fail-soft by construction (null recorder).
+			createRecallRecorder()?.emit({
+				type: "recall",
+				kind: "tool-search",
+				query: params.query,
+				hits: hits.map((hit) => ({ store: hit.scope ?? "personal", score: hit.score, text: hit.memory })),
+				durationMs: Date.now() - startedAt,
+			})
 			if (hits.length === 0) {
 				return textResult("No memories matched that query.")
 			}

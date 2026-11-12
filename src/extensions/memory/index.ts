@@ -98,6 +98,7 @@ import { migrateAgentMemory } from "./migrate-agent-memory.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
 import { authoredEnabled, createMemorySaveTool, createMemorySearchTool } from "./tools.js"
+import { createRecallRecorder } from "./trace.js"
 
 /** What one search call returns after the value gate. */
 interface DigestState {
@@ -598,10 +599,16 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		 * the pre-gate threshold rule applies untouched (small stores keep recall).
 	 * Env: KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES, default 0 = pre-flag. */
 		const computeDigest = async (query: string): Promise<DigestState | null | typeof DIGEST_SEARCH_FAILED> => {
+			const startedAt = Date.now()
+			const traceRecall = (partial: Record<string, unknown>): void =>
+				createRecallRecorder()?.emit({ type: "recall", kind: "digest-init", query, ...partial })
 			try {
 				const s = await getSearcher()
 				mark("memory.digest.searcher", s ? undefined : { skipped: "no searcher" })
-				if (!s) return null
+				if (!s) {
+					traceRecall({ error: "no-searcher", durationMs: Date.now() - startedAt })
+					return null
+				}
 				// Wide-net digest search when a selection floor is configured: the
 				// search default (topK 8) is below any useful floor, which would
 				// make the selection gate unreachable for EVERY store size. The
@@ -617,13 +624,11 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// back to the pre-gate threshold rule for this computation.
 				const decision = resolveDecision()
 				let selected: ReadonlySet<string> | undefined
-				if (decision.enabled.has("digest") && decision.gate) {
+				let gateAnswers: Array<{ text: string; choice: string; keepP?: number; injectP?: number }> | undefined
+								if (decision.enabled.has("digest") && decision.gate) {
 					const candidates = digestCandidateTexts(hits)
 					if (shouldRunDigestSelection(candidates.length, floor)) {
 						try {
-							// The gate shares the pre-request budget: a hung decision falls back to
-							// the threshold rule here instead of stalling the attempt to the abandon
-							// bound (the doc comment always promised this timeout).
 							const answers = await withTimeout(
 								batchChoice(
 									decision.gate,
@@ -640,8 +645,16 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							mark("memory.digest.gate", { candidates: candidates.length, timedOut: answers === null })
 							const kept = new Set<string>()
 							if (answers) {
+								gateAnswers = []
 								for (let i = 0; i < candidates.length; i++) {
-									if (answers[i]?.choice === "inject") kept.add(candidates[i] as string)
+									const answer = answers[i]
+									gateAnswers.push({
+										text: candidates[i] as string,
+										choice: answer?.choice ?? "unknown",
+										keepP: answer?.probabilities?.keep,
+										injectP: answer?.probabilities?.inject,
+									})
+									if (answer?.choice === "inject") kept.add(candidates[i] as string)
 								}
 								selected = kept
 							}
@@ -671,15 +684,30 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					console.info(
 						`[memory] no digest for this session (belowThreshold=${composition.belowThreshold} of threshold ${DIGEST_SCORE_THRESHOLD})`,
 					)
+					traceRecall({
+						hits: hits.map((h) => ({ text: h.memory, score: h.score })),
+						gate: gateAnswers,
+						injected: [],
+						composition,
+						durationMs: Date.now() - startedAt,
+					})
 					return null
 				}
 				console.info(`[memory] digest injected: ${JSON.stringify(result.composition)}`)
+				traceRecall({
+					hits: hits.map((h) => ({ text: h.memory, score: h.score })),
+					gate: gateAnswers,
+					injected: result.facts,
+					composition: result.composition,
+					durationMs: Date.now() - startedAt,
+				})
 				return { text: result.text, facts: result.facts, composition: result.composition, query }
 			} catch (err) {
 				if (digestFailLoggedEpoch !== digestEpoch) {
 					digestFailLoggedEpoch = digestEpoch
 					logDegrade("memory search failed, continuing without digest", err)
 				}
+				traceRecall({ error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - startedAt })
 				return DIGEST_SEARCH_FAILED
 			}
 		}
