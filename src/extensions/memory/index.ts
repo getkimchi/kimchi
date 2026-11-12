@@ -365,7 +365,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					)
 					if (!query) return
 					const outcome = await runRecall({
-						trigger: "step-budget",
+						trigger,
 						query,
 						pi,
 						ctx,
