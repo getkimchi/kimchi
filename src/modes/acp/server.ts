@@ -1938,6 +1938,23 @@ export class KimchiAcpAgent implements Agent {
 	private displayArgs(sessionId: string, toolName: string, args: Record<string, unknown>): Record<string, unknown> {
 		return EXEC_DEREF_TOOLS.has(toolName) ? this.displayRecord(sessionId, args) : args
 	}
+	/**
+	 * Live-path variant: display args PLUS the bash-control wait enrichment
+	 * (commands/elapsedSeconds sampled against the live registry). Single
+	 * funnel for every emission of a tool call's rawInput while the tool
+	 * call is happening, so the args-complete, permission, execution, and
+	 * result shapes can never drift on a wait call's cohort. Never call
+	 * this from a history/replay path — enrichment pairs a historical call
+	 * with TODAY's cohort and fabricates targets the original wait never
+	 * had (a handle-less wait has no recorded target).
+	 */
+	private displayLiveArgs(sessionId: string, toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+		return enrichBashControlRawInput(
+			toolName,
+			this.displayArgs(sessionId, toolName, args),
+			getBashSessionState(sessionId)?.registry,
+		)
+	}
 	private displayRecord(sessionId: string, value: Record<string, unknown>): Record<string, unknown> {
 		const vault = vaultForSession(sessionId)
 		return vault ? (substituteTokensDeep(vault, value) as Record<string, unknown>) : value
@@ -2323,11 +2340,7 @@ export class KimchiAcpAgent implements Agent {
 						return
 					}
 					// Args display mirrors execution (displayArgs).
-					const rawInput = enrichBashControlRawInput(
-						toolCall.name,
-						this.displayArgs(sessionId, toolCall.name, toolCall.arguments as Record<string, unknown>),
-						getBashSessionState(sessionId)?.registry,
-					)
+					const rawInput = this.displayLiveArgs(sessionId, toolCall.name, toolCall.arguments as Record<string, unknown>)
 					const { title, kind, locations } = describeToolCall(toolCall.name, rawInput, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
@@ -2458,12 +2471,7 @@ export class KimchiAcpAgent implements Agent {
 				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
 				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
-				const registry = getBashSessionState(sessionId)?.registry
-				const rawInput = enrichBashControlRawInput(
-					event.toolName,
-					this.displayArgs(sessionId, event.toolName, event.args),
-					registry,
-				)
+				const rawInput = this.displayLiveArgs(sessionId, event.toolName, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
 					const { title, kind, locations } = describeToolCall(event.toolName, rawInput, entry.cwd)
@@ -2485,7 +2493,7 @@ export class KimchiAcpAgent implements Agent {
 						rawInput,
 						status: "in_progress",
 						cwd: entry.cwd,
-						bashControlRegistry: registry,
+						bashControlRegistry: getBashSessionState(sessionId)?.registry,
 					})
 					// No pending notification was sent (back-compat) → emit tool_call as before
 					this.send({ sessionId, update })
@@ -2844,11 +2852,10 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						rawInput: enrichBashControlRawInput(
-							name,
-							this.displayArgs(sessionId, name, args),
-							getBashSessionState(sessionId)?.registry,
-						),
+						// Historical args stay as recorded: enriching here would
+						// name today's cohort as this old wait's targets and pair
+						// a live process's uptime with a wait from a past run.
+						rawInput: this.displayArgs(sessionId, name, args),
 						cwd: record?.cwd,
 					}),
 				})

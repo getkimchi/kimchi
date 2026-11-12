@@ -1,9 +1,10 @@
 import type { AgentSideConnection, PermissionOption, ToolCall } from "@agentclientprotocol/sdk"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
+import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
 import { EXEC_DEREF_TOOLS, substituteTokensDeep, vaultForSession } from "../../extensions/pii-redaction/vault.js"
-import { buildToolCallShape } from "./tool-calls/utils.js"
+import { buildToolCallShape, enrichBashControlRawInput } from "./tool-calls/utils.js"
 import { requestWithAbort } from "./utils.js"
 
 export type AcpToolCallIdResolver = (piToolCallId: string, toolName: string) => string
@@ -43,6 +44,12 @@ export function createAcpPermissionPrompter(
 					rawInput = substituteTokensDeep(vault, rawInput) as typeof rawInput
 				}
 			}
+			// The approval card must mirror the tool_call stream events, which
+			// enrich a bash_control wait with its target cohort (see
+			// displayLiveArgs in server.ts) — approving plain args while the
+			// timeline shows enriched args would show the user two different
+			// calls for one action.
+			rawInput = enrichBashControlRawInput(req.toolName, rawInput, getBashSessionState(sessionId)?.registry)
 			const toolCall: ToolCall = buildToolCallShape({
 				toolCallId: acpToolCallId,
 				piToolCallId: req.toolCallId,

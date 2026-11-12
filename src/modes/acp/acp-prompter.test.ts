@@ -163,4 +163,26 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 		expect(sent[0]?.toolCall.rawInput).toEqual({ command: `mail ${token}` })
 		expect(sent[0]?.toolCall.title).toBe(`mail ${token}`)
 	})
+
+	it("bash_control wait prompts go through the same enrichment funnel as the timeline (no registry: client-sent fields survive)", async () => {
+		const sent: Array<{ sessionId: string; toolCall: ToolCall }> = []
+		const conn = {
+			requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+				sent.push(payload)
+				return { outcome: { outcome: "cancelled" } }
+			}),
+		} as unknown as AgentSideConnection
+		const prompter = createAcpPermissionPrompter(conn, "sess-wait", {} as never, () => "acp-1")
+		await prompter.request({
+			...baseReq,
+			toolName: "bash_control",
+			input: { wait: true, commands: [{ command: "sleep 60" }], elapsedSeconds: 1 },
+		})
+		expect(sent).toHaveLength(1)
+		expect(sent[0]?.toolCall.rawInput).toEqual({
+			wait: true,
+			commands: [{ command: "sleep 60" }],
+			elapsedSeconds: 1,
+		})
+	})
 })
