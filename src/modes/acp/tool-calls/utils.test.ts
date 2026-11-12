@@ -804,7 +804,7 @@ describe("bashControlWaitMeta", () => {
 	it("resolves a wait with a known handle into a flat _meta fragment, never mutating the agent's args", () => {
 		const args = { wait: true, handles: ["h1"] }
 		expect(bashControlWaitMeta("bash_control", args, registry)).toEqual({
-			bash_control_wait: {
+			bashControlWait: {
 				commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
 				elapsedSeconds: 5,
 			},
@@ -870,7 +870,7 @@ describe("describeToolCall bash_control", () => {
 		expect(shape.title).toBe("bash_control")
 		expect(shape.rawInput).toEqual({ handle: "h1", action: "stop" })
 		expect(shape._meta).toEqual({
-			bash_control_wait: {
+			bashControlWait: {
 				commands: [{ command: "npm run dev", startedAt: "2026-11-11T12:00:00.000Z" }],
 				elapsedSeconds: 5,
 			},

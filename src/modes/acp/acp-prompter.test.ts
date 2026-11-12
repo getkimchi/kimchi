@@ -199,7 +199,7 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 			expect(sent).toHaveLength(1)
 			expect(sent[0]?.toolCall.rawInput).toEqual({ wait: true, handles: ["h1"] })
 			expect(
-				(sent[0]?.toolCall._meta as { bash_control_wait?: { commands?: unknown[] } } | undefined)?.bash_control_wait,
+				(sent[0]?.toolCall._meta as { bashControlWait?: { commands?: unknown[] } } | undefined)?.bashControlWait,
 			).toEqual({
 				commands: [expect.objectContaining({ command: "sleep 60" })],
 				elapsedSeconds: expect.any(Number),

@@ -13512,8 +13512,8 @@ describe("bash_control wait info placement", () => {
 				typeof (u.update as { rawInput?: unknown }).rawInput === "object",
 		)
 		expect((argsUpdate?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
-		const meta = (argsUpdate?.update as { _meta?: { bash_control_wait?: { commands?: { command?: string }[] } } })._meta
-		expect(meta?.bash_control_wait?.commands).toEqual([expect.objectContaining({ command: "sleep 60" })])
+		const meta = (argsUpdate?.update as { _meta?: { bashControlWait?: { commands?: { command?: string }[] } } })._meta
+		expect(meta?.bashControlWait?.commands).toEqual([expect.objectContaining({ command: "sleep 60" })])
 	})
 
 	it("never samples today's cohort for a replayed historical wait without a recorded entry", async () => {
@@ -13540,7 +13540,7 @@ describe("bash_control wait info placement", () => {
 		const replayed = updates.find((u) => u.update.sessionUpdate === "tool_call")
 		expect(replayed?.update.sessionUpdate).toBe("tool_call")
 		expect((replayed?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
-		expect((replayed?.update as { _meta?: { bash_control_wait?: unknown } })._meta?.bash_control_wait).toBeUndefined()
+		expect((replayed?.update as { _meta?: { bashControlWait?: unknown } })._meta?.bashControlWait).toBeUndefined()
 	})
 
 	it("records the resolved wait targets as a metadata custom entry when the call completes", async () => {
@@ -13623,7 +13623,7 @@ describe("bash_control wait info placement", () => {
 		expect(replayed?.update.sessionUpdate).toBe("tool_call")
 		expect((replayed?.update as { rawInput?: unknown }).rawInput).toEqual({ wait: true })
 		expect(
-			(replayed?.update as { _meta?: { bash_control_wait?: { commands?: unknown[] } } })._meta?.bash_control_wait,
+			(replayed?.update as { _meta?: { bashControlWait?: { commands?: unknown[] } } })._meta?.bashControlWait,
 		).toEqual({
 			commands: [{ command: "npm test", startedAt: "2026-05-09T00:00:00.000Z" }],
 		})

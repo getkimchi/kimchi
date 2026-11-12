@@ -154,7 +154,7 @@ function snapshotElapsedSeconds(snapshot: ProcessDisplaySnapshot): number {
  * _meta["kimchi.dev"] key carrying the registry-resolved background
  * processes behind a `bash_control` call (waits most of all).
  */
-export const BASH_CONTROL_WAIT_META_KEY = "bash_control_wait"
+export const BASH_CONTROL_WAIT_META_KEY = "bashControlWait"
 
 /** Transcript custom-entry type recording a completed wait's targets. */
 export const BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE = "bash-control-wait-targets"
