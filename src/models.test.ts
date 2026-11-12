@@ -2146,6 +2146,14 @@ describe("model picker labels", () => {
 		expect(getModelLabel("kimchi-dev/glm-5.3")).toBeUndefined()
 	})
 
+	it("does not label a slug the feed repeats inside a single provider block", () => {
+		registerModelInfoFromProviders({
+			"kimchi-dev/openai": block("cast-oai", "gpt-4.1", "gpt-4.1"),
+			"kimchi-dev": block(undefined, "glm-5.3"),
+		})
+		expect(getModelLabel("kimchi-dev/openai/gpt-4.1")).toBeUndefined()
+	})
+
 	it("falls back to the provider block id when the feed names no instance", () => {
 		registerModelInfoFromProviders({
 			"kimchi-dev/openai": block(undefined, "gpt-5.5"),

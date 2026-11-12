@@ -598,7 +598,10 @@ function registerModelLabels(
 	labels.clear()
 	const blocksById = new Map<string, string[]>()
 	for (const [block, provider] of Object.entries(providers)) {
-		for (const model of provider?.models ?? []) blocksById.set(model.id, [...(blocksById.get(model.id) ?? []), block])
+		for (const model of provider?.models ?? []) {
+			const blocks = blocksById.get(model.id) ?? []
+			if (!blocks.includes(block)) blocksById.set(model.id, [...blocks, block])
+		}
 	}
 	for (const [id, blocks] of blocksById) {
 		if (blocks.length < 2) continue
