@@ -328,3 +328,23 @@ export function resolveRecallFile(name: string, root: string = defaultMemoryDir(
 	if (!existsSync(resolved)) return null
 	return resolved
 }
+
+/** Resolve a dashboard-supplied pending-job filename to an absolute path
+ * inside `pending/` — same traversal defense as resolveTraceFile/
+ * resolveRecallFile: basename-only, .json suffix, resolved-inside check,
+ * and the name must appear in the pending dir listing (no path joins on
+ * untrusted input). */
+export function resolvePendingJobFile(name: string, root: string = defaultMemoryDir()): string | null {
+	if (typeof name !== "string" || name.length === 0) return null
+	if (basename(name) !== name) return null
+	if (!name.endsWith(".json")) return null
+	const dir = resolve(join(root, "pending"))
+	const resolved = resolve(dir, name)
+	if (!resolved.startsWith(dir + sep)) return null
+	try {
+		if (!readdirSync(dir).includes(name)) return null
+	} catch {
+		return null
+	}
+	return resolved
+}
