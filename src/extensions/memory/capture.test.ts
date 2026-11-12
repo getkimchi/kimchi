@@ -60,7 +60,7 @@ import {
 } from "./capture-worker.js"
 import { ADD_FAILURE_MAX_ATTEMPTS, MEMORY_CAPTURE_WINDOW_CHARS, MEMORY_FACT_MAX_CHARS } from "./config.js"
 import type { DecisionGateOptions } from "./decision-gate.js"
-import { TRIAGE_QUESTION_NAMES, buildValuationState } from "./gates.js"
+import { buildValuationState, TRIAGE_QUESTION_NAMES } from "./gates.js"
 import { readTraceEvents, tracesDir } from "./trace.js"
 import { usageLedgerPath } from "./usage-ledger.js"
 
