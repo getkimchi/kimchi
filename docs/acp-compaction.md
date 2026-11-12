@@ -41,6 +41,27 @@ response and the aborted `compaction_end` activity are ordered independently,
 so clients should treat them as two views of the same outcome, not wait for
 both.
 
+## Invoking compaction: the `/compact` command
+
+Prompt-driving clients (JetBrains Air, Zed) discover the manual compaction
+affordance as an advertised ACP command: `/compact` in `availableCommands`
+(the ACP Slash Commands contract). The command arrives as an ordinary
+`session/prompt` whose first text block starts with `/compact` — optionally
+followed by free-text instructions for the summary, mapping onto the same
+`instructions` parameter as the ext method. The name must be followed by
+whitespace or the end of the block, so `/compactfoo` is an ordinary prompt.
+
+The prompt is handled locally: it never reaches the model and creates no
+turn. The server surfaces the invocation as a live-only `user_message_chunk`
+(the runtime records only the summary, so the command text itself would
+otherwise never appear), runs the same handler as `_kimchi.dev/compact` —
+so progress streams through the `agent_activity` notifications and the usage
+gauge refreshes via the same `compaction_end` event — and reports the
+terminal outcome as an `agent_message_chunk` ("Context compacted." plus the
+summary, or the cancelled/failed outcome). The PromptResponse carries
+`stopReason: "end_turn"` for `completed`/`failed`, or `cancelled` when the
+compaction was aborted.
+
 ## Lifecycle: `_kimchi.dev/agent_activity`
 
 Compaction streams no transcript or session-update traffic by design — the
@@ -104,9 +125,11 @@ Semantics:
 ## Where it lives
 
 - Ext methods: `src/modes/acp/ext-methods/compact.ts`, `compact-abort.ts`
+- Command advertisement + dispatch: `src/modes/acp/commands.ts`
+  (`tryParseCompactCommand`), `src/modes/acp/server.ts` (`runCompactCommand`)
 - Activity forwarding: `src/modes/acp/activity-updates.ts`
 - Lifecycle + value refresh: `src/modes/acp/server.ts`
   (`onSessionEvent`, `emitPostCompactionUsage`)
 - Unit tests: `src/modes/acp/server.test.ts`
-  ("KimchiAcpAgent post-compaction usage_update"); e2e:
+  ("KimchiAcpAgent post-compaction usage_update", "compact command"); e2e:
   `tests/e2e/acp/compaction.test.ts`

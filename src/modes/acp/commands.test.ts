@@ -75,7 +75,7 @@ describe("composeAvailableCommands", () => {
 	})
 
 	it("returns only the static palette when a session has no skills", () => {
-		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["bug", "language"])
+		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["bug", "compact", "language"])
 	})
 })
 
