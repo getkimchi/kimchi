@@ -58,7 +58,12 @@ import {
 	tokenJaccard,
 	windowByBudget,
 } from "./capture-worker.js"
-import { ADD_FAILURE_MAX_ATTEMPTS, MEMORY_CAPTURE_WINDOW_CHARS, MEMORY_FACT_MAX_CHARS } from "./config.js"
+import {
+	ADD_FAILURE_MAX_ATTEMPTS,
+	MEMORY_CAPTURE_INCREMENTAL_MESSAGES,
+	MEMORY_CAPTURE_WINDOW_CHARS,
+	MEMORY_FACT_MAX_CHARS,
+} from "./config.js"
 import type { DecisionGateOptions } from "./decision-gate.js"
 import { buildValuationState, TRIAGE_QUESTION_NAMES } from "./gates.js"
 import { readTraceEvents, tracesDir } from "./trace.js"
@@ -276,23 +281,26 @@ describe("incrementalCapture", () => {
 	it("spawns the batch at the threshold and advances the mark", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
-		const entries = Array.from({ length: 10 }, (_, i) => msgEntry(`m${i}`))
-		incrementalCapture(entries, state, "/test/cwd", "capture-sess", spawn)
+		const entries = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(1)
-		expect((spawn.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(10)
-		expect(state.spawnedCount).toBe(10)
-		// Below threshold again until 10 more accumulate.
-		incrementalCapture([...entries, msgEntry("one more")], state, "/test/cwd", "capture-sess", spawn)
+		expect((spawn.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
+		expect(state.spawnedCount).toBe(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
+		// Below threshold again until another threshold-sized span accumulates.
+		incrementalCapture([...entries, msgEntry("one more")], state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(1)
 	})
 
 	it("batches are non-overlapping across spawns", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
-		const first = Array.from({ length: 10 }, (_, i) => msgEntry(`a${i}`))
-		incrementalCapture(first, state, "/test/cwd", "capture-sess", spawn)
-		const second = [...first, ...Array.from({ length: 12 }, (_, i) => msgEntry(`b${i}`))]
-		incrementalCapture(second, state, "/test/cwd", "capture-sess", spawn)
+		const first = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES }, (_, i) => msgEntry(`a${i}`))
+		incrementalCapture(first, state, "/test/cwd", spawn)
+		const second = [
+			...first,
+			...Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES + 2 }, (_, i) => msgEntry(`b${i}`)),
+		]
+		incrementalCapture(second, state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
 		const secondBatch = (spawn.mock.calls[1] as CaptureMessage[][])[0]
 		expect(secondBatch.every((m) => m.content.startsWith("b"))).toBe(true)
@@ -300,9 +308,9 @@ describe("incrementalCapture", () => {
 
 	it("a fresh state re-derives from zero — the worker ledger dedupes", () => {
 		const spawn = vi.fn()
-		const entries = Array.from({ length: 15 }, (_, i) => msgEntry(`m${i}`))
-		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", "capture-sess", spawn)
-		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", "capture-sess", spawn)
+		const entries = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES + 5 }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
+		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
 	})
 })
@@ -2502,11 +2510,13 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		vi.mocked(spawn).mockImplementation(() => child)
 	}
 
+	const THRESHOLD = MEMORY_CAPTURE_INCREMENTAL_MESSAGES
+
 	it("turn_end and tool_result drive the same non-overlapping increment", () => {
 		const { api, getHandler } = createExtensionApi()
 		wireMemoryCapture(api, () => true)
 		mockSpawn()
-		const ctx = createContext({ sessionManager: { getEntries: () => entries(12) } })
+		const ctx = createContext({ sessionManager: { getEntries: () => entries(THRESHOLD) } })
 		const turnEnd = getHandler("turn_end")
 		const toolResult = getHandler("tool_result")
 		const pendingDir = join(home, ".config", "kimchi", "memory", "pending") as string
@@ -2520,7 +2530,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		expect(readdirSync(pendingDir)).toHaveLength(1)
 
 		// More entries land: the next hook sees only the new span.
-		const ctx2 = createContext({ sessionManager: { getEntries: () => entries(25) } })
+		const ctx2 = createContext({ sessionManager: { getEntries: () => entries(THRESHOLD * 2) } })
 		toolResult({ type: "tool_result" }, ctx2)
 		expect(readdirSync(pendingDir)).toHaveLength(2)
 	})
@@ -2529,10 +2539,10 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		const { api, getHandler } = createExtensionApi()
 		wireMemoryCapture(api, () => true)
 		mockSpawn()
-		const atTwelve = createContext({ sessionManager: { getEntries: () => entries(12) } })
-		const atFifteen = createContext({ sessionManager: { getEntries: () => entries(15) } })
-		getHandler("turn_end")({ type: "turn_end" }, atTwelve)
-		getHandler("session_shutdown")({ type: "session_shutdown" }, atFifteen)
+		const atThreshold = createContext({ sessionManager: { getEntries: () => entries(THRESHOLD) } })
+		const atThresholdPlusThree = createContext({ sessionManager: { getEntries: () => entries(THRESHOLD + 3) } })
+		getHandler("turn_end")({ type: "turn_end" }, atThreshold)
+		getHandler("session_shutdown")({ type: "session_shutdown" }, atThresholdPlusThree)
 
 		const pendingDir = join(home, ".config", "kimchi", "memory", "pending") as string
 		const jobs = readdirSync(pendingDir)
@@ -2540,9 +2550,9 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		const messages = jobs.flatMap(
 			(name) => (JSON.parse(readFileSync(join(pendingDir, name), "utf-8")) as { messages: CaptureMessage[] }).messages,
 		)
-		// 12 from the increment + 3 tail — no message is queued twice.
-		expect(messages).toHaveLength(15)
-		expect(new Set(messages.map((m) => m.content)).size).toBe(15)
+		// THRESHOLD from the increment + 3 tail — no message is queued twice.
+		expect(messages).toHaveLength(THRESHOLD + 3)
+		expect(new Set(messages.map((m) => m.content)).size).toBe(THRESHOLD + 3)
 	})
 
 	it("shutdown splits a long session tail into bounded jobs", () => {
@@ -3676,14 +3686,14 @@ describe("incrementalCapture — spawn failure keeps the mark", () => {
 	it("a false-returning spawn leaves the span for the next evaluation", () => {
 		const state = createIncrementalCaptureState()
 		const spawnFailing = vi.fn().mockReturnValue(false)
-		const entries = Array.from({ length: 10 }, (_, i) => msgEntry(`m${i}`))
+		const entries = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES }, (_, i) => msgEntry(`m${i}`))
 		incrementalCapture(entries, state, "/test/cwd", spawnFailing)
 		expect(spawnFailing).toHaveBeenCalledTimes(1)
 		expect(state.spawnedCount).toBe(0)
 		// Recovering spawn re-attempts the SAME batch — nothing is lost.
 		const spawnOk = vi.fn().mockReturnValue(true)
 		incrementalCapture(entries, state, "/test/cwd", spawnOk)
-		expect((spawnOk.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(10)
-		expect(state.spawnedCount).toBe(10)
+		expect((spawnOk.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
+		expect(state.spawnedCount).toBe(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
 	})
 })

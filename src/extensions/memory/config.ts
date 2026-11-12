@@ -84,7 +84,12 @@ export const SUPERSEDE_SEARCH_TOPK = 8
  * everything for shutdown, shrinking the next-session staleness race to the
  * last few turns.
  */
-export const MEMORY_CAPTURE_INCREMENTAL_MESSAGES = 10
+// Mid-loop increment: how many uncaptured messages accrue before the next
+// capture job spawns. ~30 spans a fuller episode arc — windows see
+// hypothesis→outcome→conclusion, which is what extraction needs; much
+// smaller and each window is mid-deliberation with nothing complete to
+// extract.
+export const MEMORY_CAPTURE_INCREMENTAL_MESSAGES = 30
 
 /** Record key for drain-attributed jobs whose job file predates session
  *  attribution (pre-upgrade pending jobs). Never a live session's id, so

@@ -92,10 +92,12 @@ export function captureMessagesTail(
 	tail: CaptureMessage[],
 	cwd: string,
 	perJobMax = MEMORY_CAPTURE_JOB_MAX_MESSAGES,
-): void {
+): boolean {
+	let ok = true
 	for (let i = 0; i < tail.length; i += perJobMax) {
-		captureMessages(tail.slice(i, i + perJobMax), cwd)
+		ok = captureMessages(tail.slice(i, i + perJobMax), cwd) && ok
 	}
+	return ok
 }
 
 /**
@@ -138,7 +140,7 @@ export function incrementalCapture(
 	entries: readonly SessionEntry[],
 	state: IncrementalCaptureState,
 	cwd: string,
-	spawn: (messages: CaptureMessage[], cwd: string) => boolean | undefined = captureMessages,
+	spawn: (messages: CaptureMessage[], cwd: string) => boolean | undefined = captureMessagesTail,
 ): void {
 	const messages = extractMessages(entries)
 	if (messages.length - state.spawnedCount < MEMORY_CAPTURE_INCREMENTAL_MESSAGES) return
