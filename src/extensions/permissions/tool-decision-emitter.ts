@@ -31,6 +31,7 @@ export function emitToolDecision(
 		decision,
 		sourceDetail,
 		permissionMode,
+		...(event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {}),
 		...(modeFlap ? { modeFlap } : {}),
 	}
 	pi.events.emit(PERMISSION_EVENTS.TOOL_DECISION, payload)

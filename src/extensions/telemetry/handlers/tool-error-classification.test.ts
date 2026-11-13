@@ -234,6 +234,23 @@ describe("classifyToolError — tool scoping (negative cases)", () => {
 		const c = classifyToolError("write", "Declined by user")
 		expect(c.kind).toBe("declined")
 	})
+
+	it("does not apply the codemode script-error family to other tools", () => {
+		// A non-codemode tool whose output merely mentions the marker stays on
+		// the raw fail-open fallback (tool-name guard).
+		const msg = "step one done\n\nScript error:\nReferenceError: x is not defined"
+		const c = classifyToolError("bash", msg)
+		expect(c.kind).toBe("failure")
+		expect(c.message).toBe(msg.slice(0, 300))
+	})
+
+	it("does not match the codemode marker without a line-start anchor", () => {
+		// `Script error:` must start a line — text ending with "...Script error:"
+		// without the trailing error line is not the upstream failure format.
+		const c = classifyToolError("codemode", "partial output mentions Script error: somewhere")
+		expect(c.kind).toBe("failure")
+		expect(c.message).toBe("partial output mentions Script error: somewhere".slice(0, 300))
+	})
 })
 
 describe("classifyToolError — fallback", () => {

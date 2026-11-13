@@ -122,14 +122,16 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `session.end` | Session ends | `model`, `duration_ms`, `ended_by`, `source`, `mode` |
 | `user_message` | User sends a message | `model`, `message_length`, `turn_index` *(the 1-based session turn this prompt's run starts in)* |
 | `api_request` | Assistant response completes | `model`, `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `cost_usd`, `duration_ms`, `request.trace_id`, `request.span_id` *(trace of the request that produced it — present when a provider request has been issued)* |
-| `tool_result` | Any tool finishes | `tool_name`, `model`, `success`, `duration_ms` |
-| `file_read` | `read` tool succeeds | `model`, `language`, `file_hash`, `duration_ms` |
-| `file_written` | `write` tool succeeds | `model`, `language`, `file_hash`, `lines_added`, `duration_ms` |
-| `file_edited` | `edit` / `multiedit` / `patch` succeed | `model`, `language`, `file_hash`, `lines_added`, `lines_deleted`, `duration_ms` |
-| `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
-| `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)*, `request.trace_id` / `request.span_id` *(when a provider request context exists)*. **Not** emitted for subagent bash timeouts killed by the budget clamp — that is expected containment, reported as `subagent.bash_clamped` |
+| `tool_result` | Any tool finishes | `tool_name`, `model`, `success`, `duration_ms`, `nested`¹ |
+| `file_read` | `read` tool succeeds | `model`, `language`, `file_hash`, `duration_ms`, `nested`¹ |
+| `file_written` | `write` tool succeeds | `model`, `language`, `file_hash`, `lines_added`, `duration_ms`, `nested`¹ |
+| `file_edited` | `edit` / `multiedit` / `patch` succeed | `model`, `language`, `file_hash`, `lines_added`, `lines_deleted`, `duration_ms`, `nested`¹ |
+| `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms`, `nested`¹ |
+| `tool_outcome` | A gated/blocked/declined or recognized model-mistake result (routed out of the `error` funnel) | `model`, `outcome_kind` (`blocked` / `declined` / `model_mistake`), `message` (canonical, low-cardinality), `tool_name`, `tool_use_id`, `nested`¹, plus bounded family attrs (e.g. `exit_code`, `failure_code`, `file_hash`) |
+| `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(recognized families carry a canonical message; unrecognized are truncated to 300 chars)*, `request.trace_id` / `request.span_id` *(when a provider request context exists)*, `nested`¹. **Not** emitted for subagent bash timeouts killed by the budget clamp — that is expected containment, reported as `subagent.bash_clamped` |
+| `codemode.completed` | Every `codemode` tool call finishes (success and failure alike) — one aggregate record per call | `model`, `success`, `duration_ms`, `nested_call_count`, `nested_error_count`, `nested_cancelled_count`, `nested_tools` *(sorted unique normalized names, comma-joined: built-in tools and known `models.*` methods keep their ids, everything else — e.g. MCP tools — maps to `other`)*, `nested_models_cost_usd` *(sum of finite positive costs of nested `models.classify` / `models.generateImages` calls, 6 dp)*, `output_truncated` *(Pi's truncation warning detected in the first output text block)* |
 | `agent.interrupted` | User aborts the agent mid-turn (Esc) | `phase` (`llm` for a cancelled provider stream, `tool` for a cancelled tool execution), `tool_name` *(present only when `phase` is `tool` — the errored, i.e. killed, tool's result)*, `is_subagent` (`true` when the aborted run belonged to an Agents subagent — deduplicate an Esc that cascades to parent and subagent runs via this flag and `session.parent_id`), `turn_index`, `ms_into_turn` *(wall-clock ms from the user prompt's `before_agent_start` until the abort)*, `model` — the user-facing selection: `auto` when the Auto router is active, otherwise the concrete model id; `routed_model` *(present only under Auto routing)* — the router's concrete pick |
-| `claude_code.tool_decision` | Every gated permission decision, prompted or automatic | `tool_name`, `tool_use_id`, `decision` (`accept` / `reject`), `decision_source` (`config` / `hook` / `user_permanent` / `user_temporary` / `user_abort` / `user_reject`), `source_detail`, `permission_mode` (`default` / `plan` / `auto` / `yolo`), `model` — the user-facing selection: `auto` when the Auto router is active, otherwise the concrete model id |
+| `claude_code.tool_decision` | Every gated permission decision, prompted or automatic | `tool_name`, `tool_use_id`, `decision` (`accept` / `reject`), `decision_source` (`config` / `hook` / `user_permanent` / `user_temporary` / `user_abort` / `user_reject`), `source_detail`, `permission_mode` (`default` / `plan` / `auto` / `yolo`), `nested`¹, `model` — the user-facing selection: `auto` when the Auto router is active, otherwise the concrete model id |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
 | `subagent.bash_clamped` | Subagent bash call had its timeout reduced by the wall-clock budget clamp | `model`, `agent_type`, `reason` (`budget_exhausted` / `budget_tail`), `requested_timeout_s`, `clamped_to_s`, `remaining_ms` |
 | `remote_execution.started` | Remote agent successfully spawned | `origin` |
@@ -145,6 +147,17 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 > (`"plan"` / `"plan-mode"` / `"ferment plan"`) plus numeric aggregates
 > (durations, counts, token totals). Plan text, prompts, results,
 > and file paths are never emitted.
+
+> **¹ Nested-call attribution:** `nested: true` + `parent_tool_use_id` mark records for
+> calls issued by another tool — a codemode script (upstream carries the parent call id on
+> the `tool_execution_*` extension events and on `tool_call` permission events). Direct
+> (model-issued) calls carry neither attribute. Usage and duration still count under the
+> nested tool's own name — the marker is additive attribution, not a re-bucketing.
+
+> **Codemode privacy:** `codemode.completed` carries counts, enums, and cost totals only —
+> never script text, nested-call args, error text, or file paths. The upstream
+> `details.calls` entries are untrusted runtime data and are validated before use;
+> registered extension/MCP tool names are not assumed safe and normalize to `other`.
 | `loop_guard.warn` | Loop-guard issues a steer | `model`, `detector`, `count`, `is_subagent` |
 | `loop_guard.subagent_abort` | Subagent terminated after a loop-guard steer | `model`, `detector`, `count`, `is_subagent` |
 

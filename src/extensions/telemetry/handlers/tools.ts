@@ -1,5 +1,7 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { CodemodeToolDetails, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { BASH_TIMEOUT_STATUS_PATTERN } from "../../agents/subagent-bash-clamp.js"
+import { FERMENT_V2_TOOL_NAMES } from "../../ferment-v2/constants.js"
+import { TODO_TOOL_NAMES } from "../../todos/tool.js"
 import { accumulateToolUsage, handleBashCumulativeMetrics, handleEditCumulativeMetrics } from "../accumulator.js"
 import {
 	computeLineChanges,
@@ -9,7 +11,7 @@ import {
 	inferLanguage,
 	type ToolArgs,
 } from "../helpers.js"
-import type { TelemetryContext } from "../session-context.js"
+import type { TelemetryAttributes, TelemetryContext } from "../session-context.js"
 import {
 	classifyToolError,
 	type ToolErrorClassification,
@@ -45,6 +47,7 @@ export function emitToolOutcome(
 	ctx: ExtensionContext | undefined,
 	classification: ToolOutcomeClassification,
 	call: { toolName: string; toolCallId: string },
+	nestedAttrs: TelemetryAttributes = {},
 ): void {
 	tm.emit(
 		"tool_outcome",
@@ -56,12 +59,102 @@ export function emitToolOutcome(
 			tool_use_id: call.toolCallId,
 			canonicalization: "v1",
 			...(classification.attrs ?? {}),
+			...nestedAttrs,
 			...tm.getTraceAttributes(),
 		},
 		ctx,
 		tm.lastRoutedModel ? { routed_model: tm.lastRoutedModel } : undefined,
 	)
 	tm.toolOutcomeCallIds.add(call.toolCallId)
+}
+
+// ---------------------------------------------------------------------------
+// codemode.completed (one summary record per codemode call)
+// ---------------------------------------------------------------------------
+
+/** Closed allowlist for the `nested_tools` normalization: built-in tool names
+ *  with stable ids plus the known models.* methods scripts can reach. Names of
+ *  registered extension/MCP tools are NOT assumed privacy-safe — every other
+ *  name maps to `other`, keeping the attribute's cardinality bounded. */
+const NESTED_TOOL_ALLOWLIST = new Set([
+	// Core pi tools.
+	"read",
+	"write",
+	"edit",
+	"multiedit",
+	"patch",
+	"bash",
+	"grep",
+	"find",
+	"ls",
+	// Kimchi harness tools with stable names.
+	"set_phase",
+	"agent",
+	"get_subagent_result",
+	"steer_subagent",
+	"submit_plan",
+	"bash_control",
+	"questionnaire",
+	"ask_user",
+	"web_search",
+	"web_fetch",
+	"memory_search",
+	"skill_view",
+	"tool_search",
+	"list_ferments",
+	...TODO_TOOL_NAMES,
+	...FERMENT_V2_TOOL_NAMES,
+	// models.* methods reachable from codemode scripts.
+	"models.classify",
+	"models.generateImages",
+	"models.getModelsOfType",
+	"models.getAvailableOfType",
+	"models.getModelOfType",
+])
+
+/** The models.* methods that report a per-call cost (upstream model-globals). */
+const COST_BEARING_MODELS_METHODS = new Set(["models.classify", "models.generateImages"])
+
+/** Nested-call statuses of the pinned pi CodemodeToolDetails contract. */
+const CODEMODE_NESTED_STATUSES = new Set(["running", "ok", "error", "cancelled"])
+
+/** Pi's truncation warning heads the first output text block when the script
+ *  output exceeded the token cap (upstream truncateOutput). `details
+ *  .fullOutputPath` alone is insufficient — truncation can occur even when
+ *  writing the spill file fails. */
+const CODEMODE_TRUNCATION_WARNING = "Warning: truncated output"
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** Validate an untrusted `details.calls` entry against the pinned
+ *  CodemodeToolDetails contract: object with a non-empty string name and a
+ *  known status. Malformed entries are skipped, not fatal. */
+function isValidCodemodeCall(value: unknown): value is CodemodeToolDetails["calls"][number] {
+	if (!isRecord(value)) return false
+	if (typeof value.name !== "string" || value.name.length === 0) return false
+	return typeof value.status === "string" && CODEMODE_NESTED_STATUSES.has(value.status)
+}
+
+/** Whether Pi truncated this codemode result: the first output text block —
+ *  the one after the `Script completed/failed` header — starts with the
+ *  truncation warning. */
+function isTruncatedCodemodeOutput(result: unknown): boolean {
+	if (!result || typeof result !== "object" || !Array.isArray((result as { content?: unknown }).content)) {
+		return false
+	}
+	const blocks = (result as { content: unknown[] }).content
+	let sawHeader = false
+	for (const block of blocks) {
+		if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") continue
+		if (!sawHeader && (block.text.startsWith("Script completed") || block.text.startsWith("Script failed"))) {
+			sawHeader = true
+			continue
+		}
+		return block.text.startsWith(CODEMODE_TRUNCATION_WARNING)
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +172,7 @@ export function handleToolExecutionStart(
 export function handleToolExecutionEnd(
 	tm: TelemetryContext,
 	ctx: ExtensionContext,
-	event: { toolCallId: string; isError?: boolean; result?: unknown },
+	event: { toolCallId: string; isError?: boolean; result?: unknown; parentToolCallId?: string },
 ): void {
 	const pending = tm.pendingArgs.get(event.toolCallId)
 	// Release the clamp marker for this call regardless of outcome — the id
@@ -91,6 +184,14 @@ export function handleToolExecutionEnd(
 	const { toolName, args: rawArgs } = pending
 	const args = (rawArgs ?? {}) as ToolArgs
 	const toolDurationMs = Date.now() - (tm.toolStartTimes.get(event.toolCallId) ?? tm.telemetryStartMs)
+
+	// Nested-call attribution (upstream ToolExecutionEndEvent.parentToolCallId):
+	// set when another tool — a codemode script — issued this call. Additive
+	// marker only; usage/duration accounting is unchanged so totals stay
+	// comparable across direct and nested calls.
+	const nestedAttrs: TelemetryAttributes = event.parentToolCallId
+		? { nested: true, parent_tool_use_id: event.parentToolCallId }
+		: {}
 
 	// --- Error classification (before per-tool emission) ----------------------
 	// The bash execution record and the error funnel both consume the
@@ -133,6 +234,7 @@ export function handleToolExecutionEnd(
 					duration_ms: toolDurationMs,
 					tool_result_size_chars: sizeChars,
 					turn_index: tm.turnIndex,
+					...nestedAttrs,
 				},
 				ctx,
 			)
@@ -149,6 +251,7 @@ export function handleToolExecutionEnd(
 					// the full file (up to the built-in size cap), so they are not truncated.
 					read_is_truncated: !!args?.limit,
 					turn_index: tm.turnIndex,
+					...nestedAttrs,
 				},
 				ctx,
 			)
@@ -163,6 +266,7 @@ export function handleToolExecutionEnd(
 				duration_ms: toolDurationMs,
 				tool_result_size_chars: sizeChars,
 				turn_index: tm.turnIndex,
+				...nestedAttrs,
 			},
 			ctx,
 		)
@@ -175,6 +279,7 @@ export function handleToolExecutionEnd(
 					lines_added: computeWriteLines(args),
 					duration_ms: toolDurationMs,
 					turn_index: tm.turnIndex,
+					...nestedAttrs,
 				},
 				ctx,
 			)
@@ -188,6 +293,7 @@ export function handleToolExecutionEnd(
 				duration_ms: toolDurationMs,
 				tool_result_size_chars: sizeChars,
 				turn_index: tm.turnIndex,
+				...nestedAttrs,
 			},
 			ctx,
 		)
@@ -203,6 +309,7 @@ export function handleToolExecutionEnd(
 					lines_deleted: changes.removed,
 					duration_ms: toolDurationMs,
 					turn_index: tm.turnIndex,
+					...nestedAttrs,
 				},
 				ctx,
 			)
@@ -216,6 +323,7 @@ export function handleToolExecutionEnd(
 				duration_ms: toolDurationMs,
 				tool_result_size_chars: sizeChars,
 				turn_index: tm.turnIndex,
+				...nestedAttrs,
 			},
 			ctx,
 		)
@@ -235,6 +343,7 @@ export function handleToolExecutionEnd(
 			turn_index: tm.turnIndex,
 			tool_use_id: event.toolCallId,
 			canonicalization: "v1",
+			...nestedAttrs,
 			...tm.getTraceAttributes(),
 		}
 		if (!event.isError || !classification) {
@@ -264,6 +373,53 @@ export function handleToolExecutionEnd(
 			tm.emit("command_executed", { ...commandAttrs, command_outcome: "execution_error" }, ctx, modelOverrides)
 		}
 		// blocked / declined / model_mistake: pre-execution — no record.
+	} else if (toolName === "codemode") {
+		// One summary record per codemode call (success and failure alike):
+		// adoption, nested-call mix, failure rate, and nested models.* cost in a
+		// single joinable record. Nested per-call detail persists in the session
+		// JSONL (`nestedCalls` on the tool result message) — telemetry carries
+		// aggregates only. Privacy: counts/enums only — never script text, args,
+		// or error text; `details.calls` is untrusted upstream data, validated
+		// before use, and its `args` previews are never exported.
+		const details = (event.result as { details?: unknown } | undefined)?.details
+		const rawCalls = isRecord(details) && Array.isArray(details.calls) ? details.calls : []
+		const calls = rawCalls.filter(isValidCodemodeCall)
+		// Sum of finite positive costs of known cost-bearing models.* calls,
+		// rounded to 6 dp (typical classifier-call magnitudes).
+		const nestedModelsCostUsd =
+			Math.round(
+				calls.reduce(
+					(sum, call) =>
+						COST_BEARING_MODELS_METHODS.has(call.name) &&
+						typeof call.cost === "number" &&
+						Number.isFinite(call.cost) &&
+						call.cost > 0
+							? sum + call.cost
+							: sum,
+					0,
+				) * 1_000_000,
+			) / 1_000_000
+		tm.emit(
+			"codemode.completed",
+			{
+				success: !event.isError,
+				duration_ms: toolDurationMs,
+				nested_call_count: calls.length,
+				nested_error_count: calls.filter((call) => call.status === "error").length,
+				nested_cancelled_count: calls.filter((call) => call.status === "cancelled").length,
+				nested_tools: [...new Set(calls.map((call) => (NESTED_TOOL_ALLOWLIST.has(call.name) ? call.name : "other")))]
+					.sort()
+					.join(","),
+				nested_models_cost_usd: nestedModelsCostUsd,
+				output_truncated: isTruncatedCodemodeOutput(event.result),
+				turn_index: tm.turnIndex,
+				tool_use_id: event.toolCallId,
+				...nestedAttrs,
+				...tm.getTraceAttributes(),
+			},
+			ctx,
+			modelOverrides,
+		)
 	}
 
 	// --- Error / outcome tracking ----------------------------------------------
@@ -308,13 +464,14 @@ export function handleToolExecutionEnd(
 						tool_use_id: event.toolCallId,
 						canonicalization: "v1",
 						...(classification.attrs ?? {}),
+						...nestedAttrs,
 						...traceAttrs,
 					},
 					ctx,
 				)
 			}
 		} else {
-			emitToolOutcome(tm, ctx, classification, { toolName, toolCallId: event.toolCallId })
+			emitToolOutcome(tm, ctx, classification, { toolName, toolCallId: event.toolCallId }, nestedAttrs)
 		}
 	}
 }
