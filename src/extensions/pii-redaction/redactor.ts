@@ -394,7 +394,9 @@ function isBase64TailChar(c: string): boolean {
  */
 export function base64RunBefore(text: string, start: number): number {
 	let n = 0
-	for (let i = start - 1; i >= 0 && isBase64RunChar(text.charAt(i)); i--) n++
+	for (let i = start - 1; i >= 0 && isBase64RunChar(text.charAt(i)); i--) {
+		if (++n >= 16) return n // every caller compares >= 16 — constant-bound the walk (design-005)
+	}
 	return n
 }
 
@@ -607,19 +609,26 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		regex: /(aws_secret(?:_access)?_key\s*[:=]\s*["']?)([A-Za-z0-9/+=]{16,})/gi,
 		secretGroup: 2,
 	},
-	// Azure connection-string secrets. AccountName is an identifier and the
-	// keyword itself is never secret, so only the value is redacted — mirrored
-	// after the engine's keyword-anchored patterns, kept value-only for
-	// span-minimal consistency with the URL customs.
+	// Azure connection-string secrets (SharedAccessKey/SharedAccessSignature).
+	// AccountName is an identifier and the keyword itself is never secret, so
+	// only the value is redacted — mirrored after the engine's keyword-anchored
+	// patterns, kept value-only for span-minimal consistency with the URL
+	// customs. AccountKey is deliberately NOT anchored here: AZURE_STORAGE_KEY
+	// below owns it, so the pre-existing excludedEntities key for AccountKey
+	// redaction keeps working (narrowed per correctness-002 — this pattern used
+	// to claim AccountKey too, shadowing the storage-key pattern entirely).
 	{
 		name: "AZURE_CONNECTION_STRING",
-		regex: /((?:AccountKey|SharedAccessKey|SharedAccessSignature)=)([A-Za-z0-9+/=]{20,})/g,
+		regex: /((?:SharedAccessKey|SharedAccessSignature)=)([A-Za-z0-9+/=]{20,})/g,
 		secretGroup: 2,
 	},
-	// Azure storage keys inside a connection string.
+	// Azure storage keys inside a connection string. The value floor matches
+	// the fail-open truncation principle the AWS custom documents: a truncated
+	// (20-39 char) AccountKey must still redact — pre-narrowing, the
+	// connection-string pattern covered those at {20,}.
 	{
 		name: "AZURE_STORAGE_KEY",
-		regex: /(AccountKey=)([A-Za-z0-9+/]{40,}={0,2})/g,
+		regex: /(AccountKey=)([A-Za-z0-9+/]{20,}={0,2})/g,
 		secretGroup: 2,
 	},
 	// Basic-auth header values.
@@ -722,8 +731,11 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
  * found none), while `mysecretpassword` lowercase forms stay redacted.
  */
 export function isGenericNonSecretValue(value: string): boolean {
-	// Shell expansions and command substitutions.
-	if (/^\$[{[(\w]/.test(value) || /^<[A-Za-z0-9_\s-]*>$/.test(value)) return true
+	// `$`-leading shell expansions and command substitutions only:
+	// ${VAR}, $[idx], $(cmd), $VAR — the previous /\$/\w clause rejected any
+	// word-char after `$`, which let bcrypt/argon2 hashes ($2b$12$…) and
+	// $-prefixed secrets through (correctness-005).
+	if (/^\$(?:[{([]|[A-Za-z_])/.test(value) || /^<[A-Za-z0-9_\s-]*>$/.test(value)) return true
 	// Paths: anchored start (/, ~/, ./, ../, $VAR/) with path-ish body.
 	if (/^(?:~?\/|\.\.?\/|\$[A-Za-z_][\w]*\/)[\w.+=/@-]+\/?$/.test(value)) return true
 	// Identifier-shaped, digit-free (camelCase single words or dotted paths) —
@@ -818,8 +830,23 @@ export function applyCustomPatterns(
 			if (pattern.skipIfEmbeddedInBase64) {
 				const offset = args[args.length - 2]
 				const input = args[args.length - 1]
-				if (typeof offset === "number" && typeof input === "string" && base64RunBefore(input, offset) >= 16)
-					return match
+				// The anchored match starts AT its consumed boundary byte, so the
+				// byte class decides: only payload-internal bytes keep the run
+				// alive — `+`/`/` (raw base64) and `-`/`_` (base64url/JWT, and the
+				// keyword suffixes of anchored names like FACEBOOK_TOKEN). Every
+				// other delimiter (space, quote, `=`, `:`, `;`, `,`, tab, newline)
+				// is real secret framing and must redact — the measured across-
+				// the-delimiter run let any 16+ alnum token before a keyword
+				// suppress the adjacent true secret (severe security-001 /
+				// correctness-001 / design-p03). Residual accepted tradeoff,
+				// mirroring the engine witness: a ≥16-base64-char run glued to
+				// `+`/`/`/`-`/`_` still reads as payload.
+				if (typeof offset === "number" && typeof input === "string") {
+					const boundary = input.charAt(offset)
+					const payloadInternal = boundary === "+" || boundary === "/" || boundary === "-" || boundary === "_"
+					const run = base64RunBefore(input, offset) + (isBase64RunChar(boundary) ? 1 : 0)
+					if (payloadInternal && run >= 16) return match
+				}
 			}
 			if (secretGroup !== undefined) {
 				// Replace by POSITION, never by substring search: the secret's text

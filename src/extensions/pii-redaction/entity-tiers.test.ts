@@ -395,4 +395,18 @@ describe("entity tier registry", () => {
 			expect(customs.has(entry.entity), entry.entity).toBe(true)
 		}
 	})
+
+	it("every custom pattern for an anchor_required entity yields liveState active (mirror guard)", () => {
+		// The one-directional guard above pins active ⇒ custom. This mirror
+		// pins custom ⇒ active: a pattern added to redactor.ts for an
+		// anchor_required entity without registry membership in
+		// ANCHOR_REQUIRED_WITH_OWN_CUSTOMS would drop the row from the
+		// published catalog while firing in production (design-002).
+		const byName = new Map(listRedactionCatalog().map((e) => [e.entity, e]))
+		for (const name of CUSTOM_PATTERN_NAMES) {
+			const entry = byName.get(name)
+			if (entry?.tier !== "anchor_required") continue
+			expect(entry.liveState, name).toBe("active")
+		}
+	})
 })

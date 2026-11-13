@@ -6,7 +6,7 @@
  * reserved, no current aliases).
  *
  * Consumers: the release workflow attaches this output to the GitHub
- * release as redaction-catalog.json (the ai-enabler-console fetch script
+ * release as redaction-catalog.json (the policy-UI console's fetch script
  * regenerates its constants from that asset); the harness never serves it
  * at runtime.
  *

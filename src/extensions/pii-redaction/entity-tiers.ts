@@ -314,7 +314,7 @@ export function isKnownEntity(name: string): boolean {
 	return ENTITY_TIERS.has(name)
 }
 
-/** Every registered entity name (includes GUID). For drift guards. */
+/** Every registered entity name. For drift guards. */
 export function listRegisteredEntities(): readonly string[] {
 	return [...ENTITY_TIERS.keys()]
 }
@@ -371,7 +371,7 @@ export function getDefaultExcludedEntities(): string[] {
 // Redaction categories — the coarse unit admins toggle (LLM-4416)
 // ---------------------------------------------------------------------------
 //
-// Every registered entity except GUID belongs to exactly one category and
+// Every registered entity belongs to exactly one category and
 // carries an effective default: whether it redacts today. The default is
 // intentionally NOT derived from the tier alone: anchor_required entities
 // (TELEGRAM_BOT_TOKEN, OKTA_TOKEN, ...) redact via keyword-anchored custom
@@ -518,9 +518,10 @@ export function getEntityCategory(name: string): RedactionCategory | undefined {
 
 /**
  * Whether the entity redacts today under the tier defaults. False for
- * unknown names, GUID, bare-shape detectors, and anchor-required entities
- * without an anchored re-addition. True for checksum/anchored detectors and
- * for anchor-off entities covered by keyword-anchored custom patterns.
+ * unknown names, names removed via PERMANENT_ENGINE_EXCLUSIONS, bare-shape
+ * detectors, and anchor-required entities without an anchored re-addition.
+ * True for checksum/anchored detectors and for anchor-off entities covered
+ * by keyword-anchored custom patterns.
  */
 export function getEntityDefaultOn(name: string): boolean {
 	return ENTITY_CATEGORIES.get(name)?.defaultOn ?? false
@@ -551,7 +552,7 @@ const REDACTION_CATALOG: readonly RedactionCatalogEntry[] = (() => {
 	return entries.sort((a, b) => a.entity.localeCompare(b.entity))
 })()
 
-/** The full configurable catalog (GUID excluded), sorted by entity name. */
+/** The full configurable catalog, sorted by entity name. */
 export function listRedactionCatalog(): readonly RedactionCatalogEntry[] {
 	return REDACTION_CATALOG
 }

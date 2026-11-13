@@ -15,6 +15,7 @@ import {
 	getRedactionConfigError,
 	isBase64ShadowDrop,
 	isGenericLocalPart,
+	isGenericNonSecretValue,
 	isNonIdentifyingDetection,
 	isNonIdentifyingEmail,
 	isNonSensitiveIp,
@@ -205,7 +206,7 @@ describe("redactText — anchored secret patterns", () => {
 
 	it("redacts AccountKey values inside connection strings", async () => {
 		const result = await redactText(fx.azureConnString)
-		expectRedacted(result, fx.azureAccountKey, "AZURE_CONNECTION_STRING")
+		expectRedacted(result, fx.azureAccountKey, "AZURE_STORAGE_KEY")
 		expect(result).toContain("AccountKey=")
 	})
 
@@ -393,7 +394,7 @@ describe("redactText — custom secret patterns", () => {
 	})
 
 	it("relates realistic-length sk-ant- keys to ANTHROPIC_KEY even when the engine claims them (correctness-001)", async () => {
-		const key = "sk-ant-api03-" + "a1B2c3D4e5F6g7H8".repeat(6)
+		const key = `sk-ant-api03-${"a1B2c3D4e5F6g7H8".repeat(6)}`
 		const text = `claude key: ${key}`
 		const result = await redactText(text)
 		expect(result).not.toContain(key)
@@ -402,7 +403,7 @@ describe("redactText — custom secret patterns", () => {
 	})
 
 	it("honors user exclusions on the relabeled label (correctness-007)", async () => {
-		const key = "sk-ant-api03-" + "a1B2c3D4e5F6g7H8".repeat(6)
+		const key = `sk-ant-api03-${"a1B2c3D4e5F6g7H8".repeat(6)}`
 		const text = `claude key: ${key}`
 		const engine = createRedactionEngine(getDefaultExcludedEntities().filter((e) => e !== "ANTHROPIC_KEY"))
 		const dropped = await collectDetections(text, engine, new Set(["ANTHROPIC_KEY"]))
@@ -690,7 +691,7 @@ describe("anchored splice and re-additions — review regressions", () => {
 		it("redacts only the userinfo of credential-bearing database URIs", async () => {
 			const password = "sTr0ng" + "P4ss" + "w0rd" + "!9z"
 			for (const scheme of ["postgres", "postgresql", "mysql", "mongodb", "amqp", "mssql"]) {
-				const user = "svc_" + scheme
+				const user = `svc_${scheme}`
 				const host = "db.intern" + "al:5432/app"
 				const out = await redactText(`dsn: ${scheme}://${user}:${password}@${host}`)
 				expect(out, scheme).toMatch(/\[REDACTED-(DATABASE_CONNECTION_STRING|URL_WITH_CREDENTIALS|EMAIL_ADDRESS)\]/)
@@ -858,6 +859,100 @@ describe("anchored splice and re-additions — review regressions", () => {
 		// Object-valued auth stays structural (OAuth configs).
 		const nested = await redactObjectStrings({ auth: { url: "https://sso.example.com" } })
 		expect(nested).toEqual({ auth: { url: "https://sso.example.com" } })
+	})
+})
+
+describe("review round 3: base64-witness boundary classes (security-001 / correctness-001 / design-p03)", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	const V = "K9xT2mQ7pL4wR8vZ3nB6yH"
+
+	it.each([
+		`line ZGVhZGJlZWZjYWZl password: ${V}`, // space delimiter
+		`line ZGVhZGJlZWZjYWZl=password: ${V}`, // '=' delimiter
+		`line ZGVhZGJlZWZjYWZl"password: ${V}`, // quote delimiter
+		`salt=abcdefghijklmnopqrstuvwxyz1234\npassword=${V}`, // newline (env dump)
+		`digest a1b2c3d4e5f6a7b8c9d0e1f2 token: ${V}`, // hex digest + space
+		`line SGVsbG8gV29ybGQgZnJvbSBiNjQK password: ${V}`, // 20-char run
+	])("redacts a keyword-framed secret after a ≥16-char alnum token: %s", async (input) => {
+		// The across-the-delimiter witness used to skip these, leaking the
+		// true secret to the provider.
+		const out = await redactText(input)
+		expect(out).not.toContain(V)
+		expect(out).toContain("[REDACTED-GENERIC_SECRET]")
+	})
+
+	it.each([
+		["+", "raw base64"],
+		["/", "raw base64 path"],
+		["-", "base64url/JWT"],
+		["_", "anchored-name suffix"],
+	])("still skips a keyword embedded mid-payload behind %s (%s)", async (boundary) => {
+		const out = await redactText(`data ${"a".repeat(20)}${boundary}password=${V}`)
+		expect(out).toContain(V)
+	})
+
+	it("keeps a 15-char run below the witness floor redacting", async () => {
+		const out = await redactText(`line ZGVhZGJlZWZjYWZ password: ${V}`)
+		expect(out).not.toContain(V)
+	})
+
+	it("redacts both secrets in an adjacent keyword pair (one delimiter apart)", async () => {
+		const B = "M4nU8wQ2sP7vL5xR9yB3zK6t"
+		const out = await redactText(`token=${V} password=${B}`)
+		expect(out).not.toContain(V)
+		expect(out).not.toContain(B)
+		expect(out.split("[REDACTED-GENERIC_SECRET]").length - 1).toBe(2)
+	})
+})
+
+describe("review round 3: $-leading values (correctness-005)", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	it("redacts a $2b$ bcrypt hash value behind a keyword", async () => {
+		const hash = "$2b$12$KIXQePFzsv1ZUGzTEWqA9."
+		const out = await redactText(`password: ${hash}`)
+		expect(out).not.toContain(hash)
+	})
+
+	it("still rejects shell expansions", () => {
+		for (const v of ["${CI_BUILD_TOKEN}", "$(vault read)", "$MY_SECRET"]) {
+			expect(isGenericNonSecretValue(v), v).toBe(true)
+		}
+		expect(isGenericNonSecretValue("$2b$12$KIXQePFzsv1ZUGzTEWqA9.")).toBe(false)
+	})
+})
+
+describe("review round 3: AZURE pattern ownership (correctness-002)", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	// Azure's documented example storage key.
+	const key = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+
+	it("AccountKey values are owned by AZURE_STORAGE_KEY, not the connection-string pattern", async () => {
+		const out = await redactText(
+			`DefaultEndpointsProtocol=https;AccountName=myacct;AccountKey=${key};EndpointSuffix=core.windows.net`,
+		)
+		expect(out).not.toContain(key)
+		expect(out).toContain("[REDACTED-AZURE_STORAGE_KEY]")
+		expect(out).not.toContain("[REDACTED-AZURE_CONNECTION_STRING]")
+	})
+
+	it("SharedAccessSignature values stay owned by AZURE_CONNECTION_STRING", async () => {
+		const sig = "a".repeat(20)
+		const out = await redactText(`SharedAccessSignature=${sig}`)
+		expect(out).not.toContain(sig)
+		expect(out).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
+	})
+
+	it("redacts truncated AccountKey values (20-39 chars) — fail-open on export truncation", async () => {
+		const truncated = "Eby8vdM02xNOcqFlqUwJ" // 20 chars
+		const out = await redactText(`AccountKey=${truncated}`)
+		expect(out).not.toContain(truncated)
+		expect(out).toContain("[REDACTED-AZURE_STORAGE_KEY]")
 	})
 })
 
@@ -1336,7 +1431,7 @@ describe("base64-shadow suppression", () => {
 		expect(prose).not.toContain(gcp)
 		expect(prose).toContain("[REDACTED-GCP_API_KEY]")
 		// A URL path separator is not base64 evidence (correctness-003).
-		const url = "https://example.com/v1/" + gcp + "/resource"
+		const url = `https://example.com/v1/${gcp}/resource`
 		const apiCall = await redactText(`curl ${url}`)
 		expect(apiCall).not.toContain(gcp)
 		// Marker text breaks base64 runs: fixture strings keep redacting.

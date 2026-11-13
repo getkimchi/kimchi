@@ -7,26 +7,53 @@ redacts once the gate is on.
 
 ## Categories and entities
 
-Every entity the redaction engine can emit (plus the kimchi-owned custom
+Every registered entity (engine detectors plus the kimchi-owned custom
 marker types) belongs to exactly one of nine categories and carries an
 effective default — whether it redacts today or not:
 
 | Category | Members (abridged) | Default |
 |---|---|---|
-| `secrets` | vendor tokens (GitHub, AWS, LLM keys …), keyword-anchored secrets (`aws_secret_access_key = …`, `password: …`), `SECRET_FIELD` (JSON-key force-redaction) | on |
+| `secrets` | vendor tokens (GitHub, AWS, LLM keys …), keyword-anchored secrets (`aws_secret_access_key = …`, `password: …`), `SECRET_FIELD` (JSON-key force-redaction) | on (every member) |
 | `local_paths` | `LOCAL_PATH`, `CREDENTIAL_FILE` | on |
 | `emails` | `EMAIL_ADDRESS` | on |
 | `phones` | `PHONE_NUMBER` | off (bare shapes false-positive) |
 | `network` | `IP_ADDRESS`, `MAC_ADDRESS` | on |
-| `credentialed_urls` | `URL_WITH_CREDENTIALS` (+ members covered through it) | on |
+| `credentialed_urls` | `URL_WITH_CREDENTIALS`, DSNs and webhook URLs with embedded credentials (`SENTRY_DSN`, `SLACK_WEBHOOK`, `TEAMS_WEBHOOK`, `DISCORD_WEBHOOK`), `AZURE_CONNECTION_STRING` | on |
 | `financial` | `CREDIT_CARD`, `IBAN_CODE` on; routing numbers, `CRYPTO` off | mixed |
 | `identity_documents` | national IDs, healthcare IDs (SSN, passports, Medicare …) | off |
-| `personal_details` | `PERSON`, `LOCATION`, `ORGANIZATION`, `DATE_TIME`, `UK_POSTCODE` | off |
+| `personal_details` | `PERSON`, `LOCATION`, `ORGANIZATION` | off |
 
-`GUID` has no category and is not configurable: structural identifiers
-(ferment/session IDs) are never redacted. The full machine-readable catalog
-(entity → tier → category → default) is emitted by
-`bun scripts/redaction-catalog.ts`.
+Category membership is **not a stable wire contract**: members can move
+between categories (e.g. the webhook/DSN detectors moved `secrets` →
+`credentialed_urls` in this release) when a grouping better matches the
+threat class. Stored policies keyed per **entity** keep their exact
+meaning across upgrades; policies keyed per **category** follow the new
+grouping silently — if you need stability, key entities.
+
+### Removed names
+
+Twelve engine names were removed from the registry entirely — not
+configurable, permanently suppressed engine-side
+(`PERMANENT_ENGINE_EXCLUSIONS`), their names free for user-defined custom
+entities:
+
+`GUID` (structural identifiers — redacting session IDs breaks flows),
+`DATE_TIME` and `UK_POSTCODE` (log chatter, not PII), the URL family
+`URL`, `MONGODB_SRV`, `ELASTICSEARCH_URL`, `FIREBASE_URL` (coverage lives
+in the `URL_WITH_CREDENTIALS` customs), `CRATES_IO_TOKEN`, `NUGET_KEY`,
+`AIRTABLE_KEY` (measured inert on production transcripts),
+`TWILIO_ACCOUNT_SID`, `CLERK_PUBLISHABLE_KEY` (public identifiers, not
+secrets).
+
+Migration note: a **local** `redaction.entities` entry naming any of the
+twelve now throws `unknown entity` (strict, fail-visible — delete the
+entry); the org-managed wire path drops them tolerantly with one log line.
+The legacy `excludedEntities` list still accepts them (they land inert).
+
+The full machine-readable catalog (entity → tier → category → defaultOn →
+liveState) is emitted by `bun scripts/redaction-catalog.ts`; releases
+publish its active rows as the `redaction-catalog.json` asset, consumed by
+the policy-UI console.
 
 ## Local configuration (settings.json)
 
@@ -65,11 +92,13 @@ effective default — whether it redacts today or not:
 ### Custom entities
 
 Rules (violations throw locally, drop-in-managed — see below): name
-`^[A-Z][A-Z0-9_]{2,63}$` and not a built-in entity name; category from the
-list above; pattern ≤ 512 chars compiling as a JS RegExp; flags ⊆ `imsu`;
-at most 50 entries. `secretGroup` ≥ 1 replaces only that capture group (the
-rest of the match is anchoring context), mirroring the built-in anchored
-patterns. Quantified groups containing alternation or a nested quantifier —
+`^[A-Z][A-Z0-9_]{2,63}$` and not a built-in registry name (names of
+removed entities above are free for reuse — the engine detectors behind
+them stay permanently excluded); category from the list above; pattern ≤
+512 chars compiling as a JS RegExp; flags ⊆ `imsu`; at most 50 entries.
+`secretGroup` ≥ 1 replaces only that capture group (the rest of the match
+is anchoring context), mirroring the built-in anchored patterns.
+Quantified groups containing alternation or a nested quantifier —
 `(a|a)*`, `(a+)+`, `(\d{2,})*` — are rejected: these backtrack
 exponentially, the scan cannot time them out (regex runs synchronously),
 and one bad pattern would hang the process.
@@ -97,11 +126,14 @@ local.entities[E]    → local.categories[cat(E)]  → registry default
 
 ## Legacy `excludedEntities`
 
-`{ "redaction": { "excludedEntities": ["DATE_TIME"] } }` keeps its
-pre-policy meaning exactly: the array **replaces** the engine exclusion
-list wholesale (it can re-enable bare detectors, which entity states
-deliberately cannot) and disables the listed custom patterns. It cannot be
-combined with `categories`/`entities`/`customEntities` — mixing throws.
+`{ "redaction": { "excludedEntities": ["PHONE_NUMBER"] } }` is deprecated
+in favor of the policy shape above. The array **replaces** the engine
+exclusion list wholesale — with one permanent exception:
+`PERMANENT_ENGINE_EXCLUSIONS` survives every path, so the twelve removed
+names above can no longer be re-enabled (they parse but land inert). For
+anchor-required entities the legacy list remains the only way to restore
+the bare engine detector. It cannot be combined with
+`categories`/`entities`/`customEntities` — mixing throws.
 
 ## Telemetry
 

@@ -104,8 +104,8 @@ jobs:
 
       # The redaction catalog is generated once per release (not per target)
       # and attached to the GitHub release as redaction-catalog.json — the
-      # ai-enabler-console fetches it from there to regenerate its policy-UI
-      # constants. Generated from this tagged tree only; never committed.
+      # policy-UI console fetches it from there to regenerate its constants.
+      # Generated from this tagged tree only; never committed.
       - name: Generate redaction catalog
         if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
         run: bun scripts/redaction-catalog.ts > redaction-catalog.json
@@ -294,7 +294,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum kimchi_*.tar.gz kimchi_*.zip > checksums.txt
+          sha256sum kimchi_*.tar.gz kimchi_*.zip redaction-catalog.json > checksums.txt
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2

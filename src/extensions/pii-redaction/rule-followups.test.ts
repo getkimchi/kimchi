@@ -44,15 +44,15 @@ describe("rule-1: GENERIC_SECRET value guards", () => {
 
 	it("redactText: rejected values pass through, keep-class values redact", async () => {
 		const unguardPath = "/var/secrets/db-pa" + "ss-unguard"
-		const out1 = await redactText("token: " + unguardPath)
+		const out1 = await redactText(`token: ${unguardPath}`)
 		expect(out1).toContain(unguardPath)
 		const out2 = await redactText("via token: " + "oauthRefreshToken,")
 		expect(out2).toContain("oauthRefreshToken,")
 		const pw = "sTr0ng" + "P4ss" + "w0rd" + "!9z"
-		const out3 = await redactText("token: " + pw)
+		const out3 = await redactText(`token: ${pw}`)
 		expect(out3).toContain("[REDACTED-GENERIC_SECRET]")
 		const pw2 = "mysecretpassword"
-		const out4 = await redactText("password: " + pw2)
+		const out4 = await redactText(`password: ${pw2}`)
 		expect(out4).toContain("[REDACTED-GENERIC_SECRET]")
 	})
 })

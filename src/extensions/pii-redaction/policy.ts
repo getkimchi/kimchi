@@ -34,7 +34,8 @@
  *     "the anchored custom patterns run" (the default). Entity OFF excludes
  *     the engine detector AND skips the kimchi/user custom patterns with
  *     the same name — including SECRET_FIELD's JSON-key force-redaction.
- * GUID is not configurable: it has no category.
+ * Names removed via PERMANENT_ENGINE_EXCLUSIONS (GUID, DATE_TIME, …) are
+ * not configurable: no registry entry, permanently suppressed engine-side.
  */
 
 import {
@@ -421,7 +422,7 @@ function resolveRedactionPolicyUncached(managed?: RedactionPolicy, local?: Local
 	const legacy = local !== undefined && "legacyExcluded" in local ? local.legacyExcluded : undefined
 	const localPolicy = legacy !== undefined ? undefined : (local as RedactionPolicy | undefined)
 
-	// Universe: registered entities with a category (GUID has none) plus the
+	// Universe: registered entities (all categorized) plus the
 	// custom definitions from both layers. Managed custom definitions win on
 	// a name collision with local ones.
 	const customDefs = new Map<string, CustomEntityDef>()
