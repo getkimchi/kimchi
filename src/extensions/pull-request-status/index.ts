@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isStatusLineElementHidden } from "../../config/status-line-config.js"
 import { setActiveAnchor } from "../../shared/active-anchor.js"
+import { notifyUser } from "../../utils/notify-user.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	subscribePullRequestReconciliation,
@@ -87,8 +88,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		if (isStatusLineElementHidden("work-pr")) return
 		warnings.add(message)
 		const text = `PR/MR lookup unavailable: ${message}`
-		if (context.hasUI) context.ui.notify(text, "warning")
-		else console.error(text)
+		notifyUser(context, text, "warning")
 	}
 
 	function details(selected = workId) {

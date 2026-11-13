@@ -5,6 +5,7 @@ import type {
 	ExtensionHandler,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
+
 import type { McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
 import {
 	createMcpAdapter,
@@ -22,6 +23,7 @@ import {
 	reapplyCurrentProfile,
 	registerReadOnlyToolProvider,
 } from "../../shared/planning/tool-profile-manager.js"
+import { notifyUser } from "../../utils/notify-user.js"
 import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -430,8 +432,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		}
 
 		for (const warning of warnings) {
-			if (ctx.hasUI) ctx.ui.notify(warning, "warning")
-			else console.warn(warning)
+			notifyUser(ctx, warning, "warning")
 		}
 		for (const handler of upstreamHandlers.session_start) await handler(event, ctx)
 	})

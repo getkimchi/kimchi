@@ -16,6 +16,7 @@ import {
 import { gatewayAuthHeaders, resolveGatewayCredentials } from "../auth/gateway-credentials.js"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
+import { notifyUser } from "../utils/notify-user.js"
 import { createNativeUsageCapture } from "./work-attribution/native-usage.js"
 import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
 
@@ -195,8 +196,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 			if (!quiet) {
 				const errorBody = await response.text().catch(() => "")
 				const message = `Auto-naming: API error ${response.status} ${response.statusText}${errorBody ? ` - ${errorBody.slice(0, 200)}` : ""}`
-				if (ctx.hasUI) ctx.ui.notify(message, "error")
-				else console.error(`[kimchi] ${message}`)
+				notifyUser(ctx, message, "error")
 			}
 			return fallback
 		}
@@ -209,8 +209,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 	} catch (err) {
 		if (!quiet) {
 			const message = `Auto-naming: ${err instanceof Error ? err.message : String(err)}`
-			if (ctx.hasUI) ctx.ui.notify(message, "error")
-			else console.error(`[kimchi] ${message}`)
+			notifyUser(ctx, message, "error")
 		}
 		return fallback
 	} finally {
