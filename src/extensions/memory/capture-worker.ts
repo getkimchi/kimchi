@@ -70,9 +70,10 @@ import {
 	ADD_FAILURE_MAX_ATTEMPTS,
 	EXTRACTION_DERIVED_TAG,
 	MEMORY_CAPTURE_WINDOW_CHARS,
+	MEMORY_DRAIN_COMMIT_CONCURRENCY,
 	MEMORY_DRAIN_CONCURRENCY,
 	MEMORY_DRAIN_HARD_TIMEOUT_MS,
-	MEMORY_DRAIN_RELIST_PASSES,
+	MEMORY_DRAIN_INACTIVITY_MS,
 	MEMORY_FACT_MAX_CHARS,
 	MEMORY_SUPERSEDE_BATCH_FACTS,
 	MEMORY_USER_ID,
@@ -1429,6 +1430,12 @@ export interface RunCaptureWorkerOptions {
 	abortSignal?: AbortSignal
 	/** Injectable for tests — overrides MEMORY_DRAIN_HARD_TIMEOUT_MS. */
 	drainTimeoutMs?: number
+	/** Injectable for tests — overrides MEMORY_DRAIN_INACTIVITY_MS: the
+	 * watchdog aborts a drain only when NO window / commit has settled for
+	 * this long; a healthy catch-up drain runs as long as it needs. */
+	drainInactivityMs?: number
+	/** Heartbeat hook: invoked as each window settles and each job commits. */
+	onProgress?: () => void
 	/** Injectable for tests — the drain trace recorder. `null` disables
 	 * tracing explicitly; when absent the drain creates one itself
 	 * (honouring KIMCHI_MEMORY_TRACE_DRAINS). */
@@ -1500,51 +1507,78 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		// options.trace (tests) wins and skips the default creation.
 		const trace = options.trace !== undefined ? options.trace : createTraceRecorder()
 		if (trace) pruneTraces()
-		// Dead-man switch: a worker hung on LLM calls otherwise holds the
-		// lock forever — the live mtime refresh never goes stale, so nothing
-		// can steal it.
-		// At the hard budget the drain aborts, the finally releases the
-		// lock, and the process exits nonzero; job files stay pending for
-		// the next spawn's retry (ledger dedupe makes overlap no-op).
+		// Dead-man switch: a hung worker otherwise holds the lock forever —
+		// the live mtime refresh never goes stale, so nothing can steal it.
+		// The watchdog is INACTIVITY-based: a healthy drain heartbeats via
+		// options.onProgress on every settled window and job commit, so a
+		// catch-up drain chewing a long backlog runs as long as it needs;
+		// only a truly stuck drain (no progress for the inactivity budget)
+		// aborts. The flat hard budget remains as the final livelock
+		// backstop. On abort the finally releases the lock and the process
+		// exits nonzero; job files stay pending for the next spawn's retry
+		// (ledger dedupe makes overlap no-op).
 		const abort =
 			options.abortSignal === undefined
 				? new AbortController()
 				: { signal: options.abortSignal, abort: () => undefined }
-		const budget = options.drainTimeoutMs ?? MEMORY_DRAIN_HARD_TIMEOUT_MS
-		const watchdog = setTimeout(() => abort.abort(new DrainWatchdogError(budget)), budget)
+		const hardBudget = options.drainTimeoutMs ?? MEMORY_DRAIN_HARD_TIMEOUT_MS
+		const inactivityBudget = options.drainInactivityMs ?? MEMORY_DRAIN_INACTIVITY_MS
+		let lastProgress = Date.now()
+		const heartbeat = (): void => {
+			lastProgress = Date.now()
+		}
+		const watchdog = setInterval(
+			() => {
+				const idle = Date.now() - lastProgress
+				if (idle >= inactivityBudget) abort.abort(new DrainWatchdogError(idle, "inactivity"))
+			},
+			Math.min(15_000, Math.max(1_000, inactivityBudget / 2)),
+		)
+		const hardTimer = setTimeout(() => abort.abort(new DrainWatchdogError(hardBudget, "hard-timeout")), hardBudget)
 		try {
 			const pendingDir = join(defaultMemoryDir(), "pending")
 			const pendingNames = (): Set<string> =>
 				new Set(existsSync(pendingDir) ? readdirSync(pendingDir).filter((n) => n.endsWith(".json")) : [])
 			const seen = pendingNames() // pre-drain: anything appearing LATER is fresh
-			let captured = await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal, trace })
-			// Re-list: job files written WHILE this drain ran (mid-loop
-			// increments, another session) otherwise wait for the next spawner.
-			// Bounded so the watchdog keeps meaning; a pass that re-drains
-			// earlier failures is bounded by their attempts counters.
-			for (let pass = 1; pass < MEMORY_DRAIN_RELIST_PASSES; pass++) {
+			let captured = 0
+			// Drain, then keep re-listing mid-drain arrivals until the queue
+			// is EMPTY — with the inactivity watchdog a long catch-up chain
+			// is safe (replaces the fixed 3-pass cap). The abort escapes it.
+			while (true) {
+				captured += await drainPendingJobs(dbPath, {
+					...options,
+					onProgress: () => {
+						heartbeat()
+						options.onProgress?.()
+					},
+					abortSignal: abort.signal,
+					trace,
+				})
+				if (abort.signal.aborted) break
 				const fresh = [...pendingNames()].filter((n) => !seen.has(n))
 				if (fresh.length === 0) break
 				for (const n of fresh) seen.add(n)
-				captured += await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal, trace })
 			}
 			return captured
 		} finally {
-			clearTimeout(watchdog)
+			clearInterval(watchdog)
+			clearTimeout(hardTimer)
 		}
 	} finally {
 		await release()
 	}
 }
 
-/** Raised by the drain hard-timeout watchdog instead of a generic Error so
- * the CLI can exit with a distinct, greppable class. */
+/** Raised by the drain watchdog instead of a generic Error so the CLI can
+ * exit with a distinct, greppable class. The reason travels in the message
+ * so grep-and-log diagnosis tells which bound tripped. */
 export class DrainWatchdogError extends Error {
-	/** Optional budget override — the message always reports the effective
-	 * bound, not the constant, so grepping the abort cause is truthful even
-	 * when a driver or test passed a custom drainTimeoutMs. */
-	constructor(budgetMs: number = MEMORY_DRAIN_HARD_TIMEOUT_MS) {
-		super(`capture drain aborted by hard timeout (${Math.round(budgetMs / 60_000)}min)`)
+	constructor(budgetMs: number = MEMORY_DRAIN_HARD_TIMEOUT_MS, reason: "inactivity" | "hard-timeout" = "hard-timeout") {
+		super(
+			reason === "inactivity"
+				? `capture drain aborted: no progress for ${Math.round(budgetMs / 60_000)} min`
+				: `capture drain aborted by hard timeout (${Math.round(budgetMs / 60_000)}min)`,
+		)
 		this.name = "DrainWatchdogError"
 	}
 }
@@ -1738,7 +1772,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		plan.windows.map((window, index) => ({ plan, window, index })),
 	)
 	const drainConcurrency = Math.max(1, Number(process.env.KIMCHI_MEMORY_DRAIN_CONCURRENCY) || MEMORY_DRAIN_CONCURRENCY)
-	const extractTask = async (task: ExtractionTask): Promise<ExtractionOutcome> => {
+	const extractTaskInner = async (task: ExtractionTask): Promise<ExtractionOutcome> => {
 		try {
 			const traceCtx: TraceCtx | undefined = trace
 				? { job: basename(task.plan.jobFile), window: task.index, trace }
@@ -1776,6 +1810,20 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// extraction (fail-open). The multi-class split (2026-11-12) replaced the
 	// single has_durable_fact question, which crushed evidence-grounded
 	// assistant conclusions at p≈0.05–0.24.
+	// Pipeline heartbeats: every settled window (extracted or retried) feeds
+	// the drain watchdog — aborts fire on inactivity, never on a healthy
+	// long catch-up drain.
+	const extractTask = async (task: ExtractionTask): Promise<ExtractionOutcome> => {
+		// Start + settle heartbeats: a slow-but-alive window (single LLM call
+		// exceeding the inactivity budget) is NOT a hang — the start beat
+		// pins the last-progress timestamp to the call's launch.
+		options.onProgress?.()
+		try {
+			return await extractTaskInner(task)
+		} finally {
+			options.onProgress?.()
+		}
+	}
 	let results: ExtractionOutcome[]
 	let triagedOut = 0
 	if (decision.enabled.has("triage") && decision.gate) {
@@ -1904,6 +1952,10 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	tExtract = Date.now()
 	await applyDerivedTags(plans, llm)
 	tDerived = Date.now()
+	// Tail-phase heartbeat: the supersede judge + backend creation can take
+	// minutes on a catch-up drain; bracket them so the inactivity watchdog
+	// sees progress across the last LLM gap.
+	options.onProgress?.()
 	// Diagnostic: log the embedder model the runtime actually weaves for
 	// this drain — a config override that IS on disk must be visible here
 	// or its omission is the bug being probed (embedding-model switch).
@@ -1920,6 +1972,15 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	}
 	const personalBackend = await createBackend(dbPath)
 	const projectBackends = new Map<string, Backend>()
+	// Pre-seed project backends BEFORE the parallel commit loop — lazy
+	// create-on-miss inside the loop would race two commits of the same
+	// project into duplicate Backend instances on the same db path.
+	for (const plan of plans) {
+		const projectId = plan.project?.id
+		if (projectId && !projectBackends.has(projectId)) {
+			projectBackends.set(projectId, await createBackend(projectDbPath(projectId)))
+		}
+	}
 	const personalAdded: string[] = []
 	const projectAdded = new Map<string, string[]>()
 	let captured = 0
@@ -1936,7 +1997,15 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const commitFailed = new Set<JobPlan>()
 	let skippedOversized = 0
 	let addQuarantined = 0
-	for (const plan of plans) {
+	// Commits run in parallel across jobs (bounded): each job writes its
+	// own disjoint fact set to an already-created backend, so the only
+	// shared state is the counters/sets mutated synchronously post-await. A
+	// settled plan (success OR failure) is a watchdog heartbeat.
+	const commitConcurrency = Math.max(
+		1,
+		Number(process.env.KIMCHI_MEMORY_DRAIN_COMMIT_CONCURRENCY) || MEMORY_DRAIN_COMMIT_CONCURRENCY,
+	)
+	await mapWithConcurrency(plans, commitConcurrency, async (plan) => {
 		try {
 			const added = await commitPlan(plan, personalBackend, projectBackends, createBackend, valuationGate, trace)
 			personalAdded.push(...added.personal)
@@ -1980,8 +2049,10 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 					attempts: plan.addAttempts,
 				})
 			}
+		} finally {
+			options.onProgress?.()
 		}
-	}
+	})
 	if (triagedOut > 0) {
 		console.info(`[memory-capture] ${triagedOut} window(s) skipped by triage (judged non-durable)`)
 	}

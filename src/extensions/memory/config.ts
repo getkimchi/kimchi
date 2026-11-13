@@ -67,6 +67,15 @@ export const MEMORY_FACT_MAX_CHARS = 2_000
 export const MEMORY_DRAIN_CONCURRENCY = 6
 
 /**
+ * Per-job COMMIT parallelism inside a drain (phase C): jobs write disjoint
+ * fact sets to pre-created backends, and the per-fact embedder round-trips
+ * dominate the commit wall time — serial commits turn a big catch-up drain
+ * into minutes of idle HTTP. Bounded; no LLM involved, just embedder +
+ * sqlite. Override: KIMCHI_MEMORY_DRAIN_COMMIT_CONCURRENCY.
+ */
+export const MEMORY_DRAIN_COMMIT_CONCURRENCY = 4
+
+/**
  * Facts per batched supersede judge call (the pipelined worker's phase C):
  * one judge pass per store across the whole drain, the facts listed
  * chronologically — bounds the judge prompt size while keeping a single
@@ -175,22 +184,22 @@ export const CAPTURE_LOCK_UPDATE_MS = 30_000
 export const PENDING_JOB_MAX_AGE_MS = 7 * 86_400_000
 
 /**
- * Hard dead-man switch for a whole drain. A live worker refreshes the lock
- * mtime every CAPTURE_LOCK_UPDATE_MS, so a genuinely hung worker would hold
- * the lock forever (staleness never trips). At this budget the worker
- * rejects the drain, releases the lock in its finally-block, and exits —
- * pending job files remain for the next spawn's retry (hash-ledger dedupe
- * makes overlap a no-op). Kept below the driver's respawn cadence horizon
- * and well above a realistic multi-window drain.
+ * Final livelock backstop for a whole drain. The primary watchdog is the
+ * inactivity one below: a live worker heartbeats on every settled window
+ * and committed job, so a healthy catch-up drain over a big backlog can
+ * run long. Only a drain that keeps heartbeating but never finishes (a
+ * livelock) trips this. Kept generous on purpose — the old flat 12min
+ * budget aborted healthy catch-up drains mid-flight, which seeded the
+ * backlog death spiral on high-throughput bench runs.
  */
-export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 12 * 60_000
+export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 60 * 60_000
 
 /**
- * Re-list passes after a drain: job files written while this drain ran get
- * consumed by the SAME worker (fail-fast locking means the spawn that wrote
- * them exited without draining). Bounded so the watchdog keeps meaning.
+ * Inactivity watchdog: the drain aborts ONLY when no window has settled
+ * and no job has committed for this long. Replaces the fixed re-list cap:
+ * the drain now re-lists until the pending/ queue is EMPTY.
  */
-export const MEMORY_DRAIN_RELIST_PASSES = 3
+export const MEMORY_DRAIN_INACTIVITY_MS = 240_000
 
 /**
  * Drains a capture job with a deterministic (poison) extraction failure
