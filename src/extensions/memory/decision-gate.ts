@@ -143,11 +143,14 @@ export class DecisionBreaker {
 		if (this.probeInFlight) return true
 		return this.now() < this.nextProbeAt
 	}
-	/** Reserve the single probe slot (no-op when closed). Synchronous-
-	 * coupled with shouldSkip() in callers, this is atomic in a single
-	 * event-loop tick. */
-	reserveProbe(): void {
-		if (this.open) this.probeInFlight = true
+	/** Reserve the single probe slot — returns TRUE only when THIS call
+	 * actually holds it, so probe bookkeeping can tell the holder from
+	 * straggler calls that were already in flight when the circuit tripped
+	 * (those must never double the backoff). */
+	reserveProbe(): boolean {
+		if (!this.open) return false
+		this.probeInFlight = true
+		return true
 	}
 	/** Defense-in-depth: clear the probe slot for any exit path that missed
 	 * the outcome records (abort surfaced mid-flight, unexpected throw). */
@@ -163,7 +166,7 @@ export class DecisionBreaker {
 			this.transition("closed", "d3 probe answered — gates resume")
 		}
 	}
-	recordFailure(detail: string): void {
+	recordFailure(detail: string, wasProbe = false): void {
 		this.consecutive += 1
 		this.probeInFlight = false
 		if (!this.open) {
@@ -176,8 +179,9 @@ export class DecisionBreaker {
 			)
 			return
 		}
-		// While open every recorded failure IS a failed probe: back off once
-		// per probe interval, never multiplicatively under concurrency.
+		if (!wasProbe) return // in-flight straggler: don't double the backoff
+		// A failed probe: back off once per probe interval, never
+		// multiplicatively under concurrency.
 		this.probeDelayMs = Math.min(this.probeDelayMs * 2, this.maxDelay)
 		this.nextProbeAt = this.now() + this.probeDelayMs
 		this.transition("open", `d3 probe failed (${detail}) — next probe in ${Math.round(this.probeDelayMs / 1000)}s`)
@@ -252,7 +256,7 @@ export async function decide(
 		gate.onExchange?.({ request: requestBody, error: "circuit-open: d3 degraded" })
 		throw new DecisionGateError("d3 circuit open — degraded")
 	}
-	breaker.reserveProbe()
+	const heldProbe = breaker.reserveProbe()
 	try {
 		const response = await fetchWithRetry(
 			gate.endpoint,
@@ -282,13 +286,18 @@ export async function decide(
 			})
 			// A drain-watchdog abort is OUR caller cancelling, not an endpoint
 			// outage — never count it against the circuit.
-			if (!gate.abortSignal?.aborted) breaker.recordFailure(err instanceof Error ? err.message : String(err))
+			if (!gate.abortSignal?.aborted) {
+				breaker.recordFailure(err instanceof Error ? err.message : String(err), heldProbe)
+			}
 			throw err
 		})
 		if (!response.ok) {
 			recordUsage({ kind, model: gate.model ?? "d3", failed: true })
 			gate.onExchange?.({ request: requestBody, error: `HTTP ${response.status}`, status: response.status })
-			breaker.recordFailure(`HTTP ${response.status}`)
+			// Availability accounting is about TRANSPORT and retryable classes
+			// (429/5xx): a deterministic 4xx means the endpoint answered —
+			// bad credentials/payload are a config problem, not an outage.
+			if (isRetryableStatus(response.status)) breaker.recordFailure(`HTTP ${response.status}`, heldProbe)
 			throw new DecisionGateError(
 				`systemone rejected the request: HTTP ${response.status}${isRetryableStatus(response.status) ? " (transient)" : ""}`,
 			)
