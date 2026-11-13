@@ -420,6 +420,9 @@ ${lines.join("\n")}`
 
 export function buildToolSelectionSection(toolNames?: ReadonlySet<string>): string {
 	const lines: string[] = []
+	// Deliberately not hasTool(): an unknown tool set (undefined) counts as
+	// "all available" there, but codemode is registered inactive by default,
+	// so advise it only when it is known to be active.
 	if (toolNames?.has("codemode")) {
 		lines.push(
 			"- Independent calls whose full results you need → issue them together in one turn.",
@@ -602,8 +605,10 @@ function buildPrompt(parts: PromptParts): string {
  *    way); the Tool Selection line carries kimchi's codemode rule instead;
  *  - grep/find/ls/powershell/tool_search register none today — listed so a
  *    future pi addition surfaces as a review decision here, not silently.
- *  Kimchi-authored guidelines (e.g. ferment-v2's update_ferment_v2) still
- *  render: this scopes the section to guidance kimchi stands behind. */
+ *  The filter is by tool name, not by who registered the guideline: one added
+ *  to a tool with any of these names (including kimchi's re-registrations of
+ *  pi's builtins) is dropped too. Guidelines on every other tool — today only
+ *  kimchi's own, e.g. ferment-v2's update_ferment_v2 — still render. */
 const PI_GUIDELINE_TOOL_NAMES = new Set([
 	"read",
 	"bash",

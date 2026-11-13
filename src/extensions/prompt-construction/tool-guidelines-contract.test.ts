@@ -1,7 +1,7 @@
 /**
  * Contract test keeping pi's per-tool guidelines OUT of kimchi's system
- * prompt. Kimchi curates the `## Tool Guidelines` section to kimchi-authored
- * guidance (see PI_GUIDELINE_TOOL_NAMES in system-prompt.ts): every
+ * prompt. Kimchi curates the `## Tool Guidelines` section by excluding the
+ * pi-shipped tool names (see PI_GUIDELINE_TOOL_NAMES in system-prompt.ts): every
  * pi-authored bullet was reviewed and rejected — duplicated by kimchi's own
  * prompt or the tool descriptions, or contradicting the implementation
  * (bash's PI_* env claim: kimchi's background bash never injects them). Pi's
