@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import * as timers from "node:timers/promises"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as durableFiles from "../../config/json.js"
 import { createContext } from "../__mocks__/context.js"
@@ -35,6 +36,7 @@ import {
 	deliverEvents,
 	deliverSnapshots,
 	LIMIT_RETRY_MS,
+	preludeStretch,
 	reconcileReporting,
 	resetReportingPassGates,
 	serverLimit,
@@ -46,6 +48,23 @@ vi.mock("../work-attribution/costs.js", async (original) => ({ ...(await origina
 vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
 vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], units: [], unresolved: [] })) }))
 vi.mock("./ledger/outbox.js", async (original) => ({ ...(await original<typeof outbox>()), observeEvents: vi.fn() }))
+// Pass-through timers: real macrotask semantics, with a call counter the tests can read.
+vi.mock("node:timers/promises", async (original) => {
+	const real = await original<typeof import("node:timers/promises")>()
+	let calls = 0
+	return {
+		...real,
+		setImmediate: (...args: Parameters<typeof real.setImmediate>) => {
+			calls += 1
+			return real.setImmediate(...args)
+		},
+		__calls: () => {
+			const count = calls
+			calls = 0
+			return count
+		},
+	}
+})
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: config.key }),
 	resolveEndpoints: () => ({ platformApiUrl: config.endpoint }),
@@ -1869,6 +1888,83 @@ describe("repository identity for work without a PR", () => {
 		// One lookup per repository, plus at most one abandoned when a pass deadline interrupts it.
 		expect(lookups).toBeLessThanOrEqual(13)
 	}, 30_000)
+})
+
+describe("prelude stretching of a big group", () => {
+	it("crossing the row budget yields in the prelude's read and parse loops", async () => {
+		await seedLinked()
+		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		const calls = () => (timers as unknown as { __calls: () => number }).__calls()
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		calls()
+		// Two structurally identical passes, each introducing exactly one new marker batch for the same
+		// work: a 1-row pass, then a 2,000-row pass. The 2,001 rows total cross the shared row budget
+		// once in the read loop and once in the parse loop; the pass machinery fires the same immediates
+		// in both phases, so only the stretch yields differ.
+		const source = join(directory, "work-attribution", "source.jsonl")
+		const work = "65656565-6565-4565-8565-656565656565"
+		const rows = (count: number, offset: number) => {
+			let lines = ""
+			for (let index = offset; index < offset + count; index++) {
+				const hex = String(index).padStart(12, "0")
+				lines += `${JSON.stringify({
+					version: 1,
+					type: "request",
+					workId: work,
+					sessionId: "records-only",
+					requestId: `${hex.slice(0, 8)}-${hex.slice(8)}-4777-8777-${hex}`,
+					startedAt: "2026-10-04T12:00:00.000Z",
+					recordedAt: "2026-10-04T12:00:00.000Z",
+					scope: { account: content.account, repository: "/other/.git" },
+				})}\n`
+			}
+			return lines
+		}
+		await appendFile(source, rows(1, 0))
+		await run()
+		const small = calls()
+		await appendFile(source, rows(2_000, 1))
+		await run()
+		expect(calls()).toBeGreaterThanOrEqual(small + 2)
+	})
+})
+
+describe("prelude stretch", () => {
+	/** A stretch call that yields runs every already-scheduled macrotask first; a fast one leaves them parked. */
+	const yielded = async (stretch: () => Promise<void>) => {
+		let ran = false
+		const timer = setImmediate(() => {
+			ran = true
+		})
+		try {
+			await stretch()
+		} finally {
+			clearImmediate(timer)
+		}
+		return ran
+	}
+
+	it("yields after the row budget, and after the time budget even for few rows", async () => {
+		const stretch = preludeStretch(2, 60_000)
+		expect(await yielded(stretch)).toBe(false)
+		expect(await yielded(stretch)).toBe(true)
+		expect(await yielded(stretch)).toBe(false)
+
+		const slow = preludeStretch(10_000, 60_000)
+		const clock = vi.spyOn(Date, "now")
+		try {
+			// One row but the stretch has already owned the loop past its time budget.
+			clock.mockReturnValue(Date.now() + 60_001)
+			expect(await yielded(slow)).toBe(true)
+		} finally {
+			clock.mockRestore()
+		}
+	})
 })
 
 describe("incremental translation", () => {
