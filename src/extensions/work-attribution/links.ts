@@ -569,8 +569,12 @@ export async function reconcileWorkContinuations(
 		const invalid: WorkRecordProblem[] = []
 		const fresh = readWorkRecords(agentDir, since - MTIME_SLACK_MS, checkBudget, (problem) => {
 			if (problem.kind === "invalid") invalid.push(problem)
-			else if (!progress.historyUnknown?.some((seen) => JSON.stringify(seen.problem) === JSON.stringify(problem)))
-				(progress.historyUnknown ??= []).push({ problem, ids: namedIds(problem.record) })
+			else {
+				progress.historyUnknown ??= []
+				const unknown = progress.historyUnknown
+				if (!unknown.some((seen) => JSON.stringify(seen.problem) === JSON.stringify(problem)))
+					unknown.push({ problem, ids: namedIds(problem.record) })
+			}
 		})
 		if (invalid.length) throw invalidRecordsError(invalid)
 		// All-or-nothing: a mid-merge throw drops the accumulated state so the next pass
