@@ -10,7 +10,8 @@ import type {
 	PermissionToolDecisionPayload,
 } from "../../permissions/permissions-events.js"
 import { MODE_CHANGE_REASON_VALUES } from "../../permissions/permissions-events.js"
-import type { TelemetryAttributes, TelemetryContext } from "../session-context.js"
+import { nestedAttrsFor } from "../helpers.js"
+import type { TelemetryContext } from "../session-context.js"
 
 export const TOOL_DECISION_EVENT = "claude_code.tool_decision"
 
@@ -90,9 +91,7 @@ export function handleToolDecision(tm: TelemetryContext, raw: unknown): void {
 
 	// Nested-call attribution: present when the gated call was issued by another
 	// tool (e.g. a codemode script) — the auto-mode permission-friction signal.
-	const nestedAttrs: TelemetryAttributes = payload.parentToolCallId
-		? { nested: true, parent_tool_use_id: payload.parentToolCallId }
-		: {}
+	const nestedAttrs = nestedAttrsFor(payload.parentToolCallId)
 
 	tm.emit(
 		TOOL_DECISION_EVENT,

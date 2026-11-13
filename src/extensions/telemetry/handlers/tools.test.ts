@@ -1133,6 +1133,33 @@ describe("handlers/tools", () => {
 			expect(everything).not.toContain("mcp__secret__lookup")
 		})
 
+		it("emits no summary for a codemode call blocked before the script ran", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "cm-blocked"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "codemode", args: { code: "await tools.read()" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: {
+					content: [
+						{ type: "text", text: "codemode is disabled in Kimchi resources. Enable codemode from /resources." },
+					],
+				},
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			expect(events.find((e) => e.eventName === "codemode.completed")).toBeUndefined()
+			// The rejection is still visible, as a tool_outcome.
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome?.attrs.outcome_kind).toBe("blocked")
+			expect(outcome?.attrs.tool_name).toBe("codemode")
+		})
+
 		it("emits success=false on a failed script; the canonical error record still fires", async () => {
 			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
 			const ctx = new TelemetryContext(makeConfig())

@@ -9,6 +9,7 @@ import {
 	extractFilePath,
 	hashFilePath,
 	inferLanguage,
+	nestedAttrsFor,
 	type ToolArgs,
 } from "../helpers.js"
 import type { TelemetryAttributes, TelemetryContext } from "../session-context.js"
@@ -157,6 +158,16 @@ function isTruncatedCodemodeOutput(result: unknown): boolean {
 	return false
 }
 
+/** Classifications for calls rejected before the tool ran (permission, guard,
+ *  or malformed call) — the same set the bash branch emits no record for. */
+function isPreExecutionOutcome(classification: ToolErrorClassification | undefined): boolean {
+	return (
+		classification?.kind === "blocked" ||
+		classification?.kind === "declined" ||
+		classification?.kind === "model_mistake"
+	)
+}
+
 // ---------------------------------------------------------------------------
 // Tool execution handlers
 // ---------------------------------------------------------------------------
@@ -189,9 +200,7 @@ export function handleToolExecutionEnd(
 	// set when another tool — a codemode script — issued this call. Additive
 	// marker only; usage/duration accounting is unchanged so totals stay
 	// comparable across direct and nested calls.
-	const nestedAttrs: TelemetryAttributes = event.parentToolCallId
-		? { nested: true, parent_tool_use_id: event.parentToolCallId }
-		: {}
+	const nestedAttrs = nestedAttrsFor(event.parentToolCallId)
 
 	// --- Error classification (before per-tool emission) ----------------------
 	// The bash execution record and the error funnel both consume the
@@ -373,8 +382,10 @@ export function handleToolExecutionEnd(
 			tm.emit("command_executed", { ...commandAttrs, command_outcome: "execution_error" }, ctx, modelOverrides)
 		}
 		// blocked / declined / model_mistake: pre-execution — no record.
-	} else if (toolName === "codemode") {
-		// One summary record per codemode call (success and failure alike):
+	} else if (toolName === "codemode" && !isPreExecutionOutcome(classification)) {
+		// One summary record per codemode call that ran (success and failure
+		// alike); blocked/declined/model_mistake calls never ran a script and are
+		// already reported as tool_outcome, so they would only skew failure rates.
 		// adoption, nested-call mix, failure rate, and nested models.* cost in a
 		// single joinable record. Nested per-call detail persists in the session
 		// JSONL (`nestedCalls` on the tool result message) — telemetry carries

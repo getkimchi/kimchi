@@ -66,12 +66,12 @@ vi.mock("../../api/me.js", () => ({
 
 /** The pinned pi nested-call runner, loaded by file URL: the deep path is
  *  outside the package's exports map (vite/bun refuse the specifier), so we
- *  import the module directly from the installed package's dist directory
- *  (three levels up from this test file). Typed via the ambient declaration
- *  in src/types/pi-coding-agent-utils.d.ts. */
+ *  resolve the package's main entry (dist/index.js) and import the module
+ *  next to it. Typed via the ambient declaration in
+ *  src/types/pi-coding-agent-utils.d.ts. */
 const nestedToolCallsUrl = new URL(
-	"../../../node_modules/@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js",
-	import.meta.url,
+	"./core/nested-tool-calls.js",
+	import.meta.resolve("@earendil-works/pi-coding-agent"),
 ).href
 const { NestedToolCallRunner } = (await import(
 	nestedToolCallsUrl
