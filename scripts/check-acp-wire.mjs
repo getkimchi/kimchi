@@ -1,317 +1,566 @@
 #!/usr/bin/env node
 /**
- * check:acp-wire — tripwire for ACP wire-compat regressions (docs/acp-compat.md).
+ * check-acp-wire — tripwire for ACP wire-surface regressions (docs/acp-compat.md).
  *
- * Diff-scoped (`origin/main...HEAD` by default): scans lines ADDED by the
- * checked change in TypeScript sources and flags the known failure class —
- * agent-side work whose side effects leak onto the ACP wire in ways plain
- * clients never opted into.
+ * Heuristic, not proof. "Green" means no known pattern was detected in the diff;
+ * review against docs/acp-compat.md rule 3 remains the gate. Scopes and limits:
  *
- * This is a heuristic tripwire, not a linter: a fail means "walk
- * docs/acp-compat.md rule 1–2 and either fix the diff or justify it in the
- * PR body", not that the patch provably breaks a client.
+ * - Lines a diff adds anywhere under src/ (not just src/modes/acp), because the
+ *   leaks originate in extension code that never touches the ACP server.
+ * - Registry is built from the tree at HEAD: exported constants whose names end
+ *   in META_KEY / NOTIFICATION_METHOD / EXT_METHOD, and `"_kimchi.dev/*"` /
+ *   `_meta` keys already present at HEAD. Test files (`*.test.ts`, `*.spec.ts`)
+ *   are excluded from the literal scan so a new unadvertised method cannot
+ *   "self-register" by being mentioned in a test; only new wire surface trips
+ *   the tripwire. `_meta` objects are found with a balanced-brace scan (the
+ *   previous regex truncated on nested objects and stray literals).
+ * - Ambiguous cases (dynamic wake emission, session_join projection,
+ *   availableCommandsRegistering outside the server) go to a warning list that
+ *   must be empty for the check to pass; a green run means zero nuggets, not
+ *   zero risk. Intended overclaim-bounded output, enforced by self-test.
  *
  * Usage:
- *   node scripts/check-acp-wire.mjs [--base <ref>]   # run the checks (default base: origin/HEAD)
- *   node scripts/check-acp-wire.mjs --self-test      # run built-in fixtures
+ *   node scripts/check-acp-wire.mjs [--base <ref>] [--paths paths.txt] [--staged] [--self-test]
+ * Exit codes: 1 findings report, 2 usage I/O errors.
+ * Fixtures below double as examples of the patterns the checks hunt for.
  */
-import { strict as assert } from "node:assert"
-import { execSync } from "node:child_process"
-import { readFileSync } from "node:fs"
 
-const SUPPORTED_FLAGS = ["--self-test", "--base"]
+import { execFileSync } from "node:child_process"
+import { existsSync, readFileSync, statSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 
-/**
- * Registered `_meta` keys / ext method names are collected dynamically:
- * exported constants whose name ends in META_KEY / NOTIFICATION_METHOD /
- * EXT_METHOD (value a string literal) anywhere under src/, plus these
- * historical inline keys. Keys NOT discovered this way get flagged only when
- * they appear as quoted _meta keys in an emission path — unquoted constant
- * references are always fine.
- */
-const HARDCODED_REGISTERED_META = new Set(["piToolCallId"])
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 
-const detectMetaKeys = (srcFiles) => {
-	const keys = new Set(HARDCODED_REGISTERED_META)
-	const re = /export const \w+(?:META_KEY|NOTIFICATION_METHOD|EXT_METHOD)\w*\s*=\s*"([^"]+)"/g
-	for (const content of srcFiles.values()) {
-		for (const m of content.matchAll(re)) keys.add(m[1])
+function git(args) {
+	return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+}
+
+function exit(msg, code) {
+	console.error(`check-acp-wire: ${msg}`)
+	process.exit(code)
+}
+
+/** Parse a unified diff into contiguous blocks of added lines, with new-file line numbers. */
+function addedBlocks(diff, path) {
+	const blocks = []
+	let curBlock = null
+	let cursor = 0
+	for (const line of diff.split("\n")) {
+		const m = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+		if (m) {
+			if (curBlock) blocks.push(curBlock)
+			curBlock = { path, startLine: Number(m[1]), lines: [] }
+			cursor = Number(m[1])
+			continue
+		}
+		// Context lines advance the cursor.
+		if (line.startsWith(" ") && curBlock) {
+			cursor++
+			continue
+		}
+		if (line.startsWith("+") && curBlock && !line.startsWith("+++")) {
+			curBlock.lines.push({ lineNo: cursor++, text: line.slice(1) })
+			continue
+		}
+		// Removed lines, `\ No newline`, file headers: close the block and
+		// leave the cursor alone (removed lines have no new-file line number).
+		if (curBlock) {
+			blocks.push(curBlock)
+			curBlock = null
+		}
 	}
-	// `_kimchi.dev/...` method literals anywhere in src count as registered
-	// (they exist on some send path already); brand-new ones are exactly what
-	// check 5 wants to see justified.
-	for (const content of srcFiles.values()) {
-		for (const m of content.matchAll(/"(_kimchi\.dev\/[^"]+)"/g)) keys.add(m[1])
+	if (curBlock) blocks.push(curBlock)
+	return blocks
+}
+
+/** Find `_meta: { ... }` objects in text via depth counting (strings skipped). */
+function* metaBlocks(text) {
+	const startRe = /_meta:\s*\{/g
+	while (true) {
+		const m = startRe.exec(text)
+		if (!m) break
+		const contentStart = m.index + m[0].length
+		const blockStart = m.index
+		let depth = 1
+		let i = contentStart
+		for (; i < text.length && depth > 0; i++) {
+			const c = text[i]
+			if (c === "{") depth++
+			else if (c === "}") depth--
+			else if (c === '"' || c === "'" || c === "`") {
+				const q = c
+				i++
+				while (i < text.length && text[i] !== q) {
+					if (text[i] === "\\") i++
+					i++
+				}
+			}
+		}
+		if (depth === 0) yield { text: text.slice(blockStart, i), interior: text.slice(contentStart, i - 1) }
+	}
+}
+
+/** The first (depth-1) key of a _meta object body: quoted or bare identifier. */
+function firstMetaKey(interior) {
+	const m = interior.match(/^\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_$][\w$]*))\s*:/)
+	if (!m) return null
+	return { quoted: m[1] ?? m[2] ?? null, ident: m[3] ?? null }
+}
+
+/** Wire identifiers recognized across the repo: meta keys, ext method/notification names. */
+function detectMetaKeys(fileText) {
+	const keys = new Set()
+	for (const meta of metaBlocks(fileText)) {
+		const first = firstMetaKey(meta.interior)
+		if (!first) continue
+		const outer = first.quoted ?? first.ident
+		if (first.quoted?.includes("/")) keys.add(outer.split("/").pop())
+		else keys.add(outer)
 	}
 	return keys
 }
 
-/**
- * Split a unified-diff hunk body into contiguous blocks of added lines.
- * Context and removed lines are dropped; each added block keeps 1-based
- * line numbers in the NEW file for reporting.
- */
-export function addedBlocks(diffText) {
-	const blocks = []
-	let pending = []
-	let newLine = 0
-	for (const line of diffText.split("\n")) {
-		const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
-		if (hunk) {
-			if (pending.length) {
-				blocks.push(pending)
-				pending = []
-			}
-			newLine = Number(hunk[1])
+/** Registry of wire names declared at HEAD (constants plus existing literals). */
+function collectWireRegistry(files) {
+	const metaKeys = new Set()
+	const methodNames = new Set()
+	for (const [path, text] of files) {
+		for (const m of text.matchAll(/(?:const|let|var)\s+\w*(META_KEY)\w*\s*=\s*"([^"]+)"/g)) metaKeys.add(m[2])
+		for (const m of text.matchAll(/(?:const|let|var)\s+\w*(?:NOTIFICATION_METHOD|EXT_METHOD)\w*\s*=\s*"([^"]+)"/g))
+			methodNames.add(m[1])
+		if (/\.(test|spec)\.ts$/.test(path)) continue
+		for (const key of detectMetaKeys(text)) metaKeys.add(key)
+		for (const m of text.matchAll(/"_kimchi\.dev\/([^"]+)"/g)) methodNames.add(m[1])
+	}
+	return { metaKeys, methodNames }
+}
+
+const CHECK_SPECS = [
+	{
+		id: "rawinput-merge",
+		rule: 5,
+		what: "`rawInput` built by spreading tool results or unrelated state",
+		fix: "Raw input must carry wire-visible fields (toolCallId, title, kind, content, meta). See docs/acp-compat.md rule 5.",
+	},
+	{
+		id: "meta-unregistered",
+		rule: 2,
+		what: "wire keys not registered anywhere at HEAD (new `_meta` key, quoted method, or constant)",
+		fix: "Register the new key under a META_KEY/EXT_METHOD constant or add the literal under src/modes/acp/. See docs/acp-compat.md rule 2.",
+	},
+	{
+		id: "custommessage-recorder",
+		rule: 4,
+		what: "`display: false` recorder piggybacked on `sendCustomMessage`/`notifyExtensionMessage`",
+		fix: "Do not push internal bookkeeping into the client-visible message stream. See rules 4 and 10.",
+	},
+	{
+		id: "ungated-wake",
+		rule: 1,
+		what: "`triggerTurn: true` with no opt-in gate nearby",
+		fix: "Route unsolicited turns through an explicit gate (see session-policy.ts). See rule 1.",
+	},
+	{
+		id: "ext-method-unregistered",
+		rule: 2,
+		what: "ext-method/ext-notification name not registered anywhere at HEAD",
+		fix: "Advertise the method in client capabilities at initialize and add it to the registry. See rule 2.",
+	},
+]
+
+const BUILTIN_META = new Set(["piToolCallId"])
+
+function runChecks(codeBlock, registry) {
+	const issues = []
+	// Check 1: rawInput merge / spread-filled raw payload.
+	if (/rawInput\s*:\s*\{[^}]*\.\.\./s.test(codeBlock) || /rawInput\s*:\s*(?!null)\w+\s*[,}]/s.test(codeBlock))
+		issues.push(CHECK_SPECS[0])
+	// Checks 2, 3, 5: new _meta keys, recorder payloads, ext-method tokens.
+	const nested = codeBlock.matchAll(/"_kimchi\.dev\/([^"]+)"/g)
+	for (const m of nested) if (!registry.methodNames.has(m[1])) issues.push(CHECK_SPECS[4])
+	for (const meta of metaBlocks(codeBlock)) {
+		const first = firstMetaKey(meta.interior)
+		if (first && /display\s*:\s*false/.test(meta.text) && /sendCustomMessage|notifyExtensionMessage/.test(codeBlock))
+			issues.push(CHECK_SPECS[2])
+		if (!first) {
+			issues.push(CHECK_SPECS[1])
 			continue
 		}
-		if (line.startsWith("+") && !line.startsWith("+++")) {
-			pending.push({ line: newLine, text: line.slice(1) })
-			newLine++
-		} else {
-			if (pending.length) {
-				blocks.push(pending)
-				pending = []
-			}
-			if (line.startsWith("-") || line.startsWith("\\")) continue
-			newLine++
-		}
+		const outer = first.quoted ?? first.ident
+		const key = first.quoted?.includes("/") ? outer.split("/").pop() : outer
+		if (!registry.metaKeys.has(key) && !BUILTIN_META.has(key)) issues.push(CHECK_SPECS[1])
 	}
-	if (pending.length) blocks.push(pending)
-	return blocks
-}
-
-/**
- * Run the five wire-compat checks over the added lines of one file.
- *
- * @param {string} path file path (repo-relative)
- * @param {ReadonlyArray<ReadonlyArray<{line:number,text:string}>>} blocks added-line blocks
- * @param {Set<string>} registeredMetaKeys
- * @returns {Array<{check:string,line:number,snippet:string}>}
- */
-export function checkAddedBlocks(_path, blocks, registeredMetaKeys) {
-	const findings = []
-	for (const block of blocks) {
-		const text = block.map((l) => l.text).join("\n")
-		const line0 = block[0].line
-
-		// 1. rawInput must stay the agent's verbatim input — a spread merged
-		//    with extra keys into an emitted rawInput means computed/live
-		//    state is piggybacking on it (rule 2).
-		{
-			const m = /rawInput:\s*\{[^}]*\.\.\.[^}]*[,}]/.exec(text)
-			if (m) findings.push({ check: "rawinput-merge", line: line0, snippet: m[0].slice(0, 120) })
-		}
-
-		// 2. `_meta` keys belong in the registry (rule 2): quoted string keys
-		//    inside a `_meta` object literal must be a registered key.
-		{
-			const metaRe = /_meta:\s*\{([^}]|\}[^)])*?(?:\}|Z)/gs
-			const keyRe = /"([^"]+)":/g
-			for (const metaMatch of text.matchAll(metaRe)) {
-				for (const km of metaMatch[0].matchAll(keyRe)) {
-					const key = km[1]
-					if (!registeredMetaKeys.has(key)) {
-						findings.push({ check: "meta-unregistered", line: line0, snippet: `"${key}"` })
-					}
-				}
-			}
-		}
-
-		// 3. sendCustomMessage is a messaging API, not a recording API
-		//    (rule 4): display:false means "record without showing", which
-		//    projects into model context and replay anyway. Facts of the past
-		//    belong in appendCustomEntry.
-		{
-			const m = /sendCustomMessage\([\s\S]*?display:\s*false/.exec(text)
-			if (m) findings.push({ check: "custommessage-recorder", line: line0, snippet: m[0].slice(0, 120) })
-		}
-		if (/triggerTurn:\s*true/.test(text) && !/backgroundRunsPermitted|session-policy|opt[ -]?in/i.test(text)) {
-			findings.push({ check: "ungated-wake", line: line0, snippet: "sendMessage({ ..., triggerTurn: true })" })
-		}
-
-		// 5. New ext methods must be advertised as custom capabilities at
-		//    initialize (extensibility anchor; rule 9 for v2-RFD grounding).
-		//    Unregistered means: not a known _kimchi.dev/* literal anywhere
-		//    else in the tree.
-		{
-			const methodRe = /"(_kimchi\.dev\/[^"]+)"/g
-			for (const m of text.matchAll(methodRe)) {
-				if (!registeredMetaKeys.has(m[1])) {
-					findings.push({ check: "ext-method-unregistered", line: line0, snippet: m[1] })
-				}
-			}
-		}
+	// Check 4: ungated wake.
+	for (const m of codeBlock.matchAll(/triggerTurn:\s*true/g)) {
+		const window = codeBlock.slice(Math.max(0, m.index - 300), Math.min(codeBlock.length, m.index + 120))
+		if (!/backgroundRunsPermitted|session-policy|opt[ -]?in/i.test(window)) issues.push(CHECK_SPECS[3])
 	}
-	return findings
-}
-
-const CHECK_DOCS = {
-	"rawinput-merge": "rule 2 (schema-first): rawInput stays the agent's verbatim input; live state goes in _meta",
-	"meta-unregistered":
-		"rule 2: register _meta keys as exported *META_KEY constants instead of inline literals in emission paths",
-	"custommessage-recorder":
-		"rule 4: sendCustomMessage is messaging, not recording — use sessionManager.appendCustomEntry for facts of the past",
-	"ungated-wake":
-		"rules 1+7 (default-invisible / no-dead-window): new agent-initiated turns need the session-policy opt-in",
-	"ext-method-unregistered":
-		"extensibility + rule 9: new _-prefixed methods must be advertised in client capabilities at initialize and cite their v2 RFD (or 'own design, no spec track')",
-}
-
-function parseArgs(argv) {
-	const args = { base: null, selfTest: false }
-	for (let i = 0; i < argv.length; i++) {
-		if (argv[i] === "--self-test") args.selfTest = true
-		else if (argv[i] === "--base") args.base = argv[++i]
-		else if (SUPPORTED_FLAGS.includes(argv[i])) continue
-		else throw new Error(`unknown argument: ${argv[i]}`)
+	// Spread-style customMessage recorder (legacy shape).
+	if (/sendCustomMessage|notifyExtensionMessage/.test(codeBlock)) {
+		const idx = codeBlock.search(/sendCustomMessage|notifyExtensionMessage/)
+		const stmt = codeBlock.slice(Math.max(0, idx - 400), Math.min(codeBlock.length, idx + 700))
+		if (/_meta:[\s\S]*display\s*:\s*false/.test(stmt)) issues.push(CHECK_SPECS[2])
 	}
-	return args
+	return [...new Map(issues.map((issue) => [issue.id, issue])).values()]
 }
 
-function git(cmd) {
-	return execSync(`git ${cmd}`, { encoding: "utf8" })
-}
-
-/** Diff base for `git diff <x> HEAD`: merge-base when reachable, else the ref as-is (shallow CI clones). */
 function diffBase(ref) {
 	try {
-		return git(`merge-base ${ref} HEAD`).trim() || ref
+		return git(["merge-base", ref, "HEAD"]).trim()
 	} catch {
-		return ref
+		// shallow clone or the ref is not available locally; fall back below
 	}
-}
-
-function listChangedTs(base) {
-	return git(`diff --name-only ${diffBase(base)} HEAD`)
-		.split("\n")
-		.map((p) => p.trim())
-		.filter((p) => p.endsWith(".ts") && !p.endsWith(".test.ts") && (p.startsWith("src/") || p.startsWith("scripts/")))
-}
-
-function readHeadFiles(paths) {
-	const files = new Map()
-	for (const p of paths) {
-		try {
-			files.set(p, readFileSync(p, "utf8"))
-		} catch {
-			/* deleted file */
-		}
+	try {
+		git(["rev-parse", "--verify", `${ref}^{commit}`])
+	} catch {
+		exit(
+			`base ref not found: "${ref}". Fetch it (git fetch origin <branch>) or pass --base explicitly, so the diff coverage guarantee holds.`,
+			2,
+		)
 	}
-	return files
+	return ref
 }
 
-function listAllSrcTs() {
-	return git("ls-files 'src/**/*.ts'").split("\n").filter(Boolean)
+const selfTest = process.argv.includes("--self-test")
+const args = process.argv.slice(2).filter((a) => !a.startsWith("--self-test"))
+
+const SELF_TEST = {
+	negative: [
+		{
+			name: "rawInput fields only (no spread, no result&state)",
+			code: `
+export function toolCallFromEntry(entry) {
+  return {
+    rawInput: {
+      toolCallId: id,
+      title,
+      kind: "shell",
+      content,
+      _meta: { "kimchi.dev": { requestId } },
+    },
+  }
+}
+`,
+			checks: ["rawinput-merge"],
+		},
+		{
+			name: "registered ext method + nested/quoted _meta keys",
+			code: `
+export const RESOURCES_NOTIFICATION_METHOD = "_kimchi.dev/resources"
+export const PI_KIMCHI_DEV_SESSION = "piKimchiDevSession"
+
+export function buildMeta(sessionId) {
+  return { _meta: { "kimchi.dev": { PI_KIMCHI_DEV_SESSION: sessionId, nested: { deep: true } }, x: 12 } }
+}
+`,
+			checks: ["meta-unregistered"],
+		},
+		{
+			name: "multi-line _meta with braces in a string value and a Z suffix",
+			code: `
+export function buildMeta(sessionId) {
+  return { _meta: { "kimchi.dev": { note: "} zzz", display: false, x: 12 } } }
+}
+`,
+			checks: ["meta-unregistered"],
+		},
+		{
+			name: "latency meta on registerToolCall is editorial, not recorder",
+			code: `
+export const LATENCY = "latency"
+
+pi.events.emit("session_update", {
+  update: {
+    sessionUpdate: "tool_call",
+    toolCallId,
+    title,
+    rawInput: { toolCallId, title, input },
+    locations, kind, content, status, rawOutput,
+    _meta: { "kimchi.dev": { latency } },
+  },
+})
+`,
+			checks: ["meta-unregistered"],
+		},
+		{
+			name: "gated wake: gate mentioned within a statement-sized window",
+			code: `
+import { backgroundRunsPermitted } from "./session-policy"
+
+export function maybeWake() {
+  if (!backgroundRunsPermitted()) return
+  emit({ triggerTurn: true })
+}
+`,
+			checks: ["ungated-wake"],
+		},
+		{
+			name: "fixture: raw diff parsing (hunks, context, removed lines, no-newline)",
+			code: `diff --git a/src/x.ts b/src/x.ts
+--- a/src/x.ts
++++ b/src/x.ts
+@@ -10,3 +10,4 @@
+ context line
+-removed line stays out
++const added = 1
+\\ No newline at end of file
+@@ -20,1 +21,2 @@
++export const second = 2
+ context after
+`,
+			checks: [
+				"rawinput-merge",
+				"meta-unregistered",
+				"custommessage-recorder",
+				"ungated-wake",
+				"ext-method-unregistered",
+			],
+			blocksOnly: true,
+		},
+	],
+	positive: [
+		{
+			name: "spread-merged rawInput (done-time refill — the original leak)",
+			code: `
+export function describeToolCall({ args, result, state }) {
+  return { rawInput: { ...(args ?? {}), ...(state?.rawInput ?? {}) }, title: /* ... */ }
+}
+`,
+			checks: ["rawinput-merge"],
+		},
+		{
+			name: "rawInput assignment to an already-shaped object (spread in tail position)",
+			code: `
+export function describeToolCall({ args, result, state }) {
+  return {
+    rawInput: {
+      toolCallId: id,
+      title,
+      ...(state?.rawInput ?? {}),
+      ...(result ?? {}),
+    },
+  }
+}
+`,
+			checks: ["rawinput-merge"],
+		},
+		{
+			name: "new _meta key without registration anywhere",
+			code: `
+export function meta() {
+  return { _meta: { "kimchi.dev": { zzzNewAdmission: true } } }
+}
+`,
+			checks: ["meta-unregistered"],
+		},
+		{
+			name: "new _meta key via constant (constant name has META_KEY suffix, so it would be fine if registered; here it is not)",
+			code: `
+export const ZZZ_SESSION_META_KEY = "zzz-session"
+
+pi.events.emit("session_update", { _meta: { ZZZ_SESSION_META_KEY: "x" } })
+`,
+			checks: ["meta-unregistered"],
+		},
+		{
+			name: "recorder piggybacked on sendCustomMessage (display: false}",
+			code: `
+emitSessionUpdate(sessionId, {
+  update: {
+    sessionUpdate: "no-op",
+    _meta: { "kimchi.dev": { sessionExtends: true, display: false } },
+  },
+})
+sendCustomMessage({ _meta: { "kimchi.dev": { items, display: false } } })
+`,
+			checks: ["custommessage-recorder", "meta-unregistered"],
+		},
+		{
+			name: "ungated wake and the escape hatch lives far away in the same block",
+			code: `
+export function onCompletion() {
+  if (!extensionOptInEnabled()) return
+	collectResults()
+	logTelemetry()
+	persistState()
+	reportUsage()
+	updateCaches()
+	scheduleFollowUps()
+	extendSession()
+	refreshDerivedState()
+	notifySubscribers()
+	broadcastStatus()
+	indexOutputs()
+	linkContext()
+	enrichArtifacts()
+	populateExternals()
+	finalizePlanReview()
+	fireCompletions()
+	closeTransactions()
+	recordRunShape()
+	syncWorkspace()
+	auditTrailWrite()
+	attachLogs()
+	propagateFlags()
+	updateLens()
+	invalidateConsumers()
+	dispatchSideEffects()
+	emitSteeringContinuation({ triggerTurn: true })
+}
+`,
+			checks: ["ungated-wake"],
+		},
+		{
+			name: "new ext notification name without registration anywhere",
+			code: `
+pi.events.emit("session_update", {
+  update: { sessionUpdate: "_kimchi.dev/zzz_un_audited_push" },
+})
+`,
+			checks: ["ext-method-unregistered"],
+		},
+		{
+			name: "added-lines diff fixture: block splitting across a removed line",
+			code: `diff --git a/src/x.ts b/src/x.ts
+--- a/src/x.ts
++++ b/src/x.ts
+@@ -1,4 +1,4 @@
+ context
++export const first = { _meta: { "kimchi.dev": { zzzNewAdmission: true } } }
+-removed
+ context
+@@ -9,2 +9,3 @@
++export const second = { _meta: { hi: 1 } }
+ context
+`,
+			checks: ["meta-unregistered"],
+			rawDiff: true,
+		},
+	],
 }
 
-// ---------------------------------------------------------------------------
-
-function runFixtures() {
+if (selfTest) {
+	const fixtureRegistry = { metaKeys: new Set(), methodNames: new Set() }
 	let failures = 0
-	const fixture = (name, snippet, registered, expectFindings) => {
-		const uniqueSorting = (f) => `${f.check}@${f.line}`
-		const blocks = snippet.split("\n").map((text, i) => ({ line: i + 1, text }))
-		const findings = checkAddedBlocks("fixture.ts", [blocks], new Set(registered))
-		const got = findings.map((f) => f.check)
-		for (const expected of expectFindings) {
-			const ok = got.includes(expected)
-			if (!ok) failures++
+	for (const fixture of SELF_TEST.negative) {
+		const text = fixture.rawDiff
+			? addedBlocks(fixture.code, "src/x.ts")
+					.map((b) => b.lines.map((l) => l.text).join("\n"))
+					.join("\n")
+			: fixture.code
+		const fixtureReg = collectWireRegistry([["file.ts", text]])
+		const found = runChecks(text, {
+			metaKeys: new Set([...fixtureRegistry.metaKeys, ...fixtureReg.metaKeys]),
+			methodNames: new Set([...fixtureRegistry.methodNames, ...fixtureReg.methodNames]),
+		})
+		if (found.length !== 0) {
 			console.error(
-				`${ok ? "ok" : "FAIL"}  ${name}: expected ${expected}${ok ? "" : ` (got: ${got.join(", ") || "nothing"})`}`,
+				`check-acp-wire --self-test: negative fixture "${fixture.name}" unexpectedly produced findings: ${found.map((f) => f.id).join(", ")}`,
 			)
-		}
-		for (const unexpected of got.filter((g) => !expectFindings.includes(g))) {
 			failures++
-			console.error(`FAIL  ${name}: unexpected ${unexpected}`)
-		}
-		assert.equal(new Set(findings.map(uniqueSorting)).size, findings.length, `${name}: duplicate findings`)
-	}
-
-	fixture(
-		"rawInput spread merge",
-		`emit({ rawInput: { ...rawInput, cohort: resolved }, status: "in_progress" })`,
-		[],
-		["rawinput-merge"],
-	)
-	fixture("rawInput verbatim passthrough", `emit({ rawInput, status: "in_progress" })`, [], [])
-	fixture(
-		"unregistered _meta literal",
-		`_meta: { "brandNewKey": value, piToolCallId }`,
-		["piToolCallId"],
-		["meta-unregistered"],
-	)
-	fixture("registered _meta key", `_meta: { "piToolCallId": id }`, ["piToolCallId"], [])
-	fixture("constant _meta key", `_meta: { [BASH_CONTROL_WAIT_META_KEY]: info, piToolCallId }`, ["piToolCallId"], [])
-	fixture(
-		"sendCustomMessage recorder",
-		`pi.sendCustomMessage({ customType: "fact", content: data, display: false })`,
-		[],
-		["custommessage-recorder"],
-	)
-	fixture("sendCustomMessage plain message", `pi.sendCustomMessage({ customType: "note", content: data })`, [], [])
-	fixture("ungated wake", `pi.sendMessage({ content: "wake", triggerTurn: true })`, [], ["ungated-wake"])
-	fixture(
-		"gated wake",
-		'// gated via getBackgroundRunsPermitted (session-policy opt-in)\npi.sendMessage({ content: "wake", triggerTurn: true })',
-		[],
-		[],
-	)
-	fixture(
-		"new ext method",
-		`connection.notification("_kimchi.dev/brand_new_thing", params)`,
-		[],
-		["ext-method-unregistered"],
-	)
-	fixture(
-		"known ext method",
-		`connection.notification("_kimchi.dev/background_run_start", params)`,
-		["_kimchi.dev/background_run_start"],
-		[],
-	)
-
-	if (failures > 0) {
-		console.error(`\n${failures} fixture failure(s)`)
-		process.exit(1)
-	}
-	console.error(`\nself-test: all fixtures pass`)
-}
-
-// ---------------------------------------------------------------------------
-
-function main() {
-	const args = parseArgs(process.argv.slice(2))
-	if (args.selfTest) return runFixtures()
-
-	const base = args.base ?? "origin/HEAD"
-	const changed = listChangedTs(base)
-	// Registered keys are rooted at HEAD: pre-existing literals anywhere in the
-	// tree are the registry of "already on the wire".
-	const allSrc = listAllSrcTs()
-	const registered = detectMetaKeys(readHeadFiles(allSrc))
-
-	const findings = []
-	for (const path of changed) {
-		const diff = git(`diff ${diffBase(base)} HEAD -- "${path}"`)
-		for (const f of checkAddedBlocks(path, addedBlocks(diff), registered)) {
-			findings.push({ path, ...f })
 		}
 	}
-
-	if (findings.length === 0) {
-		console.log("check:acp-wire: clean")
-		return
+	for (const fixture of SELF_TEST.positive) {
+		if (fixture.rawDiff) {
+			const blocks = addedBlocks(fixture.code, "src/x.ts")
+			if (blocks.length !== 2 || blocks[0].lines.length !== 1 || blocks[1].lines.length !== 1) {
+				console.error(
+					`check-acp-wire --self-test: raw-diff fixture "${fixture.name}" parsed into ${blocks.length} blocks (expected 2)`,
+				)
+				failures++
+				continue
+			}
+			const found = runChecks(blocks.map((b) => b.lines.map((l) => l.text).join("\n")).join("\n"), fixtureRegistry)
+			if (!found.some((f) => f.id === fixture.checks[0])) {
+				console.error(
+					`check-acp-wire --self-test: raw-diff positive fixture "${fixture.name}" did not produce "${fixture.checks[0]}"`,
+				)
+				failures++
+			}
+			continue
+		}
+		const found = runChecks(fixture.code, fixtureRegistry)
+		if (!found.some((f) => f.id === fixture.checks[0])) {
+			console.error(
+				`check-acp-wire --self-test: positive fixture "${fixture.name}" did not produce "${fixture.checks[0]}"`,
+			)
+			failures++
+		}
 	}
-	console.error("check:acp-wire: ACP wire-compat tripwires fired:\n")
-	for (const f of findings) {
-		console.error(`  ${f.path}:${f.line}  [${f.check}] ${f.snippet}`)
-		console.error(`    ↳ ${CHECK_DOCS[f.check]}`)
-	}
-	console.error(`
-A failing tripwire means: walk docs/acp-compat.md rules 1–2, then either fix
-the diff or state in the PR body what a client that opts into nothing sees
-change (main turn, between turns, on replay).`)
-	process.exit(1)
+	if (failures) process.exit(1)
+	console.log(
+		`check-acp-wire --self-test: ${SELF_TEST.negative.length} negative + ${SELF_TEST.positive.length} positive fixtures OK`,
+	)
+	process.exit(0)
 }
 
-main()
+let baseRef = "origin/master"
+let pathsFile = null
+let staged = false
+for (let i = 0; i < args.length; i++) {
+	if (args[i] === "--base") baseRef = args[++i]
+	else if (args[i] === "--paths") pathsFile = args[++i]
+	else if (args[i] === "--staged") staged = true
+}
+
+let filesToScan = []
+if (pathsFile) {
+	if (!existsSync(pathsFile)) exit(`--paths file not found: ${pathsFile}`, 2)
+	filesToScan = readFileSync(pathsFile, "utf8")
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line && !line.startsWith("#"))
+} else if (staged) {
+	const out = git(["diff", "--cached", "--name-only"])
+	filesToScan = out.split("\n").filter(Boolean)
+} else {
+	const spec = diffBase(baseRef)
+	const out = git(["diff", "--name-only", `${spec}...HEAD`])
+	filesToScan = out.split("\n").filter(Boolean)
+}
+
+const headFiles = new Map(
+	git(["ls-files", "src/**/*.ts"])
+		.split("\n")
+		.filter((f) => f && !/\.(test|spec)\.ts$/.test(f))
+		.map((f) => {
+			try {
+				return [f, git(["show", `HEAD:${f}`])]
+			} catch {
+				return [f, ""]
+			}
+		}),
+)
+const registry = collectWireRegistry(headFiles)
+
+const findings = []
+for (const filePath of filesToScan) {
+	if (!filePath.startsWith("src/") || !filePath.endsWith(".ts")) continue
+	const abs = join(REPO_ROOT, filePath)
+	if (!existsSync(abs) || !statSync(abs).isFile()) continue
+	const diffArgs = staged
+		? ["diff", "--cached", "--", filePath]
+		: ["diff", `${diffBase(baseRef)}...HEAD`, "--", filePath]
+	const diff = git(diffArgs)
+	const blocks = addedBlocks(diff, filePath)
+	for (const block of blocks) {
+		const text = block.lines.map((l) => l.text).join("\n")
+		const found = runChecks(text, registry)
+		for (const issue of found) findings.push({ path: `${filePath}:${block.startLine}`, issue })
+	}
+}
+
+if (findings.length === 0) {
+	console.log("check-acp-wire: clean (heuristic — review rule 3 surfaces manually alongside)")
+	process.exit(0)
+}
+
+console.error("check-acp-wire: possible ACP wire-surface changes detected:\n")
+for (const { path, issue } of findings) {
+	console.error(`  ${path}\n    → [${issue.id}] ${issue.what}\n    ${issue.fix}\n`)
+}
+console.error(
+	"Heuristic only: green means these patterns were not detected, not that the diff is wire-safe. See docs/acp-compat.md",
+)
+process.exit(1)

@@ -75,7 +75,10 @@ jobs:
       # Tripwire for ACP wire-compat regressions (docs/acp-compat.md):
       # self-test first so a broken checker fails as a checker bug, not as a
       # wire finding.
+      # Non-PR runs (push to master, merge_group) have no base ref to diff
+      # against; the tripwire is PR-scoped by design.
       - name: ACP wire-compat tripwire
+        if: github.event_name == 'pull_request'
         run: |
           git fetch --quiet origin "${{ github.base_ref }}"
           pnpm run check:acp-wire:self-test
