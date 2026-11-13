@@ -240,6 +240,18 @@ report grouped by relevance. No analysis, no suggestions.
 `extensions: false` strips MCP-provided tools so this agent can't accidentally
 call into a heavy database or browser tool.
 
+For **custom agents**, the same flag is a hard contract: the runner registers
+no extension-provided tools (bundled web tools included — off means off), and
+spawning fails fast with an actionable error if the `tools:` list names
+anything the child session can't honor (builtins, the native `Skill` tool,
+and DAP debug tools via the `extensions.dap` resource are the only registerable
+names on this path). Previously such names were silently dropped and the agent
+ran without them; the fail-fast turns that latent misconfiguration into an
+explicit error at spawn. Remedies: enable extensions for the agent, remove the
+names from its `tools:` list, or — if every name is explicitly opted out via
+`disallowed_tools` — nothing, that's respected. Built-in personas are exempt
+from this check and behave exactly as before.
+
 ### Adaptive model selection with `models`
 
 `.kimchi/agents/adaptive-reader.md`:

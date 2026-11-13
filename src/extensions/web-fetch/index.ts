@@ -30,7 +30,16 @@ function formatDuration(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`
 }
 
-export default function webFetchExtension(pi: ExtensionAPI): void {
+export interface WebFetchExtensionOptions {
+	/** Bind process-global cache/browser-pool teardown to this session's
+	 *  shutdown event. Default true. Subagent sessions MUST pass false: the
+	 *  cache and the Playwright browser pool are module singletons shared with
+	 *  the parent session — a child ending would wipe the shared cache and
+	 *  kill the shared browser mid-flight. */
+	cleanupOnShutdown?: boolean
+}
+
+export default function webFetchExtension(pi: ExtensionAPI, options?: WebFetchExtensionOptions): void {
 	// web_fetch is part of the static session surface (registered and
 	// advertised from session start): a mid-session reveal would invalidate the
 	// prompt cache for the whole history after the tools block — worth far more
@@ -111,8 +120,10 @@ export default function webFetchExtension(pi: ExtensionAPI): void {
 		},
 	})
 
-	pi.on("session_shutdown", () => {
-		cacheClear()
-		void shutdownBrowserPool()
-	})
+	if (options?.cleanupOnShutdown !== false) {
+		pi.on("session_shutdown", () => {
+			cacheClear()
+			void shutdownBrowserPool()
+		})
+	}
 }
