@@ -1412,6 +1412,33 @@ describe("runAgent — profile tool access", () => {
 		expect(result.droppedToolNames).toEqual(["grep", "missing_tool"])
 	})
 
+	it("does not report the runner-appended Skill name — children load skills via preload blocks, not the tool", async () => {
+		// skills: true makes the runner append "Skill" to toolNames for prompt
+		// documentation; no child session has ever registered a tool by that
+		// name. Reporting the append would fire on every skill-enabled run.
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: true }))
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Researcher", description: "Research agent", roles: ["research"], skills: true }),
+		)
+		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep"],
+			registeredToolNames: ["read", "grep"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.droppedToolNames).toBeUndefined()
+	})
+
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {
 		mockGetConfig.mockReturnValue(
 			makeTypeConfig({

@@ -675,7 +675,15 @@ ${skillLines}`
 			(name) => session.getToolDefinition(name) !== undefined,
 			disallowedSet,
 			(names) => {
-				droppedToolNames = names
+				// SKILL_TOOL_NAME is runner-appended for prompt documentation, not a
+				// user/persona request: no child session has ever registered it (the
+				// skills-manager extension registers skill_view/skill_manage; children
+				// load skills via the brief preload blocks). Reporting it fires on
+				// every skill-enabled run — exclude it. The underlying gap (prompt
+				// advertises a tool no child has) predates the drop-report and is
+				// tracked separately.
+				const reported = names.filter((n) => n !== SKILL_TOOL_NAME)
+				if (reported.length > 0) droppedToolNames = reported
 			},
 		)
 		// upstream pi: only ACTIVE tools are callable (registered-but-inactive now
