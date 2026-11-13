@@ -16,6 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
 import { isResourceEnabled } from "../../../resources/store.js"
+import { findModelByRef } from "../../../shared/model-ref.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
@@ -170,24 +171,10 @@ export function setGraceTurns(n: number): void {
  */
 function resolveDefaultModel(
 	parentModel: Model<Api> | undefined,
-	registry: Pick<PiModelRegistry, "find" | "getAvailable">,
+	registry: Pick<PiModelRegistry, "getAvailable">,
 	configModel?: string,
 ): Model<Api> | undefined {
-	if (configModel) {
-		const slashIdx = configModel.indexOf("/")
-		if (slashIdx !== -1) {
-			const provider = configModel.slice(0, slashIdx)
-			const modelId = configModel.slice(slashIdx + 1)
-
-			const availableKeys = new Set(registry.getAvailable().map((model) => `${model.provider}/${model.id}`))
-			const isAvailable = (p: string, id: string) => availableKeys.has(`${p}/${id}`)
-
-			const found = registry.find(provider, modelId)
-			if (found && isAvailable(provider, modelId)) return found
-		}
-	}
-
-	return parentModel
+	return (configModel ? findModelByRef(registry, configModel) : undefined) ?? parentModel
 }
 
 let cachedGuidelinesRegistry: ModelRegistry | undefined

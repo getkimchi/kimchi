@@ -11,6 +11,61 @@ describe("ACP gateway provider selection", () => {
 		await fixture?.stop()
 	})
 
+	it("uses an explicitly selected nested provider for an agent and returns its result to the parent", async () => {
+		fixture = await startAcpFixture({
+			artifactName: "acp-agent-provider-selection",
+			providerId: "kimchi-dev",
+			defaultModel: "shared",
+			extraArgs: ["--model", "kimchi-dev/shared"],
+			models: PROVIDER_CATALOG,
+			responses: [
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "Agent",
+								arguments: JSON.stringify({
+									prompt: "Report ready",
+									description: "check provider",
+									subagent_type: "General-Purpose",
+									model: "kimchi-dev/upstream/shared",
+									run_in_background: false,
+								}),
+							},
+						},
+					],
+				},
+				{ forSubagent: true, stream: ["Provider child complete."] },
+				{
+					match: (request) => JSON.stringify(request.body ?? {}).includes("Provider child complete."),
+					stream: ["Provider delegation complete."],
+				},
+			],
+		})
+		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		const result = await prompt(fixture, session.sessionId, "Ask an agent to report ready")
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.chunks).toContain("Provider delegation complete.")
+		const child = fixture.fake.requests.filter(
+			(request) =>
+				request.url.endsWith("/chat/completions") &&
+				JSON.stringify(request.body?.messages ?? []).includes("You are a kimchi coding agent sub-agent."),
+		)
+		expect(child).toHaveLength(1)
+		expect(child[0]?.headers).toMatchObject({ authorization: "Bearer fake", "x-provider-type": "upstream" })
+		expect(child[0]?.body).toMatchObject({ model: "shared" })
+		const continuation = fixture.fake.requests.find((request) =>
+			JSON.stringify(request.body?.messages ?? []).includes("Provider child complete."),
+		)
+		expect(continuation?.headers["x-provider-type"]).toBe("ai-enabler")
+		expect(continuation?.body).toMatchObject({
+			model: "shared",
+			messages: expect.arrayContaining([
+				expect.objectContaining({ role: "tool", content: expect.stringContaining("Provider child complete.") }),
+			]),
+		})
+	})
+
 	it("distinguishes providers and keeps their route and thinking settings through a tool round trip", async () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-provider-model-selection",
