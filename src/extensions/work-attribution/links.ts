@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { readFileSync, realpathSync } from "node:fs"
 import { join } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { preludeStretch } from "../../shared/prelude-stretch.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { appendWorkRecord, getWorkId, isWorkSegment, type WorkContext } from "../work-attribution.js"
 import type { WorkContinuation } from "./continuation.js"
@@ -17,6 +18,7 @@ import {
 import {
 	object,
 	readWorkRecords,
+	readWorkRecordsForHistoryAsync,
 	SHA256_HEX,
 	type WorkRecord,
 	type WorkRecordProblem,
@@ -178,11 +180,8 @@ function indexRecord(index: ContinuationIndex, row: WorkRecord): void {
 		addRow(index.transitions, row.workId + row.transitionId, row)
 }
 
-function indexContinuationRecords(
-	records: readonly WorkRecord[],
-	checkBudget: () => void = () => {},
-): ContinuationIndex {
-	const index: ContinuationIndex = {
+function newContinuationIndex(): ContinuationIndex {
+	return {
 		linked: new Set(),
 		requests: new Map(),
 		workRequests: new Map(),
@@ -190,7 +189,29 @@ function indexContinuationRecords(
 		plans: new Map(),
 		transitions: new Map(),
 	}
+}
+
+function indexContinuationRecords(
+	records: readonly WorkRecord[],
+	checkBudget: () => void = () => {},
+): ContinuationIndex {
+	const index = newContinuationIndex()
 	for (let position = 0; position < records.length; position++) {
+		if (position % BUDGET_CHECK_ROWS === 0) checkBudget()
+		indexRecord(index, records[position])
+	}
+	return index
+}
+
+/** The same index, breathing between rows for a caller driving the UI loop. */
+async function indexContinuationRecordsAsync(
+	records: readonly WorkRecord[],
+	checkBudget: () => void,
+	stretch: () => Promise<void>,
+): Promise<ContinuationIndex> {
+	const index = newContinuationIndex()
+	for (let position = 0; position < records.length; position++) {
+		await stretch()
 		if (position % BUDGET_CHECK_ROWS === 0) checkBudget()
 		indexRecord(index, records[position])
 	}
@@ -240,6 +261,22 @@ export function readContinuationHistory(agentDir: string, checkBudget?: () => vo
 	})
 	if (invalid.length) throw new Error(`Incomplete work history contains invalid records in ${journals(invalid)}`)
 	return { records, index: indexContinuationRecords(records, checkBudget), unknown }
+}
+
+/** The same snapshot, breathing through the ledger walk and the index build. */
+export async function readContinuationHistoryAsync(
+	agentDir: string,
+	checkBudget: () => void = () => {},
+	stretch: () => Promise<void> = preludeStretch(),
+): Promise<ContinuationHistory> {
+	const invalid: WorkRecordProblem[] = []
+	const unknown: ContinuationHistory["unknown"] = []
+	const records = await readWorkRecordsForHistoryAsync(agentDir, checkBudget, stretch, (problem) => {
+		if (problem.kind === "invalid") invalid.push(problem)
+		else unknown.push({ problem, ids: namedIds(problem.record) })
+	})
+	if (invalid.length) throw new Error(`Incomplete work history contains invalid records in ${journals(invalid)}`)
+	return { records, index: await indexContinuationRecordsAsync(records, checkBudget, stretch), unknown }
 }
 
 /** Unknown record types naming this work or one of its requests; this version cannot tell what they change. */
@@ -504,6 +541,7 @@ export async function reconcileWorkContinuations(
 	signal: AbortSignal,
 	assertLease: () => void,
 	progress: ContinuationProgress = {},
+	stretch: () => Promise<void> = preludeStretch(),
 ): Promise<void> {
 	const startedAt = Date.now()
 	const deadline = startedAt + REPAIR_BUDGET_MS
@@ -620,11 +658,12 @@ export async function reconcileWorkContinuations(
 				candidates.delete(key)
 	} else {
 		// First pass, or a rewrite invalidated the accumulated state: one full read rebuilds it.
-		const history = readContinuationHistory(agentDir, checkBudget)
+		const history = await readContinuationHistoryAsync(agentDir, checkBudget, stretch)
 		index = history.index
 		receipts = new Set()
 		candidates = new Map()
 		for (const row of history.records) {
+			await stretch()
 			const found = receipt(row)
 			if (!found) continue
 			receipts.add(found.key)
