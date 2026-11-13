@@ -29,6 +29,8 @@
 		"memory:measure": "bun run src/extensions/memory/verify-measure.ts",
 		"typecheck": "tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
+		"check:acp-wire": "node scripts/check-acp-wire.mjs",
+		"check:acp-wire:self-test": "node scripts/check-acp-wire.mjs --self-test",
 		"test": "vitest run --dir src",
 		"test:dap-integration": "vitest run --config vitest.dap-integration.config.ts",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
