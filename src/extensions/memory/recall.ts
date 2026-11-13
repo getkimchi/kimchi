@@ -89,6 +89,9 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 	// traced-empty-hits contract; undefined from any facet = no backend →
 	// silent skip overall.
 	const facets = queries && queries.length > 0 ? [...queries] : [query]
+	/** Per-facet outcome for the trace: which of the embedded lookups
+	 * actually retrieved (the dashboard shows them as separate cells). */
+	const facetBreakdown: Array<{ text: string; hits: number }> = []
 	let hits: MemorySearchHit[] | null | undefined
 	try {
 		if (facets.length === 1) {
@@ -107,6 +110,7 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 					emptyBackend = true
 					break
 				}
+				facetBreakdown.push({ text: q, hits: (sub ?? []).length })
 				for (const h of sub ?? []) {
 					const text = h.memory ?? ""
 					const prior = merged.get(text)
@@ -150,6 +154,7 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 		}
 		emit({
 			trigger,
+			...(facetBreakdown.length > 1 ? { facets: facetBreakdown } : {}),
 			hits: list.map((h) => ({ text: h.memory, score: h.score })),
 			injected: recall?.facts ?? [],
 			composition: recall?.composition,

@@ -224,6 +224,34 @@ describe("memory dashboard — recall (retrieval) endpoints", () => {
 		expect(recalls[2]).toMatchObject({ kind: "digest-init", hits: 1, injected: 1 })
 	})
 
+	it("/api/recalls surfaces the facet count from multi-facet traces", async () => {
+		writeDrain("recall-2026-11-12T09-11-00-555-0.jsonl", [
+			drainEvent({
+				type: "recall",
+				kind: "digest-progressive",
+				trigger: "state-revisit",
+				query: "blended query text",
+				facets: [
+					{ text: "reasoning head facet", hits: 1 },
+					{ text: "receipt facet", hits: 2 },
+					{ text: "recent message facet", hits: 0 },
+				],
+				hits: [{ text: "one merged fact", score: 0.7 }],
+				injected: ["one merged fact"],
+				durationMs: 5,
+			}),
+		])
+		const { url } = await serve()
+		const recalls = (await (await get(url, "/api/recalls")).json()) as Array<{ facets: number | null }>
+		expect(recalls[0].facets).toBe(3)
+		// and the drill-down serves the per-facet breakdown for the details section
+		const detail = (await (await get(url, "/api/recall?name=recall-2026-11-12T09-11-00-555-0.jsonl")).json()) as {
+			events: Array<{ facets: Array<{ text: string; hits: number }> }>
+		}
+		expect(detail.events[0].facets).toHaveLength(3)
+		expect(detail.events[0].facets[2]).toMatchObject({ text: "recent message facet", hits: 0 })
+	})
+
 	it("/api/recall serves the full recall record and rejects non-recall names", async () => {
 		writeDrain("recall-2026-11-12T09-00-00-444-0.jsonl", [
 			drainEvent({ type: "recall", kind: "digest-init", query: "q", injected: ["f1"] }),

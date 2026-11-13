@@ -147,6 +147,11 @@ describe("runRecall", () => {
 		const shared = emitted.find((h) => h.text === "shared fact")
 		expect(shared?.score).toBe(0.9)
 		expect(emitted).toHaveLength(3)
+		// the trace carries the per-facet breakdown (dashboard facet column)
+		expect(rig.emitted[0].facets).toEqual([
+			{ text: "facet-plan", hits: 2 },
+			{ text: "facet-state", hits: 2 },
+		])
 	})
 
 	it("an undefined result from any facet is an overall no-searcher skip", async () => {
