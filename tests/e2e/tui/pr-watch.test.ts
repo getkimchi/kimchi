@@ -1,35 +1,136 @@
 import { execFileSync } from "node:child_process"
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { expect, Key, test } from "@microsoft/tui-test"
+import { expect, test } from "@microsoft/tui-test"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
-import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { requestAdvertisesTool, toolResultText } from "./support/mcp-model-script.js"
+import { createPRWatchTargets, git } from "./support/pr-watch-targets.js"
+import { chatRequests } from "./support/wire-requests.js"
 
 test.use(TUI_TEST_CONFIG)
 
+for (const provider of ["github", "gitlab"] as const) {
+	test(`adds requested ${provider} targets from a non-repository conversation and controls them together`, async ({
+		terminal,
+	}) => {
+		const root = mkdtempSync(join(tmpdir(), "pr-watch-multiple-tui-"))
+		const targets = createPRWatchTargets(root, [7, 8], provider)
+		const label = provider === "github" ? "PR #" : "MR !"
+		const plural = provider === "github" ? "PRs" : "MRs"
+		const repository = provider === "github" ? "example/kimchi-lab" : "group/subgroup/kimchi-lab"
+		const stateFile = join(root, "state.json")
+		writeFileSync(stateFile, JSON.stringify({ targets: targets.map((target) => ({ ...target, kind: "passed" })) }))
+		try {
+			await runKimchiSession(
+				terminal,
+				{
+					artifactName: `pr-watch-multiple-home-${provider}`,
+					extraArgs: ["--yolo"],
+					responses: targets.flatMap(({ url, cwd }, i) => [
+						{
+							toolCalls: [
+								{
+									id: `watch-${i}`,
+									function: { name: "pr_watch", arguments: JSON.stringify({ targets: [{ url, cwd }] }) },
+								},
+							],
+						},
+						{ stream: [i === 0 ? "Watching the first requested PR." : "Second PR added to tracking."] },
+					]),
+					seedHome: (homeDir) => {
+						const repo = process.env.KIMCHI_REPO_ROOT
+						if (!repo) throw new Error("Run through scripts/run-tui-e2e.js")
+						const extensions = join(homeDir, ".config/kimchi/harness/extensions")
+						mkdirSync(extensions, { recursive: true })
+						copyFileSync(
+							join(repo, `tests/e2e/acp/support/${provider === "github" ? "pr" : "mr"}-monitor-api.js`),
+							join(extensions, "pr-monitor-api.js"),
+						)
+						return {
+							env: {
+								GH_TOKEN: "pr-monitor-fixture-token",
+								GITLAB_TOKEN: "pr-monitor-fixture-token",
+								GITLAB_HOST: "gitlab.fixture.test",
+								KIMCHI_TEST_PR_MONITOR: stateFile,
+							},
+						}
+					},
+				},
+				async (fixture, trace) => {
+					expect(() => git(fixture.workDir, "rev-parse", "--show-toplevel")).toThrow()
+					expect(viewText(terminal)).not.toContain("PR watch:")
+					terminal.submit(`Watch ${targets[0].url} and fix CI`)
+					await waitForText(terminal, "Watching the first requested PR.")
+					await waitForText(terminal, `${label}7: watching`, { full: false })
+					expect(fullText(terminal)).toContain("CI only")
+					trace.step("an explicit request starts CI-only tracking from outside a repository")
+					terminal.submit(`Also watch ${targets[1].url} and fix CI`)
+					await waitForText(terminal, "Second PR added to tracking.")
+					await waitForText(terminal, `PR watch: 2 ${plural}`, { full: false })
+					terminal.submit("/pr-watch monitor")
+					await waitForText(terminal, `Monitor · 2 ${plural}`, { full: false })
+					expect(viewText(terminal)).toContain(`${repository} ${label}7`)
+					expect(viewText(terminal)).toContain(`${repository} ${label}8`)
+					trace.step("the second request adds a target; Monitor lists both checkouts")
+					terminal.keyPress("p")
+					await waitForText(terminal, "Watch only", { full: false })
+					terminal.keyPress("s")
+					await waitForText(terminal, "Stopped", { full: false })
+					terminal.keyEscape()
+					await waitForText(terminal, PROMPT_READY, { full: false })
+					expect(viewText(terminal)).not.toContain(`PR watch: 2 ${plural}`)
+					for (const target of targets) expect(git(target.cwd, "rev-parse", "HEAD")).toBe(target.head)
+					expect(chatRequests(fixture)).toHaveLength(4)
+					trace.step("pause and stop apply to the set without opening another agent session")
+				},
+			)
+		} finally {
+			rmSync(root, { force: true, recursive: true })
+		}
+	})
+}
+
 for (const mode of ["regular", "fullscreen"] as const) {
-	test(`/pr-watch Monitor updates, pauses and stops without inference in ${mode} mode`, async ({ terminal }) => {
+	test(`PR watching and Monitor controls work in Plan mode (${mode})`, async ({ terminal }) => {
 		let stateFile = ""
 		await runKimchiSession(
 			terminal,
 			{
 				artifactName: `pr-watch-monitor-${mode}`,
+				startupText: "Enable automatic PR watching?",
+				exitMarker: `PR_WATCH_EXIT_${mode}`,
 				gitInit: true,
-				responses: [],
+				responses:
+					mode === "regular"
+						? [
+								{
+									toolCalls: [
+										{
+											id: "watch",
+											function: {
+												name: "pr_watch",
+												arguments: JSON.stringify({ url: "https://github.com/example/kimchi-lab/pull/7" }),
+											},
+										},
+									],
+								},
+								{ stream: ["Tracking started; repairs wait until you leave Plan mode."] },
+							]
+						: [],
 				extraArgs: ["--plan"],
 				env: { KIMCHI_PERMISSIONS: "plan" },
 				seedHome: (homeDir, workDir) => {
-					if (mode === "fullscreen") {
-						const path = join(homeDir, ".config/kimchi/harness/settings.json")
-						writeFileSync(
-							path,
-							JSON.stringify({
-								...JSON.parse(readFileSync(path, "utf8")),
-								tuiMode: "fullscreen",
-								showHardwareCursor: true,
-							}),
-						)
-					}
+					const path = join(homeDir, ".config/kimchi/harness/settings.json")
+					writeFileSync(
+						path,
+						JSON.stringify({
+							...JSON.parse(readFileSync(path, "utf8")),
+							tuiMode: mode,
+							showHardwareCursor: true,
+						}),
+					)
 					const repoRoot = process.env.KIMCHI_REPO_ROOT
 					if (!repoRoot) throw new Error("Run through scripts/run-tui-e2e.js")
 					const git = (...args: string[]) =>
@@ -61,43 +162,96 @@ for (const mode of ["regular", "fullscreen"] as const) {
 				},
 			},
 			async (fixture, trace) => {
+				expect(viewText(terminal)).not.toContain("PR #7:")
+				expect(viewText(terminal)).not.toContain("[Monitor]")
+				if (mode === "fullscreen") {
+					terminal.submit("")
+					await waitForText(terminal, "Tracking PR #7 with auto-fix.")
+					await waitForText(terminal, "PR #7: needs attention", { full: false })
+					trace.step("accepting enables fixes; Plan mode pauses repairs and Monitor stays closed")
+				} else {
+					terminal.keyEscape()
+					await waitForText(terminal, PROMPT_READY, { full: false })
+					expect(viewText(terminal)).not.toContain("PR #7:")
+					trace.step("declining PR discovery leaves tracking hidden until explicitly requested")
+					terminal.submit("watch this https://github.com/example/kimchi-lab/pull/7 pr")
+					await waitForText(terminal, "Tracking started; repairs wait until you leave Plan mode.")
+					expect(fullText(terminal)).toContain("#7 · Watching · Fixes paused in Plan")
+					expect(fullText(terminal)).not.toContain("lines returned")
+					terminal.keyPress("o", { ctrl: true })
+					await waitForText(terminal, "Normal permissions still apply.", { full: false })
+					terminal.keyPress("o", { ctrl: true })
+					await waitForText(terminal, "Tool output: collapsed", { full: false })
+					expect(fixture.fake.requests.some((request) => requestAdvertisesTool(request, "pr_watch"))).toBe(true)
+					expect(toolResultText(fixture.fake.requests, "watch")).toContain("Switch out of Plan mode")
+					trace.step("a natural-language request starts tracking through the advertised pr_watch tool")
+				}
 				terminal.submit("/pr-watch")
-				await waitForText(terminal, "Switch out of Plan mode")
+				await waitForText(terminal, "Switch out of Plan mode", { full: false })
 				expect(fullText(terminal)).toContain("Keep this Kimchi process open")
 				await waitForText(terminal, "PR #7: needs attention", { full: false })
 				trace.step("tracking indicator stays visible while repairs pause in Plan mode")
 				terminal.submit("/pr-watch monitor")
-				await waitForText(terminal, "[Monitor]", { full: false })
+				await waitForText(terminal, "Monitor · PR #7", { full: false })
 				expect(viewText(terminal)).toContain("failed: Parser tests")
 				expect(viewText(terminal)).not.toMatch(/\[Script\]|\[Output\]/)
 				terminal.resize(60, 20)
-				await waitForText(terminal, "1–4 of 7", { full: false })
-				terminal.keyPress(Key.End)
-				await waitForText(terminal, "4–7 of 7", { full: false })
-				terminal.keyPress(Key.Home)
-				await waitForText(terminal, "1–4 of 7", { full: false })
+				await waitForText(terminal, "Esc close · R · P pause · S stop", { full: false })
+				expect(viewText(terminal)).toContain("1 failed")
+				expect(viewText(terminal)).toContain("Fixes paused in Plan")
+				expect(viewText(terminal)).not.toContain("PR #7: needs attention")
 				terminal.resize(130, 40)
-				await waitForText(terminal, "1–7 of 7", { full: false })
-				trace.step("single Monitor tab supports resize and paging")
+				await waitForText(terminal, "Esc close · R refresh · P pause fixes · S stop", { full: false })
+				trace.step("compact Monitor fits narrow terminals without a duplicate tracking row")
 				terminal.keyPress("p")
-				await waitForText(terminal, "watching · auto-fix off", { full: false })
+				await waitForText(terminal, "Watch only", { full: false })
 				const seed = JSON.parse(readFileSync(stateFile, "utf8"))
 				writeFileSync(stateFile, JSON.stringify({ ...seed, kind: "passed" }))
 				terminal.keyPress("r")
-				await waitForText(terminal, "passed: Parser tests", { full: false })
+				await waitForText(terminal, "CI: 1 passed · Review threads 0", { full: false })
+				terminal.resize(60, 10)
+				await waitForText(terminal, "Esc close · enlarge terminal to monitor", { full: false })
+				terminal.resize(130, 40)
+				await waitForText(terminal, "CI: 1 passed · Review threads 0", { full: false })
 				trace.step("pause revokes fixes; refresh shows a changed provider snapshot")
 				terminal.keyCtrlC()
 				await waitForText(terminal, PROMPT_READY, { full: false })
 				await waitForText(terminal, "PR #7: watching", { full: false })
 				terminal.submit("/pr-watch monitor")
-				await waitForText(terminal, "[Monitor]", { full: false })
+				await waitForText(terminal, "Monitor · PR #7", { full: false })
 				terminal.keyPress("s")
-				await waitForText(terminal, "stopped · auto-fix off", { full: false })
+				await waitForText(terminal, "Stopped", { full: false })
 				terminal.keyEscape()
 				await waitForText(terminal, PROMPT_READY, { full: false })
 				expect(viewText(terminal)).not.toContain("PR #7: watching")
 				trace.step("Ctrl+C closes inspection only; explicit stop removes tracking indicator")
-				expect(fixture.fake.requests.filter((request) => request.url.includes("chat/completions"))).toHaveLength(0)
+				const preferencePath = join(fixture.agentDir, "pr-watch.json")
+				expect(JSON.parse(readFileSync(preferencePath, "utf8"))).toEqual({ enabled: mode === "fullscreen" })
+				if (mode === "fullscreen") {
+					terminal.submit("/quit")
+					await waitForText(terminal, `PR_WATCH_EXIT_${mode}`, { full: false })
+					writeFileSync(stateFile, JSON.stringify({ ...seed, kind: "passed", number: 8 }))
+					launchKimchi(terminal, fixture, ["--plan"], fixture.seedEnv, { exitMarker: "PR_WATCH_SECOND_EXIT" })
+					await waitForText(terminal, "PR #8: watching", { full: false })
+					expect(viewText(terminal)).toContain("Fixes paused in Plan")
+					expect(viewText(terminal)).not.toContain("Enable automatic PR watching?")
+					trace.step("a new process and PR reuse the saved general opt-in without another question")
+					terminal.submit("/pr-watch disable")
+					await waitForText(terminal, "Automatic PR watching disabled for future PRs and sessions")
+					expect(JSON.parse(readFileSync(preferencePath, "utf8"))).toEqual({ enabled: false })
+					terminal.submit("/quit")
+					await waitForText(terminal, "PR_WATCH_SECOND_EXIT", { full: false })
+					writeFileSync(stateFile, JSON.stringify({ ...seed, kind: "passed", number: 9 }))
+					launchKimchi(terminal, fixture, ["--plan"], fixture.seedEnv)
+					await waitForText(terminal, "feature · PR #9 open", { full: false })
+					expect(viewText(terminal)).not.toContain("Enable automatic PR watching?")
+					expect(viewText(terminal)).not.toContain("PR #9: watching")
+					trace.step("disabling is remembered across another process and PR, leaving tracking hidden")
+				}
+				expect(execFileSync("git", ["--git-dir", seed.bare, "rev-parse", "feature"], { encoding: "utf8" }).trim()).toBe(
+					seed.head,
+				)
+				expect(chatRequests(fixture)).toHaveLength(mode === "regular" ? 2 : 0)
 			},
 		)
 	})

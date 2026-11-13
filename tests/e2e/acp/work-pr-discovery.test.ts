@@ -185,6 +185,7 @@ it("keeps tracked GitLab history in /work and shows only the checked-out branch'
 			path: `/api/v4/projects/example%2Fgroup%2Fkimchi-lab/repository/commits/${sha}/merge_requests`,
 		})
 	expect(calls.every((call) => call.tokenMatched)).toBe(true)
+	fixture.client.answerNextPermissionWith({ kind: "reject_once" })
 	git("switch", "-c", "feature")
 	await expectNotification(
 		fixture,
@@ -202,6 +203,11 @@ it("keeps tracked GitLab history in /work and shows only the checked-out branch'
 		statusKey: "work-pr-url",
 		statusText: url,
 	})
+	await expect
+		.poll(() =>
+			fixture?.client.permissionRequests.some((request) => request.toolCall.title === "Enable automatic PR watching?"),
+		)
+		.toBe(true)
 	const beforeDefault = fixture.client.extNotifications.length
 	git("switch", "main")
 	await expectNotification(

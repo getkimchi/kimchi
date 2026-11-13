@@ -14,6 +14,7 @@ import {
 } from "../work-attribution.js"
 import { currentBranch, lookupBranchPullRequest } from "./branch-status.js"
 import { anchorDirectory, directoryLabel, observedCommandDirectory } from "./command-anchor.js"
+import { BRANCH_PR_OBSERVED_EVENT, type BranchPRObservation } from "./events.js"
 import { mergePullRequestLinks, pullRequestLabel } from "./links.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { LOOKUP_WINDOW_MS, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
@@ -239,7 +240,14 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 						if (!current()) return
 						workTreeStatus(ctx, anchor, branch)
 						// Clear the previous branch's link before waiting for its replacement.
-						if (branch !== branchName) footer(branch)
+						if (branch !== branchName) {
+							footer(branch)
+							pi.events.emit(BRANCH_PR_OBSERVED_EVENT, {
+								sessionId: ctx.sessionManager.getSessionId(),
+								cwd: anchor,
+								branch,
+							} satisfies BranchPRObservation)
+						}
 						if (!branchLookupDue(branch)) return
 						const result = branch ? await lookupBranchPullRequest(anchor, signal) : undefined
 						if (!current()) return
@@ -255,6 +263,12 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 						}
 						const pr = result?.pullRequest
 						footer(pr ? `${branch} · ${pullRequestLabel(pr)}` : branch, pr?.url)
+						pi.events.emit(BRANCH_PR_OBSERVED_EVENT, {
+							sessionId: ctx.sessionManager.getSessionId(),
+							cwd: anchor,
+							branch,
+							pullRequest: pr,
+						} satisfies BranchPRObservation)
 					})
 					.catch((error) => {
 						if (!current()) return

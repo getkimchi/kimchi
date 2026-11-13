@@ -2,6 +2,7 @@ import { lookupBranchPullRequest } from "../pull-request-status/branch-status.js
 import { api, pages, repositoryIdentity, requestJSON } from "../pull-request-status/provider-api.js"
 import type { Repository } from "../pull-request-status/provider-records.js"
 import { object } from "../work-attribution/summary.js"
+import { readPRTarget } from "./targets.js"
 import type { PRCheck, PRFeedback, PRSnapshot } from "./types.js"
 
 const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"])
@@ -135,12 +136,15 @@ async function readGithubFeedback(
 	throw new Error("This PR has too many review threads to monitor safely.")
 }
 
-export async function readPRSnapshot(cwd: string, signal: AbortSignal): Promise<PRSnapshot | null> {
-	const lookup = await lookupBranchPullRequest(cwd, signal)
+export async function readPRSnapshot(cwd: string, signal: AbortSignal, url?: string): Promise<PRSnapshot | null> {
+	const target = url ? await readPRTarget(url, signal) : undefined
+	const lookup = target
+		? { branch: target.branch, pullRequest: target.pullRequest }
+		: await lookupBranchPullRequest(cwd, signal)
 	const pr = lookup?.pullRequest
 	if (!pr || !lookup) return null
 	const deadline = Date.now() + 25_000
-	const remote = await repositoryIdentity(cwd, signal, deadline, new Map(), lookup.branch)
+	const remote = target?.repository ?? (await repositoryIdentity(cwd, signal, deadline, new Map(), lookup.branch))
 	const get = async (path: string) => (await requestJSON(remote, api(remote, path), signal, deadline)).value
 	let checks: PRCheck[]
 	let feedback: PRFeedback[]

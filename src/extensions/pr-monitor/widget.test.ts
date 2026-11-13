@@ -19,7 +19,7 @@ describe("PR tracking indicator", () => {
 	it("remains visible during PR discovery and links to the monitor", () => {
 		expect(view(state)).toContain("PR watch: watching")
 		expect(view(state)).toContain("discovering PR")
-		expect(view(state)).toContain("fixes off")
+		expect(view(state)).toContain("Watch only")
 		expect(view(state)).toContain("/pr-watch monitor")
 	})
 	it("clears when monitoring is stopped", () => {

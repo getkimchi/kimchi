@@ -1,9 +1,17 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent"
 import { CURSOR_MARKER, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { mountInputPanel, safePanelText } from "../../components/input-panel.js"
+import { buildAlignedLine } from "../../components/tool-block.js"
 import { claimRawInputCapture } from "../shared-input.js"
 import type { PRMonitor } from "./monitor.js"
-import type { PRMonitorState } from "./types.js"
+import {
+	prWatchFixesLabel,
+	prWatchPhaseLabel,
+	prWatchPlural,
+	prWatchSummary,
+	prWatchTargetLabel,
+} from "./presentation.js"
+import { PLAN_MODE_MESSAGE, type PRMonitorState } from "./types.js"
 
 export class PRMonitorPanel {
 	private state: PRMonitorState
@@ -18,7 +26,7 @@ export class PRMonitorPanel {
 	private readonly timer: ReturnType<typeof setInterval>
 
 	constructor(
-		private readonly monitor: PRMonitor,
+		private readonly monitor: Pick<PRMonitor, "snapshot" | "observe" | "refresh" | "configure">,
 		private readonly tui: { requestRender(): void; terminal: { rows: number } },
 		private readonly done: () => void,
 		private readonly theme: Theme,
@@ -51,11 +59,11 @@ export class PRMonitorPanel {
 	invalidate(): void {}
 
 	private get height(): number {
-		return Math.max(1, Math.min(16, this.tui.terminal.rows - 4, Math.floor(this.tui.terminal.rows / 2)))
+		return Math.max(1, Math.min(16, this.tui.terminal.rows - 3, this.body(this.width).length + 8))
 	}
 
 	private get pageRows(): number {
-		return Math.max(1, this.height - 6)
+		return Math.max(0, this.height - 8)
 	}
 
 	private body(width: number): string[] {
@@ -64,33 +72,22 @@ export class PRMonitorPanel {
 			lines.push(...wrapTextWithAnsi(safePanelText(text), width).map((line) => this.theme.fg(color, line)))
 		}
 		const pr = this.state.pullRequest
-		if (pr) {
-			add(pr.title)
-			add(`${pr.branch} · ${pr.headSha.slice(0, 8)}`)
-			add(pr.url)
-		} else
-			add(
-				this.state.phase === "error"
-					? "PR data is unavailable."
-					: this.state.enabled
-						? "Watching this branch; no PR found yet."
-						: "Watching is off.",
-			)
 		const message = this.error ?? this.state.message
-		if (message) add(message, "warning")
+		if (message && message !== PLAN_MODE_MESSAGE) add(message, this.state.phase === "error" ? "error" : "warning")
+		if (this.state.watches && this.state.watches.length > 1) {
+			for (const { cwd, state } of this.state.watches) {
+				const target = state.pullRequest
+				add(
+					`${target ? `${target.repository} ${prWatchTargetLabel(target)}` : cwd} · ${prWatchPhaseLabel(state)} · ${prWatchFixesLabel(state)}`,
+				)
+				add(prWatchSummary(state), "muted")
+				if (state.message) add(state.message, "warning")
+			}
+			return lines
+		}
 		if (!pr) return lines
-		const checks = pr.checks
-		add(
-			`CI${this.state.phase === "error" || !this.state.enabled ? " (last known)" : ""}: ${checks.filter((check) => check.state === "failed").length} failing, ${checks.filter((check) => check.state === "pending").length} running, ${checks.filter((check) => check.state === "passed").length} passed`,
-			"accent",
-		)
-		if (!checks.length) add("No CI checks reported; result unknown.", "warning")
-		for (const check of checks)
-			add(
-				`${check.state}: ${check.name}`,
-				check.state === "failed" ? "error" : check.state === "passed" ? "success" : "text",
-			)
-		add(`Unresolved review threads: ${pr.feedback.length}`, "accent")
+		for (const check of pr.checks.filter((check) => check.state === "failed" || check.state === "pending"))
+			add(`${check.state}: ${check.name}`, check.state === "failed" ? "error" : "text")
 		for (const feedback of pr.feedback) {
 			add(
 				`${feedback.author}${feedback.path ? ` · ${feedback.path}${feedback.line ? `:${feedback.line}` : ""}` : ""}${feedback.trusted ? "" : " · manual review"}`,
@@ -126,10 +123,11 @@ export class PRMonitorPanel {
 		else if (matchesKey(data, "s") && this.state.enabled) void this.act("stop")
 		else {
 			const max = Math.max(0, this.body(this.width).length - this.pageRows)
+			const page = Math.max(1, this.pageRows)
 			const delta = matchesKey(data, "pageUp")
-				? -this.pageRows
+				? -page
 				: matchesKey(data, "pageDown")
-					? this.pageRows
+					? page
 					: matchesKey(data, "up")
 						? -1
 						: matchesKey(data, "down")
@@ -154,12 +152,17 @@ export class PRMonitorPanel {
 		const theme = this.theme
 		const w = Math.max(1, width)
 		this.width = Math.max(1, w - 2)
-		if (w < 6 || this.height < 8)
-			return [truncateToWidth(theme.fg("text", "Esc close · enlarge terminal to monitor"), w, "…", true)]
 		const content = this.body(this.width)
+		if (w < 6 || this.height < 8 || (content.length > 0 && this.pageRows === 0))
+			return [truncateToWidth(theme.fg("text", "Esc close · enlarge terminal to monitor"), w, "…", true)]
 		this.offset = Math.max(0, Math.min(this.offset, content.length - this.pageRows))
 		const state = this.state
-		const heading = `${state.pullRequest ? `PR #${state.pullRequest.number}` : "PR watch"} · ${state.enabled ? state.phase : "stopped"} · auto-fix ${state.autoFix ? "on" : "off"}`
+		const heading =
+			state.watches && state.watches.length > 1
+				? `Monitor · ${state.watches.length} ${prWatchPlural(state)}`
+				: state.pullRequest
+					? `Monitor · ${prWatchTargetLabel(state.pullRequest)}`
+					: "Monitor"
 		const checked = state.checkedAt ? Date.parse(state.checkedAt) : Number.NaN
 		const age = Number.isFinite(checked) ? `${Math.max(0, Math.floor((Date.now() - checked) / 1000))}s ago` : "not yet"
 		const hint = (key: string, label = "") => theme.fg("accent", key) + (label ? theme.fg("text", ` ${label}`) : "")
@@ -170,21 +173,32 @@ export class PRMonitorPanel {
 			...(state.enabled ? [hint("S", "stop")] : []),
 		]
 		const lines = [
-			theme.bold(
+			buildAlignedLine(
+				theme.bold(theme.fg("text", heading)),
 				theme.fg(
-					state.phase === "error" ? "error" : state.phase === "attention" ? "warning" : "accent",
-					safePanelText(heading),
+					state.phase === "error" ? "error" : state.phase === "attention" ? "warning" : "text",
+					prWatchPhaseLabel(state),
+				),
+				this.width,
+			),
+			theme.fg(
+				"text",
+				safePanelText(
+					state.watches && state.watches.length > 1
+						? "Local checkouts · one repair at a time"
+						: (state.pullRequest?.title ?? "This branch"),
 				),
 			),
-			theme.bg("selectedBg", theme.bold(theme.fg("accent", "[Monitor]"))),
+			theme.fg("text", prWatchSummary(state)),
+			theme.fg(state.message === PLAN_MODE_MESSAGE ? "warning" : "text", prWatchFixesLabel(state)),
 			...Array.from({ length: this.pageRows }, (_, i) => content[this.offset + i] ?? ""),
 			theme.fg(
 				"text",
-				`${this.busy ? "Updating · " : ""}Last checked ${age} · ${this.offset + 1}–${Math.min(content.length, this.offset + this.pageRows)} of ${content.length} · ↑↓/PgUp/PgDn scroll`,
+				`${this.busy ? "Updating · " : ""}Checked ${age}${content.length > this.pageRows ? ` · ${this.offset + 1}–${Math.min(content.length, this.offset + this.pageRows)} of ${content.length} · ↑↓ scroll` : ""}`,
 			),
 			controls.join(theme.fg("dim", " · ")),
 		]
-		const border = theme.fg("accent", "─".repeat(w))
+		const border = theme.fg("borderMuted", "─".repeat(w))
 		return [border, ...lines.map((line) => ` ${truncateToWidth(line, this.width, "…", true)} `), border]
 	}
 }

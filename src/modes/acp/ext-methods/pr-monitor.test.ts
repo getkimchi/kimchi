@@ -2,8 +2,8 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../../../extensions/__mocks__/context.js"
 import { createExtensionApi } from "../../../extensions/__mocks__/extension-api.js"
+import { PRWatchCollection } from "../../../extensions/pr-monitor/collection.js"
 import { getPRMonitor } from "../../../extensions/pr-monitor/index.js"
-import { PRMonitor } from "../../../extensions/pr-monitor/monitor.js"
 import { readPRSnapshot } from "../../../extensions/pr-monitor/providers.js"
 import { handlePRMonitor } from "./pr-monitor.js"
 
@@ -11,11 +11,11 @@ vi.mock("../../../extensions/pr-monitor/index.js", () => ({ getPRMonitor: vi.fn(
 vi.mock("../../../extensions/pr-monitor/providers.js", () => ({ readPRSnapshot: vi.fn() }))
 
 describe("ACP PR monitor controls", () => {
-	let monitor: PRMonitor
+	let monitor: PRWatchCollection
 	beforeEach(() => {
 		vi.resetAllMocks()
 		vi.mocked(readPRSnapshot).mockResolvedValue(null)
-		monitor = new PRMonitor(createExtensionApi().api, createContext())
+		monitor = new PRWatchCollection(createExtensionApi().api, createContext())
 		vi.mocked(getPRMonitor).mockReturnValue(monitor)
 	})
 	afterEach(async () => {

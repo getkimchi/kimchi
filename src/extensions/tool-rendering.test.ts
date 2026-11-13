@@ -439,17 +439,17 @@ describe("hidden tool block rendering", () => {
 		expect(rendered).not.toContain("custom non-Agent renderer")
 	})
 
-	it("uses bash_control's custom call and result renderers", () => {
+	it.each(["bash_control", "pr_watch"])("uses %s custom call and result renderers", (toolName) => {
 		initTheme("default")
 		const tui = new TuiMainScreen(new ProcessTerminal())
 		vi.spyOn(tui, "requestRender").mockImplementation(() => {})
 		const component = new ToolExecutionComponent(
-			"bash_control",
+			toolName,
 			"tc-control",
 			{ handle: "c1", action: "continue" },
 			{},
 			{
-				renderCall: () => new Text("Bash · Checking TypeScript", 0, 0),
+				renderCall: () => new Text(`${toolName} custom call`, 0, 0),
 				renderResult: () => new Text("pnpm run typecheck\nlatest output", 0, 0),
 			} as never,
 			tui,
@@ -457,7 +457,7 @@ describe("hidden tool block rendering", () => {
 		)
 		component.updateResult({ content: [{ type: "text", text: "output" }], isError: false }, true)
 		const rendered = component.render(80).map(stripSgr).join("\n")
-		expect(rendered).toContain("Bash · Checking TypeScript")
+		expect(rendered).toContain(`${toolName} custom call`)
 		expect(rendered).toContain("latest output")
 	})
 

@@ -8,12 +8,12 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { testTheme } from "../__mocks__/theme.js"
+import { lightTestTheme, testTheme } from "../__mocks__/theme.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { PRMonitor } from "./monitor.js"
 import { PRMonitorPanel } from "./panel.js"
 import { readPRSnapshot } from "./providers.js"
-import type { PRSnapshot } from "./types.js"
+import { PLAN_MODE_MESSAGE, type PRSnapshot } from "./types.js"
 
 vi.mock("./providers.js", () => ({ readPRSnapshot: vi.fn() }))
 
@@ -52,12 +52,12 @@ describe("PR Monitor panel", () => {
 		await monitor.dispose()
 		vi.useRealTimers()
 	})
-	it("opens a single Monitor tab and closes without polling, changing consent or aborting", async () => {
+	it("opens Monitor and closes without polling, changing consent or aborting", async () => {
 		const refresh = vi.spyOn(monitor, "refresh")
 		const configure = vi.spyOn(monitor, "configure")
 		const done = vi.fn()
 		panel = new PRMonitorPanel(monitor, tui, done, testTheme)
-		expect(view()).toContain("[Monitor]")
+		expect(view()).toContain("Monitor · PR #7")
 		expect(view()).toContain("failed: Tests")
 		expect(view()).not.toMatch(/\[Script\]|\[Output\]/)
 		expect(isRawInputCaptureActive()).toBe(true)
@@ -90,11 +90,30 @@ describe("PR Monitor panel", () => {
 		]
 		vi.mocked(readPRSnapshot).mockResolvedValue(next)
 		await monitor.refresh()
-		expect(view()).toContain("passed: Tests")
+		expect(view()).toContain("1 passed · Review threads 1")
 		expect(view()).toContain("manual review")
 		expect(view()).toContain("Please add a test")
 		expect(tui.requestRender).toHaveBeenCalled()
 		expect(extension.sendMessage).not.toHaveBeenCalled()
+	})
+	it("fits its content and lists only checks needing attention", async () => {
+		const snapshot = pr()
+		snapshot.checks.push(
+			{ ...snapshot.checks[0], id: "green", name: "Already healthy", state: "passed" },
+			{ ...snapshot.checks[0], id: "running", name: "Still running", state: "pending" },
+		)
+		vi.mocked(readPRSnapshot).mockResolvedValue(snapshot)
+		await monitor.refresh()
+		panel = new PRMonitorPanel(monitor, tui, vi.fn(), testTheme)
+		const text = view()
+		expect(text).toContain("1 failed · 1 running · 1 passed · Review threads 0")
+		expect(text).toContain("failed: Tests")
+		expect(text).toContain("pending: Still running")
+		expect(text).not.toContain("Already healthy")
+		expect(text).not.toContain(snapshot.url)
+		expect(text).not.toContain(snapshot.branch)
+		expect(text.split("\n").filter((line) => !line.trim())).toHaveLength(0)
+		expect(text).not.toContain("PgUp/PgDn")
 	})
 	it("offers explicit refresh, pause and stop without granting fixes", async () => {
 		await monitor.configure(true, true)
@@ -111,7 +130,7 @@ describe("PR Monitor panel", () => {
 		panel.handleInput("s")
 		await vi.advanceTimersByTimeAsync(0)
 		expect(monitor.snapshot).toMatchObject({ enabled: false, autoFix: false })
-		expect(view()).toContain("stopped")
+		expect(view()).toContain("Stopped")
 		expect(view()).not.toContain("S stop")
 		expect(extension.sendMessage).not.toHaveBeenCalled()
 	})
@@ -146,7 +165,7 @@ describe("PR Monitor panel", () => {
 		snapshot.checks = Array.from({ length: 30 }, (_, i) => ({
 			id: String(i),
 			name: `check-${i}`,
-			state: "passed",
+			state: "pending",
 			summary: "",
 			url: null,
 		}))
@@ -166,11 +185,44 @@ describe("PR Monitor panel", () => {
 		panel = new PRMonitorPanel(monitor, tui, vi.fn(), testTheme)
 		panel.handleInput("\x1b[F")
 		expect(view()).toContain("last review body")
-		expect(view()).toContain("[Monitor]")
+		expect(view()).toContain("Monitor · PR #7")
+		expect(view()).toContain("30 running · Review threads 1")
 		expect(view()).toContain("Esc close")
 		tui.terminal.rows = 24
 		panel.handleInput("\x1b[H")
 		expect(view()).toContain("Parser fix")
+	})
+	it.each([
+		testTheme,
+		lightTestTheme,
+	])("keeps a healthy PR summary and Plan limit visible in a small panel", async (theme) => {
+		const snapshot = pr()
+		snapshot.checks = [
+			{ ...snapshot.checks[0], state: "passed" },
+			{ ...snapshot.checks[0], id: "skip", name: "Optional job", state: "skipped" },
+		]
+		vi.mocked(readPRSnapshot).mockResolvedValue(snapshot)
+		await monitor.refresh()
+		vi.spyOn(monitor, "snapshot", "get").mockReturnValue({
+			...monitor.snapshot,
+			autoFix: true,
+			message: PLAN_MODE_MESSAGE,
+		})
+		tui.terminal.rows = 14
+		panel = new PRMonitorPanel(monitor, tui, vi.fn(), theme)
+		const lines = panel.render(80)
+		const rendered = lines.map(stripTerminalSequences).join("\n")
+		expect(rendered).toContain("CI: 1 passed · 1 skipped · Review threads 0")
+		expect(rendered).toContain("Fixes paused in Plan")
+		expect(rendered).not.toContain("Auto-fix on")
+		expect(rendered).not.toContain("Optional job")
+		expect(rendered).not.toContain("scroll")
+		expect(lines[0]).toBe(theme.fg("borderMuted", "─".repeat(80)))
+		expect(lines).toHaveLength(8)
+		tui.terminal.rows = 10
+		expect(panel.render(80).map((line) => stripTerminalSequences(line).trimEnd())).toEqual([
+			"Esc close · enlarge terminal to monitor",
+		])
 	})
 	it("renders safe provider text and fits narrow resizes", async () => {
 		const snapshot = pr()

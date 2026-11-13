@@ -5,6 +5,8 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, it, vi } from "vitest"
 import type { PRMonitorState } from "../../../src/extensions/pr-monitor/types.js"
+import { requestAdvertisesTool, toolResultText } from "../tui/support/mcp-model-script.js"
+import { chatRequests } from "../tui/support/wire-requests.js"
 import { startAcpFixture } from "./support/acp-fixture.js"
 import { newSession } from "./support/scenarios.js"
 
@@ -13,7 +15,11 @@ it.each([
 	"review",
 	"command",
 	"flag",
-])("auto-fixes a %s event over ACP while idle and pushes one real local commit", async (kind) => {
+	"offer",
+	"natural",
+	"natural-plan",
+])("handles %s PR watching over ACP and repairs only outside Plan mode", async (kind) => {
+	const natural = kind === "natural" || kind === "natural-plan"
 	const data = mkdtempSync(join(tmpdir(), "kimchi-pr-monitor-e2e-"))
 	const stateFile = join(data, "state.json")
 	const bare = join(data, "origin.git")
@@ -25,9 +31,31 @@ it.each([
 	const fixture = await startAcpFixture({
 		artifactName: `pr-monitor-${kind}`,
 		pretrustWorkDir: true,
-		extraArgs: ["--yolo", ...(kind === "flag" ? ["--pr-watch"] : [])],
+		extraArgs: [kind === "natural-plan" ? "--plan" : "--yolo", ...(kind === "flag" ? ["--pr-watch"] : [])],
 		extensionPath: fileURLToPath(new URL("./support/pr-monitor-api.js", import.meta.url)),
 		responses: [
+			...(natural
+				? [
+						{
+							toolCalls: [
+								{
+									id: "watch",
+									function: {
+										name: "pr_watch",
+										arguments: JSON.stringify({ url: "https://github.com/example/kimchi-lab/pull/7" }),
+									},
+								},
+							],
+						},
+						{
+							stream: [
+								kind === "natural-plan"
+									? "Watching the requested PR. Switch out of Plan mode before auto-fixing."
+									: "Watching the requested PR with automatic fixes enabled.",
+							],
+						},
+					]
+				: []),
 			{
 				toolCalls: [
 					{
@@ -61,7 +89,29 @@ it.each([
 		const before = git(cwd, "rev-parse", "HEAD")
 		const seed = { bare, head: before, kind: kind === "review" ? "review" : "ci", exists: kind !== "flag" }
 		writeFileSync(stateFile, JSON.stringify(seed))
+		if (kind !== "offer") fixture.client.answerNextPermissionWith({ kind: "reject_once" })
 		const sessionId = await newSession(fixture, cwd)
+		if (kind !== "flag") {
+			await expect
+				.poll(
+					() =>
+						fixture.client.permissionRequests.filter(
+							(request) => request.toolCall.title === "Enable automatic PR watching?",
+						).length,
+				)
+				.toBe(1)
+		}
+		if (kind === "offer") {
+			await expect
+				.poll(() =>
+					fixture.client.extNotifications.some(
+						({ params }) =>
+							(params as { message?: string }).message ===
+							"Tracking PR #7 with auto-fix. /pr-watch watch pauses fixes. /pr-watch disable turns off automatic watching.",
+					),
+				)
+				.toBe(true)
+		}
 		await expect
 			.poll(() =>
 				fixture.client.sessionUpdates.some(
@@ -76,7 +126,7 @@ it.each([
 			set_pr_monitor: true,
 		})
 		const initial = await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId })
-		expect(initial.state).toMatchObject({ enabled: kind === "flag", autoFix: false })
+		expect(initial.state).toMatchObject({ enabled: kind === "flag" || kind === "offer", autoFix: kind === "offer" })
 		if (kind === "flag") {
 			expect((initial.state as PRMonitorState).pullRequest).toBeNull()
 			writeFileSync(stateFile, JSON.stringify({ ...seed, exists: true }))
@@ -84,13 +134,43 @@ it.each([
 			expect(discovered.state).toMatchObject({ enabled: true, autoFix: false, pullRequest: { number: 7 } })
 			expect(git(cwd, "rev-parse", "HEAD")).toBe(before)
 		}
-		if (kind === "command" || kind === "flag") {
+		if (natural) {
+			await fixture.conn.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "watch this https://github.com/example/kimchi-lab/pull/7 pr" }],
+			})
+			expect(fixture.fake.requests.some((request) => requestAdvertisesTool(request, "pr_watch"))).toBe(true)
+		} else if (kind === "command" || kind === "flag") {
 			await fixture.conn.prompt({
 				sessionId,
 				prompt: [{ type: "text", text: "/pr-watch Fix only the parser fixture" }],
 			})
-		} else {
+		} else if (kind === "review") {
+			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch reviews" }] })
+		} else if (kind !== "offer") {
 			await fixture.conn.extMethod("_kimchi.dev/set_pr_monitor", { sessionId, enabled: true, autoFix: true })
+		}
+		if (kind === "natural-plan") {
+			expect(toolResultText(fixture.fake.requests, "watch")).toContain("Switch out of Plan mode")
+			await expect
+				.poll(async () => (await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId })).state)
+				.toMatchObject({
+					enabled: true,
+					autoFix: true,
+					phase: "attention",
+					message: "Switch out of Plan mode before auto-fixing this PR.",
+					pullRequest: { number: 7 },
+				})
+			expect(git(cwd, "rev-parse", "HEAD")).toBe(before)
+			expect(git(data, "--git-dir", bare, "rev-parse", "feature")).toBe(before)
+			expect(readFileSync(join(cwd, "answer.txt"), "utf8")).toBe("broken\n")
+			expect(chatRequests(fixture)).toHaveLength(2)
+			expect(fixture.client.extNotifications).not.toContainEqual({
+				method: "_kimchi.dev/pr_update",
+				params: expect.objectContaining({ sessionId, state: expect.objectContaining({ phase: "fixing" }) }),
+			})
+			expect(fixture.client.agentTextBySession().get(sessionId)).toContain("Switch out of Plan mode")
+			return
 		}
 		await expect
 			.poll(() => git(data, "--git-dir", bare, "show", "feature:answer.txt"), { timeout: 20_000 })
@@ -106,10 +186,11 @@ it.each([
 		expect(after).not.toBe(before)
 		expect(git(cwd, "rev-list", "--count", `${before}..HEAD`)).toBe("1")
 		expect(readFileSync(join(cwd, "answer.txt"), "utf8")).toBe("fixed\n")
-		expect(fixture.client.extNotifications).toContainEqual({
-			method: "_kimchi.dev/pr_update",
-			params: expect.objectContaining({ sessionId, state: expect.objectContaining({ phase: "fixing" }) }),
-		})
+		if (kind !== "offer")
+			expect(fixture.client.extNotifications).toContainEqual({
+				method: "_kimchi.dev/pr_update",
+				params: expect.objectContaining({ sessionId, state: expect.objectContaining({ phase: "fixing" }) }),
+			})
 		expect(fixture.client.agentTextBySession().get(sessionId)).toContain("pushed the repair commit")
 		if (kind === "command") {
 			const requests = fixture.fake.requests.filter((request) => request.url.includes("chat/completions")).length
@@ -124,6 +205,32 @@ it.each([
 			})
 			expect(fixture.fake.requests.filter((request) => request.url.includes("chat/completions")).length).toBe(requests)
 		} else await fixture.conn.extMethod("_kimchi.dev/set_pr_monitor", { sessionId, enabled: false, autoFix: false })
+		if (kind === "offer") {
+			const preferencePath = join(fixture.homeDir, ".config/kimchi/harness/pr-watch.json")
+			expect(JSON.parse(readFileSync(preferencePath, "utf8"))).toEqual({ enabled: true })
+			writeFileSync(stateFile, JSON.stringify({ ...seed, number: 8 }))
+			const second = await newSession(fixture, cwd)
+			await expect
+				.poll(async () => (await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId: second })).state)
+				.toMatchObject({ enabled: true, autoFix: true, pullRequest: { number: 8 } })
+			expect(
+				fixture.client.permissionRequests.filter(
+					(request) => request.toolCall.title === "Enable automatic PR watching?",
+				),
+			).toHaveLength(1)
+			await fixture.conn.prompt({ sessionId: second, prompt: [{ type: "text", text: "/pr-watch disable" }] })
+			expect(JSON.parse(readFileSync(preferencePath, "utf8"))).toEqual({ enabled: false })
+			writeFileSync(stateFile, JSON.stringify({ ...seed, number: 9 }))
+			const third = await newSession(fixture, cwd)
+			await expect
+				.poll(async () => (await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId: third })).state)
+				.toMatchObject({ enabled: false, autoFix: false, pullRequest: { number: 9 } })
+			expect(
+				fixture.client.permissionRequests.filter(
+					(request) => request.toolCall.title === "Enable automatic PR watching?",
+				),
+			).toHaveLength(1)
+		}
 	} finally {
 		await fixture.stop()
 		vi.unstubAllEnvs()

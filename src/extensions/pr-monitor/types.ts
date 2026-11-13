@@ -1,3 +1,6 @@
+export const PLAN_MODE_MESSAGE = "Switch out of Plan mode before auto-fixing this PR."
+export type PRRepairMode = "ci" | "reviews" | "all"
+
 export interface PRCheck {
 	id: string
 	name: string
@@ -34,6 +37,8 @@ export interface PRMonitorState {
 	pullRequest: PRSnapshot | null
 	checkedAt: string | null
 	message: string | null
+	mode?: PRRepairMode
+	watches?: { cwd: string; state: PRMonitorState }[]
 }
 export function prKey(pr: PRSnapshot): string {
 	return pr.url

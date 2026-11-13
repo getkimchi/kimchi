@@ -2,6 +2,14 @@
 
 Extensions communicate through the pi event bus (`pi.events`), available to every extension including externally loaded ones (`-e`). All channels use `pi.events.emit(channel, payload)` to publish and `pi.events.on(channel, handler)` to subscribe.
 
+`kimchi:branch-pr-observed` publishes `{ sessionId, cwd, branch?, pullRequest? }`
+from the existing current-branch PR lookup. `cwd` is the observed checkout; a
+branch change clears `pullRequest` before lookup. The PR Monitor uses this to
+offer the one-time general preference or apply the saved choice to the checkout's PR.
+Each watcher remains scoped to its own session and checkout; normal trust and
+permissions still gate repairs. Types live in
+`src/extensions/pull-request-status/events.ts`.
+
 ---
 
 ## 1. Subagent Events
