@@ -66,9 +66,12 @@ async function selectText(terminal: Terminal, text: string): Promise<void> {
 	terminal.mouseUp(col + text.length - 1, row)
 }
 
-/** SGR wheel events at the middle of the screen: `64` up, `65` down. */
+/** SGR wheel events inside the transcript (`64` up, `65` down); the row is anchored to the streamed report. */
 function wheel(terminal: Terminal, code: 64 | 65, ticks: number): void {
-	for (let i = 0; i < ticks; i++) terminal.write(`\x1b[<${code};20;10M`)
+	const lines = viewText(terminal).split("\n")
+	const row = lines.findIndex((line) => line.includes("Report line"))
+	const y = row >= 0 ? row + 1 : 10 // SGR cells are 1-based
+	for (let i = 0; i < ticks; i++) terminal.write(`\x1b[<${code};20;${y}M`)
 }
 
 test("the add-to-chat pill follows the selection and hides when it scrolls out of view", async ({ terminal }) => {

@@ -254,7 +254,8 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 					statusLine: { pinned: [] },
 					hideThinkingBlock: true,
 					// Keep the suite hermetic: the side-chat extension loads in every
-					// session (its harness patch is inert until a pane or pill mounts),
+					// session (its patched wrappers then run per mouse/wheel/render,
+					// but with no pane or pill mounted the interceptor sets are empty),
 					// so this override only suppresses the "Add to side chat" pill.
 					// Side-chat e2e tests that exercise the pill opt in explicitly.
 					resources: { "extensions.side-chat": false },

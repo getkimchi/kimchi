@@ -24,8 +24,9 @@
  *
  * ACP has no split view, so this is TUI-only by design.
  *
- * The harness patch is installed only when this (resource-gated) extension
- * loads; every compositor and interceptor registered here is removed again on
+ * The harness patch is installed with the extension on every TUI run (the
+ * `extensions.side-chat` resource gates only the pill's registration);
+ * every compositor and interceptor registered here is removed again on
  * `session_shutdown`, because the harness re-runs the factory on `/new`, `/resume` and
  * `/reload` and the previous instance's context is stale by then.
  */

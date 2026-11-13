@@ -79,9 +79,16 @@ export class SelectionPill {
 		if (event.y !== placed.row || event.x < placed.column || event.x >= placed.column + placed.width) return false
 		const host = this.options.host()
 		const text = host?.settledSelection()?.text
+		// The pill can be painted during a frame where text extraction
+		// momentarily fails (mid-stream). Eating that click without quoting
+		// must NOT clear the selection: the pill stays and a retry works.
+		if (!text) return true
 		host?.clearSelection()
+		// Disarm the rect now: the pixels repaint only on the next compositor
+		// pass, and a second click on the dead pill must start a new selection.
+		this.placed = undefined
 		this.swallowRelease = true
-		if (text) this.options.onAdd(text)
+		this.options.onAdd(text)
 		return true
 	}
 

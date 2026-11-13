@@ -109,6 +109,39 @@ describe("SelectionPill", () => {
 		expect(onAdd).not.toHaveBeenCalled()
 	})
 
+	it("eats a click mid-stream without quoting or clearing the selection, and quotes on retry", () => {
+		const { host, pill, frame, screen, select, scrollView, onAdd } = setup()
+		select(1, 2, 40)
+		pill.paint(screen, frame, 60)
+
+		// The mid-stream frame this file's bounds-only paint covers: the pill is
+		// visible but text extraction momentarily fails.
+		const bounds = { start: { row: 1, col: 0, scrollView }, end: { row: 2, col: 40, scrollView } }
+		vi.mocked(host.settledSelection).mockReturnValue(undefined)
+		expect(pill.handleMouse(press(30, 3))).toBe(true)
+		expect(onAdd).not.toHaveBeenCalled()
+		expect(host.clearSelection).not.toHaveBeenCalled()
+		// The release is not swallowed (no add happened).
+		expect(pill.handleMouse(press(30, 3, true))).toBe(false)
+
+		// Extraction recovers next frame: the same click quotes.
+		vi.mocked(host.settledSelection).mockReturnValue({ bounds, text: "selected text" })
+		expect(pill.handleMouse(press(30, 3))).toBe(true)
+		expect(onAdd).toHaveBeenCalledWith("selected text")
+	})
+
+	it("lets a second click on the consumed pill's spot start a new selection before the next paint", () => {
+		const { pill, frame, screen, select } = setup()
+		select(1, 2, 40)
+		pill.paint(screen, frame, 60)
+
+		expect(pill.handleMouse(press(30, 3))).toBe(true)
+		expect(pill.handleMouse(press(30, 3, true))).toBe(true)
+
+		// The rect was disarmed on consume: no press under the dead pixels is eaten.
+		expect(pill.handleMouse(press(30, 3))).toBe(false)
+	})
+
 	describe("with an excluded pane (the open side chat)", () => {
 		function splitSetup() {
 			const { host, setFrame, setSelection } = createSideChatHost()
