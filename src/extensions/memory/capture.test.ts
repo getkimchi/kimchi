@@ -1645,8 +1645,10 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			}),
 		).rejects.toThrow("1 capture job(s) failed")
 		// The file was rewritten twice (staging + add-failure counter) and both
-		// rewrites restored the original mtime.
-		expect(statSync(jobFile).mtimeMs).toBe(fixed.getTime())
+		// rewrites restored the original mtime — sub-millisecond filesystems
+		// may preserve what Date conversion cannot represent, so compare
+		// within a millisecond.
+		expect(Math.abs(statSync(jobFile).mtimeMs - fixed.getTime())).toBeLessThan(1)
 	})
 
 	it("skips oversized facts before the embed (never truncates) and counts them in the summary", async () => {

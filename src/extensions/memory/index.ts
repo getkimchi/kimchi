@@ -55,20 +55,14 @@ import {
 	runAdminCommand,
 } from "./admin.js"
 import { createMemoryBackend, memoryDbPath } from "./backend.js"
-import {
-	createIncrementalCaptureState,
-	incrementalCapture,
-	messageText,
-	readCaptureSessionSaved,
-	wireMemoryCapture,
-} from "./capture.js"
+import { messageText, readCaptureSessionSaved, wireMemoryCapture } from "./capture.js"
 import {
 	DIGEST_SCORE_THRESHOLD,
 	MEMORY_PRE_REQUEST_TIMEOUT_MS,
 	MEMORY_SEARCH_TIMEOUT_MS,
-	MEMORY_STATE_FINGERPRINT_CAP,
 	MEMORY_STEP_ENV_RECEIPT_KEEP_CHARS,
 	MEMORY_USER_ID,
+	stateFingerprintCap,
 	stepRecallInterval,
 	TURN_RECALL_QUERY_MAX_CHARS,
 	TURN_RECALL_RESPONSE_CHARS,
@@ -325,7 +319,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							revisitFired.add(fp)
 							pendingRevisitTail = toolResultText
 						}
-					} else if (seenFingerprints.size < MEMORY_STATE_FINGERPRINT_CAP) {
+					} else if (seenFingerprints.size < stateFingerprintCap()) {
 						seenFingerprints.add(fp)
 					}
 				}
@@ -458,7 +452,6 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					digest = undefined
 					deliveredKeys.clear()
 					deliveredFacts.length = 0
-					incrementalState = createIncrementalCaptureState()
 					clearSavedStatus(ctx)
 					if (ctx.hasUI) ctx.ui.setStatus(MEMORY_STATUS_KEY, undefined)
 				}
@@ -518,10 +511,6 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// newest skip is queued and refired when the chain settles.
 		let recallInFlight = false
 		let pendingRecallQuery: string | undefined
-		// Lever 3: mid-session incremental capture — the runtime mark makes
-		// batches non-overlapping; the worker's hash ledger dedupes restarts.
-		let incrementalState = createIncrementalCaptureState()
-
 		// The session's working directory, captured at the first agent start —
 		// scopes retrieval to the project store (see createScopedSearcher).
 		let sessionCwd: string | undefined

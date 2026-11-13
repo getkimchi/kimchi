@@ -134,8 +134,12 @@ export const MEMORY_STEP_QUERY_MAX_CHARS = 2_000
 /** Characters retained per kept receipt-side state slice (head+tail total, before truncation). */
 export const MEMORY_STEP_ENV_RECEIPT_KEEP_CHARS = 4_096
 
-/** Max distinct state fingerprints remembered per session for state-revisit detection. */
+/** Max distinct state fingerprints remembered per session for state-revisit detection; env override. */
 export const MEMORY_STATE_FINGERPRINT_CAP = 512
+export function stateFingerprintCap(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = Number.parseInt(env.KIMCHI_MEMORY_STATE_FINGERPRINT_CAP ?? "", 10)
+	return Number.isFinite(raw) && raw > 0 ? raw : MEMORY_STATE_FINGERPRINT_CAP
+}
 
 /** Tool steps between mid-loop recall evaluations; env override. */
 export function stepRecallInterval(env: NodeJS.ProcessEnv = process.env): number {
