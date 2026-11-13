@@ -1,10 +1,17 @@
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { chatCompletionsApi } from "../../models.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 import { createGatewayCodexProvider, registerGatewayCodexApi } from "./codex-gateway.js"
+import {
+	beginCodexCompaction,
+	countCompactions,
+	endCodexCompaction,
+	resetCodexSession,
+	startCodexTurn,
+} from "./codex-request-context.js"
 import { createKimchiProviderOAuth } from "./flow.js"
 
 export default function loginExtension(pi: ExtensionAPI): void {
@@ -15,6 +22,29 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	registerBunOAuthFlows()
 	registerGatewayCodexApi()
 	pi.registerProvider(createGatewayCodexProvider())
+
+	// Correlation state for Codex gateway requests (see codex-request-context.ts). The window number is
+	// the compaction count on the current branch, so resume and /tree switches land on the right window.
+	const sessionOf = (ctx: ExtensionContext) => ({
+		id: ctx.sessionManager.getSessionId(),
+		windows: countCompactions(ctx.sessionManager.getBranch()),
+	})
+	pi.on("before_agent_start", (_event, ctx) => {
+		const { id, windows } = sessionOf(ctx)
+		startCodexTurn(id, windows)
+	})
+	pi.on("session_before_compact", (_event, ctx) => {
+		beginCodexCompaction(ctx.sessionManager.getSessionId())
+	})
+	const endCompaction = (_event: unknown, ctx: ExtensionContext) => {
+		const { id, windows } = sessionOf(ctx)
+		endCodexCompaction(id, windows)
+	}
+	pi.on("session_compact", endCompaction)
+	pi.on("session_compact_failed", endCompaction)
+	pi.on("session_shutdown", (_event, ctx) => {
+		resetCodexSession(ctx.sessionManager.getSessionId())
+	})
 
 	// Apply a custom llmEndpoint as an in-memory baseUrl override for the kimchi-dev provider.
 	// This routes chat requests to the override even when the metadata refresh falls back to the

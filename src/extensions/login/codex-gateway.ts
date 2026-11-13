@@ -8,6 +8,7 @@ import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { CODEX_PROVIDER_ID, chatCompletionsApi } from "../../models.js"
 import { getVersion } from "../../utils.js"
+import { codexRequestMetadata } from "./codex-request-context.js"
 
 type CodexProvider = ReturnType<typeof openaiCodexProvider>
 
@@ -43,13 +44,48 @@ export function filterCodexSubscription<T extends { id: string }>(providers: T[]
 	return providers.filter((provider) => provider.id !== CODEX_PROVIDER_ID || codexOffered)
 }
 
+/** Originator the gateway logs for Kimchi traffic (Codex CLI sends its own). */
+const CODEX_ORIGINATOR = "kimchi"
+
+/**
+ * Correlation data Codex CLI sends, for one request of a session: headers plus
+ * the `client_metadata` body field. Keys are fixed; nothing about the machine,
+ * workspace or git state is included.
+ */
+export function codexCorrelation(sessionId: string): {
+	headers: Record<string, string>
+	clientMetadata: Record<string, string>
+} {
+	const meta = codexRequestMetadata(sessionId)
+	return {
+		headers: {
+			"thread-id": meta.threadId,
+			"x-codex-window-id": meta.windowId,
+			"x-codex-turn-metadata": JSON.stringify({
+				session_id: meta.sessionId,
+				thread_id: meta.threadId,
+				turn_id: meta.turnId,
+				request_kind: meta.requestKind,
+				window_id: meta.windowId,
+				window_number: meta.windowNumber,
+			}),
+		},
+		clientMetadata: {
+			session_id: meta.sessionId,
+			thread_id: meta.threadId,
+			turn_id: meta.turnId,
+			"x-codex-window-id": meta.windowId,
+		},
+	}
+}
+
 /**
  * Gateway options for a Codex request: SSE, the kimchi user agent and the
  * Kimchi key. Only for a model whose baseUrl is the configured gateway and an
  * API key session; anything else (e.g. an old Codex login pointing at
  * chatgpt.com) is left untouched so the Kimchi key never leaves the gateway.
  */
-export function withGatewayOptions<T extends { headers?: Record<string, string | null> } | undefined>(
+export function withGatewayOptions<T extends Pick<StreamOptions, "sessionId" | "onPayload" | "headers"> | undefined>(
 	model: { baseUrl: string },
 	options: T,
 ) {
@@ -57,10 +93,24 @@ export function withGatewayOptions<T extends { headers?: Record<string, string |
 	const { token, source } = resolveGatewayCredentials(config)
 	if (source !== "api-key" || model.baseUrl !== chatCompletionsApi(config.customLlmEndpoint)) return options
 	// pi's Codex client defaults User-Agent to "pi (...)"; the gateway attributes traffic by `kimchi/<version>`.
+	const correlation = options?.sessionId ? codexCorrelation(options.sessionId) : undefined
+	const callerOnPayload = options?.onPayload
 	return {
 		...options,
 		transport: "sse" as const,
-		headers: { "User-Agent": `kimchi/${getVersion()}`, ...options?.headers, [KIMCHI_KEY_HEADER]: token },
+		headers: {
+			"User-Agent": `kimchi/${getVersion()}`,
+			...options?.headers,
+			originator: CODEX_ORIGINATOR,
+			...correlation?.headers,
+			[KIMCHI_KEY_HEADER]: token,
+		},
+		...(correlation && {
+			onPayload: async (payload: unknown, m: Parameters<NonNullable<typeof callerOnPayload>>[1]) => ({
+				...(((await callerOnPayload?.(payload, m)) ?? payload) as object),
+				client_metadata: correlation.clientMetadata,
+			}),
+		}),
 	}
 }
 
