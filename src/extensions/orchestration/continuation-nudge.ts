@@ -7,7 +7,11 @@
  *
  *   1. Continuation nudge — the orchestrator reasons in prose, announces it
  *      will delegate, and ends its turn without emitting the `Agent` tool
- *      call. Mirrors AISI Inspect's `on_continue`.
+ *      call. Mirrors AISI Inspect's `on_continue`. A broken-announcement
+ *      carve-out (`looksLikeBrokenAnnouncement`) also fires this nudge on
+ *      announcement-shaped text-only stops *after* tools ran in the cycle
+ *      — the kimi-k3 quirk where the model announces a write and never
+ *      emits it.
  *
  *   2. Empty-turn nudge — some Kimi deployments return an empty response
  *      (no text, no tool calls) after receiving tool results from a
@@ -99,7 +103,9 @@ const AWAITING_USER_PHRASES: RegExp[] = [
 	/\byour (?:call|decision|choice)\b/i,
 	/\bwaiting (?:on|for) (?:you|your)\b/i,
 	/\bawait(?:ing)? (?:you|your|the user)\b/i,
-	/\btell me (?:if|whether|which|how|when)\b/i,
+	// "Tell me <if/whether/what/to/…>" — direct interrogative/imperative asks.
+	// Bare "tell me" stays rejected (mid-work processing phrases).
+	/\btell me (?:if|whether|which|how|when|what|to)\b/i,
 ]
 
 /** A text-only turn that asks anything, or explicitly hands control back to
@@ -117,11 +123,17 @@ const AWAITING_USER_PHRASES: RegExp[] = [
  *  the model waited on the user produced unauthorized continued work. If
  *  unrecovered-drift reports ever surface, strip fenced code blocks, inline
  *  code spans, and URLs from the joined text before these checks. */
-export function isAwaitingUserAnswer(message: AssistantMessage): boolean {
-	const text = message.content
+/** Joined text blocks of an assistant message. Shared by the text-shape
+ *  checks; the extraction idiom used to repeat three times in this file. */
+function assistantMessageText(message: AssistantMessage): string {
+	return message.content
 		.filter((c) => c.type === "text")
 		.map((c) => c.text)
 		.join("")
+}
+
+export function isAwaitingUserAnswer(message: AssistantMessage): boolean {
+	const text = assistantMessageText(message)
 	return text.includes("?") || AWAITING_USER_PHRASES.some((r) => r.test(text))
 }
 
@@ -129,18 +141,109 @@ export function isAwaitingUserAnswer(message: AssistantMessage): boolean {
  *  protocol acknowledgement. Prose containing the token ("Done. <done>")
  *  and tool-bearing responses must not match. */
 export function isBareDoneSignal(message: AssistantMessage): boolean {
-	const text = message.content
-		.filter((c) => c.type === "text")
-		.map((c) => c.text)
-		.join("")
+	const text = assistantMessageText(message)
 	return text.trim() === DONE_SIGNAL
+}
+
+/*
+ * Broken-announcement carve-out (corpus-tuned on 5.5 months / ~2.6k user sessions).
+ *
+ * The `toolsCalledSinceLastUserInput` guard below treats every text-only stop
+ * deep in a cycle as an end-of-task summary. Observed reality (corpus scan):
+ * a single-model (kimi-k3) generation quirk instead resolves the design in the
+ * thinking block and ends the turn with a one-line announcement of the
+ * write/edit it never emits — stopReason "stop", no tool call. Every incident
+ * matched a narrow shape: ≤250 chars, no question, no hand-back-to-user
+ * phrasing, ending in a colon or a commitment-phrase + action-verb pair.
+ * That shape fired with zero dangerous false positives over 7,198 text-only
+ * stop turns replayed.
+ *
+ * These constants are fitting artifacts from that corpus scan, not principled
+ * invariants — retune against the fixture set (co-located test) rather than by
+ * intuition.
+ */
+
+/* Wait-suppression phrases appear in three corpora with different owners:
+ *  AWAITING_USER_PHRASES above (suppresses the no-tools-cycle nudge),
+ *  WAIT_ON_USER below (gates the post-tools carve-out), and the awaiting
+ *  check embedded in the carve-out. They intentionally overlap — "say the
+ *  word", "tell me …", "your …" live in every copy — and are retuned from
+ *  the same corpus fixtures (co-located test). Do not merge them: each
+ *  corpus sits behind a different call site with different acceptable
+ *  false-hit rates.
+ */
+
+/** Deliberate hand-back-to-user stops; a nudge here pushes unauthorized work.
+ *  Second-person consent forms are the highest-risk family: post-tool stops
+ *  are exactly where models ask permission to push/deploy/commit, and the
+ *  carve-out is what makes those turns nudgeable (security-p1). */
+const WAIT_ON_USER =
+	/\b(ask me|tell me to|check (?:back )?in|wait(?:ing)? for|your (?:call|go-ahead|signal|approval)|your \w+ (?:go-ahead|approval|signal|word|consent|blessing)|on your (?:signal|approval|word)|say the word|let me know|you (?:approve|confirm|say so|are ready|'re ready|object|decide|sign off|green-?light)|give (?:the word|the order|the signal|the green light|(?:me )?the go-ahead)|unless you|if you want)\b/i
+
+/** The committed action is contingent on background/external completion —
+ *  the dominant false-positive class in the replay ("reviewers running, I'll
+ *  aggregate when they report"). The loop resumes via toolResult delivery /
+ *  subagent notifications, so nudging only burns a recovery round.
+ *  Single-word alternatives are word-anchored ("appending"/"prepending"
+ *  must not hit — correctness-001). */
+const WAIT_ON_BACKGROUND =
+	/(running in the background|still running|is running|are running|when (?:it|they|the|both|results?|reports?|notices?|agents?|reviews?|build|ci|pipeline|smoke|jobs?|chunks?|trials?)|once (?:it|they|the|both)|as soon as|waiting on the|until (?:it|the)|i'?ll (?:report|aggregate|confirm|update|post|notify|summarize|check in)|\bawait(?:ing|s)?\b|\bpending\b|in flight|mid-trial|still (?:executing|crawling|waiting))/i
+
+/** Completion-report openers — long "Done —" summaries that occasionally
+ *  contain commitment-shaped tail prose ("next steps could be:"). */
+const COMPLETION_OPENER =
+	/^(done\b|complete[ds]?\b|rebase[dr]?\b|cleanup complete|pushed\b|saved\b|redone\b|bookkeeping updated|all todos are (?:now )?complete|status:|the plan is submitted|nearly done|launched:|questionnaire cancelled)/i
+
+/** Next-action commitment + action verb, or a trailing colon.
+ *  The apostrophe covers both straight and typographic forms (I’ll). */
+const COMMITMENT_PHRASE = /\b(let me|i(?:'|’)?ll|i will|now i|next[, ]|then (?:i|we)|first,)\b/i
+const ACTION_VERB =
+	/\b(writ\w*|creat\w*|run(?:ning)?|spawn\w*|build\w*|appl\w*|add\w*|implement\w*|fix\w*|test\w*|check\w*|read\w*|updat\w*|commit\w*|push\w*|launch\w*|deploy\w*|verif\w*|extract\w*|generat\w*)\b/i
+
+/** Every observed broken announcement was 32–233 chars — single-sentence
+ *  introducers. Longer texts are summaries that may merely echo commitment
+ *  phrasing; the corpus's only recall miss (a 2.3KB pseudo-tool-call turn)
+ *  is accepted risk, not a reason to raise this. */
+const MAX_ANNOUNCEMENT_LENGTH = 250
+
+/**
+ * Interrogatives inside inline code spans, fenced blocks, and URLs are not
+ * questions to the user ("Now writing the parser (handles `a?.b`):") —
+ * strip them before the '?' / awaiting-phrase check inside the carve-out,
+ * as the isAwaitingUserAnswer docs record as the intended next mitigation.
+ */
+function stripNonProse(text: string): string {
+	return text
+		.replace(/```[\s\S]*?```/g, " ")
+		.replace(/`[^`\n]*`/g, " ")
+		.replace(/https?:\/\/\S+/g, " ")
+}
+
+/**
+ * Whether a text-only stop turn looks like a broken continuation: the model
+ * announced an immediate action and ended the turn without emitting it.
+ * Conservative by construction — any wait-on-user, wait-on-background,
+ * question, or completion-report signal suppresses it.
+ */
+export function looksLikeBrokenAnnouncement(message: AssistantMessage): boolean {
+	const text = assistantMessageText(message).trim()
+	if (!text || text.length > MAX_ANNOUNCEMENT_LENGTH) return false
+	const prose = stripNonProse(text)
+	if (prose.includes("?") || AWAITING_USER_PHRASES.some((r) => r.test(prose))) return false
+	if (WAIT_ON_USER.test(text) || WAIT_ON_BACKGROUND.test(text)) return false
+	// Completion openers tolerate leading punctuation/emoji ("✅ Done …" —
+	// correctness-002).
+	if (COMPLETION_OPENER.test(text.replace(/^[^a-zA-Z0-9]+/, ""))) return false
+	return text.endsWith(":") || (COMMITMENT_PHRASE.test(text) && ACTION_VERB.test(text))
 }
 
 /** Post-turn state machine for the "text-only drift" nudge.
  *
- * Fires at most twice per user-input cycle, and only when no tool has been
- * called during that cycle — so legitimate end-of-task summaries after a
- * completed tool sequence are not nudged.
+ * Fires at most twice per user-input cycle. The no-tool cycle guard exists
+ * so legitimate end-of-task summaries after a completed tool sequence are
+ * not nudged; the exception is `looksLikeBrokenAnnouncement` — an
+ * announcement-shaped text-only stop after tools ran in the cycle is still
+ * nudged (the broken-write-announcement quirk).
  *
  * Suppresses the nudge while an Agent result is pending to prevent the
  * model from signalling DONE before the Agent output has been received
@@ -269,7 +372,10 @@ export class ContinuationNudge {
 		if (this.nudgeCountThisCycle >= ContinuationNudge.MAX_NUDGES) return false
 		// In a fresh session, suppress the nudge until at least one tool has been called.
 		if (!this.toolsCalledThisSession) return false
-		if (this.toolsCalledSinceLastUserInput) return false
+		// A text-only turn after tools in the cycle is normally the end-of-task
+		// summary — unless it is announcement-shaped (see looksLikeBrokenAnnouncement),
+		// the kimi-k3 generation quirk where the model announces a write and stops.
+		if (this.toolsCalledSinceLastUserInput && !looksLikeBrokenAnnouncement(message)) return false
 		// Do not nudge while any Agent result is pending — the model must
 		// wait for all Agent outputs before it can continue or signal done.
 		if (this.pendingDelegationCount > 0) return false

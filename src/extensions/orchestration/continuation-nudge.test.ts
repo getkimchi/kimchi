@@ -10,6 +10,7 @@ import {
 	EmptyTurnNudge,
 	isAwaitingUserAnswer,
 	isBareDoneSignal,
+	looksLikeBrokenAnnouncement,
 	type OrchestratorMessages,
 	SECOND_NUDGE_TEXT,
 	stripStaleNudges,
@@ -1183,5 +1184,123 @@ describe("brandUnmarkedSteers", () => {
 		const once = brandUnmarkedSteers(messages)
 		const twice = brandUnmarkedSteers(once)
 		expect(twice).toBe(once)
+	})
+})
+
+// ─── Broken-announcement carve-out ─────────────────────────────────────────
+// Fixtures replay real corpus turns (stall-scan: 5.5 months, 2,578 current-model
+// files, 7,198 text-only stop turns → 8 true stalls, 0 dangerous false-positive
+// fires). Any regex retune must keep this recall/precision contract.
+
+const stalled = (text: string) => makeAssistant([{ type: "text", text }])
+
+describe("looksLikeBrokenAnnouncement (corpus replay)", () => {
+	// True stalls — every one required a user "continue" prod to resume.
+	it.each([
+		"Now the mockserver. I'll extend it to parse request bodies, validate canonical IDs for kimi models, and answer 200:",
+		"Now updating the remaining handlers that referenced the old `persona`/`chunksFor` signatures:",
+		"Using the write tool from here on:",
+		"Non-streaming returns `reasoning_content` correctly. The harness streams — let me test streaming.",
+		"I have solid findings on the litellm hop too. Let me write the interim findings document now, then continue with the client.",
+		"Writing the provider-level test:",
+		"`fetch` is injected into the OpenAI SDK — the test can stub it fully offline. Writing the regression suite:",
+		"Now I have the full picture. Writing the capture (chunk 3):",
+	])("fires on a broken announcement: %s", (text) => {
+		expect(looksLikeBrokenAnnouncement(stalled(text))).toBe(true)
+	})
+
+	it("fires inside evaluateTurn even after tools ran in the cycle", () => {
+		const nudge = new ContinuationNudge()
+		nudge.recordToolCall() // tools ran earlier in this user-input cycle
+		expect(nudge.evaluateTurn(stalled("Now I have the full picture. Writing the capture (chunk 3):"))).toBe(true)
+	})
+
+	it.each([
+		// background-wait: the loop resumes via toolResult / agent notifications
+		"Both reviewers are running in parallel (Standards + Spec). I'll aggregate their reports under the two headings when they land.",
+		"Smoke is running in the background — I'll report its result when the notice lands. Everything else stays as confirmed.",
+		"Bash queue clear. Waiting on the three remaining review agents — their completions will arrive automatically.",
+		// long completion reports with commitment-shaped tail prose
+		"Done. If you want, next steps could be:\n\n1. **Fleet-wide batch correlation** — script all watchdog fires over the last 24–48h and resolve each to its smg router pod.",
+		"All four modes allowed. On the next session start: shift+tab cycles the full set including yolo, `/forge` opens the loop.",
+		// completion opener hiding behind a leading emoji / punctuation prefix
+		"✅ Done fixing the parser. Writing the summary: everything green on the branch.",
+		// deliberate waits on the user
+		"Tell me to continue and I'll apply both corrections.",
+		"Pushing any of these branches needs your explicit go-ahead.",
+		"Ask me to check in ~10–15 min, when the rerun lands.",
+		"Just tell me what document you want, and I'll load it and get started.",
+		// second-person consent waits (security-p1): the action held for YOUR go
+		"I will push the branch once you approve.",
+		"I will deploy the fix once you confirm.",
+		"I will run the deploy when you are ready.",
+		"I will push these branches once I have your explicit go-ahead.",
+		"Tell me what to fix and I will apply it.",
+		"I will push the hotfix unless you object.",
+		"I will push once you give the signal.",
+		"I will deploy once you give the green light.",
+		"I will push the fix once you sign off.",
+		// questions are never nudged
+		"Which of these should I land first?",
+		// oversized / empty / mega-text turns are out of scope for this net
+		"",
+		`Long verbose turn: ${"x".repeat(400)}`,
+	])("does not fire: %s", (text) => {
+		expect(looksLikeBrokenAnnouncement(stalled(text))).toBe(false)
+	})
+
+	// Recall hardening: suppression corpora must not eat genuine announcements.
+	it.each([
+		// "appending" contains "pending" as a substring but is not a background wait
+		"Now appending the changelog entries:",
+		// an interrogative inside an inline code span is not a question to the user
+		"Now writing the parser (handles `a?.b`) and the reducer:",
+		// typographic apostrophe in the commitment phrase
+		"Now updating the remaining handlers — I’ll finish the wire suite next.",
+	])("fires despite corpus-word lookalikes: %s", (text) => {
+		expect(looksLikeBrokenAnnouncement(stalled(text))).toBe(true)
+	})
+
+	describe("carve-out composition with the downstream guards", () => {
+		const announce = () => stalled("Now I have the full picture. Writing the capture (chunk 3):")
+
+		it("respects pending Agent delegations even when announcement-shaped", () => {
+			const nudge = new ContinuationNudge()
+			nudge.recordToolCall()
+			nudge.markDelegationCall()
+			expect(nudge.evaluateTurn(announce())).toBe(false)
+		})
+
+		it.each(["aborted", "error"])("never nudges an %s stop", (stopReason) => {
+			const nudge = new ContinuationNudge()
+			nudge.recordToolCall()
+			const msg = announce()
+			msg.stopReason = stopReason as AssistantMessage["stopReason"]
+			expect(nudge.evaluateTurn(msg)).toBe(false)
+		})
+
+		it("a carve-out fire consumes budget and arms the pending recovery state", () => {
+			const nudge = new ContinuationNudge()
+			nudge.recordToolCall()
+			expect(nudge.evaluateTurn(announce())).toBe(true)
+			expect(nudge.isNudgeResponsePending()).toBe(true)
+			// A second fire in the same cycle hits the cap (MAX_NUDGES = 2).
+			expect(nudge.evaluateTurn(announce())).toBe(true)
+			expect(nudge.isBudgetExhausted()).toBe(true)
+		})
+	})
+
+	// evaluateTurn-level suppression: without the guard, an end-of-task/
+	// wait post-tool stop would be nudged. These close the hole found in the
+	// review fix round (predicate-level fixtures alone cannot fail if the
+	// evaluateTurn guard is removed).
+	it.each([
+		"Both reviewers are running in parallel (Standards + Spec). I'll aggregate their reports when they land.",
+		"Tell me to continue and I'll apply both corrections.",
+		"Just tell me what document you want, and I'll load it.",
+	])("evaluateTurn still suppresses legit post-tool stops: %s", (text) => {
+		const nudge = new ContinuationNudge()
+		nudge.recordToolCall()
+		expect(nudge.evaluateTurn(stalled(text))).toBe(false)
 	})
 })
