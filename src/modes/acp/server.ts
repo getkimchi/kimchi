@@ -158,6 +158,7 @@ import { handleListResources, handleSetResourceEnabled } from "./ext-methods/res
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
+import { handleWorktreeCreate, handleWorktreeList, handleWorktreeRemove } from "./ext-methods/worktrees.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
@@ -1348,6 +1349,14 @@ export class KimchiAcpAgent implements Agent {
 				const result = await handleProbeMcpServer(this.mcpProbe, params)
 				return result as Record<keyof ProbeResult, unknown>
 			}
+			case AVAILABLE_EXT_METHODS.worktree_create:
+				// Sessionless: create a worktree under .kimchi/worktrees/ for the
+				// given repo cwd; the client opens sessions with the returned dir.
+				return { ...(await handleWorktreeCreate(params)) }
+			case AVAILABLE_EXT_METHODS.worktree_list:
+				return { ...(await handleWorktreeList(params)) }
+			case AVAILABLE_EXT_METHODS.worktree_remove:
+				return { ...(await handleWorktreeRemove(params)) }
 			case AVAILABLE_EXT_METHODS.auth_status:
 				// Read the shared credential store per call so authenticate(),
 				// unstable_logout(), and logins from other Kimchi surfaces are

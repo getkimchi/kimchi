@@ -68,6 +68,35 @@ paths are carried even when gitignored (`.kimchi/` is typically ignored).
     `KIMCHI_WORKTREE_NO_PROMPT=1` to skip the prompt in tests.
 - Resume a kept worktree session with `kimchi --worktree <name> --resume`.
 
+## Switching worktrees mid-session (EnterWorktree / ExitWorktree)
+
+In the interactive TUI the model can move the current conversation between
+the main checkout and a worktree with two tools:
+
+- `EnterWorktree { name? }` — creates (or reuses) the worktree, then restarts
+  the session inside it, resuming the same session file;
+- `ExitWorktree` — restarts the session in the main checkout. The worktree is
+  kept (clean it up with `kimchi worktree remove`).
+
+Mechanics: the tool writes a restart marker
+(`<agentDir>/worktree-restart.json`), asks the model to stop, and requests a
+graceful shutdown. After pi's main() returns, the CLI consumes the marker and
+re-execs itself with `--worktree <name> --session <file>` (enter) or
+`--session <file>` plus `KIMCHI_WORKTREE_LAUNCH_CWD=<mainRoot>` (exit, with
+the worktree env binding dropped). On platforms without a re-exec primitive
+(Windows) the equivalent `kimchi --worktree … --resume` command is printed
+instead. The exit prompt is skipped for restart shutdowns.
+
+ACP has no process to re-exec, so IDE clients use sessionless ext methods
+instead and open sessions with the returned directory:
+
+- `_kimchi.dev/worktree/create { cwd, name? }` → `{ name, dir, branch, mainRoot, baseRef }`
+- `_kimchi.dev/worktree/list { cwd }` → `{ worktrees: [{ name, branch, path, status }] }`
+- `_kimchi.dev/worktree/remove { cwd, name, force? }` → `{ removed: true }`
+
+Upstream: a future pi `AgentSession.setCwd()` would allow switching without
+shutting the session down; tracked in a pi-mono issue.
+
 ## Subagent isolation
 
 The `Agent` tool accepts `isolation: "worktree"`. Local runs then execute in a

@@ -59,6 +59,12 @@ export const AVAILABLE_EXT_METHODS = {
 
 	// Misc inbound — standalone probing helper.
 	probe_mcp_server: `_${CAPABILITIES_KEY}/probe_mcp_server`,
+
+	// Sessionless inbound — git worktree management (slice 4). Create/list/
+	// remove here; the client then opens sessions with the worktree cwd.
+	worktree_create: `_${CAPABILITIES_KEY}/worktree/create`,
+	worktree_list: `_${CAPABILITIES_KEY}/worktree/list`,
+	worktree_remove: `_${CAPABILITIES_KEY}/worktree/remove`,
 } as const
 
 export const AVAILABLE_EXT_NOTIFICATIONS = {

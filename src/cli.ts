@@ -30,7 +30,14 @@ import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 import { installThinkingLevelAdvisor } from "./thinking-selection.js"
-import { KIMCHI_WORKTREE_ENV } from "./worktree-cli.js"
+import { performReExec, ReExecUnavailableError } from "./update/auto-update.js"
+import { KIMCHI_WORKTREE_ENV, KIMCHI_WORKTREE_MAIN_ENV } from "./worktree-cli.js"
+import {
+	clearWorktreeRestartRequest,
+	KIMCHI_WORKTREE_LAUNCH_CWD_ENV,
+	readWorktreeRestartRequest,
+	type WorktreeRestartRequest,
+} from "./worktree-restart.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -193,6 +200,7 @@ import {
 	prepareProviderRequest,
 	recordProviderResponse,
 } from "./extensions/work-attribution.js"
+import createWorktreeModeExtension from "./extensions/worktree-mode.js"
 import worktreeSessionBindingExtension from "./extensions/worktree-session-binding.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
@@ -486,6 +494,17 @@ async function cliMain(): Promise<void> {
 		const cliTrustOptions = getParsedCliArgs().options
 		const cliTrustOverride =
 			cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
+		// ExitWorktree re-exec launches with the main checkout as desired cwd;
+		// honor it before the trust block (which resolves from process.cwd()).
+		const launchCwd = process.env[KIMCHI_WORKTREE_LAUNCH_CWD_ENV]
+		if (launchCwd) {
+			delete process.env[KIMCHI_WORKTREE_LAUNCH_CWD_ENV]
+			try {
+				process.chdir(launchCwd)
+			} catch {
+				console.error(`[worktree] restart cwd no longer exists: ${launchCwd}`)
+			}
+		}
 		if (!helpOrVersion && hasWorktreeArg(originalArgs)) {
 			const { ensurePreMainWorktree, maybePrintWorktreeIncludeHint } = await import("./worktree-cli.js")
 			try {
@@ -890,7 +909,7 @@ async function cliMain(): Promise<void> {
 			})
 			// Terminal chrome extensions need an actual TUI, not just an extension UI protocol.
 			const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
-				? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
+				? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension, createWorktreeModeExtension()]
 				: []
 			// Config-derived skill paths resolve lazily: the trust prompt is answered
 			// inside pi's main() (after this point), and resource discovery re-runs
@@ -1098,12 +1117,27 @@ async function cliMain(): Promise<void> {
 				const { main } = await import("@earendil-works/pi-coding-agent")
 				await main(rawArgsWithoutMultiModel, { extensionFactories })
 			}
+			// Worktree restart-in-place (slice 4): EnterWorktree/ExitWorktree end
+			// the session by writing a restart marker and requesting a graceful
+			// shutdown. Consume the marker HERE — before the exit prompt, which a
+			// restart must never trigger — and re-exec into the target directory
+			// resuming the same session file.
+			const restartRequest = readWorktreeRestartRequest(preMainAgentDir)
+			if (restartRequest) {
+				clearWorktreeRestartRequest(preMainAgentDir)
+				await handleWorktreeRestart(restartRequest)
+			}
 			// Worktree exit prompt (slice 1): only for the interactive TUI; the
 			// headless -p / ACP / non-TTY paths skip it (`interactive` false).
 			// KIMCHI_WORKTREE_NO_PROMPT is a deterministic no-UI escape for e2e
 			// (clack prompts cannot be answered through the test pty).
 			// Best-effort — never changes the session's exit path.
-			if (!hasPrintFlag(rawArgs) && process.env.KIMCHI_WORKTREE_NO_PROMPT !== "1" && process.env[KIMCHI_WORKTREE_ENV]) {
+			if (
+				!restartRequest &&
+				!hasPrintFlag(rawArgs) &&
+				process.env.KIMCHI_WORKTREE_NO_PROMPT !== "1" &&
+				process.env[KIMCHI_WORKTREE_ENV]
+			) {
 				const { runWorktreeExitPrompt } = await import("./worktree-exit-prompt.js")
 				const { readWorktreeBindingFromEnv } = await import("./extensions/worktree-session-binding.js")
 				const binding = readWorktreeBindingFromEnv()
@@ -1132,6 +1166,40 @@ async function cliMain(): Promise<void> {
 			const isInfraFailure = applyInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
 			process.exit(isInfraFailure ? KIMCHI_INFRA_ERROR_EXIT_CODE : 1)
 		}
+	}
+}
+
+/**
+ * Re-exec the binary for an EnterWorktree/ExitWorktree restart request:
+ *  - enter → `kimchi --worktree <name> --session <file>` (the pre-main hook
+ *    creates/reuses the worktree and chdirs into it);
+ *  - exit  → `kimchi --session <file>` with the main checkout as launch cwd
+ *    (KIMCHI_WORKTREE_LAUNCH_CWD) and the worktree env binding dropped so the
+ *    resumed session is unbound.
+ * Never returns on POSIX (the process image is replaced); on platforms
+ * without a re-exec primitive we print the manual equivalent instead.
+ */
+async function handleWorktreeRestart(request: WorktreeRestartRequest): Promise<void> {
+	const env = { ...process.env }
+	let args: string[]
+	if (request.direction === "enter" && request.name) {
+		args = ["--worktree", request.name, "--session", request.sessionFile]
+	} else {
+		delete env[KIMCHI_WORKTREE_ENV]
+		delete env[KIMCHI_WORKTREE_MAIN_ENV]
+		if (request.mainRoot) env[KIMCHI_WORKTREE_LAUNCH_CWD_ENV] = request.mainRoot
+		args = ["--session", request.sessionFile]
+	}
+	try {
+		performReExec(args, env)
+	} catch (err) {
+		if (!(err instanceof ReExecUnavailableError)) throw err
+		// No execv primitive on this platform: the user restarts by hand.
+		console.log(
+			request.direction === "enter"
+				? `Restart in the worktree with: kimchi --worktree ${request.name} --resume ${request.sessionFile}`
+				: `Restart in the main checkout with: cd ${request.mainRoot} && kimchi --resume ${request.sessionFile}`,
+		)
 	}
 }
 
