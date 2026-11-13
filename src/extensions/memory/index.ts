@@ -63,6 +63,7 @@ import {
 	MEMORY_STEP_ENV_RECEIPT_KEEP_CHARS,
 	MEMORY_USER_ID,
 	stateFingerprintCap,
+	loopContextTurns,
 	stepRecallInterval,
 	TURN_RECALL_QUERY_MAX_CHARS,
 	TURN_RECALL_RESPONSE_CHARS,
@@ -360,8 +361,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					if (recallFailed || !memoryActive()) return
 					const reasoning = lastAssistantReasoning(ctx)
 					const receipts = revisitTail !== undefined ? [revisitTail] : lastLoopEnvTails
-					const query = buildLoopRecallQuery(reasoning, receipts)
-					const queries = buildLoopRecallQueries(reasoning, receipts)
+					const turnTexts = recentTurnTexts(ctx, loopContextTurns(process.env))
+					const query = buildLoopRecallQuery(reasoning, receipts, turnTexts)
+					const queries = buildLoopRecallQueries(reasoning, receipts, turnTexts)
 					if (!query) return
 					const outcome = await runRecall({
 						trigger,
@@ -1099,4 +1101,48 @@ function lastAssistantReasoning(ctx: ExtensionContext): string {
 		// Same tolerance as lastAssistantText.
 	}
 	return ""
+}
+
+/**
+ * Recent conversation turns as recall context facets (Chunk A: the
+ * multi-message embedding context). Walks entries backwards collecting
+ * user + assistant message texts, skips the LATEST assistant entry (its
+ * reasoning is already the query head), and returns at most `count`
+ * summaries. Textless turns (pure tool steps) are skipped without
+ * consuming the budget; any parse failure degrades to [].
+ */
+function recentTurnTexts(ctx: ExtensionContext, count: number): string[] {
+	if (count <= 0) return []
+	try {
+		const entries = ctx.sessionManager.getEntries()
+		const texts: string[] = []
+		let seenLatestAssistant = false
+		for (let i = entries.length - 1; i >= 0 && texts.length < count; i--) {
+			const entry = entries[i]
+			if (entry.type !== "message") continue
+			const msg = entry.message
+			if (msg.role !== "assistant" && msg.role !== "user") continue
+			if (msg.role === "assistant" && !seenLatestAssistant) {
+				seenLatestAssistant = true
+				continue
+			}
+			const content = msg.content
+			let text = ""
+			if (typeof content === "string") text = content
+			else if (Array.isArray(content)) {
+				for (const block of content as Array<{ type?: string; text?: string; thinking?: string }>) {
+					const t = block?.text ?? block?.thinking
+					if (t) {
+						text = t
+						break
+					}
+				}
+			}
+			text = text.trim()
+			if (text) texts.push(text)
+		}
+		return texts
+	} catch {
+		return []
+	}
 }

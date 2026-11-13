@@ -10,7 +10,12 @@
 import { createHash } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { markHarnessSteer } from "../steer-marker.js"
-import { MEMORY_STEP_ENV_TAIL_CHARS, MEMORY_STEP_QUERY_MAX_CHARS, MEMORY_STEP_REASONING_HEAD_CHARS } from "./config.js"
+import {
+	MEMORY_LOOP_CONTEXT_TURN_CHARS,
+	MEMORY_STEP_ENV_TAIL_CHARS,
+	MEMORY_STEP_QUERY_MAX_CHARS,
+	MEMORY_STEP_REASONING_HEAD_CHARS,
+} from "./config.js"
 import { buildTurnRecall, factKey, isCovered, type MemorySearchHit } from "./inject.js"
 
 export type RecallOutcome = "injected" | "covered" | "gate-skip" | "no-hits" | "no-searcher" | "failed"
@@ -170,23 +175,39 @@ const spliceReceipt = (t: string): string => {
 	return `${t.slice(0, headBudget)}\n…\n${t.slice(-tailBudget)}`
 }
 
-/** Per-aspect facet queries: [reasoning head?, receipt-1, receipt-2] — each
- * bounded, each a clean embedding topic (the plan voice vs. each visible
- * state). An empty head means the facet array starts with receipts. */
-export function buildLoopRecallQueries(reasoningText: string, envReceipts: readonly string[]): string[] {
+/** Per-aspect facet queries: [reasoning head?, receipt-1, receipt-2,
+ * recent message texts…] — each bounded, each a clean embedding topic
+ * (the plan voice vs. each visible state vs. the recent conversation
+ * turns). Recent turn texts land AFTER receipts: they are context, not
+ * the trigger's own evidence, and the blended cap trims from the tail.
+ * Facets dedupe by exact trimmed text (a reasoning head copied from its
+ * own message text never embeds twice). */
+export function buildLoopRecallQueries(
+	reasoningText: string,
+	envReceipts: readonly string[],
+	recentTurns: readonly string[] = [],
+): string[] {
 	const facets: string[] = []
 	const head = reasoningText.slice(0, MEMORY_STEP_REASONING_HEAD_CHARS).trim()
 	if (head) facets.push(head)
 	for (const t of envReceipts.filter((t) => t.length > 0).slice(-2)) {
 		const sliced = spliceReceipt(t).trim()
-		if (sliced) facets.push(sliced)
+		if (sliced && !facets.includes(sliced)) facets.push(sliced)
+	}
+	for (const t of recentTurns) {
+		const sliced = t.slice(0, MEMORY_LOOP_CONTEXT_TURN_CHARS).trim()
+		if (sliced && !facets.includes(sliced)) facets.push(sliced)
 	}
 	return facets
 }
 
 /** Blended form for coverage checks, gates, and the trace — same spans. */
-export function buildLoopRecallQuery(reasoningText: string, envReceipts: readonly string[]): string {
-	return buildLoopRecallQueries(reasoningText, envReceipts).join("\n").slice(0, MEMORY_STEP_QUERY_MAX_CHARS)
+export function buildLoopRecallQuery(
+	reasoningText: string,
+	envReceipts: readonly string[],
+	recentTurns: readonly string[] = [],
+): string {
+	return buildLoopRecallQueries(reasoningText, envReceipts, recentTurns).join("\n").slice(0, MEMORY_STEP_QUERY_MAX_CHARS)
 }
 
 // Volatile counters: a counter keyword followed only by counter phrasing

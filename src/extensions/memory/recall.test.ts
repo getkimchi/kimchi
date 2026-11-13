@@ -8,7 +8,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { MemorySearchHit } from "./inject.js"
-import { buildLoopRecallQuery, type RecallRunArgs, runRecall, stateFingerprint } from "./recall.js"
+import { buildLoopRecallQueries, buildLoopRecallQuery, type RecallRunArgs, runRecall, stateFingerprint } from "./recall.js"
 
 const hit = (text: string, score = 0.9): MemorySearchHit => ({ memory: text, score }) as MemorySearchHit
 
@@ -246,5 +246,26 @@ describe("buildLoopRecallQuery", () => {
 	it("the query respects the total budget with a wide head and two receipts", () => {
 		const query = buildLoopRecallQuery("h".repeat(900), [`${"a".repeat(900)}\n${"z".repeat(900)}`])
 		expect(query.length).toBeLessThanOrEqual(2000)
+	})
+
+	it("recent turn texts land as facets after the receipts, bounded per facet", () => {
+		const facets = buildLoopRecallQueries("aim: plan", ["state: room A"], ["user said follow the wall", "previous note: door is stuck"])
+		expect(facets).toEqual(["aim: plan", "state: room A", "user said follow the wall", "previous note: door is stuck"])
+	})
+
+	it("turn texts slice to the per-facet char budget", () => {
+		const facets = buildLoopRecallQueries("", [], ["x".repeat(500)])
+		expect(facets).toHaveLength(1)
+		expect(facets[0].length).toBeLessThanOrEqual(160)
+	})
+
+	it("exact-duplicate turn texts dedupe against earlier facets", () => {
+		const facets = buildLoopRecallQueries("aim: plan", [], ["aim: plan", "aim: plan"])
+		expect(facets).toEqual(["aim: plan"])
+	})
+
+	it("no recent turns keeps the legacy facet shape", () => {
+		expect(buildLoopRecallQueries("aim: plan", ["state: room A"])).toEqual(["aim: plan", "state: room A"])
+		expect(buildLoopRecallQuery("aim: plan", ["state: room A"], [])).toBe("aim: plan\nstate: room A")
 	})
 })

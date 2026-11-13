@@ -1695,4 +1695,32 @@ describe("mid-loop recall (step-budget trigger)", () => {
 		await flushChain()
 		expect(sendMessage.mock.calls.length).toBe(0)
 	})
+
+	it("context facets carry recent message texts into the embedding facets", async () => {
+		populateCliArgs(["--memory"])
+		const search = vi.fn(async (query: string) => [{ memory: `fact for ${query.slice(0, 20)}`, score: 0.95 }])
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => ({ search }) }))
+		const { start } = rig
+		const tri = getToolResultHandler(rig)
+		const assistant = (text: string) =>
+			({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } }) as unknown as SessionEntry
+		const user = (text: string) =>
+			({ type: "message", message: { role: "user", content: [{ type: "text", text }] } }) as unknown as SessionEntry
+		const entries = [
+			user("objective: reach the lab"),
+			assistant("the northern gate is blocked by a trigger script"),
+			assistant("heading north from the gate"),
+		]
+		const ctx = createContext({ sessionManager: { getEntries: () => entries } })
+		await start(startEvent("run"), fakeCtx)
+		// K tool steps with the seeded ctx → one step-budget evaluation whose
+		// facets embed the recent message texts (the latest assistant entry
+		// is the reasoning head; earlier turns are context facets).
+		for (let i = 0; i < K; i++) tri(toolResultEvent(`state ${i}`) as never, ctx)
+		await flushChain()
+		expect(search).toHaveBeenCalled()
+		const facetTexts = search.mock.calls.map((call) => call[0] as string)
+		expect(facetTexts.some((t) => t.includes("the northern gate is blocked"))).toBe(true)
+		expect(facetTexts.some((t) => t.includes("objective: reach the lab"))).toBe(true)
+	})
 })
