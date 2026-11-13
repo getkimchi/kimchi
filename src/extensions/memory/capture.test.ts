@@ -60,11 +60,13 @@ import {
 } from "./capture-worker.js"
 import {
 	ADD_FAILURE_MAX_ATTEMPTS,
+	defaultMemoryDir,
 	MEMORY_CAPTURE_INCREMENTAL_MESSAGES,
 	MEMORY_CAPTURE_WINDOW_CHARS,
 	MEMORY_FACT_MAX_CHARS,
 } from "./config.js"
 import type { DecisionGateOptions } from "./decision-gate.js"
+import { acquireCaptureLock } from "./lock.js"
 import { buildValuationState, TRIAGE_QUESTION_NAMES } from "./gates.js"
 import { readTraceEvents, tracesDir } from "./trace.js"
 import { usageLedgerPath } from "./usage-ledger.js"
@@ -1649,6 +1651,52 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		// may preserve what Date conversion cannot represent, so compare
 		// within a millisecond.
 		expect(Math.abs(statSync(jobFile).mtimeMs - fixed.getTime())).toBeLessThan(1)
+	})
+
+	it("a live lock holder means the worker defers with exit 0 and no drain", async () => {
+		const jobFile = writeJob("deferred", [msg("user", "deferred marker")])
+		const release = await acquireCaptureLock(defaultMemoryDir())
+		expect(release).not.toBeNull()
+		try {
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], { llm: makeFakeLlm([]) }),
+			).resolves.toBe(0)
+			// Untouched — the holder's own drain consumes it later.
+			expect(existsSync(jobFile)).toBe(true)
+		} finally {
+			await release!()
+		}
+	})
+
+	it("the drain re-list consumes job files written while the drain was running", async () => {
+		const job1 = writeJob("first", [msg("user", "first marker")])
+		// The extraction LLM writes a SECOND job into pending/ mid-drain —
+		// with fail-fast locking its spawn exits, so this drain's re-list
+		// pass must consume it (previously it waited for the next trigger).
+		let wroteSecond = false
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			if (!wroteSecond) {
+				wroteSecond = true
+				writeJob("second", [msg("user", "second marker")])
+			}
+			const transcript = body.messages[1]?.content ?? ""
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const captured = await runCaptureWorker(["--job", job1, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(makeFakeBackend().backend),
+		})
+		expect(captured).toBe(2)
+		expect(readdirSync(pendingDir()).filter((n) => n.endsWith(".json"))).toHaveLength(0)
 	})
 
 	it("skips oversized facts before the embed (never truncates) and counts them in the summary", async () => {

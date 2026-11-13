@@ -54,7 +54,7 @@ export interface AdminStore {
 export interface AdminDeps {
 	memoryRoot?: string
 	createBackend?: (dbPath: string) => Promise<AdminBackend>
-	acquireLock?: (memoryRoot: string) => Promise<() => Promise<void>>
+	acquireLock?: (memoryRoot: string) => Promise<(() => Promise<void>) | null>
 	/** Decision-gate context for consolidate; default resolves from config. */
 	decisionGate?: DecisionGateOptions | null
 }
@@ -424,7 +424,7 @@ async function defaultCreateBackend(dbPath: string): Promise<AdminBackend> {
 interface ResolvedDeps {
 	memoryRoot: string
 	createBackend: (dbPath: string) => Promise<AdminBackend>
-	acquireLock: (memoryRoot: string) => Promise<() => Promise<void>>
+	acquireLock: (memoryRoot: string) => Promise<(() => Promise<void>) | null>
 }
 
 /** Resolve the decision endpoint for consolidate. Explicitly null only for
@@ -862,6 +862,7 @@ export type AdminResetOutcome =
 	/** Client-side failures — the caller renders them or surfaces them as params problems. */
 	| { ok: false; reason: "cancelled" | "confirmation-required" }
 	| { ok: false; reason: "no-such-store"; scopeId: string }
+	| { ok: false; reason: "busy" }
 
 export interface AdminResetOptions {
 	/** Skip the confirm gate (the grammar's --yes; the ACP method's confirm:true). */
@@ -902,6 +903,7 @@ export async function adminResetScope(scope: ScopeFilter, options: AdminResetOpt
 			return { ok: false, reason: "cancelled" }
 		}
 		const release = await deps.acquireLock(deps.memoryRoot)
+		if (release === null) return { ok: false, reason: "busy" }
 		try {
 			// The held lock lives on capture.lock (+ its .lock directory) —
 			// wiping them under the lock would break release. The migration
@@ -937,6 +939,7 @@ export async function adminResetScope(scope: ScopeFilter, options: AdminResetOpt
 		return { ok: false, reason: "cancelled" }
 	}
 	const release = await deps.acquireLock(deps.memoryRoot)
+	if (release === null) return { ok: false, reason: "busy" }
 	try {
 		await backend.deleteAll()
 	} finally {
@@ -1100,6 +1103,11 @@ async function opConsolidate(
 		}
 	}
 	const release = await deps.acquireLock(deps.memoryRoot)
+	if (release === null) {
+		lines.push("")
+		lines.push("A capture drain is currently running — nothing deleted; retry shortly.")
+		return result({ text: lines.join("\n"), data: { scans, deletions, applied: false } })
+	}
 	try {
 		const backends = new Map<string, AdminBackend>()
 		for (const d of deletions) {

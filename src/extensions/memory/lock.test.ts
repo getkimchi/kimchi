@@ -60,9 +60,25 @@ describe("capture lock — dead-holder break", () => {
 	it("acquire succeeds immediately after a dead holder's lock is broken", async () => {
 		makeStaleLock(deadPid())
 		const release = await acquireCaptureLock(dir, { pollMs: 50 })
+		expect(release).not.toBeNull()
 		// The acquisition wrote its own pid sidecar.
 		expect(readFileSync(pidFile(), "utf-8").trim()).toBe(String(process.pid))
-		await release()
+		await release!()
 		expect(existsSync(pidFile())).toBe(false)
+	})
+
+	it("a live holder means fail-fast: null without waiting", async () => {
+		const first = await acquireCaptureLock(dir, { pollMs: 50 })
+		expect(first).not.toBeNull()
+		const started = Date.now()
+		// Same-process reentrant acquire conflicts: proper-lockfile tracks
+		// ownership by pid, and our own sidecar is treated as live (the
+		// break helper refuses our own pid), so this models a live holder.
+		const second = await acquireCaptureLock(dir, { pollMs: 50 })
+		expect(second).toBeNull()
+		// Fail-fast: breaks only come from dead pids, so contention returns
+		// immediately — no poll loops (previously up to an hour).
+		expect(Date.now() - started).toBeLessThan(1_000)
+		await first!()
 	})
 })
