@@ -258,3 +258,15 @@ test("the outbox status aggregate has covering indexes available to every open",
 		"CREATE INDEX IF NOT EXISTS outbox_batches_by_account ON outbox_batches(account_key, order_key, created_at)",
 	)
 })
+
+test("an existing ledger gains the additive indexes on open (bun driver)", () => {
+	const dir = agentDir()
+	// The driver opens the ledger, drops both covering indexes, reopens it, and reports what the
+	// every-open additive apply restored — a pre-existing ledger behaves identically to a fresh one.
+	const result = driver("schema-check", dir)
+	const indexes = (result.afterReopen as string[]).filter((name) =>
+		["outbox_pending_cover", "outbox_batches_by_account"].includes(name),
+	)
+	expect((result.afterDrop as string[]).some((name) => name === "outbox_pending_cover")).toBe(false)
+	expect(indexes.sort()).toEqual(["outbox_batches_by_account", "outbox_pending_cover"])
+})
