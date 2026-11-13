@@ -545,7 +545,7 @@
 	},
 	{
 		"tool": "edit",
-		"message": "edits[1] and edits[2] overlap in /home/beznet/Workspace/edapex/apps/api/src/lib/server/services/errors.ts. Merge them into one edit or target disjoint regions.",
+		"message": "edits[1] and edits[2] overlap in /home/dev/project/apps/api/src/lib/server/services/errors.ts. Merge them into one edit or target disjoint regions.",
 		"expect": {
 			"kind": "model_mistake",
 			"message": "Edit targets overlap"
@@ -577,7 +577,7 @@
 	},
 	{
 		"tool": "read",
-		"message": "EPERM: operation not permitted, access '/Users/P3105454/Projects/code-review-workflow/docs/results/2026-11-03-m1-baseline.md'",
+		"message": "EPERM: operation not permitted, access '/Users/dev/project/docs/results/baseline.md'",
 		"expect": {
 			"kind": "model_mistake",
 			"message": "Filesystem permission denied"
@@ -650,6 +650,70 @@
 	{
 		"tool": "complete_ferment",
 		"message": "complete_ferment refused — agent self-flagged on 1 ferment gate(s):\n\n  ⛔ Gate C1: Four of five success criteria met: baseline recognition incomplete",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Ferment self-flagged"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Could not edit file: /home/dev/project/src/app.ts. Error code: EACCES.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "EPERM: operation not permitted, mkdir '/home/dev/project/.cache'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "ENOTDIR: not a directory, open '/home/dev/project/README.md/sub'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Path not found"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "EPERM: operation not permitted, rename '/home/dev/project/a.txt' -> '/home/dev/project/b.txt'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "ls",
+		"message": "Cannot read directory: EACCES: permission denied, scandir '/home/dev/project'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "grep",
+		"message": "rg: /home/dev/project/protected: Incorrect function. (os error 1)",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Search target error"
+		}
+	},
+	{
+		"tool": "scope_ferment",
+		"message": "Cannot scope ferment — agent self-flagged on 2 plan gate(s):\n\n  ⛔ Gate P1: phases lack a verifiable success signal",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Ferment self-flagged"
+		}
+	},
+	{
+		"tool": "complete_ferment_step",
+		"message": "Step 3: \"Add the export button\" cannot complete - agent self-flagged on 1 step gate(s):\n\n  ⛔ Gate S2: no evidence attached",
 		"expect": {
 			"kind": "model_mistake",
 			"message": "Ferment self-flagged"

@@ -217,9 +217,13 @@ describe("classifyToolError — tool scoping (negative cases)", () => {
 		expect(c.kind).toBe("failure")
 	})
 
-	it("does not apply read patterns to the find tool", () => {
+	it("does not apply read-specific canonicals to the find tool (shared fs family does)", () => {
 		const c = classifyToolError("find", "ENOENT: no such file or directory, access '/src/missing'")
-		expect(c.kind).toBe("failure")
+		// The read tool's family canonical ("Read path not found") must not
+		// leak to find — but the shared fs errno family correctly
+		// canonicalizes this shape for path tools too (review follow-up).
+		expect(c.kind).toBe("model_mistake")
+		expect(c.message).toBe("Path not found")
 	})
 
 	it("does not apply the ask_user cancellation pattern to other tools", () => {

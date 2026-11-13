@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { createContext } from "../../__mocks__/context.js"
 import type { TelemetryContext } from "../session-context.js"
-import { handleTransportError } from "./transport-errors.js"
+import { classifyTransportError, handleTransportError } from "./transport-errors.js"
 
 function mockSessionCtx(): Pick<TelemetryContext, "emit" | "getTraceAttributes"> {
 	return {
@@ -213,5 +213,24 @@ describe("handleTransportError", () => {
 		})
 		const emitted = (sessionCtx.emit as ReturnType<typeof vi.fn>).mock.calls[0][1] as { error_message: string }
 		expect(emitted.error_message).toBe("Transport: socket closed unexpectedly")
+	})
+})
+
+describe("classifyTransportError (direct)", () => {
+	it("canonicalizes headers-phase idle timeouts with the same bounded attrs", () => {
+		const c = classifyTransportError(
+			"Stream idle timeout: socket connection closed — no bytes received from llm.kimchi.dev during headers for 120000ms (read timed out)",
+		)
+		expect(c.message).toBe("Transport: stream idle timeout")
+		expect(c.attrs).toEqual({ upstream_host: "llm.kimchi.dev", idle_timeout_ms: 120000 })
+	})
+
+	it("keeps the bounded-length contract on the fail-open branch", () => {
+		// Defensive branch: a transport error gated in but matching no family
+		// keeps the raw head, truncated to 300 chars.
+		const c = classifyTransportError("unknown transport failure " + "x".repeat(400))
+		expect(c.message.length).toBe(300)
+		expect(c.message.endsWith("xxx")).toBe(true)
+		expect(c.attrs).toBeUndefined()
 	})
 })

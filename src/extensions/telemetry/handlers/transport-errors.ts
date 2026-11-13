@@ -33,10 +33,12 @@ const MAX_HOST_LEN = 64
  * a family, so that branch is defensive for future gate patterns.
  *
  * Match order is specific-first: the stream-idle message contains
- * "connection closed", so the generic family must not shadow it.
+ * "connection closed", so the generic family must not shadow it. Both idle
+ * phases (headers and body — src/http/stream-idle-timeout.ts) carry the
+ * same diagnostics.
  */
-function classifyTransportError(msg: string): { message: string; attrs?: Record<string, string | number> } {
-	const idle = msg.match(/^Stream idle timeout: .*?no bytes received from (\S+) during body for (\d+)ms/)
+export function classifyTransportError(msg: string): { message: string; attrs?: Record<string, string | number> } {
+	const idle = msg.match(/^Stream idle timeout: .*?no bytes received from (\S+) during (?:headers|body) for (\d+)ms/)
 	if (idle) {
 		const host = idle[1]
 		return {
