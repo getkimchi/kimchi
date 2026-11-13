@@ -10,7 +10,7 @@
  * hash, so overlapping captures are cheap no-ops.
  */
 import { spawn } from "node:child_process"
-import { createHash, randomUUID } from "node:crypto"
+import { createHash } from "node:crypto"
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -405,14 +405,6 @@ export function thinkingText(content: unknown): string {
 		if (text.trim()) parts.push(text)
 	}
 	return parts.join("\n\n").slice(0, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS)
-}
-
-/** The session id for the current process — scoping job ids and hashes.
- * A uuid, not a timestamp: recording time never enters LLM input. */
-const CAPTURE_SESSION_ID = randomUUID()
-
-function captureSessionId(): string {
-	return CAPTURE_SESSION_ID
 }
 
 function captureMessages(messages: CaptureMessage[], cwd: string, session?: string): boolean {

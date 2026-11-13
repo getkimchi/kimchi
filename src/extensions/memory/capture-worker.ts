@@ -79,8 +79,8 @@ import {
 	POISON_JOB_MAX_ATTEMPTS,
 	POISON_JOB_TTL_MS,
 	SUPERSEDE_SEARCH_TOPK,
-	UNKNOWN_CAPTURE_SESSION_ID,
 	TRANSIENT_JOB_MAX_ATTEMPTS,
+	UNKNOWN_CAPTURE_SESSION_ID,
 } from "./config.js"
 import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
 import { factClassesEnabled, parseBooleanFlag } from "./flags.js"
