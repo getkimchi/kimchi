@@ -1,7 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
-import { chatRequests, systemPromptOf } from "./support/wire-requests.js"
+import { chatRequests, systemPromptOf, toolDescriptionOf } from "./support/wire-requests.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -28,6 +28,16 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			expect(prompt).toContain("## Documents")
 			expect(prompt).toContain("orients the user")
 			expect(prompt).toContain("## Phase Management")
+
+			// Codemode's selection rule reaches the model through both Tool
+			// Selection and the dynamic function declaration.
+			expect(prompt).toContain("Use `codemode` when intermediate output can be filtered before it reaches you")
+			const codemodeDescription = toolDescriptionOf(chat[0], "codemode")
+			// Exactly once: pi's built-in codemode is replaced, not stacked.
+			expect(codemodeDescription?.split("Use to filter large output before it reaches the model")).toHaveLength(2)
+			expect(codemodeDescription).not.toContain("const hits")
+			expect(prompt).not.toContain("Use read to examine files instead of cat or sed.")
+			expect(prompt).not.toContain("Use codemode to batch independent tool calls (Promise.allSettled),")
 
 			// The headless replacement never appears in an interactive session.
 			expect(prompt).not.toContain("## Autonomous Session")

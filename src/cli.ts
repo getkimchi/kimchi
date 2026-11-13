@@ -25,6 +25,7 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { createGuidedCodemodeExtension } from "./extensions/codemode/guidance.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
@@ -912,6 +913,10 @@ async function cliMain(): Promise<void> {
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
+				// Registers `codemode` with kimchi's selection rule. In TUI/print it
+				// replaces pi's built-in codemode extension (marked replaceable);
+				// ACP sessions load no pi built-ins, so this is their only codemode.
+				createGuidedCodemodeExtension(),
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,
 				backgroundUpdateExtension,

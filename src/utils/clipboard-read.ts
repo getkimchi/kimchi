@@ -20,8 +20,7 @@ import { hasImageFileContent, readImageFileFromDisk, sniffImageMimeType } from "
  *  cannot repaint or clear the user's screen. Mirrors the gateway-side
  *  helper in llm-gateway-error.ts (same biome workaround applies). */
 function stripControlChars(value: string): string {
-	// Built from a string pattern: biome's noControlCharactersInRegex only
-	// applies to literals, and the ranges here are the whole point.
+	// biome-ignore lint/complexity/useRegexLiterals: string pattern on purpose — noControlCharactersInRegex only flags literals, and the control ranges here are the whole point.
 	return value.replace(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]", "g"), "")
 }
 
