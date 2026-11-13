@@ -2696,12 +2696,23 @@ export async function runCaptureWorkerMain(argv: string[]): Promise<number> {
 	}
 }
 
-// Executed directly via `bun run .../capture-worker.ts` (dev spawn path).
-// argv-comparison instead of import.meta.main: the compile-pipeline's cjs
-// wrapper (--compile, required for --bytecode/--minify) rejects surviving
-// import.meta.* and top-level await, and in the compiled binary this module
-// is never the main module anyway (kimchi memory-capture routes via cli.ts).
+// Executed directly via `bun run .../capture-worker.ts` (dev spawn path,
+// capture.ts). argv-comparison instead of import.meta.main: the
+// compile-pipeline's cjs wrapper (--compile, required for
+// --bytecode/--minify) rejects surviving import.meta.* and top-level
+// await, and in the compiled binary this module is never the main module
+// anyway (kimchi memory-capture routes via cli.ts).
+//
+// Compiled-binary guard: under --compile the argv comparison can still
+// return true (the bundle URL resolves back onto this module), which
+// double-invokes the worker alongside cli.ts's own dispatch — the second
+// invocation defers on the first's lock and its process.exit(0) then
+// kills the drain mid-flight (bench incident: silent undead locks, zero
+// drains). The dev/compiled discriminator matches capture.ts's spawn
+// branch exactly: bun execPath == dev module path, anything else ==
+// compiled subcommand routing.
 const isWorkerMain = (() => {
+	if (basename(process.execPath) !== "bun") return false
 	try {
 		return typeof process.argv[1] === "string" && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 	} catch {
