@@ -8,7 +8,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { MemorySearchHit } from "./inject.js"
-import { buildLoopRecallQueries, buildLoopRecallQuery, type RecallRunArgs, runRecall, stateFingerprint } from "./recall.js"
+import {
+	buildLoopRecallQueries,
+	buildLoopRecallQuery,
+	type RecallRunArgs,
+	runRecall,
+	stateFingerprint,
+} from "./recall.js"
 
 const hit = (text: string, score = 0.9): MemorySearchHit => ({ memory: text, score }) as MemorySearchHit
 
@@ -249,7 +255,11 @@ describe("buildLoopRecallQuery", () => {
 	})
 
 	it("recent turn texts land as facets after the receipts, bounded per facet", () => {
-		const facets = buildLoopRecallQueries("aim: plan", ["state: room A"], ["user said follow the wall", "previous note: door is stuck"])
+		const facets = buildLoopRecallQueries(
+			"aim: plan",
+			["state: room A"],
+			["user said follow the wall", "previous note: door is stuck"],
+		)
 		expect(facets).toEqual(["aim: plan", "state: room A", "user said follow the wall", "previous note: door is stuck"])
 	})
 

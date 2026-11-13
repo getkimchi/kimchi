@@ -66,8 +66,8 @@ import {
 	MEMORY_FACT_MAX_CHARS,
 } from "./config.js"
 import type { DecisionGateOptions } from "./decision-gate.js"
-import { acquireCaptureLock } from "./lock.js"
 import { buildValuationState, TRIAGE_QUESTION_NAMES } from "./gates.js"
+import { acquireCaptureLock } from "./lock.js"
 import { readTraceEvents, tracesDir } from "./trace.js"
 import { usageLedgerPath } from "./usage-ledger.js"
 
@@ -1658,9 +1658,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		const release = await acquireCaptureLock(defaultMemoryDir())
 		expect(release).not.toBeNull()
 		try {
-			await expect(
-				runCaptureWorker(["--job", jobFile, "--db", dbPath()], { llm: makeFakeLlm([]) }),
-			).resolves.toBe(0)
+			await expect(runCaptureWorker(["--job", jobFile, "--db", dbPath()], { llm: makeFakeLlm([]) })).resolves.toBe(0)
 			// Untouched — the holder's own drain consumes it later.
 			expect(existsSync(jobFile)).toBe(true)
 		} finally {
