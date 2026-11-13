@@ -73,6 +73,17 @@ describe("SelectionPill", () => {
 		expect(pill.paint(screen, frame, 60)).toBe(screen)
 	})
 
+	it("pins to the selection end's edge when the selection spans the whole viewport", () => {
+		const { pill, frame, screen, select } = setup()
+		// 21-row selection in a 10-row viewport: no anchor row fits, but the
+		// selected text is all that's on screen, so the pill still follows.
+		select(0, 20, 40)
+
+		const rows = plain(pill.paint(screen, frame, 60))
+
+		expect(rows[9]).toContain(LABEL)
+	})
+
 	it("keeps painting from the selection bounds when its text extraction is temporarily unavailable", () => {
 		// Mid-stream the previous-layout text extraction can come back empty for
 		// a frame; the pill must follow the bounds regardless, otherwise it blips.
@@ -109,20 +120,19 @@ describe("SelectionPill", () => {
 		expect(onAdd).not.toHaveBeenCalled()
 	})
 
-	it("eats a click mid-stream without quoting or clearing the selection, and quotes on retry", () => {
+	it("passes a click through untouched when the selected text is unavailable, and quotes on retry", () => {
 		const { host, pill, frame, screen, select, scrollView, onAdd } = setup()
 		select(1, 2, 40)
 		pill.paint(screen, frame, 60)
 
-		// The mid-stream frame this file's bounds-only paint covers: the pill is
-		// visible but text extraction momentarily fails.
+		// The frames this file's bounds-only paint covers: the pill is visible
+		// but text extraction fails (momentarily mid-stream, or permanently for
+		// a text-less selection) — the click must neither be eaten nor clear.
 		const bounds = { start: { row: 1, col: 0, scrollView }, end: { row: 2, col: 40, scrollView } }
 		vi.mocked(host.settledSelection).mockReturnValue(undefined)
-		expect(pill.handleMouse(press(30, 3))).toBe(true)
+		expect(pill.handleMouse(press(30, 3))).toBe(false)
 		expect(onAdd).not.toHaveBeenCalled()
 		expect(host.clearSelection).not.toHaveBeenCalled()
-		// The release is not swallowed (no add happened).
-		expect(pill.handleMouse(press(30, 3, true))).toBe(false)
 
 		// Extraction recovers next frame: the same click quotes.
 		vi.mocked(host.settledSelection).mockReturnValue({ bounds, text: "selected text" })

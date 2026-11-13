@@ -55,8 +55,14 @@ export class SelectionPill {
 		const toScreen = (row: number) => top + row - scrollView.scrollTop
 		let row = toScreen(bounds.end.row) + 1
 		if (row > bottom) row = toScreen(bounds.start.row) - 1
-		// Anchor scrolled out of the transcript viewport: hide, don't float.
-		if (row < top || row > bottom) return screen
+		if (row < top || row > bottom) {
+			// Selection scrolled out of the transcript viewport: hide, don't float.
+			// A selection TALLER than the viewport straddles it — its text is all
+			// that's on screen, so pin the pill to the end's edge instead.
+			const straddles = toScreen(bounds.start.row) <= top && toScreen(bounds.end.row) >= bottom
+			if (!straddles) return screen
+			row = Math.max(top, Math.min(bottom, toScreen(bounds.end.row)))
+		}
 		const label = this.label()
 		const labelWidth = visibleWidth(label)
 		const maxColumn = rect.x + rect.width - labelWidth - 1
@@ -79,10 +85,11 @@ export class SelectionPill {
 		if (event.y !== placed.row || event.x < placed.column || event.x >= placed.column + placed.width) return false
 		const host = this.options.host()
 		const text = host?.settledSelection()?.text
-		// The pill can be painted during a frame where text extraction
-		// momentarily fails (mid-stream). Eating that click without quoting
-		// must NOT clear the selection: the pill stays and a retry works.
-		if (!text) return true
+		// The pill can be painted while text extraction fails. Pass that click
+		// through untouched (the pre-bounds-paint behavior): transient mid-stream
+		// failures recover next frame, and permanently text-less selections
+		// (e.g. blank lines) must not become a click black hole.
+		if (!text) return false
 		host?.clearSelection()
 		// Disarm the rect now: the pixels repaint only on the next compositor
 		// pass, and a second click on the dead pill must start a new selection.
