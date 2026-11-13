@@ -23,3 +23,9 @@ export function systemPromptOf(request: { body: unknown }): string {
 	}
 	return ""
 }
+
+/** Description sent with a named OpenAI function declaration, if active. */
+export function toolDescriptionOf(request: { body: unknown }, name: string): string | undefined {
+	const body = request.body as { tools?: Array<{ function?: { name?: string; description?: string } }> }
+	return body.tools?.find((tool) => tool.function?.name === name)?.function?.description
+}

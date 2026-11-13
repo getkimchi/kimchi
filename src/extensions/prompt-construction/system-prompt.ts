@@ -420,6 +420,12 @@ ${lines.join("\n")}`
 
 export function buildToolSelectionSection(toolNames?: ReadonlySet<string>): string {
 	const lines: string[] = []
+	if (toolNames?.has("codemode")) {
+		lines.push(
+			"- Independent calls whose full results you need → issue them together in one turn.",
+			"- Use `codemode` when intermediate output can be filtered before it reaches you (e.g. read several files, return only matching lines) or when the next call's arguments follow mechanically from an earlier result (e.g. grep, then read a bounded range around each hit). Use direct tools when choosing the next step needs your judgment.",
+		)
+	}
 	if (hasTool(toolNames, "read")) {
 		lines.push("- Reading a file → use `read` (not `cat`, `head`, `tail`, `sed -n`).")
 	}
@@ -593,7 +599,7 @@ function buildPrompt(parts: PromptParts): string {
  *    injects the PI_* session/model env vars the guideline advertises;
  *  - codemode's recommends codemode for batching independent calls, which
  *    kimchi deliberately routes to direct parallel calls (one round either
- *    way);
+ *    way); the Tool Selection line carries kimchi's codemode rule instead;
  *  - grep/find/ls/powershell/tool_search register none today — listed so a
  *    future pi addition surfaces as a review decision here, not silently.
  *  Kimchi-authored guidelines (e.g. ferment-v2's update_ferment_v2) still

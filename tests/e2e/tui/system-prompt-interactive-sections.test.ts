@@ -1,7 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
-import { chatRequests, systemPromptOf } from "./support/wire-requests.js"
+import { chatRequests, systemPromptOf, toolDescriptionOf } from "./support/wire-requests.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -29,7 +29,12 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			expect(prompt).toContain("orients the user")
 			expect(prompt).toContain("## Phase Management")
 
-			// Pi-authored tool guidelines are curated out of the prompt.
+			// Codemode's selection rule reaches the model through both Tool
+			// Selection and the dynamic function declaration.
+			expect(prompt).toContain("Use `codemode` when intermediate output can be filtered before it reaches you")
+			const codemodeDescription = toolDescriptionOf(chat[0], "codemode")
+			expect(codemodeDescription).toContain("Use to filter large output before it reaches the model")
+			expect(codemodeDescription).not.toContain("const hits")
 			expect(prompt).not.toContain("Use read to examine files instead of cat or sed.")
 			expect(prompt).not.toContain("Use codemode to batch independent tool calls (Promise.allSettled),")
 

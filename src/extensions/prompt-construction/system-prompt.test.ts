@@ -140,11 +140,16 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("## Tool Guidelines\n\n- Batch objective updates.\n- Read relevant files.")
 		expect(result.match(/Batch objective updates\./g)).toHaveLength(1)
 		expect(result).not.toContain("Use read to examine files instead of cat or sed.")
+		expect(result).toContain("- Independent calls whose full results you need → issue them together in one turn.")
+		expect(result).toContain("Use `codemode` when intermediate output can be filtered before it reaches you")
+		expect(result).toContain("the next call's arguments follow mechanically from an earlier result")
+		expect(result).toContain("Use direct tools when choosing the next step needs your judgment.")
 	})
 
-	it("omits the tool-guidelines section when no active tool contributes guidelines", () => {
+	it("omits codemode advice and the tool-guidelines section when no active tool contributes guidelines", () => {
 		const result = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
 		expect(result).not.toContain("## Tool Guidelines")
+		expect(result).not.toContain("Use `codemode` when")
 	})
 
 	it("omits guidelines from delegation tools filtered out of subagent prompts", () => {

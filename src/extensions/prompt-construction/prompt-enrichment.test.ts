@@ -266,10 +266,14 @@ describe("prompt enrichment tool visibility", () => {
 		const active = await handler({}, ctx)
 		expect(active?.systemPrompt).toContain("- Claim complete only after evidence.")
 		expect(active?.systemPrompt).not.toContain("Use codemode to batch independent tool calls.")
+		expect(active?.systemPrompt).toContain(
+			"Use `codemode` when intermediate output can be filtered before it reaches you",
+		)
 
 		mock.api.setActiveTools([])
 		const inactive = await handler({}, ctx)
 		expect(inactive?.systemPrompt).not.toContain("- Claim complete only after evidence.")
+		expect(inactive?.systemPrompt).not.toContain("Use `codemode` when")
 	})
 
 	it("omits hidden tools from the rendered available tools section", async () => {

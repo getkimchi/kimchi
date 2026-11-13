@@ -6,7 +6,8 @@
  * prompt or the tool descriptions, or contradicting the implementation
  * (bash's PI_* env claim: kimchi's background bash never injects them). Pi's
  * codemode bullet recommends codemode for batching independent calls, which
- * kimchi routes to direct parallel calls.
+ * kimchi routes to direct parallel calls; kimchi's codemode rule lives in the
+ * Tool Selection line.
  *
  * This builds the prompt from pi's REAL tool definitions (read/bash/edit/
  * write/grep/find/ls + the codemode extension registration), so it fails if:
@@ -53,7 +54,7 @@ const PI_GUIDELINE_BULLETS = [
 ]
 
 describe("tool guidelines contract (pi guidelines stay curated out)", () => {
-	it("renders no pi-authored guideline", () => {
+	it("renders no pi-authored guideline; codemode steering comes from Tool Selection", () => {
 		// Real pi definitions, not mocks: the assertions must hold against
 		// whatever the pinned pi actually registers today.
 		const mock = createExtensionApi()
@@ -82,5 +83,8 @@ describe("tool guidelines contract (pi guidelines stay curated out)", () => {
 		// The default pi tool set carries no kimchi-authored guidelines, so the
 		// section must be absent entirely.
 		expect(prompt).not.toContain("## Tool Guidelines")
+		// Kimchi's codemode rule lives in Tool Selection instead:
+		expect(prompt).toContain("Use `codemode` when intermediate output can be filtered before it reaches you")
+		expect(prompt).toContain("- Independent calls whose full results you need → issue them together in one turn.")
 	})
 })
