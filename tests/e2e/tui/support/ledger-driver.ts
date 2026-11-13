@@ -31,6 +31,10 @@ import {
 	readWorkHead,
 	readWorkSummary,
 } from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
+import {
+	readRecordsSinceSql,
+	workRecordsImportedPresent,
+} from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
 import {
 	readWorkRecords,
@@ -124,6 +128,31 @@ async function readOnly(agent: string): Promise<void> {
 	const count = store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM meta").get()?.count ?? -1
 	out({ count })
 	store.close()
+}
+
+async function planSince(agent: string, seed?: string): Promise<void> {
+	const store = openStore(agent)
+	// The planner's choice only diverges at scale: without statistics, table sizes past ~20k rows
+	// make the unhinted windowed read lose to a full scan; a fresh ledger cannot show it.
+	if (seed === "seed") {
+		const count = store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records").get()?.count ?? 0
+		if (count < 20_000) {
+			const insert = store.db.query(
+				"INSERT INTO work_records (record_hash, type, work_id, session_id, body, source_path, source_generation, source_offset, imported_at) VALUES (?, 'request', 'plan-since-seed', 'plan-since', ?, 'seed', 0, NULL, ?)",
+			)
+			store.tx(() => {
+				for (let index = 0; index < 25_000; index++) insert.run(`plan-since-${index}`, "{}", 1_700_000_000_000 + index)
+			})
+		}
+	}
+	const present = workRecordsImportedPresent(store.db)
+	const sql = readRecordsSinceSql(present).replace("?", "1730000000000")
+	const plan = store.db
+		.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${sql}`)
+		.all()
+		.map((row) => row.detail)
+	store.close()
+	out({ plan, hinted: present })
 }
 
 async function schemaCheck(agent: string): Promise<void> {
@@ -2022,6 +2051,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),
 	"read-only": (agent) => readOnly(agent),
 	"schema-check": (agent) => schemaCheck(agent),
+	"plan-since": (agent, arg) => planSince(agent, arg),
 	"write-probe": (agent) => writeProbe(agent),
 	capture: (agent, json) => captureRecord(agent, json ?? "{}"),
 	head: (agent, workId) => printHead(agent, workId ?? ""),

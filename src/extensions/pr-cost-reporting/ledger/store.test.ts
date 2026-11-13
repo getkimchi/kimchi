@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, onTestFinished, test } from "vitest"
 import { LEDGER_ADDITIVE_SCHEMA } from "./schema.js"
+import { readRecordsSinceSql } from "./records.js"
 import { classifyUserVersion, LedgerUnavailableError, ledgerDbPath, openStore, retryOnBusy } from "./store.js"
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
@@ -273,4 +274,22 @@ test("an existing ledger gains the additive indexes on open (bun driver)", () =>
 	const indexes = (result.afterReopen as string[]).filter((name) => expected.includes(name))
 	expect((result.afterDrop as string[]).some((name) => expected.includes(name))).toBe(false)
 	expect(indexes.sort()).toEqual(expected)
+})
+
+test("the windowed read is hinted onto the imported index; unhinted SQL stays rowid-ordered", () => {
+	expect(readRecordsSinceSql(true)).toContain("INDEXED BY work_records_imported")
+	expect(readRecordsSinceSql(true)).toContain("ORDER BY rowid")
+	// An indexless open (a contended first open defers the additive apply) must degrade to the scan, not error.
+	expect(readRecordsSinceSql(false)).not.toContain("INDEXED BY")
+})
+
+test("the planner answers the windowed read from the index, not a full scan (bun driver)", () => {
+	const dir = agentDir()
+	// At table sizes past ~20k rows, the unhinted ORDER BY rowid read loses to a full scan without
+	// STAT4; the driver seeds 25k rows so the planner's choice is the one the soak measured.
+	const result = driver("plan-since", dir, "seed")
+	expect(result.hinted).toBe(true)
+	const plan = (result.plan as string[]).join(" ")
+	expect(plan).toContain("work_records_imported")
+	expect(plan).not.toContain("SCAN work_records")
 })

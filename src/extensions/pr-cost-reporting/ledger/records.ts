@@ -318,6 +318,31 @@ export function readStoredRecordsAsync(
 	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row, stretch)
 }
 
+/**
+ * The windowed incremental read. Without STAT4, the planner always prefers a full scan to the
+ * imported_at index because `ORDER BY rowid` would force a temp sort — the index must be hinted.
+ * The hint is chosen per connection: a ledger opened before the additive index landed (a contended
+ * first open defers it) still runs the unhinted scan instead of erroring on the missing index.
+ */
+export function readRecordsSinceSql(hint: boolean): string {
+	return `SELECT ${recordColumnsSql()} FROM work_records ${hint ? "INDEXED BY work_records_imported " : ""}WHERE imported_at >= ? ORDER BY rowid`
+}
+
+function recordColumnsSql(): string {
+	return "record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt"
+}
+
+/** Probe applied per open; statements prepared after openStore's additive apply see the index. */
+export function workRecordsImportedPresent(db: { query: <T, P>(sql: string) => { get: () => T | null | undefined } }): boolean {
+	return (
+		db
+			.query<{ name: string }, []>(
+				"SELECT name FROM sqlite_master WHERE type='index' AND name = 'work_records_imported'",
+			)
+			.get() !== undefined
+	)
+}
+
 export function readRecordsAsync(
 	agentDir: string,
 	checkBudget: () => void,
@@ -616,15 +641,12 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const allHeads = db.query<{ body: string }, []>("SELECT body FROM work_projection_head")
 	const clearRows = db.query("DELETE FROM work_projection_rows WHERE work_id = ?")
 	const clearHead = db.query("DELETE FROM work_projection_head WHERE work_id = ?")
-	const recordColumns =
-		"record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt"
+	const recordColumns = recordColumnsSql()
 	const readRecordsAll = db.query<StoredRecord, []>(`SELECT ${recordColumns} FROM work_records ORDER BY rowid`)
 	const readRecordsWork = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE work_id = ? ORDER BY rowid`,
 	)
-	const readRecordsSince = db.query<StoredRecord, [number]>(
-		`SELECT ${recordColumns} FROM work_records WHERE imported_at >= ? ORDER BY rowid`,
-	)
+	const readRecordsSince = db.query<StoredRecord, [number]>(readRecordsSinceSql(workRecordsImportedPresent(db)))
 	const readRecordsSession = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE session_id = ? ORDER BY rowid`,
 	)
