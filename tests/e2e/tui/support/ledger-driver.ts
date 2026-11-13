@@ -335,7 +335,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 			stored.map((row) => JSON.parse(row.body)),
 		)
 		const producer = "33333333-3333-4333-8333-333333333333"
-		const built = buildEvents(
+		const built = await buildEvents(
 			stored,
 			report,
 			new Map([[agent, { provider: "github", host: "github.com", id: "999", name: "fork/repo" }]]),

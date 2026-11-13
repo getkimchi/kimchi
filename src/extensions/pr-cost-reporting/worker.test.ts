@@ -488,7 +488,7 @@ describe("account-fenced reporting delivery", () => {
 			recordHashes: ["a".repeat(64)],
 		}
 		const units = [{ account: accountKey(content.account), entities: ["work"], recordHashes: group.recordHashes }]
-		vi.mocked(eventBuilder.buildEvents).mockReturnValueOnce({ accounts: [group], units, unresolved: [] })
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValueOnce({ accounts: [group], units, unresolved: [] })
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(outbox.observeEvents).toHaveBeenCalledWith(
 			directory,
@@ -1893,7 +1893,7 @@ describe("repository identity for work without a PR", () => {
 describe("prelude stretching of a big group", () => {
 	it("crossing the row budget yields in the prelude's read and parse loops", async () => {
 		await seedLinked()
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [],
 			units: [],
 			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
@@ -1980,7 +1980,7 @@ describe("incremental translation", () => {
 			observeTime: "2026-10-04T12:00:00Z",
 			coverage: { code: "fixture", count: "1" },
 		}))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [{ account: content.account, facts, recordHashes: [] }],
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
@@ -2006,7 +2006,7 @@ describe("incremental translation", () => {
 
 	it("a pass over an unresolvable group skips its full rebuild while inputs stand still", async () => {
 		await seedLinked()
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [],
 			units: [],
 			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
@@ -2033,7 +2033,7 @@ describe("incremental translation", () => {
 		// An identity lookup that keeps failing leaves the group's markers in place, so the pass runs again —
 		// but the full rebuild waits out the window while the identical inputs produce the identical outcome.
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [],
 			units: [],
 			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
@@ -2064,7 +2064,7 @@ describe("incremental translation", () => {
 	it("a corrupt stalled note discards the windows rather than freezing every pass", async () => {
 		await seedLinked()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [],
 			units: [],
 			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
@@ -2094,7 +2094,7 @@ describe("incremental translation", () => {
 	it("a stalled window stamped far into the future is pruned, not a lock-out", async () => {
 		await seedLinked()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [],
 			units: [],
 			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
@@ -2122,12 +2122,12 @@ describe("incremental translation", () => {
 	it("a later attempt that resolves the group lifts its stalled window", async () => {
 		await seedLinked()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValueOnce({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValueOnce({
 			accounts: [],
 			units: [],
 			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
 		})
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({ accounts: [], units: [], unresolved: [] })
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({ accounts: [], units: [], unresolved: [] })
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		await run()
 		const backend = backendFor(directory)
@@ -2160,7 +2160,7 @@ describe("incremental translation", () => {
 			observeTime: "2026-10-04T12:00:00Z",
 			coverage: { code: "fixture", count: "1" },
 		}))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [{ account: content.account, facts, recordHashes: [] }],
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
@@ -2207,7 +2207,7 @@ describe("incremental translation", () => {
 			observeTime: "2026-10-04T12:00:00Z",
 			coverage: { code: "fixture", count: "1" },
 		}))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [{ account: content.account, facts, recordHashes: [] }],
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
@@ -2246,7 +2246,7 @@ describe("incremental translation", () => {
 			observeTime: "2026-10-04T12:00:00Z",
 			coverage: { code: "fixture", count: "1" },
 		}))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [{ account: content.account, facts, recordHashes: [] }],
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
@@ -2267,6 +2267,15 @@ describe("incremental translation", () => {
 			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
 		expect(observed()).toEqual(entities)
 		expect(backendFor(directory).markedRecords()).toEqual([])
+	})
+
+	it("drives event translation with the stretcher the prelude uses", async () => {
+		await seedLinked()
+		respond(accepted)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const call = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)
+		expect(call?.[7]).toBeTypeOf("function")
 	})
 
 	it("rebuilds only the group of works whose records changed", async () => {
@@ -2326,7 +2335,7 @@ describe("idle reporting passes", () => {
 			scope: null,
 		}
 		await appendFile(path, `${duplicates}${JSON.stringify(tail)}\n`)
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCostsAsync")
 		await run()
 		if (kind === "new") {
 			expect(readRecords(directory)).toContainEqual(tail)
@@ -2349,7 +2358,7 @@ describe("idle reporting passes", () => {
 		await run()
 		const path = join(directory, "work-attribution", "source.jsonl")
 		const valid = (await readFile(path, "utf8")).split("\n")[0]
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCostsAsync")
 		await appendFile(path, '{"type":"request"\n')
 		await run()
 		expect(calculate).not.toHaveBeenCalled()
@@ -2370,7 +2379,7 @@ describe("idle reporting passes", () => {
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		await run()
 		await run()
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCostsAsync")
 		const blockingRead = vi.spyOn(summary, "readWorkRecords")
 		await run()
 		expect(calculate).not.toHaveBeenCalled()
