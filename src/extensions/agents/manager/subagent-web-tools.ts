@@ -14,7 +14,7 @@
  * resource toggles in both places.
  */
 
-import type { InlineExtension } from "@earendil-works/pi-coding-agent"
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "../../../resources/filter.js"
 import webFetchExtension from "../../web-fetch/index.js"
 import webSearchExtension from "../../web-search/index.js"
@@ -24,6 +24,18 @@ export const WEB_TOOL_MANAGED_FACTORIES: ManagedExtensionFactory[] = [
 	{ id: "tools.web_search", factory: webSearchExtension },
 ]
 
-export function subagentWebToolFactories(): InlineExtension[] {
-	return enabledExtensionFactories(WEB_TOOL_MANAGED_FACTORIES)
+// web-fetch's cache + Playwright browser pool are process-global module
+// singletons, torn down by the extension's session_shutdown handler. A child
+// session must never own that teardown: a subagent ending would wipe the
+// shared cache and kill the shared browser while the parent (or a sibling
+// subagent) may still be mid-fetch. The parent session keeps the default
+// (cleanup bound); children opt out.
+const childSafeWebFetch: ExtensionFactory = (pi) => webFetchExtension(pi, { cleanupOnShutdown: false })
+
+export function subagentWebToolFactories(): ExtensionFactory[] {
+	return enabledExtensionFactories(
+		WEB_TOOL_MANAGED_FACTORIES.map((entry) =>
+			entry.id === "tools.web_fetch" ? { ...entry, factory: childSafeWebFetch } : entry,
+		),
+	)
 }
