@@ -10,6 +10,7 @@ import {
 } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { isWorkSegment, type WorkSegment } from "../work-attribution.js"
+
 import { requestWorkLinks } from "./links.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object, SHA256_HEX, type WorkRecord } from "./summary.js"
@@ -567,6 +568,38 @@ export function calculatePullRequestCosts(
 	incompleteRequestIds: ReadonlySet<string> = new Set(),
 	noCharge: ReadonlyMap<string, WorkAccount> = new Map(),
 ): PullRequestCostReport {
+	const steps = calculatePullRequestCostsSteps(records, observations, incompleteRequestIds, noCharge)
+	let step = steps.next()
+	while (!step.done) step = steps.next()
+	return step.value
+}
+
+/** Breathing twin of the reporting calculation for callers that must not hold the thread. */
+export async function calculatePullRequestCostsAsync(
+	records: readonly WorkRecord[],
+	observations: readonly RequestCostObservation[],
+	incompleteRequestIds: ReadonlySet<string> = new Set(),
+	noCharge: ReadonlyMap<string, WorkAccount> = new Map(),
+	stretch: () => Promise<void> = async () => {},
+): Promise<PullRequestCostReport> {
+	const steps = calculatePullRequestCostsSteps(records, observations, incompleteRequestIds, noCharge)
+	let step = steps.next()
+	while (!step.done) {
+		await stretch()
+		step = steps.next()
+	}
+	return step.value
+}
+
+function* calculatePullRequestCostsSteps(
+	records: readonly WorkRecord[],
+	observations: readonly RequestCostObservation[],
+	incompleteRequestIds: ReadonlySet<string> = new Set(),
+	noCharge: ReadonlyMap<string, WorkAccount> = new Map(),
+): Generator<void, PullRequestCostReport> {
+	// The drain decides how much compute happens between suspensions (the
+	// prelude stretcher's 2,000-row / 50ms budget when the capture pass drives,
+	// nothing at all for the synchronous wrapper below).
 	const ownership = new Map<string, RequestOwnership>()
 	const workPulls = new Map<string, Set<string>>()
 	const pullWorks = new Map<string, Set<string>>()
@@ -585,6 +618,7 @@ export function calculatePullRequestCosts(
 	const commitRecorded = new Map<string, number>()
 	const commitOrigins = new Map<string, string>()
 	for (const row of records) {
+		yield
 		if (row.type !== "commit") continue
 		const commit = JSON.stringify([row.workId, row.repository, row.sha])
 		const recordedAt = time(row.recordedAt)
@@ -612,6 +646,7 @@ export function calculatePullRequestCosts(
 	/** Keyed by work and PR: when that work first recorded a commit linked to the PR. */
 	const firstLinked = new Map<string, number>()
 	for (const row of records) {
+		yield
 		if (row.type === "request" && typeof row.requestId === "string" && row.requestId) {
 			const owner: RequestOwnership = ownership.get(row.requestId) ?? {
 				workIds: new Set<string>(),
@@ -799,6 +834,7 @@ export function calculatePullRequestCosts(
 	const billingAccounts = new Map<string, (WorkAccount | undefined)[]>()
 	for (const [requestId, account] of noCharge) billingAccounts.set(requestId, [account])
 	for (const row of observations) {
+		yield
 		const accounts = billingAccounts.get(row.requestId) ?? []
 		accounts.push(row.account)
 		billingAccounts.set(row.requestId, accounts)
@@ -907,6 +943,7 @@ export function calculatePullRequestCosts(
 	const accountKey = (account: WorkAccount | null) =>
 		JSON.stringify(account && [account.apiUrl, account.organizationId, account.userId])
 	for (const row of requests) {
+		yield
 		for (const workId of [...row.workIds, ...(row.linkedWorkIds ?? [])]) {
 			const accounts = accountsByWork.get(workId) ?? new Map<string, WorkAccount | null>()
 			accounts.set(accountKey(row.account), row.account)

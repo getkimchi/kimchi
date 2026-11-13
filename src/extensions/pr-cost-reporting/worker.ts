@@ -12,7 +12,7 @@ import { pullRequestKey } from "../pull-request-status/links.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
-import { readWorkCostReport } from "../work-attribution/cost-sync.js"
+import { readWorkCostReportAsync } from "../work-attribution/cost-sync.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import {
 	isWorkAccount,
@@ -34,6 +34,7 @@ import {
 	readOutboxStatus,
 } from "./ledger/outbox.js"
 import { backendFor, type OutboxBatch, type RecordBackend, type StoredRecord } from "./ledger/records.js"
+import { preludeStretch } from "./prelude.js"
 import type { Acknowledgement } from "./protocol.js"
 import {
 	ACCOUNT_SCOPES,
@@ -986,22 +987,9 @@ export async function reconcileReporting(
 
 /** At most this many requests or auxiliary records commit their events in one transaction. */
 const CHUNK_UNITS = 100
-/** Rows or milliseconds of prelude work a stretch may own before the UI loop gets a turn. */
-const PRELUDE_YIELD_ROWS = 2_000
-const PRELUDE_YIELD_MS = 50
 
-/** Yields to the loop every `rows` pulled rows or `ms` of stretch time, whichever comes first. */
-export function preludeStretch(rows = PRELUDE_YIELD_ROWS, ms = PRELUDE_YIELD_MS): () => Promise<void> {
-	let pulled = 0
-	let stamp = Date.now()
-	return async () => {
-		pulled += 1
-		if (pulled < rows && Date.now() - stamp < ms) return
-		pulled = 0
-		stamp = Date.now()
-		await setImmediate()
-	}
-}
+export { preludeStretch } from "./prelude.js"
+
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
 /** The group translation in progress: units committed while its marked records stay unchanged. */
@@ -1328,7 +1316,9 @@ async function translateGroup(
 			records.push(JSON.parse(row.body) as WorkRecord)
 			await stretch()
 		}
-		const { report } = readWorkCostReport(agentDir, records)
+		// The report shares the prelude's stretch cadence: a big group breathes between the calculation's
+		// 2,000-step or ~50ms stretches instead of owning the loop end-to-end.
+		const { report } = await readWorkCostReportAsync(agentDir, records, preludeStretch())
 		const { repositories, settled: identitiesSettled } = await repositoryIdentities(
 			agentDir,
 			records,
@@ -1349,7 +1339,7 @@ async function translateGroup(
 					),
 					records: new Set(changed.keys()),
 				}
-		const built = buildEvents(
+		const built = await buildEvents(
 			stored,
 			report,
 			repositories,
@@ -1357,6 +1347,7 @@ async function translateGroup(
 			check,
 			(account, entity) => effectiveClaim(backend, account, entity),
 			touched,
+			stretch,
 		)
 		builtUnits = built.units
 		unresolved = built.unresolved.length

@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation, roundedUsd, usd } from "./costs.js"
+import {
+	calculatePullRequestCosts,
+	calculatePullRequestCostsAsync,
+	decimalNanos,
+	type RequestCostObservation,
+	roundedUsd,
+	usd,
+} from "./costs.js"
 import type { WorkRecord } from "./summary.js"
 
 const time = (minutes: number) => new Date(Date.UTC(2026, 9, 2, 10, minutes)).toISOString()
@@ -1951,5 +1958,20 @@ describe("time split across a work's PRs", () => {
 		)
 		expect(report.unallocated.shared.requestIds).toEqual([])
 		expect(calculatePullRequestCosts(records(firstListed).toReversed(), [])).toEqual(report)
+	})
+})
+
+describe("breathing twin of the reporting calculation", () => {
+	it("produces the identical report, and lets the loop breathe past the step budget", { timeout: 30_000 }, async () => {
+		// Real macrotask waits: the drain's interleaving matches the production capture pass.
+		const stretch = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+		const records = [commit(), ...Array.from({ length: 2_050 }, (_, index) => request(`req-${index}`))]
+		const observations = [charge("req-0", "1.25"), charge("req-1", null)]
+		const rejected = new Set<string>()
+		const identities = new Map()
+		const expected = calculatePullRequestCosts(records, observations, rejected, identities)
+		const actual = await calculatePullRequestCostsAsync(records, observations, rejected, identities, stretch)
+		expect(actual).toEqual(expected)
+		expect(stretch).toHaveBeenCalled()
 	})
 })
