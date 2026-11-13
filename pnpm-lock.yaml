@@ -31,6 +31,9 @@ overrides:
   vitest: ^4.1.12
   ws: ^8.21.0
   '@hono/node-server': ^2.1.3
+  '@getkimchi/kimchi-bridge>@openai/agents-core': '-'
+  '@getkimchi/kimchi-bridge>mdast-util-from-markdown': '-'
+  '@getkimchi/kimchi-bridge>shell-quote': '-'
 
 patchedDependencies:
   '@earendil-works/pi-ai@1.3.0':
@@ -78,8 +81,8 @@ importers:
         specifier: 1.3.0
         version: 1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937)
       '@getkimchi/kimchi-bridge':
-        specifier: link:../../../../kimchi-bridge/pr-cost
-        version: link:../../../../kimchi-bridge/pr-cost
+        specifier: github:getkimchi/kimchi-bridge#ea26c2fdebcff8d69b1e6216d969fcc639925ce8
+        version: https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/ea26c2fdebcff8d69b1e6216d969fcc639925ce8
       '@hyzyla/pdfium':
         specifier: ^3.0.0
         version: 3.0.0
@@ -668,6 +671,11 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@getkimchi/kimchi-bridge@https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/ea26c2fdebcff8d69b1e6216d969fcc639925ce8':
+    resolution: {tarball: https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/ea26c2fdebcff8d69b1e6216d969fcc639925ce8}
+    version: 0.1.0
+    engines: {bun: '>=1.4.0'}
 
   '@google/genai@1.52.0':
     resolution: {integrity: sha512-gwSvbpiN/17O9TbsqSsE/OzZcpv5Fo4RQjdngGgogtuB9RsyJ8ZHhX5KjHj1bp5N9snN2eK8LDGXSaWW2hof8Q==}
@@ -3922,6 +3930,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.27.7':
     optional: true
+
+  '@getkimchi/kimchi-bridge@https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/ea26c2fdebcff8d69b1e6216d969fcc639925ce8': {}
 
   '@google/genai@1.52.0(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.7))(supports-color@10.2.2)':
     dependencies:

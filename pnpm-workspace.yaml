@@ -49,6 +49,12 @@ overrides:
   # GHSA-frvp-7c67-39w9 + GHSA-rmxm-3fg6-px4f (both fixed in
   # @hono/node-server >=2.1.3, within @modelcontextprotocol/sdk's declared range)
   "@hono/node-server": ^2.1.3
+  # Kimchi compiles in only the bridge's shared work modules (its package.json
+  # `exports`), which import nothing from npm; the bridge's own test enforces
+  # that. Its runtime dependencies serve its plugins, so leave them out.
+  "@getkimchi/kimchi-bridge>@openai/agents-core": "-"
+  "@getkimchi/kimchi-bridge>mdast-util-from-markdown": "-"
+  "@getkimchi/kimchi-bridge>shell-quote": "-"
 
 patchedDependencies:
   playwright-core@1.59.1: patches/playwright-core@1.59.1.patch
