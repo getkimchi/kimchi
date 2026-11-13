@@ -1031,6 +1031,58 @@ it("withholds a receipt that was already pending when an unknown record type lat
 	expect(links().every((row) => row.workId !== pending.workId)).toBe(true)
 })
 
+it("an incremental pass over a spanning backlog fails loudly on fresh damage", async () => {
+	// 30 linkable receipts: pass 1 completes 25 and the cap leaves 5 pending, so quiet is
+	// NOT set, the incremental state is retained, and pass 2 runs the incremental branch.
+	for (let index = 0; index < 30; index++) acceptedContinuation("plan", `planner-${index}`)
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	expect(links()).toHaveLength(25)
+	fs.appendFileSync(join(dir, "work-attribution", "00000000-damaged-mid.jsonl"), "{ broken json\n")
+	await flushWorkSummaries()
+	const backend = backendFor(dir)
+	const original = backend.readRecords.bind(backend)
+	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	await expect(repair(progress)).rejects.toThrow(/invalid records/)
+	const calls = read.mock.calls
+	read.mockRestore()
+	// The rejecting pass must be the incremental branch itself, not a full rebuild.
+	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(false)
+})
+
+it("an incremental pass over a spanning backlog withholds a work named by a fresh unknown record", async () => {
+	const flows = Array.from({ length: 30 }, (_, index) => acceptedContinuation("plan", `planner-${index}`))
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	expect(links()).toHaveLength(25)
+	const remaining = flows.map((flow) => flow.workId).filter((workId) => !links().some((row) => row.workId === workId))
+	expect(remaining).toHaveLength(5)
+	// The unknown record names one of the receipts the backlog has not reached yet.
+	fs.appendFileSync(
+		join(dir, "work-attribution", "00000000-unknown-mid.jsonl"),
+		`${JSON.stringify({
+			version: 1,
+			type: "future_record_kind",
+			workId: remaining[0],
+			sessionId: "00000000-unknown-mid",
+			recordedAt: new Date().toISOString(),
+			cwd: dir,
+		})}\n`,
+	)
+	await flushWorkSummaries()
+	const backend = backendFor(dir)
+	const original = backend.readRecords.bind(backend)
+	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	await repair(progress)
+	const calls = read.mock.calls
+	read.mockRestore()
+	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(false)
+	// The named work stays unconfirmed; the other pending receipts may proceed.
+	expect(links().every((row) => row.workId !== remaining[0])).toBe(true)
+})
+
 it("reads only new ledger records since the last pass once no receipt can still link", async () => {
 	vi.useFakeTimers({ toFake: ["Date"] })
 	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))
