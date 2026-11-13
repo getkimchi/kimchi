@@ -553,8 +553,11 @@ export async function reconcileWorkContinuations(
 		progress.historyReceipts !== undefined &&
 		progress.historyCandidates !== undefined &&
 		since !== undefined &&
+		// journalStats must exist too: an empty previous map makes journalGrewOnly vacuous,
+		// undoing the rewrite detection the stats are taken for. Fail toward the full rebuild.
+		progress.journalStats !== undefined &&
 		(progress.historyRecords === undefined || parsedFingerprint.records >= progress.historyRecords) &&
-		journalGrewOnly(progress.journalStats ?? new Map(), parsedFingerprint.files)
+		journalGrewOnly(progress.journalStats, parsedFingerprint.files)
 	let index: ContinuationIndex
 	let receipts: Set<string>
 	let candidates: Map<string, { row: WorkRecord; continuation: WorkContinuation }>
