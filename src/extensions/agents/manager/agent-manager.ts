@@ -10,6 +10,7 @@ import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { type AcpSessionCallbacks, AcpSessionDetachedError } from "../../../sandbox/worker/acp-client.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
+import { createWorktree, removeWorktree, resolveRepoRoots, worktreeStatus } from "../../../shared/git/worktree.js"
 import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
@@ -321,80 +322,93 @@ export class AgentManager {
 			record.detachFromParent = undefined
 		}
 
+		// Local-run options (remote runs reuse the original options object
+		// through _runRemote; only the local path needs a cwd override).
+		const runAgentOptions: Parameters<typeof runAgent>[3] = {
+			pi,
+			model: options.model,
+			maxTurns: options.maxTurns,
+			tokenBudget: options.tokenBudget,
+			inactivityTimeout: options.inactivityTimeout,
+			maxDuration: options.maxDuration,
+			workerReport: record.taskRef
+				? {
+						isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
+						submit: (report) => {
+							const accepted = this.submitReport(id, report) != null
+							return {
+								accepted,
+								message: accepted
+									? "Agent report recorded. Worker run complete."
+									: "Agent report rejected because this worker is no longer active.",
+							}
+						},
+					}
+				: undefined,
+			hardTurnLimit: record.taskRef?.kind === "ferment_step",
+			isolated: options.isolated,
+			inheritContext: options.inheritContext,
+			thinkingLevel: options.thinkingLevel,
+			sessionFile: options.sessionFile,
+			sessionDir: options.sessionDir,
+			signal: record.abortController?.signal,
+			onToolActivity: (activity) => {
+				// Count only terminal statuses — a "pending" notification is
+				// not a completed tool use.
+				if (activity.status === "completed" || activity.status === "failed") record.toolUses++
+				options.onToolActivity?.(activity)
+			},
+			onTurnEnd: (turnCount) => {
+				record.lastTurnCount = turnCount
+				options.onTurnEnd?.(turnCount)
+			},
+			onTextDelta: options.onTextDelta,
+			onAssistantUsage: (usage) => {
+				addUsage(record.lifetimeUsage, usage)
+				options.onAssistantUsage?.(usage)
+			},
+			onCompaction: (info) => {
+				record.compactionCount++
+				this.onCompact?.(record, info)
+				options.onCompaction?.(info)
+			},
+			onRuntimeCleanupRegistered: (cleanup) => {
+				this.runtimeCleanups.set(record, cleanup)
+			},
+			onSessionCreated: (session) => {
+				record.session = session
+				if (record.pendingSteers?.length) {
+					for (const msg of record.pendingSteers) {
+						session.steer(msg).catch(() => {})
+					}
+					record.pendingSteers = undefined
+				}
+				options.onSessionCreated?.(session)
+			},
+			onSystemPrompt: (prompt) => {
+				record.systemPrompt = prompt
+			},
+		}
+
+		// Worktree isolation (slice 2) unwraps to an async provision before the
+		// run starts; the default path keeps runAgent's synchronous invocation —
+		// callers (and tests) rely on onSessionCreated / runtime-cleanup
+		// registration happening before the returned promise settles.
 		const runPromise = record.remote
 			? this._runRemote(record, prompt, options, ctx)
-			: runAgent(ctx, type, prompt, {
-					pi,
-					model: options.model,
-					maxTurns: options.maxTurns,
-					tokenBudget: options.tokenBudget,
-					inactivityTimeout: options.inactivityTimeout,
-					maxDuration: options.maxDuration,
-					workerReport: record.taskRef
-						? {
-								isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
-								submit: (report) => {
-									const accepted = this.submitReport(id, report) != null
-									return {
-										accepted,
-										message: accepted
-											? "Agent report recorded. Worker run complete."
-											: "Agent report rejected because this worker is no longer active.",
-									}
-								},
-							}
-						: undefined,
-					hardTurnLimit: record.taskRef?.kind === "ferment_step",
-					isolated: options.isolated,
-					inheritContext: options.inheritContext,
-					thinkingLevel: options.thinkingLevel,
-					sessionFile: options.sessionFile,
-					sessionDir: options.sessionDir,
-					signal: record.abortController?.signal,
-					onToolActivity: (activity) => {
-						// Count only terminal statuses — a "pending" notification is
-						// not a completed tool use.
-						if (activity.status === "completed" || activity.status === "failed") record.toolUses++
-						options.onToolActivity?.(activity)
-					},
-					onTurnEnd: (turnCount) => {
-						record.lastTurnCount = turnCount
-						options.onTurnEnd?.(turnCount)
-					},
-					onTextDelta: options.onTextDelta,
-					onAssistantUsage: (usage) => {
-						addUsage(record.lifetimeUsage, usage)
-						options.onAssistantUsage?.(usage)
-					},
-					onCompaction: (info) => {
-						record.compactionCount++
-						this.onCompact?.(record, info)
-						options.onCompaction?.(info)
-					},
-					onRuntimeCleanupRegistered: (cleanup) => {
-						this.runtimeCleanups.set(record, cleanup)
-					},
-					onSessionCreated: (session) => {
-						record.session = session
-						if (record.pendingSteers?.length) {
-							for (const msg of record.pendingSteers) {
-								session.steer(msg).catch(() => {})
-							}
-							record.pendingSteers = undefined
-						}
-						options.onSessionCreated?.(session)
-					},
-					onSystemPrompt: (prompt) => {
-						record.systemPrompt = prompt
-					},
-				})
+			: options.isolation === "worktree"
+				? (async () => {
+						const cwd = await provisionAgentWorktree(record, options, ctx)
+						return runAgent(ctx, type, prompt, cwd ? { ...runAgentOptions, cwd } : runAgentOptions)
+					})()
+				: runAgent(ctx, type, prompt, runAgentOptions)
 		// Remote runs (fresh and resumed) share one completion wiring; the
 		// local chain below is the original code, deliberately untouched.
 		const promise = record.remote
 			? this.wireRemoteCompletion(record, runPromise, { detach, maxTurns: options.maxTurns })
 			: runPromise
 					.then(
-						({
+						async ({
 							responseText,
 							session,
 							aborted,
@@ -405,11 +419,12 @@ export class AgentManager {
 							planPath,
 							autoLoadedSkills,
 						}) => {
+							const worktreeNote = await settleAgentWorktree(record)
 							if (record.status !== "stopped") {
 								record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 							}
 							record.abortReason = abortReason
-							const finalText = formatRunResultText(responseText, planPath, autoLoadedSkills)
+							const finalText = formatRunResultText(responseText, planPath, autoLoadedSkills) + worktreeNote
 							record.result = finalText
 							record.session = session
 							record.lastTurnCount = turnsUsed
@@ -426,7 +441,8 @@ export class AgentManager {
 							return finalText
 						},
 					)
-					.catch((err) => {
+					.catch(async (err) => {
+						await settleAgentWorktree(record, err)
 						if (record.status !== "stopped") {
 							record.status = "error"
 							record.error = err instanceof Error ? err.message : String(err)
@@ -1444,4 +1460,72 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 		task_ref: record.taskRef,
 		resume_attempts: record.resumeAttempts?.length ?? 0,
 	}
+}
+
+/**
+ * Provision a disposable worktree for an isolation: "worktree" run (slice 2).
+ * Returns the worktree directory, or undefined when the run needs no
+ * isolation (default, or remote — the sandbox is already isolated).
+ *
+ * The worktree is created under the main checkout's .kimchi/worktrees with a
+ * generated `agent-<shortId>-<slug>` name and registered on the record so the
+ * completion path can settle it (remove when clean, keep + report when dirty).
+ */
+async function provisionAgentWorktree(
+	record: AgentRecord,
+	options: SpawnOptions,
+	ctx: ExtensionContext,
+): Promise<string | undefined> {
+	if (options.isolation !== "worktree" || record.remote) return undefined
+	const { mainRoot } = resolveRepoRoots(ctx.cwd)
+	const created = await createWorktree({
+		mainRoot,
+		name: `agent-${record.id}-${slugify(record.type)}`,
+		baseRef: "fresh",
+	})
+	record.worktree = {
+		dir: created.path,
+		mainRoot,
+		branch: created.branch,
+		name: created.name,
+	}
+	return created.path
+}
+
+/** Agent-type → small safe slug for worktree names. */
+function slugify(type: string): string {
+	const slug = type
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+	return slug.slice(0, 24) || "agent"
+}
+
+/**
+ * Settle the record's disposable worktree after the run:
+ * - clean (no uncommitted, untracked, or unpushed work) → removed, both the
+ *   directory and the `worktree-<name>` branch;
+ * - has work → kept; returns a trailing note naming the directory and branch
+ *   so the parent agent can diff/merge/cherry-pick. On abort/error the same
+ *   rule applies (a dirty worktree is evidence, not garbage — never removed
+ *   implicitly).
+ *
+ * Returns "" when no worktree was provisioned or it was removed.
+ */
+async function settleAgentWorktree(record: AgentRecord, err?: unknown): Promise<string> {
+	const worktree = record.worktree
+	if (!worktree) return ""
+	try {
+		const status = await worktreeStatus(worktree.dir, worktree.mainRoot)
+		if (!status.dirty && !status.untracked && status.ownCommits === 0) {
+			await removeWorktree({ dir: worktree.dir, branch: worktree.branch })
+			record.worktree = undefined // only clear once the worktree is gone
+			return ""
+		}
+	} catch {
+		// A failed status read must not crash the completion path; treat as
+		// "has work" (keep) so nothing is destroyed on an ambiguous state.
+	}
+	const keptFor = err ? " (agent errored; preserved for inspection)" : ""
+	return `\n\nWorktree: ${worktree.dir} (branch ${worktree.branch}${keptFor})`
 }

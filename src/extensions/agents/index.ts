@@ -1741,6 +1741,12 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						description: "If true, agent gets no extension/MCP tools - only built-in tools.",
 					}),
 				),
+				isolation: Type.Optional(
+					Type.Literal("worktree", {
+						description:
+							"Run the agent in a disposable git worktree under .kimchi/worktrees so its file changes don't touch the main checkout. The worktree is removed after a clean run; dirty work stays and its path is reported by the agent. Overrides any persona default.",
+					}),
+				),
 				inherit_context: Type.Optional(
 					Type.Boolean({
 						description: "If true, fork parent conversation into the agent. Default: false (fresh context).",
@@ -2053,6 +2059,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 							taskRef,
 							maxDuration: resolvedConfig.maxDuration,
 							isolated,
+							isolation: resolvedConfig.isolation,
 							inheritContext,
 							thinkingLevel: thinking,
 							isBackground: true,
@@ -2204,6 +2211,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						taskRef,
 						maxDuration: resolvedConfig.maxDuration,
 						isolated,
+						isolation: resolvedConfig.isolation,
 						inheritContext,
 						thinkingLevel: thinking,
 						isBackground: false,

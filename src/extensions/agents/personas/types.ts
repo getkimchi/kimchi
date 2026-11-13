@@ -10,6 +10,17 @@ import type { LifetimeUsage } from "../manager/usage.js"
 import type { PersistedGitWorkflow } from "../remote-run-persistence.js"
 import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
 
+export interface AgentWorktreeInfo {
+	/** Absolute worktree directory. */
+	dir: string
+	/** Main checkout root the worktree was created under. */
+	mainRoot: string
+	/** Branch name, `worktree-<name>`. */
+	branch: string
+	/** Worktree name (dir basename). */
+	name: string
+}
+
 /** Thinking/reasoning level for models that support it. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 
@@ -228,6 +239,9 @@ export interface AgentRecord {
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */
 	detachFromParent?: () => void
+	/** Worktree isolation (isolation: "worktree"): the disposable worktree
+	 *  created for this run, settled (removed-or-kept) when the run ends. */
+	worktree?: AgentWorktreeInfo
 	/**
 	 * Lifetime usage breakdown, accumulated via `message_end` events. Survives
 	 * compaction. Total = input + output + cacheWrite (cacheRead deliberately
