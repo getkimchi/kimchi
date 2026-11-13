@@ -233,6 +233,84 @@ it(
 )
 
 it(
+	"replays a settled background call as terminal under the SAME live ACP id when a prompt ran between handoff and exit",
+	async () => {
+		// Wake-replay zombie regression: handoff turn ends, an unrelated
+		// prompt runs (agent_start wipes the per-turn id mappings), THEN the
+		// process exits and settles. The replay after all that must
+		// re-announce the call under the ONE id the live client already holds,
+		// terminal — a fresh id would leave a duplicate (zombie) row.
+		const COMMAND = 'while [ ! -f acp-bg-zombie ]; do sleep 0.05; done; echo ACP-BG-"ZOMBIE-b410"'
+		const fixture = await startAcpFixture({
+			artifactName: "bash-background-tool-calls-zombie",
+			responses: [
+				{ toolCalls: [{ id: "spawn", function: { name: "bash", arguments: JSON.stringify({ command: COMMAND }) } }] },
+				{ stream: ["The background command is launched."] },
+				// The in-between prompt's answer (the transcript's "Hello" turn).
+				{ stream: ["Hi!"] },
+				// Spare: the exit wakes the idle agent.
+				{ stream: ["The background command finished."] },
+			],
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const pending = prompt(fixture, sessionId, "Run the gated command in the background")
+			const handoff = await waitForSessionUpdate(
+				fixture,
+				sessionId,
+				(update) =>
+					update.sessionUpdate === "tool_call_update" &&
+					update.status === "in_progress" &&
+					(JSON.stringify(update.rawOutput) ?? "").includes('"handoff":true'),
+			)
+			const liveAcpToolCallId = handoff.toolCallId
+			expect((await pending).stopReason).toBe("end_turn")
+
+			// The prompt between handoff and exit.
+			expect((await prompt(fixture, sessionId, "Hello")).stopReason).toBe("end_turn")
+
+			// Now the process exits: the held call settles completed under the
+			// live id, and the settle fact persists WITH that id.
+			writeFileSync(join(fixture.workDir, "acp-bg-zombie"), "")
+			await waitForSessionUpdate(
+				fixture,
+				sessionId,
+				(update) =>
+					update.sessionUpdate === "tool_call_update" &&
+					update.toolCallId === liveAcpToolCallId &&
+					update.status === "completed",
+			)
+
+			// Client reload, SAME harness process: replay must re-announce the
+			// call exactly once, under the live id, terminal.
+			const updatesBeforeReload = fixture.client.sessionUpdates.length
+			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			const replayedToolCalls = fixture.client.sessionUpdates
+				.slice(updatesBeforeReload)
+				.filter(
+					(u): u is { sessionId: string; update: Extract<SessionUpdate, { sessionUpdate: "tool_call" }> } =>
+						u.sessionId === sessionId &&
+						u.update.sessionUpdate === "tool_call" &&
+						JSON.stringify(u.update.rawInput ?? {}).includes("acp-bg-zombie"),
+				)
+			expect(replayedToolCalls).toHaveLength(1)
+			expect(replayedToolCalls[0].update.toolCallId).toBe(liveAcpToolCallId)
+			expect(replayedToolCalls[0].update.status).toBe("completed")
+			// No in_progress for the call in the replay: the settled call must
+			// never resurrect as a running row.
+			expect(
+				toolCallUpdatesFor(fixture.client.sessionUpdates.slice(updatesBeforeReload), sessionId, liveAcpToolCallId).some(
+					(u) => u.status === "in_progress",
+				),
+			).toBe(false)
+		} finally {
+			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it(
 	"holds the running call across turns: recycled upstream ids get fresh ACP ids, steering works, and the later exit settles it",
 	async () => {
 		const COMMAND = 'while [ ! -f acp-bg-hold ]; do sleep 0.05; done; echo ACP-BG-"HELD-3d4f"'

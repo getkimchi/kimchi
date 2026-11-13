@@ -33,6 +33,10 @@ export type BashBackgroundSettleOutcome = {
  *  toolCallId of the held call it settles. */
 export interface BashBackgroundSettleData extends BashBackgroundSettleOutcome {
 	toolCallId: string
+	/** The ACP id the settled call was announced under. Optional: transcripts
+	 *  written before identity persistence lack it — replay falls back to a
+	 *  fresh allocation for those. */
+	acpToolCallId?: string
 }
 
 /**
