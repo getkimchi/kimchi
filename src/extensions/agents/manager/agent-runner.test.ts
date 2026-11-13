@@ -2,9 +2,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
+import type * as PiCodingAgent from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
+import { createModel } from "../../__mocks__/model-registry.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
 import * as diagnostics from "../../work-attribution/diagnostics.js"
@@ -23,7 +25,9 @@ afterEach(async () => {
 })
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
+	const { createExtensionRuntime } = await vi.importActual<typeof PiCodingAgent>("@earendil-works/pi-coding-agent")
 	return {
+		createExtensionRuntime,
 		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
 		DefaultResourceLoader: vi.fn().mockImplementation(function () {
 			return {
@@ -146,6 +150,7 @@ import {
 	type BeforeProviderHeadersEvent,
 	type CreateAgentSessionResult,
 	createAgentSession,
+	createExtensionRuntime,
 	DefaultResourceLoader,
 	type ExtensionAPI,
 	type InlineExtension,
@@ -382,6 +387,43 @@ describe("runAgent — telemetry extension", () => {
 
 	afterEach(() => {
 		vi.clearAllMocks()
+	})
+
+	it.each([
+		["kimchi-dev/upstream", "shared"],
+		["upstream", "team/shared"],
+	])("uses the persona default %s/%s instead of its parent model", async (provider, id) => {
+		const parent = createModel("shared")
+		const target = createModel(id, provider)
+		Object.assign(ctx, { model: parent })
+		ctx.modelRegistry.getAvailable.mockReturnValue([parent, target])
+		ctx.modelRegistry.find.mockImplementation((p, modelId) =>
+			[parent, target].find((model) => model.provider === p && model.id === modelId),
+		)
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ models: [`${provider}/${id}`] }))
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession({}) as unknown as AgentSession,
+			extensionsResult: { extensions: [], errors: [], runtime: createExtensionRuntime() },
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+		expect(mockCreateAgentSession.mock.calls[0]?.[0]?.model).toBe(target)
+	})
+
+	it("keeps the parent when the persona default is unavailable", async () => {
+		const parent = createModel("shared")
+		Object.assign(ctx, { model: parent })
+		ctx.modelRegistry.getAvailable.mockReturnValue([parent])
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ models: ["kimchi-dev/upstream/missing"] }))
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession({}) as unknown as AgentSession,
+			extensionsResult: { extensions: [], errors: [], runtime: createExtensionRuntime() },
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+		expect(mockCreateAgentSession.mock.calls[0]?.[0]?.model).toBe(parent)
 	})
 
 	it("passes required Kimchi extensions to DefaultResourceLoader", async () => {

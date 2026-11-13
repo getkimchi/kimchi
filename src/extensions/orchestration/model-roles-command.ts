@@ -560,7 +560,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					for (const ref of normalizeRoleModels(roles[key])) {
 						if (!seen.has(ref)) {
 							seen.add(ref)
-							const resolved = resolveModelMetadata(ref)
+							const resolved = resolveModelMetadata(ref, undefined, ctx.modelRegistry)
 							const annotation =
 								resolved?.source === "custom"
 									? ""
@@ -582,7 +582,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				if (!choice || choice === "Back") return
 
 				const ref = choice.replace(/\s*\(default\)$/, "").replace(/\s*\(missing metadata\)$/, "")
-				const existing = resolveModelMetadata(ref)
+				const existing = resolveModelMetadata(ref, undefined, ctx.modelRegistry)
 				const existingMeta: ModelCustomMetadata | undefined = existing
 					? { tier: existing.tier, description: existing.description, vision: existing.vision }
 					: undefined

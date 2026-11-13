@@ -11,11 +11,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 
 import { type Static, Type } from "typebox"
 import { Value } from "typebox/value"
 
-import { modelIdFromRef } from "../../shared/model-ref.js"
+import { findModelByRef, modelIdFromRef } from "../../shared/model-ref.js"
 import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import type { ModelTier } from "./model-registry/types.js"
 
@@ -181,11 +182,12 @@ export function deleteModelMetadata(ref: string, settingsPath?: string): void {
 
 /**
  * Unified lookup: settings metadata → builtin MODEL_CAPABILITIES → undefined
- * ref format: "provider/model-id". For builtin lookup, strip provider and use model ID.
+ * Registry lookup preserves slashes in both provider and model IDs.
  */
 export function resolveModelMetadata(
 	ref: string,
 	settingsPath?: string,
+	modelRegistry?: Pick<ModelRegistry, "getAvailable">,
 ):
 	| { source: "builtin" | "custom"; tier?: ModelTier; description?: string; vision?: boolean; reasoning?: boolean }
 	| undefined {
@@ -201,8 +203,8 @@ export function resolveModelMetadata(
 		}
 	}
 
-	// 2. Check MODEL_CAPABILITIES — strip provider prefix to get model ID
-	const modelId = modelIdFromRef(ref)
+	// 2. Prefer the registered ID; the ref alone cannot distinguish slashes in providers from model IDs.
+	const modelId = (modelRegistry && findModelByRef(modelRegistry, ref)?.id) ?? modelIdFromRef(ref)
 	const entry = MODEL_CAPABILITIES.get(modelId)
 	if (entry && entry !== "ignored") {
 		return {
@@ -221,8 +223,12 @@ export function resolveModelMetadata(
 /**
  * True if model has neither builtin nor custom metadata.
  */
-export function isModelMetadataMissing(ref: string, settingsPath?: string): boolean {
-	return resolveModelMetadata(ref, settingsPath) === undefined
+export function isModelMetadataMissing(
+	ref: string,
+	settingsPath?: string,
+	modelRegistry?: Pick<ModelRegistry, "getAvailable">,
+): boolean {
+	return resolveModelMetadata(ref, settingsPath, modelRegistry) === undefined
 }
 
 // ---------------------------------------------------------------------------
