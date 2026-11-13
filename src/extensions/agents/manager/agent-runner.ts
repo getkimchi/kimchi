@@ -972,7 +972,12 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 		deps.effectiveExtensions === true ||
 		(deps.effectiveExtensions !== false && deps.effectiveExtensions.includes("mcp"))
 	) {
-		extensionFactories.push(createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd }))
+		// Headless children: drop config warnings (no UI; console output is noise
+		// in the parent process) and connect the built-in gateway lazily so a
+		// subagent spawn never opens an eager gateway connection.
+		extensionFactories.push(
+			createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd, suppressWarnings: true, lazyGatewayConnect: true }),
+		)
 	}
 	return extensionFactories
 }
@@ -1000,6 +1005,13 @@ export async function resumeAgent(
 		onRuntimeCleanupRegistered?: (cleanup: () => void) => void
 	} = {},
 ): Promise<RunResult> {
+	// runAgentInner emits session_shutdown after every run (the per-run flush,
+	// mirroring the ACP pattern), which tears the MCP adapter's connections down
+	// terminally (its lifecycle manager cannot reconnect). A resumed session is
+	// the same AgentSession object, so restart its extensions with a fresh
+	// session_start — reason "resume", matching pi's own resumption event.
+	await session.extensionRunner?.emit({ type: "session_start", reason: "resume" })
+
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 

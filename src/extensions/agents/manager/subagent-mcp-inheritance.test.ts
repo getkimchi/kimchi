@@ -120,11 +120,12 @@ function createChildSessionHarness(
 async function startChildSession(options: {
 	cwd: string
 	ctxOverrides?: Parameters<typeof createContext>[0]
+	extensionOptions?: Parameters<typeof createKimchiMcpAdapterExtension>[0]
 }): Promise<ReturnType<typeof createExtensionApi>> {
 	const { harness, ctx } = createChildSessionHarness(options.cwd, options.ctxOverrides)
 	// Same call shape as the runner's non-isolated path:
-	// createKimchiMcpAdapterExtension({ cwd: effectiveCwd }).
-	const extension = createKimchiMcpAdapterExtension({ cwd: options.cwd })
+	// createKimchiMcpAdapterExtension({ cwd: effectiveCwd, …child options }).
+	const extension = createKimchiMcpAdapterExtension({ cwd: options.cwd, ...options.extensionOptions })
 	extension(harness.api)
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
 	return harness
@@ -186,6 +187,50 @@ describe("subagent MCP tool inheritance — real extension", () => {
 		expect(harness.getActiveToolNames()).not.toContain("mcp")
 		expect(warn).toHaveBeenCalledWith(MCP_PROJECT_TRUST_WARNING)
 		warn.mockRestore()
+	})
+
+	it("suppresses config warnings in headless children when suppressWarnings is set", async () => {
+		writeFileSync(
+			join(childCwd, ".mcp.json"),
+			JSON.stringify({ mcpServers: { hostile: { url: "https://attacker.example/mcp" } } }),
+		)
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+		await startChildSession({
+			cwd: childCwd,
+			ctxOverrides: { isProjectTrusted: vi.fn(() => false) },
+			extensionOptions: { suppressWarnings: true },
+		})
+
+		// The trust gate still fails closed (empty surface, no mcp tool) — only
+		// the console notification is dropped for the headless child.
+		expect(warn).not.toHaveBeenCalled()
+		warn.mockRestore()
+	})
+
+	it("registers the built-in gateway without keep-alive lifecycle when lazyGatewayConnect is set", async () => {
+		const { harness, ctx } = createChildSessionHarness(childCwd)
+		const emitSpy = vi.spyOn(harness.api.events, "emit")
+		vi.spyOn(console, "error").mockImplementation(() => {}) // no runtime listener answers the register request
+		const extension = createKimchiMcpAdapterExtension({
+			cwd: childCwd,
+			lazyGatewayConnect: true,
+			suppressWarnings: true,
+			builtinGateway: {
+				name: "kimchi-mcp-gateway",
+				entry: { url: "https://api.cast.ai/mcp", headers: { Authorization: "Bearer t" }, lifecycle: "keep-alive" },
+			},
+		})
+		extension(harness.api)
+		await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
+
+		const registerCall = emitSpy.mock.calls.find(([event]) => event === "pi-mcp-adapter:runtime-register:v1")
+		expect(registerCall).toBeDefined()
+		const definition = (registerCall?.[1] as { definition?: Record<string, unknown> } | undefined)?.definition
+		expect(definition?.url).toContain("api.cast.ai")
+		// The lazy child strips keep-alive: no eager connection per subagent;
+		// the adapter connects on first tool call instead.
+		expect(definition).not.toHaveProperty("lifecycle")
 	})
 
 	// Isolation is deliberately not exercised here: the runAgent mechanism tests

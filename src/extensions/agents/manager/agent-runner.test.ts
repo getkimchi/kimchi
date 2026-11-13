@@ -1319,6 +1319,24 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")
 	})
+	it("resumeAgent: re-emits session_start so extensions torn down by the run-end flush restart", async () => {
+		const emitSpy = vi.fn()
+		const session = {
+			subscribe: vi.fn(() => () => {}),
+			abort: vi.fn(),
+			steer: vi.fn(),
+			messages: [],
+			extensionRunner: { emit: emitSpy },
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockResolvedValue(undefined),
+		}
+
+		await resumeAgent(session as unknown as AgentSession, "continue", {})
+
+		expect(emitSpy).toHaveBeenCalledWith({ type: "session_start", reason: "resume" })
+	})
 })
 
 describe("runAgent — profile tool access", () => {
@@ -2908,7 +2926,11 @@ describe("buildInlineExtensionFactories", () => {
 	it("passes the effective cwd to the MCP adapter factory", () => {
 		buildInlineExtensionFactories(makeDeps({ effectiveExtensions: true, effectiveCwd: "/repo-under-test" }))
 
-		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledWith({ cwd: "/repo-under-test" })
+		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledWith({
+			cwd: "/repo-under-test",
+			suppressWarnings: true,
+			lazyGatewayConnect: true,
+		})
 	})
 
 	it("rebuilds the system prompt from the routed model before the child's first turn", async () => {
