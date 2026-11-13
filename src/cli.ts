@@ -112,6 +112,7 @@ import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import languageCommandExtension from "./extensions/language-command.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
+import codexCorrelationExtension from "./extensions/login/codex-correlation-extension.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -929,6 +930,7 @@ async function cliMain(): Promise<void> {
 				branchCommandExtension,
 				...terminalUiExtensionFactories,
 				loginExtension,
+				codexCorrelationExtension,
 				startupAuthGate,
 				shellProfileMigrationExtension,
 				// session_start handlers are awaited in order; warn after the migration dialog closes.
