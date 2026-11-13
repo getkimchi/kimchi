@@ -603,6 +603,12 @@ export async function reconcileWorkContinuations(
 		}
 		// Settled receipts must leave the pending map, or the per-pass cap counts dead work forever.
 		for (const key of done) candidates.delete(key)
+		// A work named by an unknown record type that arrived this pass must not confirm from a
+		// candidate registered before the record was known — matching the rebuild branch, which
+		// only ever adds candidates the unknown gate already cleared.
+		for (const [key, candidate] of candidates)
+			if (unknownRecords({ index, unknown: progress.historyUnknown ?? [] }, candidate.row.workId).length)
+				candidates.delete(key)
 	} else {
 		// First pass, or a rewrite invalidated the accumulated state: one full read rebuilds it.
 		const history = readContinuationHistory(agentDir, checkBudget)
