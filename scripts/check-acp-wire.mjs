@@ -12,8 +12,7 @@
  *   `_meta` keys already present at HEAD. Test files (`*.test.ts`, `*.spec.ts`)
  *   are excluded from the literal scan so a new unadvertised method cannot
  *   "self-register" by being mentioned in a test; only new wire surface trips
- *   the tripwire. `_meta` objects are found with a balanced-brace scan (the
- *   previous regex truncated on nested objects and stray literals).
+ *   the tripwire. `_meta` objects are found with a balanced-brace scan.
  * - Ambiguous cases (dynamic wake emission, session_join projection,
  *   availableCommandsRegistering outside the server) go to a warning list that
  *   must be empty for the check to pass; a green run means zero nuggets, not
@@ -54,7 +53,6 @@ function addedBlocks(diff, path) {
 			cursor = Number(m[1])
 			continue
 		}
-		// Context lines advance the cursor.
 		if (line.startsWith(" ") && curBlock) {
 			cursor++
 			continue
@@ -63,8 +61,8 @@ function addedBlocks(diff, path) {
 			curBlock.lines.push({ lineNo: cursor++, text: line.slice(1) })
 			continue
 		}
-		// Removed lines, `\ No newline`, file headers: close the block and
-		// leave the cursor alone (removed lines have no new-file line number).
+		// Removed lines, `\ No newline`, file headers: close the block.
+		// Removed lines have no line number in the new file, so the cursor stays.
 		if (curBlock) {
 			blocks.push(curBlock)
 			curBlock = null
@@ -173,10 +171,8 @@ const BUILTIN_META = new Set(["piToolCallId"])
 
 function runChecks(codeBlock, registry) {
 	const issues = []
-	// Check 1: rawInput merge / spread-filled raw payload.
 	if (/rawInput\s*:\s*\{[^}]*\.\.\./s.test(codeBlock) || /rawInput\s*:\s*(?!null)\w+\s*[,}]/s.test(codeBlock))
 		issues.push(CHECK_SPECS[0])
-	// Checks 2, 3, 5: new _meta keys, recorder payloads, ext-method tokens.
 	const nested = codeBlock.matchAll(/"_kimchi\.dev\/([^"]+)"/g)
 	for (const m of nested) if (!registry.methodNames.has(m[1])) issues.push(CHECK_SPECS[4])
 	for (const meta of metaBlocks(codeBlock)) {
@@ -191,12 +187,10 @@ function runChecks(codeBlock, registry) {
 		const key = first.quoted?.includes("/") ? outer.split("/").pop() : outer
 		if (!registry.metaKeys.has(key) && !BUILTIN_META.has(key)) issues.push(CHECK_SPECS[1])
 	}
-	// Check 4: ungated wake.
 	for (const m of codeBlock.matchAll(/triggerTurn:\s*true/g)) {
 		const window = codeBlock.slice(Math.max(0, m.index - 300), Math.min(codeBlock.length, m.index + 120))
 		if (!/backgroundRunsPermitted|session-policy|opt[ -]?in/i.test(window)) issues.push(CHECK_SPECS[3])
 	}
-	// Spread-style customMessage recorder (legacy shape).
 	if (/sendCustomMessage|notifyExtensionMessage/.test(codeBlock)) {
 		const idx = codeBlock.search(/sendCustomMessage|notifyExtensionMessage/)
 		const stmt = codeBlock.slice(Math.max(0, idx - 400), Math.min(codeBlock.length, idx + 700))
@@ -316,7 +310,6 @@ export function maybeWake() {
 				"ungated-wake",
 				"ext-method-unregistered",
 			],
-			blocksOnly: true,
 		},
 	],
 	positive: [
@@ -364,7 +357,7 @@ pi.events.emit("session_update", { _meta: { ZZZ_SESSION_META_KEY: "x" } })
 			checks: ["meta-unregistered"],
 		},
 		{
-			name: "recorder piggybacked on sendCustomMessage (display: false}",
+			name: "recorder piggybacked on sendCustomMessage (display: false)",
 			code: `
 emitSessionUpdate(sessionId, {
   update: {
@@ -504,6 +497,12 @@ for (let i = 0; i < args.length; i++) {
 	else if (args[i] === "--staged") staged = true
 }
 
+// Two-dot tree diff only: with a merge-base sha it equals `base...HEAD`;
+// with the raw ref (shallow clones, e.g. CI's default fetch-depth: 1, have
+// no merge base) it degrades to tip-to-tip, where master-ahead edits appear
+// as removals — never as fake "added" lines — so findings stay exact.
+const diffSpec = staged ? null : diffBase(baseRef)
+
 let filesToScan = []
 if (pathsFile) {
 	if (!existsSync(pathsFile)) exit(`--paths file not found: ${pathsFile}`, 2)
@@ -515,8 +514,7 @@ if (pathsFile) {
 	const out = git(["diff", "--cached", "--name-only"])
 	filesToScan = out.split("\n").filter(Boolean)
 } else {
-	const spec = diffBase(baseRef)
-	const out = git(["diff", "--name-only", `${spec}...HEAD`])
+	const out = git(["diff", "--name-only", diffSpec, "HEAD"])
 	filesToScan = out.split("\n").filter(Boolean)
 }
 
@@ -539,9 +537,7 @@ for (const filePath of filesToScan) {
 	if (!filePath.startsWith("src/") || !filePath.endsWith(".ts")) continue
 	const abs = join(REPO_ROOT, filePath)
 	if (!existsSync(abs) || !statSync(abs).isFile()) continue
-	const diffArgs = staged
-		? ["diff", "--cached", "--", filePath]
-		: ["diff", `${diffBase(baseRef)}...HEAD`, "--", filePath]
+	const diffArgs = staged ? ["diff", "--cached", "--", filePath] : ["diff", diffSpec, "HEAD", "--", filePath]
 	const diff = git(diffArgs)
 	const blocks = addedBlocks(diff, filePath)
 	for (const block of blocks) {
