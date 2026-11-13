@@ -29,6 +29,10 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			expect(prompt).toContain("orients the user")
 			expect(prompt).toContain("## Phase Management")
 
+			// Pi-authored tool guidelines are curated out of the prompt.
+			expect(prompt).not.toContain("Use read to examine files instead of cat or sed.")
+			expect(prompt).not.toContain("Use codemode to batch independent tool calls (Promise.allSettled),")
+
 			// The headless replacement never appears in an interactive session.
 			expect(prompt).not.toContain("## Autonomous Session")
 		},
