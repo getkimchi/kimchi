@@ -162,7 +162,6 @@ import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import sideChatExtension from "./extensions/side-chat/index.js"
-import { SIDE_CHAT_RESOURCE_ID } from "./extensions/side-chat/resource.js"
 import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -1054,8 +1053,11 @@ async function cliMain(): Promise<void> {
 					{ id: "tools.web_fetch", factory: webFetchExtension },
 					{ id: "tools.web_search", factory: webSearchExtension },
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
-					{ id: SIDE_CHAT_RESOURCE_ID, factory: sideChatExtension },
 				] satisfies ManagedExtensionFactory[]),
+				// Always on: /btw and the side-chat pane are core UI. The resource
+				// `extensions.side-chat` gates only the "Add to side chat" pill
+				// (inside the extension), not the side chat itself.
+				sideChatExtension,
 				modelWindowSnapshotExtension,
 				modelSwitchExtension,
 				modelListExtension,

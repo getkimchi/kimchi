@@ -206,10 +206,10 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	{
 		id: SIDE_CHAT_RESOURCE_ID,
 		kind: "extensions",
-		label: "Side chat",
+		label: 'Side chat "Add to chat" button',
 		description:
-			"Branch a side chat docked to the right of the session (/btw): quote transcript selections, then /wrap a steering prompt back to the main agent. Fullscreen TUI only.",
-		defaultEnabled: true,
+			'Show a floating "Add to side chat" button under transcript selections: clicking it quotes the selection into the side chat. The side chat itself (/btw) is always available; this only gates the button. Fullscreen TUI only.',
+		defaultEnabled: false,
 		restartRequired: true,
 	},
 	{

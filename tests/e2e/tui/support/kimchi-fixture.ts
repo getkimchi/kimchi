@@ -253,10 +253,10 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 				{
 					statusLine: { pinned: [] },
 					hideThinkingBlock: true,
-					// Keep the suite hermetic: side chat is default-on, and loading it
-					// patches InteractiveMode/TuiAltScreen prototypes and adds /btw +
-					// shortcuts to every session. Side-chat e2e opts in explicitly;
-					// the default-on path has its own test that strips this override.
+					// Keep the suite hermetic: the side-chat extension loads in every
+					// session (its harness patch is inert until a pane or pill mounts),
+					// so this override only suppresses the "Add to side chat" pill.
+					// Side-chat e2e tests that exercise the pill opt in explicitly.
 					resources: { "extensions.side-chat": false },
 					// Default the hermetic suite to regular mode: pi 1.3's fullscreen
 					// alt-screen keeps the transcript/overlays out of the terminal

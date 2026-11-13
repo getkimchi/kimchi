@@ -112,12 +112,12 @@ describe("resource definitions", () => {
 		})
 	})
 
-	it("registers side chat (/btw) as a default-on extension, like Cost per PR", () => {
+	it('registers the side chat "Add to chat" button as a default-off extension resource', () => {
 		const resource = getResourceDefinitions().find((candidate) => candidate.id === "extensions.side-chat")
 		expect(resource).toMatchObject({
 			kind: "extensions",
-			label: "Side chat",
-			defaultEnabled: true,
+			label: 'Side chat "Add to chat" button',
+			defaultEnabled: false,
 			restartRequired: true,
 		})
 		expect(resource?.experimental).not.toBe(true)

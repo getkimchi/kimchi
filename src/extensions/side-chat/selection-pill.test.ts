@@ -20,7 +20,7 @@ function setup(rect = { x: 0, y: 0, width: 60, height: 10 }) {
 			bounds: { start: { row: startRow, col: 0, scrollView }, end: { row: endRow, col: endCol, scrollView } },
 		})
 	const screen = Array.from({ length: rect.height }, () => " ".repeat(rect.width))
-	return { host, pill, frame, screen, select, onAdd }
+	return { host, pill, frame, screen, select, onAdd, scrollView }
 }
 
 const plain = (lines: string[]) => lines.map((line) => stripTerminalSequences(line))
@@ -55,6 +55,36 @@ describe("SelectionPill", () => {
 		select(0, 0, 5)
 
 		expect(pill.paint(screen, frame, 10)).toBe(screen)
+	})
+
+	it("hides when the selection scrolled out above the viewport", () => {
+		const { pill, frame, screen, select, scrollView } = setup()
+		select(1, 2, 40)
+		Object.defineProperty(scrollView, "scrollTop", { get: () => 10 })
+
+		expect(pill.paint(screen, frame, 60)).toBe(screen)
+	})
+
+	it("hides when the selection scrolled out below the viewport instead of clamping into view", () => {
+		const { pill, frame, screen, select } = setup()
+		// Viewport is 10 rows: both candidate anchor rows (below end, above start) fall outside.
+		select(15, 17, 40)
+
+		expect(pill.paint(screen, frame, 60)).toBe(screen)
+	})
+
+	it("keeps painting from the selection bounds when its text extraction is temporarily unavailable", () => {
+		// Mid-stream the previous-layout text extraction can come back empty for
+		// a frame; the pill must follow the bounds regardless, otherwise it blips.
+		const { host, pill, frame, screen, scrollView } = setup()
+		const bounds = {
+			start: { row: 1, col: 0, scrollView },
+			end: { row: 2, col: 40, scrollView },
+		}
+		vi.mocked(host.settledSelection).mockReturnValue(undefined)
+		vi.mocked(host.selectionBounds).mockReturnValue(bounds)
+
+		expect(plain(pill.paint(screen, frame, 60))[3]).toContain(LABEL)
 	})
 
 	it("adds the selection on click and swallows the release", () => {

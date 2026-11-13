@@ -5,6 +5,13 @@
  * start when there is no room below); a left click on it hands the selected
  * text over and swallows the matching release so the renderer doesn't start
  * a new selection.
+ *
+ * Painting reads the selection bounds only — never the extracted text:
+ * text extraction reads the renderer's *previous* layout and can come back
+ * empty for a frame while the transcript streams (letting the pill blip),
+ * and the text is only needed when the pill is clicked. When the anchor
+ * rows scroll out of the transcript viewport, the pill hides instead of
+ * clamping into view.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent"
@@ -33,9 +40,9 @@ export class SelectionPill {
 
 	paint(screen: string[], frame: Frame, width: number): string[] {
 		this.placed = undefined
-		const selection = this.options.host()?.settledSelection()
-		const scrollView = selection?.bounds.start.scrollView
-		if (!selection || !scrollView) return screen
+		const bounds = this.options.host()?.selectionBounds()
+		const scrollView = bounds?.start.scrollView
+		if (!bounds || !scrollView) return screen
 		const excluded = this.options.excludeWithin()
 		if (excluded) {
 			const excludedBox = findBox(frame.root, (box) => box.component === excluded)
@@ -46,14 +53,15 @@ export class SelectionPill {
 		const top = rect.y
 		const bottom = top + rect.height - 1
 		const toScreen = (row: number) => top + row - scrollView.scrollTop
-		let row = toScreen(selection.bounds.end.row) + 1
-		if (row > bottom) row = toScreen(selection.bounds.start.row) - 1
-		if (row < top || row > bottom) row = Math.max(top, Math.min(bottom, toScreen(selection.bounds.end.row)))
+		let row = toScreen(bounds.end.row) + 1
+		if (row > bottom) row = toScreen(bounds.start.row) - 1
+		// Anchor scrolled out of the transcript viewport: hide, don't float.
+		if (row < top || row > bottom) return screen
 		const label = this.label()
 		const labelWidth = visibleWidth(label)
 		const maxColumn = rect.x + rect.width - labelWidth - 1
 		if (maxColumn < rect.x) return screen
-		const column = Math.max(rect.x, Math.min(maxColumn, rect.x + selection.bounds.end.col - labelWidth + 1))
+		const column = Math.max(rect.x, Math.min(maxColumn, rect.x + bounds.end.col - labelWidth + 1))
 		const result = [...screen]
 		result[row] = compositeKeepingCursor(result[row] ?? "", label, column, labelWidth, width)
 		this.placed = { row, column, width: labelWidth }

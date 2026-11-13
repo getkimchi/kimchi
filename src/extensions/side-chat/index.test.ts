@@ -10,6 +10,13 @@ const live = vi.hoisted(() => ({ compositors: 0, mouseInterceptors: 0, harnessIn
 /** Set to make getSideChatHost return a fake host (e.g. a non-fullscreen one). */
 const hostRef = vi.hoisted(() => ({ host: undefined as unknown }))
 const acpMode = vi.hoisted(() => ({ current: false }))
+/** The `extensions.side-chat` resource state the extension's factory reads. */
+const pillResource = vi.hoisted(() => ({ enabled: true }))
+
+vi.mock("../../resources/store.js", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	isResourceEnabled: () => pillResource.enabled,
+}))
 
 vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
 	...(await importOriginal<typeof AcpState>()),
@@ -87,6 +94,25 @@ describe("side chat extension", () => {
 			compositors: 0,
 			mouseInterceptors: 0,
 		})
+	})
+
+	it('registers no pill when the "Add to chat" button resource is off, but keeps /btw and the shortcuts', async () => {
+		pillResource.enabled = false
+		try {
+			const pi = setup()
+
+			expect(pi.getRegisteredShortcutKeys()).toEqual(["ctrl+alt+left", "ctrl+alt+right"])
+			expect(pi.registerCommand.mock.calls.map(([name]) => name)).toEqual(["btw"])
+
+			await pi.emit("session_start", { type: "session_start", reason: "startup" }, createContext())
+
+			expect({ compositors: live.compositors, mouseInterceptors: live.mouseInterceptors }).toEqual({
+				compositors: 0,
+				mouseInterceptors: 0,
+			})
+		} finally {
+			pillResource.enabled = true
+		}
 	})
 })
 
