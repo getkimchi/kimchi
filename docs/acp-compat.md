@@ -78,7 +78,11 @@ when v2 stabilizes.)
 
 - **ACP sessions broadcast.** Multiple processes attach to one pi session, and a pi
   session also runs with no ACP head (TUI/headless/workers). Nothing on the wire is
-  per-client.
+  per-client — and that runs through the agent loop too: run chaining, abort order,
+  steer queueing, and terminal stop reasons all reach clients as typed protocol
+  events, whether anyone changed the loop or just mis-modeled what it already does
+  (#730, #1125, #1161). Tunings made for the TUI's affordances (free text,
+  tolerated markers, a stop button) do not transfer.
 - **ACP is all-or-nothing.** A client can't implement half the protocol; an old client
   must get the old protocol, complete and unchanged.
 - **Replay is wire-visible.** Whatever replay attaches to historical blocks reaches the
@@ -106,7 +110,8 @@ when v2 stabilizes.)
    must map belong in the spec'd `name` field (or registered `_meta`), never encoded
    into `title`.
 3. **Scope checklist for any agent-side feature.** Walk before implementing: main-turn
-   emissions? work outside turns (wakes, idle keys, completion logic)? artifacts?
+   emissions? work outside turns (wakes, idle keys, completion logic)? run-loop
+   semantics (chained runs, abort order, terminal stop reasons)? artifacts?
    replay/time-travel? context injection (`sendMessage`/`sendCustomMessage`)? permission
    prompts? ext-methods? ext-notifications? Each "yes" is another surface where rules 1
    and 2 must hold.
