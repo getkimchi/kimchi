@@ -24,6 +24,8 @@ export type CommandHookEventName =
 	| "SubagentStop"
 	| "Notification"
 	| "SessionEnd"
+	| "WorktreeCreate"
+	| "WorktreeRemove"
 
 /** Every hook event the command-hook adapter machinery can drive. */
 export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
@@ -47,6 +49,8 @@ export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
 	"SubagentStop",
 	"Notification",
 	"SessionEnd",
+	"WorktreeCreate",
+	"WorktreeRemove",
 ]
 
 export interface CommandHookAdapterDefinition {

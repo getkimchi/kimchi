@@ -11,8 +11,10 @@ import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { type AcpSessionCallbacks, AcpSessionDetachedError } from "../../../sandbox/worker/acp-client.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import { createWorktree, removeWorktree, resolveRepoRoots, worktreeStatus } from "../../../shared/git/worktree.js"
+import { emitWorktreeHook } from "../../../worktree-hooks.js"
 import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
+import { trackWorktreeEvent, trySessionId } from "../../telemetry/index.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
@@ -1489,6 +1491,14 @@ async function provisionAgentWorktree(
 		branch: created.branch,
 		name: created.name,
 	}
+	// Inside a live session the project is trusted; fire-and-forget so hook
+	// latency never delays the agent's first turn.
+	void emitWorktreeHook(
+		"WorktreeCreate",
+		{ name: created.name, dir: created.path, branch: created.branch, mainRoot, kind: "agent" },
+		true,
+	)
+	trackWorktreeEvent("created", { source: "agent", named: true }, trySessionId(ctx))
 	return created.path
 }
 
@@ -1520,12 +1530,15 @@ async function settleAgentWorktree(record: AgentRecord, err?: unknown): Promise<
 		if (!status.dirty && !status.untracked && status.ownCommits === 0) {
 			await removeWorktree({ dir: worktree.dir, branch: worktree.branch })
 			record.worktree = undefined // only clear once the worktree is gone
+			void emitWorktreeHook("WorktreeRemove", { ...worktree, kind: "agent" }, true)
+			trackWorktreeEvent("removed", { source: "agent", named: true, had_work: false })
 			return ""
 		}
 	} catch {
 		// A failed status read must not crash the completion path; treat as
 		// "has work" (keep) so nothing is destroyed on an ambiguous state.
 	}
+	trackWorktreeEvent("kept", { source: "agent", named: true, had_work: true })
 	const keptFor = err ? " (agent errored; preserved for inspection)" : ""
 	return `\n\nWorktree: ${worktree.dir} (branch ${worktree.branch}${keptFor})`
 }

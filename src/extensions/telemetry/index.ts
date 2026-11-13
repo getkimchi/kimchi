@@ -326,6 +326,36 @@ export function trackRemoteExecution(
 }
 
 // ---------------------------------------------------------------------------
+// Worktree lifecycle tracking
+// ---------------------------------------------------------------------------
+
+export type WorktreeEventKind = "created" | "kept" | "removed" | "pruned"
+
+/** Attributes deliberately exclude paths/names — worktree and branch names can
+ *  carry user identifiers. `named` captures intent without the name. */
+export interface WorktreeEventAttrs {
+	/** user = --worktree / EnterWorktree / CLI subcommand; agent = subagent isolation. */
+	source: "user" | "agent"
+	/** True when the worktree got a user-chosen (or agent-chosen) name. */
+	named: boolean
+	/** Set on kept/removed: the worktree held uncommitted or unpushed work. */
+	had_work?: boolean
+	/** Set on created: the session resumed an existing worktree session. */
+	resumed?: boolean
+}
+
+/**
+ * Track a worktree lifecycle event. Resolves the calling session's telemetry
+ * context; pre-session callers (CLI subcommands) silently no-op when no
+ * session has initialized telemetry.
+ */
+export function trackWorktreeEvent(kind: WorktreeEventKind, attrs: WorktreeEventAttrs, sessionId?: string): void {
+	const ctx = resolveSessionTelemetryCtx(sessionId)
+	if (!isCtxEnabled(ctx)) return
+	ctx.emit(`worktree.${kind}`, { ...attrs })
+}
+
+// ---------------------------------------------------------------------------
 // Ferment domain event handlers (subscribed via pi.events)
 // ---------------------------------------------------------------------------
 

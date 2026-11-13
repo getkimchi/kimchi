@@ -21,6 +21,7 @@ import { runSetup } from "./setup.js"
 import { runSetupTools } from "./setup-tools.js"
 import { runUpdate } from "./update.js"
 import { runVersion } from "./version.js"
+import { runWorktree } from "./worktree.js"
 
 export const COMMANDS: CommandDefinition[] = [
 	{ name: "setup", summary: "Run the interactive setup wizard", run: runSetup },
@@ -47,6 +48,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "mcp", summary: "MCP server utilities (probe and diagnostics)", run: runMcp },
 	{ name: "memory", summary: "Manage persistent memory (list, search, delete, reset)", run: runMemory },
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
+	{ name: "worktree", summary: "Manage kimchi git worktrees (list|remove|prune)", run: runWorktree },
 ]
 
 const COMMAND_NAMES = new Set(COMMANDS.map((c) => c.name))

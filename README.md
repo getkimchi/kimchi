@@ -54,6 +54,18 @@ kimchi         # launch the coding agent
 
 Run `kimchi --help` to see all available subcommands and flags.
 
+## Git worktrees
+
+Work in an isolated git worktree without touching your main checkout:
+
+```bash
+kimchi --worktree fix-auth    # session runs in .kimchi/worktrees/fix-auth (branch worktree-fix-auth)
+kimchi worktree list          # name, status, branch, path
+kimchi worktree prune         # drop clean leftovers
+```
+
+Anonymous sessions (`kimchi --worktree` with no name) clean up after themselves when they leave no work; named ones ask on exit. Subagents can run in disposable worktrees too via the Agent tool's `isolation: "worktree"`, and a `.worktreeinclude` file in the main checkout carries project config (e.g. `.kimchi/config.json`) into new worktrees. See [docs/worktrees.md](docs/worktrees.md).
+
 ## Models
 
 ### Model selection

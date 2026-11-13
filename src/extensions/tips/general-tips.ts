@@ -52,6 +52,16 @@ export const GENERAL_TIPS = [
 		message: "Resume the latest session with `kimchi --continue`.",
 	},
 	{
+		id: "worktree",
+		scope: "general",
+		message: "Start in a scratch worktree: `kimchi --worktree <name>`.",
+	},
+	{
+		id: "agent-worktree-isolation",
+		scope: "general",
+		message: 'Isolate subagents in worktrees: Agent `isolation: "worktree"`.',
+	},
+	{
 		id: "named-branch",
 		scope: "general",
 		message: "Name a branch with `/branch <name>`; resume it with `-r <id>`.",

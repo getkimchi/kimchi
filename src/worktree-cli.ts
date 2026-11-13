@@ -23,6 +23,7 @@ import {
 	WorktreeError,
 	worktreeStatus,
 } from "./shared/git/worktree.js"
+import { emitWorktreeHook } from "./worktree-hooks.js"
 
 export const KIMCHI_WORKTREE_ENV = "KIMCHI_WORKTREE"
 export const KIMCHI_WORKTREE_MAIN_ENV = "KIMCHI_WORKTREE_MAIN"
@@ -98,6 +99,16 @@ export async function ensurePreMainWorktree(opts: {
 		} catch {
 			// Trust seeding is best-effort: a failure must not fail the session.
 		}
+	}
+
+	// WorktreeCreate hooks fire only for a truly new worktree (reuse stays
+	// quiet). best-effort: emitWorktreeHook never throws.
+	if (!reuseExisting) {
+		await emitWorktreeHook(
+			"WorktreeCreate",
+			{ name: created.name, dir: created.path, branch: created.branch, mainRoot, kind: "user" },
+			launchTrusted,
+		)
 	}
 
 	// Everything downstream (pi's main(), session dir, LSP) reads process.cwd(),

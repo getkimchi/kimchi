@@ -16,6 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 import { WORKTREE_BRANCH_PREFIX } from "../shared/git/worktree.js"
 import { KIMCHI_WORKTREE_ENV, KIMCHI_WORKTREE_MAIN_ENV } from "../worktree-cli.js"
+import { trackWorktreeEvent, trySessionId } from "./telemetry/index.js"
 
 export const KIMCHI_WORKTREE_ENTRY_TYPE = "kimchi_worktree"
 export const KIMCHI_WORKTREE_SCHEMA_VERSION = 1
@@ -76,9 +77,14 @@ export function createWorktreeSessionBindingExtension(
 	const settled = (): Promise<void> => Promise.all([...pending]).then(() => undefined)
 
 	const extension = (pi: ExtensionAPI): void => {
-		pi.on("session_start", () => {
+		pi.on("session_start", (event, ctx) => {
 			const entry = resolveEntry()
 			if (!entry) return
+			trackWorktreeEvent(
+				"created",
+				{ source: "user", named: entry.named, resumed: event?.reason === "resume" },
+				trySessionId(ctx),
+			)
 			const append = Promise.resolve()
 				.then(() => pi.appendEntry(KIMCHI_WORKTREE_ENTRY_TYPE, entry))
 				.catch((err: unknown) => {

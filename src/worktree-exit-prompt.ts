@@ -15,7 +15,7 @@
 
 import { existsSync } from "node:fs"
 import { confirm, isCancel, log } from "@clack/prompts"
-
+import { trackWorktreeEvent } from "./extensions/telemetry/index.js"
 import {
 	removeWorktree,
 	resolveRepoRoots,
@@ -23,6 +23,17 @@ import {
 	WorktreeError,
 	worktreeStatus,
 } from "./shared/git/worktree.js"
+import { emitWorktreeHook, type WorktreeHookSubject } from "./worktree-hooks.js"
+
+function exitHookSubject(env: ExitPromptEnvironment): WorktreeHookSubject {
+	return {
+		name: env.name,
+		dir: env.dir,
+		branch: `${WORKTREE_BRANCH_PREFIX}${env.name}`,
+		mainRoot: env.mainRoot,
+		kind: "user",
+	}
+}
 
 export interface ExitPromptEnvironment {
 	/** The worktree directory. */
@@ -91,6 +102,8 @@ export async function promptWorktreeExit(env: ExitPromptEnvironment): Promise<Ex
 	if (!env.named && !hasWork) {
 		try {
 			await removeWorktree({ dir: env.dir, branch: `${WORKTREE_BRANCH_PREFIX}${env.name}` })
+			await emitWorktreeHook("WorktreeRemove", exitHookSubject(env), true)
+			trackWorktreeEvent("removed", { source: "user", named: env.named, had_work: false })
 		} catch {
 			// Removal is best-effort at exit.
 		}
@@ -107,6 +120,7 @@ export async function promptWorktreeExit(env: ExitPromptEnvironment): Promise<Ex
 		if (!env.named) {
 			log.info(`Worktree ${env.name} kept. Resume it later with: kimchi --worktree ${env.name} --resume`)
 		}
+		trackWorktreeEvent("kept", { source: "user", named: env.named, had_work: hasWork })
 		return { action: "keep", resumeHint: !env.named }
 	}
 
@@ -123,6 +137,8 @@ export async function promptWorktreeExit(env: ExitPromptEnvironment): Promise<Ex
 
 	try {
 		await removeWorktree({ dir: env.dir, branch: `${WORKTREE_BRANCH_PREFIX}${env.name}`, force: hasWork })
+		await emitWorktreeHook("WorktreeRemove", exitHookSubject(env), true)
+		trackWorktreeEvent("removed", { source: "user", named: env.named, had_work: hasWork })
 		log.info(`Removed worktree ${env.name}`)
 		return { action: "remove", resumeHint: false }
 	} catch (err) {
