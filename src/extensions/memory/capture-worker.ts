@@ -74,6 +74,7 @@ import {
 	MEMORY_DRAIN_CONCURRENCY,
 	MEMORY_DRAIN_HARD_TIMEOUT_MS,
 	MEMORY_DRAIN_INACTIVITY_MS,
+	MEMORY_DRAIN_JOB_BATCH,
 	MEMORY_FACT_MAX_CHARS,
 	MEMORY_SUPERSEDE_BATCH_FACTS,
 	MEMORY_USER_ID,
@@ -1436,6 +1437,12 @@ export interface RunCaptureWorkerOptions {
 	drainInactivityMs?: number
 	/** Heartbeat hook: invoked as each window settles and each job commits. */
 	onProgress?: () => void
+	/** Internal: job files already processed by THIS worker run (committed,
+	 * quarantined, or kept-for-retry). runCaptureWorker's re-drain loop
+	 * skips them so retry cadence stays per-spawn, not intra-drain — a
+	 * poison/flaky job must not burn all of its attempt budget in one run.
+	 */
+	processed?: Set<string>
 	/** Injectable for tests — the drain trace recorder. `null` disables
 	 * tracing explicitly; when absent the drain creates one itself
 	 * (honouring KIMCHI_MEMORY_TRACE_DRAINS). */
@@ -1539,14 +1546,18 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 			const pendingDir = join(defaultMemoryDir(), "pending")
 			const pendingNames = (): Set<string> =>
 				new Set(existsSync(pendingDir) ? readdirSync(pendingDir).filter((n) => n.endsWith(".json")) : [])
-			const seen = pendingNames() // pre-drain: anything appearing LATER is fresh
 			let captured = 0
-			// Drain, then keep re-listing mid-drain arrivals until the queue
-			// is EMPTY — with the inactivity watchdog a long catch-up chain
-			// is safe (replaces the fixed 3-pass cap). The abort escapes it.
+			const processed = new Set<string>()
+			// Drain, then keep re-draining until the pending/ queue is EMPTY —
+			// the drain now waves through the backlog in bounded batches, so a
+			// deep queue converts to steady commit throughput instead of one
+			// monolithic pass. `processed` keeps each job to one attempt per
+			// worker run (retry cadence is per-spawn); when nothing new is
+			// left to attempt the loop exits even with files still pending.
 			while (true) {
 				captured += await drainPendingJobs(dbPath, {
 					...options,
+					processed,
 					onProgress: () => {
 						heartbeat()
 						options.onProgress?.()
@@ -1555,9 +1566,8 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 					trace,
 				})
 				if (abort.signal.aborted) break
-				const fresh = [...pendingNames()].filter((n) => !seen.has(n))
-				if (fresh.length === 0) break
-				for (const n of fresh) seen.add(n)
+				const remaining = [...pendingNames()].filter((n) => !processed.has(join(pendingDir, n)))
+				if (remaining.length === 0) break
 			}
 			return captured
 		} finally {
@@ -1666,14 +1676,22 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const jobFiles = readdirSync(pendingDir)
 		.filter((name) => name.endsWith(".json"))
 		.map((name) => join(pendingDir, name))
+		.filter((p) => !options.processed?.has(p))
 		.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs)
+
+	// Wave cap: a monolithic wave scales its commit-latency lineely with
+	// backlog size while inflow keeps arriving — the backlog CAN'T be
+	// out-pulled. Batching to a few-minute wave means steady commit
+	// throughput; leftovers surface in the runCaptureWorker re-drain loop.
+	const batch = Math.max(1, Number(process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH) || MEMORY_DRAIN_JOB_BATCH)
+	const batched = jobFiles.slice(0, batch)
 
 	// Phase A — sequential claim pass (fast, no LLM).
 	const hashes = loadHashes()
 	const claimed = new Set<string>()
 	const plans: JobPlan[] = []
 	let failed = 0
-	for (const jobFile of jobFiles) {
+	for (const jobFile of batched) {
 		try {
 			const plan = planJob(jobFile, hashes, claimed)
 			if (plan) plans.push(plan)
@@ -1683,6 +1701,9 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 				`[memory-capture] job ${basename(jobFile)} failed (file left for retry):`,
 				err instanceof Error ? err.message : err,
 			)
+		} finally {
+			// One attempt per job per drain — retry cadence is per-spawn.
+			options.processed?.add(jobFile)
 		}
 	}
 	if (plans.length === 0) {

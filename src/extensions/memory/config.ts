@@ -76,6 +76,16 @@ export const MEMORY_DRAIN_CONCURRENCY = 6
 export const MEMORY_DRAIN_COMMIT_CONCURRENCY = 4
 
 /**
+ * Jobs per drain wave (phase A claim pass). A monolithic wave's
+ * commit latency scales with the whole backlog while inflow keeps
+ * arriving — with a deep queue the drain can never out-pull it.
+ * Bounded waves keep commit throughput steady; leftovers surface in
+ * the holder's re-drain loop (which now runs until pending/ is
+ * empty). Override: KIMCHI_MEMORY_DRAIN_JOB_BATCH.
+ */
+export const MEMORY_DRAIN_JOB_BATCH = 96
+
+/**
  * Facts per batched supersede judge call (the pipelined worker's phase C):
  * one judge pass per store across the whole drain, the facts listed
  * chronologically — bounds the judge prompt size while keeping a single
