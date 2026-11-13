@@ -187,9 +187,6 @@ Earlier instances of the same class, all fixed after the fact:
   carried partial (usually empty) arguments until post-approval re-send; clients
   rendered edit cards with no path while the user was being asked to approve them.
   Rule 2's "every emission path" wording exists because of this.
-- **Command-palette broadcast storm** (#1251). Skill-watcher debounce windows each
-  re-broadcast an identical `available_commands_update` to every attached session:
-  one deliberate change, three wire notifications per client.
 - **`session/cancel` lost in pi-mono's pre-run window** (#1630). A cancel landing
   before the run's AbortController existed was silently dropped; the turn streamed
   to completion (~60 s) and the client's prompt request timed out instead of
