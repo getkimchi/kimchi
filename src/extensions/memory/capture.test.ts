@@ -13,7 +13,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -27,6 +27,7 @@ import {
 } from "./capture.js"
 import {
 	ASSISTANT_FACTS_SYSTEM_PROMPT,
+	applyDerivedTags,
 	type CaptureBackend,
 	type CaptureMessage,
 	chatJson,
@@ -36,20 +37,69 @@ import {
 	factTokens,
 	isAttributedNearDuplicate,
 	isDurableFact,
+	type JobPlan,
+	keepForStore,
 	mapWithConcurrency,
 	messageHash,
 	normalizeFactText,
 	PoisonExtractionError,
 	parseIdArray,
 	parseTaggedFacts,
+	RECEIPTS_EXTRACTION_SUFFIX,
+	receiptsEnabled,
+	routeTaskFacts,
 	runCaptureWorker,
+	STRICT_NOISE_FACT_PATTERNS,
 	SUPERSEDE_SYSTEM_PROMPT,
+	splitDerivedTag,
+	strictNoiseEnabled,
 	stripAttribution,
+	taskScopeEnabled,
 	tokenJaccard,
 	windowByBudget,
 } from "./capture-worker.js"
+import {
+	ADD_FAILURE_MAX_ATTEMPTS,
+	defaultMemoryDir,
+	MEMORY_CAPTURE_INCREMENTAL_MESSAGES,
+	MEMORY_CAPTURE_WINDOW_CHARS,
+	MEMORY_FACT_MAX_CHARS,
+} from "./config.js"
+import type { DecisionGateOptions } from "./decision-gate.js"
+import { buildValuationState, TRIAGE_QUESTION_NAMES } from "./gates.js"
+import { acquireCaptureLock } from "./lock.js"
+import { readTraceEvents, tracesDir } from "./trace.js"
+import { usageLedgerPath } from "./usage-ledger.js"
 
 const msg = (role: "user" | "assistant", content: string): CaptureMessage => ({ role, content })
+
+/** Triage stub answering every question of the request with "definitely not durable" —
+ * old-styled single-name responses would throw inside decide()
+ * (missing per-question answers) and flip the drain into fail-open extraction,
+ * defeating exactly the tests these stubs serve. */
+function neverDurableTriage(): typeof fetch {
+	return vi.fn(
+		async (_input: unknown, init: RequestInit | undefined) =>
+			new Response(
+				JSON.stringify(
+					(() => {
+						const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+						const answers: Record<string, unknown> = {}
+						for (const name of Object.keys(body.questions)) {
+							answers[name] = {
+								type: "choice",
+								choice: "no",
+								probabilities: { yes: 0.01, no: 0.99 },
+								confidence: 0.99,
+							}
+						}
+						return { answers, usage: { input_tokens: 100, output_tokens: 0 } }
+					})(),
+				),
+				{ status: 200 },
+			),
+	) as unknown as typeof fetch
+}
 
 // child_process is module-mocked so the spawn-error test can emit a fake
 // 'error' event; spawnSync (scope.ts's git parsing) stays real.
@@ -70,7 +120,14 @@ describe("spawnCaptureWorker (error listener)", () => {
 			// An async spawn failure: emitting 'error' with no listener throws
 			// (EventEmitter semantics) and would crash the harness process.
 			expect(() => child.emit("error", new Error("spawn ENOENT"))).not.toThrow()
-			expect(consoleError).toHaveBeenCalledWith("[memory] capture worker spawn failed:", "spawn ENOENT")
+			expect(consoleError).toHaveBeenCalledWith(
+				expect.stringMatching(/^\[memory\] capture worker spawn pid=.*failed:$/),
+				"spawn ENOENT",
+			)
+			// The spawn event itself is now visible in session stderr (attempt
+			// logs): a worker that never starts leaves exactly one evidence line.
+			child.emit("spawn")
+			expect(consoleError).toHaveBeenCalledWith(expect.stringMatching(/^\[memory\] capture worker spawn pid=\? cmd=6$/))
 			expect(unref).toHaveBeenCalled()
 		} finally {
 			consoleError.mockRestore()
@@ -115,7 +172,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("KIMCHI_MEMORY_CAPTURE=off: no handlers registered, no job files, no spawns", () => {
 		process.env.KIMCHI_MEMORY_CAPTURE = "off"
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true, "capture-sess")
+		wireMemoryCapture(api, () => true, undefined, "capture-sess")
 		// The gate returns before registering: no handlers exist at all.
 		expect(() => getHandler("session_shutdown")).toThrow()
 		expect(() => getHandler("session_before_compact")).toThrow()
@@ -128,7 +185,7 @@ describe("wireMemoryCapture — capture kill-switch", () => {
 	it("default (unset) keeps normal capture", () => {
 		delete process.env.KIMCHI_MEMORY_CAPTURE
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true, "capture-sess")
+		wireMemoryCapture(api, () => true, undefined, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -172,8 +229,8 @@ describe("windowByBudget", () => {
 
 	it("uses the configured budget by default", () => {
 		const messages = Array.from({ length: 5 }, () => msg("user", "z".repeat(600)))
-		// 600 each, 2000 default: three fit (1800), the fourth overflows.
-		expect(windowByBudget(messages).map((w) => w.length)).toEqual([3, 2])
+		// The default is the config constant — same packing as an explicit call.
+		expect(windowByBudget(messages)).toEqual(windowByBudget(messages, MEMORY_CAPTURE_WINDOW_CHARS))
 	})
 
 	it("returns no windows for empty input", () => {
@@ -218,7 +275,7 @@ describe("incrementalCapture", () => {
 	it("does not spawn below the threshold", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
-		incrementalCapture([msgEntry("one"), msgEntry("two")], state, "/test/cwd", "capture-sess", spawn)
+		incrementalCapture([msgEntry("one"), msgEntry("two")], state, "/test/cwd", spawn, "capture-sess")
 		expect(spawn).not.toHaveBeenCalled()
 		expect(state.spawnedCount).toBe(0)
 	})
@@ -226,23 +283,26 @@ describe("incrementalCapture", () => {
 	it("spawns the batch at the threshold and advances the mark", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
-		const entries = Array.from({ length: 10 }, (_, i) => msgEntry(`m${i}`))
-		incrementalCapture(entries, state, "/test/cwd", "capture-sess", spawn)
+		const entries = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(1)
-		expect((spawn.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(10)
-		expect(state.spawnedCount).toBe(10)
-		// Below threshold again until 10 more accumulate.
-		incrementalCapture([...entries, msgEntry("one more")], state, "/test/cwd", "capture-sess", spawn)
+		expect((spawn.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
+		expect(state.spawnedCount).toBe(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
+		// Below threshold again until another threshold-sized span accumulates.
+		incrementalCapture([...entries, msgEntry("one more")], state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(1)
 	})
 
 	it("batches are non-overlapping across spawns", () => {
 		const state = createIncrementalCaptureState()
 		const spawn = vi.fn()
-		const first = Array.from({ length: 10 }, (_, i) => msgEntry(`a${i}`))
-		incrementalCapture(first, state, "/test/cwd", "capture-sess", spawn)
-		const second = [...first, ...Array.from({ length: 12 }, (_, i) => msgEntry(`b${i}`))]
-		incrementalCapture(second, state, "/test/cwd", "capture-sess", spawn)
+		const first = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES }, (_, i) => msgEntry(`a${i}`))
+		incrementalCapture(first, state, "/test/cwd", spawn)
+		const second = [
+			...first,
+			...Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES + 2 }, (_, i) => msgEntry(`b${i}`)),
+		]
+		incrementalCapture(second, state, "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
 		const secondBatch = (spawn.mock.calls[1] as CaptureMessage[][])[0]
 		expect(secondBatch.every((m) => m.content.startsWith("b"))).toBe(true)
@@ -250,9 +310,9 @@ describe("incrementalCapture", () => {
 
 	it("a fresh state re-derives from zero — the worker ledger dedupes", () => {
 		const spawn = vi.fn()
-		const entries = Array.from({ length: 15 }, (_, i) => msgEntry(`m${i}`))
-		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", "capture-sess", spawn)
-		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", "capture-sess", spawn)
+		const entries = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES + 5 }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
+		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
 	})
 })
@@ -295,12 +355,17 @@ describe("extractMessages (user + gated assistant)", () => {
 		expect(extractMessages([entry])).toEqual([{ role: "user", content: "blocky plain" }])
 	})
 
-	it("excludes thinking blocks from the extracted text", () => {
+	it("includes thinking blocks under the [internal reasoning] marker", () => {
 		const entry = msgEntry("assistant", [
 			{ type: "thinking", text: "internal reasoning about the approach" },
 			{ type: "text", text: "The recipe uses 3 eggs." },
 		])
-		expect(extractMessages([entry])).toEqual([{ role: "assistant", content: "The recipe uses 3 eggs." }])
+		expect(extractMessages([entry])).toEqual([
+			{
+				role: "assistant",
+				content: "The recipe uses 3 eggs.\n\n[internal reasoning]: internal reasoning about the approach",
+			},
+		])
 	})
 
 	it("excludes assistant turns containing tool-call blocks (work product)", () => {
@@ -319,9 +384,97 @@ describe("extractMessages (user + gated assistant)", () => {
 		expect(messages[0]?.content.startsWith("The answer is 3 eggs.")).toBe(true)
 	})
 
-	it("excludes thinking-only assistant turns", () => {
+	it("captures thinking-only assistant turns as their own reasoning record", () => {
 		const entry = msgEntry("assistant", [{ type: "thinking", text: "only reasoning" }])
-		expect(extractMessages([entry])).toEqual([])
+		expect(extractMessages([entry])).toEqual([{ role: "assistant", content: "[internal reasoning]: only reasoning" }])
+	})
+
+	it("captures openai-flavored thinking parts whose text lives under the thinking field", () => {
+		// reasoning_content parts arrive as
+		// { type: "thinking", thinking: "...", thinkingSignature: "reasoning_content" }
+		// — field name `thinking`, not `text`, unlike anthropic-flavored parts.
+		const entry = msgEntry("assistant", [{ type: "thinking", thinking: "one action per batch of ticks" }])
+		expect(extractMessages([entry])).toEqual([
+			{ role: "assistant", content: "[internal reasoning]: one action per batch of ticks" },
+		])
+	})
+})
+
+describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)", () => {
+	const msgEntry = (role: string, content: unknown, rest: Record<string, unknown> = {}) =>
+		({ type: "message", message: { role, content, ...rest } }) as unknown as SessionEntry
+	const toolCall = (id: string, name: string, args: unknown) => ({ type: "toolCall", id, name, arguments: args })
+
+	afterEach(() => {
+		delete process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS
+	})
+
+	it("default OFF is byte-parity: toolCall turns excluded, toolResult unread", () => {
+		delete process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS
+		const messages = extractMessages([
+			msgEntry("user", "check the schema"),
+			msgEntry("assistant", [toolCall("tc1", "bash", { command: "sqlite3 db .schema" })]),
+			msgEntry("toolResult", [{ type: "text", text: "CREATE TABLE items ..." }], { toolCallId: "tc1" }),
+		])
+		expect(messages).toEqual([{ role: "user", content: "check the schema" }])
+	})
+
+	it("ON: toolCall turns splice attempt (assistant) + receipt (user) records in transcript position", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const messages = extractMessages([
+			msgEntry("user", "how many reviews in 2031+?"),
+			msgEntry("assistant", [toolCall("tc1", "bash", { command: 'sqlite3 db ".schema"' })]),
+			msgEntry("toolResult", [{ type: "text", text: "CREATE TABLE orders_g1 (item_ref TEXT ...);" }], {
+				toolCallId: "tc1",
+			}),
+			msgEntry("assistant", [{ type: "text", text: "The table is orders_g1 with item_ref as key." }]),
+		])
+		expect(messages).toEqual([
+			{ role: "user", content: "how many reviews in 2031+?" },
+			{ role: "assistant", content: '[tool] bash: {"command":"sqlite3 db \\".schema\\""}' },
+			{ role: "env", content: "CREATE TABLE orders_g1 (item_ref TEXT ...);" },
+			{ role: "assistant", content: "The table is orders_g1 with item_ref as key." },
+		])
+	})
+
+	it("ON: thinking rides alongside the spliced tool-work records", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const messages = extractMessages([
+			msgEntry("assistant", [
+				{ type: "thinking", text: "the ts column must be ms not seconds" },
+				toolCall("tc1", "bash", { command: "select length(ts)" }),
+			]),
+		])
+		expect(messages).toEqual([
+			{ role: "assistant", content: "[internal reasoning]: the ts column must be ms not seconds" },
+			{ role: "assistant", content: '[tool] bash: {"command":"select length(ts)"}' },
+		])
+	})
+
+	it("ON: long tool results bound head+tail with elision marker", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const big = `HEAD:${"x".repeat(900)}:TAIL`
+		const messages = extractMessages([
+			msgEntry("assistant", [toolCall("tc1", "bash", { command: "big" })]),
+			msgEntry("toolResult", [{ type: "text", text: big }], { toolCallId: "tc1" }),
+		])
+		const receipt = messages.find((m) => m.role === "env")?.content ?? ""
+		expect(receipt).toContain("HEAD:")
+		expect(receipt).toContain(":TAIL")
+		expect(receipt).toContain("chars elided")
+		expect(receipt.length).toBeLessThan(big.length + 50)
+	})
+
+	it("ON: toolCall without a result still yields the attempt record", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const messages = extractMessages([msgEntry("assistant", [toolCall("tc9", "read", { path: "a.ts" })])])
+		expect(messages).toEqual([{ role: "assistant", content: '[tool] read: {"path":"a.ts"}' }])
+	})
+
+	it("ON: pure-text assistant turns take the text path, not the tool lane", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const messages = extractMessages([msgEntry("assistant", [{ type: "text", text: "The answer is 42." }])])
+		expect(messages).toEqual([{ role: "assistant", content: "The answer is 42." }])
 	})
 })
 
@@ -354,7 +507,9 @@ describe("extractAssistantFacts (cautious agent-aware pass)", () => {
 		const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string) as {
 			messages: Array<{ content: string }>
 		}
-		expect(body.messages[0]?.content).toContain("AI agent, not the user")
+		expect(body.messages[0]?.content).toContain('Messages marked "assistant" were produced by an AI agent')
+		expect(body.messages[0]?.content).toContain("NOTES TO FUTURE SELF")
+		expect(body.messages[0]?.content).toContain("EVIDENCE-GROUNDED CONCLUSIONS")
 	})
 
 	it("the scoped variant swaps the respond line for the scope-tag section", async () => {
@@ -624,6 +779,46 @@ describe("parseTaggedFacts (three observed model shapes)", () => {
 	it("throws on prose with no parseable shape", () => {
 		expect(() => parseTaggedFacts("just talking, nothing durable")).toThrow(/unparseable/)
 	})
+
+	describe("task lane ([task] prefix hunts down in every shape)", () => {
+		it("object shape: [task] strings lose their prefix", () => {
+			expect(
+				parseTaggedFacts(
+					'{"personal": [], "project": [], "task": ["[task] schema ts is ms", "already bare"]}',
+					"personal",
+					{
+						taskScope: true,
+					},
+				),
+			).toEqual({ personal: [], project: [], task: ["schema ts is ms", "already bare"] })
+		})
+
+		it("fact-object shape: scope=task strips a literal [task] prefix", () => {
+			expect(
+				parseTaggedFacts(
+					'[{"fact": "[task] keep identifiers exact", "scope": "task"}, {"fact": "bare task fact", "scope": "task"}]',
+					"personal",
+					{ taskScope: true },
+				),
+			).toEqual({ personal: [], project: [], task: ["keep identifiers exact", "bare task fact"] })
+		})
+
+		it("bare-array shape: [task] strings route and strip (unchanged)", () => {
+			expect(
+				parseTaggedFacts('["[task] ts is ms", "[personal] dog is Fred"]', "personal", { taskScope: true }),
+			).toEqual({
+				personal: ["dog is Fred"],
+				project: [],
+				task: ["ts is ms"],
+			})
+		})
+
+		it("markdown-list shape: [task] lines route and strip", () => {
+			expect(
+				parseTaggedFacts("- [task] keep units in ms\n- [personal] dog is Fred", "personal", { taskScope: true }),
+			).toEqual({ personal: ["dog is Fred"], project: [], task: ["keep units in ms"] })
+		})
+	})
 })
 
 describe("chatJson retry behavior", () => {
@@ -631,7 +826,7 @@ describe("chatJson retry behavior", () => {
 		const fetchImpl = vi
 			.fn()
 			.mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 }))
-		await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u")
+		await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", "extraction")
 		const init = fetchImpl.mock.calls[0]?.[1] as RequestInit
 		const body = JSON.parse(String(init.body)) as { tags?: string[] }
 		expect(body.tags).toContain("memory:extraction")
@@ -643,7 +838,12 @@ describe("chatJson retry behavior", () => {
 			.mockResolvedValue(
 				new Response(JSON.stringify({ choices: [{ message: { content: '["fact"]' } }] }), { status: 200 }),
 			)
-		const text = await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u")
+		const text = await chatJson(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			"s",
+			"u",
+			"extraction",
+		)
 		expect(text).toBe('["fact"]')
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
 	})
@@ -653,7 +853,12 @@ describe("chatJson retry behavior", () => {
 			.fn()
 			.mockResolvedValueOnce(new Response("boom", { status: 502 }))
 			.mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }))
-		const text = await chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u")
+		const text = await chatJson(
+			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			"s",
+			"u",
+			"extraction",
+		)
 		expect(text).toBe("ok")
 		expect(fetchImpl).toHaveBeenCalledTimes(2)
 	})
@@ -661,7 +866,7 @@ describe("chatJson retry behavior", () => {
 	it("does not retry other 4xx errors", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(new Response("bad request", { status: 400 }))
 		await expect(
-			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u"),
+			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", "extraction"),
 		).rejects.toThrow(/gateway rejected/)
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
 	})
@@ -669,7 +874,7 @@ describe("chatJson retry behavior", () => {
 	it("classifies non-retryable 4xx as poison (deterministic — never re-drained)", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(new Response("bad request", { status: 400 }))
 		await expect(
-			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u"),
+			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", "extraction"),
 		).rejects.toBeInstanceOf(PoisonExtractionError)
 	})
 
@@ -679,6 +884,7 @@ describe("chatJson retry behavior", () => {
 			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 			"s",
 			"u",
+			"extraction",
 			1, // one attempt — exhausts immediately
 		).catch((err: unknown) => err)
 		expect(error).toBeInstanceOf(Error)
@@ -691,6 +897,7 @@ describe("chatJson retry behavior", () => {
 			{ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 			"s",
 			"u",
+			"extraction",
 			1,
 		).catch((err: unknown) => err)
 		expect(error).toBeInstanceOf(Error)
@@ -700,7 +907,7 @@ describe("chatJson retry behavior", () => {
 	it("gives up after max attempts on persistent 5xx", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(new Response("still down", { status: 503 }))
 		await expect(
-			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", 2),
+			chatJson({ baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }, "s", "u", "extraction", 2),
 		).rejects.toThrow(/gateway rejected the request: HTTP 503/)
 		expect(fetchImpl).toHaveBeenCalledTimes(2)
 	})
@@ -729,6 +936,7 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 				"system",
 				"user",
 				parseStringArray,
+				"extraction",
 			)
 			expect(facts).toEqual(["I mediate disputes weekly"])
 			expect(fetchImpl).toHaveBeenCalledTimes(2)
@@ -752,6 +960,7 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 					"system",
 					"user",
 					parseStringArray,
+					"extraction",
 				),
 			).rejects.toThrow(/unparseable response after strict retry/)
 			// Same model + temperature 0 + same input fails identically next drain.
@@ -760,6 +969,7 @@ describe("chatWithRetry (prose responses are retryable)", () => {
 				"system",
 				"user",
 				parseStringArray,
+				"extraction",
 			)
 			await expect(attempt).rejects.toBeInstanceOf(PoisonExtractionError)
 			expect(fetchImpl).toHaveBeenCalledTimes(4)
@@ -854,11 +1064,112 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		return { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
 	}
 
+	/** Stubbed d3 systemone endpoint: triage windows at a fixed p(yes);
+	 * valuation keeps or discards every candidate at a fixed p(discard). */
+	function makeFakeD3(options: {
+		triageP?: number
+		valuation?: "keep" | "discard"
+		valuationP?: number
+	}): DecisionGateOptions {
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const name of Object.keys(body.questions)) {
+				if (TRIAGE_QUESTION_NAMES.has(name)) {
+					const p = options.triageP ?? 0.9
+					answers[name] = {
+						type: "choice",
+						choice: p >= 0.3 ? "yes" : "no",
+						probabilities: { yes: p, no: 1 - p },
+						confidence: 0.9,
+					}
+				} else {
+					const p = options.valuationP ?? (options.valuation === "discard" ? 0.95 : 0.1)
+					answers[name] = {
+						type: "choice",
+						choice: options.valuation === "discard" ? "discard" : "keep",
+						probabilities: { keep: 1 - p, discard: p },
+						confidence: 0.9,
+					}
+				}
+			}
+			return new Response(
+				JSON.stringify({ id: "fake-d3", model: "d3", answers, usage: { input_tokens: 100, output_tokens: 0 } }),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			)
+		}
+		return { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl }
+	}
+
 	const writeJob = (name: string, messages: CaptureMessage[]): string => {
 		const file = join(pendingDir(), `${name}.json`)
 		writeFileSync(file, JSON.stringify({ messages, project: null }))
 		return file
 	}
+
+	it("watchdog: a hung extraction aborts at the drain budget and leaves the job pending", async () => {
+		const fake = makeFakeBackend()
+		// Fetch that settles only on abort — the drain watchdog must cut it,
+		// not hang the lock (the benchmark's lock_held=True, triggers=0 stall).
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const signal = init?.signal
+			return await new Promise<Response>((_resolve, reject) => {
+				if (signal?.aborted) reject(signal.reason)
+				signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+			})
+		}
+		const jobFile = writeJob("stuck", [msg("user", "never resolves")])
+		const started = Date.now()
+		// Either the watchdog error propagates, or the drain completes via
+		// transient-failed windows — both satisfy the no-hang contract; the
+		// elapsed bound (vitest's 5s timeout) proves the watchdog, not the
+		// fetch, ended the wait.
+		try {
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+				drainTimeoutMs: 80,
+			})
+		} catch (err) {
+			// The abort is a HARD failure: runCaptureWorker rejects with
+			// DrainWatchdogError (no partial exit-0 with swallowed windows).
+			expect(String(err)).toContain("capture drain aborted by hard timeout")
+		}
+		expect(Date.now() - started).toBeLessThan(5_000)
+		// Fail-soft: hashes unmarked → job stays pending for the next spawn.
+		expect(existsSync(jobFile)).toBe(true)
+		// Store untouched: no facts from the aborted drain.
+		expect(fake.added).toEqual([])
+	})
+
+	it("watchdog: the lock is released after a watchdog-aborted drain (next spawn proceeds)", async () => {
+		const fake = makeFakeBackend()
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const signal = init?.signal
+			return await new Promise<Response>((_resolve, reject) => {
+				if (signal?.aborted) reject(signal.reason)
+				signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+			})
+		}
+		const jobFile = writeJob("stuck2", [msg("user", "first drain hangs")])
+		try {
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+				drainTimeoutMs: 80,
+			})
+		} catch {
+			// watchdog error acceptable
+		}
+		// Second worker with a healthy LLM drains the SAME job immediately —
+		// proves the first run's finally released the lock.
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm([]),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["first drain hangs"])
+	})
 
 	it("drains a job end to end: extract → add → hash-mark → job removal", async () => {
 		const fake = makeFakeBackend()
@@ -898,6 +1209,239 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(updated.sessions[session]?.factsAdded).toBe(2)
 	})
 
+	describe("drain tracing", () => {
+		/** Events of one drain trace file (index -1 = newest). */
+		const drainEvents = (index = -1) => {
+			const files = readdirSync(tracesDir()).sort()
+			const target = files[index < 0 ? files.length + index : index]
+			return target ? readTraceEvents(join(tracesDir(), target)) : []
+		}
+
+		it("records a full drain: api events carry the complete system prompt, window transcript, and raw response", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace1", [msg("user", "my dog's name is Fred")])
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(fake.backend),
+			})
+			const events = drainEvents()
+			expect(events[0]).toMatchObject({ type: "drain_start", model: "m", jobFiles: ["trace1.json"] })
+			expect(events.find((e) => e.type === "job")).toMatchObject({
+				job: "trace1.json",
+				messages: 1,
+				windows: 1,
+			})
+			// Full chat exchange: exact system prompt + window transcript in,
+			// complete raw response out.
+			const extraction = events.find((e) => e.type === "api" && e.kind === "extraction-user")
+			expect(extraction).toMatchObject({ job: "trace1.json", window: 0 })
+			const request = extraction?.request as { model: string; system: string; user: string }
+			expect(request).toMatchObject({ model: "m", user: "user: my dog's name is Fred" })
+			expect(request.system).toBe(EXTRACTION_SYSTEM_PROMPT)
+			const response = extraction?.response as { content: string }
+			expect(response.content).toContain("Fred")
+			// Pure-user window: no assistant pass.
+			expect(events.find((e) => e.type === "api" && e.kind === "extraction-assistant")).toBeUndefined()
+			// Store + supersede trail.
+			expect(events.find((e) => e.type === "phase" && e.phase === "store-add")).toMatchObject({
+				store: "personal",
+				fact: "my dog's name is Fred",
+			})
+			const supersedeChat = events.find((e) => e.type === "api" && e.kind === "supersede-chat")
+			expect(supersedeChat).toMatchObject({ store: "personal" })
+			expect((supersedeChat?.request as { system: string }).system).toBe(SUPERSEDE_SYSTEM_PROMPT)
+			expect(events.find((e) => e.type === "job_end")).toMatchObject({ outcome: "committed", captured: 1 })
+			expect(events.find((e) => e.type === "drain_end")).toMatchObject({ captured: 1, jobs: 1 })
+		})
+
+		it("the triage gate records its full state, the question asked, and the per-option probabilities", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace-triage", [msg("user", "skip me")])
+			const transcripts: string[] = []
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm(transcripts),
+				createBackend: () => Promise.resolve(fake.backend),
+				decision: { gate: makeFakeD3({ triageP: 0.1 }), enabled: new Set(["triage"]) },
+			})
+			const events = drainEvents()
+			const triage = events.find((e) => e.type === "api" && e.kind === "triage")
+			expect((triage?.request as { state: string }).state).toBe("user: skip me")
+			expect((triage?.request as { questions: Record<string, unknown> }).questions.learned_conclusion).toBeDefined()
+			const answers = (
+				triage?.response as { answers: Record<string, { choice: string; probabilities: Record<string, number> }> }
+			).answers
+			expect(answers.learned_conclusion?.probabilities.yes).toBe(0.1)
+			expect(events.find((e) => e.type === "phase" && e.phase === "triage-skip")).toMatchObject({
+				job: "trace-triage.json",
+				window: 0,
+				probability: 0.1,
+				topClass: expect.any(String),
+			})
+			// Triaged out: no extraction calls at all, window hash-marked.
+			expect(events.find((e) => e.type === "api" && e.kind === "extraction-user")).toBeUndefined()
+			expect(transcripts).toHaveLength(0)
+			expect(events.find((e) => e.type === "drain_end")).toMatchObject({ triagedOut: 1 })
+		})
+
+		it("the valuation gate records every question (instructions + criteria) and the resulting discard", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace-val", [msg("user", "two facts")])
+			// Extraction returns two facts; the d3 fake discards both at p=0.95.
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				return new Response(
+					JSON.stringify({
+						choices: [{ message: { content: JSON.stringify({ personal: ["fact alpha", "fact beta"], project: [] }) } }],
+					}),
+					{ status: 200 },
+				)
+			}
+			const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+				decision: { gate: makeFakeD3({ valuation: "discard", valuationP: 0.95 }), enabled: new Set(["valuation"]) },
+			})
+			expect(captured).toBe(0)
+			const events = drainEvents()
+			const valuation = events.find((e) => e.type === "api" && e.kind === "valuation")
+			const vRequest = valuation?.request as {
+				state: string
+				questions: Record<string, { instructions: string; criteria: Record<string, string> }>
+			}
+			expect(vRequest.state).toBe(buildValuationState(undefined, ["user: two facts"]))
+			expect(Object.keys(vRequest.questions)).toEqual(["item_1", "item_2"])
+			expect(vRequest.questions.item_1?.instructions).toContain("fact alpha")
+			expect(vRequest.questions.item_1?.criteria).toHaveProperty("keep")
+			expect(vRequest.questions.item_1?.criteria).toHaveProperty("discard")
+			const vAnswers = (valuation?.response as { answers: Record<string, { choice: string }> }).answers
+			expect(vAnswers.item_2?.choice).toBe("discard")
+			const discards = events.filter((e) => e.type === "phase" && e.phase === "valuation-discard")
+			expect(discards).toHaveLength(2)
+			expect(discards[0]).toMatchObject({ job: "trace-val.json", fact: "fact alpha", probability: 0.95 })
+			expect(events.find((e) => e.type === "job_end")).toMatchObject({ outcome: "committed", skippedByValuation: 2 })
+		})
+
+		it("records each local store decision: durability pattern, exact-dup, redaction, store-add", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace-local", [msg("user", "mixed facts")])
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				return new Response(
+					JSON.stringify({
+						choices: [
+							{
+								message: {
+									content: JSON.stringify({
+										personal: [
+											"PR #5 is still queued",
+											"a durable preference",
+											"a durable preference",
+											"my api key is sk-proj-abc123def456789",
+										],
+										project: [],
+									}),
+								},
+							},
+						],
+					}),
+					{ status: 200 },
+				)
+			}
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+			})
+			const events = drainEvents()
+			const durable = events.find((e) => e.type === "phase" && e.phase === "durability-skip")
+			expect(durable).toMatchObject({ job: "trace-local.json", store: "personal", fact: "PR #5 is still queued" })
+			expect(String(durable?.pattern)).toContain("pr")
+			expect(events.filter((e) => e.type === "phase" && e.phase === "store-add")).toHaveLength(2)
+			expect(events.find((e) => e.type === "phase" && e.phase === "exact-dup-skip")).toMatchObject({
+				fact: "a durable preference",
+			})
+			const redaction = events.find((e) => e.type === "phase" && e.phase === "redaction")
+			expect(String(redaction?.before)).toContain("sk-proj-")
+			expect(String(redaction?.after)).not.toContain("sk-proj-")
+		})
+
+		it("a strict-JSON retry emits both api exchanges and the strict-json-retry phase event", async () => {
+			const fake = makeFakeBackend()
+			const jobFile = writeJob("trace-retry", [msg("user", "retry me")])
+			let calls = 0
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				calls += 1
+				const content =
+					calls === 1
+						? "I cannot extract facts from this."
+						: JSON.stringify({ personal: ["retried fact"], project: [] })
+				return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 })
+			}
+			vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+					createBackend: () => Promise.resolve(fake.backend),
+				})
+			} finally {
+				vi.restoreAllMocks()
+			}
+			const events = drainEvents()
+			const extractions = events.filter((e) => e.type === "api" && e.kind === "extraction-user")
+			expect(extractions).toHaveLength(2)
+			expect((extractions[0]?.response as { content: string }).content).toBe("I cannot extract facts from this.")
+			expect((extractions[1]?.request as { system: string }).system).toContain("CRITICAL FORMAT REMINDER")
+			expect(events.find((e) => e.type === "phase" && e.phase === "strict-json-retry")).toMatchObject({
+				kind: "extraction-user",
+				job: "trace-retry.json",
+				window: 0,
+			})
+			expect(fake.added).toEqual(["retried fact"])
+		})
+
+		it("a persistently poisoned job records job_end kept-for-retry then quarantined at the attempt cap", async () => {
+			const jobFile = writeJob("poison", [msg("user", "poison me")])
+			const fetchImpl: typeof fetch = async () =>
+				new Response(JSON.stringify({ choices: [{ message: { content: "not json, ever" } }] }), { status: 200 })
+			const options = {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(makeFakeBackend().backend),
+			}
+			vi.spyOn(console, "error").mockImplementation(() => {})
+			let first: number
+			let second: number
+			try {
+				first = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], options)
+				second = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], options)
+			} finally {
+				vi.restoreAllMocks()
+			}
+			expect(first).toBe(0)
+			expect(second).toBe(0)
+			expect(readdirSync(tracesDir())).toHaveLength(2)
+			const firstEnd = drainEvents(0).find((e) => e.type === "job_end")
+			expect(firstEnd).toMatchObject({ outcome: "kept-for-retry", failedWindows: 1 })
+			const secondEvents = drainEvents(1)
+			expect(secondEvents.find((e) => e.type === "job")).toMatchObject({ drainAttempts: 1 })
+			expect(secondEvents.find((e) => e.type === "job_end" && e.outcome === "quarantined")).toMatchObject({
+				reason: "poison",
+				attempts: 2,
+			})
+		})
+	})
+
 	it("a re-spawned duplicate job is a no-op (ledger idempotence)", async () => {
 		const fake = makeFakeBackend()
 		const transcripts: string[] = []
@@ -928,6 +1472,318 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(captured).toBe(1)
 		expect(fake.added).toEqual(["crash marker"])
 		expect(existsSync(jobFile)).toBe(false)
+	})
+
+	it("extracts once: a failed add stages the facts — the retry drain re-adds without re-paying the LLM", async () => {
+		const jobFile = writeJob("job1", [msg("user", "crash marker")])
+		const transcripts: string[] = []
+		// First drain: extraction succeeds, the store rejects every add → the
+		// job stays with its facts STAGED (extract-once); the ledger is
+		// commit-gated, so it is still absent (pre-staging observable).
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm(transcripts),
+				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		expect(existsSync(jobFile)).toBe(true)
+		const staged = JSON.parse(readFileSync(jobFile, "utf-8")) as { staged?: { personalFacts: string[] } }
+		expect(staged.staged?.personalFacts).toEqual(["crash marker"])
+		expect(existsSync(ledgerPath())).toBe(false)
+		expect(transcripts).toHaveLength(1)
+		// Retry with a working store: the staged facts capture and the window
+		// hash reaches the ledger at commit — with NO second extraction call
+		// (the October incident's multiplier, gone).
+		const fake = makeFakeBackend()
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm(transcripts),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["crash marker"])
+		expect(transcripts).toHaveLength(1) // extraction paid exactly once across both drains
+		expect(existsSync(jobFile)).toBe(false)
+		const ledger = JSON.parse(readFileSync(ledgerPath(), "utf-8")) as string[]
+		expect(ledger).toHaveLength(1)
+	})
+
+	it("a fully-staged job with persistently failing adds survives every drain until the add-failure cap quarantines it", async () => {
+		const jobFile = writeJob("job1", [msg("user", "quarantine marker")])
+		const transcripts: string[] = []
+		const failing = (): Promise<CaptureBackend> => Promise.resolve(makeFakeBackend({ failAdds: true }).backend)
+		const drain = (createBackend: () => Promise<CaptureBackend>) =>
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], { llm: makeFakeLlm(transcripts), createBackend }).catch(
+				(err: unknown) => (err instanceof Error ? err.message : String(err)),
+			)
+		// ADD_FAILURE_MAX_ATTEMPTS - 1 failing drains: the job stays in pending/
+		// (never deleted by planJob — its staged facts are uncommitted) with a
+		// growing addAttempts counter and the staged facts intact.
+		for (let i = 0; i < ADD_FAILURE_MAX_ATTEMPTS - 1; i++) {
+			expect(await drain(failing)).toContain("1 capture job(s) failed")
+			expect(existsSync(jobFile)).toBe(true)
+			const job = JSON.parse(readFileSync(jobFile, "utf-8")) as { addAttempts?: number; staged?: unknown }
+			expect(job.addAttempts).toBe(i + 1)
+			expect(job.staged).toBeDefined()
+		}
+		// The cap drain quarantines to failed/ with the staged facts preserved
+		// for the manual mv-back requeue (failedJobs counts it — same dir).
+		expect(await drain(failing)).toContain("1 capture job(s) failed")
+		expect(existsSync(jobFile)).toBe(false)
+		const quarantined = join(home, ".config", "kimchi", "memory", "failed", "job1.json")
+		expect(existsSync(quarantined)).toBe(true)
+		const job = JSON.parse(readFileSync(quarantined, "utf-8")) as {
+			addAttempts?: number
+			staged?: { personalFacts: string[] }
+		}
+		expect(job.addAttempts).toBe(ADD_FAILURE_MAX_ATTEMPTS)
+		expect(job.staged?.personalFacts).toEqual(["quarantine marker"])
+		// Extraction was paid exactly once across all the failing drains, and
+		// an empty pending dir makes no calls.
+		expect(transcripts).toHaveLength(1)
+		expect(await drain(() => Promise.resolve(makeFakeBackend().backend))).toBe(0)
+		expect(transcripts).toHaveLength(1)
+	})
+
+	it("a staged job with a previously-failed window re-extracts only that window", async () => {
+		// Two windows: the combined content exceeds MEMORY_CAPTURE_WINDOW_CHARS.
+		const long = (marker: string) => `keep ${marker} ${"x".repeat(MEMORY_CAPTURE_WINDOW_CHARS)}`
+		const jobFile = writeJob("windows", [msg("user", long("FIRST")), msg("user", long("FAILME"))])
+		const transcripts: string[] = []
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			const transcript = body.messages[1]?.content ?? ""
+			// Deterministic failure class (non-retryable 4xx) — fails fast: no
+			// retry-backoff round, no jittered waits inside the 5s test budget.
+			if (transcript.includes("FAILME")) return new Response("extraction refused", { status: 400 })
+			transcripts.push(transcript)
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "").slice(0, 40)
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+		const fake = makeFakeBackend()
+		// Drain 1: the FIRST window extracts and stages; the FAILME window
+		// fails deterministically (poison class — skipped by the transient
+		// retry round; the drain itself is fail-soft). The job stays with one
+		// of two windows covered and one recorded poison attempt (below the
+		// quarantine cap).
+		const first = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm,
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(first).toBe(1) // the FIRST window's fact committed
+		expect(existsSync(jobFile)).toBe(true)
+		expect(transcripts).toHaveLength(1) // only the FIRST window extracted
+		const staged1 = JSON.parse(readFileSync(jobFile, "utf-8")) as { staged?: { personalFacts: string[] } }
+		expect(staged1.staged?.personalFacts).toHaveLength(1)
+		// Drain 2: only the FAILME window re-extracts (the staged window is
+		// covered by staged.windowHashes) against a now-healthy gateway; the
+		// FAILME fact commits (the FIRST fact is already in the store —
+		// deduped), and the job deletes.
+		const okFetch: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const transcript = body.messages[1]?.content ?? ""
+			transcripts.push(transcript)
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "").slice(0, 40)
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const second = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: { ...llm, fetchImpl: okFetch },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(second).toBe(1) // the FAILME fact newly added
+		expect(fake.added).toHaveLength(2) // both windows' facts across both drains
+		// Extraction transcripts only (the supersede judge's chat traffic rides
+		// the same stub): the FIRST window exactly once (drain 1), the FAILME
+		// window exactly once more (drain 2) — staged coverage held.
+		const extraction = transcripts.filter((t) => !t.startsWith("NEW FACTS"))
+		expect(extraction).toHaveLength(2)
+		expect(extraction[0]).toContain("FIRST")
+		expect(extraction[1]).toContain("FAILME")
+		expect(existsSync(jobFile)).toBe(false)
+	})
+
+	it("a staged write that outlived a lost ledger state still re-adds without re-extracting", async () => {
+		const jobFile = writeJob("job1", [msg("user", "ledger crash marker")])
+		const transcripts: string[] = []
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm(transcripts),
+				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		// The ledger save is commit-gated anyway; the staged coverage that
+		// prevents re-extraction lives in the job file itself.
+		expect(existsSync(jobFile)).toBe(true)
+		const fake = makeFakeBackend()
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm(transcripts),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["ledger crash marker"])
+		expect(transcripts).toHaveLength(1) // staged coverage prevented re-extraction
+	})
+
+	it("the staged rewrite preserves the job file's mtime (drain order / sweep age)", async () => {
+		const jobFile = writeJob("job1", [msg("user", "mtime marker")])
+		// Recent enough to survive the 7-day stale-job sweep, distinct from
+		// the write time the rewrites must restore.
+		const fixed = new Date(Date.now() - 60_000)
+		utimesSync(jobFile, fixed, fixed)
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		// The file was rewritten twice (staging + add-failure counter) and both
+		// rewrites restored the original mtime — sub-millisecond filesystems
+		// may preserve what Date conversion cannot represent, so compare
+		// within a millisecond.
+		expect(Math.abs(statSync(jobFile).mtimeMs - fixed.getTime())).toBeLessThan(1)
+	})
+
+	it("a live lock holder means the worker defers with exit 0 and no drain", async () => {
+		const jobFile = writeJob("deferred", [msg("user", "deferred marker")])
+		const release = await acquireCaptureLock(defaultMemoryDir())
+		expect(release).not.toBeNull()
+		try {
+			await expect(runCaptureWorker(["--job", jobFile, "--db", dbPath()], { llm: makeFakeLlm([]) })).resolves.toBe(0)
+			// Untouched — the holder's own drain consumes it later.
+			expect(existsSync(jobFile)).toBe(true)
+		} finally {
+			await release!()
+		}
+	})
+
+	it("the drain re-list consumes job files written while the drain was running", async () => {
+		const job1 = writeJob("first", [msg("user", "first marker")])
+		// The extraction LLM writes a SECOND job into pending/ mid-drain —
+		// with fail-fast locking its spawn exits, so this drain's re-list
+		// pass must consume it (previously it waited for the next trigger).
+		let wroteSecond = false
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			if (!wroteSecond) {
+				wroteSecond = true
+				writeJob("second", [msg("user", "second marker")])
+			}
+			const transcript = body.messages[1]?.content ?? ""
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		const captured = await runCaptureWorker(["--job", job1, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(makeFakeBackend().backend),
+		})
+		expect(captured).toBe(2)
+		expect(readdirSync(pendingDir()).filter((n) => n.endsWith(".json"))).toHaveLength(0)
+	})
+
+	it("skips oversized facts before the embed (never truncates) and counts them in the summary", async () => {
+		const jobFile = writeJob("job1", [msg("user", "size guard marker")])
+		const oversized = `I have an enormous number of coins ${"x".repeat(MEMORY_FACT_MAX_CHARS)}` // over the cap
+		const boundary = "i collect vintage typewriters ".padEnd(MEMORY_FACT_MAX_CHARS, "y") // exactly the cap — the strict > keeps it
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+			}
+			return new Response(
+				JSON.stringify({
+					choices: [
+						{ message: { content: JSON.stringify({ personal: ["a normal fact", oversized, boundary], project: [] }) } },
+					],
+				}),
+				{ status: 200 },
+			)
+		}
+		const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => {})
+		const fake = makeFakeBackend()
+		try {
+			const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+			})
+			expect(captured).toBe(2) // the normal fact and the boundary fact
+			expect(fake.added).toEqual(["a normal fact", boundary]) // the oversized fact never reached the store
+			expect(consoleInfo).toHaveBeenCalledWith(expect.stringContaining("1 oversized fact(s) skipped"))
+		} finally {
+			consoleInfo.mockRestore()
+		}
+	})
+
+	it("records usage-ledger rows for the chat funnel: extraction and supersede distinguished by kind", async () => {
+		const jobFile = writeJob("job1", [msg("user", "ledger row marker")])
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				// The chat supersede judge: usage rides the same response shape.
+				return new Response(
+					JSON.stringify({
+						choices: [{ message: { content: "[]" } }],
+						usage: { prompt_tokens: 55, completion_tokens: 5 },
+					}),
+					{ status: 200 },
+				)
+			}
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: JSON.stringify({ personal: ["ledger row marker"], project: [] }) } }],
+					usage: { prompt_tokens: 120, completion_tokens: 30 },
+				}),
+				{ status: 200 },
+			)
+		}
+		const fake = makeFakeBackend()
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		const rows = readFileSync(usageLedgerPath(), "utf-8")
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+		expect(rows).toHaveLength(2) // one extraction row, one supersede-judge row
+		expect(rows[0]).toMatchObject({ kind: "extraction", model: "m", inputTokens: 120, outputTokens: 30 })
+		expect(rows[1]).toMatchObject({ kind: "supersede", model: "m", inputTokens: 55, outputTokens: 5 })
+	})
+
+	it("records a failed extraction row with no token counts when the gateway rejects", async () => {
+		const jobFile = writeJob("job2", [msg("user", "doomed marker")])
+		const fetchImpl: typeof fetch = async () => new Response("bad request", { status: 400 })
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(makeFakeBackend().backend),
+		})
+		expect(captured).toBe(0) // the poisoned window captured nothing (fail-soft)
+		const rows = readFileSync(usageLedgerPath(), "utf-8")
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+		expect(rows).toHaveLength(1)
+		expect(rows[0]).toMatchObject({ kind: "extraction", model: "m", failed: true })
+		expect(rows[0].inputTokens).toBeUndefined()
 	})
 
 	it("a poison job file is removed and does not block the rest of the drain", async () => {
@@ -1331,7 +2187,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			// The valuation question embeds the fact text in its instructions.
 			const facts = Object.values(body.questions).map((q) =>
 				q.instructions.replace(
-					/^Candidate memory fact \d+: "|" — should a long-term memory system KEEP this fact\?$/g,
+					/^Candidate memory fact \d+: "|" — would knowing it in advance help a future session of this agent complete its task\?$/g,
 					"",
 				),
 			)
@@ -1495,23 +2351,23 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(fake.items.map((item) => item.memory)).toEqual(["I now have 25 new postcards, up from 17"])
 	})
 
-	/** Triage stub: answers every window's durable-fact question with the given pYes. */
+	/** Triage stub: answers every triage class question of the request with the given pYes. */
 	function triageFetchImpl(pYes: number): typeof fetch {
-		const fetchImpl: typeof fetch = async () =>
-			new Response(
-				JSON.stringify({
-					answers: {
-						has_durable_fact: {
-							type: "choice",
-							choice: pYes >= 0.5 ? "yes" : "no",
-							probabilities: { yes: pYes, no: 1 - pYes },
-							confidence: 0.9,
-						},
-					},
-					usage: { input_tokens: 100, output_tokens: 0 },
-				}),
-				{ status: 200 },
-			)
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const name of Object.keys(body.questions)) {
+				answers[name] = {
+					type: "choice",
+					choice: pYes >= 0.5 ? "yes" : "no",
+					probabilities: { yes: pYes, no: 1 - pYes },
+					confidence: 0.9,
+				}
+			}
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), {
+				status: 200,
+			})
+		}
 		return fetchImpl
 	}
 
@@ -1574,23 +2430,22 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		// Triage per window: first call (durable window) durable, second not.
 		const pYesSeq = [0.9, 0.05]
 		let triageCalls = 0
-		const triageFetch: typeof fetch = async () => {
+		const triageFetch: typeof fetch = async (_input, init) => {
 			const pYes = pYesSeq[Math.min(triageCalls, pYesSeq.length - 1)] as number
 			triageCalls += 1
-			return new Response(
-				JSON.stringify({
-					answers: {
-						has_durable_fact: {
-							type: "choice",
-							choice: pYes >= 0.5 ? "yes" : "no",
-							probabilities: { yes: pYes, no: 1 - pYes },
-							confidence: 0.9,
-						},
-					},
-					usage: { input_tokens: 100, output_tokens: 0 },
-				}),
-				{ status: 200 },
-			)
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const name of Object.keys(body.questions)) {
+				answers[name] = {
+					type: "choice",
+					choice: pYes >= 0.5 ? "yes" : "no",
+					probabilities: { yes: pYes, no: 1 - pYes },
+					confidence: 0.9,
+				}
+			}
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), {
+				status: 200,
+			})
 		}
 		const captured = await runCaptureWorker(["--job", durable, "--db", dbPath()], {
 			llm: makeFakeLlm(transcripts),
@@ -1627,7 +2482,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("session_shutdown writes a deterministic job file and spawns the worker", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true, "capture-sess")
+		wireMemoryCapture(api, () => true, undefined, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -1658,7 +2513,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("an isActive gate of false skips capture entirely", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => false, "capture-sess")
+		wireMemoryCapture(api, () => false, undefined, "capture-sess")
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -1675,7 +2530,7 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("an isActive gate of false skips before-compaction capture too", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => false, "capture-sess")
+		wireMemoryCapture(api, () => false, undefined, "capture-sess")
 		const beforeCompact = getHandler<{ type: "session_before_compact"; branchEntries: SessionEntry[] }>(
 			"session_before_compact",
 		)
@@ -1690,6 +2545,82 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		const pendingDir = join(home, ".config", "kimchi", "memory", "pending")
 		expect(existsSync(pendingDir) ? readdirSync(pendingDir) : []).toHaveLength(0)
 		expect(spawn).not.toHaveBeenCalled()
+	})
+
+	const entries = (n: number, startAt = 0): SessionEntry[] =>
+		Array.from(
+			{ length: n },
+			(_, i) => ({ type: "message", message: { role: "user", content: `m${startAt + i}` } }) as unknown as SessionEntry,
+		)
+	const mockSpawn = () => {
+		const child = new EventEmitter() as unknown as ChildProcess
+		child.unref = vi.fn()
+		vi.mocked(spawn).mockImplementation(() => child)
+	}
+
+	const THRESHOLD = MEMORY_CAPTURE_INCREMENTAL_MESSAGES
+
+	it("turn_end and tool_result drive the same non-overlapping increment", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => true)
+		mockSpawn()
+		const ctx = createContext({ sessionManager: { getEntries: () => entries(THRESHOLD) } })
+		const turnEnd = getHandler("turn_end")
+		const toolResult = getHandler("tool_result")
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending") as string
+
+		turnEnd({ type: "turn_end" }, ctx)
+		expect(readdirSync(pendingDir)).toHaveLength(1)
+
+		// Same entries again: the mark already covered them — no requeue.
+		toolResult({ type: "tool_result" }, ctx)
+		turnEnd({ type: "turn_end" }, ctx)
+		expect(readdirSync(pendingDir)).toHaveLength(1)
+
+		// More entries land: the next hook sees only the new span.
+		const ctx2 = createContext({ sessionManager: { getEntries: () => entries(THRESHOLD * 2) } })
+		toolResult({ type: "tool_result" }, ctx2)
+		expect(readdirSync(pendingDir)).toHaveLength(2)
+	})
+
+	it("shutdown captures only the tail past the incremental mark", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => true)
+		mockSpawn()
+		const atThreshold = createContext({ sessionManager: { getEntries: () => entries(THRESHOLD) } })
+		const atThresholdPlusThree = createContext({ sessionManager: { getEntries: () => entries(THRESHOLD + 3) } })
+		getHandler("turn_end")({ type: "turn_end" }, atThreshold)
+		getHandler("session_shutdown")({ type: "session_shutdown" }, atThresholdPlusThree)
+
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending") as string
+		const jobs = readdirSync(pendingDir)
+		expect(jobs).toHaveLength(2)
+		const messages = jobs.flatMap(
+			(name) => (JSON.parse(readFileSync(join(pendingDir, name), "utf-8")) as { messages: CaptureMessage[] }).messages,
+		)
+		// THRESHOLD from the increment + 3 tail — no message is queued twice.
+		expect(messages).toHaveLength(THRESHOLD + 3)
+		expect(new Set(messages.map((m) => m.content)).size).toBe(THRESHOLD + 3)
+	})
+
+	it("shutdown splits a long session tail into bounded jobs", () => {
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => true)
+		mockSpawn()
+		const ctx = createContext({ sessionManager: { getEntries: () => entries(75) } })
+		getHandler("session_shutdown")({ type: "session_shutdown" }, ctx)
+
+		const pendingDir = join(home, ".config", "kimchi", "memory", "pending") as string
+		const jobs = readdirSync(pendingDir)
+		// 75 messages / ≤30 per job → 3 jobs: 30+30+15.
+		expect(jobs).toHaveLength(3)
+		const sizes = jobs
+			.map(
+				(name) =>
+					(JSON.parse(readFileSync(join(pendingDir, name), "utf-8")) as { messages: CaptureMessage[] }).messages.length,
+			)
+			.sort((a, b) => a - b)
+		expect(sizes).toEqual([15, 30, 30])
 	})
 })
 
@@ -1838,7 +2769,7 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 		expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("quarantined poison job after 3 attempts"))
 	})
 
-	it("transient failures never count toward quarantine", async () => {
+	it("transient failures count toward their own cap — below it the job retries", async () => {
 		// Zero-delay backoff: computeRetryDelayMs floors at 100ms with random() = 0.
 		const random = vi.spyOn(Math, "random").mockReturnValue(0)
 		try {
@@ -1857,10 +2788,107 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 			}
 			expect(existsSync(jobFile)).toBe(true)
 			expect(existsSync(join(failedDir(), "flaky.json"))).toBe(false)
-			const job = JSON.parse(readFileSync(jobFile, "utf-8")) as { drainAttempts?: number }
+			const job = JSON.parse(readFileSync(jobFile, "utf-8")) as {
+				drainAttempts?: number
+				transientAttempts?: number
+			}
+			// Three drains → transientAttempts=3 (default cap is 10, far off).
+			// The poison counter is untouched — proven-transient failures are
+			// not counted against the deterministic cap.
+			expect(job.transientAttempts).toBe(3)
 			expect(job.drainAttempts).toBeUndefined()
 		} finally {
 			random.mockRestore()
+		}
+	})
+
+	it("a whole-drain-transient job quarantines at the transient cap", async () => {
+		const random = vi.spyOn(Math, "random").mockReturnValue(0)
+		process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS = "2"
+		try {
+			const fetchImpl: typeof fetch = async () => {
+				throw new TypeError("fetch failed")
+			}
+			const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+			const jobFile = writeJob("storm", [msg("user", "my neighbor's boat sank")])
+			// Drain 1: attempts=1, under the env-lowered cap, file kept.
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(fakeBackend()),
+				}),
+			).resolves.toBe(0)
+			expect(existsSync(jobFile)).toBe(true)
+			// Drain 2: attempts=2 → at the cap → quarantined; drain still clean.
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(fakeBackend()),
+				}),
+			).resolves.toBe(0)
+			expect(existsSync(jobFile)).toBe(false)
+			const quarantined = join(failedDir(), "storm.json")
+			expect(existsSync(quarantined)).toBe(true)
+			expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("quarantined transient job after 2 attempts"))
+			// The moved file carries the counter for a manual requeue.
+			const job = JSON.parse(readFileSync(quarantined, "utf-8")) as { transientAttempts?: number }
+			expect(job.transientAttempts).toBe(2)
+		} finally {
+			random.mockRestore()
+			delete process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS
+		}
+	})
+
+	it("a commit-phase failure (store write 503) counts toward the transient cap even with clean windows", async () => {
+		const random = vi.spyOn(Math, "random").mockReturnValue(0)
+		process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS = "2"
+		try {
+			// Extraction succeeds with one real fact, so commitPlan actually
+			// calls backend.add; the add throws 503 — the observed bench storm
+			// where commitPhase failed with all windows clean.
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+				const system = body.messages[0]?.content ?? ""
+				if (system.includes("must decide which stored memories")) {
+					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
+				}
+				return new Response(
+					JSON.stringify({ choices: [{ message: { content: JSON.stringify(["Dog's name is Fred"]) } }] }),
+					{ status: 200 },
+				)
+			}
+			const failingBackend: CaptureBackend = {
+				add: async () => {
+					throw new Error("503 Service Temporarily Unavailable")
+				},
+				delete: async () => ({}),
+				getAll: async () => ({ results: [] }),
+				search: async () => ({ results: [] }),
+			}
+			const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+			const jobFile = writeJob("commit-fail", [msg("user", "my dog's name is Fred")])
+			// First drain: counters bump to 1 even though windows are clean —
+			// without this hook, commit-only failures never reach quarantine.
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(failingBackend),
+				}),
+			).rejects.toThrow()
+			const afterFirst = JSON.parse(readFileSync(jobFile, "utf-8")) as { transientAttempts?: number }
+			expect(afterFirst.transientAttempts).toBe(1)
+			// Second drain: cap hit → quarantined.
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(failingBackend),
+				}),
+			).rejects.toThrow()
+			expect(existsSync(jobFile)).toBe(false)
+			expect(existsSync(join(failedDir(), "commit-fail.json"))).toBe(true)
+		} finally {
+			random.mockRestore()
+			delete process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS
 		}
 	})
 
@@ -1882,9 +2910,10 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 
 	it("commits healthy windows while the poisoned one counts toward quarantine", async () => {
 		const poisonMarker = "BADMARKER"
-		// Two >2000-char user messages → two windows, healthy first, poison second.
-		const good = `my dog's name is Fred ${"a".repeat(1600)}`
-		const bad = `${poisonMarker} ${"b".repeat(1600)}`
+		// Two 7.5k-char user messages → two windows under the 8k budget
+		// (each alone fits; together they overflow), healthy first, poison second.
+		const good = `my dog's name is Fred ${"a".repeat(7500)}`
+		const bad = `${poisonMarker} ${"b".repeat(7500)}`
 		const jobFile = join(pendingDir(), "mixed.json")
 		// Session + project ride the job JSON — the bookkeeping rewrite must not drop them.
 		writeFileSync(
@@ -2056,5 +3085,726 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 		}
 		// A sanitized counter never jumps to quarantine in one drain.
 		expect(existsSync(failedDir())).toBe(false)
+	})
+})
+
+describe("strict-noise capture parity", () => {
+	// Representative capture: a real-shaped extraction reply mixing durable
+	// rule-model facts with answer-level recall and framing echo — the two
+	// noise classes the strict filter exists for. Synthetic shape-equivalents
+	// — invented domain (grocery/commerce), invented names/counts; the layered
+	// behavior being pinned is the regex + keep/discard split, never content.
+	// Pinned so a change that silently shifts either layer (parse, filter)
+	// fails loudly.
+	const captureFacts = [
+		"The grocery dataset uses tables `orders_g1` and `skus_g1`, joined on `item_ref`.",
+		"The user determined that the `flv` integer flag (flv=1) is the reliable definition of a fulfilled order, since `delivery_state` is empty on ~30% of rows.",
+		"The user is working with a MySQL database containing three commerce datasets (grocery, pharmacy, bakery) for a data-analysis task.",
+		"The user uses amt_paid as the canonical total for the 'Household & Cleaning' category.",
+		"In the pharmacy dataset, prices are stored as amt (integer pence) and amt_paid (decimal pounds), both of which are NULL-or-valued with no zero values.",
+		"In the pharmacy dataset, the dept field uses 'Cleaning' rather than the literal 'Household & Cleaning'.",
+		"The 'Household & Cleaning' top-level category is identified in the dept_g2 table at depth=1, with root level 0 being the degenerate 'Merchandise' category.",
+		"The pharmacy dataset is named rx2 in the MySQL database.",
+		"The user is working with a MySQL database containing three product datasets: grocery, pharmacy, and bakery.",
+		"The user answered that 4,214 pharmacy orders were fulfilled in Q3 (July through September) of 2024.",
+		"As of 2024, the user was working with a MySQL database containing commerce datasets for grocery, pharmacy, and bakery.",
+		"The user decided that the supplier's `dept` field is the correct interpretation of 'top-level categories' for the analysis, rejecting the taxonomy-root reading (`depth=0`) as degenerate.",
+	]
+	const strictKeep = [
+		captureFacts[0],
+		captureFacts[1],
+		captureFacts[3],
+		captureFacts[4],
+		captureFacts[5],
+		captureFacts[6],
+		captureFacts[7],
+		captureFacts[11],
+	]
+
+	it("layer 1 (extraction output): markdown reply parses to the fact list in order", () => {
+		const txt = captureFacts.map((f) => `- [personal] ${f}`).join("\n")
+		const parsed = parseTaggedFacts(txt, "personal")
+		expect(parsed.project).toEqual([])
+		expect(parsed.personal).toEqual(captureFacts)
+	})
+
+	it("layer 2 (post-filter store): flag OFF keeps every fact (byte-parity)", () => {
+		vi.stubEnv("KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE", "")
+		try {
+			const kept = captureFacts.filter((f) => keepForStore(f, { strictNoise: false }))
+			expect(kept).toEqual(captureFacts)
+		} finally {
+			vi.unstubAllEnvs()
+		}
+	})
+
+	it("flag ON rejects the noise classes and keeps exactly the rule facts", () => {
+		const kept = captureFacts.filter((f) => keepForStore(f, { strictNoise: true }))
+		expect(kept).toEqual(strictKeep)
+	})
+
+	it("rejections hit answer-level recall, framing echo, and extractor meta text", () => {
+		const noisy = [
+			"The user answered that 42 items were archived.",
+			"The user submitted the final answer.",
+			"The user is working with a graph database for a research task.",
+			"As of 2023, the user was working on a data-cleaning pipeline for the audit.",
+			"No durable facts about the user were found in this snippet.",
+		]
+		for (const f of noisy) {
+			expect(keepForStore(f, { strictNoise: true })).toBe(false)
+		}
+	})
+
+	it("positive control: durable personal preferences and project facts survive strict mode", () => {
+		const durable = [
+			"The user prefers dark mode in all editors.",
+			"The user's deploy box runs NixOS.",
+			"The signing table stores timestamps in milliseconds since epoch.",
+		]
+		for (const f of durable) {
+			expect(keepForStore(f, { strictNoise: true })).toBe(true)
+		}
+	})
+
+	it("base durability list is untouched by the strict extensions", () => {
+		const sample = ["As of the conversation, something happened.", "PR #42 merged."]
+		for (const f of sample) {
+			expect(isDurableFact(f)).toBe(false)
+			expect(STRICT_NOISE_FACT_PATTERNS.some((p) => p.test(f))).toBe(false)
+		}
+	})
+
+	it("strictNoiseEnabled parses the env flag like the other gate flags", () => {
+		for (const off of [undefined, "", "0", "false", "FALSE"]) {
+			expect(strictNoiseEnabled({ KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE: off } as NodeJS.ProcessEnv)).toBe(false)
+		}
+		for (const on of ["1", "true", "yes"]) {
+			expect(strictNoiseEnabled({ KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE: on } as NodeJS.ProcessEnv)).toBe(true)
+		}
+	})
+})
+
+describe("task-scope capture ([task] grammar + routing)", () => {
+	// Synthetic and domain-generic on purpose: the parser contract is grammar
+	// (tag placement, output shape, lane precedence), not content.
+	type Scope = "personal" | "project"
+	const shapes: Record<
+		string,
+		{ input: string; defaultScope: Scope; expected: { personal: string[]; project: string[]; task: string[] } }
+	> = {
+		markdown: {
+			input:
+				"- [personal] The user prefers four-space indentation.\n" +
+				"- [task] In the ledger store, `qty` counts units and `cmp` counts minor currency units.\n" +
+				"- [project] The invoicing service owns the ledger tables.",
+			defaultScope: "personal",
+			expected: {
+				personal: ["The user prefers four-space indentation."],
+				project: ["The invoicing service owns the ledger tables."],
+				task: ["In the ledger store, `qty` counts units and `cmp` counts minor currency units."],
+			},
+		},
+		array_strings_keeps_default_scope: {
+			input: JSON.stringify([
+				"[task] Timestamps in the ledger store are milliseconds since epoch",
+				"[personal] The user keeps notes in Org mode",
+				"The audit ledger uses snake_case column names",
+			]),
+			defaultScope: "project",
+			expected: {
+				personal: ["The user keeps notes in Org mode"],
+				project: ["The audit ledger uses snake_case column names"],
+				task: ["Timestamps in the ledger store are milliseconds since epoch"],
+			},
+		},
+		fact_objects: {
+			input: JSON.stringify([
+				{ fact: "Identifiers in the ledger store use the `entry_` prefix", scope: "task" },
+				{ fact: "The user reviews merges on Fridays", scope: "personal" },
+			]),
+			defaultScope: "project",
+			expected: {
+				personal: ["The user reviews merges on Fridays"],
+				project: [],
+				task: ["Identifiers in the ledger store use the `entry_` prefix"],
+			},
+		},
+		object_shape: {
+			input: JSON.stringify({
+				personal: ["The user drafts specs in English"],
+				project: ["The gateway service owns rate limiting"],
+				task: ["Negative amounts never appear in the ledger store"],
+			}),
+			defaultScope: "personal",
+			expected: {
+				personal: ["The user drafts specs in English"],
+				project: ["The gateway service owns rate limiting"],
+				task: ["Negative amounts never appear in the ledger store"],
+			},
+		},
+		// Leading tag decides the lane (exactly one lane per string); a trailing
+		// tag stays part of the fact text.
+		double_tag_single_lane: {
+			input: JSON.stringify(["[task] [project] The ledger store keys are zero-padded to 12 digits"]),
+			defaultScope: "project",
+			expected: {
+				personal: [],
+				project: [],
+				task: ["[project] The ledger store keys are zero-padded to 12 digits"],
+			},
+		},
+	}
+
+	for (const [name, c] of Object.entries(shapes)) {
+		it(`parses the ${name} shape with [task] when the flag is on`, () => {
+			expect(parseTaggedFacts(c.input, c.defaultScope, { taskScope: true })).toEqual(c.expected)
+		})
+	}
+
+	const flagOffParity: Record<
+		string,
+		{ input: string; defaultScope: Scope; expected: { personal: string[]; project: string[] } }
+	> = {
+		markdown_ignores_task_lines: {
+			input:
+				"- [task] Timestamps are milliseconds in the ledger store\n" +
+				"- [personal] The user prefers four-space indentation.",
+			defaultScope: "personal",
+			expected: { personal: ["The user prefers four-space indentation."], project: [] },
+		},
+		array_string_keeps_literal_prefix: {
+			input: JSON.stringify(["[task] Timestamps are milliseconds in the ledger store"]),
+			defaultScope: "personal",
+			expected: { personal: ["[task] Timestamps are milliseconds in the ledger store"], project: [] },
+		},
+		object_shape_ignores_task_key: {
+			input: JSON.stringify({
+				personal: ["The user drafts specs in English"],
+				task: ["Negative amounts never appear"],
+			}),
+			defaultScope: "personal",
+			expected: { personal: ["The user drafts specs in English"], project: [] },
+		},
+	}
+
+	for (const [name, c] of Object.entries(flagOffParity)) {
+		it(`flag OFF keeps the pre-flag behaviour: ${name}`, () => {
+			expect(parseTaggedFacts(c.input, c.defaultScope)).toEqual(c.expected)
+		})
+	}
+
+	it("routes [task] facts into the project store when a project context exists", () => {
+		expect(routeTaskFacts(["A"], true)).toEqual({ toProject: ["A"], toPersonal: [] })
+	})
+
+	it("routes [task] facts into the personal store with a logged reason when there is no project context", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			expect(routeTaskFacts(["A", "B"], false)).toEqual({ toProject: [], toPersonal: ["A", "B"] })
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("no project context: routing 2 task-scope fact(s) into the personal store"),
+			)
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("taskScopeEnabled parses the env flag like the other gate flags", () => {
+		for (const off of [undefined, "", "0", "false"]) {
+			expect(taskScopeEnabled({ KIMCHI_MEMORY_TASK_SCOPE: off } as NodeJS.ProcessEnv)).toBe(false)
+		}
+		for (const on of ["1", "true", "yes"]) {
+			expect(taskScopeEnabled({ KIMCHI_MEMORY_TASK_SCOPE: on } as NodeJS.ProcessEnv)).toBe(true)
+		}
+	})
+})
+
+describe("receipts lane (KIMCHI_MEMORY_EXTRACTION_RECEIPTS)", () => {
+	it("flag defaults OFF and parses standard truthy forms", () => {
+		expect(receiptsEnabled({} as NodeJS.ProcessEnv)).toBe(false)
+		expect(receiptsEnabled({ KIMCHI_MEMORY_EXTRACTION_RECEIPTS: "0" } as NodeJS.ProcessEnv)).toBe(false)
+		expect(receiptsEnabled({ KIMCHI_MEMORY_EXTRACTION_RECEIPTS: "false" } as NodeJS.ProcessEnv)).toBe(false)
+		expect(receiptsEnabled({ KIMCHI_MEMORY_EXTRACTION_RECEIPTS: "1" } as NodeJS.ProcessEnv)).toBe(true)
+	})
+
+	it("suffix is distinct and never in the OFF-composed prompt family", () => {
+		expect(RECEIPTS_EXTRACTION_SUFFIX).toContain("expectation-failure")
+		expect(EXTRACTION_SYSTEM_PROMPT).not.toContain("expectation-failure")
+		// OFF-composition stays byte-identical to the pre-flag prompt family:
+		// the flagDefaults test above asserts the OFF shape end-to-end.
+	})
+
+	it("strict-noise pattern blocks bare corrected-answer receipts when the flag is on", () => {
+		expect(
+			keepForStore("The correct answer to the delivery-count question is 420, not 422.", {
+				strictNoise: true,
+			}),
+		).toBe(false)
+		expect(
+			keepForStore(
+				"The query on orders_g2.amt_paid returned 'no such column' — the schema dump lists only amt and amt_total.",
+				{ strictNoise: true },
+			),
+		).toBe(true)
+		expect(
+			keepForStore("The correct answer to the delivery-count question is 420, not 422.", {
+				strictNoise: false,
+			}),
+		).toBe(true)
+	})
+})
+
+describe("splitDerivedTag (KIMCHI_MEMORY_FACT_CLASSES lane)", () => {
+	const FLG = "KIMCHI_MEMORY_FACT_CLASSES"
+	afterEach(() => {
+		delete process.env[FLG]
+	})
+
+	it("flag OFF: identity, no parsing (byte-parity)", () => {
+		expect(splitDerivedTag("[derived] Treating dept as top-level")).toEqual({
+			text: "[derived] Treating dept as top-level",
+			derived: false,
+		})
+	})
+
+	it("flag ON: strips the [derived] tag", () => {
+		process.env[FLG] = "1"
+		expect(splitDerivedTag("[derived] Treating dept as top-level")).toEqual({
+			text: "Treating dept as top-level",
+			derived: true,
+		})
+	})
+
+	it("flag ON: untagged fact stays trusted", () => {
+		process.env[FLG] = "1"
+		expect(splitDerivedTag("The items table ts column is milliseconds.")).toEqual({
+			text: "The items table ts column is milliseconds.",
+			derived: false,
+		})
+	})
+
+	it("flag ON: leading whitespace tolerated; mid-string tags preserved", () => {
+		process.env[FLG] = "1"
+		expect(splitDerivedTag("  [derived] Aggregating per item.").derived).toBe(true)
+		expect(splitDerivedTag("Mentions [derived] mid-sentence stay text").derived).toBe(false)
+	})
+})
+
+describe("applyDerivedTags — the batched classifier post-pass (KIMCHI_MEMORY_FACT_CLASSES)", () => {
+	const FLG = "KIMCHI_MEMORY_FACT_CLASSES"
+	afterEach(() => {
+		delete process.env[FLG]
+	})
+
+	/** Minimal plan stub — applyDerivedTags only touches the fact lists. */
+	const plan = (personalFacts: string[], projectFacts: string[] = []): JobPlan => ({
+		jobFile: "job.json",
+		jobObject: { messages: [] },
+		project: null,
+		session: undefined,
+		drainAttempts: 0,
+		transientAttempts: 0,
+		addAttempts: 0,
+		staged: undefined,
+		windows: [],
+		personalFacts,
+		projectFacts,
+		extractedWindows: [],
+		poisonedWindowCount: 0,
+		transientWindowCount: 0,
+	})
+
+	const classifierLlm = (
+		answers: string[] | Error,
+	): { baseURL: string; apiKey: string; model: string; fetchImpl: typeof fetch } => ({
+		baseURL: "https://gw.test/v1",
+		apiKey: "k",
+		model: "m",
+		fetchImpl: async () => {
+			if (answers instanceof Error) return new Response("boom", { status: 500 })
+			return new Response(JSON.stringify({ choices: [{ message: { content: answers.shift() ?? "{}" } }] }), {
+				status: 200,
+			})
+		},
+	})
+
+	it("flag OFF: no-op — no call, no mutation (byte-parity)", async () => {
+		const p = plan(["The dog is named Freya"])
+		const llm = classifierLlm([])
+		const spy = vi.fn(llm.fetchImpl)
+		await applyDerivedTags([p], { ...llm, fetchImpl: spy })
+		expect(spy).not.toHaveBeenCalled()
+		expect(p.personalFacts).toEqual(["The dog is named Freya"])
+	})
+
+	it("flag ON: classifier indexes get the [derived] prefix, in place", async () => {
+		process.env[FLG] = "1"
+		const p = plan([
+			"The dog is named Freya",
+			"REALTIME.json reports current exposure, not lifecycle",
+			"The user prefers pnpm",
+		])
+		await applyDerivedTags([p], classifierLlm(['{"derived": [1]}']))
+		expect(p.personalFacts).toEqual([
+			"The dog is named Freya",
+			"[derived] REALTIME.json reports current exposure, not lifecycle",
+			"The user prefers pnpm",
+		])
+	})
+
+	it("flag ON: a fact pre-tagged by extraction is stripped for the classifier and re-tagged without doubling", async () => {
+		process.env[FLG] = "1"
+		const p = plan(["[derived] Treating the megapack as portable power"])
+		const llm = classifierLlm(['{"derived": []}'])
+		const seen: string[] = []
+		const orig = llm.fetchImpl
+		llm.fetchImpl = async (input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+			seen.push(body.messages[1]?.content ?? "")
+			return orig(input, init)
+		}
+		await applyDerivedTags([p], llm)
+		expect(p.personalFacts).toEqual(["[derived] Treating the megapack as portable power"])
+		expect(seen[0]).toContain("Treating the megapack as portable power")
+		expect(seen[0]).not.toContain("[derived]")
+	})
+
+	it("flag ON: dedupes identical facts across plans (one classifier index hits both lists)", async () => {
+		process.env[FLG] = "1"
+		const p1 = plan(["Shared derivation"])
+		const p2 = plan([], ["Shared derivation"])
+		await applyDerivedTags([p1, p2], classifierLlm(['{"derived": [0]}']))
+		expect(p1.personalFacts).toEqual(["[derived] Shared derivation"])
+		expect(p2.projectFacts).toEqual(["[derived] Shared derivation"])
+	})
+
+	it("flag ON: classifier failure is fail-open — facts stay trusted, nothing is mutated", async () => {
+		process.env[FLG] = "1"
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const p = plan(["The dog is named Freya"])
+			await applyDerivedTags([p], classifierLlm(new Error("gateway down")))
+			expect(p.personalFacts).toEqual(["The dog is named Freya"])
+			expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("classifier failed"))).toBe(true)
+		} finally {
+			errorSpy.mockRestore()
+		}
+	}, 15_000)
+
+	it("flag ON: out-of-range indexes are ignored (no crash, no tag)", async () => {
+		process.env[FLG] = "1"
+		const p = plan(["Fact A", "Fact B"])
+		await applyDerivedTags([p], classifierLlm(['{"derived": [5, -1]}']))
+		expect(p.personalFacts).toEqual(["Fact A", "Fact B"])
+	})
+})
+
+describe("triage runs on tool-evidence windows too (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)", () => {
+	const realHome = process.env.HOME
+	const realAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	const FLG = "KIMCHI_MEMORY_CAPTURE_TOOL_TURNS"
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-triage-bypass-"))
+		process.env.HOME = home
+		mkdirSync(join(home, ".config", "kimchi", "memory", "pending"), { recursive: true })
+		process.env.KIMCHI_CODING_AGENT_DIR = join(home, "agent-config")
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		if (realAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = realAgentDir
+		delete process.env[FLG]
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	const pendingDir = () => join(home, ".config", "kimchi", "memory", "pending")
+	const dbPath = () => join(home, ".config", "kimchi", "memory", "personal", "memory.db")
+
+	it("flag ON + [tool] window: triage runs like on any other window (bypass removed)", async () => {
+		process.env[FLG] = "1"
+		const stored: string[] = []
+		const backend: CaptureBackend = {
+			add: async (fact) => {
+				stored.push(fact)
+				return `m${stored.length}`
+			},
+			delete: async () => {},
+			getAll: async () => ({ results: [] }),
+			search: async () => ({ results: [] }),
+		}
+		const extractFetch: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [{ message: { content: JSON.stringify({ personal: ["items ts is milliseconds"], project: [] }) } }],
+				}),
+				{ status: 200 },
+			)
+		// The triage stub answers "definitely not durable": the window gets
+		// no exemption now — the gate judges it and skips extraction.
+		const triageFetch = neverDurableTriage()
+		const job = join(pendingDir(), "tooljob.json")
+		writeFileSync(
+			job,
+			JSON.stringify({
+				messages: [
+					msg("assistant", "[tool] sqlite: SELECT typeof(ts) FROM items → integer"),
+					msg("user", "so ts is epoch ms"),
+				],
+				project: null,
+			}),
+		)
+		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
+			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
+		})
+		expect(stored).toEqual([])
+		expect(captured).toBe(0)
+		expect(triageFetch).toHaveBeenCalled()
+	})
+
+	it("flag ON + plain window: triage still gates (no accidental blanket bypass)", async () => {
+		process.env[FLG] = "1"
+		const stored: string[] = []
+		const backend: CaptureBackend = {
+			add: async (fact) => {
+				stored.push(fact)
+				return `m${stored.length}`
+			},
+			delete: async () => {},
+			getAll: async () => ({ results: [] }),
+			search: async () => ({ results: [] }),
+		}
+		const extractFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						choices: [{ message: { content: JSON.stringify({ personal: ["the dog is named Freya"], project: [] }) } }],
+					}),
+					{ status: 200 },
+				),
+		)
+		const triageFetch = neverDurableTriage()
+		const job = join(pendingDir(), "plainjob.json")
+		writeFileSync(job, JSON.stringify({ messages: [msg("user", "ok thanks")], project: null }))
+		const captured = await runCaptureWorker(["--job", job, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
+			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
+		})
+		expect(triageFetch).toHaveBeenCalled()
+		expect(extractFetch).not.toHaveBeenCalled()
+		expect(stored).toEqual([])
+		expect(captured).toBe(0)
+	})
+
+	it("flag OFF: a [tool] record is an ordinary window — triage does run", async () => {
+		const stored: string[] = []
+		const backend: CaptureBackend = {
+			add: async (fact) => {
+				stored.push(fact)
+				return `m${stored.length}`
+			},
+			delete: async () => {},
+			getAll: async () => ({ results: [] }),
+			search: async () => ({ results: [] }),
+		}
+		const extractFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						choices: [{ message: { content: JSON.stringify({ personal: ["x"], project: [] }) } }],
+					}),
+					{ status: 200 },
+				),
+		)
+		const triageFetch = neverDurableTriage()
+		const job = join(pendingDir(), "offjob.json")
+		writeFileSync(
+			job,
+			JSON.stringify({
+				messages: [msg("assistant", "[tool] sqlite: SELECT 1 → 1"), msg("user", "ok")],
+				project: null,
+			}),
+		)
+		await runCaptureWorker(["--job", job, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
+			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
+		})
+		expect(triageFetch).toHaveBeenCalled()
+	})
+})
+
+describe("valuation context threading (KIMCHI_MEMORY_VALUATION_CONTEXT)", () => {
+	const realHome = process.env.HOME
+	const realAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	const FLG = "KIMCHI_MEMORY_VALUATION_CONTEXT"
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-valuation-ctx-"))
+		process.env.HOME = home
+		mkdirSync(join(home, ".config", "kimchi", "memory", "pending"), { recursive: true })
+		process.env.KIMCHI_CODING_AGENT_DIR = join(home, "agent-config")
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		if (realAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = realAgentDir
+		delete process.env[FLG]
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	/** Drain one d3-valuated capture with a pre-seeded store; record the raw valuation request bodies. */
+	async function drainWithSeededStore(flagOn: boolean): Promise<string[]> {
+		if (flagOn) process.env[FLG] = "1"
+		const existing = [{ id: "m1", memory: "The dog is named Freya" }]
+		const backend: CaptureBackend = {
+			add: async (fact) => `m-${existing.length + 1}-${fact.slice(0, 6)}`,
+			delete: async () => {},
+			getAll: async () => ({ results: existing }),
+			search: async () => ({ results: [] }),
+		}
+		const extractFetch: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [{ message: { content: JSON.stringify({ personal: ["Freya is a Labrador"], project: [] }) } }],
+				}),
+				{ status: 200 },
+			)
+		const bodies: string[] = []
+		const gateFetch: typeof fetch = async (_input, init) => {
+			bodies.push(String(init?.body ?? ""))
+			// Answer keep for every fact in the batch (question keys are item_N).
+			const parsed = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers: Record<string, unknown> = {}
+			for (const key of Object.keys(parsed.questions)) {
+				answers[key] = {
+					type: "choice",
+					choice: "keep",
+					probabilities: { keep: 0.99, discard: 0.01 },
+					confidence: 0.99,
+				}
+			}
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), { status: 200 })
+		}
+		const job = join(home, ".config", "kimchi", "memory", "pending", "ctx.json")
+		writeFileSync(job, JSON.stringify({ messages: [msg("user", "new fact: Freya is a Labrador")], project: null }))
+		await runCaptureWorker(["--job", job, "--db", join(home, ".config", "kimchi", "memory", "personal", "memory.db")], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractFetch },
+			createBackend: () => Promise.resolve(backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: gateFetch },
+				enabled: new Set(["valuation"]),
+			},
+		})
+		return bodies
+	}
+
+	it("flag ON: the valuation request carries the existing store facts", async () => {
+		const bodies = await drainWithSeededStore(true)
+		expect(bodies.length).toBeGreaterThan(0)
+		expect(bodies[0]).toContain("The dog is named Freya")
+	})
+
+	it("flag OFF: the valuation request never mentions the store contents", async () => {
+		const bodies = await drainWithSeededStore(false)
+		expect(bodies.length).toBeGreaterThan(0)
+		expect(bodies[0]).not.toContain("The dog is named Freya")
+		expect(bodies[0]).not.toContain("already holds these memories")
+	})
+})
+
+describe("incrementalCapture — spawn failure keeps the mark", () => {
+	const msgEntry = (content: string) =>
+		({ type: "message", message: { role: "user", content } }) as unknown as SessionEntry
+
+	it("a false-returning spawn leaves the span for the next evaluation", () => {
+		const state = createIncrementalCaptureState()
+		const spawnFailing = vi.fn().mockReturnValue(false)
+		const entries = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, state, "/test/cwd", spawnFailing)
+		expect(spawnFailing).toHaveBeenCalledTimes(1)
+		expect(state.spawnedCount).toBe(0)
+		// Recovering spawn re-attempts the SAME batch — nothing is lost.
+		const spawnOk = vi.fn().mockReturnValue(true)
+		incrementalCapture(entries, state, "/test/cwd", spawnOk)
+		expect((spawnOk.mock.calls[0] as CaptureMessage[][])[0]).toHaveLength(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
+		expect(state.spawnedCount).toBe(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
+	})
+})
+
+describe("mid-loop recall producer wiring", () => {
+	const toolResultEvent = (text: string) => ({
+		type: "tool_result",
+		toolCallId: "t1",
+		toolName: "bash",
+		input: {},
+		content: [{ type: "text", text }],
+		isError: false,
+	})
+
+	it("delivers the full result text to the callback per received tool_result", () => {
+		const { api, getHandler } = createExtensionApi()
+		const tails: string[] = []
+		const ctx = createContext()
+		wireMemoryCapture(
+			api as ExtensionAPI,
+			() => true,
+			(tail) => tails.push(tail),
+		)
+		const tri = getHandler("tool_result")
+		const long = `head-${"x".repeat(700)}-END`
+		tri(toolResultEvent(long) as never, ctx)
+		tri(toolResultEvent("plain text") as never, ctx)
+		expect(tails).toEqual([long, "plain text"]) // full text: per-use slicing lives downstream
+	})
+
+	it("swallows producer errors — capture keeps working", () => {
+		const { api, getHandler } = createExtensionApi()
+		const ctx = createContext()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		let failed = 0
+		wireMemoryCapture(
+			api as ExtensionAPI,
+			() => true,
+			() => {
+				failed++
+				throw new Error("producer boom")
+			},
+		)
+		const tri = getHandler("tool_result")
+		expect(() => tri(toolResultEvent("t") as never, ctx)).not.toThrow()
+		expect(failed).toBe(1)
+		expect(consoleError).toHaveBeenCalled()
+		consoleError.mockRestore()
+	})
+
+	it("the producer stays live when capture is disabled", () => {
+		const { api, getHandler } = createExtensionApi()
+		const tails: string[] = []
+		const ctx = createContext()
+		vi.stubEnv("KIMCHI_MEMORY_CAPTURE", "off")
+		wireMemoryCapture(
+			api as ExtensionAPI,
+			() => true,
+			(tail) => tails.push(tail),
+		)
+		getHandler("tool_result")(toolResultEvent("tail-fact") as never, ctx)
+		expect(tails).toEqual(["tail-fact"])
+		vi.unstubAllEnvs()
 	})
 })

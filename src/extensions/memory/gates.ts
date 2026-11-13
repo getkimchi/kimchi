@@ -12,7 +12,8 @@
  *
  * Pure — unit-testable under Node.
  */
-import type { ChoiceQuestion } from "./decision-gate.js"
+import type { ChoiceAnswer, ChoiceQuestion } from "./decision-gate.js"
+import { parseBooleanFlag } from "./flags.js"
 
 /** The gates that exist; each maps to one insertion point in the pipeline. */
 export const DECISION_GATE_KINDS = ["valuation", "triage", "digest", "recall", "supersede"] as const
@@ -59,30 +60,205 @@ export function decisionGatesEnabled(env: { KIMCHI_MEMORY_DECISION_GATE?: string
 // triage/valuation framing; E6 extended digest criteria for dated events;
 // E4's one miss added the opaque-identifiers clause to recall.
 
-/** Window triage: should this window pay extraction at all? (E1/E1b/E5b/E6/E8) */
-export function triageQuestion(): Record<"has_durable_fact", ChoiceQuestion> {
+/** Task-lane acceptance wording — appended ONLY when KIMCHI_MEMORY_TASK_SCOPE
+ * is enabled; flag OFF keeps the criterion strings byte-identical to the
+ * calibrated set below. Change only with a calibration run (module rule). */
+const TASK_SCOPE_TRIAGE_SUFFIX =
+	" (d) DURABLE TASK facts — exact schema/identifier mappings, unit or format conventions, confirmed traps with their corrections, and decisions the asker settled with rationale"
+const TASK_SCOPE_VALUATION_KEEP_SUFFIX =
+	" OR durable task knowledge (exact schema/identifier mapping, unit/format convention, confirmed trap + correction, settled decision rationale)"
+
+/** Task-lane env flag, re-parsed per call — mirrors the other gate env reads. */
+export function taskLaneEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_TASK_SCOPE")
+}
+
+/** Window triage: should this window pay extraction at all? (E1/E1b/E5b/E6/E8,
+ * replaced by the multi-class fan-out after the 2026-11-12 live cross-corpus
+ * experiment — see docs/memory-extension.md. The single has_durable_fact
+ * question crushed assistant-side evidence-grounded conclusions
+ * (p≈0.05–0.24 on tactical notes-to-self); splitting the durable definition
+ * into per-class questions rescued exactly that class without regressing any
+ * content the single question kept.)
+ *
+ * Four CONTENT classes decide keep/skip. A fifth question,
+ * `insight_worth_future_self`, is recorded in the trace/dashboard but is
+ * deliberately NOT gating: it over-fires on raw boilerplate (<skill> blocks,
+ * unmined transcripts) when used as the decider.
+ */
+export type TriageQuestionName =
+	| "user_stated_durable"
+	| "engaged_assistant_answer"
+	| "plan_or_dated_event"
+	| "learned_conclusion"
+	| "insight_worth_future_self"
+
+/** The four classes that gate: skip only when ALL of them score below
+ * TRIAGE_DURABLE_MIN_P. `insight_worth_future_self` is trace-only signal. */
+export const TRIAGE_GATE_CLASSES = [
+	"user_stated_durable",
+	"engaged_assistant_answer",
+	"plan_or_dated_event",
+	"learned_conclusion",
+] as const satisfies readonly TriageQuestionName[]
+
+export type TriageGateClass = (typeof TRIAGE_GATE_CLASSES)[number]
+
+/** All five names, including the trace-only signal — tests key off this set. */
+export const TRIAGE_QUESTION_NAMES: ReadonlySet<string> = new Set([...TRIAGE_GATE_CLASSES, "insight_worth_future_self"])
+
+export function triageQuestions(): Record<TriageQuestionName, ChoiceQuestion> {
 	return {
-		has_durable_fact: {
+		user_stated_durable: {
 			type: "choice",
 			instructions:
-				"Does this snippet contain at least one DURABLE fact worth capturing to long-term memory? Durable sources are: (a) USER-STATED facts — stable preferences, decisions with rationale, corrections, personal context (role, family, plans, possessions, constraints), itemized values (counts, prices, dates, measurements) — each occurrence of recurring items as its own fact; (b) ASSISTANT-PROVIDED answers the user engaged with — the user asked a question it answers, or accepted/acted on/referred back to it (schedules, rotations, recipes, recommendations, numbers); (c) plans and dated events. NOT durable: small talk with no fact content, code/file contents, generic advice the user never engaged with.",
-			criteria: { yes: "At least one durable fact is present", no: "Nothing durable — only transient content" },
+				"Does this snippet contain any USER-STATED durable fact: a stable preference, a decision with rationale, a correction, personal context (role, plans, possessions, constraints), or an itemized value (count, price, date, measurement)?" +
+				(taskLaneEnabled()
+					? `; also: TASK facts —${TASK_SCOPE_TRIAGE_SUFFIX.replace(" (d) DURABLE TASK facts —", "")}`
+					: ""),
+			criteria: { yes: "At least one user-stated durable fact", no: "None" },
+		},
+		engaged_assistant_answer: {
+			type: "choice",
+			instructions:
+				"Does this snippet contain an assistant-provided answer or fact the USER actively engaged with (asked for, accepted, acted on, or referred back to) — e.g. schedules, rotations, recipes, recommendations, numbers the user needed?",
+			criteria: { yes: "At least one engaged assistant answer", no: "None" },
+		},
+		plan_or_dated_event: {
+			type: "choice",
+			instructions: "Does this snippet contain a plan, a scheduled event, or a dated occurrence worth recalling later?",
+			criteria: { yes: "At least one plan or dated event", no: "None" },
+		},
+		learned_conclusion: {
+			type: "choice",
+			instructions:
+				"Does this snippet contain a CONCLUSION established from evidence during the session — a failure pattern identified, a procedure/approach validated or invalidated by its observed outcome, a verified mechanic/rule of the environment, or a tactical/strategic lesson — regardless of whether the user or the assistant stated it?",
+			criteria: { yes: "At least one evidence-grounded conclusion", no: "None" },
+		},
+		insight_worth_future_self: {
+			type: "choice",
+			instructions:
+				"Would any content in this snippet materially help an agent answering in a FUTURE session — something worth loading at the start of the next conversation to avoid repeating a mistake or losing established knowledge? (Judge content type: concrete lessons/facts yes, generic advice no.)",
+			criteria: { yes: "Content worth recalling in a future session", no: "Nothing future-useful" },
 		},
 	}
 }
 
+/** Triage keep/skip decision from one d3 response. Skip only when every
+ * gate class reports a numeric p(yes) below TRIAGE_DURABLE_MIN_P — a
+ * response missing numeric answers degrades to NOT-skip (extraction on
+ * unknowns, mirroring the pre-split undefined behavior).
+ * `probabilities` mirrors the four classes (+ signal question) verbatim
+ * for the drain trace: the dashboard renders which class carried a keep. */
+export function triageVerdict(answers: Partial<Record<TriageQuestionName, ChoiceAnswer | undefined>>): {
+	skip: boolean
+	/** Max gate-class probability — the decisions' numeric anchor (undefined
+	 * when no class answered numerically; skip is then false). */
+	maxP: number | undefined
+	/** The class that carried the keep (the argmax) — for trace labeling. */
+	topClass: TriageGateClass | undefined
+	probabilities: Partial<Record<TriageQuestionName, number>>
+} {
+	const probabilities: Partial<Record<TriageQuestionName, number>> = {}
+	let maxP: number | undefined
+	let topClass: TriageGateClass | undefined
+	for (const name of TRIAGE_GATE_CLASSES) {
+		const p = answers[name]?.probabilities.yes
+		if (typeof p !== "number") continue
+		probabilities[name] = p
+		if (maxP === undefined || p > maxP) {
+			maxP = p
+			topClass = name
+		}
+	}
+	const signal = answers.insight_worth_future_self?.probabilities.yes
+	if (typeof signal === "number") probabilities.insight_worth_future_self = signal
+	return { skip: maxP !== undefined && maxP < TRIAGE_DURABLE_MIN_P, maxP, topClass, probabilities }
+}
+
 /** Fact valuation: keep this extracted fact? (E2/E6/E8) */
 export const VALUATION_STATE =
-	"A memory system extracted the following candidate facts from a user's assistant sessions. Judge each one independently for long-term value."
+	"A memory system extracted these candidate facts from an agent's past sessions. Future sessions of this agent retrieve each memory by semantic similarity with their current task. Judge each fact on one dimension only: would knowing it in advance help a future session do its work better?"
+
+/**
+ * Env flag (KIMCHI_MEMORY_GATE_NOISE_CLASSES, default OFF): append the
+ * empirically measured harness/evaluation protocol boilerplate class to
+ * the valuation discard criteria. The class is content-free — it names a
+ * *kind* of text (protocol meta, store-relevant nowhere), not any
+ * benchmark's content: attempt/query limits, reply-format rules, question
+ * numbering, and "the user is running an automated benchmark/evaluation"
+ * self-references. OFF keeps the criteria bit-identical.
+ */
+export function gateNoiseClassesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_GATE_NOISE_CLASSES", { strict: true })
+}
+
+const GATE_NOISE_CLASS_SUFFIX =
+	"; harness or evaluation protocol boilerplate (attempt/query limits, reply-format rules, question numbering, or statements that the user is running an automated benchmark or evaluation)"
+
+/**
+ * Env flag (KIMCHI_MEMORY_VALUATION_CONTEXT, default OFF): attach the
+ * existing store's fact texts to the valuation state so the gate can see
+ * what is already remembered — judging duplicates, conflicts, and
+ * genuinely-new information with context instead of blind per-fact.
+ */
+export function valuationContextEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_VALUATION_CONTEXT", { strict: true })
+}
+
+/** Bound on existing-store facts attached to the valuation state. */
+export const VALUATION_CONTEXT_MAX_FACTS = 100
+
+/** Bound on source-window text attached to the valuation state, so a large
+ * drain cannot push the state beyond what the decision gateway accepts
+ * comfortably. */
+export const VALUATION_SOURCE_MAX_CHARS = 20000
+
+/** Build the valuation state: the static prompt, plus (flagged) the store's
+ * existing fact texts so discards/keeps can reference the live context, and
+ * (when supplied) the source windows the candidate facts were extracted
+ * from so the judge can reject contradictions or inventions instead of
+ * scoring blind plausibility. */
+export function buildValuationState(existing?: string[], sources?: string[]): string {
+	let state = VALUATION_STATE
+	if (sources && sources.length > 0) {
+		// Two bounds, both enforced: (a) per-window, so every window keeps a
+		// marker of its presence (a vanished tail window would make
+		// "unsupported by the source" a false-negative for the facts that
+		// window produced), and (b) aggregate, so a 60-window drain cannot
+		// blow the state past the gateway's input comfort.
+		const perWindowCap = Math.max(500, Math.floor(VALUATION_SOURCE_MAX_CHARS / sources.length))
+		let used = 0
+		let truncated = 0
+		const kept: string[] = []
+		for (const source of sources) {
+			if (used >= VALUATION_SOURCE_MAX_CHARS) {
+				truncated += 1
+				continue
+			}
+			const cap = Math.min(perWindowCap, VALUATION_SOURCE_MAX_CHARS - used)
+			kept.push(source.length > cap ? `${source.slice(0, cap)}\n[truncated]` : source)
+			used += Math.min(source.length, cap)
+		}
+		if (truncated > 0) kept.push(`[${truncated} further window(s) omitted]`)
+		state = `${state}\n\nThe facts were extracted from these conversation windows \u2014 reject any fact that contradicts or invents details absent from them, and treat truncated or omitted windows as partial:\n\n${kept.map((s) => `---\n${s}`).join("\n")}`
+	}
+	if (!valuationContextEnabled() || !existing || existing.length === 0) return state
+	const head = existing.slice(0, VALUATION_CONTEXT_MAX_FACTS)
+	return `${state}\n\nThe store already holds these memories (use them to spot duplicates, conflicts, and genuinely-new information):\n${head.map((f) => `- ${f}`).join("\n")}`
+}
 
 export function valuationQuestion(fact: string, index: number): ChoiceQuestion {
 	return {
 		type: "choice",
-		instructions: `Candidate memory fact ${index + 1}: "${fact}" — should a long-term memory system KEEP this fact?`,
+		instructions: `Candidate memory fact ${index + 1}: "${fact}" — would knowing it in advance help a future session of this agent complete its task?`,
 		criteria: {
-			keep: "Durable from ANY source: user-stated (stable preference, decision with rationale, correction, personal context, possession with purpose, itemized value, dated event/plan) OR assistant-provided fact the user engaged with (asked, accepted, acted on, referred back: schedules, rotations, recipes, numbers, recommendations) OR lasting project convention",
+			keep:
+				"Durable from ANY source: user-stated (stable preference, decision with rationale, correction, personal context, possession with purpose, itemized value, dated event/plan) OR assistant-provided fact the user engaged with (asked, accepted, acted on, referred back: schedules, rotations, recipes, numbers, recommendations) OR lasting project convention" +
+				(taskLaneEnabled() ? TASK_SCOPE_VALUATION_KEEP_SUFFIX : ""),
 			discard:
-				"Transient: task progress, statuses, work summaries, tool output, or content with no identifiable fact a future session could use",
+				"Transient: task progress, statuses, work summaries, tool output, or content with no identifiable fact a future session could use" +
+				(gateNoiseClassesEnabled() ? GATE_NOISE_CLASS_SUFFIX : ""),
 		},
 	}
 }

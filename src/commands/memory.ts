@@ -9,12 +9,28 @@
  * `kimchi resources enable|disable extensions.memory`.
  */
 import { runAdminCommand } from "../extensions/memory/admin.js"
+import { startMemoryDashboard } from "../extensions/memory/dashboard.js"
 import { confirm } from "./_helpers.js"
 
 export async function runMemory(args: string[]): Promise<number> {
 	const result = await runAdminCommand(args, {
 		cwd: process.cwd(),
 		confirm: confirmReset,
+		// The terminal-only launcher: `kimchi memory dashboard` runs the
+		// loopback dashboard until Ctrl+C; a SIGINT closes the server and
+		// resolves so the process exits with code 0.
+		launchDashboard: async ({ port, openBrowser }) => {
+			const server = await startMemoryDashboard({ port, openBrowser })
+			console.log(`Memory extraction dashboard: ${server.url}`)
+			console.log("Ctrl+C to stop.")
+			await new Promise<void>((resolve) => {
+				process.once("SIGINT", () => {
+					server.close()
+					resolve()
+				})
+			})
+			return { text: "Dashboard stopped.", json: JSON.stringify({ url: server.url }, null, 2), code: 0 }
+		},
 	})
 	console.log(result.useJson ? result.json : result.text)
 	return result.code

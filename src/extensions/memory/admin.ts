@@ -54,7 +54,7 @@ export interface AdminStore {
 export interface AdminDeps {
 	memoryRoot?: string
 	createBackend?: (dbPath: string) => Promise<AdminBackend>
-	acquireLock?: (memoryRoot: string) => Promise<() => Promise<void>>
+	acquireLock?: (memoryRoot: string) => Promise<(() => Promise<void>) | null>
 	/** Decision-gate context for consolidate; default resolves from config. */
 	decisionGate?: DecisionGateOptions | null
 }
@@ -82,6 +82,7 @@ export type AdminCommand =
 	| { op: "delete"; ids: string[] }
 	| { op: "reset"; scope: ScopeFilter; yes: boolean }
 	| { op: "consolidate"; scope: ScopeFilter; yes: boolean }
+	| { op: "dashboard"; port?: number; noOpen: boolean }
 	| { op: "set-enabled"; enabled: boolean }
 	| { op: "usage-error"; message: string }
 
@@ -97,6 +98,12 @@ export const USAGE = `usage: memory [list|search|delete|reset|consolidate|enable
           One-shot d3-assisted cleanup: classifies every fact as unique /
           complementary / exact_twin / near_twin and deletes the redundant
           copies. Reports first; deletes only with --yes (or confirmed).
+  dashboard [--port N] [--no-open]
+          Web dashboard for the capture pipeline: the pending queue, and
+          every drained job with per-phase detail — the full request text
+          and complete response for each extraction/supersede API call,
+          and every d3 decision question with its probabilities.
+          Terminal-only (runs a localhost server until Ctrl+C).
   enable | disable
           Toggle memory for the current interactive session only. Resets on
           restart; the persistent feature switch is
@@ -108,7 +115,16 @@ export const USAGE = `usage: memory [list|search|delete|reset|consolidate|enable
 
 // --- grammar ------------------------------------------------------------------
 
-const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset", "consolidate", "enable", "disable"])
+const KNOWN_SUBCOMMANDS = new Set([
+	"list",
+	"search",
+	"delete",
+	"reset",
+	"consolidate",
+	"dashboard",
+	"enable",
+	"disable",
+])
 const DEFAULT_LIST_LIMIT = 50
 
 export { DEFAULT_LIST_LIMIT }
@@ -119,7 +135,7 @@ interface ParsedFlags {
 	positionals: string[]
 }
 
-const VALUE_FLAGS = new Set(["--scope", "--project", "--limit", "--offset"])
+const VALUE_FLAGS = new Set(["--scope", "--project", "--limit", "--offset", "--port"])
 
 function parseFlagTokens(rest: string[]): ParsedFlags | { error: string } {
 	const values: Record<string, string> = {}
@@ -135,6 +151,8 @@ function parseFlagTokens(rest: string[]): ParsedFlags | { error: string } {
 			bools.add("json")
 		} else if (token === "--yes") {
 			bools.add("yes")
+		} else if (token === "--no-open") {
+			bools.add("no-open")
 		} else if (token.startsWith("--")) {
 			return { error: `unknown flag ${token}` }
 		} else {
@@ -269,6 +287,19 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 		}
 		return { op: "set-enabled", enabled: sub === "enable" }
 	}
+	// Dashboard: sessionless store op (works with the feature disabled),
+	// no scope, no positionals — checked before the scope parse so it never
+	// pays the git probe either.
+	if (sub === "dashboard") {
+		if (flags.positionals.length > 0) {
+			return { op: "usage-error", message: "dashboard takes no positional arguments" }
+		}
+		const port = flags.values.port === undefined ? undefined : parseNonNegativeInt(flags.values.port, "--port")
+		if (typeof port === "object") {
+			return { op: "usage-error", message: port.error }
+		}
+		return { op: "dashboard", port, noOpen: flags.bools.has("no-open") }
+	}
 	// Only list, search, and consolidate consume the parsed scope — overview
 	// and delete get the unresolved local marker instead of paying the git
 	// probe.
@@ -393,7 +424,7 @@ async function defaultCreateBackend(dbPath: string): Promise<AdminBackend> {
 interface ResolvedDeps {
 	memoryRoot: string
 	createBackend: (dbPath: string) => Promise<AdminBackend>
-	acquireLock: (memoryRoot: string) => Promise<() => Promise<void>>
+	acquireLock: (memoryRoot: string) => Promise<(() => Promise<void>) | null>
 }
 
 /** Resolve the decision endpoint for consolidate. Explicitly null only for
@@ -513,6 +544,10 @@ export interface AdminRunOptions {
 	 *  "Last session" line. Omitted by sessionless surfaces (CLI, ACP
 	 *  store overview). */
 	captureSessionId?: string
+	/** Terminal-only dashboard launcher — supplied by the CLI surface
+	 * (commands/memory.ts); in-session callers omit it and /memory
+	 * dashboard answers with the terminal-only hint. */
+	launchDashboard?: (options: { port?: number; openBrowser: boolean }) => Promise<Omit<AdminResult, "useJson">>
 	/** Test seams. */
 	deps?: AdminDeps
 }
@@ -549,6 +584,17 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 				return withMode(await opReset(parsed, options, deps), false)
 			case "consolidate":
 				return withMode(await opConsolidate(parsed, options, deps, options.deps), false)
+			case "dashboard":
+				return withMode(
+					options.launchDashboard
+						? await options.launchDashboard({ port: parsed.port, openBrowser: !parsed.noOpen })
+						: result({
+								text: "`memory dashboard` is terminal-only: run `kimchi memory dashboard [--port N] [--no-open]` in a terminal.",
+								code: 1,
+								data: { error: "dashboard is terminal-only" },
+							}),
+					false,
+				)
 			case "set-enabled":
 				return withMode(opSetEnabled(parsed, options), false)
 		}
@@ -635,8 +681,9 @@ export interface MemoryOverview {
 	root: string
 	stores: Array<{ scope: string; facts: number; sizeBytes: number }>
 	pendingJobs: number
-	/** Quarantined poison capture jobs (deterministic extraction failures,
-	 * moved aside after POISON_JOB_MAX_ATTEMPTS drains). */
+	/** Quarantined capture jobs — deterministic extraction poison and
+	 * add-failed commits (both moved aside after their attempt caps;
+	 * requeue by mv back into pending/). */
 	failedJobs: number
 	ledgerEntries: number
 	/** The most recent capture completion from ANOTHER session — the
@@ -815,6 +862,7 @@ export type AdminResetOutcome =
 	/** Client-side failures — the caller renders them or surfaces them as params problems. */
 	| { ok: false; reason: "cancelled" | "confirmation-required" }
 	| { ok: false; reason: "no-such-store"; scopeId: string }
+	| { ok: false; reason: "busy" }
 
 export interface AdminResetOptions {
 	/** Skip the confirm gate (the grammar's --yes; the ACP method's confirm:true). */
@@ -855,6 +903,7 @@ export async function adminResetScope(scope: ScopeFilter, options: AdminResetOpt
 			return { ok: false, reason: "cancelled" }
 		}
 		const release = await deps.acquireLock(deps.memoryRoot)
+		if (release === null) return { ok: false, reason: "busy" }
 		try {
 			// The held lock lives on capture.lock (+ its .lock directory) —
 			// wiping them under the lock would break release. The migration
@@ -890,6 +939,7 @@ export async function adminResetScope(scope: ScopeFilter, options: AdminResetOpt
 		return { ok: false, reason: "cancelled" }
 	}
 	const release = await deps.acquireLock(deps.memoryRoot)
+	if (release === null) return { ok: false, reason: "busy" }
 	try {
 		await backend.deleteAll()
 	} finally {
@@ -927,6 +977,13 @@ async function opReset(
 		return result({
 			text: `No memory store for ${outcome.scopeId} — nothing to reset.`,
 			data: { scope: outcome.scopeId, error: "no such store" },
+			code: 1,
+		})
+	}
+	if (outcome.reason === "busy") {
+		return result({
+			text: "A capture drain is currently running — retry shortly.",
+			data: { error: "busy" },
 			code: 1,
 		})
 	}
@@ -972,6 +1029,15 @@ async function opConsolidate(
 	if (stores.length === 0) {
 		return result({ text: "No memory stores in this scope — nothing to consolidate.", data: { scans: [] } })
 	}
+	// Busy probe BEFORE the classification batch — a running drain would
+	// fail the mutation acquire below anyway; checking now avoids burning
+	// the multi-minute d3 classification for nothing. Not held across the
+	// classification: classification is read-only against the stores.
+	const probe = await deps.acquireLock(deps.memoryRoot)
+	if (probe === null) {
+		return result({ text: "A capture drain is currently running — retry shortly.", data: { error: "busy" }, code: 1 })
+	}
+	await probe()
 	const lines: string[] = []
 	const deletions: ConsolidateDeletion[] = []
 	const scans: Array<Record<string, unknown>> = []
@@ -990,6 +1056,9 @@ async function opConsolidate(
 				consolidateState(items.map((item) => item.memory)),
 				items.map((item) => item.memory),
 				consolidateQuestion,
+				undefined,
+				undefined,
+				"admin",
 			)
 		} catch (err) {
 			lines.push(
@@ -1050,6 +1119,11 @@ async function opConsolidate(
 		}
 	}
 	const release = await deps.acquireLock(deps.memoryRoot)
+	if (release === null) {
+		lines.push("")
+		lines.push("A capture drain is currently running — nothing deleted; retry shortly.")
+		return result({ text: lines.join("\n"), data: { scans, deletions, applied: false } })
+	}
 	try {
 		const backends = new Map<string, AdminBackend>()
 		for (const d of deletions) {

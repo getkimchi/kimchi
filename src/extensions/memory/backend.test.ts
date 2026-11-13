@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -18,7 +18,9 @@ import {
 	resolveExtractionModel,
 	tagEmbeddingRequests,
 } from "./backend.js"
+import { MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
 import type { SharedEmbedder } from "./embedder.js"
+import { usageLedgerPath } from "./usage-ledger.js"
 
 function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 	return {
@@ -54,6 +56,11 @@ describe("buildMemoryConfig", () => {
 		expect(config.llm.config.apiKey).toBe("test-key")
 		expect(config.vectorStore.provider).toBe("memory")
 		expect(config.vectorStore.config.dbPath).toBe("/tmp/mem.db")
+	})
+
+	it("caps the mem0 llm request with MEMORY_REQUEST_TIMEOUT_MS", () => {
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
+		expect(config.llm.config.timeout).toBe(MEMORY_REQUEST_TIMEOUT_MS)
 	})
 
 	it("uses the user-configured llmEndpoint when set", () => {
@@ -134,17 +141,17 @@ describe("buildMemoryConfig", () => {
 })
 
 describe("embedding endpoint configuration", () => {
-	// The env knobs from the phase-1 A/B runs (MEMORY_EMBEDDING_*,
-	// OPENROUTER_API_KEY) were removed — the model and dims come from the
-	// kimchi config file (memoryEmbedding.model / .dims) or stay pinned.
+	// The env knobs (MEMORY_EMBEDDING_* and the third-party provider key)
+	// were removed — the model and dims come from the kimchi config file
+	// (memoryEmbedding.model / .dims) or stay pinned.
 	// This guards that leftover env from old setups neither redirects nor
 	// breaks anything.
-	it("ignores leftover MEMORY_EMBEDDING_* / OPENROUTER env from the A/B runs", () => {
+	it("ignores leftover MEMORY_EMBEDDING_* / third-party env from old setups", () => {
 		process.env.MEMORY_EMBEDDING_MODEL = "text-embedding-3-large"
-		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
-		process.env.MEMORY_EMBEDDING_API_KEY = "or-key"
+		process.env.MEMORY_EMBEDDING_BASE_URL = "https://provider.test/api/v1"
+		process.env.MEMORY_EMBEDDING_API_KEY = "stale-key"
 		process.env.MEMORY_EMBEDDING_DIMS = "3072"
-		process.env.OPENROUTER_API_KEY = "or-key"
+		process.env.OLD_PROVIDER_API_KEY = "stale-key"
 		try {
 			const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
 			expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
@@ -157,7 +164,7 @@ describe("embedding endpoint configuration", () => {
 			delete process.env.MEMORY_EMBEDDING_BASE_URL
 			delete process.env.MEMORY_EMBEDDING_API_KEY
 			delete process.env.MEMORY_EMBEDDING_DIMS
-			delete process.env.OPENROUTER_API_KEY
+			delete process.env.OLD_PROVIDER_API_KEY
 		}
 	})
 
@@ -337,7 +344,7 @@ describe("createMemoryBackend", () => {
 					headers: { authorization: "Bearer k" },
 					body: JSON.stringify({ input: ["text"], model: "bge-m3" }),
 				})
-				await globalThis.fetch("https://openrouter.ai/api/v1/embeddings", {
+				await globalThis.fetch("https://other-origin.test/api/v1/embeddings", {
 					method: "POST",
 					headers: { authorization: "Bearer k" },
 					body: JSON.stringify({ input: ["text"], model: "openai/text-embedding-3-small" }),
@@ -353,6 +360,88 @@ describe("createMemoryBackend", () => {
 			} finally {
 				globalThis.fetch = originalFetch
 			}
+		})
+
+		it("merges a caller-held abort signal with the timeout (AbortSignal.any semantics)", async () => {
+			const originalFetch = globalThis.fetch
+			let captured: RequestInit | undefined
+			globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				captured = init
+				return new Response("{}", { status: 200 })
+			})
+			try {
+				tagEmbeddingRequests("https://gw.test/merge/v1")
+				const caller = new AbortController()
+				await globalThis.fetch("https://gw.test/merge/v1/embeddings", {
+					method: "POST",
+					body: JSON.stringify({ input: ["x"], model: "bge-m3" }),
+					signal: caller.signal,
+				})
+				// (a) an embeddings request gets a merged signal (never undefined)
+				expect(captured?.signal).toBeDefined()
+				// (b) the merged signal is not the bare caller signal
+				expect(captured?.signal === caller.signal).toBe(false)
+				// (c) caller abort propagates through the merge
+				caller.abort()
+				expect(captured?.signal?.aborted).toBe(true)
+			} finally {
+				globalThis.fetch = originalFetch
+			}
+		})
+
+		it("gateway /embeddings gets the merged signal even with no caller signal; non-embeddings keeps init untouched", async () => {
+			const originalFetch = globalThis.fetch
+			const seen: Array<{ url: string; init: RequestInit | undefined }> = []
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				seen.push({ url: String(input), init })
+				return new Response("{}", { status: 200 })
+			})
+			try {
+				tagEmbeddingRequests("https://gw.test/nosig/v1")
+				await globalThis.fetch("https://gw.test/nosig/v1/embeddings", {
+					method: "POST",
+					body: JSON.stringify({ input: ["x"], model: "bge-m3" }),
+				})
+				await globalThis.fetch("https://gw.test/nosig/v1/models")
+				// (d) embeddings without caller signal gets a timeout signal
+				expect(seen[0]?.init?.signal).toBeDefined()
+				expect(seen[0]?.init?.signal?.aborted).toBe(false)
+				// Non-embeddings request passes through with no added signal
+				expect(seen[1]?.init?.signal).toBeUndefined()
+			} finally {
+				globalThis.fetch = originalFetch
+			}
+		})
+
+		it("records a usage-ledger embedding row without consuming the response body", async () => {
+			const originalFetch = globalThis.fetch
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(JSON.stringify({ data: [], usage: { prompt_tokens: 7, total_tokens: 7 } }), {
+						status: 200,
+					}),
+			)
+			try {
+				tagEmbeddingRequests("https://gw.test/v1")
+				const returned = await globalThis.fetch("https://gw.test/v1/embeddings", {
+					method: "POST",
+					headers: { authorization: "Bearer k" },
+					body: JSON.stringify({ input: ["text"], model: "bge-m3" }),
+				})
+				// The SDK's consumer can still read the body — the ledger row read
+				// a clone, not the response itself.
+				const body = (await returned.json()) as { usage?: { prompt_tokens?: number } }
+				expect(body.usage?.prompt_tokens).toBe(7)
+			} finally {
+				globalThis.fetch = originalFetch
+			}
+			// The row lands (the clone read is asynchronous — give it a beat).
+			await new Promise((resolve) => setTimeout(resolve, 20))
+			const lines = readFileSync(usageLedgerPath(), "utf-8")
+				.split("\n")
+				.filter((line) => line.length > 0)
+			const row = JSON.parse(lines[lines.length - 1] ?? "") as Record<string, unknown>
+			expect(row).toMatchObject({ kind: "embedding", model: "bge-m3", inputTokens: 7 })
 		})
 	})
 })
@@ -460,7 +549,7 @@ describe("tagEmbeddingRequests organization header", () => {
 				headers: { "X-CastAi-Organization-Id": "org-stamped" },
 				body: JSON.stringify({ input: ["t"] }),
 			})
-			await globalThis.fetch("https://openrouter.ai/v1/embeddings", { method: "POST", body: "{}" })
+			await globalThis.fetch("https://other-origin.test/v1/embeddings", { method: "POST", body: "{}" })
 			expect(seen[0]?.headers.get("x-castai-organization-id")).toBe("org-7")
 			// pre-stamped (models.json provider headers) is never clobbered
 			expect(seen[1]?.headers.get("x-castai-organization-id")).toBe("org-stamped")

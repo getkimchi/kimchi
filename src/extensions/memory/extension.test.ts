@@ -11,9 +11,10 @@ import { createCommandContext, createContext, createToolContext } from "../__moc
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
 import { MEMORY_PRE_REQUEST_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
-import { createMemoryExtension, type MemorySearcher } from "./index.js"
+import { createMemoryExtension, type MemorySearcher, memoryEnabledNotice } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
+import { createMemorySaveTool } from "./tools.js"
 
 // The /memory command handler delegates to the admin core; the backend-
 // touching functions are mocked so arg threading, panel mounting, and
@@ -824,8 +825,12 @@ describe("memory extension", () => {
 		}
 		// Turn 1 (digest) + one drift retrieval per follow-up turn — every user
 		// message is fresh signal, so recall keeps running for the whole session.
-		expect(search).toHaveBeenCalledTimes(8)
-		expect(sendMessage).toHaveBeenCalledTimes(7)
+		// Turn 1 (digest) + one drift retrieval per follow-up turn — every user
+		// message is fresh signal, so recall keeps running for the whole session.
+		// The final SEND lands one settle hop after the last search: poll it
+		// too (the search-flush above only proves retrieval, not delivery).
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(8))
+		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(7))
 	})
 
 	it("the drift recall runs detached — the turn never waits on retrieval", async () => {
@@ -1134,6 +1139,63 @@ describe("memory extension — digest selection gate", () => {
 		}
 	})
 
+	it("the digest floor widens the search to floor+1 (topK threads through) and selection runs above the floor", async () => {
+		process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES = "1"
+		const decisionFetch = selectorFetchImpl(["the user's dog is named Freya"])
+		const searchCalls: Array<number | undefined> = []
+		const searcher = {
+			search: vi.fn(async (_q: string, topK?: number) => {
+				searchCalls.push(topK)
+				return searchable()
+			}),
+		}
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => searcher,
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(["digest"]),
+				}),
+			}),
+		)
+		const turn1 = await start(startEvent("digest floor pin"), fakeCtx)
+		// 3 candidates strictly exceed the floor (1): the selection call ran.
+		expect(turn1?.systemPrompt).toContain("the user's dog is named Freya")
+		expect(turn1?.systemPrompt).not.toContain("greplier")
+		// Searched with the widened cap, not the store default (8) nor floor itself.
+		expect(searchCalls[0]).toBe(2)
+		delete process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES
+	})
+
+	it("at/under the floor the selector never runs (small stores keep recall)", async () => {
+		process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES = "3"
+		const decisionFetch = vi.fn(async () => {
+			throw new Error("must not be called")
+		})
+		const searchCalls: Array<number | undefined> = []
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({
+					search: vi.fn(async (_q: string, topK?: number) => {
+						searchCalls.push(topK)
+						return searchable()
+					}),
+				}),
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(["digest"]),
+				}),
+			}),
+		)
+		const turn1 = await start(startEvent("digest floor pin"), fakeCtx)
+		// 3 candidates == floor 3: threshold rule keeps all.
+		expect(turn1?.systemPrompt).toContain("greplier")
+		expect(searchCalls[0]).toBe(4)
+		delete process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES
+	})
+
 	it("the digest gate off (subset env): no selector call, threshold rule applies", async () => {
 		const decisionFetch = vi.fn(async () => {
 			throw new Error("must not be called")
@@ -1144,7 +1206,7 @@ describe("memory extension — digest selection gate", () => {
 				createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
 				decision: () => ({
 					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
-					enabled: new Set(["triage"]), // digest NOT enabled
+					enabled: new Set(["valuation"]), // digest NOT enabled
 				}),
 			}),
 		)
@@ -1332,7 +1394,6 @@ describe("memory saved feedback (completion record)", () => {
 		writeRecord(3)
 		await start(startEvent("fourth turn"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
-
 		// Saves never announce — the segment half is the only surface.
 		expect(vi.mocked(ctx.ui.notify).mock.calls.every((call) => !String(call[0]).startsWith("Saved"))).toBe(true)
 	})
@@ -1414,5 +1475,255 @@ describe("memory saved feedback (completion record)", () => {
 		writeRecord(3)
 		await start(startEvent("turn 2"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
+	})
+})
+
+describe("authored lane wiring (KIMCHI_MEMORY_AUTHORED)", () => {
+	afterEach(() => {
+		delete process.env.KIMCHI_MEMORY_AUTHORED
+	})
+
+	it("flag OFF: save_memory is not registered", () => {
+		const { api, getRegisteredTool } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
+		expect(() => getRegisteredTool("save_memory")).toThrow(/not registered/)
+	})
+
+	it("flag ON: save_memory is registered (only then can the model write)", () => {
+		process.env.KIMCHI_MEMORY_AUTHORED = "1"
+		const { api, getRegisteredTool } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
+		expect(getRegisteredTool("save_memory")).toBeDefined()
+		expect(getRegisteredTool("save_memory")?.name).toBe("save_memory")
+	})
+
+	it("the system-prompt notice never contradicts the registered tool surface", () => {
+		process.env.KIMCHI_MEMORY_AUTHORED = "1"
+		expect(memoryEnabledNotice()).toContain("save_memory")
+		expect(memoryEnabledNotice()).not.toContain("there is no write tool")
+		delete process.env.KIMCHI_MEMORY_AUTHORED
+		expect(memoryEnabledNotice()).toContain("there is no write tool to call")
+		expect(memoryEnabledNotice()).not.toContain("save_memory")
+	})
+})
+
+describe("authored lane redaction parity", () => {
+	it("save_memory redacts credential-shaped facts before persisting", async () => {
+		const stored: string[] = []
+		const tool = createMemorySaveTool({
+			write: async (text) => {
+				stored.push(text)
+			},
+			existing: async () => [],
+			isEnabled: () => true,
+		})
+		await tool.execute(
+			"call-1",
+			{ fact: "The gateway key is sk-proj-AbCdEf1234567890GhIjKlMnOpQrStUvWx in the shared config." },
+			undefined,
+			undefined,
+			{} as never,
+		)
+		expect(stored).toHaveLength(1)
+		expect(stored[0]).toContain("[authored]")
+		expect(stored[0]).toContain("[REDACTED-")
+		expect(stored[0]).not.toContain("sk-proj-")
+	})
+})
+
+describe("mid-loop recall (step-budget trigger)", () => {
+	const K = 25 // MEMORY_STEP_RECALL_INTERVAL — the tool steps between evaluations
+
+	const toolResultEvent = (text: string) => ({
+		type: "tool_result",
+		toolCallId: "t1",
+		toolName: "bash",
+		input: {},
+		content: [{ type: "text", text }],
+		isError: false,
+	})
+
+	function fireToolResults(handler: ReturnType<RigBundle["getHandler"]>, n: number, label: string) {
+		for (let i = 0; i < n; i++) {
+			handler(toolResultEvent(`${label} step state ${i}`) as never, fakeCtx)
+		}
+	}
+	type RigBundle = Awaited<ReturnType<typeof setup>>
+	// One combined tool_result handler in the capture-enabled wiring (producer + increment).
+	const getToolResultHandler = (r: RigBundle) => r.getHandler("tool_result")
+
+	function freshFactSearcher() {
+		let n = 0
+		let first = true
+		return {
+			search: vi.fn(async () => {
+				if (first) {
+					first = false
+					return [] // turn-1 digest finds nothing: no seeds, no pre-turn injection
+				}
+				n++
+				return [{ memory: `durable loop tactic ${n}`, score: 0.95 }]
+			}),
+		}
+	}
+
+	async function flushChain() {
+		// The step trigger's evaluation chains microtasks after the
+		// tool_result handler returns; a few macrotask ticks drain the whole
+		// microtask queue, including chained catch-up evaluations.
+		for (let i = 0; i < 5; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 0))
+		}
+	}
+
+	it("evaluates recall every K tool steps in a loop without user turns", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run the episode"), fakeCtx)
+		fireToolResults(tri, 2 * K + K / 2, "arc")
+		await flushChain()
+		// 2*K + K/2 steps → exactly 2 step-window evaluations, both injecting.
+		expect(sendMessage.mock.calls.length).toBe(2)
+		// within the last window nothing else fires
+		fireToolResults(tri, K - 1, "tail")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(2)
+	})
+
+	it("a user-turn injection suppresses the step trigger for one full window", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("entry"), fakeCtx)
+		// Second user turn: progressive recall injects at loop step 0 —
+		// delivery is detached from the turn (#1701 semantics), so poll the
+		// settle before counting.
+		await start(startEvent("new topic, please adjust"), fakeCtx)
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
+		// K-1 tool steps: inside the suppression window — no step injection.
+		fireToolResults(tri, K - 1, "suppressed")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		// At K steps since the user-turn injection the trigger shoulders in.
+		fireToolResults(tri, 1, "crossing")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(2)
+	})
+
+	it("compaction resets the step counter and budget window", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		fireToolResults(tri, K - 1, "pre-compact")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+		await start(startEvent("continuation after compact"), fakeCtx) // has hits now: user-turn injects (1)
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
+		rig.getHandler("session_compact")({}, fakeCtx)
+		// Counter zeroed: K-1 further steps stay inside the fresh window,
+		// NOT crossing an old boundary at K total.
+		fireToolResults(tri, K - 2, "post-compact")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+	})
+
+	it("disabled memory session: step trigger no-ops and a flip resets counters", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		setSessionMemoryOverride(fakeCtx.sessionManager, false)
+		fireToolResults(tri, K, "disabled")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+		// Flip back on → the flip is processed at the next agent start; that
+		// turn's progressive recall legitimately injects (user-turn path),
+		// and the flip ALSO resets the step counters, so the following K-1
+		// steps stay within the fresh window: only the crossing step fires.
+		setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
+		await start(startEvent("memory back on"), fakeCtx) // user-turn injects: 1
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
+		fireToolResults(tri, K - 1, "after-flip")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		fireToolResults(tri, 1, "after-flip-crossing")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(2)
+	})
+
+	it("state-revisit: a repeated state fires one revisit evaluation exactly once", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		const state = (room: string, step: number) => `step ${step}\nroom: ${room}\ninventory: key`
+		fireToolResults(tri, 1, "")
+		tri(toolResultEvent(state("grey hall", 1)) as never, fakeCtx)
+		tri(toolResultEvent(state("white cell", 2)) as never, fakeCtx)
+		tri(toolResultEvent(state("grey hall", 3)) as never, fakeCtx) // revisit
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		// A third pass through the same room fires nothing — once per state.
+		tri(toolResultEvent(state("grey hall", 4)) as never, fakeCtx)
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+	})
+
+	it("state-revisit: strictly-unique states fire nothing", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		fireToolResults(tri, 1, "")
+		tri(toolResultEvent("room: alpha\ninventory: key") as never, fakeCtx)
+		tri(toolResultEvent("room: beta\ninventory: key") as never, fakeCtx)
+		tri(toolResultEvent("room: gamma\ninventory: key") as never, fakeCtx)
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+	})
+
+	it("context facets carry recent message texts into the embedding facets", async () => {
+		populateCliArgs(["--memory"])
+		const search = vi.fn(async (query: string) => [{ memory: `fact for ${query.slice(0, 20)}`, score: 0.95 }])
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => ({ search }) }))
+		const { start } = rig
+		const tri = getToolResultHandler(rig)
+		const assistant = (text: string) =>
+			({
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text }] },
+			}) as unknown as SessionEntry
+		const user = (text: string) =>
+			({ type: "message", message: { role: "user", content: [{ type: "text", text }] } }) as unknown as SessionEntry
+		const entries = [
+			user("objective: reach the lab"),
+			assistant("the northern gate is blocked by a trigger script"),
+			assistant("heading north from the gate"),
+		]
+		const ctx = createContext({ sessionManager: { getEntries: () => entries } })
+		await start(startEvent("run"), fakeCtx)
+		// K tool steps with the seeded ctx → one step-budget evaluation whose
+		// facets embed the recent message texts (the latest assistant entry
+		// is the reasoning head; earlier turns are context facets).
+		for (let i = 0; i < K; i++) tri(toolResultEvent(`state ${i}`) as never, ctx)
+		await flushChain()
+		expect(search).toHaveBeenCalled()
+		const facetTexts = search.mock.calls.map((call) => call[0] as string)
+		expect(facetTexts.some((t) => t.includes("the northern gate is blocked"))).toBe(true)
+		expect(facetTexts.some((t) => t.includes("objective: reach the lab"))).toBe(true)
 	})
 })

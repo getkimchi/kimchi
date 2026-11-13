@@ -1,13 +1,33 @@
-import { describe, expect, it, vi } from "vitest"
+import { readFileSync } from "node:fs"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	batchChoice,
 	DECISION_BATCH_SIZE,
 	DECISION_QUESTION_CAP,
+	DecisionBreaker,
 	DecisionGateError,
 	decide,
 	MEMORY_DECISION_TAG,
+	sharedDecisionBreaker,
 	systemoneEndpoint,
 } from "./decision-gate.js"
+import { usageLedgerPath } from "./usage-ledger.js"
+
+beforeEach(() => {
+	// The shared breaker is process-global state: failure-injecting tests
+	// would otherwise wedge later tests' decides into circuit-open mode.
+	sharedDecisionBreaker.recordSuccess()
+})
+
+/** The last usage-ledger row (rows accumulate across this file's tests). */
+function lastLedgerRow(): Record<string, unknown> {
+	const lines = readFileSync(usageLedgerPath(), "utf-8")
+		.split("\n")
+		.filter((line) => line.length > 0)
+	const last = lines[lines.length - 1]
+	if (!last) throw new Error("usage ledger has no rows")
+	return JSON.parse(last) as Record<string, unknown>
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
@@ -37,6 +57,37 @@ describe("systemoneEndpoint", () => {
 })
 
 describe("decide", () => {
+	it("records a usage-ledger row with kind, model, usage, and question count", async () => {
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse({
+				...(answersBody(["q1"]) as Record<string, unknown>),
+				usage: { input_tokens: 42, output_tokens: 0 },
+			}),
+		) as unknown as typeof fetch
+		await decide(
+			{ ...GATE, fetchImpl },
+			"state",
+			{ q1: { type: "choice", instructions: "i", criteria: { yes: "y", no: "n" } } },
+			"triage",
+		)
+		expect(lastLedgerRow()).toMatchObject({ kind: "triage", model: "d3", inputTokens: 42, questions: 1 })
+	})
+
+	it("records a failed row (zero tokens) when the gateway rejects the call", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ error: "no quota" }, 401)) as unknown as typeof fetch
+		await expect(
+			decide(
+				{ ...GATE, fetchImpl, maxRetries: 0 },
+				"s",
+				{ q1: { type: "choice", instructions: "i", criteria: { a: "a" } } },
+				"recall",
+			),
+		).rejects.toThrow(/HTTP 401/)
+		const row = lastLedgerRow()
+		expect(row).toMatchObject({ kind: "recall", failed: true })
+		expect(row.inputTokens).toBeUndefined()
+	})
+
 	it("posts state, questions, model, and the usage tag; returns validated answers", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1", "q2"]))) as unknown as typeof fetch
 		const res = await decide({ ...GATE, fetchImpl }, "state text", {
@@ -137,5 +188,162 @@ describe("batchChoice", () => {
 				criteria: { a: "a" },
 			})),
 		).rejects.toBeInstanceOf(DecisionGateError)
+	})
+})
+
+describe("decide onExchange hook", () => {
+	const question = { type: "choice" as const, instructions: "durable?", criteria: { yes: "y", no: "n" } }
+
+	it("receives the exact request body and the full parsed response on success", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1"]))) as unknown as typeof fetch
+		const exchanges: Array<{ request: Record<string, unknown>; response?: Record<string, unknown> }> = []
+		const result = await decide(
+			{ ...GATE, fetchImpl, onExchange: (exchange) => exchanges.push(exchange) },
+			"the full state text",
+			{ q1: question },
+		)
+		expect(exchanges).toHaveLength(1)
+		expect(exchanges[0]?.request).toEqual({
+			model: "d3",
+			state: "the full state text",
+			questions: { q1: question },
+			tags: [MEMORY_DECISION_TAG],
+		})
+		expect(exchanges[0]?.response?.answers).toEqual(result.answers)
+		expect(exchanges[0]?.response?.id).toBe("decision-x")
+		expect(exchanges[0]?.response?.usage).toEqual({ input_tokens: 10, output_tokens: 0 })
+	})
+
+	it("receives the HTTP status on a rejected call", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ error: "no quota" }, 401)) as unknown as typeof fetch
+		const exchanges: Array<{ error?: string; status?: number }> = []
+		await expect(
+			decide({ ...GATE, fetchImpl, maxRetries: 0, onExchange: (exchange) => exchanges.push(exchange) }, "s", {
+				q1: question,
+			}),
+		).rejects.toBeInstanceOf(DecisionGateError)
+		expect(exchanges).toHaveLength(1)
+		expect(exchanges[0]?.status).toBe(401)
+	})
+
+	it("receives the error on a network failure after the retry budget", async () => {
+		const fetchImpl = vi.fn(async () => {
+			throw new Error("socket hang up")
+		}) as unknown as typeof fetch
+		const exchanges: Array<{ error?: string }> = []
+		await expect(
+			decide({ ...GATE, fetchImpl, maxRetries: 0, onExchange: (exchange) => exchanges.push(exchange) }, "s", {
+				q1: question,
+			}),
+		).rejects.toThrow("socket hang up")
+		expect(exchanges).toHaveLength(1)
+		expect(exchanges[0]?.error).toBe("socket hang up")
+	})
+
+	it("turn-path regression: no hook configured — behave exactly as before (no hook calls, same result)", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1"]))) as unknown as typeof fetch
+		const result = await decide({ ...GATE, fetchImpl }, "s", { q1: question })
+		expect(result.answers.q1?.choice).toBe("yes")
+		expect(result.usage.input_tokens).toBe(10)
+	})
+})
+
+describe("DecisionBreaker circuit state machine", () => {
+	const question = {
+		type: "choice" as const,
+		instructions: "is it?",
+		criteria: { yes: "yes", no: "no" },
+	}
+
+	it("closed circuit passes decides through untouched", async () => {
+		const t = 0
+		const breaker = new DecisionBreaker({ now: () => t, probeDelayMs: 60_000 })
+		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q"]))) as unknown as typeof fetch
+		for (let i = 0; i < 3; i++) {
+			const r = await decide({ ...GATE, breaker, fetchImpl }, "s", { q: question })
+			expect(r.answers.q?.choice).toBe("yes")
+		}
+		expect(fetchImpl).toHaveBeenCalledTimes(3)
+		expect(breaker.shouldSkip()).toBe(false)
+	})
+
+	it("opens only after the consecutive-failure threshold; skips without fetching once open", async () => {
+		const t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 2, probeDelayMs: 60_000 })
+		const bad = vi.fn(async () => {
+			throw new Error("read ETIMEDOUT")
+		}) as unknown as typeof fetch
+		const opts = { ...GATE, breaker, fetchImpl: bad, maxRetries: 0 } as const
+		await expect(decide(opts, "s", { q: question })).rejects.toThrow("ETIMEDOUT")
+		expect(breaker.shouldSkip()).toBe(false) // one specimen is NOT an outage
+		await expect(decide(opts, "s", { q: question })).rejects.toThrow("ETIMEDOUT")
+		expect(breaker.shouldSkip()).toBe(true) // second consecutive failure opens
+		for (let i = 0; i < 5; i++) {
+			await expect(decide(opts, "s", { q: question })).rejects.toBeInstanceOf(DecisionGateError)
+		}
+		expect(bad).toHaveBeenCalledTimes(2) // skipped calls never touched the wire
+	})
+
+	it("probe window admits exactly one specimen; success closes the circuit", async () => {
+		let t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 1, probeDelayMs: 60_000 })
+		const bad = vi.fn(async () => {
+			throw new Error("EHOSTUNREACH")
+		}) as unknown as typeof fetch
+		await expect(decide({ ...GATE, breaker, fetchImpl: bad, maxRetries: 0 }, "s", { q: question })).rejects.toThrow()
+		expect(breaker.shouldSkip()).toBe(true)
+		t = 61_000
+		expect(breaker.shouldSkip()).toBe(false) // probe due
+		const good = vi.fn(async () => jsonResponse(answersBody(["q"]))) as unknown as typeof fetch
+		const r = await decide({ ...GATE, breaker, fetchImpl: good }, "s", { q: question })
+		expect(r.answers.q?.choice).toBe("yes")
+		expect(breaker.shouldSkip()).toBe(false) // closed again
+	})
+
+	it("failed probe re-opens with doubled backoff (per interval, not per failure)", async () => {
+		let t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 1, probeDelayMs: 60_000 })
+		const bad = vi.fn(async () => {
+			throw new Error("reset")
+		}) as unknown as typeof fetch
+		const opts = { ...GATE, breaker, fetchImpl: bad, maxRetries: 0 } as const
+		await expect(decide(opts, "s", { q: question })).rejects.toThrow()
+		t = 61_000
+		await expect(decide(opts, "s", { q: question })).rejects.toThrow() // probe 1 fails → 120s
+		t = 61_000 + 61_000
+		expect(breaker.shouldSkip()).toBe(true)
+		t = 61_000 + 121_000
+		expect(breaker.shouldSkip()).toBe(false)
+	})
+
+	it("contract failures (valid HTTP, unparseable answers) never trip the breaker", async () => {
+		const t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 1, probeDelayMs: 60_000 })
+		const badContract = vi.fn(async () =>
+			jsonResponse({ id: "x", model: "d3", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }),
+		) as unknown as typeof fetch
+		const opts = { ...GATE, breaker, fetchImpl: badContract } as const
+		await expect(decide(opts, "s", { q: question })).rejects.toBeInstanceOf(DecisionGateError)
+		expect(breaker.shouldSkip()).toBe(false)
+		await expect(decide(opts, "s", { q: question })).rejects.toBeInstanceOf(DecisionGateError)
+		expect(badContract).toHaveBeenCalledTimes(2)
+	})
+
+	it("probe-slot release: an aborted probe leaves the circuit probeable", async () => {
+		let t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 1, probeDelayMs: 60_000 })
+		// Open via one specimen failure.
+		const bad = vi.fn(async () => {
+			throw new Error("down")
+		}) as unknown as typeof fetch
+		await expect(decide({ ...GATE, breaker, fetchImpl: bad, maxRetries: 0 }, "s", { q: question })).rejects.toThrow()
+		t = 61_000
+		// Reserve the probe slot (the path decide() takes before awaiting).
+		expect(breaker.shouldSkip()).toBe(false)
+		breaker.reserveProbe()
+		expect(breaker.shouldSkip()).toBe(true)
+		// Simulate the unexpected-exit guard decide() runs in finally.
+		breaker.releaseProbe()
+		expect(breaker.shouldSkip()).toBe(false)
 	})
 })
