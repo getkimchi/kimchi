@@ -16,6 +16,7 @@ import {
 import { Spacer, Text } from "@earendil-works/pi-tui"
 import { clearApiKey, endpointsForRegion, loadConfig } from "./config.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
+import { filterCodexSubscription } from "./extensions/login/codex-gateway.js"
 import {
 	completeKimchiSsoLogin,
 	createLoginChoiceSelector,
@@ -355,7 +356,9 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 		return
 	}
 
-	const providerOptions = modeLike.getLoginProviderOptions("oauth").filter((provider) => !isKimchiProvider(provider.id))
+	const providerOptions = filterCodexSubscription(
+		modeLike.getLoginProviderOptions("oauth").filter((provider) => !isKimchiProvider(provider.id)),
+	)
 	if (providerOptions.length === 0) {
 		modeLike.showStatus?.("No subscription providers available.")
 		return

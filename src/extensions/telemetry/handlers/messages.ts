@@ -9,7 +9,7 @@ import { handleTransportError } from "./transport-errors.js"
 
 /** Maps OAuth provider IDs to canonical names accepted by the telemetry backend. */
 const PROVIDER_TELEMETRY_MAP: Record<string, string> = {
-	"openai-codex": "openai",
+	"kimchi-dev/openai-codex": "openai",
 }
 
 export function handleMessageStart(tm: TelemetryContext, ctx: ExtensionContext, event: { message: Message }): void {

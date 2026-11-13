@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Socket } from "node:net"
 import { setTimeout as sleep } from "node:timers/promises"
+import { zstdDecompressSync } from "node:zlib"
 import type { VerifyApiKeyResponse } from "../../../../src/api/organizations.js"
 
 export interface FakeModel {
@@ -326,6 +327,14 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				return
 			}
 
+			// Responses routes: the ChatGPT-subscription route (pi's openai-codex provider,
+			// zstd-compressed request) and the native OpenAI one. Both reply with Responses-style SSE.
+			if (req.method === "POST" && /^\/openai\/v1\/(codex\/)?responses/.test(req.url ?? "")) {
+				const script = pickResponseScript(request, mainQueue, subagentQueue)
+				writeCodexResponse(res, script, body)
+				return
+			}
+
 			writeJson(res, 404, { error: `Unhandled fake OpenAI route: ${req.method} ${req.url}` })
 		} catch (error) {
 			if (!res.headersSent) {
@@ -367,7 +376,9 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
 	}
 	if (chunks.length === 0) return undefined
-	const raw = Buffer.concat(chunks).toString("utf-8")
+	let bytes = Buffer.concat(chunks)
+	if (req.headers["content-encoding"] === "zstd") bytes = zstdDecompressSync(bytes)
+	const raw = bytes.toString("utf-8")
 	try {
 		return JSON.parse(raw)
 	} catch {
@@ -683,6 +694,70 @@ function takeResponseScript(queue: FakeResponseScript[], request: FakeResponseRe
 
 function unixNow(): number {
 	return Math.floor(Date.now() / 1000)
+}
+
+function writeCodexResponse(res: ServerResponse, script: FakeResponseScript, body: unknown): void {
+	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
+	const text = (script.stream ?? ["fake response"]).join("")
+	res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" })
+	const response = (status: string, output: unknown[]) => ({
+		id: "resp_fake",
+		object: "response",
+		model,
+		status,
+		output,
+		usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, input_tokens_details: { cached_tokens: 0 } },
+	})
+	const item = (status: string, content: unknown[]) => ({
+		type: "message",
+		id: "msg_fake",
+		role: "assistant",
+		status,
+		content,
+	})
+	const toolCalls = script.toolCalls ?? []
+	const output: unknown[] = []
+	writeSse(res, { type: "response.created", response: response("in_progress", []) })
+	// A script with tool calls and no text is a tool-only turn; every other script answers with text.
+	if (script.stream || toolCalls.length === 0) {
+		const outputIndex = output.length
+		writeSse(res, { type: "response.output_item.added", output_index: outputIndex, item: item("in_progress", []) })
+		writeSse(res, {
+			type: "response.content_part.added",
+			item_id: "msg_fake",
+			output_index: outputIndex,
+			content_index: 0,
+			part: { type: "output_text", text: "", annotations: [] },
+		})
+		writeSse(res, {
+			type: "response.output_text.delta",
+			item_id: "msg_fake",
+			output_index: outputIndex,
+			content_index: 0,
+			delta: text,
+		})
+		const done = item("completed", [{ type: "output_text", text, annotations: [] }])
+		writeSse(res, { type: "response.output_item.done", output_index: outputIndex, item: done })
+		output.push(done)
+	}
+	for (const [index, toolCall] of toolCalls.entries()) {
+		const outputIndex = output.length
+		const callId = toolCall.id ?? `call_fake_${index}`
+		const functionCall = (arguments_: string) => ({
+			type: "function_call",
+			id: `fc_${callId}`,
+			call_id: callId,
+			name: toolCall.function.name,
+			arguments: arguments_,
+		})
+		writeSse(res, { type: "response.output_item.added", output_index: outputIndex, item: functionCall("") })
+		const done = functionCall(toolCall.function.arguments)
+		writeSse(res, { type: "response.output_item.done", output_index: outputIndex, item: done })
+		output.push(done)
+	}
+	writeSse(res, { type: "response.completed", response: response("completed", output) })
+	res.end()
 }
 
 function writeSse(res: ServerResponse, event: unknown): void {

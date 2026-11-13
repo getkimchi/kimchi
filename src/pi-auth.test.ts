@@ -125,6 +125,25 @@ describe("syncPiAuth", () => {
 		})
 	})
 
+	it("leaves the ChatGPT subscription login alone when storing or clearing the Kimchi key", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+		const chatgpt = { type: "oauth", access: "chatgpt-jwt", refresh: "", expires: 4_102_444_800_000 }
+		writeFileSync(authPath, JSON.stringify({ "kimchi-dev/openai-codex": chatgpt }))
+		writeFileSync(modelsPath, JSON.stringify({ providers: { "kimchi-dev": {}, "kimchi-dev/openai-codex": {} } }))
+
+		await syncPiAuth(authPath, modelsPath, "kimchi-key")
+		expect(JSON.parse(readFileSync(authPath, "utf-8"))).toEqual({
+			"kimchi-dev": { type: "api_key", key: "kimchi-key" },
+			"kimchi-dev/openai-codex": chatgpt,
+		})
+
+		await syncPiAuth(authPath, modelsPath, "")
+		expect(JSON.parse(readFileSync(authPath, "utf-8"))).toEqual({ "kimchi-dev/openai-codex": chatgpt })
+	})
+
 	it("writes auth.json atomically so a concurrent lock-free reader never observes a torn file", async () => {
 		// POSIX rename is the invariant under test; Windows replace semantics differ.
 		if (process.platform === "win32") return

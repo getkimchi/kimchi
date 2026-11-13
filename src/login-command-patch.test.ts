@@ -23,6 +23,13 @@ vi.mock("@earendil-works/pi-ai/compat", async () => {
 
 // The self-hosted login prompt resolves the install's endpoints via the
 // discovery document; unit tests must not hit the network.
+const { codexAvailableMock } = vi.hoisted(() => ({ codexAvailableMock: vi.fn(() => true) }))
+vi.mock("./extensions/login/codex-gateway.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./extensions/login/codex-gateway.js")>()),
+	filterCodexSubscription: <T extends { id: string }>(providers: T[]) =>
+		providers.filter((provider) => provider.id !== "kimchi-dev/openai-codex" || codexAvailableMock()),
+}))
+
 vi.mock("./self-hosted-discovery.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./self-hosted-discovery.js")>()
 	return { ...actual, fetchSelfHostedEndpoints: vi.fn() }
@@ -1066,7 +1073,7 @@ it("routes the subscription option to OpenAI Codex without showing internal Kimc
 		{ id: "kimchi-dev", name: "Kimchi", authType: "oauth" },
 		{ id: "kimchi-dev/openai", name: "Kimchi", authType: "oauth" },
 		{ id: "kimchi-dev/anthropic", name: "Kimchi", authType: "oauth" },
-		{ id: "openai-codex", name: "OpenAI Codex", authType: "oauth" },
+		{ id: "kimchi-dev/openai-codex", name: "OpenAI Codex", authType: "oauth" },
 	])
 
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
@@ -1077,7 +1084,24 @@ it("routes the subscription option to OpenAI Codex without showing internal Kimc
 	await waitForMockCall(fakeIm.showLoginDialog)
 
 	expect(fakeIm.getLoginProviderOptions).toHaveBeenCalledWith("oauth")
-	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai-codex", "OpenAI Codex")
+	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("kimchi-dev/openai-codex", "OpenAI Codex")
+})
+
+it("hides OpenAI Codex from the subscription list when the gateway feed has no chatgpt entries", async () => {
+	codexAvailableMock.mockReturnValueOnce(false)
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([
+		{ id: "kimchi-dev/openai-codex", name: "OpenAI Codex", authType: "oauth" },
+	])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("No subscription providers available.")
+	expect(fakeIm.showLoginDialog).not.toHaveBeenCalled()
 })
 
 it("shows one Kimchi entry in generic configure and logout provider lists", async () => {
@@ -1249,7 +1273,7 @@ it("preserves upstream logout behavior for non-Kimchi providers", async () => {
 	const registry = makeFakeModelRegistry()
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.getLogoutProviderOptions.mockResolvedValue([
-		{ id: "openai-codex", name: "OpenAI Codex", authType: "oauth", status: { configured: true } },
+		{ id: "kimchi-dev/openai-codex", name: "OpenAI Codex", authType: "oauth", status: { configured: true } },
 	])
 
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
@@ -1258,7 +1282,7 @@ it("preserves upstream logout behavior for non-Kimchi providers", async () => {
 	fakeIm.selectorComponent.handleInput("\n")
 	await waitForMockCall(registry.logout)
 
-	expect(registry.logout).toHaveBeenCalledWith("openai-codex", { signal: expect.any(AbortSignal) })
+	expect(registry.logout).toHaveBeenCalledWith("kimchi-dev/openai-codex", { signal: expect.any(AbortSignal) })
 	expect(configModule.clearApiKey).not.toHaveBeenCalled()
 	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Logged out of OpenAI Codex")

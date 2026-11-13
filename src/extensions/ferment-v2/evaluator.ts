@@ -1,6 +1,7 @@
 import type { Api, Context, Model, Usage } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
+import { CODEX_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError } from "../../llm-gateway-error.js"
 import { INTERNAL_SESSION_ENTRY } from "../../session-visibility.js"
 import { findModelByRef } from "../../shared/model-ref.js"
@@ -31,7 +32,7 @@ function isKimchiManagedJsonModeProvider(provider: string): boolean {
 	return (
 		provider === "moonshotai" ||
 		provider === "kimchi-dev" ||
-		provider.startsWith("kimchi-dev/") ||
+		(provider.startsWith("kimchi-dev/") && provider !== CODEX_PROVIDER_ID) ||
 		provider === "kimchi-experimental"
 	)
 }

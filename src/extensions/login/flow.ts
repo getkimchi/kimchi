@@ -25,7 +25,7 @@ import {
 	writeRegion,
 } from "../../config.js"
 import { markCredentialStale } from "../../credential-staleness.js"
-import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
+import { CODEX_PROVIDER_ID, isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
 	applyOrganizationHeader,
 	isTransientModelsError,
@@ -49,6 +49,7 @@ import { discoveryFailureMessage, fetchSelfHostedEndpoints } from "../../self-ho
 import { GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "../auto-model/constants.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 import { requestStatusIdentityRefresh } from "../status/refresh.js"
+import { filterCodexSubscription } from "./codex-gateway.js"
 
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
@@ -380,6 +381,8 @@ function upstreamModelToPiConfig(m: Model<Api>, providerId: string): PiModelConf
 }
 
 export async function prePopulateSubscriptionModels(providerId: string): Promise<void> {
+	// Codex models come from the gateway feed, never pi's hardcoded list.
+	if (providerId === CODEX_PROVIDER_ID) return
 	const piModels = getModels?.(providerId as Parameters<typeof getModels>[0]) ?? []
 	if (piModels.length === 0) return
 
@@ -414,7 +417,7 @@ export function getKimchiProviderIds(modelRegistry: ModelRegistryLike): Set<stri
 		...modelRegistry
 			.getAll()
 			.map((model) => model.provider)
-			.filter((providerId) => providerId.startsWith(`${KIMCHI_PROVIDER_ID}/`)),
+			.filter((providerId) => providerId.startsWith(`${KIMCHI_PROVIDER_ID}/`) && providerId !== CODEX_PROVIDER_ID),
 	])
 }
 
@@ -1024,8 +1027,7 @@ export function getSubscriptionProviderOptions(
 					return { id, name: provider.name ?? provider.auth.oauth.name ?? id }
 				})
 				.filter((provider): provider is { id: string; name: string } => provider !== undefined)
-	return providers
-		.filter((provider) => !isKimchiProvider(provider.id))
+	return filterCodexSubscription(providers.filter((provider) => !isKimchiProvider(provider.id)))
 		.map((provider) => ({
 			id: provider.id,
 			name: provider.name,
