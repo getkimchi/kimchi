@@ -143,6 +143,7 @@ import {
 } from "../../extensions/pii-redaction/vault.js"
 import { formatPRWatchStatus, runPRWatchCommand } from "../../extensions/pr-monitor/command.js"
 import { getPRMonitor } from "../../extensions/pr-monitor/index.js"
+import { setPRMonitoringPermitted } from "../../extensions/pr-monitor/session-policy.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
@@ -173,8 +174,10 @@ import {
 	AVAILABLE_EXT_METHODS,
 	BACKGROUND_RUNS_CAPABILITY,
 	getClientOptedIntoBackgroundRuns,
+	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
+	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
 import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
@@ -669,6 +672,7 @@ export class KimchiAcpAgent implements Agent {
 		// live commands vs. the completion guard) for every session this
 		// server creates.
 		setBackgroundRunsPermitted(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
+		setPRMonitoringPermitted(getClientOptedIntoPRMonitoring(request.clientCapabilities))
 
 		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
@@ -748,6 +752,7 @@ export class KimchiAcpAgent implements Agent {
 					// button. Note the agent NEEDS this flag advertised only so
 					// clients feature-detect the gate; emission is opt-in gated.
 					[BACKGROUND_RUNS_CAPABILITY]: true,
+					[PR_MONITORING_CAPABILITY]: true,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
@@ -1520,8 +1525,11 @@ export class KimchiAcpAgent implements Agent {
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
-		// Standard command advertisement + text replies work in existing ACP clients.
-		if (/^\/pr-watch(?:\s|$)/.test(text) && images.length === 0) {
+		if (
+			getClientOptedIntoPRMonitoring(this.clientCapabilities) &&
+			/^\/pr-watch(?:\s|$)/.test(text) &&
+			images.length === 0
+		) {
 			const monitor = getPRMonitor(entry.session.sessionManager)
 			let reply: string
 			try {
@@ -1667,6 +1675,7 @@ export class KimchiAcpAgent implements Agent {
 		switch (method) {
 			case AVAILABLE_EXT_METHODS.pr_status:
 			case AVAILABLE_EXT_METHODS.set_pr_monitor:
+				if (!getClientOptedIntoPRMonitoring(this.clientCapabilities)) throw RequestError.methodNotFound(method)
 				return handlePRMonitor(
 					(sessionId) => this.sessions.get(sessionId)?.session,
 					params,
@@ -3288,7 +3297,10 @@ export class KimchiAcpAgent implements Agent {
 				sessionId,
 				update: {
 					sessionUpdate: "available_commands_update",
-					availableCommands: composeAvailableCommands(record.skillCommands),
+					availableCommands: composeAvailableCommands(
+						record.skillCommands,
+						getClientOptedIntoPRMonitoring(this.clientCapabilities),
+					),
 				},
 			})
 		})

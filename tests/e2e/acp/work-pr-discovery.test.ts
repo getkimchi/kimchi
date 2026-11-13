@@ -63,7 +63,7 @@ it("keeps tracked GitLab history in /work and shows only the checked-out branch'
 		extensionPath: fileURLToPath(new URL("../tui/support/fixtures/pr-api.js", import.meta.url)),
 		responses: [],
 		pretrustWorkDir: true,
-		clientMeta: { "kimchi.dev": { pi_notify: true } },
+		clientMeta: { "kimchi.dev": { pi_notify: true, prMonitoring: true, backgroundRuns: true } },
 	})
 
 	const cwd = fixture.workDir

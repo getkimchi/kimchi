@@ -85,18 +85,40 @@ PR URL to leave the others running.
 
 ## Studio and other ACP clients
 
-The harness advertises `pr-watch` through standard `available_commands_update`.
-Commands sent as ordinary `session/prompt` text return ordinary
-`agent_message_chunk` replies. Existing Studio builds can list, send and display
-the command without a Studio code change. Repair output and tool activity use
-the existing agent-initiated run stream.
-`/pr-watch monitor` returns the current snapshot as ordinary text in ACP clients.
-The one-time general offer uses the existing confirmation dialog, with standard
-ACP permission choices for clients without elicitation support. The saved user
-preference applies to future ACP sessions without another offer. Accepting
-enables CI fixes under normal permissions; it requires no Studio change.
-Natural-language requests use the same `pr_watch` tool and existing tool/result
-stream in TUI and ACP, with no additional client protocol.
+ACP clients must opt in at `initialize` before PR monitoring is available:
+
+```json
+{
+  "clientCapabilities": {
+    "_meta": {
+      "kimchi.dev": {
+        "prMonitoring": true,
+        "backgroundRuns": true
+      }
+    }
+  }
+}
+```
+
+The harness advertises both flags under `agentCapabilities._meta["kimchi.dev"]`.
+Both client flags are required because the watcher can start repair turns after
+`session/prompt` returns. The existing background-run start/end notifications let
+the client show and cancel those runs.
+
+Without both flags, Kimchi registers no PR-watch command, tool or consent offer,
+and starts no watcher or repair turn. Loading a saved session does not restore
+its watcher, even if the user previously enabled automatic watching. Stored
+conversation messages still replay normally. The PR extension methods return
+`-32601` (method not found) for clients that have not opted in. TUI and native
+RPC behavior is unchanged; native RPC uses its own event contract.
+
+Studio can reuse its existing command, confirmation, tool and message rendering,
+but must declare the capability flags before using PR monitoring. For an opted-in
+client, `pr-watch` appears in `available_commands_update`; commands use ordinary
+`session/prompt` text and `agent_message_chunk` replies. Natural-language requests
+use the `pr_watch` tool. `/pr-watch monitor` returns a text snapshot.
+The general consent choice is separate from client capability support and still
+applies across future supported sessions. Normal permissions gate repairs.
 
 Clients that want structured state can use these optional extension methods:
 

@@ -30,6 +30,7 @@ it.each([
 	vi.stubEnv("KIMCHI_TEST_PR_MONITOR", stateFile)
 	const fixture = await startAcpFixture({
 		artifactName: `pr-monitor-${kind}`,
+		clientMeta: { "kimchi.dev": { prMonitoring: true, backgroundRuns: true } },
 		pretrustWorkDir: true,
 		extraArgs: [kind === "natural-plan" ? "--plan" : "--yolo", ...(kind === "flag" ? ["--pr-watch"] : [])],
 		extensionPath: fileURLToPath(new URL("./support/pr-monitor-api.js", import.meta.url)),
@@ -124,6 +125,7 @@ it.each([
 		expect(fixture.initializeResponse.agentCapabilities?._meta?.["kimchi.dev"]).toMatchObject({
 			pr_status: true,
 			set_pr_monitor: true,
+			prMonitoring: true,
 		})
 		const initial = await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId })
 		expect(initial.state).toMatchObject({ enabled: kind === "flag" || kind === "offer", autoFix: kind === "offer" })
@@ -192,6 +194,17 @@ it.each([
 				params: expect.objectContaining({ sessionId, state: expect.objectContaining({ phase: "fixing" }) }),
 			})
 		expect(fixture.client.agentTextBySession().get(sessionId)).toContain("pushed the repair commit")
+		if (kind === "ci") {
+			await expect
+				.poll(
+					() =>
+						fixture.client.extNotifications.filter(({ method }) => method === "_kimchi.dev/background_run_end").length,
+				)
+				.toBe(1)
+			expect(
+				fixture.client.extNotifications.filter(({ method }) => method === "_kimchi.dev/background_run_start"),
+			).toHaveLength(1)
+		}
 		if (kind === "command") {
 			const requests = fixture.fake.requests.filter((request) => request.url.includes("chat/completions")).length
 			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch status" }] })

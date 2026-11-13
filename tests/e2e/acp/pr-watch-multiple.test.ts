@@ -23,6 +23,7 @@ it.each([
 	vi.stubEnv("KIMCHI_TEST_PR_MONITOR", stateFile)
 	const fixture = await startAcpFixture({
 		artifactName: `pr-watch-multiple-home-${provider}`,
+		clientMeta: { "kimchi.dev": { prMonitoring: true, backgroundRuns: true } },
 		extraArgs: ["--yolo"],
 		extensionPath: fileURLToPath(
 			new URL(provider === "github" ? "./support/pr-monitor-api.js" : "./support/mr-monitor-api.js", import.meta.url),

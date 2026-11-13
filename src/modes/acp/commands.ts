@@ -38,8 +38,14 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 ]
 
 /** Full session palette: static commands first, then skill commands. */
-export function composeAvailableCommands(skillCommands: ReadonlyMap<string, AcpSkillInfo>): AvailableCommand[] {
-	return [...AVAILABLE_COMMANDS, ...buildSkillAvailableCommands(Array.from(skillCommands.values()))]
+export function composeAvailableCommands(
+	skillCommands: ReadonlyMap<string, AcpSkillInfo>,
+	prMonitoring = false,
+): AvailableCommand[] {
+	return [
+		...AVAILABLE_COMMANDS.filter(({ name }) => name !== "pr-watch" || prMonitoring),
+		...buildSkillAvailableCommands(Array.from(skillCommands.values())),
+	]
 }
 
 /** Snapshot the loader's current skills without rescanning (session setup). */

@@ -2,17 +2,23 @@ import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, TuiAltScreen } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getParsedCliArgs } from "../../cli-args.js"
+import { isAcpSessionHost } from "../../modes/acp/state.js"
 import { createCommandContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
 import prMonitorExtension, { getPRMonitor } from "./index.js"
 import { readPRSnapshot } from "./providers.js"
+import { setPRMonitoringPermitted } from "./session-policy.js"
 import { readPRWatchPreference, writePRWatchPreference } from "./settings.js"
 import type { PRSnapshot } from "./types.js"
 
 vi.mock("./providers.js", () => ({ readPRSnapshot: vi.fn() }))
 vi.mock("./settings.js", () => ({ readPRWatchPreference: vi.fn(), writePRWatchPreference: vi.fn() }))
 vi.mock("../../cli-args.js", async (original) => ({ ...(await original()), getParsedCliArgs: vi.fn() }))
+vi.mock("../../modes/acp/state.js", async (original) => ({
+	...(await original()),
+	isAcpSessionHost: vi.fn(() => false),
+}))
 
 describe("/pr-watch", () => {
 	let extension: ReturnType<typeof createExtensionApi>
@@ -42,6 +48,43 @@ describe("/pr-watch", () => {
 		await command.handler("stop", ctx)
 		expect(getPRMonitor(ctx.sessionManager)?.snapshot.enabled).toBe(false)
 		expect(extension.sendMessage).not.toHaveBeenCalled()
+	})
+	it("does not register, restore, poll or offer PR watching for an unsupported ACP client", async () => {
+		vi.useFakeTimers()
+		vi.mocked(isAcpSessionHost).mockReturnValue(true)
+		setPRMonitoringPermitted(false)
+		vi.mocked(readPRWatchPreference).mockReturnValue(true)
+		vi.mocked(getParsedCliArgs).mockReturnValue({ options: { "pr-watch": true }, positionals: [] })
+		vi.mocked(readPRSnapshot).mockClear()
+		const blocked = createExtensionApi()
+		const blockedCtx = createCommandContext()
+		vi.spyOn(blockedCtx.sessionManager, "getEntries").mockReturnValue([
+			{
+				type: "custom",
+				id: "saved-watch",
+				parentId: null,
+				timestamp: "2026-11-13T12:00:00Z",
+				customType: "pr_monitor",
+				data: { enabled: true, autoFix: true, attempts: 0, mode: "ci" },
+			},
+		])
+		try {
+			prMonitorExtension(blocked.api)
+			await blocked.emit("session_start", {}, blockedCtx)
+			await blocked.emit("agent_settled", { aborted: false }, blockedCtx)
+			await vi.advanceTimersByTimeAsync(90_000)
+			expect(blocked.registerTool).not.toHaveBeenCalled()
+			expect(blocked.registerCommand).not.toHaveBeenCalled()
+			expect(getPRMonitor(blockedCtx.sessionManager)).toBeUndefined()
+			expect(readPRSnapshot).not.toHaveBeenCalled()
+			expect(blocked.sendMessage).not.toHaveBeenCalled()
+			expect(blocked.appendEntry).not.toHaveBeenCalled()
+			expect(blockedCtx.ui.confirm).not.toHaveBeenCalled()
+		} finally {
+			await blocked.emit("session_shutdown", {}, blockedCtx)
+			vi.mocked(isAcpSessionHost).mockReturnValue(false)
+			vi.useRealTimers()
+		}
 	})
 	it("changes the general preference even before a PR exists, without inference or a tracking row", async () => {
 		const command = extension.getRegisteredCommand("pr-watch")

@@ -6,6 +6,7 @@ import { formatPRWatchStatus, runPRWatchCommand } from "./command.js"
 import { createPRTrackingOffer } from "./offer.js"
 import { PRMonitorPanel } from "./panel.js"
 import { renderPRWatchCall, renderPRWatchResult } from "./render.js"
+import { isPRMonitoringPermitted } from "./session-policy.js"
 import { discoverMyOpenPRs } from "./targets.js"
 import type { PRMonitorState } from "./types.js"
 import { renderPRWatchWidget } from "./widget.js"
@@ -17,6 +18,7 @@ export function getPRMonitor(sessionManager: object): PRWatchCollection | undefi
 }
 
 export default function prMonitorExtension(pi: ExtensionAPI): void {
+	if (!isPRMonitoringPermitted()) return
 	let monitor: PRWatchCollection | undefined
 	let panel: PRMonitorPanel | undefined
 	let refreshUI: (() => void) | undefined
