@@ -544,6 +544,182 @@
 		}
 	},
 	{
+		"tool": "edit",
+		"message": "edits[1] and edits[2] overlap in /home/dev/project/apps/api/src/lib/server/services/errors.ts. Merge them into one edit or target disjoint regions.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit targets overlap"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Edit tool input is invalid. edits must contain at least one replacement.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit empty replacements"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "EISDIR: illegal operation on a directory, read",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Path is a directory"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "ENOENT: no such file or directory, open '/Users/dev/proj/missing.md'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Read path not found"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "EPERM: operation not permitted, access '/Users/dev/project/docs/results/baseline.md'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "EACCES: permission denied, open '/etc/hosts'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "ETIMEDOUT: connection timed out, write",
+		"expect": {
+			"kind": "failure",
+			"message": "Filesystem timeout"
+		}
+	},
+	{
+		"tool": "grep",
+		"message": "rg: regex parse error:\n    (?:chatWithRetry\\(llm, SUPERSEDE_SYSTEM_PROMPT|chatWithRetry<{)\n                                                                  ^\nerror: repetition quantifier expects a valid decimal",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Invalid regex"
+		}
+	},
+	{
+		"tool": "grep",
+		"message": "ripgrep (rg) is not available and could not be downloaded",
+		"expect": {
+			"kind": "failure",
+			"message": "Search tool unavailable"
+		}
+	},
+	{
+		"tool": "find",
+		"message": "fd is not available and could not be downloaded",
+		"expect": {
+			"kind": "failure",
+			"message": "Search tool unavailable"
+		}
+	},
+	{
+		"tool": "codemode",
+		"message": "The // @options: line must be the first line of the input; found one on line 2",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Codemode options line misplaced"
+		}
+	},
+	{
+		"tool": "propose_ferment_scoping",
+		"message": "Field \"phases\" was a string, but it did not contain a valid JSON array. Emit phases as a real array, not prose or malformed JSON text.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Ferment argument not valid JSON"
+		}
+	},
+	{
+		"tool": "complete_ferment",
+		"message": "Every gate object requires {id, verdict, rationale, evidence}. Fix these and retry:\nS1: missing \"verdict\"",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Ferment gate objects invalid"
+		}
+	},
+	{
+		"tool": "complete_ferment",
+		"message": "complete_ferment refused — agent self-flagged on 1 ferment gate(s):\n\n  ⛔ Gate C1: Four of five success criteria met: baseline recognition incomplete",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Ferment self-flagged"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Could not edit file: /home/dev/project/src/app.ts. Error code: EACCES.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "EPERM: operation not permitted, mkdir '/home/dev/project/.cache'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "ENOTDIR: not a directory, open '/home/dev/project/README.md/sub'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Path not found"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "EPERM: operation not permitted, rename '/home/dev/project/a.txt' -> '/home/dev/project/b.txt'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "ls",
+		"message": "Cannot read directory: EACCES: permission denied, scandir '/home/dev/project'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Filesystem permission denied"
+		}
+	},
+	{
+		"tool": "grep",
+		"message": "rg: /home/dev/project/protected: Incorrect function. (os error 1)",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Search target error"
+		}
+	},
+	{
+		"tool": "scope_ferment",
+		"message": "Cannot scope ferment — agent self-flagged on 2 plan gate(s):\n\n  ⛔ Gate P1: phases lack a verifiable success signal",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Ferment self-flagged"
+		}
+	},
+	{
+		"tool": "complete_ferment_step",
+		"message": "Step 3: \"Add the export button\" cannot complete - agent self-flagged on 1 step gate(s):\n\n  ⛔ Gate S2: no evidence attached",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Ferment self-flagged"
+		}
+	},
+	{
 		"tool": "codemode",
 		"message": "Script failed\nWall time 0.1 seconds\nOutput:\n\nScript error:\nReferenceError: x is not defined",
 		"expect": {

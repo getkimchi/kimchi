@@ -386,7 +386,39 @@ describe("handleMessageEnd", () => {
 			"error",
 			expect.objectContaining({
 				error_type: "transport_error",
-				error_message: expect.stringContaining("socket connection was closed unexpectedly"),
+				error_message: "Transport: socket closed unexpectedly",
+				canonicalization: "v1",
+			}),
+			expect.anything(),
+		)
+	})
+
+	it("canonicalizes stream idle timeouts with bounded attrs instead of the raw host/timeout text", async () => {
+		const { ctx, piCtx } = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		await handleMessageEnd(ctx, piCtx, {
+			message: {
+				role: "assistant",
+				model: "kimi-k2.6",
+				provider: "kimchi-dev",
+				stopReason: "error",
+				errorMessage:
+					"Stream idle timeout: socket connection closed — no bytes received from llm.kimchi.dev during body for 300000ms (read timed out)",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+				timestamp: BASE_TS,
+				responseId: "chatcmpl-transport-idle",
+			} as Message,
+		})
+
+		expect(emitSpy).toHaveBeenCalledWith(
+			"error",
+			expect.objectContaining({
+				error_type: "transport_error",
+				error_message: "Transport: stream idle timeout",
+				canonicalization: "v1",
+				upstream_host: "llm.kimchi.dev",
+				idle_timeout_ms: 300000,
 			}),
 			expect.anything(),
 		)

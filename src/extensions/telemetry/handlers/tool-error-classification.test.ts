@@ -58,9 +58,11 @@ describe("classifyToolError — fixture replay (real export messages)", () => {
 
 	it("collapses the curated set to a bounded set of canonical messages", () => {
 		const distinct = new Set(typedFixtures.map((f) => f.expect.message))
-		// ~40 canonical families cover the curated export; growth beyond this
-		// means a new pattern is emitting per-instance messages.
-		expect(distinct.size).toBeLessThanOrEqual(40)
+		// ~40 canonical families covered the curated export through the 1.28.2
+		// canonicalization; the 2026-11 gap-closing pass (fs errno, rg/fd,
+		// codemode, ferment validation) raises the ceiling to 50. Growth beyond
+		// that means a new pattern is emitting per-instance messages.
+		expect(distinct.size).toBeLessThanOrEqual(50)
 	})
 
 	it("leaks no absolute path, ISO timestamp, or rate-limit window into canonical messages", () => {
@@ -215,9 +217,13 @@ describe("classifyToolError — tool scoping (negative cases)", () => {
 		expect(c.kind).toBe("failure")
 	})
 
-	it("does not apply read patterns to the find tool", () => {
+	it("does not apply read-specific canonicals to the find tool (shared fs family does)", () => {
 		const c = classifyToolError("find", "ENOENT: no such file or directory, access '/src/missing'")
-		expect(c.kind).toBe("failure")
+		// The read tool's family canonical ("Read path not found") must not
+		// leak to find — but the shared fs errno family correctly
+		// canonicalizes this shape for path tools too (review follow-up).
+		expect(c.kind).toBe("model_mistake")
+		expect(c.message).toBe("Path not found")
 	})
 
 	it("does not apply the ask_user cancellation pattern to other tools", () => {
