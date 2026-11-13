@@ -160,11 +160,15 @@ when v2 stabilizes.)
 
 ## Evidence lineage
 
-Unsolicited-turn gating: #1728 (`session-policy.ts`). Replay id re-allocation on wake:
-`toolCallIdMap.clear()` in the `agent_start` branch of `src/modes/acp/server.ts`. Title-as-name
-fragility: `describeToolCall` kind-`"other"` tools had no schema slot for the tool name
-(the spec's `name` field is now the fix target). Placement rework: #1727. CustomEntry vs
-`sendCustomMessage`: #1729 (commit `cb2985e5c`).
+The workstream that produced this doc:
+
+- **Unsolicited-turn gating** (#1728, `session-policy.ts`).
+- **Replay id re-allocation on wake.** `toolCallIdMap.clear()` in the `agent_start`
+  branch of `src/modes/acp/server.ts`.
+- **Title-as-name fragility.** `describeToolCall` kind-`"other"` tools had no schema
+  slot for the tool name (the spec's `name` field is now the fix target).
+- **Placement rework** (#1727).
+- **CustomEntry vs `sendCustomMessage`** (#1729, commit `cb2985e5c`).
 
 Earlier instances of the same class, all fixed after the fact:
 
