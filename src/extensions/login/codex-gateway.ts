@@ -8,7 +8,7 @@ import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { CODEX_PROVIDER_ID, chatCompletionsApi } from "../../models.js"
 import { getVersion } from "../../utils.js"
-import { codexRequestMetadata } from "./codex-request-context.js"
+import { codexRequestMetadata, resolveCodexSession } from "./codex-request-context.js"
 
 type CodexProvider = ReturnType<typeof openaiCodexProvider>
 
@@ -93,7 +93,8 @@ export function withGatewayOptions<T extends Pick<StreamOptions, "sessionId" | "
 	const { token, source } = resolveGatewayCredentials(config)
 	if (source !== "api-key" || model.baseUrl !== chatCompletionsApi(config.customLlmEndpoint)) return options
 	// pi's Codex client defaults User-Agent to "pi (...)"; the gateway attributes traffic by `kimchi/<version>`.
-	const correlation = options?.sessionId ? codexCorrelation(options.sessionId) : undefined
+	const correlatedSession = resolveCodexSession(options?.sessionId)
+	const correlation = correlatedSession ? codexCorrelation(correlatedSession) : undefined
 	const callerOnPayload = options?.onPayload
 	return {
 		...options,

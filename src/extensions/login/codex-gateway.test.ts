@@ -4,7 +4,7 @@ import { join } from "node:path"
 import type { Api, Model, StreamOptions } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { filterCodexSubscription, isCodexGatewayAvailable, withGatewayOptions } from "./codex-gateway.js"
-import { resetCodexSession } from "./codex-request-context.js"
+import { beginCodexCompaction, endCodexCompaction, resetCodexSession, startCodexTurn } from "./codex-request-context.js"
 
 const { loadConfigMock } = vi.hoisted(() => ({ loadConfigMock: vi.fn() }))
 
@@ -130,6 +130,7 @@ describe("withGatewayOptions correlation", () => {
 	beforeEach(() => {
 		useApiKey()
 		resetCodexSession("s1")
+		startCodexTurn("s1", 0)
 	})
 
 	it("adds Codex correlation headers", () => {
@@ -200,5 +201,26 @@ describe("withGatewayOptions correlation", () => {
 			headers: { "X-Parent-Session-Id": "p1" },
 		})
 		expect((options?.headers as Record<string, string>)["X-Parent-Session-Id"]).toBe("p1")
+	})
+
+	it("gives a compaction request with an unknown session id the compacting session's correlation", () => {
+		startCodexTurn("s1", 3)
+		beginCodexCompaction("s1")
+		const options: StreamOptions | undefined = withGatewayOptions(model, { sessionId: "random-uuid" })
+		const headers = options?.headers as Record<string, string>
+		expect(headers["thread-id"]).toBe("s1")
+		expect(headers["x-codex-window-id"]).toBe("s1:3")
+		expect(JSON.parse(headers["x-codex-turn-metadata"])).toMatchObject({ thread_id: "s1", request_kind: "compaction" })
+		endCodexCompaction("s1", 3)
+		resetCodexSession("s1")
+	})
+
+	it("gives an unknown session id with no compaction the originator only", () => {
+		const options: StreamOptions | undefined = withGatewayOptions(model, { sessionId: "random-uuid" })
+		const headers = options?.headers as Record<string, string>
+		expect(headers.originator).toBe("kimchi")
+		expect(headers).not.toHaveProperty("thread-id")
+		expect(headers).not.toHaveProperty("x-codex-turn-metadata")
+		expect(options?.onPayload).toBeUndefined()
 	})
 })

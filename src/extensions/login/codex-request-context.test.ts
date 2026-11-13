@@ -5,11 +5,13 @@ import {
 	countCompactions,
 	endCodexCompaction,
 	resetCodexSession,
+	resolveCodexSession,
 	startCodexTurn,
 } from "./codex-request-context.js"
 
 describe("codex request context", () => {
 	it("starts at window 0 with a v7 turn id, kind turn", () => {
+		startCodexTurn("s1", 0)
 		const m = codexRequestMetadata("s1")
 		expect(m).toMatchObject({
 			sessionId: "s1",
@@ -23,6 +25,7 @@ describe("codex request context", () => {
 	})
 
 	it("keeps the turn id until the next turn starts", () => {
+		startCodexTurn("s1", 0)
 		const a = codexRequestMetadata("s1").turnId
 		expect(codexRequestMetadata("s1").turnId).toBe(a)
 		startCodexTurn("s1", 0)
@@ -80,5 +83,44 @@ describe("codex request context", () => {
 
 	it("counts compaction entries only", () => {
 		expect(countCompactions([{ type: "message" }, { type: "compaction" }, { type: "compaction" }])).toBe(2)
+	})
+
+	describe("resolveCodexSession", () => {
+		it("returns a known session id as is", () => {
+			startCodexTurn("s1", 0)
+			expect(resolveCodexSession("s1")).toBe("s1")
+			resetCodexSession("s1")
+		})
+
+		it("returns undefined for an unknown id with no compaction running", () => {
+			startCodexTurn("s1", 0)
+			expect(resolveCodexSession("random")).toBeUndefined()
+			expect(resolveCodexSession(undefined)).toBeUndefined()
+			resetCodexSession("s1")
+		})
+
+		it("maps an unknown id to the one compacting session, until the compaction ends", () => {
+			startCodexTurn("s1", 0)
+			beginCodexCompaction("s1")
+			expect(resolveCodexSession("random")).toBe("s1")
+			expect(resolveCodexSession(undefined)).toBe("s1")
+			endCodexCompaction("s1", 1)
+			expect(resolveCodexSession("random")).toBeUndefined()
+			resetCodexSession("s1")
+		})
+
+		it("does not guess when two sessions are compacting", () => {
+			beginCodexCompaction("s1")
+			beginCodexCompaction("s2")
+			expect(resolveCodexSession("random")).toBeUndefined()
+			resetCodexSession("s1")
+			resetCodexSession("s2")
+		})
+
+		it("reading metadata for an unknown id leaves no state behind", () => {
+			resetCodexSession("fresh")
+			codexRequestMetadata("fresh")
+			expect(resolveCodexSession("fresh")).toBeUndefined()
+		})
 	})
 })
