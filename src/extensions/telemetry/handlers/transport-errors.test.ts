@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { createContext } from "../../__mocks__/context.js"
 import type { TelemetryContext } from "../session-context.js"
-import { classifyTransportError, handleTransportError } from "./transport-errors.js"
+import { classifyTransportError, handleTransportError, TRANSPORT_ERROR_PATTERNS } from "./transport-errors.js"
 
 function mockSessionCtx(): Pick<TelemetryContext, "emit" | "getTraceAttributes"> {
 	return {
@@ -232,5 +232,32 @@ describe("classifyTransportError (direct)", () => {
 		expect(c.message.length).toBe(300)
 		expect(c.message.endsWith("xxx")).toBe(true)
 		expect(c.attrs).toBeUndefined()
+	})
+})
+
+describe("classifyTransportError — gate/family sync (review follow-up)", () => {
+	it("every gate pattern has a canonical family (no silent raw fallback)", () => {
+		// Tripwire: a gate pattern added without a matching family reverts its
+		// events to the raw per-instance message — the exact regression this
+		// canonicalization fixes.
+		for (const pattern of TRANSPORT_ERROR_PATTERNS) {
+			const message = `upstream failure: ${pattern} during request`
+			const c = classifyTransportError(message)
+			const fellBack = c.message === message.slice(0, 300)
+			expect(fellBack, `gate pattern "${pattern}" has no canonical family`).toBe(false)
+		}
+	})
+
+	it("exports known upstream hosts in plaintext and hashes custom gateways", () => {
+		const known = classifyTransportError(
+			"Stream idle timeout: socket connection closed — no bytes received from llm.kimchi.dev during body for 300000ms (read timed out)",
+		)
+		expect(known.attrs?.upstream_host).toBe("llm.kimchi.dev")
+
+		const custom = classifyTransportError(
+			"Stream idle timeout: socket connection closed — no bytes received from my-tenant.corp-gateway.example.com during body for 300000ms (read timed out)",
+		)
+		expect(custom.attrs?.upstream_host).not.toBe("my-tenant.corp-gateway.example.com")
+		expect(String(custom.attrs?.upstream_host)).toMatch(/^[0-9a-f]{12}$/)
 	})
 })

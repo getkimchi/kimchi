@@ -1,8 +1,11 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { hashFilePath } from "../helpers.js"
 import type { TelemetryContext } from "../session-context.js"
 
-const TRANSPORT_ERROR_PATTERNS = [
+// Exported for the gate/family sync tripwire test — the gate and the
+// canonical families are two hand-maintained lists.
+export const TRANSPORT_ERROR_PATTERNS = [
 	"socket connection was closed unexpectedly",
 	"socket closed",
 	"connection closed",
@@ -10,7 +13,7 @@ const TRANSPORT_ERROR_PATTERNS = [
 	"broken pipe",
 	"econnreset",
 	"econnrefused",
-]
+] as const
 
 function isTransportError(errorMessage: string | undefined): boolean {
 	if (!errorMessage) return false
@@ -20,6 +23,28 @@ function isTransportError(errorMessage: string | undefined): boolean {
 
 /** Bounded length for the upstream-host diagnostic attr. */
 const MAX_HOST_LEN = 64
+
+/** Hosts safe to export as plaintext — the kimchi proxy and the public
+ *  provider endpoints. Custom gateways (per-tenant subdomains, corporate
+ *  proxies) are hashed instead: a raw per-tenant host would be a per-user
+ *  quasi-identifier in PostHog, while the hash preserves distinctness for
+ *  correlation. */
+const KNOWN_UPSTREAM_HOSTS = new Set([
+	"llm.kimchi.dev",
+	"api.anthropic.com",
+	"api.openai.com",
+	"openrouter.ai",
+	"generativelanguage.googleapis.com",
+	"api.mistral.ai",
+	"api.cohere.ai",
+	"api.deepseek.com",
+	"api.x.ai",
+])
+
+function exportHost(host: string): string {
+	const bounded = host.length > MAX_HOST_LEN ? host.slice(0, MAX_HOST_LEN) : host
+	return KNOWN_UPSTREAM_HOSTS.has(bounded) ? bounded : hashFilePath(bounded)
+}
 
 /**
  * Canonical transport-error families (error-telemetry canonicalization v1).
@@ -40,11 +65,10 @@ const MAX_HOST_LEN = 64
 export function classifyTransportError(msg: string): { message: string; attrs?: Record<string, string | number> } {
 	const idle = msg.match(/^Stream idle timeout: .*?no bytes received from (\S+) during (?:headers|body) for (\d+)ms/)
 	if (idle) {
-		const host = idle[1]
 		return {
 			message: "Transport: stream idle timeout",
 			attrs: {
-				upstream_host: host.length > MAX_HOST_LEN ? host.slice(0, MAX_HOST_LEN) : host,
+				upstream_host: exportHost(idle[1]),
 				idle_timeout_ms: Number(idle[2]),
 			},
 		}
