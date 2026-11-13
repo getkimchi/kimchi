@@ -75,7 +75,7 @@ interface SpawnArgs {
 	options: SpawnOptions
 }
 
-interface SpawnOptions {
+export interface SpawnOptions {
 	description: string
 	visibility?: AgentVisibility
 	model?: Model<Api>
@@ -120,6 +120,15 @@ interface SpawnOptions {
 	onCompaction?: (info: CompactionInfo) => void
 }
 
+/** A queued-but-not-started agent, re-spawnable against a new pi/ctx
+ *  (see subagent-handoff.ts — the session-replacement hand-off). */
+export interface QueuedAgentHandoff {
+	id: string
+	type: SubagentType
+	prompt: string
+	options: SpawnOptions
+}
+
 function formatTaskRef(ref: AgentTaskRef): string {
 	return JSON.stringify(ref)
 }
@@ -137,6 +146,22 @@ function applyLinkedWorkerLimits(options: SpawnOptions): SpawnOptions {
 		maxDuration: Math.min(options.maxDuration ?? budget.maxDuration, budget.maxDuration),
 		tokenBudget: Math.min(options.tokenBudget ?? budget.tokenBudget, budget.tokenBudget),
 	}
+}
+
+/** Pin the work-attribution segment onto a ctx copy for a local run. Copy
+ *  descriptors like Pi's createCommandContext(): a spread would freeze Pi's
+ *  lazy getters (model, sessionManager, signal, ...) at spawn and bypass its
+ *  stale-context guard. */
+function pinWorkContext(ctx: ExtensionContext, remote: boolean | undefined): ExtensionContext {
+	if (remote) return ctx
+	return Object.defineProperties(
+		{},
+		{
+			...Object.getOwnPropertyDescriptors(ctx),
+			workId: { value: tryWorkAttribution(() => getWorkId(ctx)), enumerable: true },
+			segment: { value: getWorkSegment(ctx) ?? null, enumerable: true },
+		},
+	) as ExtensionContext
 }
 
 function withAgentReportProtocol(prompt: string, taskRef: AgentTaskRef | undefined): string {
@@ -261,18 +286,7 @@ export class AgentManager {
 		}
 		this.agents.set(id, record)
 
-		// Pin only the work and segment. Copy descriptors like Pi's createCommandContext(): a spread would freeze
-		// Pi's lazy getters (model, sessionManager, signal, ...) at spawn and bypass its stale-context guard.
-		const workContext = effectiveOptions.remote
-			? ctx
-			: (Object.defineProperties(
-					{},
-					{
-						...Object.getOwnPropertyDescriptors(ctx),
-						workId: { value: tryWorkAttribution(() => getWorkId(ctx)), enumerable: true },
-						segment: { value: getWorkSegment(ctx) ?? null, enumerable: true },
-					},
-				) as ExtensionContext)
+		const workContext = pinWorkContext(ctx, effectiveOptions.remote)
 		const args: SpawnArgs = {
 			pi,
 			ctx: workContext,
@@ -419,7 +433,7 @@ export class AgentManager {
 							record.latestOutcome = buildAgentOutcome(record)
 
 							if (record.isBackground) {
-								this.runningBackground--
+								this.decrementRunningBackground()
 								if (!this.disposed) this.onComplete?.(record)
 								this.drainQueue()
 							}
@@ -435,7 +449,7 @@ export class AgentManager {
 						record.latestOutcome = buildAgentOutcome(record)
 
 						if (record.isBackground) {
-							this.runningBackground--
+							this.decrementRunningBackground()
 							if (!this.disposed) this.onComplete?.(record)
 							this.drainQueue()
 						}
@@ -777,7 +791,7 @@ export class AgentManager {
 				this.startAgent(next.id, record, next.args)
 			} catch (err) {
 				if (this.runningBackground > beforeRunningBackground) {
-					this.runningBackground--
+					this.decrementRunningBackground()
 				}
 				record.status = "error"
 				record.error = err instanceof Error ? err.message : String(err)
@@ -1103,6 +1117,14 @@ export class AgentManager {
 		return count
 	}
 
+	/** Decrement the background-run count, clamped at 0. After a
+	 *  session-replacement hand-off (extractRunningLocal) the adopting manager
+	 *  owns the count — settle chains from the outgoing manager's records may
+	 *  still fire here and must not drive it negative. */
+	private decrementRunningBackground(): void {
+		if (this.runningBackground > 0) this.runningBackground--
+	}
+
 	/** Remote-run completion wiring: maps the run result onto the record and
 	 *  fires onComplete/drainQueue exactly once for background agents (success
 	 *  and failure alike). Shared by the remote spawn path and
@@ -1139,7 +1161,7 @@ export class AgentManager {
 				record.latestOutcome = buildAgentOutcome(record)
 
 				if (record.isBackground) {
-					this.runningBackground--
+					this.decrementRunningBackground()
 					if (!this.disposed) this.onComplete?.(record)
 					this.drainQueue()
 				}
@@ -1155,7 +1177,7 @@ export class AgentManager {
 				record.latestOutcome = buildAgentOutcome(record)
 
 				if (record.isBackground) {
-					this.runningBackground--
+					this.decrementRunningBackground()
 					if (!this.disposed) this.onComplete?.(record)
 					this.drainQueue()
 				}
@@ -1301,6 +1323,137 @@ export class AgentManager {
 		})
 		record.promise = this.wireRemoteCompletion(record, promise, {})
 		return "resumed"
+	}
+
+	/** Extract running local agents for a session-replacement hand-off
+	 *  (fork/new — see subagent-handoff.ts).
+	 *
+	 *  Removes the records and their queue entries from this manager without
+	 *  aborting or disposing them — the adopting manager takes ownership, so a
+	 *  later dispose() here cannot kill their sessions. Remote runs are left
+	 *  behind (they survive session replacement via remote_run:state
+	 *  persistence and reattach in the new session), as are terminal records
+	 *  and transient visual entries. The background-run count moves to the
+	 *  adopter; this manager clamps at 0 from here on. */
+	extractRunningLocal(): { records: AgentRecord[]; queued: QueuedAgentHandoff[]; midResumeIds: Set<string> } {
+		const records: AgentRecord[] = []
+		const adoptedIds = new Set<string>()
+		const queuedIds = new Set(this.queue.map((entry) => entry.id))
+		for (const [id, record] of this.agents) {
+			if (record.remote) continue
+			if (!isActiveStatus(record.status)) continue
+			// Eligible: still queued, running (live run promise), detached to
+			// background, or mid-resume. Transient visual records
+			// (registerTransient: no promise, no background flag, not queued)
+			// die with their owner.
+			const eligible =
+				queuedIds.has(id) ||
+				record.promise !== undefined ||
+				record.isBackground === true ||
+				this.activeResumePromises.has(record)
+			if (!eligible) continue
+			records.push(record)
+			adoptedIds.add(id)
+		}
+		const queued: QueuedAgentHandoff[] = []
+		for (const entry of this.queue) {
+			if (!adoptedIds.has(entry.id)) continue
+			queued.push({ id: entry.id, type: entry.args.type, prompt: entry.args.prompt, options: entry.args.options })
+		}
+		// Records with an in-flight resume: resume() never fires onComplete and
+		// the resume's continuation still lands its result on the shared record
+		// object — the adopter must merely not start notifying for them (see
+		// adoptRecords' settle-gap branch).
+		const midResumeIds = new Set<string>()
+		for (const record of records) {
+			if (this.activeResumePromises.has(record)) midResumeIds.add(record.id)
+		}
+		for (const id of adoptedIds) this.agents.delete(id)
+		this.queue = this.queue.filter((entry) => !adoptedIds.has(entry.id))
+		// The adopting manager owns the count from here on.
+		this.runningBackground = 0
+		return { records, queued, midResumeIds }
+	}
+
+	/** Adopt records and queue entries handed off by a replaced session
+	 *  runtime. Records keep their ids — the orchestrator LLM already holds
+	 *  them. Queued entries are re-spawned against the new pi/ctx with their
+	 *  original ids.
+	 *
+	 *  Settle wiring is attached to EVERY live run, regardless of
+	 *  background-ness: a foreground record can later be detached to
+	 *  background (Ctrl+B), and settleAdopted re-checks isBackground at settle
+	 *  time — so the slot count stays balanced whether or not a detach
+	 *  happened. Foreground runs still never raise a completion notification
+	 *  (settleAdopted early-returns for them); the result remains reachable
+	 *  via get_subagent_result by id. Mid-resume records (id in
+	 *  midResumeIds) keep the pre-existing semantics of resume(): no
+	 *  onComplete, the resume continuation still lands its result on the
+	 *  shared record object.
+	 *
+	 *  A background record that settled in the staging gap (between
+	 *  extractRunningLocal and this call) gets its completion fired here — the
+	 *  outgoing chain suppressed it (disposed) and its original run promise is
+	 *  gone (the chain's finally cleared record.promise), so there is nothing
+	 *  left to re-wrap. Records that were mid-resume at extract time are
+	 *  excluded from this branch: they never notified before replacement
+	 *  either. */
+	adoptRecords(
+		records: AgentRecord[],
+		queued: QueuedAgentHandoff[],
+		midResumeIds: Set<string>,
+		pi: ExtensionAPI,
+		ctx: ExtensionContext,
+	): void {
+		if (this.disposed) return
+		for (const record of records) {
+			if (this.agents.has(record.id)) continue
+			this.agents.set(record.id, record)
+			if (record.promise !== undefined && isActiveStatus(record.status)) {
+				if (record.isBackground) this.runningBackground++
+				const original = record.promise
+				record.promise = original.then(
+					(text: string) => {
+						this.settleAdopted(record)
+						return text
+					},
+					() => {
+						this.settleAdopted(record)
+						return ""
+					},
+				)
+			} else if (record.isBackground && !isActiveStatus(record.status) && !midResumeIds.has(record.id)) {
+				// Settled in the staging gap — fire the adoption-side settle now so
+				// the replacement session still gets the completion notification.
+				// No runningBackground bookkeeping: this record never occupied a
+				// slot under this manager.
+				if (!this.disposed) this.onComplete?.(record)
+				this.drainQueue()
+			}
+		}
+		for (const entry of queued) {
+			if (!this.agents.has(entry.id)) continue
+			this.queue.push({
+				id: entry.id,
+				args: {
+					pi,
+					ctx: pinWorkContext(ctx, entry.options.remote),
+					type: entry.type,
+					prompt: entry.prompt,
+					options: entry.options,
+				},
+			})
+		}
+		this.drainQueue()
+	}
+
+	/** Settle a re-wired adopted run: the local-settle mirror from startAgent,
+	 *  running on the adopting manager instead of the (disposed) original. */
+	private settleAdopted(record: AgentRecord): void {
+		if (!record.isBackground) return
+		this.decrementRunningBackground()
+		if (!this.disposed) this.onComplete?.(record)
+		this.drainQueue()
 	}
 
 	/** Stops all agents. Remote runs are spared when `skipRemote` is set —

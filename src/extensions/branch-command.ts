@@ -81,6 +81,9 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 						},
 						{ triggerTurn: false },
 					)
+					// The agents extension's own adoption toast ("N background agent(s)
+					// continue running from the previous session") covers the hand-off
+					// notice — one toast, uniform across /branch, /clone, and /new.
 				},
 			})
 			if (result.cancelled) return
