@@ -716,25 +716,47 @@ function writeCodexResponse(res: ServerResponse, script: FakeResponseScript, bod
 		status,
 		content,
 	})
+	const toolCalls = script.toolCalls ?? []
+	const output: unknown[] = []
 	writeSse(res, { type: "response.created", response: response("in_progress", []) })
-	writeSse(res, { type: "response.output_item.added", output_index: 0, item: item("in_progress", []) })
-	writeSse(res, {
-		type: "response.content_part.added",
-		item_id: "msg_fake",
-		output_index: 0,
-		content_index: 0,
-		part: { type: "output_text", text: "", annotations: [] },
-	})
-	writeSse(res, {
-		type: "response.output_text.delta",
-		item_id: "msg_fake",
-		output_index: 0,
-		content_index: 0,
-		delta: text,
-	})
-	const done = item("completed", [{ type: "output_text", text, annotations: [] }])
-	writeSse(res, { type: "response.output_item.done", output_index: 0, item: done })
-	writeSse(res, { type: "response.completed", response: response("completed", [done]) })
+	// A script with tool calls and no text is a tool-only turn; every other script answers with text.
+	if (script.stream || toolCalls.length === 0) {
+		const outputIndex = output.length
+		writeSse(res, { type: "response.output_item.added", output_index: outputIndex, item: item("in_progress", []) })
+		writeSse(res, {
+			type: "response.content_part.added",
+			item_id: "msg_fake",
+			output_index: outputIndex,
+			content_index: 0,
+			part: { type: "output_text", text: "", annotations: [] },
+		})
+		writeSse(res, {
+			type: "response.output_text.delta",
+			item_id: "msg_fake",
+			output_index: outputIndex,
+			content_index: 0,
+			delta: text,
+		})
+		const done = item("completed", [{ type: "output_text", text, annotations: [] }])
+		writeSse(res, { type: "response.output_item.done", output_index: outputIndex, item: done })
+		output.push(done)
+	}
+	for (const [index, toolCall] of toolCalls.entries()) {
+		const outputIndex = output.length
+		const callId = toolCall.id ?? `call_fake_${index}`
+		const functionCall = (arguments_: string) => ({
+			type: "function_call",
+			id: `fc_${callId}`,
+			call_id: callId,
+			name: toolCall.function.name,
+			arguments: arguments_,
+		})
+		writeSse(res, { type: "response.output_item.added", output_index: outputIndex, item: functionCall("") })
+		const done = functionCall(toolCall.function.arguments)
+		writeSse(res, { type: "response.output_item.done", output_index: outputIndex, item: done })
+		output.push(done)
+	}
+	writeSse(res, { type: "response.completed", response: response("completed", output) })
 	res.end()
 }
 

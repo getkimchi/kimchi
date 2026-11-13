@@ -8,7 +8,7 @@ import {
 	waitForText,
 	waitForTurnToSettle,
 } from "./support/assertions.js"
-import type { FakeModel } from "./support/fake-openai-server.js"
+import type { FakeModel, FakeResponseRequest } from "./support/fake-openai-server.js"
 import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -187,6 +187,20 @@ async function ask(
 	return before
 }
 
+const bashTrue = { id: "call_true", function: { name: "bash", arguments: JSON.stringify({ command: "true" }) } }
+
+/** Matches a request whose last Responses input item contains `text`. */
+function lastInputIncludes(text: string): (request: FakeResponseRequest) => boolean {
+	return (request) => {
+		const input = (request.body as { input?: unknown[] } | undefined)?.input
+		return JSON.stringify(input?.at(-1) ?? "").includes(text)
+	}
+}
+
+function codexTurnMetadata(request: { headers: Record<string, string | string[] | undefined> }) {
+	return JSON.parse(String(request.headers["x-codex-turn-metadata"])) as Record<string, unknown>
+}
+
 test("after ChatGPT login the picker lists the feed's chatgpt models and a Codex request carries both credentials over SSE", async ({
 	terminal,
 }) => {
@@ -228,6 +242,97 @@ test("after ChatGPT login the picker lists the feed's chatgpt models and a Codex
 	)
 })
 
+test("Codex requests carry thread, window and turn ids that follow the session", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "chatgpt-gateway-correlation",
+			// Scripts are matched on the request, not queued in order: the harness may add a hidden
+			// follow-up request after a text-only reply, and that one must not shift the replies.
+			responses: [
+				{ match: lastInputIncludes('"text":"one"'), toolCalls: [bashTrue] },
+				{ match: lastInputIncludes("call_true"), stream: ["reply one"] },
+				{ match: lastInputIncludes('"text":"two"'), stream: ["reply two"] },
+				{ match: (r) => JSON.stringify(r.body).includes("context summarization assistant"), stream: ["SUMMARY"] },
+				{ match: lastInputIncludes('"text":"three"'), stream: ["reply three"] },
+				{ match: lastInputIncludes("Do not repeat your previous answer"), stream: ["<done>"] },
+				{ match: lastInputIncludes("Do not repeat your previous answer"), stream: ["<done>"] },
+			],
+			providerId: "kimchi-dev",
+			initialModel: "glm-5.3",
+			models: WITH_CHATGPT,
+			seedHome: (homeDir) => {
+				seedAuth(homeDir, { kimchi: true, chatgpt: true })
+				// A tiny kept tail so /compact has something to summarize in a short session.
+				const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+				const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+				settings.compaction = { enabled: true, reserveTokens: 1_000, keepRecentTokens: 1 }
+				writeFileSync(settingsPath, JSON.stringify(settings))
+			},
+		},
+		async (fixture, trace) => {
+			await selectModel(terminal, "5.4-codex", "gpt-5.4-codex")
+			await ask(terminal, fixture, "one", "reply one")
+			await ask(terminal, fixture, "two", "reply two")
+			terminal.submit("/compact")
+			await waitForText(terminal, "Compacted from", { timeoutMs: STREAM_TIMEOUT_MS })
+			await ask(terminal, fixture, "three", "reply three")
+
+			const codex = fixture.fake.requests.filter(
+				(r) => r.method === "POST" && r.url.startsWith("/openai/v1/codex/responses"),
+			)
+			const kindOf = (request: FakeResponseRequest) => codexTurnMetadata(request).request_kind
+			const compactionRequests = codex.filter((r) => kindOf(r) === "compaction")
+			expect(compactionRequests).toHaveLength(1)
+			const [compaction] = compactionRequests
+			const byInput = (text: string) => codex.filter(lastInputIncludes(text))
+			const [toolCall] = byInput('"text":"one"')
+			const [replyOne] = byInput("call_true")
+			const [replyTwo] = byInput('"text":"two"')
+			const [replyThree] = byInput('"text":"three"')
+			const sessionId = String(toolCall.headers["thread-id"])
+			expect(sessionId).not.toBe("undefined")
+
+			for (const request of codex) {
+				const metadata = codexTurnMetadata(request)
+				expect(request.headers.originator).toBe("kimchi")
+				expect(request.headers["thread-id"]).toBe(sessionId)
+				expect(Object.keys(metadata).sort()).toEqual(
+					["request_kind", "session_id", "thread_id", "turn_id", "window_id", "window_number"].sort(),
+				)
+				expect(metadata.thread_id).toBe(sessionId)
+				const clientMetadata = (request.body as { client_metadata: Record<string, string> }).client_metadata
+				expect(Object.keys(clientMetadata).sort()).toEqual(
+					["session_id", "thread_id", "turn_id", "x-codex-window-id"].sort(),
+				)
+				expect(clientMetadata.thread_id).toBe(sessionId)
+				expect(clientMetadata.turn_id).toBe(metadata.turn_id)
+			}
+			trace.step("every Codex request carries the originator, thread id and exact metadata keys")
+
+			// One prompt with a tool loop is one turn; the next prompt is a new turn.
+			expect(codexTurnMetadata(toolCall).turn_id).toBe(codexTurnMetadata(replyOne).turn_id)
+			expect(codexTurnMetadata(replyTwo).turn_id).not.toBe(codexTurnMetadata(replyOne).turn_id)
+			for (const request of [toolCall, replyOne, replyTwo]) {
+				expect(codexTurnMetadata(request)).toMatchObject({ request_kind: "turn", window_number: 0 })
+				expect(request.headers["x-codex-window-id"]).toBe(`${sessionId}:0`)
+			}
+			trace.step("a tool loop shares one turn id and the next prompt gets a new one")
+
+			// pi sends a random session id on compaction; it must still land on this session.
+			expect(compaction.headers["thread-id"]).toBe(sessionId)
+			expect(compaction.headers["x-codex-window-id"]).toBe(`${sessionId}:0`)
+			expect(codexTurnMetadata(compaction)).toMatchObject({ request_kind: "compaction", window_number: 0 })
+			trace.step("the compaction request carries the session's thread id and kind compaction")
+
+			expect(codexTurnMetadata(replyThree)).toMatchObject({ request_kind: "turn", window_number: 1 })
+			expect(replyThree.headers["x-codex-window-id"]).toBe(`${sessionId}:1`)
+			expect(codexTurnMetadata(replyThree).turn_id).not.toBe(codexTurnMetadata(replyTwo).turn_id)
+			trace.step("the turn after compaction is in window 1 with a new turn id")
+		},
+	)
+})
+
 test("a kimchi-dev request after ChatGPT login carries only the Kimchi key", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
@@ -246,6 +351,9 @@ test("a kimchi-dev request after ChatGPT login carries only the Kimchi key", asy
 			expect(chat[0].headers.authorization).toMatch(/^Bearer (fake|kimchi-e2e-key)$/)
 			expect(chat[0].headers["x-api-key"]).toBeUndefined()
 			expect(chat[0].headers["chatgpt-account-id"]).toBeUndefined()
+			expect(chat[0].headers.originator).toBeUndefined()
+			expect(chat[0].headers["thread-id"]).toBeUndefined()
+			expect(Object.keys(chat[0].headers).filter((h) => h.startsWith("x-codex-"))).toEqual([])
 			trace.step("kimchi-dev request has only the Kimchi key")
 		},
 	)
