@@ -276,6 +276,43 @@ test("a model on the chatgpt row and another row shows as two labelled entries",
 	)
 })
 
+test("picking each labelled gpt-5.5 entry routes to the provider it names", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "chatgpt-gateway-duplicate-routing",
+			responses: [{ stream: ["from subscription"] }, { stream: ["from api key"] }],
+			providerId: "kimchi-dev",
+			initialModel: "glm-5.3",
+			models: WITH_CHATGPT,
+			seedHome: (homeDir) => seedAuth(homeDir, { kimchi: true, chatgpt: true }),
+		},
+		async (fixture, trace) => {
+			// The picker filter matches id, provider and name, not the label.
+			await selectModel(terminal, "5.5 openai-codex", "gpt-5.5 (Team Codex, subscription)")
+			const first = await ask(terminal, fixture, "via subscription", "from subscription")
+			const modelRequest = (r: { method: string; url: string }) =>
+				r.method === "POST" && /^\/openai\/v1\/(codex\/responses|responses|chat\/completions)/.test(r.url)
+			const [codex] = fixture.fake.requests.slice(first).filter(modelRequest)
+			expect(codex.url.split("?")[0]).toBe("/openai/v1/codex/responses")
+			expect(codex.headers.authorization).toBe(`Bearer ${chatgptJwt()}`)
+			expect(codex.headers["x-api-key"]).toBe("fake")
+			expect((codex.body as { model: string }).model).toBe("gpt-5.5")
+			trace.step("subscription entry went to the Codex route with both credentials")
+
+			await selectModel(terminal, "5.5 kimchi-dev/openai", "gpt-5.5 (OpenAI prod)")
+			const second = await ask(terminal, fixture, "via api key", "from api key")
+			const [openai] = fixture.fake.requests.slice(second).filter(modelRequest)
+			expect(openai.url.split("?")[0]).toBe("/openai/v1/responses")
+			expect(openai.headers.authorization).toMatch(/^Bearer (fake|kimchi-e2e-key)$/)
+			expect(openai.headers["x-api-key"]).toBeUndefined()
+			expect(openai.headers["x-provider-type"]).toBe("openai")
+			expect((openai.body as { model: string }).model).toBe("gpt-5.5")
+			trace.step("OpenAI prod entry went to the gateway with only the Kimchi key")
+		},
+	)
+})
+
 test("one session switches Codex model, GLM 5.3, Codex model and every request succeeds", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,

@@ -327,9 +327,9 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				return
 			}
 
-			// ChatGPT-subscription route (pi's openai-codex provider through the gateway):
-			// zstd-compressed Responses request, Responses-style SSE reply.
-			if (req.method === "POST" && req.url?.startsWith("/openai/v1/codex/responses")) {
+			// Responses routes: the ChatGPT-subscription route (pi's openai-codex provider,
+			// zstd-compressed request) and the native OpenAI one. Both reply with Responses-style SSE.
+			if (req.method === "POST" && /^\/openai\/v1\/(codex\/)?responses/.test(req.url ?? "")) {
 				const script = pickResponseScript(request, mainQueue, subagentQueue)
 				writeCodexResponse(res, script, body)
 				return
