@@ -127,9 +127,6 @@ export function resolveBashControlWaitInfo(
 	const runningEntries = entries.filter((s) => s.state === "running")
 	const elapsedHead = runningEntries[0] ?? entries[0]
 	return {
-		// Full command, never truncated: ACP clients (Studio) render these
-		// _meta commands verbatim and need the complete text, unlike the
-		// bounded model-facing summaries produced by summarizeCommand.
 		commands: entries.map((s) => ({
 			command: s.command,
 			startedAt: new Date(s.startedAt).toISOString(),
