@@ -43,7 +43,7 @@ const CHECKSUM_ENTITIES = [
  * (dotted quads, colon hex) so they rarely false-fire, and their
  * sensitivity is debatable but low-cost to keep.
  */
-const BARE_SHAPE_KEPT: ReadonlySet<string> = new Set(["IP_ADDRESS", "MAC_ADDRESS"])
+const BARE_SHAPE_KEPT: ReadonlySet<string> = new Set(["IP_ADDRESS", "MAC_ADDRESS", "EMAIL_ADDRESS"])
 
 /** National-ID / civil-date / locale formats — shape-only evidence. */
 const BARE_SHAPE_NATIONAL_IDS = [
@@ -101,6 +101,8 @@ const BARE_SHAPE_OTHER = [
 	"GUID", // structural identifiers (ferment/session IDs) — redacting breaks flows
 	"IP_ADDRESS", // shape-precise and kept on — see BARE_SHAPE_KEPT
 	"MAC_ADDRESS", // same
+	"EMAIL_ADDRESS", // shape-based detector, always kept on (identity surface, not keyword-anchored)
+	"AIRTABLE_KEY", // `key[A-Za-z0-9]{14}` shape — measured ~3% precision on transcripts; opt-in
 	"TELEGRAM_BOT_TOKEN", // `<digits>:<35 chars>` collides with CI section markers
 	"OKTA_TOKEN", // bare shape — collides with branch names / base64 blobs
 ] as const
@@ -135,7 +137,6 @@ const ANCHOR_REQUIRED_ENTITIES = [
  * within a group carries no meaning.
  */
 const ANCHORED_ENTITIES = [
-	"EMAIL_ADDRESS",
 	"PRIVATE_KEY",
 	// Cloud / infra
 	"AWS_ACCESS_KEY",
@@ -234,7 +235,6 @@ const ANCHORED_ENTITIES = [
 	"ZENDESK_TOKEN",
 	// Dev-platform / registry tokens (prefixed shapes)
 	"SONARQUBE_TOKEN", // squ_/sqp_ prefix
-	"AIRTABLE_KEY", // key…/pat….<hex> prefixed shapes
 	// Observability / ops
 	"DATADOG_API_KEY",
 	"NEW_RELIC_KEY",
@@ -395,11 +395,34 @@ const ANCHOR_REQUIRED_WITH_CUSTOMS = [
 /** Credentialed-URL entities whose coverage lives in URL_WITH_CREDENTIALS customs, not their own bare shape. */
 const CREDENTIALED_URLS_INERT = ["URL", "ELASTICSEARCH_URL", "FIREBASE_URL", "MONGODB_SRV"] as const
 
+/** anchor_required entities with an anchored re-addition of their own — the
+ * union of ANCHOR_REQUIRED_WITH_CUSTOMS (secrets members) and entities whose
+ * custom lives under a different category (DATABASE_CONNECTION_STRING's
+ * credentialed-URI custom). Used only for liveState derivation; membership
+ * is pinned by test against redactor's CUSTOM_PATTERNS. */
+const ANCHOR_REQUIRED_WITH_OWN_CUSTOMS = [...ANCHOR_REQUIRED_WITH_CUSTOMS, "DATABASE_CONNECTION_STRING"] as const
+
+/**
+ * The engine-side disposition of an entity, independent of policy defaults:
+ *
+ * - "active": has live coverage of its own — an engine detector (anchored /
+ *   checksum / bare_shape) or an anchored custom pattern. Turning it on or
+ *   off is a meaningful policy choice.
+ * - "alias_of": no coverage of its own; its hits are reported under another
+ *   marker (URL_WITH_CREDENTIALS). Flipping it on activates the bare shape
+ *   instead — a false-positive hazard, not the aliased coverage.
+ * - "no_matcher": nothing fires under any policy — anchor_required without
+ *   an anchored re-addition, or demoted as measured-inert.
+ */
+export type RedactionLiveState = "active" | "alias_of" | "no_matcher"
+
 /** anchor_required entities with no anchored re-addition — never fire today.
  * CRATES_IO_TOKEN / NUGET_KEY: measured 0% precision on production transcripts. */
 const SECRETS_INERT = ["CRATES_IO_TOKEN", "NUGET_KEY"] as const
 
-/** [category, defaultOn, members]. GUID is deliberately unassigned: structural identifiers are never redacted. */
+/** [category, defaultOn, members]. GUID is deliberately unassigned (structural identifiers are never
+ * redacted), as is UK_POSTCODE (dropped from the configurable surface: a shape-only postal code is
+ * low-value as a redaction choice — the engine detector stays off regardless). */
 type CategoryGroup = readonly [RedactionCategory, boolean, readonly string[]]
 
 const CATEGORY_GROUPS: readonly CategoryGroup[] = [
@@ -407,10 +430,8 @@ const CATEGORY_GROUPS: readonly CategoryGroup[] = [
 		"secrets",
 		true,
 		[
-			...ANCHORED_ENTITIES.filter(
-				(name) => name !== "EMAIL_ADDRESS" && name !== "REDIS_URL_WITH_PASSWORD" && name !== "COCKROACHDB_CONNECTION",
-			),
-			...ANCHOR_REQUIRED_WITH_CUSTOMS,
+			...ANCHORED_ENTITIES.filter((name) => name !== "REDIS_URL_WITH_PASSWORD" && name !== "COCKROACHDB_CONNECTION"),
+			...ANCHOR_REQUIRED_WITH_CUSTOMS.filter((name) => name !== "AZURE_CONNECTION_STRING"),
 			// bare_shape at engine level, anchored by keyword custom patterns.
 			"TELEGRAM_BOT_TOKEN",
 			"OKTA_TOKEN",
@@ -431,9 +452,15 @@ const CATEGORY_GROUPS: readonly CategoryGroup[] = [
 	[
 		"credentialed_urls",
 		true,
-		["URL_WITH_CREDENTIALS", "REDIS_URL_WITH_PASSWORD", "COCKROACHDB_CONNECTION", "DATABASE_CONNECTION_STRING"],
+		[
+			"URL_WITH_CREDENTIALS",
+			"REDIS_URL_WITH_PASSWORD",
+			"COCKROACHDB_CONNECTION",
+			"DATABASE_CONNECTION_STRING",
+			"AZURE_CONNECTION_STRING",
+		],
 	],
-	["secrets", false, SECRETS_INERT],
+	["secrets", false, [...SECRETS_INERT, "AIRTABLE_KEY"]],
 	["credentialed_urls", false, CREDENTIALED_URLS_INERT],
 	["financial", true, ["CREDIT_CARD", "IBAN_CODE"]],
 	["financial", false, ["ABA_ROUTING_NUMBER", "US_BANK_NUMBER", "CRYPTO"]],
@@ -444,7 +471,7 @@ const CATEGORY_GROUPS: readonly CategoryGroup[] = [
 			(name) => name !== "ABA_ROUTING_NUMBER" && name !== "US_BANK_NUMBER" && name !== "UK_POSTCODE",
 		),
 	],
-	["personal_details", false, ["PERSON", "LOCATION", "ORGANIZATION", "DATE_TIME", "UK_POSTCODE"]],
+	["personal_details", false, ["PERSON", "LOCATION", "ORGANIZATION", "DATE_TIME"]],
 ]
 
 interface CategoryEntry {
@@ -483,13 +510,29 @@ export interface RedactionCatalogEntry {
 	tier: EntityTier
 	category: RedactionCategory
 	defaultOn: boolean
+	/** Engine-side disposition — what actually fires, independent of defaultOn. */
+	liveState: RedactionLiveState
+	/** The marker this entity's coverage is reported under; set iff liveState is "alias_of". */
+	aliasOf?: string
 }
 
 /** Computed once — the catalog is a pure function of immutable registries. */
 const REDACTION_CATALOG: readonly RedactionCatalogEntry[] = (() => {
 	const entries: RedactionCatalogEntry[] = []
 	for (const [entity, { category, defaultOn }] of ENTITY_CATEGORIES) {
-		entries.push({ entity, tier: ENTITY_TIERS.get(entity) ?? "anchored", category, defaultOn })
+		const tier = ENTITY_TIERS.get(entity) ?? "anchored"
+		let liveState: RedactionLiveState = "active"
+		let aliasOf: string | undefined
+		if ((CREDENTIALED_URLS_INERT as readonly string[]).includes(entity)) {
+			liveState = "alias_of"
+			aliasOf = "URL_WITH_CREDENTIALS"
+		} else if (
+			tier === "anchor_required" &&
+			!(ANCHOR_REQUIRED_WITH_OWN_CUSTOMS as readonly string[]).includes(entity)
+		) {
+			liveState = "no_matcher"
+		}
+		entries.push({ entity, tier, category, defaultOn, liveState, ...(aliasOf ? { aliasOf } : {}) })
 	}
 	return entries.sort((a, b) => a.entity.localeCompare(b.entity))
 })()
