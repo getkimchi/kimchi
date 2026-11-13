@@ -16,9 +16,11 @@ import {
 	DIGEST_SCORE_THRESHOLD,
 	EXTRACTION_DERIVED_TAG,
 	GATE_MIN_COVERAGE,
+	TURN_RECALL_HARD_FACTS_CAP,
 	TURN_RECALL_MAX_FACT_CHARS,
-	TURN_RECALL_MAX_FACTS,
+	TURN_RECALL_SCORE_TIE_EPSILON,
 	tokensEstimated,
+	turnRecallMaxFacts,
 } from "./config.js"
 import { factClassesEnabled, staleAwareDigestEnabled } from "./flags.js"
 
@@ -422,6 +424,8 @@ export function buildTurnRecall(
 	composition.considered = candidates.length
 
 	const kept: Candidate[] = []
+	let capScore: number | undefined
+	const maxFacts = turnRecallMaxFacts()
 	for (const candidate of candidates) {
 		if (candidate.score < DIGEST_SCORE_THRESHOLD) {
 			composition.belowThreshold += 1
@@ -432,9 +436,19 @@ export function buildTurnRecall(
 			composition.selectorSkipped += 1
 			continue
 		}
-		if (kept.length >= TURN_RECALL_MAX_FACTS) {
-			composition.overCap += 1
-			continue
+		if (kept.length >= maxFacts) {
+			if (kept.length === maxFacts && capScore === undefined) capScore = kept[kept.length - 1].score
+			// Score ties: a candidate within epsilon of the cap-filling score
+			// ties with it — co-select rather than dropping by list position,
+			// bounded by the hard cap the steer budget tolerates.
+			const isTie =
+				kept.length < TURN_RECALL_HARD_FACTS_CAP &&
+				capScore !== undefined &&
+				candidate.score >= capScore - TURN_RECALL_SCORE_TIE_EPSILON
+			if (!isTie) {
+				composition.overCap += 1
+				continue
+			}
 		}
 		kept.push(candidate)
 	}

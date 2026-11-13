@@ -223,11 +223,39 @@ describe("buildTurnRecall (progressive-recall value gate)", () => {
 	})
 
 	it("keeps at most TURN_RECALL_MAX_FACTS new facts and counts the overflow", () => {
-		const hits = [1, 2, 3, 4, 5].map((i) => ({ memory: `fact ${i}`, score: 0.5 }))
+		// Distinct scores drop well past the tie epsilon, so rank order alone
+		// fills the cap and the rest count as overCap.
+		const hits = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3].map((score, i) => ({ memory: `fact ${i}`, score }))
 		const recall = buildTurnRecall(hits, new Set(), "")
 		expect(recall?.facts).toHaveLength(TURN_RECALL_MAX_FACTS)
 		expect(recall?.composition.facts).toBe(TURN_RECALL_MAX_FACTS)
-		expect(recall?.composition.overCap).toBe(5 - TURN_RECALL_MAX_FACTS)
+		expect(recall?.composition.overCap).toBe(7 - TURN_RECALL_MAX_FACTS)
+	})
+
+	it("score ties within epsilon co-select past the cap, bounded by the hard cap", () => {
+		// 0.5 to 0.495 spans are all within tie epsilon of the cap score;
+		// candidates at 0.30 are far below and count as overflow.
+		const hits = [
+			...([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5].map((score, i) => ({ memory: `tied ${i}`, score }))),
+			{ memory: "distant loser", score: 0.3 },
+		]
+		const recall = buildTurnRecall(hits, new Set(), "")
+		expect(recall?.facts).toHaveLength(8) // hard cap, not cap 5
+		expect(recall?.composition.overCap).toBe(3) // 2 tied past hard cap + 1 distant
+	})
+
+	it("KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS=3 restores the legacy cap", () => {
+		const prev = process.env.KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS
+		process.env.KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS = "3"
+		try {
+			const hits = [0.9, 0.8, 0.7, 0.6, 0.5].map((score, i) => ({ memory: `legacy ${i}`, score }))
+			const recall = buildTurnRecall(hits, new Set(), "")
+			expect(recall?.facts).toHaveLength(3)
+			expect(recall?.composition.overCap).toBe(2)
+		} finally {
+			if (prev === undefined) delete process.env.KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS
+			else process.env.KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS = prev
+		}
 	})
 
 	it("truncates facts over the per-fact char cap; the ledger keeps the full fact", () => {

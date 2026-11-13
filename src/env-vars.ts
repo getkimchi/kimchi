@@ -204,6 +204,10 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_MEMORY_STALE_AWARE_DIGEST",
 	"KIMCHI_MEMORY_STEP_RECALL_INTERVAL",
 	"KIMCHI_MEMORY_STATE_FINGERPRINT_CAP",
+	// recent conversation turns embedded as mid-loop recall facets (0 disables)
+	"KIMCHI_MEMORY_LOOP_CONTEXT_TURNS",
+	// max injected facts per recall (default 5; ties within epsilon co-select, hard cap 8)
+	"KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS",
 	// tool-output residency + adaptive idle-GC tuning (docs/memory-residency.md)
 	"KIMCHI_TOOL_OUTPUT_STORE",
 	"KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES",

@@ -134,6 +134,20 @@ export const MEMORY_STEP_QUERY_MAX_CHARS = 2_000
 /** Characters retained per kept receipt-side state slice (head+tail total, before truncation). */
 export const MEMORY_STEP_ENV_RECEIPT_KEEP_CHARS = 4_096
 
+/**
+ * Recent message texts (user/assistant summaries) embedded as recall
+ * facets alongside the reasoning head and receipts — thinking-less turns
+ * otherwise collapse the query to bare receipt echoes. 0 disables.
+ */
+export const MEMORY_LOOP_CONTEXT_TURNS = 6
+export function loopContextTurns(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = Number.parseInt(env.KIMCHI_MEMORY_LOOP_CONTEXT_TURNS ?? "", 10)
+	return Number.isFinite(raw) && raw >= 0 ? raw : MEMORY_LOOP_CONTEXT_TURNS
+}
+
+/** Chars of each recent message text kept as a recall facet. */
+export const MEMORY_LOOP_CONTEXT_TURN_CHARS = 160
+
 /** Max distinct state fingerprints remembered per session for state-revisit detection; env override. */
 export const MEMORY_STATE_FINGERPRINT_CAP = 512
 export function stateFingerprintCap(env: NodeJS.ProcessEnv = process.env): number {
@@ -232,8 +246,19 @@ export const MEMORY_CAPTURE_TOOL_CALL_CHARS = 400
 export const MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS = 500
 export const MEMORY_CAPTURE_TOOL_RESULT_TAIL_CHARS = 200
 
-/** Max NEW facts per progressive turn recall (per re-evaluation). */
-export const TURN_RECALL_MAX_FACTS = 3
+/** Default max NEW facts per progressive turn recall (per re-evaluation); env override. */
+export const TURN_RECALL_MAX_FACTS = 5
+export function turnRecallMaxFacts(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = Number.parseInt(env.KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS ?? "", 10)
+	return Number.isFinite(raw) && raw > 0 ? raw : TURN_RECALL_MAX_FACTS
+}
+
+/** Score window around the last kept rank that still counts as a tie —
+ * tied visualizations of the same state are co-selected, not dropped. */
+export const TURN_RECALL_SCORE_TIE_EPSILON = 0.02
+
+/** Absolute hard cap on injected facts per recall, tie extension included. */
+export const TURN_RECALL_HARD_FACTS_CAP = 8
 
 /** Per-fact character cap in turn recalls (steer messages stay compact). */
 export const TURN_RECALL_MAX_FACT_CHARS = 400
