@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { createContext } from "../../__mocks__/context.js"
 import type { TelemetryContext } from "../session-context.js"
-import { handleTransportError } from "./transport-errors.js"
+import { classifyTransportError, handleTransportError, TRANSPORT_ERROR_PATTERNS } from "./transport-errors.js"
 
 function mockSessionCtx(): Pick<TelemetryContext, "emit" | "getTraceAttributes"> {
 	return {
@@ -72,7 +72,8 @@ describe("handleTransportError", () => {
 			"error",
 			{
 				error_type: "transport_error",
-				error_message: errorMessage,
+				error_message: "Transport: socket closed unexpectedly",
+				canonicalization: "v1",
 			},
 			piCtx,
 		)
@@ -90,7 +91,11 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: expect.any(String) }),
+			expect.objectContaining({
+				error_type: "transport_error",
+				error_message: "Transport: socket closed unexpectedly",
+				canonicalization: "v1",
+			}),
 			expect.anything(),
 		)
 	})
@@ -107,7 +112,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "Connection reset by peer" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: connection reset" }),
 			expect.anything(),
 		)
 	})
@@ -119,7 +124,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "socket closed" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: connection closed" }),
 			expect.anything(),
 		)
 	})
@@ -131,7 +136,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "connection closed" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: connection closed" }),
 			expect.anything(),
 		)
 	})
@@ -143,7 +148,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "read ECONNRESET" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: connection reset" }),
 			expect.anything(),
 		)
 	})
@@ -161,7 +166,7 @@ describe("handleTransportError", () => {
 			"error",
 			expect.objectContaining({
 				error_type: "transport_error",
-				error_message: "connect ECONNREFUSED 127.0.0.1:443",
+				error_message: "Transport: connection refused",
 			}),
 			expect.anything(),
 		)
@@ -174,7 +179,7 @@ describe("handleTransportError", () => {
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
-			expect.objectContaining({ error_type: "transport_error", error_message: "Broken pipe" }),
+			expect.objectContaining({ error_type: "transport_error", error_message: "Transport: broken pipe" }),
 			expect.anything(),
 		)
 	})
@@ -193,20 +198,66 @@ describe("handleTransportError", () => {
 			"error",
 			{
 				error_type: "transport_error",
-				error_message: "socket connection was closed unexpectedly",
+				error_message: "Transport: socket closed unexpectedly",
+				canonicalization: "v1",
 			},
 			piCtx,
 		)
 	})
 
-	it("truncates error_message to 300 chars", () => {
+	it("canonicalizes a long transport error instead of leaking its raw tail", () => {
 		const sessionCtx = mockSessionCtx()
 		const longMessage = `socket connection was closed unexpectedly ${"x".repeat(400)}`
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
 			message: { role: "assistant", stopReason: "error", errorMessage: longMessage } as AssistantMessage,
 		})
 		const emitted = (sessionCtx.emit as ReturnType<typeof vi.fn>).mock.calls[0][1] as { error_message: string }
-		expect(emitted.error_message.length).toBe(300)
-		expect(emitted.error_message.endsWith("xxx")).toBe(true)
+		expect(emitted.error_message).toBe("Transport: socket closed unexpectedly")
+	})
+})
+
+describe("classifyTransportError (direct)", () => {
+	it("canonicalizes headers-phase idle timeouts with the same bounded attrs", () => {
+		const c = classifyTransportError(
+			"Stream idle timeout: socket connection closed — no bytes received from llm.kimchi.dev during headers for 120000ms (read timed out)",
+		)
+		expect(c.message).toBe("Transport: stream idle timeout")
+		expect(c.attrs).toEqual({ upstream_host: "llm.kimchi.dev", idle_timeout_ms: 120000 })
+	})
+
+	it("keeps the bounded-length contract on the fail-open branch", () => {
+		// Defensive branch: a transport error gated in but matching no family
+		// keeps the raw head, truncated to 300 chars.
+		const c = classifyTransportError("unknown transport failure " + "x".repeat(400))
+		expect(c.message.length).toBe(300)
+		expect(c.message.endsWith("xxx")).toBe(true)
+		expect(c.attrs).toBeUndefined()
+	})
+})
+
+describe("classifyTransportError — gate/family sync (review follow-up)", () => {
+	it("every gate pattern has a canonical family (no silent raw fallback)", () => {
+		// Tripwire: a gate pattern added without a matching family reverts its
+		// events to the raw per-instance message — the exact regression this
+		// canonicalization fixes.
+		for (const pattern of TRANSPORT_ERROR_PATTERNS) {
+			const message = `upstream failure: ${pattern} during request`
+			const c = classifyTransportError(message)
+			const fellBack = c.message === message.slice(0, 300)
+			expect(fellBack, `gate pattern "${pattern}" has no canonical family`).toBe(false)
+		}
+	})
+
+	it("exports known upstream hosts in plaintext and hashes custom gateways", () => {
+		const known = classifyTransportError(
+			"Stream idle timeout: socket connection closed — no bytes received from llm.kimchi.dev during body for 300000ms (read timed out)",
+		)
+		expect(known.attrs?.upstream_host).toBe("llm.kimchi.dev")
+
+		const custom = classifyTransportError(
+			"Stream idle timeout: socket connection closed — no bytes received from my-tenant.corp-gateway.example.com during body for 300000ms (read timed out)",
+		)
+		expect(custom.attrs?.upstream_host).not.toBe("my-tenant.corp-gateway.example.com")
+		expect(String(custom.attrs?.upstream_host)).toMatch(/^[0-9a-f]{12}$/)
 	})
 })

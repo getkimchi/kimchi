@@ -289,8 +289,33 @@ function classifyEditError(fullMsg: string): ToolErrorClassification | undefined
 	if (m) return { kind: "model_mistake", message: "Edit oldText not unique", attrs: { occurrences: Number(m[1]) } }
 	m = fullMsg.match(/^No changes made to (.+?)\. The replacements? produced identical content/)
 	if (m) return { kind: "model_mistake", message: "Edit produced no changes", attrs: { file_hash: hashFilePath(m[1]) } }
-	m = fullMsg.match(/^Could not edit file: (.+?)\. Error code: ENOENT\./)
-	if (m) return { kind: "model_mistake", message: "Edit target missing", attrs: { file_hash: hashFilePath(m[1]) } }
+	m = fullMsg.match(/^Could not edit file: (.+?)\. Error code: (\w+)\.$/)
+	if (m) {
+		// Upstream edit.js wraps any errno as "Could not edit file: <path>.
+		// Error code: <ERRNO>." — route the permission errnos to the shared
+		// fs family canonical; anything else falls through to fail-open.
+		if (m[2] === "ENOENT")
+			return { kind: "model_mistake", message: "Edit target missing", attrs: { file_hash: hashFilePath(m[1]) } }
+		if (m[2] === "EACCES" || m[2] === "EPERM" || m[2] === "EROFS")
+			return {
+				kind: "model_mistake",
+				message: "Filesystem permission denied",
+				attrs: { file_hash: hashFilePath(m[1]) },
+			}
+	}
+	// Upstream edit-diff.js: overlapping edits are rejected wholesale.
+	m = fullMsg.match(
+		/^edits\[(\d+)\] and edits\[(\d+)\] overlap in (.+?)\. Merge them into one edit or target disjoint regions\.$/,
+	)
+	if (m)
+		return {
+			kind: "model_mistake",
+			message: "Edit targets overlap",
+			attrs: { first_edit_index: Number(m[1]), second_edit_index: Number(m[2]), file_hash: hashFilePath(m[3]) },
+		}
+	// Upstream edit.js: argument validation.
+	if (fullMsg === "Edit tool input is invalid. edits must contain at least one replacement.")
+		return { kind: "model_mistake", message: "Edit empty replacements" }
 	return undefined
 }
 
@@ -299,11 +324,16 @@ function classifyEditError(fullMsg: string): ToolErrorClassification | undefined
 // ---------------------------------------------------------------------------
 
 function classifyReadError(fullMsg: string): ToolErrorClassification | undefined {
-	let m = fullMsg.match(/^ENOENT: no such file or directory, access '(.+)'$/)
+	let m = fullMsg.match(/^ENOENT: no such file or directory, (?:access|open) '(.+)'$/)
 	if (m) return { kind: "model_mistake", message: "Read path not found", attrs: { file_hash: hashFilePath(m[1]) } }
 	// Already canonical (kimchi permissions read gate) — keep the message.
 	if (fullMsg === "Path is a directory; read only accepts files. List or search the directory instead.") {
 		return { kind: "model_mistake", message: fullMsg }
+	}
+	// Upstream read.js surfaces the raw errno when the gate is bypassed
+	// (e.g. a stat/open race): same semantics as the gate above.
+	if (fullMsg === "EISDIR: illegal operation on a directory, read") {
+		return { kind: "model_mistake", message: "Path is a directory" }
 	}
 	m = fullMsg.match(/^Offset (\d+) is beyond end of file \(\d+ lines total\)$/)
 	if (m) return { kind: "model_mistake", message: "Read offset beyond EOF", attrs: { offset: Number(m[1]) } }
@@ -320,6 +350,42 @@ function classifyPathError(fullMsg: string): ToolErrorClassification | undefined
 	// Distinct from the read family's canonical message — these producers
 	// (find/grep/ls path probing) are not the read tool.
 	return { kind: "model_mistake", message: "Path not found", attrs: { file_hash: hashFilePath(m[1]) } }
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem errno family (read / write / edit / find / grep / ls)
+// ---------------------------------------------------------------------------
+
+/** Node fs errno shape shared by every file-accessing tool:
+ *  `EXXXX: <description>, <verb> '<path>'` with an optional second path for
+ *  rename (`'a' -> 'b'`), optionally wrapped by the upstream ls tool
+ *  (`Cannot read directory: …`, ls.js). The errno code selects the family;
+ *  every captured path is hashed, never exported raw.
+ *
+ *  EACCES/EPERM/EROFS are target rejections (the model attempted a file it
+ *  has no permission for — model friction); ENOENT/ENOTDIR/EISDIR are path
+ *  mistakes; ETIMEDOUT is an environment failure (network filesystems) and
+ *  stays in the error funnel with a canonical; any other errno is
+ *  conservatively a failure with the path hashed. */
+const FS_ERRNO_RE =
+	/^(?:Cannot read directory: )?(E[A-Z]{2,}): [^']*? (?:open|access|write|rename|mkdir|scandir|readdir|read|stat|lstat|unlink|rmdir|readlink|copyfile) '(.+?)'(?: -> '(.+?)')?$/
+
+function classifyFsError(fullMsg: string): ToolErrorClassification | undefined {
+	// Path-less errno forms first: the common ETIMEDOUT read/write carries
+	// no quoted path.
+	if (/^ETIMEDOUT: connection timed out, (?:read|write)$/.test(fullMsg))
+		return { kind: "failure", message: "Filesystem timeout" }
+	const m = fullMsg.match(FS_ERRNO_RE)
+	if (!m) return undefined
+	const [, errno, path, secondPath] = m
+	const attrs: Record<string, string | number> = { file_hash: hashFilePath(path) }
+	if (secondPath) attrs.target_file_hash = hashFilePath(secondPath)
+	if (errno === "EACCES" || errno === "EPERM" || errno === "EROFS")
+		return { kind: "model_mistake", message: "Filesystem permission denied", attrs }
+	if (errno === "ENOENT" || errno === "ENOTDIR" || errno === "EISDIR")
+		return { kind: "model_mistake", message: "Path not found", attrs }
+	if (errno === "ETIMEDOUT") return { kind: "failure", message: "Filesystem timeout", attrs }
+	return { kind: "failure", message: "Filesystem error", attrs }
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +473,34 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 		) {
 			return { kind: "blocked", message: "Ferment state guard" }
 		}
+		// Ferment argument-validation families (ferment/tools/lifecycle.ts
+		// parseJsonArray + gate-validation.ts): the model passed malformed
+		// or failing arguments — agent friction, not anomalies. All three
+		// parseJsonArray variants plus the gate-object shape check.
+		const fermentField = msg.match(
+			/^Field "([a-z0-9_.]+)" (?:must be an array|was a JSON string, but it did not decode to an array|was a string, but it did not contain a valid JSON array)\./,
+		)
+		if (fermentField)
+			return { kind: "model_mistake", message: "Ferment argument not valid JSON", attrs: { field: fermentField[1] } }
+		if (msg.startsWith("Every gate object requires {id, verdict, rationale, evidence}. Fix these and retry:")) {
+			return { kind: "model_mistake", message: "Ferment gate objects invalid" }
+		}
+		if (
+			/^complete_ferment refused — agent self-flagged on \d+ ferment gate\(s\):/.test(msg) ||
+			/^Call refused — agent self-flagged on \d+ gate\(s\):/.test(msg)
+		) {
+			return { kind: "model_mistake", message: "Ferment self-flagged" }
+		}
+		// The remaining self-flagged refusals share one harness-owned core —
+		// `agent self-flagged on N (plan|ferment|step) gate(s):` — under five
+		// different producer prefixes (lifecycle.ts scope/complete/propose,
+		// steps.ts with model-authored step text before the core, and the
+		// ASCII-hyphen step variant). Matching the core instead of per-shape
+		// literals keeps future wording drift from leaking the free-text
+		// gate lines into the raw fallback.
+		if (/agent self-flagged on \d+ (?:plan |ferment |step )?gate\(s\):/.test(msg)) {
+			return { kind: "model_mistake", message: "Ferment self-flagged" }
+		}
 	}
 
 	// Declines — user decisions, by definition not failures.
@@ -440,12 +534,41 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 		if (read) return read
 	}
 	if (PATH_TOOLS.has(toolName)) {
+		// rg/fd subprocess families (the grep tool shells out to bundled rg,
+		// find to fd): a bad pattern in the model's own regex is friction; a
+		// bootstrap failure to download the tool is a real harness failure.
+		if (/^rg: (?:regex parse error|the literal)/.test(msg)) {
+			return { kind: "model_mistake", message: "Invalid regex" }
+		}
+		if (/^(?:ripgrep \(rg\)|rg|fd) is not available and could not be downloaded$/.test(msg)) {
+			return { kind: "failure", message: "Search tool unavailable" }
+		}
+		// rg stderr reporting an OS-level failure on a target path the model
+		// chose (unreadable, locked, special file): rg's own format, ending in
+		// the errno code — distinct from the pattern-error forms above.
+		const rgOs = msg.match(/^rg: (.+): .+ \(os error \d+\)$/)
+		if (rgOs)
+			return { kind: "model_mistake", message: "Search target error", attrs: { file_hash: hashFilePath(rgOs[1]) } }
 		const path = classifyPathError(msg)
 		if (path) return path
 	}
 
+	// Filesystem errno family — shared by every file-accessing tool scope.
+	if (toolName === "read" || WRITE_EDIT_TOOLS.has(toolName) || PATH_TOOLS.has(toolName)) {
+		const fs = classifyFsError(msg)
+		if (fs) return fs
+	}
+
 	const engine = classifyEngineValidationError(msg)
 	if (engine) return engine
+
+	// Codemode options-line validation (pi-mono codemode chunk): the
+	// // @options: directive must lead the script; a misplaced one is rejected.
+	// Harness-owned string, tool-agnostic match (same exception class as
+	// engine validation).
+	if (/^The \/\/ @options: line must be the first line of the input; found one on line \d+$/.test(msg)) {
+		return { kind: "model_mistake", message: "Codemode options line misplaced" }
+	}
 
 	// Fail-open fallback: today's behavior, unchanged.
 	return { kind: "failure", message: msg.slice(0, 300) }
