@@ -14402,11 +14402,11 @@ describe("KimchiAcpAgent background bash handoff", () => {
 		expect(res.stopReason).toBe("end_turn")
 		const heldAcpId = toolCalls()[0]?.toolCallId ?? ""
 
-		// The process exits BEFORE the reload: the hold settles, so a later
-		// replay must present the call as terminal (no dangling spinner).
-		await ops.exitMatching("sleep", 0)
-		await waitFor(() => updatesFor(heldAcpId).some((u) => u.status === "completed"))
-
+		// The persisted branch, as pi would record it: the recorded result of
+		// the backgrounded call is its pre-exit handoff (details.handoff). Set
+		// BEFORE the exit so the exit watcher's persisted settle (metadata-only
+		// CustomEntry, carrying the live ACP id) lands in the same branch the
+		// reload replays from — mirroring the real session file's ordering.
 		fake.branch = [
 			userTextEntry("run it", "u1", null),
 			assistantBlocksEntry(
@@ -14431,24 +14431,93 @@ describe("KimchiAcpAgent background bash handoff", () => {
 			},
 		]
 
+		// The process exits BEFORE the reload: the hold settles, so a later
+		// replay must present the call as terminal (no dangling spinner).
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(heldAcpId).some((u) => u.status === "completed"))
+
 		updates.length = 0
 		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
 
 		const replayCalls = toolCalls()
 		expect(replayCalls).toHaveLength(1)
-		// Held state was retired by the settle: replay falls back to a fresh id …
-		expect(replayCalls[0]?.toolCallId).not.toBe(heldAcpId)
+		// The persisted settle carries the live ACP id: replay re-binds it, so a
+		// client that kept its live rows across the replay sees ONE id for the
+		// call — no zombie duplicate (wake-replay regression).
+		expect(replayCalls[0]?.toolCallId).toBe(heldAcpId)
 		// … and a TERMINAL status — the recorded result is the handoff, but the
 		// process is no longer held, so replaying in_progress would spin forever.
 		expect(replayCalls[0]?.status).toBe("completed")
-		const replayed = updatesFor(replayCalls[0]?.toolCallId ?? "")
+		const replayed = updatesFor(heldAcpId)
 		expect(replayed.some((u) => u.status === "in_progress")).toBe(false)
-		// The in-flight markers are normalized away so the terminal status and
-		// the details payload cannot contradict each other on the wire.
+		// The replayed outcome is the persisted settle: terminal details matching
+		// the terminal status, no in-flight handoff markers.
 		const details = replayed[replayed.length - 1]?.rawOutput?.details
 		expect(details?.handoff).toBeUndefined()
-		expect(details?.exited).toBeUndefined()
-		expect(details?.exitCode).toBeNull()
+		expect(details?.exited).toBe(true)
+		expect(details?.exitCode).toBe(0)
+	})
+
+	// Regression for the wake-replay zombie row (settle→wake transcript):
+	// handoff turn ends, an unrelated prompt runs (its agent_start wipes the
+	// per-turn id mappings), THEN the process exits and settles. A replay
+	// that follows must re-announce the call under the ONE id the live client
+	// holds, terminal — not mint a fresh id for a duplicate running row.
+	it("rebinds the settled call's live ACP id on replay when a prompt ran between handoff and exit", async () => {
+		const handle = spawnBackgroundSleep()
+
+		const res = await promptWithHandoff(handle)
+		expect(res.stopReason).toBe("end_turn")
+		const heldAcpId = toolCalls()[0]?.toolCallId ?? ""
+
+		// The in-between prompt (transcript's "Hello" turn): its agent_start
+		// clears toolCallIdMap, so the handoff's id-stability record survives
+		// only in the held map until the settle.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Hello" }] })).stopReason).toBe("end_turn")
+
+		// The persisted branch up to the exit: handoff turn + the in-between
+		// prompt. The settle entry appends to the tail when the process exits.
+		fake.branch = [
+			userTextEntry("run it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-tc-1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle, exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			userTextEntry("Hello", "u2", "tr-tc-1"),
+			assistantBlocksEntry([{ type: "text", text: "Hi!" }], "a2", "u2"),
+		]
+
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(heldAcpId).some((u) => u.status === "completed"))
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		// Exactly one bash call row, under the settle-rebound live id,
+		// terminal — the client's live indicator equals a fresh reload.
+		expect(toolCalls()).toHaveLength(1)
+		expect(toolCalls()[0]?.toolCallId).toBe(heldAcpId)
+		expect(toolCalls()[0]?.status).toBe("completed")
 	})
 
 	it("replays the persisted settle outcome on reload: a failed process replays failed with its exit code, not completed", async () => {

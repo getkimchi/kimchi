@@ -2780,6 +2780,7 @@ export class KimchiAcpAgent implements Agent {
 								try {
 									const data: BashBackgroundSettleData = {
 										toolCallId: piToolCallId,
+										acpToolCallId,
 										isError: outcome.isError,
 										text: outcome.text,
 										details: outcome.details,
@@ -3093,6 +3094,17 @@ export class KimchiAcpAgent implements Agent {
 				// belongs to the block whose handoff it settled.
 				const settleResult = heldAcpId === undefined ? takeReplayToolResult(settles, upstreamId) : undefined
 				const finalResult = settleResult ?? replayResult
+				// A call settled before this replay carries its live ACP id in the
+				// persisted settle: re-bind that id so the re-announcement updates
+				// the row the client already holds instead of opening a zombie
+				// duplicate under a fresh id. The numeric suffix must also stay
+				// ahead of record.nextToolCallId — a replay allocating counters
+				// from 0 could otherwise mint the same id for a LATER call.
+				if (record && heldAcpId === undefined && settleResult?.acpToolCallId !== undefined) {
+					record.toolCallIdMap.set(upstreamId, settleResult.acpToolCallId)
+					const seq = /\d+$/.exec(settleResult.acpToolCallId)
+					if (seq) record.nextToolCallId = Math.max(record.nextToolCallId, Number(seq[0]) + 1)
+				}
 				const acpToolCallId = heldAcpId
 					? heldAcpId.acpToolCallId
 					: record
@@ -4450,6 +4462,13 @@ type ReplayToolResult = {
 	// thinner payload on replay.
 	details?: unknown
 	toolName?: string
+	/**
+	 * Settle facts only: the ACP id the settled call was announced under in
+	 * the live session. Replay re-binds it so a client that kept its live
+	 * rows across the replay sees ONE id for the call, terminal — not a
+	 * duplicate row under a fresh id (wake-replay zombie).
+	 */
+	acpToolCallId?: string
 }
 
 // First pass over the branch: index tool results by their toolCallId so the
@@ -4566,6 +4585,7 @@ function collectBashBackgroundSettles(entries: BranchEntry[]): Map<string, Repla
 			content: entry.data.text.length > 0 ? [{ type: "text", text: entry.data.text }] : [],
 			isError: entry.data.isError,
 			details: entry.data.details,
+			acpToolCallId: entry.data.acpToolCallId,
 		})
 		out.set(entry.data.toolCallId, queued)
 	}
