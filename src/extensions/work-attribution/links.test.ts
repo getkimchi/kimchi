@@ -960,6 +960,48 @@ it("rebuilds the accumulated history from scratch after a journal is rewritten, 
 	expect(links()).toHaveLength(2)
 })
 
+it("withholds a work named by an unknown record type that arrived between passes", async () => {
+	const flow = acceptedContinuation("plan", "planner")
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	expect(links()).toHaveLength(1)
+	// A second receipt arrives AFTER the first pass, alongside an unknown-type record naming its work.
+	const later = acceptedContinuation("plan", "planner-later")
+	const unknownRecord = {
+		version: 1,
+		type: "future_record_kind",
+		workId: later.workId,
+		sessionId: "00000000-future-session",
+		recordedAt: new Date().toISOString(),
+		cwd: dir,
+	}
+	fs.appendFileSync(
+		join(dir, "work-attribution", "00000000-future-session.jsonl"),
+		`${JSON.stringify(unknownRecord)}\n`,
+	)
+	await flushWorkSummaries()
+	await repair(progress)
+	await repair(progress)
+	// The first pass may have rebuilt (journal growth); whichever path runs, the unknown-type
+	// gate must keep the later work's receipt unconfirmed until the history explains the record.
+	expect(links().every((row) => row.workId !== later.workId)).toBe(true)
+	expect(links()).toHaveLength(1)
+})
+
+it("fails loudly when an invalid journal line arrives between passes, writing no new links", async () => {
+	const flow = acceptedContinuation("plan", "planner")
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	expect(links()).toHaveLength(1)
+	const later = acceptedContinuation("plan", "planner-invalid")
+	fs.appendFileSync(join(dir, "work-attribution", "00000000-damaged.jsonl"), "{ broken json\n")
+	await flushWorkSummaries()
+	await expect(repair(progress)).rejects.toThrow(/invalid records/)
+	expect(links()).toHaveLength(1)
+})
+
 it("reads only new ledger records since the last pass once no receipt can still link", async () => {
 	vi.useFakeTimers({ toFake: ["Date"] })
 	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))

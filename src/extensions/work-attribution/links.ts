@@ -225,6 +225,11 @@ function journals(problems: readonly WorkRecordProblem[]): string {
 	return named.length > 3 ? `${named.slice(0, 3).join(", ")} and ${named.length - 3} more` : named.join(", ")
 }
 
+/** The strict-reader damage error, buildable where the `journals` helper is shadowed by a fingerprint value. */
+function invalidRecordsError(invalid: readonly WorkRecordProblem[]): Error {
+	return new Error(`Incomplete work history contains invalid records in ${journals(invalid)}`)
+}
+
 /** Damage anywhere could hide a revocation, so it blocks every confirmation until the journal is repaired. */
 export function readContinuationHistory(agentDir: string, checkBudget?: () => void): ContinuationHistory {
 	const invalid: WorkRecordProblem[] = []
@@ -432,7 +437,14 @@ export interface ContinuationProgress {
 	 * Incremental history: the index, unknown-type problems, receipt keys, and pending candidates
 	 * accumulated so far, plus the watermark (epoch ms) through which records were read. Kept on
 	 * the progress object so a bounded work quota per pass does not re-read the whole ledger every
-	 * pass; any journal rewrite or truncation drops it and forces one full rebuild.
+	 * pass. Held in memory only — not JSON-serializable (Sets/Maps).
+	 *
+	 * Safety shape: the LEDGER is the authority and only ever grows (no production code deletes
+	 * records; a rewritten journal's re-import adds both generations' rows with fresh import
+	 * times, so a modifiedSince read never misses content a rewrite removed). The stat gate below
+	 * is defense in depth: shrinking and same-size rewrites force a full rebuild, and the strict
+	 * problem check on every incremental read surfaces the damage a growing rewrite carries.
+	 * The watermark is wall-clock: a large clock rollback strands rows until a full rebuild.
 	 */
 	historyIndex?: ContinuationIndex
 	historyUnknown?: ContinuationHistory["unknown"]
@@ -441,14 +453,30 @@ export interface ContinuationProgress {
 	historySince?: number
 	/** Per-journal stats of the last pass that built the incremental state, to tell append-only growth from rewrites. */
 	journalStats?: Map<string, { size: string; mtimeNs: string; ctimeNs: string }>
+	/** The ledger record count when the state was built; a decrease forces a full rebuild. */
+	historyRecords?: number
 }
 
 /** File stats from a workJournalFingerprint value; coupled to its JSON shape by construction. */
-function fingerprintFiles(fingerprint: string): Map<string, { size: string; mtimeNs: string; ctimeNs: string }> {
-	const parsed = JSON.parse(fingerprint) as [string, string[][]]
-	const files = new Map<string, { size: string; mtimeNs: string; ctimeNs: string }>()
-	for (const [path, , , size, mtimeNs, ctimeNs] of parsed[1]) files.set(path, { size, mtimeNs, ctimeNs })
-	return files
+function fingerprintFiles(
+	fingerprint: string,
+): { files: Map<string, { size: string; mtimeNs: string; ctimeNs: string }>; records: number } | undefined {
+	try {
+		const parsed = JSON.parse(fingerprint) as [string, string[][]]
+		const records = Number(parsed[0])
+		if (!Array.isArray(parsed[1]) || !Number.isFinite(records)) return undefined
+		const files = new Map<string, { size: string; mtimeNs: string; ctimeNs: string }>()
+		for (const entry of parsed[1]) {
+			if (!Array.isArray(entry) || typeof entry[0] !== "string") return undefined
+			const [path, , , size, mtimeNs, ctimeNs] = entry
+			if (typeof size !== "string" || typeof mtimeNs !== "string" || typeof ctimeNs !== "string") return undefined
+			files.set(path, { size, mtimeNs, ctimeNs })
+		}
+		return { files, records }
+	} catch {
+		// A shape change in workJournalFingerprint must fail toward a full rebuild, not toward "grew".
+		return undefined
+	}
 }
 
 /** Appends only ever grow a journal: shrink or same-size-change means a rewrite, which the incremental state cannot absorb. */
@@ -497,38 +525,77 @@ export async function reconcileWorkContinuations(
 		if (changed.every(known)) {
 			progress.quiet = { since: startedAt, receipts }
 			progress.settledJournals = journals
+			// Nothing pending: release the accumulated index — the quiet path handles future
+			// appends, so resident memory is bounded to periods with an actual backlog.
+			progress.historyIndex = undefined
+			progress.historyUnknown = undefined
+			progress.historyReceipts = undefined
+			progress.historyCandidates = undefined
+			progress.journalStats = undefined
+			progress.historyRecords = undefined
 			return
 		}
 		progress.quiet = undefined
 	}
 	progress.done ??= new Set()
 	const done = progress.done
-	const files = fingerprintFiles(journals)
+	const parsedFingerprint = fingerprintFiles(journals)
 	const since = progress.historySince
 	const incremental =
+		parsedFingerprint !== undefined &&
 		progress.historyIndex !== undefined &&
 		progress.historyReceipts !== undefined &&
 		progress.historyCandidates !== undefined &&
 		since !== undefined &&
-		journalGrewOnly(progress.journalStats ?? new Map(), files)
+		(progress.historyRecords === undefined || parsedFingerprint.records >= progress.historyRecords) &&
+		journalGrewOnly(progress.journalStats ?? new Map(), parsedFingerprint.files)
 	let index: ContinuationIndex
 	let receipts: Set<string>
 	let candidates: Map<string, { row: WorkRecord; continuation: WorkContinuation }>
-	if (incremental && progress.historyIndex && progress.historyReceipts && progress.historyCandidates) {
+	if (
+		incremental &&
+		parsedFingerprint &&
+		progress.historyIndex &&
+		progress.historyReceipts &&
+		progress.historyCandidates
+	) {
 		// Append-only since the last pass: merge the new records into the accumulated state.
 		index = progress.historyIndex
 		receipts = progress.historyReceipts
 		candidates = progress.historyCandidates
-		const fresh = readWorkRecords(agentDir, since - MTIME_SLACK_MS, checkBudget)
-		for (const row of fresh) {
-			checkBudget()
-			indexRecord(index, row)
-			const found = receipt(row)
-			if (!found) continue
-			receipts.add(found.key)
-			if (index.linked.has(found.continuation.evidence.requestId)) done.add(found.key)
-			if (!done.has(found.key) && !unknownRecords({ index, unknown: progress.historyUnknown ?? [] }, row.workId).length)
-				candidates.set(found.key, { row, continuation: found.continuation })
+		// The strict problem check guards every link write: damage blocks confirmation
+		// ("Damage anywhere could hide a revocation"), and unknown record types block the
+		// work they name. Problem notes are persisted, so this replays them cheaply.
+		const invalid: WorkRecordProblem[] = []
+		const fresh = readWorkRecords(agentDir, since - MTIME_SLACK_MS, checkBudget, (problem) => {
+			if (problem.kind === "invalid") invalid.push(problem)
+			else if (!progress.historyUnknown?.some((seen) => JSON.stringify(seen.problem) === JSON.stringify(problem)))
+				(progress.historyUnknown ??= []).push({ problem, ids: namedIds(problem.record) })
+		})
+		if (invalid.length) throw invalidRecordsError(invalid)
+		// All-or-nothing: a mid-merge throw drops the accumulated state so the next pass
+		// rebuilds from one full read, instead of re-merging this window forever.
+		try {
+			for (const row of fresh) {
+				checkBudget()
+				indexRecord(index, row)
+				const found = receipt(row)
+				if (!found) continue
+				receipts.add(found.key)
+				if (index.linked.has(found.continuation.evidence.requestId)) done.add(found.key)
+				if (
+					!done.has(found.key) &&
+					!unknownRecords({ index, unknown: progress.historyUnknown ?? [] }, row.workId).length
+				)
+					candidates.set(found.key, { row, continuation: found.continuation })
+			}
+		} catch (error) {
+			progress.historyIndex = undefined
+			progress.historyReceipts = undefined
+			progress.historyCandidates = undefined
+			progress.journalStats = undefined
+			progress.historyRecords = undefined
+			throw error
 		}
 		// Settled receipts must leave the pending map, or the per-pass cap counts dead work forever.
 		for (const key of done) candidates.delete(key)
@@ -554,7 +621,13 @@ export async function reconcileWorkContinuations(
 		progress.historyCandidates = candidates
 	}
 	progress.historySince = startedAt
-	progress.journalStats = files
+	if (parsedFingerprint) {
+		progress.journalStats = parsedFingerprint.files
+		progress.historyRecords = parsedFingerprint.records
+	} else {
+		progress.journalStats = undefined
+		progress.historyRecords = undefined
+	}
 	const keys = [...candidates.keys()].sort()
 	const start = Math.max(0, keys.indexOf(progress.nextContinuation ?? ""))
 	let wrote = false
@@ -586,7 +659,16 @@ export async function reconcileWorkContinuations(
 	}
 	if (keys.length > MAX_CONTINUATIONS_PER_PASS) return
 	if (!wrote) progress.settledJournals = journals
-	if (keys.every((key) => done.has(key))) progress.quiet = { since: startedAt, receipts }
+	if (keys.every((key) => done.has(key))) {
+		progress.quiet = { since: startedAt, receipts }
+		// Same release as the quiet fast path above: nothing pending, drop the index.
+		progress.historyIndex = undefined
+		progress.historyUnknown = undefined
+		progress.historyReceipts = undefined
+		progress.historyCandidates = undefined
+		progress.journalStats = undefined
+		progress.historyRecords = undefined
+	}
 }
 
 /** Explicit repair chooses one input segment; choosing its current work confirms an uncertain assignment. */
