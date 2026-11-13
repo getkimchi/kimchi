@@ -1,9 +1,10 @@
 /** The checked-out branch and its PR or MR, independent of recorded-work associations. */
 
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { object } from "../work-attribution/summary.js"
 import { api, command, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
 import { LookupError, label, pullRequest } from "./provider-records.js"
-import { PASS_BUDGET_MS, type WorkPullRequest } from "./pull-requests.js"
+import { PASS_BUDGET_MS } from "./pull-requests.js"
 
 export interface BranchPullRequest {
 	branch: string

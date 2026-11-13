@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto"
 import { setImmediate } from "node:timers/promises"
+import {
+	accountKey,
+	type ReportingRepository,
+	type RepositoryIdentity,
+} from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
+import type { PullRequestCostReport } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
+import { effectiveClaim, type Fact, type OutboxBatch } from "@getkimchi/kimchi-bridge/work/outbox"
+import type { Acknowledgement } from "@getkimchi/kimchi-bridge/work/protocol"
 import { verifyApiKey } from "../../api/organizations.js"
 import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
@@ -13,22 +21,12 @@ import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
-import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"
 import { legacyInputSignature } from "./ledger/import.js"
-import {
-	acknowledgeBatch,
-	deliveryRetry,
-	effectiveClaim,
-	type Fact,
-	observeEvents,
-	pendingBatch,
-	readOutboxStatus,
-} from "./ledger/outbox.js"
-import { backendFor, type OutboxBatch, type RecordBackend } from "./ledger/records.js"
-import type { Acknowledgement } from "./protocol.js"
+import { acknowledgeBatch, deliveryRetry, observeEvents, pendingBatch, readOutboxStatus } from "./ledger/outbox.js"
+import { backendFor, type RecordBackend } from "./ledger/records.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,
@@ -61,7 +59,6 @@ import {
 	UPLOAD_INTERVAL_MS,
 	withReportingConsent,
 } from "./queue.js"
-import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
 /** Failed repository-identity lookups wait this long before retrying, inside and outside a pass. */

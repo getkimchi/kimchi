@@ -1,6 +1,6 @@
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { describe, expect, it } from "vitest"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { calculatePullRequestCosts } from "./costs.js"
 import type { WorkRecord } from "./summary.js"
 

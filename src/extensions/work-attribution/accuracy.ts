@@ -1,5 +1,5 @@
+import { decimalNanos, usd } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
 import { plainURL } from "../../utils/url.js"
-import { decimalNanos, usd } from "./costs.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 

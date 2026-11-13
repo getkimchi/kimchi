@@ -1,6 +1,6 @@
+import { accountKey, repositoryKey } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
 import { describe, expect, it } from "vitest"
 import type { PendingRepository, ReportingState } from "./queue.js"
-import { accountKey, repositoryKey } from "./snapshot.js"
 import { limitNoticeTexts, statusText } from "./status.js"
 
 const now = Date.UTC(2026, 9, 8, 12)
