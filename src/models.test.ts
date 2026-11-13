@@ -206,18 +206,48 @@ describe("updateModelsConfig", () => {
 		})
 	})
 
-	it("writes feed chatgpt entries as openai-codex and drops them (and the legacy hardcoded block) when the feed has none", async () => {
+	it("writes feed chatgpt entries as kimchi-dev/openai-codex and drops them (and the legacy hardcoded block) when the feed has none", async () => {
 		const chatgpt = { ...(KIMI as object), slug: "gpt-5.5", provider: "chatgpt" }
 		vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ models: [KIMI, chatgpt] }) } as Response)
 		await updateModelsConfig(modelsJsonPath, "key", { sleep: async () => {} })
 		let written = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(written.providers["openai-codex"].models.map((m: { id: string }) => m.id)).toEqual(["gpt-5.5"])
+		expect(written.providers["kimchi-dev/openai-codex"].models.map((m: { id: string }) => m.id)).toEqual(["gpt-5.5"])
 
 		vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ models: [KIMI] }) } as Response)
 		await updateModelsConfig(modelsJsonPath, "key", { sleep: async () => {} })
 		written = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(written.providers["openai-codex"]).toBeUndefined()
+		expect(written.providers["kimchi-dev/openai-codex"]).toBeUndefined()
 		expect(written.providers["kimchi-dev"]).toBeDefined()
+	})
+
+	it("drops a cached block still named openai-codex on refresh", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ models: [KIMI] }) } as Response)
+		await updateModelsConfig(modelsJsonPath, "key", { sleep: async () => {} })
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		config.providers["openai-codex"] = { api: "openai-codex-responses", models: [{ id: "gpt-5.5", name: "GPT-5.5" }] }
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
+
+		vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ models: [KIMI] }) } as Response)
+		await updateModelsConfig(modelsJsonPath, "key", { sleep: async () => {} })
+
+		expect(JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers["openai-codex"]).toBeUndefined()
+	})
+
+	it("does not resurrect a cached openai-codex block when the refresh fails, but keeps the kimchi-dev/openai-codex rows", async () => {
+		const chatgpt = { ...(KIMI as object), slug: "gpt-5.5", provider: "chatgpt" }
+		vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ models: [KIMI, chatgpt] }) } as Response)
+		await updateModelsConfig(modelsJsonPath, "key", { sleep: async () => {} })
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		config.providers["openai-codex"] = { api: "openai-codex-responses", models: [{ id: "gpt-5.4", name: "GPT-5.4" }] }
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
+		vi.mocked(fetch).mockRejectedValue(new Error("network down"))
+
+		const result = await discoverModelsConfig(modelsJsonPath, "key", { sleep: async () => {} })
+
+		expect(result.refreshed).toBe(false)
+		expect(result.providers["openai-codex"]).toBeUndefined()
+		expect(result.providers["kimchi-dev/openai-codex"].models?.map((m) => m.id)).toEqual(["gpt-5.5"])
+		expect(result.models.map((m) => m.slug)).not.toContain("gpt-5.4")
 	})
 
 	it("keeps an old Codex login's models out of the gateway blocks when the refresh fails", async () => {
@@ -2126,10 +2156,10 @@ describe("chatgpt feed entries", () => {
 		thinking_levels: ["low", "medium", "high"],
 	}
 
-	it("builds an openai-codex provider aimed at the gateway, not a kimchi-dev sub-provider", () => {
+	it("builds a kimchi-dev/openai-codex provider aimed at the gateway, not a kimchi-dev sub-provider", () => {
 		const { providers } = buildModelsConfig([KIMI, CODEX] as never, "https://gw.example")
 		expect(providers["kimchi-dev/chatgpt"]).toBeUndefined()
-		const codex = providers["openai-codex"]
+		const codex = providers["kimchi-dev/openai-codex"]
 		expect(codex.baseUrl).toBe("https://gw.example/openai/v1")
 		expect(codex.api).toBe("openai-codex-responses")
 		const [model] = codex.models as ProviderModelConfig[]
@@ -2145,15 +2175,15 @@ describe("chatgpt feed entries", () => {
 		})
 	})
 
-	it("omits openai-codex for an SSO organization: the gateway takes only an API key next to a ChatGPT login", () => {
+	it("omits kimchi-dev/openai-codex for an SSO organization: the gateway takes only an API key next to a ChatGPT login", () => {
 		const { providers } = buildModelsConfig([KIMI, CODEX] as never, "https://gw.example", "org-123")
-		expect(providers["openai-codex"]).toBeUndefined()
+		expect(providers["kimchi-dev/openai-codex"]).toBeUndefined()
 		expect(providers["kimchi-dev/chatgpt"]).toBeUndefined()
 	})
 
-	it("omits openai-codex when the feed has no chatgpt entries", () => {
+	it("omits kimchi-dev/openai-codex when the feed has no chatgpt entries", () => {
 		const { providers } = buildModelsConfig([KIMI] as never, "https://gw.example")
-		expect(providers["openai-codex"]).toBeUndefined()
+		expect(providers["kimchi-dev/openai-codex"]).toBeUndefined()
 	})
 })
 
@@ -2166,11 +2196,11 @@ describe("model picker labels", () => {
 		registerModelInfoFromProviders({
 			"kimchi-dev": block(undefined, "glm-5.3"),
 			"kimchi-dev/openai": block("OpenAI prod", "gpt-5.5"),
-			"openai-codex": block("Team Codex", "gpt-5.5", "gpt-5.4-codex"),
+			"kimchi-dev/openai-codex": block("Team Codex", "gpt-5.5", "gpt-5.4-codex"),
 		})
-		expect(getModelLabel("openai-codex/gpt-5.5")).toBe("gpt-5.5 (Team Codex, subscription)")
+		expect(getModelLabel("kimchi-dev/openai-codex/gpt-5.5")).toBe("gpt-5.5 (Team Codex, subscription)")
 		expect(getModelLabel("kimchi-dev/openai/gpt-5.5")).toBe("gpt-5.5 (OpenAI prod)")
-		expect(getModelLabel("openai-codex/gpt-5.4-codex")).toBeUndefined()
+		expect(getModelLabel("kimchi-dev/openai-codex/gpt-5.4-codex")).toBeUndefined()
 		expect(getModelLabel("kimchi-dev/glm-5.3")).toBeUndefined()
 	})
 
@@ -2185,9 +2215,9 @@ describe("model picker labels", () => {
 	it("falls back to the provider block id when the feed names no instance", () => {
 		registerModelInfoFromProviders({
 			"kimchi-dev/openai": block(undefined, "gpt-5.5"),
-			"openai-codex": block(undefined, "gpt-5.5"),
+			"kimchi-dev/openai-codex": block(undefined, "gpt-5.5"),
 		})
 		expect(getModelLabel("kimchi-dev/openai/gpt-5.5")).toBe("gpt-5.5 (kimchi-dev/openai)")
-		expect(getModelLabel("openai-codex/gpt-5.5")).toBe("gpt-5.5 (openai-codex, subscription)")
+		expect(getModelLabel("kimchi-dev/openai-codex/gpt-5.5")).toBe("gpt-5.5 (kimchi-dev/openai-codex, subscription)")
 	})
 })

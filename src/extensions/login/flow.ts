@@ -25,10 +25,9 @@ import {
 	writeRegion,
 } from "../../config.js"
 import { markCredentialStale } from "../../credential-staleness.js"
-import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
+import { CODEX_PROVIDER_ID, isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
 	applyOrganizationHeader,
-	CODEX_PROVIDER_ID,
 	isTransientModelsError,
 	ModelsFetchError,
 	type PiModelConfig,
@@ -418,7 +417,7 @@ export function getKimchiProviderIds(modelRegistry: ModelRegistryLike): Set<stri
 		...modelRegistry
 			.getAll()
 			.map((model) => model.provider)
-			.filter((providerId) => providerId.startsWith(`${KIMCHI_PROVIDER_ID}/`)),
+			.filter((providerId) => providerId.startsWith(`${KIMCHI_PROVIDER_ID}/`) && providerId !== CODEX_PROVIDER_ID),
 	])
 }
 

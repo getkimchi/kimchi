@@ -79,7 +79,7 @@ describe("loginExtension", () => {
 		// models (the gateway feed supplies them).
 		const provider = registerProvider.mock.calls[0]?.[0]
 		expect(provider).toMatchObject({
-			id: "openai-codex",
+			id: "kimchi-dev/openai-codex",
 			name: "OpenAI Codex",
 			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
 		})

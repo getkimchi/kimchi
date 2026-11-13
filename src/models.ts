@@ -6,7 +6,7 @@ import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
-import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+import { CODEX_PROVIDER_ID, isKimchiProvider, KIMCHI_PROVIDER_ID, PI_CODEX_PROVIDER_ID } from "./kimchi-provider.js"
 import {
 	collectDeprecationMarkers,
 	deriveDeprecationState,
@@ -83,9 +83,8 @@ const RESPONSES_NONE_EFFORT_SLUG_PATTERNS: RegExp[] = [/^gpt-5\.[1-9]/, /^gpt-6/
 
 const GATEWAY_THINKING_LEVEL_MAP: ThinkingLevelMap = { off: "none", max: "max" }
 
-/** Feed provider for ChatGPT-subscription rows, served through pi's stock `openai-codex` provider. */
+/** Feed provider for ChatGPT-subscription rows, served through the `kimchi-dev/openai-codex` provider. */
 export const CHATGPT_FEED_PROVIDER = "chatgpt"
-export const CODEX_PROVIDER_ID = "openai-codex"
 
 const GATEWAY_METADATA_PROVIDERS = new Set(["ai-enabler", "custom"])
 
@@ -445,7 +444,7 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string, or
 		}
 	}
 
-	// ChatGPT-subscription rows ride pi's stock `openai-codex` provider (client
+	// ChatGPT-subscription rows ride pi's Codex client under `kimchi-dev/openai-codex` (client
 	// login as Bearer) through the gateway; the Kimchi key header is added at
 	// runtime by the login extension. No chatgpt rows means no block, so the
 	// models disappear on refresh while the stored login stays in auth.json.
@@ -521,6 +520,7 @@ function syntheticMarkerKeys(): Set<string> {
 /** Provider blocks kimchi owns; deprecation markers only apply to models
  *  under these — a sidecar slug must never mark another provider's rows. */
 function isKimchiManagedKey(key: string): boolean {
+	if (key.startsWith(`${CODEX_PROVIDER_ID}/`)) return false
 	return key.startsWith("kimchi-dev/") || key.startsWith("kimchi-experimental/")
 }
 
@@ -731,15 +731,11 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 		registerDeprecationMarkers(modelsJsonPath)
 		const result: ModelMetadata[] = []
 		for (const [name, provider] of Object.entries(providers)) {
-			if (!name.startsWith("kimchi-dev") && name !== CODEX_PROVIDER_ID) continue
+			// A block still named `openai-codex` (pi's own id) is not read back.
+			if (!name.startsWith("kimchi-dev")) continue
 			const models = (provider as { models?: PiModelConfig[] }).models
 			if (!Array.isArray(models) || models.length === 0) continue
-			// An `openai-codex` block from the pre-gateway Codex login has no feed
-			// provider on its models; only the gateway feed's chatgpt rows belong here.
-			const metadata = models.map(modelToMetadata)
-			result.push(
-				...(name === CODEX_PROVIDER_ID ? metadata.filter((m) => m.provider === CHATGPT_FEED_PROVIDER) : metadata),
-			)
+			result.push(...models.map(modelToMetadata))
 		}
 		if (result.length === 0) return undefined
 		return result
@@ -754,11 +750,12 @@ function readExistingProviders(modelsJsonPath: string): Record<string, unknown> 
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const config = JSON.parse(raw)
 		const providers = config?.providers ?? {}
-		// Strip all kimchi-managed providers (kimchi-dev and kimchi-dev/* sub-providers)
-		// plus kimchi-experimental, so they get regenerated on refresh.
+		// Strip all kimchi-managed providers (kimchi-dev and kimchi-dev/* sub-providers,
+		// including kimchi-dev/openai-codex), kimchi-experimental, and a leftover block
+		// under pi's own `openai-codex` id, so they get regenerated on refresh.
 		const rest: Record<string, unknown> = {}
 		for (const [name, value] of Object.entries(providers as Record<string, unknown>)) {
-			if (name.startsWith("kimchi-dev") || name === "kimchi-experimental" || name === CODEX_PROVIDER_ID) continue
+			if (name.startsWith("kimchi-dev") || name === "kimchi-experimental" || name === PI_CODEX_PROVIDER_ID) continue
 			rest[name] = value
 		}
 		return rest

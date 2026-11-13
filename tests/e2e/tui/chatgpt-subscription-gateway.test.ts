@@ -18,7 +18,7 @@ test.use(TUI_TEST_CONFIG)
  *
  * The stubbed gateway serves chatgpt rows in /v1/models/metadata and a
  * /openai/v1/codex/responses route. The ChatGPT browser login itself is not
- * stubbable, so "after ChatGPT login" seeds the stored openai-codex OAuth
+ * stubbable, so "after ChatGPT login" seeds the stored kimchi-dev/openai-codex OAuth
  * credential the login would have written.
  */
 
@@ -80,7 +80,9 @@ function seedAuth(homeDir: string, options: { kimchi: boolean; chatgpt: boolean 
 		JSON.stringify({
 			...(options.kimchi ? { "kimchi-dev": { type: "api_key", key: "kimchi-e2e-key" } } : {}),
 			...(options.chatgpt
-				? { "openai-codex": { type: "oauth", access: chatgptJwt(), refresh: "", expires: 4_102_444_800_000 } }
+				? {
+						"kimchi-dev/openai-codex": { type: "oauth", access: chatgptJwt(), refresh: "", expires: 4_102_444_800_000 },
+					}
 				: {}),
 		}),
 	)
@@ -220,7 +222,7 @@ test("after ChatGPT login the picker lists the feed's chatgpt models and a Codex
 			terminal.submit("")
 			await waitForText(terminal, "gpt-5.4-codex", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			const picker = viewText(terminal)
-			expect(picker).toContain("openai-codex")
+			expect(picker).toContain("kimchi-dev/openai-codex")
 			// Pi's hardcoded codex list must not leak in next to the feed's models.
 			expect(picker).not.toContain("gpt-5.3-codex")
 			terminal.keyEscape()
@@ -378,7 +380,7 @@ test("a model on the chatgpt row and another row shows as two labelled entries",
 			const picker = viewText(terminal)
 			expect(picker).toContain("gpt-5.5 (OpenAI prod)")
 			expect(picker).toMatch(/glm-5\.3\s+kimchi-dev\s/)
-			expect(picker).toMatch(/gpt-5\.4-codex\s+openai-codex/)
+			expect(picker).toMatch(/gpt-5\.4-codex\s+kimchi-dev\/openai-codex/)
 			trace.step("one entry per provider, labelled by instance name")
 		},
 	)
@@ -397,7 +399,7 @@ test("picking each labelled gpt-5.5 entry routes to the provider it names", asyn
 		},
 		async (fixture, trace) => {
 			// The picker filter matches id, provider and name, not the label.
-			await selectModel(terminal, "5.5 openai-codex", "gpt-5.5 (Team Codex, subscription)")
+			await selectModel(terminal, "5.5 kimchi-dev/openai-codex", "gpt-5.5 (Team Codex, subscription)")
 			const first = await ask(terminal, fixture, "via subscription", "from subscription")
 			const modelRequest = (r: { method: string; url: string }) =>
 				r.method === "POST" && /^\/openai\/v1\/(codex\/responses|responses|chat\/completions)/.test(r.url)
@@ -469,7 +471,7 @@ test("a feed without chatgpt entries removes the Codex models on refresh and kee
 				authPath = join(homeDir, ".config", "kimchi", "harness", "auth.json")
 				modelsPath = join(homeDir, ".config", "kimchi", "harness", "models.json")
 				seedAuth(homeDir, { kimchi: true, chatgpt: true })
-				// A previous session's feed (and pi's old hardcoded list) left an openai-codex block.
+				// A previous session's feed (and pi's old hardcoded list) left a block under pi's own openai-codex id.
 				writeFileSync(
 					modelsPath,
 					JSON.stringify({
@@ -501,7 +503,7 @@ test("a feed without chatgpt entries removes the Codex models on refresh and kee
 			await waitForText(terminal, "PROVIDER", { timeoutMs: INPUT_TIMEOUT_MS })
 			expect(viewText(terminal)).not.toContain("openai-codex")
 			expect(JSON.parse(readFileSync(modelsPath, "utf-8")).providers["openai-codex"]).toBeUndefined()
-			expect(JSON.parse(readFileSync(authPath, "utf-8"))["openai-codex"]).toMatchObject({ type: "oauth" })
+			expect(JSON.parse(readFileSync(authPath, "utf-8"))["kimchi-dev/openai-codex"]).toMatchObject({ type: "oauth" })
 			trace.step("codex models gone, ChatGPT login still stored")
 		},
 	)

@@ -26,7 +26,7 @@ test("auth menus offer OpenAI Codex and show one Kimchi provider", async ({ term
 						"kimchi-dev": { type: "api_key", key: "test-key" },
 						"kimchi-dev/anthropic": { type: "api_key", key: "test-key" },
 						"kimchi-dev/openai": { type: "api_key", key: "test-key" },
-						"openai-codex": { type: "oauth", access: "test-token", refresh: "", expires: 4_102_444_800_000 },
+						"kimchi-dev/openai-codex": { type: "oauth", access: "test-token", refresh: "", expires: 4_102_444_800_000 },
 					}),
 				)
 			},

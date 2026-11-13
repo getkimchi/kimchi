@@ -6,7 +6,8 @@ import { registerApiProvider } from "@earendil-works/pi-ai/compat"
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
-import { CODEX_PROVIDER_ID, chatCompletionsApi } from "../../models.js"
+import { CODEX_PROVIDER_ID, PI_CODEX_PROVIDER_ID } from "../../kimchi-provider.js"
+import { chatCompletionsApi } from "../../models.js"
 import { getVersion } from "../../utils.js"
 import { codexRequestMetadata, resolveCodexSession } from "./codex-request-context.js"
 
@@ -17,7 +18,7 @@ export const KIMCHI_KEY_HEADER = "X-API-Key"
 
 /**
  * True when the model feed listed chatgpt rows (persisted by the models
- * refresh as the `openai-codex` block) and the session uses a Kimchi API key.
+ * refresh as the `kimchi-dev/openai-codex` block) and the session uses a Kimchi API key.
  * The ChatGPT login takes `Authorization`, and the gateway reads `X-API-Key`
  * only as an API key, so SSO sessions cannot reach it.
  * Gates the "OpenAI Codex" entry under "Use a subscription".
@@ -38,10 +39,15 @@ export function isCodexGatewayAvailable(): boolean {
 	}
 }
 
-/** Drops "OpenAI Codex" from a provider list unless the gateway offers it. */
+/**
+ * Drops "OpenAI Codex" from a provider list unless the gateway offers it, and
+ * always drops pi's own `openai-codex` (direct to chatgpt.com).
+ */
 export function filterCodexSubscription<T extends { id: string }>(providers: T[]): T[] {
 	const codexOffered = isCodexGatewayAvailable()
-	return providers.filter((provider) => provider.id !== CODEX_PROVIDER_ID || codexOffered)
+	return providers.filter(
+		(provider) => provider.id !== PI_CODEX_PROVIDER_ID && (provider.id !== CODEX_PROVIDER_ID || codexOffered),
+	)
 }
 
 /** Originator the gateway logs for Kimchi traffic (Codex CLI sends its own). */
@@ -136,12 +142,13 @@ export function registerGatewayCodexApi(): void {
 }
 
 /**
- * Pi's stock `openai-codex` provider (login flow), re-labelled, with no
+ * Pi's stock Codex provider (login flow) under the `kimchi-dev/openai-codex` id, re-labelled, with no
  * hardcoded models: the models come from the gateway feed (models.json).
  */
 export function createGatewayCodexProvider(): CodexProvider {
 	return {
 		...openaiCodexProvider(),
+		id: CODEX_PROVIDER_ID,
 		name: "OpenAI Codex",
 		getModels: () => [],
 		getAllModels: () => [],

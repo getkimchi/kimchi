@@ -3,7 +3,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model, StreamOptions } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { filterCodexSubscription, isCodexGatewayAvailable, withGatewayOptions } from "./codex-gateway.js"
+import {
+	createGatewayCodexProvider,
+	filterCodexSubscription,
+	isCodexGatewayAvailable,
+	withGatewayOptions,
+} from "./codex-gateway.js"
 import { beginCodexCompaction, endCodexCompaction, resetCodexSession, startCodexTurn } from "./codex-request-context.js"
 
 const { loadConfigMock } = vi.hoisted(() => ({ loadConfigMock: vi.fn() }))
@@ -16,7 +21,8 @@ const SSO_AUTH = { "kimchi-dev": { type: "oauth", access: "sso-jwt", orgId: "org
 let agentDir: string
 
 function writeModels(codexModels: unknown[]): void {
-	const providers = codexModels.length > 0 ? { "openai-codex": { baseUrl: GATEWAY, models: codexModels } } : {}
+	const providers =
+		codexModels.length > 0 ? { "kimchi-dev/openai-codex": { baseUrl: GATEWAY, models: codexModels } } : {}
 	writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers }))
 }
 
@@ -61,18 +67,33 @@ describe("isCodexGatewayAvailable", () => {
 })
 
 describe("filterCodexSubscription", () => {
-	const providers = [{ id: "anthropic" }, { id: "openai-codex" }]
+	const providers = [{ id: "anthropic" }, { id: "kimchi-dev/openai-codex" }]
 
 	it("keeps OpenAI Codex when the gateway offers it", () => {
 		useApiKey()
 		writeModels([{ id: "gpt-6-sol" }])
-		expect(filterCodexSubscription(providers).map((p) => p.id)).toEqual(["anthropic", "openai-codex"])
+		expect(filterCodexSubscription(providers).map((p) => p.id)).toEqual(["anthropic", "kimchi-dev/openai-codex"])
+	})
+
+	it("never lists pi's own direct-to-chatgpt.com openai-codex provider", () => {
+		useApiKey()
+		writeModels([{ id: "gpt-6-sol" }])
+		expect(filterCodexSubscription([...providers, { id: "openai-codex" }]).map((p) => p.id)).toEqual([
+			"anthropic",
+			"kimchi-dev/openai-codex",
+		])
 	})
 
 	it("drops OpenAI Codex otherwise and keeps the rest", () => {
 		useSso()
 		writeModels([{ id: "gpt-6-sol" }])
 		expect(filterCodexSubscription(providers).map((p) => p.id)).toEqual(["anthropic"])
+	})
+})
+
+describe("createGatewayCodexProvider", () => {
+	it("registers under the Kimchi-prefixed id, not pi's own openai-codex id", () => {
+		expect(createGatewayCodexProvider()).toMatchObject({ id: "kimchi-dev/openai-codex", name: "OpenAI Codex" })
 	})
 })
 
