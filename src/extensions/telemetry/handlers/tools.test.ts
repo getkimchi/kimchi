@@ -1,8 +1,14 @@
+import { readFile } from "node:fs/promises"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { createContext } from "../../__mocks__/context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
-import { handleToolExecutionEnd, handleToolExecutionStart, resultSizeChars } from "./tools.js"
+import {
+	CODEMODE_TRUNCATION_WARNING,
+	handleToolExecutionEnd,
+	handleToolExecutionStart,
+	resultSizeChars,
+} from "./tools.js"
 
 vi.mock("../../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
@@ -1244,8 +1250,10 @@ describe("handlers/tools", () => {
 		it("maps an unexpected tool name to other and detects truncation with or without a spill path", async () => {
 			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
 			const ctx = new TelemetryContext(makeConfig())
-			const truncatedOutput =
+			const truncatedBody =
 				"Warning: truncated output (original token count: 1234)\nTotal output lines: 900\n\nhead…900 tokens truncated…tail"
+			const truncatedOutput = `${truncatedBody}\n\n[Full output: /tmp/spill.txt (read with offset/limit)]`
+			const truncatedNoSpill = `${truncatedBody}\n\n[Could not save the full output: EACCES: permission denied]`
 
 			// Truncated, with the spill file saved.
 			handleToolExecutionStart(ctx, { toolCallId: "cm-5", toolName: "codemode", args: {} })
@@ -1266,7 +1274,16 @@ describe("handlers/tools", () => {
 			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId: "cm-6",
 				isError: false,
-				result: codemodeResult({ calls: [] }, truncatedOutput),
+				result: codemodeResult({ calls: [] }, truncatedNoSpill),
+			})
+
+			// Not truncated, though the script's own output starts with the warning
+			// text (e.g. it echoed an earlier truncated result).
+			handleToolExecutionStart(ctx, { toolCallId: "cm-8", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-8",
+				isError: false,
+				result: codemodeResult({ calls: [] }, `${truncatedBody}\nmore of my own output`),
 			})
 
 			// Not truncated.
@@ -1292,6 +1309,44 @@ describe("handlers/tools", () => {
 
 			const notTruncated = events.find((e) => e.attrs.tool_use_id === "cm-7" && e.eventName === "codemode.completed")
 			expect(notTruncated?.attrs.output_truncated).toBe("false")
+
+			const echoed = events.find((e) => e.attrs.tool_use_id === "cm-8" && e.eventName === "codemode.completed")
+			expect(echoed?.attrs.output_truncated).toBe("false")
+		})
+
+		it("records an aborted script in codemode.completed but emits no error", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			handleToolExecutionStart(ctx, { toolCallId: "cm-abort", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-abort",
+				isError: true,
+				result: codemodeResult(
+					{ calls: [] },
+					"partial\nScript error:\nScript aborted: The operation was aborted\n\nNo tool calls were made.",
+					true,
+				),
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			expect(events.find((e) => e.eventName === "codemode.completed")?.attrs.success).toBe("false")
+			// agent.interrupted owns the abort signal; no tool_failure double-count.
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+		})
+
+		it("pins the upstream strings the codemode classification and truncation checks rely on", async () => {
+			const entry = import.meta.resolve("@earendil-works/pi-coding-agent")
+			const source = await readFile(new URL("./extensions/codemode/execute.js", entry), "utf8")
+			expect(source).toContain(': "Script failed"}\\nWall time')
+			expect(source).toContain("Script error:\\n${formatError(")
+			expect(source).toContain("`Script aborted: ${")
+			expect(source).toContain("`Script timed out: ${")
+			expect(source).toContain(`\`${CODEMODE_TRUNCATION_WARNING}\${`)
+			expect(source).toContain("(read with offset/limit)]`")
+			expect(source).toContain("`\\n\\n[Could not save the full output: ${")
 		})
 	})
 

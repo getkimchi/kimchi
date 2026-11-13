@@ -158,6 +158,9 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 > never script text, nested-call args, error text, or file paths. The upstream
 > `details.calls` entries are untrusted runtime data and are validated before use;
 > registered extension/MCP tool names are not assumed safe and normalize to `other`.
+> A failed script is classified by its `Script failed` header, before any content-based family,
+> so its output never reaches `error_message`: the error record carries `Codemode script error`
+> or `Codemode script timeout`, and an aborted script emits no error (like any aborted tool).
 | `loop_guard.warn` | Loop-guard issues a steer | `model`, `detector`, `count`, `is_subagent` |
 | `loop_guard.subagent_abort` | Subagent terminated after a loop-guard steer | `model`, `detector`, `count`, `is_subagent` |
 

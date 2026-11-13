@@ -1,4 +1,5 @@
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type * as NestedToolCallsModuleNs from "@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getMe } from "../../api/me.js"
@@ -18,6 +19,8 @@ import telemetryExtension, {
 } from "./index.js"
 import { logEvents } from "./otlp-test-utils.js"
 import { _resetSharedAccumulators } from "./session-context.js"
+
+type NestedToolCallsModule = typeof NestedToolCallsModuleNs
 
 vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(),
@@ -73,9 +76,7 @@ const nestedToolCallsUrl = new URL(
 	"./core/nested-tool-calls.js",
 	import.meta.resolve("@earendil-works/pi-coding-agent"),
 ).href
-const { NestedToolCallRunner } = (await import(
-	nestedToolCallsUrl
-)) as typeof import("@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js")
+const { NestedToolCallRunner } = (await import(nestedToolCallsUrl)) as NestedToolCallsModule
 
 beforeEach(() => {
 	vi.mocked(getActiveFerment).mockReset().mockReturnValue(undefined)

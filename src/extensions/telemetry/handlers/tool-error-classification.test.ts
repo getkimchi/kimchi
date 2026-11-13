@@ -456,3 +456,43 @@ describe("classifyToolError — current-version gates", () => {
 		expect(c.message).toBe("Path not found")
 	})
 })
+
+describe("classifyToolError — codemode script results", () => {
+	const failed = (output: string, error: string) =>
+		`Script failed\nWall time 0.4 seconds\nOutput:\n\n${output}\nScript error:\n${error}\n\nNo tool calls were made.`
+
+	it("keys on the result header, so script output never picks another family", () => {
+		// The script echoed a nested call's resource-gate error.
+		const c = classifyToolError(
+			"codemode",
+			failed("read is disabled in Kimchi resources. Enable read from /resources.", "Error: gave up"),
+		)
+		expect(c).toEqual({ kind: "failure", message: "Codemode script error" })
+	})
+
+	it("classifies an aborted script as aborted, like direct-tool aborts", () => {
+		const c = classifyToolError("codemode", failed("partial", "Script aborted: The operation was aborted"))
+		expect(c).toEqual({ kind: "aborted", message: "Codemode script aborted" })
+	})
+
+	it("gives timeouts their own canonical message", () => {
+		const c = classifyToolError("codemode", failed("partial", "Script timed out: exceeded 60000 ms"))
+		expect(c).toEqual({ kind: "failure", message: "Codemode script timeout" })
+	})
+
+	it("never exports script output when truncation cut the Script error marker", () => {
+		const c = classifyToolError(
+			"codemode",
+			"Script failed\nWall time 1.0 seconds\nOutput:\nWarning: truncated output (original token count: 9000)\nTotal output lines: 40\n\nSECRET-PREFIX data…8000 tokens truncated…ipt error:\nTypeError: x",
+		)
+		expect(c).toEqual({ kind: "failure", message: "Codemode script error" })
+	})
+
+	it("still classifies codemode's own pre-execution gates by their family", () => {
+		const c = classifyToolError(
+			"codemode",
+			"codemode is disabled in Kimchi resources. Enable codemode from /resources.",
+		)
+		expect(c).toEqual({ kind: "blocked", message: "Resource disabled" })
+	})
+})

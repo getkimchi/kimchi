@@ -119,11 +119,16 @@ const COST_BEARING_MODELS_METHODS = new Set(["models.classify", "models.generate
 /** Nested-call statuses of the pinned pi CodemodeToolDetails contract. */
 const CODEMODE_NESTED_STATUSES = new Set(["running", "ok", "error", "cancelled"])
 
-/** Pi's truncation warning heads the first output text block when the script
- *  output exceeded the token cap (upstream truncateOutput). `details
- *  .fullOutputPath` alone is insufficient — truncation can occur even when
- *  writing the spill file fails. */
-const CODEMODE_TRUNCATION_WARNING = "Warning: truncated output"
+/** Pi's truncated output (upstream codemode truncateOutput) is one text block
+ *  that starts with this warning and ends with the spill-file note — either
+ *  the saved path or the save error. Requiring both ends keeps a script whose
+ *  own output merely starts with the warning text from counting as truncated.
+ *  `details.fullOutputPath` alone is insufficient: truncation also happens
+ *  when writing the spill file fails. telemetry/index.test.ts pins both
+ *  strings against the installed pi. */
+export const CODEMODE_TRUNCATION_WARNING = "Warning: truncated output (original token count: "
+const CODEMODE_TRUNCATION_SPILL_NOTE =
+	/\n\n\[(?:Full output: .* \(read with offset\/limit\)|Could not save the full output: [\s\S]*)\]$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -153,9 +158,67 @@ function isTruncatedCodemodeOutput(result: unknown): boolean {
 			sawHeader = true
 			continue
 		}
-		return block.text.startsWith(CODEMODE_TRUNCATION_WARNING)
+		return block.text.startsWith(CODEMODE_TRUNCATION_WARNING) && CODEMODE_TRUNCATION_SPILL_NOTE.test(block.text)
 	}
 	return false
+}
+
+/** One summary record per codemode call that ran, success and failure alike:
+ *  adoption, nested-call mix, failure rate and nested models.* cost in a single
+ *  joinable record. Calls rejected before the script ran (blocked / declined /
+ *  model_mistake) are not passed here; they are reported as tool_outcome.
+ *  Nested per-call detail persists in the session JSONL (`nestedCalls` on the
+ *  tool result message); telemetry carries aggregates only. Privacy: counts and
+ *  enums only, never script text, args or error text. `details.calls` is
+ *  untrusted upstream data, validated before use, and its `args` previews are
+ *  never exported. */
+function emitCodemodeCompleted(
+	tm: TelemetryContext,
+	ctx: ExtensionContext,
+	event: { toolCallId: string; isError?: boolean; result?: unknown },
+	durationMs: number,
+	nestedAttrs: TelemetryAttributes,
+	modelOverrides: TelemetryAttributes | undefined,
+): void {
+	const details = (event.result as { details?: unknown } | undefined)?.details
+	const rawCalls = isRecord(details) && Array.isArray(details.calls) ? details.calls : []
+	const calls = rawCalls.filter(isValidCodemodeCall)
+	// Sum of finite positive costs of known cost-bearing models.* calls,
+	// rounded to 6 dp (typical classifier-call magnitudes).
+	const nestedModelsCostUsd =
+		Math.round(
+			calls.reduce(
+				(sum, call) =>
+					COST_BEARING_MODELS_METHODS.has(call.name) &&
+					typeof call.cost === "number" &&
+					Number.isFinite(call.cost) &&
+					call.cost > 0
+						? sum + call.cost
+						: sum,
+				0,
+			) * 1_000_000,
+		) / 1_000_000
+	tm.emit(
+		"codemode.completed",
+		{
+			success: !event.isError,
+			duration_ms: durationMs,
+			nested_call_count: calls.length,
+			nested_error_count: calls.filter((call) => call.status === "error").length,
+			nested_cancelled_count: calls.filter((call) => call.status === "cancelled").length,
+			nested_tools: [...new Set(calls.map((call) => (NESTED_TOOL_ALLOWLIST.has(call.name) ? call.name : "other")))]
+				.sort()
+				.join(","),
+			nested_models_cost_usd: nestedModelsCostUsd,
+			output_truncated: isTruncatedCodemodeOutput(event.result),
+			turn_index: tm.turnIndex,
+			tool_use_id: event.toolCallId,
+			...nestedAttrs,
+			...tm.getTraceAttributes(),
+		},
+		ctx,
+		modelOverrides,
+	)
 }
 
 /** Classifications for calls rejected before the tool ran (permission, guard,
@@ -383,54 +446,7 @@ export function handleToolExecutionEnd(
 		}
 		// blocked / declined / model_mistake: pre-execution — no record.
 	} else if (toolName === "codemode" && !isPreExecutionOutcome(classification)) {
-		// One summary record per codemode call that ran (success and failure
-		// alike); blocked/declined/model_mistake calls never ran a script and are
-		// already reported as tool_outcome, so they would only skew failure rates.
-		// adoption, nested-call mix, failure rate, and nested models.* cost in a
-		// single joinable record. Nested per-call detail persists in the session
-		// JSONL (`nestedCalls` on the tool result message) — telemetry carries
-		// aggregates only. Privacy: counts/enums only — never script text, args,
-		// or error text; `details.calls` is untrusted upstream data, validated
-		// before use, and its `args` previews are never exported.
-		const details = (event.result as { details?: unknown } | undefined)?.details
-		const rawCalls = isRecord(details) && Array.isArray(details.calls) ? details.calls : []
-		const calls = rawCalls.filter(isValidCodemodeCall)
-		// Sum of finite positive costs of known cost-bearing models.* calls,
-		// rounded to 6 dp (typical classifier-call magnitudes).
-		const nestedModelsCostUsd =
-			Math.round(
-				calls.reduce(
-					(sum, call) =>
-						COST_BEARING_MODELS_METHODS.has(call.name) &&
-						typeof call.cost === "number" &&
-						Number.isFinite(call.cost) &&
-						call.cost > 0
-							? sum + call.cost
-							: sum,
-					0,
-				) * 1_000_000,
-			) / 1_000_000
-		tm.emit(
-			"codemode.completed",
-			{
-				success: !event.isError,
-				duration_ms: toolDurationMs,
-				nested_call_count: calls.length,
-				nested_error_count: calls.filter((call) => call.status === "error").length,
-				nested_cancelled_count: calls.filter((call) => call.status === "cancelled").length,
-				nested_tools: [...new Set(calls.map((call) => (NESTED_TOOL_ALLOWLIST.has(call.name) ? call.name : "other")))]
-					.sort()
-					.join(","),
-				nested_models_cost_usd: nestedModelsCostUsd,
-				output_truncated: isTruncatedCodemodeOutput(event.result),
-				turn_index: tm.turnIndex,
-				tool_use_id: event.toolCallId,
-				...nestedAttrs,
-				...tm.getTraceAttributes(),
-			},
-			ctx,
-			modelOverrides,
-		)
+		emitCodemodeCompleted(tm, ctx, event, toolDurationMs, nestedAttrs, modelOverrides)
 	}
 
 	// --- Error / outcome tracking ----------------------------------------------
