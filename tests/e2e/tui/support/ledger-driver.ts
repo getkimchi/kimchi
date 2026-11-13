@@ -129,14 +129,18 @@ async function readOnly(agent: string): Promise<void> {
 async function schemaCheck(agent: string): Promise<void> {
 	const listFrom = (db: { query: <T, P>(sql: string) => { all: () => T[] } }): string[] =>
 		db
-			.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'outbox_%'")
+			.query<{ name: string }, []>(
+				"SELECT name FROM sqlite_master WHERE type='index' AND (name LIKE 'outbox_%' OR name = 'work_records_imported')",
+			)
 			.all()
 			.map((row) => row.name)
 			.sort()
 	// One handle for the drop: opening again would re-apply the additive schema before we could measure it.
 	const first = openStore(agent)
 	const before = listFrom(first.db)
-	first.db.exec("DROP INDEX IF EXISTS outbox_pending_cover; DROP INDEX IF EXISTS outbox_batches_by_account")
+	first.db.exec(
+		"DROP INDEX IF EXISTS outbox_pending_cover; DROP INDEX IF EXISTS outbox_batches_by_account; DROP INDEX IF EXISTS work_records_imported",
+	)
 	const afterDrop = listFrom(first.db)
 	first.close()
 	const second = openStore(agent)
