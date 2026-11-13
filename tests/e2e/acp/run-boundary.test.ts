@@ -5,6 +5,16 @@ import { newSession, prompt, waitFor, waitForSessionUpdate } from "./support/sce
 const RUN_START_METHOD = "_kimchi.dev/background_run_start"
 const RUN_END_METHOD = "_kimchi.dev/background_run_end"
 
+/** Quiet window with no new boundary notifications, to prove no extra wake. */
+const QUIET_MS = 2_000
+
+function runBoundaries(fixture: Awaited<ReturnType<typeof startAcpFixture>>) {
+	return {
+		starts: () => fixture.client.extNotifications.filter((n) => n.method === RUN_START_METHOD),
+		ends: () => fixture.client.extNotifications.filter((n) => n.method === RUN_END_METHOD),
+	}
+}
+
 // An agent-initiated run (a background-bash exit waking the idle
 // agent) announces its boundary over ACP — background_run_start with the wake reason
 // BEFORE the run's streamed output, background_run_end with the stopReason AFTER it —
@@ -110,3 +120,197 @@ it(
 	},
 	STARTUP_TIMEOUT_MS,
 )
+
+it(
+	"a restored session's background completion still wakes with run boundaries",
+	async () => {
+		const fixture = await startAcpFixture({
+			artifactName: "run-boundary-restored-wake",
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "spawn",
+							function: { name: "bash", arguments: JSON.stringify({ command: 'sleep 3 && echo "RB-RESTORE-7c2e"' }) },
+						},
+					],
+				},
+				{ stream: ["Background watcher started. "] },
+				{ stream: ["Restored wake fired. "] },
+			],
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			expect((await prompt(fixture, sessionId, "Start a background watcher")).stopReason).toBe("end_turn")
+
+			// Restore the session mid-run (session/load) BEFORE the exit: the
+			// replay emits no boundary, and the live process's exit must still
+			// wake the agent with its own bracketed run.
+			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+
+			await waitForSessionUpdate(
+				fixture,
+				sessionId,
+				(update) =>
+					update.sessionUpdate === "agent_message_chunk" &&
+					update.content.type === "text" &&
+					update.content.text.includes("Restored wake fired"),
+				45_000,
+			)
+			await waitFor(
+				() => runBoundaries(fixture).ends(),
+				(ends) => ends.length > 0,
+				45_000,
+			)
+
+			const { starts, ends } = runBoundaries(fixture)
+			expect(starts()).toHaveLength(1)
+			expect(ends()).toHaveLength(1)
+			expect(starts()[0].params).toMatchObject({ sessionId, reason: "background-task-complete" })
+		} finally {
+			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it(
+	"a cancelled wake ends the run (cancelled) and does not re-wake",
+	async () => {
+		const fixture = await startAcpFixture({
+			artifactName: "run-boundary-cancelled-wake",
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "spawn",
+							function: { name: "bash", arguments: JSON.stringify({ command: 'sleep 2 && echo "RB-CANCEL-3f9a"' }) },
+						},
+					],
+				},
+				{ stream: ["Background watcher started. "] },
+				// Slow wake stream so the cancel lands mid-run.
+				{ stream: Array.from({ length: 40 }, (_, i) => `wake-chunk-${i} `), delayMs: 150 },
+			],
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			expect((await prompt(fixture, sessionId, "Start a background watcher")).stopReason).toBe("end_turn")
+
+			await waitFor(
+				() => runBoundaries(fixture).starts(),
+				(starts) => starts.length > 0,
+				45_000,
+			)
+			await fixture.conn.cancel({ sessionId })
+			await waitFor(
+				() => runBoundaries(fixture).ends(),
+				(ends) => ends.length > 0,
+				45_000,
+			)
+
+			const { starts, ends } = runBoundaries(fixture)
+			expect(ends()[0].params).toMatchObject({ sessionId, stopReason: "cancelled" })
+			// No re-wake after the cancel (a suppression regression would fire
+			// another run_start once the scripted response exhausted).
+			await new Promise((resolve) => setTimeout(resolve, QUIET_MS))
+			expect(starts()).toHaveLength(1)
+			expect(ends()).toHaveLength(1)
+		} finally {
+			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it("a background exit during an in-flight prompt is steered into that turn, not a wake", async () => {
+	const fixture = await startAcpFixture({
+		artifactName: "run-boundary-wake-after-prompt",
+		responses: [
+			{
+				toolCalls: [
+					{
+						id: "spawn",
+						function: { name: "bash", arguments: JSON.stringify({ command: 'sleep 2 && echo "RB-MIDPROMPT-5d1b"' }) },
+					},
+				],
+			},
+			{ stream: ["Background watcher started. "] },
+			// Second prompt: 20 chunks x 200 ms ≈ 4 s — the exit at ~2 s
+			// lands squarely inside this turn. Its completion notification
+			// is delivered as a steer INTO the running turn (deliverAs:
+			// "steer" continues the run the exit landed in), so no
+			// agent-initiated wake — and no run boundary — may appear.
+			{ stream: Array.from({ length: 20 }, (_, i) => `prompt-chunk-${i} `), delayMs: 200 },
+		],
+	})
+	try {
+		const sessionId = await newSession(fixture, fixture.workDir)
+		expect((await prompt(fixture, sessionId, "Start a background watcher")).stopReason).toBe("end_turn")
+		expect((await prompt(fixture, sessionId, "Talk to me for a while")).stopReason).toBe("end_turn")
+
+		// Past the exit window: the settle updated its held tool call,
+		// but no wake run was announced (the steer rode the prompt turn).
+		await new Promise((resolve) => setTimeout(resolve, QUIET_MS))
+		const { starts, ends } = runBoundaries(fixture)
+		expect(starts()).toHaveLength(0)
+		expect(ends()).toHaveLength(0)
+	} finally {
+		await fixture.stop()
+	}
+}, 90_000)
+
+it("batched background exits produce a single wake", async () => {
+	const fixture = await startAcpFixture({
+		artifactName: "run-boundary-batched-exits",
+		responses: [
+			// Sequential tool rounds of one prompt: both watchers spawn at
+			// ~the same time, so their exits land in one batch window.
+			{
+				toolCalls: [
+					{
+						id: "spawn-a",
+						function: { name: "bash", arguments: JSON.stringify({ command: 'sleep 3 && echo "RB-BATCH-A"' }) },
+					},
+				],
+			},
+			{
+				toolCalls: [
+					{
+						id: "spawn-b",
+						function: { name: "bash", arguments: JSON.stringify({ command: 'sleep 3 && echo "RB-BATCH-B"' }) },
+					},
+				],
+			},
+			{ stream: ["Two watchers started. "] },
+			{ stream: ["Both watchers finished. "] },
+		],
+	})
+	try {
+		const sessionId = await newSession(fixture, fixture.workDir)
+		expect((await prompt(fixture, sessionId, "Start two background watchers")).stopReason).toBe("end_turn")
+
+		await waitForSessionUpdate(
+			fixture,
+			sessionId,
+			(update) =>
+				update.sessionUpdate === "agent_message_chunk" &&
+				update.content.type === "text" &&
+				update.content.text.includes("Both watchers finished"),
+			45_000,
+		)
+		await waitFor(
+			() => runBoundaries(fixture).ends(),
+			(ends) => ends.length > 0,
+			45_000,
+		)
+
+		// Two exits inside the batch window → exactly one wake, no runaway.
+		await new Promise((resolve) => setTimeout(resolve, QUIET_MS))
+		const { starts, ends } = runBoundaries(fixture)
+		expect(starts()).toHaveLength(1)
+		expect(ends()).toHaveLength(1)
+	} finally {
+		await fixture.stop()
+	}
+}, 90_000)
