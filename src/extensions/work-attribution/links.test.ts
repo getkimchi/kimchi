@@ -1002,6 +1002,35 @@ it("fails loudly when an invalid journal line arrives between passes, writing no
 	expect(links()).toHaveLength(1)
 })
 
+it("withholds a receipt that was already pending when an unknown record type later names its work", async () => {
+	// A receipt pending from pass 1 (its producer evidence is missing), then the evidence
+	// arrives TOGETHER with an unknown-type record naming the same work: the incremental
+	// pass must not confirm what the rebuild branch would withhold.
+	const pending = acceptedContinuation("plan", "planner-pending", { omitOrigin: true })
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	expect(links()).toHaveLength(0)
+	// Restore the producer evidence (the origin record the receipt was waiting on) and add
+	// the unknown-type record naming the work.
+	appendWorkRecord(pending.ctx, pending.origin, pending.workId)
+	fs.appendFileSync(
+		join(dir, "work-attribution", "00000000-later-unknown.jsonl"),
+		`${JSON.stringify({
+			version: 1,
+			type: "future_record_kind",
+			workId: pending.workId,
+			sessionId: "00000000-later-unknown",
+			recordedAt: new Date().toISOString(),
+			cwd: dir,
+		})}\n`,
+	)
+	await flushWorkSummaries()
+	await repair(progress)
+	await repair(progress)
+	expect(links().every((row) => row.workId !== pending.workId)).toBe(true)
+})
+
 it("reads only new ledger records since the last pass once no receipt can still link", async () => {
 	vi.useFakeTimers({ toFake: ["Date"] })
 	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))
