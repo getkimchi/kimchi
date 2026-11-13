@@ -10,6 +10,7 @@
  *   foreign-check  plant a foreign user_version, then prove openStore refuses it
  *   hold-writer    BEGIN IMMEDIATE, print {"held":true}, sleep <arg>ms, COMMIT
  *   read-only      open the store in a second process; count meta rows
+ *   schema-check   open, drop the additive indexes, reopen; print the additive apply's effect
  *   write-probe    try BEGIN IMMEDIATE; report acquisition or lock error + elapsed
  *   capture        capture one record JSON (<arg>) via the v2 records seam
  *   head           print the saved projection head for work <arg>
@@ -123,6 +124,25 @@ async function readOnly(agent: string): Promise<void> {
 	const count = store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM meta").get()?.count ?? -1
 	out({ count })
 	store.close()
+}
+
+async function schemaCheck(agent: string): Promise<void> {
+	const listFrom = (db: { query: <T, P>(sql: string) => { all: () => T[] } }): string[] =>
+		db
+			.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'outbox_%'")
+			.all()
+			.map((row) => row.name)
+			.sort()
+	// One handle for the drop: opening again would re-apply the additive schema before we could measure it.
+	const first = openStore(agent)
+	const before = listFrom(first.db)
+	first.db.exec("DROP INDEX IF EXISTS outbox_pending_cover; DROP INDEX IF EXISTS outbox_batches_by_account")
+	const afterDrop = listFrom(first.db)
+	first.close()
+	const second = openStore(agent)
+	const afterReopen = listFrom(second.db)
+	second.close()
+	out({ before, afterDrop, afterReopen })
 }
 
 async function writeProbe(agent: string): Promise<void> {
@@ -1997,6 +2017,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"foreign-check": (agent) => foreignCheck(agent),
 	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),
 	"read-only": (agent) => readOnly(agent),
+	"schema-check": (agent) => schemaCheck(agent),
 	"write-probe": (agent) => writeProbe(agent),
 	capture: (agent, json) => captureRecord(agent, json ?? "{}"),
 	head: (agent, workId) => printHead(agent, workId ?? ""),

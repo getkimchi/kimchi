@@ -1904,8 +1904,10 @@ describe("prelude stretching of a big group", () => {
 		calls()
 		// Two structurally identical passes, each introducing exactly one new marker batch for the same
 		// work: a 1-row pass, then a 2,000-row pass. The 2,001 rows total cross the shared row budget
-		// once in the read loop and once in the parse loop; the pass machinery fires the same immediates
-		// in both phases, so only the stretch yields differ.
+		// and the pass machinery fires the same immediates in both phases: with identical surroundings,
+		// at least two extra immediates appear only because the stretcher parked the loop somewhere in
+		// the read and parse walks — a directional binding, since the floor can't see WHICH loop each
+		// yield came from (loop-level floors live in events.test and links.test).
 		const source = join(directory, "work-attribution", "source.jsonl")
 		const work = "65656565-6565-4565-8565-656565656565"
 		const rows = (count: number, offset: number) => {
@@ -2276,6 +2278,15 @@ describe("incremental translation", () => {
 		await run()
 		const call = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)
 		expect(call?.[7]).toBeTypeOf("function")
+		// Identity, not just presence: the captured fn must carry the prelude budget — after 2_000
+		// rows it must park the loop for real (a no-op stretch would never let this tick fire).
+		const stretch = call?.[7] as () => Promise<void>
+		let ticked = false
+		setImmediate(() => {
+			ticked = true
+		})
+		for (let index = 0; index < 2_001; index++) await stretch()
+		expect(ticked).toBe(true)
 	})
 
 	it("rebuilds only the group of works whose records changed", async () => {

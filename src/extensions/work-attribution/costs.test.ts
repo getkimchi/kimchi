@@ -1970,8 +1970,14 @@ describe("breathing twin of the reporting calculation", () => {
 		const rejected = new Set<string>()
 		const identities = new Map()
 		const expected = calculatePullRequestCosts(records, observations, rejected, identities)
+		let ticked = false
+		setTimeout(() => {
+			ticked = true
+		}, 0)
 		const actual = await calculatePullRequestCostsAsync(records, observations, rejected, identities, stretch)
 		expect(actual).toEqual(expected)
 		expect(stretch).toHaveBeenCalled()
+		// Awaited, not fire-and-forget: only a stretch parked between steps lets this macrotask tick.
+		expect(ticked).toBe(true)
 	})
 })

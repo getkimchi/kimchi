@@ -38,10 +38,14 @@ it("breathes the stretcher while parsing and attributing masses of requests", as
 		stretch,
 	)
 	expect(built.accounts).toHaveLength(0)
-	// Parse and grouping loops each breathe once per record: dropping either undercuts this count.
-	expect(stretch.mock.calls.length).toBeGreaterThanOrEqual(2 * 2_003)
+	// Three loops breathe once per request-shaped record each: parse, grouping, and the auxiliary-records
+	// sweep (which awaits before its type filter, so plain request rows count there too). Dropping any
+	// one of them undercuts this floor.
+	expect(stretch.mock.calls.length).toBeGreaterThanOrEqual(3 * 2_003)
 
-	// The attribution loop breathes once per reported request even with no records to group.
+	// The attribution loop breathes once per reported request even with no records to group. The
+	// per-unit validation loop adds nothing here: units only form after fact attribution, and this
+	// fixture stops before facts exist (probe: attr=2,003 / units=0 both phases).
 	stretch.mockClear()
 	const requests = many.map(({ requestId }) => ({
 		requestId,
