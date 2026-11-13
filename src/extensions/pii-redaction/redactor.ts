@@ -78,7 +78,7 @@ export function createRedactionEngine(excludedEntities: readonly string[]): Guar
 	const fresh = createEngine(config)
 	// Tier-driven exclusions: bare-shape detectors false-fire constantly in
 	// an engineering corpus (SHAs, timestamps, digit runs) — see
-	// entity-tiers.ts. GUID stays out: structural identifiers, not PII.
+	// entity-tiers.ts.
 	fresh.setExcludeEntities([...excludedEntities])
 	return fresh
 }

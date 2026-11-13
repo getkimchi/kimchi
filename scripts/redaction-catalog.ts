@@ -19,11 +19,11 @@ import { listRedactionCatalog } from "../src/extensions/pii-redaction/entity-tie
 
 // Only actionable rows publish. no_matcher rows (anchor_required entities
 // without an anchored custom — none today) would be dead toggles for
-// consumers; removed names (URL family, CRATES_IO_TOKEN, NUGET_KEY,
-// UK_POSTCODE) never reach the catalog at all — they left the registry and
-// are suppressed engine-side via PERMANENT_ENGINE_EXCLUSIONS. The filter
-// stays as the guard: a future anchor_required addition without a custom
-// auto-classifies as no_matcher and stays out of the published contract.
+// consumers; names in PERMANENT_ENGINE_EXCLUSIONS never reach the catalog
+// at all — no registry entry, suppressed engine-side on every path. The
+// filter stays as the guard: a future anchor_required addition without a
+// custom auto-classifies as no_matcher and stays out of the published
+// contract.
 const published = listRedactionCatalog().filter((entry) => entry.liveState === "active")
 
 console.log(JSON.stringify(published, null, 2))

@@ -193,10 +193,9 @@ describe("entity tier registry", () => {
 			expect(getEntityCategory(entry.entity)).toBe(entry.category)
 			expect(getEntityDefaultOn(entry.entity)).toBe(entry.defaultOn)
 		}
-		// GUID and DATE_TIME were removed from the registry entirely (the
-		// UK_POSTCODE treatment): not configurable, not detected, names free
-		// for user-defined custom entities, engine shapes suppressed via
-		// PERMANENT_ENGINE_EXCLUSIONS.
+		// Cataloged as PERMANENT_ENGINE_EXCLUSIONS entries: not configurable,
+		// not detected, names free for user-defined custom entities, engine
+		// shapes suppressed on every path.
 		for (const removed of ["GUID", "DATE_TIME"]) {
 			expect(
 				catalog.some((e) => e.entity === removed),
@@ -323,8 +322,8 @@ describe("entity tier registry", () => {
 		// Policy-off, matcher live: flipping on is a meaningful choice.
 		expect(byName.get("PHONE_NUMBER")?.liveState).toBe("active")
 		expect(byName.get("PERSON")?.liveState).toBe("active")
-		// Removed names: no catalog row at all — not dead toggles, gone from
-		// the registry like UK_POSTCODE (suppressed via PERMANENT_ENGINE_EXCLUSIONS).
+		// Removed names: no catalog row at all — no registry entry, engine
+		// shapes suppressed via PERMANENT_ENGINE_EXCLUSIONS.
 		for (const name of [
 			"URL",
 			"MONGODB_SRV",
@@ -370,8 +369,7 @@ describe("entity tier registry", () => {
 			expect(entry.liveState, entry.entity).toBe("active")
 		}
 		const names = published.map((e) => e.entity)
-		// Removed from the registry entirely (UK_POSTCODE treatment): these must
-		// never resurface as published rows.
+		// Permanently excluded names must never resurface as published rows.
 		for (const removed of [
 			"CRATES_IO_TOKEN",
 			"NUGET_KEY",

@@ -10,7 +10,7 @@ describe("resolveRedactionPolicy — defaults", () => {
 		expect(resolved.engineExclusions).toEqual(getDefaultExcludedEntities())
 		expect(resolved.disabledEntities.size).toBe(0)
 		expect(resolved.customPatterns).toEqual([])
-		// GUID is not part of the configurable universe.
+		// GUID sits outside the configurable universe.
 		expect(resolved.categories.has("GUID")).toBe(false)
 	})
 
@@ -89,8 +89,8 @@ describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 	it("permanently-excluded names survive the wholesale replace", () => {
 		const resolved = resolveRedactionPolicy(undefined, { legacyExcluded: ["DATE_TIME"] })
 		// The permanent set never becomes detectable — the legacy list may
-		// drop every other engine exclusion, but not these. DATE_TIME itself
-		// is in the permanent set now, so the union collapses to it.
+		// drop every other engine exclusion, but not these; a legacy entry
+		// naming a permanent member collapses into the union.
 		expect([...resolved.engineExclusions].sort()).toEqual([...PERMANENT_ENGINE_EXCLUSIONS].sort())
 		expect(resolved.disabledEntities).toEqual(new Set(["DATE_TIME"]))
 	})
@@ -121,9 +121,9 @@ describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 	})
 
 	it("UK_POSTCODE is free for a user-defined custom entity — the engine bare shape never fires", () => {
-		// UK_POSTCODE was removed from the registry: no built-in coverage, no
-		// collision rejection. A user re-defining it gets their own custom pass
-		// only — the engine detector stays excluded via PERMANENT_ENGINE_EXCLUSIONS.
+		// A name in PERMANENT_ENGINE_EXCLUSIONS has no built-in coverage and
+		// no collision rejection: a user re-defining it gets their own custom
+		// pass only — the engine detector stays excluded on every path.
 		const resolved = resolveRedactionPolicy(undefined, {
 			customEntities: [{ name: "UK_POSTCODE", category: "personal_details", pattern: "\\bGIR\\s?0AA\\b" }],
 		})
@@ -209,9 +209,9 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 	})
 
 	it("removed names are not configurable", () => {
-		// GUID left the registry entirely (the UK_POSTCODE treatment): the
-		// name is free for user-defined custom entities, and a bare toggle
-		// referencing it fails as an unknown entity.
+		// A PERMANENT_ENGINE_EXCLUSIONS name is free for user-defined custom
+		// entities, and a bare toggle referencing it fails as an unknown
+		// entity.
 		expect(() => parseLocalPolicy({ entities: { GUID: "on" } })).toThrow(/unknown entity/)
 	})
 

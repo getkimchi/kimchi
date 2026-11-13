@@ -34,8 +34,8 @@
  *     "the anchored custom patterns run" (the default). Entity OFF excludes
  *     the engine detector AND skips the kimchi/user custom patterns with
  *     the same name — including SECRET_FIELD's JSON-key force-redaction.
- * Names removed via PERMANENT_ENGINE_EXCLUSIONS (GUID, DATE_TIME, …) are
- * not configurable: no registry entry, permanently suppressed engine-side.
+ * Names in PERMANENT_ENGINE_EXCLUSIONS are not configurable: no registry
+ * entry, permanently suppressed engine-side.
  */
 
 import {
@@ -516,9 +516,9 @@ export function parseLegacyExcludedEntities(raw: unknown): string[] {
 	}
 	for (const name of raw as string[]) {
 		// PERMANENT_ENGINE_EXCLUSIONS names describe real engine detectors we
-		// suppress (UK_POSTCODE has no registry entry — it was removed from the
-		// product), so they are valid things to keep off; users copying the
-		// default exclusion list into settings must not hit "unknown entity".
+		// suppress without a registry entry, so they are valid things to keep
+		// off; users copying the default exclusion list into settings must not
+		// hit "unknown entity".
 		if (!isKnownEntity(name) && !PERMANENT_ENGINE_EXCLUSIONS.includes(name)) {
 			throw new Error(`settings.json "redaction.excludedEntities": unknown entity "${name}"`)
 		}

@@ -321,15 +321,11 @@ export function listRegisteredEntities(): readonly string[] {
 
 /**
  * Engine names every code path keeps suppressed — including the legacy
- * `excludedEntities` wholesale replace. All of these were removed from the
- * product entirely: no registry entry (the names are free for user-defined
- * custom entities), yet the engine's own bare detectors must never fire.
- * GUID is structural (redacting session/ferment IDs breaks flows);
- * DATE_TIME is log/build chatter, not PII; the URL family is covered by
- * the URL_WITH_CREDENTIALS customs; CRATES_IO_TOKEN / NUGET_KEY /
- * AIRTABLE_KEY measured 0–3% precision on production transcripts;
- * TWILIO_ACCOUNT_SID and CLERK_PUBLISHABLE_KEY are public identifiers,
- * not secrets. No path may un-exclude them.
+ * `excludedEntities` wholesale replace. These have no registry entry at
+ * all (the names are free for user-defined custom entities), yet the
+ * engine's own bare detectors must never fire — they measured as log
+ * chatter, public identifiers, or inert on production transcripts. No
+ * path may un-exclude them.
  */
 export const PERMANENT_ENGINE_EXCLUSIONS: readonly string[] = [
 	"GUID",
@@ -355,7 +351,7 @@ export function getEntityTier(name: string): EntityTier | undefined {
  * The default set excluded at engine level: every bare-shape detector
  * (except the shape-precise keep-list) plus every anchor-required detector
  * (re-added anchored by CUSTOM_PATTERNS), unioned with the permanent
- * exclusions — UK_POSTCODE has no tier entry but its engine detector must
+ * exclusions — a name here has no tier entry but its engine detector must
  * stay suppressed.
  */
 export function getDefaultExcludedEntities(): string[] {
@@ -432,11 +428,9 @@ const ANCHOR_REQUIRED_WITH_OWN_CUSTOMS = [...ANCHOR_REQUIRED_WITH_CUSTOMS, "DATA
 export type RedactionLiveState = "active" | "alias_of" | "no_matcher"
 
 /** [category, defaultOn, members]. Every registered entity belongs to exactly one category. The
- * removed names (GUID, DATE_TIME, UK_POSTCODE, the URL family — URL, MONGODB_SRV, ELASTICSEARCH_URL,
- * FIREBASE_URL — and the measured-inert CRATES_IO_TOKEN / NUGET_KEY) have no entry at all: gone
- * from the registry, suppressed engine-side via PERMANENT_ENGINE_EXCLUSIONS (the URL family's
- * coverage lives in the URL_WITH_CREDENTIALS customs), their names free for user-defined custom
- * entities. */
+ * excluded names (PERMANENT_ENGINE_EXCLUSIONS) have no entry at all: gone
+ * from the registry, suppressed engine-side on every path, their names
+ * free for user-defined custom entities. */
 type CategoryGroup = readonly [RedactionCategory, boolean, readonly string[]]
 
 const CATEGORY_GROUPS: readonly CategoryGroup[] = [
