@@ -520,6 +520,8 @@ export async function reconcileWorkContinuations(
 	progress.settledJournals = undefined
 	if (progress.quiet) {
 		// Journals only grow, so only those changed since can hold a new receipt; nothing else needs the whole history.
+		// Non-strict read, safe only because this path never confirms: any real change falls
+		// through to the strict reads below before a link is written.
 		const { since, receipts } = progress.quiet
 		const changed = readWorkRecords(agentDir, since - MTIME_SLACK_MS, checkBudget)
 		const known = (row: WorkRecord) => {
