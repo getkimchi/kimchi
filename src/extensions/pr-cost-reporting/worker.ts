@@ -986,6 +986,22 @@ export async function reconcileReporting(
 
 /** At most this many requests or auxiliary records commit their events in one transaction. */
 const CHUNK_UNITS = 100
+/** Rows or milliseconds of prelude work a stretch may own before the UI loop gets a turn. */
+const PRELUDE_YIELD_ROWS = 2_000
+const PRELUDE_YIELD_MS = 50
+
+/** Yields to the loop every `rows` pulled rows or `ms` of stretch time, whichever comes first. */
+export function preludeStretch(rows = PRELUDE_YIELD_ROWS, ms = PRELUDE_YIELD_MS): () => Promise<void> {
+	let pulled = 0
+	let stamp = Date.now()
+	return async () => {
+		pulled += 1
+		if (pulled < rows && Date.now() - stamp < ms) return
+		pulled = 0
+		stamp = Date.now()
+		await setImmediate()
+	}
+}
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
 /** The group translation in progress: units committed while its marked records stay unchanged. */
@@ -1294,16 +1310,24 @@ async function translateGroup(
 		serializedAccounts = existingPlan.accounts
 		facts = factsMapOf(serializedAccounts)
 	} else {
+		// Reads and parses pull one record at a time, so a big group can breathe inside the stretch: every
+		// few thousand rows or ~50ms of work, wait a turn — otherwise the whole read owns the UI loop.
+		const stretch = preludeStretch()
 		const stored: StoredRecord[] = []
 		for (const workId of works) {
-			for (const row of backend.readRecords({ workId }, check)) stored.push(row)
+			for (const row of backend.readRecords({ workId }, check)) {
+				stored.push(row)
+				await stretch()
+			}
 			// Between works, let the loop breathe: a big group's reads otherwise block the UI for the whole stretch.
 			await setImmediate()
 		}
-		const records = stored.map((row) => {
+		const records: WorkRecord[] = []
+		for (const row of stored) {
 			check()
-			return JSON.parse(row.body) as WorkRecord
-		})
+			records.push(JSON.parse(row.body) as WorkRecord)
+			await stretch()
+		}
 		const { report } = readWorkCostReport(agentDir, records)
 		const { repositories, settled: identitiesSettled } = await repositoryIdentities(
 			agentDir,
