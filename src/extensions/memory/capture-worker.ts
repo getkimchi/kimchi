@@ -1829,6 +1829,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	if (decision.enabled.has("triage") && decision.gate) {
 		const gate = decision.gate
 		const skips = await mapWithConcurrency(tasks, drainConcurrency, async (task) => {
+			options.onProgress?.()
 			try {
 				const job = basename(task.plan.jobFile)
 				const gateTraced = trace ? withGateApiHook(gate, "triage", { job, window: task.index }, trace) : gate
@@ -1852,6 +1853,8 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 					err instanceof Error ? err.message : err,
 				)
 				return false
+			} finally {
+				options.onProgress?.()
 			}
 		})
 		const runTasks: ExtractionTask[] = []
