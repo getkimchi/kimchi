@@ -240,6 +240,8 @@ interface RecallSummary {
 	/** What fired the recall: "user-turn" | "step-budget" | "state-revisit" (absent on pre-trigger traces — renders blank). */
 	trigger: string | null
 	queryPreview: string
+	/** Facet embeddings made (multi-facet recalls embed each facet separately); null/1 on legacy single-query traces. */
+	facets: number | null
 	hits: number
 	injected: number
 	gateSkip: boolean
@@ -253,6 +255,7 @@ function summarizeRecall(memoryRoot: string, name: string): RecallSummary {
 	let kind: string | null = null
 	let trigger: string | null = null
 	let queryPreview = ""
+	let facets: number | null = null
 	let hits = 0
 	let injected = 0
 	let gateSkip = false
@@ -263,6 +266,7 @@ function summarizeRecall(memoryRoot: string, name: string): RecallSummary {
 		if (typeof event.kind === "string") kind = event.kind
 		if (typeof event.trigger === "string") trigger = event.trigger
 		if (typeof event.query === "string") queryPreview = event.query.slice(0, 80)
+		if (Array.isArray(event.facets)) facets = event.facets.length
 		if (Array.isArray(event.hits)) hits = event.hits.length
 		if (Array.isArray(event.injected)) injected = event.injected.length
 		const gate = event.gate as { lookup?: string } | undefined
@@ -276,6 +280,7 @@ function summarizeRecall(memoryRoot: string, name: string): RecallSummary {
 		kind,
 		trigger,
 		queryPreview,
+		facets,
 		hits,
 		injected,
 		gateSkip,
@@ -713,7 +718,7 @@ async function renderRecalls() {
     }
     const t = el("table", root);
     const head = el("tr", t);
-    for (const h of ["recall", "kind", "trigger", "hits", "injected", "gate", "ms", "error", "query"]) el("th", head, "", h);
+    for (const h of ["recall", "kind", "trigger", "facets", "hits", "injected", "gate", "ms", "error", "query"]) el("th", head, "", h);
     for (const r of recalls) {
       const tr = el("tr", t);
       const td = el("td", tr);
@@ -721,6 +726,7 @@ async function renderRecalls() {
       link.onclick = () => openRecall(r.name);
       el("td", tr, "muted", r.kind || "?");
       el("td", tr, "muted", r.trigger || "");
+      el("td", tr, "muted", r.facets !== null ? r.facets : "");
       el("td", tr, "", r.hits);
       el("td", tr, r.injected ? "ok" : "", r.injected);
       el("td", tr, r.gateSkip ? "warn" : "muted", r.gateSkip ? "skip" : "");
@@ -774,6 +780,13 @@ async function openRecall(name) {
       const dq = el("details", sec);
       el("summary", dq, "", "Query (" + String(ev.query).length + " chars)");
       el("pre", dq, "", ev.query);
+    }
+    if (Array.isArray(ev.facets) && ev.facets.length) {
+      const df = el("details", sec);
+      el("summary", df, "", "Facets: " + ev.facets.length + " embedding lookups");
+      for (const f of ev.facets) {
+        el("div", df, "q", "[" + (f && typeof f.hits === "number" ? f.hits : 0) + " hits] " + String(f && f.text || "").slice(0, 120));
+      }
     }
     if (Array.isArray(ev.gate)) {
       el("div", sec, "muted", "digest selector gate answers:");
