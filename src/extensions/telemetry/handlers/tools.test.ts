@@ -1,8 +1,14 @@
+import { readFile } from "node:fs/promises"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { createContext } from "../../__mocks__/context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
-import { handleToolExecutionEnd, handleToolExecutionStart, resultSizeChars } from "./tools.js"
+import {
+	CODEMODE_TRUNCATION_WARNING,
+	handleToolExecutionEnd,
+	handleToolExecutionStart,
+	resultSizeChars,
+} from "./tools.js"
 
 vi.mock("../../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
@@ -958,6 +964,408 @@ describe("handlers/tools", () => {
 
 			const toolResult = events.find((e) => e.eventName === "tool_result")
 			expect(toolResult?.attrs.tool_result_size_chars).toBe(String("hello world".length))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// nested-call attribution (codemode-driven calls)
+	// -----------------------------------------------------------------------
+
+	describe("nested-call attribution", () => {
+		it("marks a nested read with nested=true and parent_tool_use_id", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "cm-1/1"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts" } })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false, parentToolCallId: "cm-1" })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const toolResult = events.find((e) => e.eventName === "tool_result")
+			expect(toolResult?.attrs.tool_name).toBe("read")
+			expect(toolResult?.attrs.nested).toBe("true")
+			expect(toolResult?.attrs.parent_tool_use_id).toBe("cm-1")
+
+			const fileRead = events.find((e) => e.eventName === "file_read")
+			expect(fileRead?.attrs.nested).toBe("true")
+			expect(fileRead?.attrs.parent_tool_use_id).toBe("cm-1")
+		})
+
+		it("marks a nested bash call on tool_result and command_executed", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "cm-1/2"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "ls" } })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false, parentToolCallId: "cm-1" })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const toolResult = events.find((e) => e.eventName === "tool_result")
+			expect(toolResult?.attrs.nested).toBe("true")
+			expect(toolResult?.attrs.parent_tool_use_id).toBe("cm-1")
+
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec?.attrs.command_outcome).toBe("success")
+			expect(cmdExec?.attrs.nested).toBe("true")
+			expect(cmdExec?.attrs.parent_tool_use_id).toBe("cm-1")
+		})
+
+		it("marks a nested call's tool_outcome and error failure record", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const gateId = "cm-1/3"
+
+			// A nested call gated before execution → tool_outcome carries the marker.
+			handleToolExecutionStart(ctx, { toolCallId: gateId, toolName: "bash", args: { command: "rm -rf /" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: gateId,
+				isError: true,
+				parentToolCallId: "cm-1",
+				result: {
+					content: [{ type: "text", text: "Blocked: the session is in plan mode (read-only)." }],
+				},
+			})
+
+			// A nested call failing with an unknown error → the error record too.
+			const failId = "cm-1/4"
+			handleToolExecutionStart(ctx, { toolCallId: failId, toolName: "read", args: { path: "/gone" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: failId,
+				isError: true,
+				parentToolCallId: "cm-1",
+				result: { content: [{ type: "text", text: "something unexpected blew up" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome?.attrs.outcome_kind).toBe("blocked")
+			expect(outcome?.attrs.nested).toBe("true")
+			expect(outcome?.attrs.parent_tool_use_id).toBe("cm-1")
+
+			const error = events.find((e) => e.eventName === "error")
+			expect(error?.attrs.error_type).toBe("tool_failure")
+			expect(error?.attrs.nested).toBe("true")
+			expect(error?.attrs.parent_tool_use_id).toBe("cm-1")
+		})
+
+		it("does not mark direct calls", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-direct-read"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts" } })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			for (const e of events) {
+				expect(e.attrs.nested).toBeUndefined()
+				expect(e.attrs.parent_tool_use_id).toBeUndefined()
+			}
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// codemode.completed
+	// -----------------------------------------------------------------------
+
+	/** A codemode-shaped result: header text block + output text block, with
+	 *  optional untrusted `details`. */
+	function codemodeResult(details: unknown, outputText = "step one done\n", isError = false) {
+		return {
+			content: [
+				{ type: "text", text: `${isError ? "Script failed" : "Script completed"}\nWall time 0.1 seconds\nOutput:\n` },
+				{ type: "text", text: outputText },
+			],
+			...(details === undefined ? {} : { details }),
+		}
+	}
+
+	describe("codemode.completed", () => {
+		it("emits one summary with tallies, normalized nested_tools, and models cost", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "cm-1"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "codemode", args: { code: "await tools.read()" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: false,
+				result: codemodeResult({
+					calls: [
+						{ id: "cm-1/1", name: "read", args: '{"path":"/secrets.env"}', status: "ok", durationMs: 5 },
+						{ id: "cm-1/2", name: "bash", args: '{"command":"cat /secrets.env"}', status: "error", error: "boom" },
+						{ id: "cm-1/3", name: "models.classify", args: '{"model":"x"}', status: "ok", cost: 0.001234567 },
+						{ id: "cm-1/4", name: "mcp__secret__lookup", args: '{"q":"token"}', status: "cancelled" },
+					],
+				}),
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const completed = events.find((e) => e.eventName === "codemode.completed")
+			expect(completed).toBeDefined()
+			expect(completed?.attrs.success).toBe("true")
+			expect(completed?.attrs.tool_use_id).toBe(toolCallId)
+			expect(Number(completed?.attrs.nested_call_count)).toBe(4)
+			expect(Number(completed?.attrs.nested_error_count)).toBe(1)
+			expect(Number(completed?.attrs.nested_cancelled_count)).toBe(1)
+			// Allowlisted names keep their id; the MCP tool maps to `other`.
+			expect(completed?.attrs.nested_tools).toBe("bash,models.classify,other,read")
+			expect(Number(completed?.attrs.nested_models_cost_usd)).toBeCloseTo(0.001235, 6)
+			expect(completed?.attrs.output_truncated).toBe("false")
+
+			// Privacy: no script text, no nested args, no error text, and no
+			// un-allowlisted tool name anywhere on the emitted records.
+			const everything = JSON.stringify(events)
+			expect(everything).not.toContain("await tools.read()")
+			expect(everything).not.toContain("/secrets.env")
+			expect(everything).not.toContain("cat /secrets.env")
+			expect(everything).not.toContain("token")
+			expect(everything).not.toContain("boom")
+			expect(everything).not.toContain("mcp__secret__lookup")
+		})
+
+		it("emits no summary for a codemode call blocked before the script ran", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "cm-blocked"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "codemode", args: { code: "await tools.read()" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: {
+					content: [
+						{ type: "text", text: "codemode is disabled in Kimchi resources. Enable codemode from /resources." },
+					],
+				},
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			expect(events.find((e) => e.eventName === "codemode.completed")).toBeUndefined()
+			// The rejection is still visible, as a tool_outcome.
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome?.attrs.outcome_kind).toBe("blocked")
+			expect(outcome?.attrs.tool_name).toBe("codemode")
+		})
+
+		it("emits success=false on a failed script; the canonical error record still fires", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "cm-2"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "codemode", args: { code: "throw new Error('x')" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: codemodeResult(
+					{ calls: [{ id: "cm-2/1", name: "grep", args: "{}", status: "ok" }] },
+					"partial output\n\nScript error:\nReferenceError: x is not defined",
+					true,
+				),
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const completed = events.find((e) => e.eventName === "codemode.completed")
+			expect(completed?.attrs.success).toBe("false")
+			expect(Number(completed?.attrs.nested_call_count)).toBe(1)
+			expect(Number(completed?.attrs.nested_error_count)).toBe(0)
+
+			// Chunk 1's canonical classification still funnels the failure.
+			const error = events.find((e) => e.eventName === "error")
+			expect(error?.attrs.error_type).toBe("tool_failure")
+			expect(error?.attrs.error_message).toBe("Codemode script error")
+			// The raw script error text must not leak into the error record.
+			expect(JSON.stringify(events)).not.toContain("ReferenceError")
+		})
+
+		it("emits zero counts when details are absent or malformed", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+
+			// Older/absent details.
+			handleToolExecutionStart(ctx, { toolCallId: "cm-3", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "cm-3", isError: false, result: codemodeResult(undefined) })
+
+			// Malformed entries: null, non-object, empty name, unknown status, and
+			// a cost-bearing entry with a non-finite cost — all skipped or excluded.
+			handleToolExecutionStart(ctx, { toolCallId: "cm-4", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-4",
+				isError: false,
+				result: codemodeResult({
+					calls: [
+						null,
+						42,
+						{ id: "cm-4/1", status: "ok" },
+						{ id: "cm-4/2", name: "", status: "ok" },
+						{ id: "cm-4/3", name: "read", status: "exploded" },
+						{ id: "cm-4/4", name: "read", status: "ok" },
+						{ id: "cm-4/5", name: "models.generateImages", status: "ok", cost: Number.NaN },
+						{ id: "cm-4/6", name: "models.generateImages", status: "ok", cost: 0.5 },
+					],
+				}),
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const empty = events.find((e) => e.attrs.tool_use_id === "cm-3" && e.eventName === "codemode.completed")
+			expect(empty).toBeDefined()
+			expect(Number(empty?.attrs.nested_call_count)).toBe(0)
+			expect(empty?.attrs.nested_tools).toBe("")
+			expect(Number(empty?.attrs.nested_models_cost_usd)).toBe(0)
+
+			const malformed = events.find((e) => e.attrs.tool_use_id === "cm-4" && e.eventName === "codemode.completed")
+			expect(malformed).toBeDefined()
+			// 5 malformed entries skipped (null, non-object, missing name, empty
+			// name, unknown status); 3 valid entries kept. The NaN cost contributes
+			// nothing; the 0.5 cost does.
+			expect(Number(malformed?.attrs.nested_call_count)).toBe(3)
+			expect(Number(malformed?.attrs.nested_error_count)).toBe(0)
+			expect(Number(malformed?.attrs.nested_models_cost_usd)).toBeCloseTo(0.5, 6)
+		})
+
+		it("maps an unexpected tool name to other and detects truncation with or without a spill path", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const truncatedBody =
+				"Warning: truncated output (original token count: 1234)\nTotal output lines: 900\n\nhead…900 tokens truncated…tail"
+			const truncatedOutput = `${truncatedBody}\n\n[Full output: /tmp/spill.txt (read with offset/limit)]`
+			const truncatedNoSpill = `${truncatedBody}\n\n[Could not save the full output: EACCES: permission denied]`
+
+			// Truncated, with the spill file saved.
+			handleToolExecutionStart(ctx, { toolCallId: "cm-5", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-5",
+				isError: false,
+				result: codemodeResult(
+					{
+						calls: [{ id: "cm-5/1", name: "my_custom_tool", args: "{}", status: "ok" }],
+						fullOutputPath: "/tmp/spill.txt",
+					},
+					truncatedOutput,
+				),
+			})
+
+			// Truncated, spill write failed (no fullOutputPath) — still detected.
+			handleToolExecutionStart(ctx, { toolCallId: "cm-6", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-6",
+				isError: false,
+				result: codemodeResult({ calls: [] }, truncatedNoSpill),
+			})
+
+			// Truncated, with an image: upstream joins the saved image's label onto
+			// the truncated block, after the spill note, and the image follows.
+			handleToolExecutionStart(ctx, { toolCallId: "cm-9", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-9",
+				isError: false,
+				result: {
+					content: [
+						{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" },
+						{ type: "text", text: `${truncatedOutput}\n[Image saved to /tmp/img-1.png (image/png, 45.2 kB)]` },
+						{ type: "image", data: "aGk=", mimeType: "image/png" },
+					],
+					details: { calls: [] },
+				},
+			})
+
+			// Not truncated, though the script's own output starts with the warning
+			// text (e.g. it echoed an earlier truncated result).
+			handleToolExecutionStart(ctx, { toolCallId: "cm-8", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-8",
+				isError: false,
+				result: codemodeResult({ calls: [] }, `${truncatedBody}\nmore of my own output`),
+			})
+
+			// Not truncated.
+			handleToolExecutionStart(ctx, { toolCallId: "cm-7", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-7",
+				isError: false,
+				result: codemodeResult({ calls: [] }, "all fit"),
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const withSpill = events.find((e) => e.attrs.tool_use_id === "cm-5" && e.eventName === "codemode.completed")
+			expect(withSpill?.attrs.output_truncated).toBe("true")
+			expect(withSpill?.attrs.nested_tools).toBe("other")
+			// The spill path must not leak either.
+			expect(JSON.stringify(events)).not.toContain("/tmp/spill.txt")
+
+			const withoutSpill = events.find((e) => e.attrs.tool_use_id === "cm-6" && e.eventName === "codemode.completed")
+			expect(withoutSpill?.attrs.output_truncated).toBe("true")
+
+			const notTruncated = events.find((e) => e.attrs.tool_use_id === "cm-7" && e.eventName === "codemode.completed")
+			expect(notTruncated?.attrs.output_truncated).toBe("false")
+
+			const echoed = events.find((e) => e.attrs.tool_use_id === "cm-8" && e.eventName === "codemode.completed")
+			expect(echoed?.attrs.output_truncated).toBe("false")
+
+			const withImage = events.find((e) => e.attrs.tool_use_id === "cm-9" && e.eventName === "codemode.completed")
+			expect(withImage?.attrs.output_truncated).toBe("true")
+		})
+
+		it("records an aborted script in codemode.completed but emits no error", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			handleToolExecutionStart(ctx, { toolCallId: "cm-abort", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-abort",
+				isError: true,
+				result: codemodeResult(
+					{ calls: [] },
+					"partial\nScript error:\nScript aborted: The operation was aborted\n\nNo tool calls were made.",
+					true,
+				),
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			expect(events.find((e) => e.eventName === "codemode.completed")?.attrs.success).toBe("false")
+			// agent.interrupted owns the abort signal; no tool_failure double-count.
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+		})
+
+		it("pins the upstream strings the codemode classification and truncation checks rely on", async () => {
+			const entry = import.meta.resolve("@earendil-works/pi-coding-agent")
+			const source = await readFile(new URL("./extensions/codemode/execute.js", entry), "utf8")
+			expect(source).toContain(': "Script failed"}\\nWall time')
+			expect(source).toContain("Script error:\\n${formatError(")
+			expect(source).toContain("`Script aborted: ${")
+			expect(source).toContain("`Script timed out: ${")
+			expect(source).toContain(`\`${CODEMODE_TRUNCATION_WARNING}\${`)
+			expect(source).toContain("(read with offset/limit)]`")
+			expect(source).toContain("`\\n\\n[Could not save the full output: ${")
 		})
 	})
 

@@ -240,6 +240,23 @@ describe("classifyToolError — tool scoping (negative cases)", () => {
 		const c = classifyToolError("write", "Declined by user")
 		expect(c.kind).toBe("declined")
 	})
+
+	it("does not apply the codemode script-error family to other tools", () => {
+		// A non-codemode tool whose output merely mentions the marker stays on
+		// the raw fail-open fallback (tool-name guard).
+		const msg = "step one done\n\nScript error:\nReferenceError: x is not defined"
+		const c = classifyToolError("bash", msg)
+		expect(c.kind).toBe("failure")
+		expect(c.message).toBe(msg.slice(0, 300))
+	})
+
+	it("does not match the codemode marker without a line-start anchor", () => {
+		// `Script error:` must start a line — text ending with "...Script error:"
+		// without the trailing error line is not the upstream failure format.
+		const c = classifyToolError("codemode", "partial output mentions Script error: somewhere")
+		expect(c.kind).toBe("failure")
+		expect(c.message).toBe("partial output mentions Script error: somewhere".slice(0, 300))
+	})
 })
 
 describe("classifyToolError — fallback", () => {
@@ -443,5 +460,45 @@ describe("classifyToolError — current-version gates", () => {
 	it("uses a tool-neutral canonical message for the find/grep/ls path family", () => {
 		const c = classifyToolError("find", "Path not found: /Users/me/missing")
 		expect(c.message).toBe("Path not found")
+	})
+})
+
+describe("classifyToolError — codemode script results", () => {
+	const failed = (output: string, error: string) =>
+		`Script failed\nWall time 0.4 seconds\nOutput:\n\n${output}\nScript error:\n${error}\n\nNo tool calls were made.`
+
+	it("keys on the result header, so script output never picks another family", () => {
+		// The script echoed a nested call's resource-gate error.
+		const c = classifyToolError(
+			"codemode",
+			failed("read is disabled in Kimchi resources. Enable read from /resources.", "Error: gave up"),
+		)
+		expect(c).toEqual({ kind: "failure", message: "Codemode script error" })
+	})
+
+	it("classifies an aborted script as aborted, like direct-tool aborts", () => {
+		const c = classifyToolError("codemode", failed("partial", "Script aborted: The operation was aborted"))
+		expect(c).toEqual({ kind: "aborted", message: "Codemode script aborted" })
+	})
+
+	it("gives timeouts their own canonical message", () => {
+		const c = classifyToolError("codemode", failed("partial", "Script timed out: exceeded 60000 ms"))
+		expect(c).toEqual({ kind: "failure", message: "Codemode script timeout" })
+	})
+
+	it("never exports script output when truncation cut the Script error marker", () => {
+		const c = classifyToolError(
+			"codemode",
+			"Script failed\nWall time 1.0 seconds\nOutput:\nWarning: truncated output (original token count: 9000)\nTotal output lines: 40\n\nSECRET-PREFIX data…8000 tokens truncated…ipt error:\nTypeError: x",
+		)
+		expect(c).toEqual({ kind: "failure", message: "Codemode script error" })
+	})
+
+	it("still classifies codemode's own pre-execution gates by their family", () => {
+		const c = classifyToolError(
+			"codemode",
+			"codemode is disabled in Kimchi resources. Enable codemode from /resources.",
+		)
+		expect(c).toEqual({ kind: "blocked", message: "Resource disabled" })
 	})
 })

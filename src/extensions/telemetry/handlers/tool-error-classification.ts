@@ -414,12 +414,34 @@ function classifyEngineValidationError(fullMsg: string): ToolErrorClassification
  * are the one cross-tool exception. Ordering is most-specific first, with
  * bash terminal status resolved before gate-like output prefixes.
  */
+/** First block of every failed codemode result (upstream codemode execute.js).
+ *  It is its own content block, so output truncation never touches it. */
+const CODEMODE_FAILED_HEADER = "Script failed\n"
+
+/** A failed codemode script. The `Script error:` block names the cause (script
+ *  error, timeout, abort, sandbox failure) but sits after the script output and
+ *  can be cut by output truncation, so the message never depends on finding it:
+ *  without it the result is the generic script error. Aborts match direct-tool
+ *  aborts (no error record; `agent.interrupted` owns the signal). */
+function classifyCodemodeScriptFailure(msg: string): ToolErrorClassification {
+	if (msg.includes("\nScript error:\nScript aborted: ")) return { kind: "aborted", message: "Codemode script aborted" }
+	if (msg.includes("\nScript error:\nScript timed out: "))
+		return { kind: "failure", message: "Codemode script timeout" }
+	return { kind: "failure", message: "Codemode script error" }
+}
+
 export function classifyToolError(toolName: string, fullMsg: string): ToolErrorClassification {
 	const msg = fullMsg ?? ""
 
 	// Bare abort, exact match only (upstream createErrorToolResult("Operation
 	// aborted")) — never a substring search inside larger output.
 	if (msg.trim() === "Operation aborted") return { kind: "aborted", message: "Operation aborted" }
+
+	// Codemode script result: checked before every content-based family,
+	// because the script's own output (echoed nested-call errors included)
+	// follows the header and must never decide the family or reach the
+	// fail-open fallback.
+	if (toolName === "codemode" && msg.startsWith(CODEMODE_FAILED_HEADER)) return classifyCodemodeScriptFailure(msg)
 
 	if (toolName === "bash") {
 		// Terminal status of the executed command wins over gate-shaped output.

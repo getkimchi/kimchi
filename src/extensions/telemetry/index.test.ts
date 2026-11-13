@@ -1,4 +1,5 @@
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type * as NestedToolCallsModuleNs from "@earendil-works/pi-coding-agent/dist/core/nested-tool-calls.js"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getMe } from "../../api/me.js"
@@ -18,6 +19,8 @@ import telemetryExtension, {
 } from "./index.js"
 import { logEvents } from "./otlp-test-utils.js"
 import { _resetSharedAccumulators } from "./session-context.js"
+
+type NestedToolCallsModule = typeof NestedToolCallsModuleNs
 
 vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(),
@@ -63,6 +66,17 @@ vi.mock("../../startup-context.js", () => ({
 vi.mock("../../api/me.js", () => ({
 	getMe: vi.fn(),
 }))
+
+/** The pinned pi nested-call runner, loaded by file URL: the deep path is
+ *  outside the package's exports map (vite/bun refuse the specifier), so we
+ *  resolve the package's main entry (dist/index.js) and import the module
+ *  next to it. Typed via the ambient declaration in
+ *  src/types/pi-coding-agent-utils.d.ts. */
+const nestedToolCallsUrl = new URL(
+	"./core/nested-tool-calls.js",
+	import.meta.resolve("@earendil-works/pi-coding-agent"),
+).href
+const { NestedToolCallRunner } = (await import(nestedToolCallsUrl)) as NestedToolCallsModule
 
 beforeEach(() => {
 	vi.mocked(getActiveFerment).mockReset().mockReturnValue(undefined)
@@ -306,6 +320,53 @@ describe("telemetryExtension integration", () => {
 
 		const metricsCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/metrics"))
 		expect(metricsCalls.length).toBeGreaterThan(0)
+	})
+
+	it("nested tool execution events reach the telemetry handler with parentToolCallId (upstream runner pin)", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		// The real pinned-pi nested-call runner, wired the way AgentSession wires
+		// it: events flow to the extension handler via host.emit. The runner itself
+		// builds the tool_execution_* events with parentToolCallId — a stub
+		// runToolCall outcome is enough to exercise that path.
+		const emitted: Array<{ type: string; toolCallId: string; toolName: string; parentToolCallId?: string }> = []
+		const runner = new NestedToolCallRunner({
+			getTools: () => [],
+			isSequential: () => false,
+			runToolCall: async (toolCall) => ({
+				toolCall,
+				result: { content: [{ type: "text", text: "ok" }], details: {} },
+				isError: false,
+			}),
+			emit: async (event) => {
+				emitted.push(event)
+				if (event.type === "tool_execution_start") {
+					await getHandler(handlers, "tool_execution_start")(event)
+				} else if (event.type === "tool_execution_end") {
+					await getHandler(handlers, "tool_execution_end")(event)
+				}
+			},
+		})
+
+		await runner.execute("cm-1", "read", { path: "/src/app.ts" })
+
+		// Upstream contract: nested tool_execution_* events carry parentToolCallId
+		// (the separate public-event forwarding path omits it — if the extension
+		// handler stops receiving the field, nested records lose their join key).
+		const end = emitted.find((e) => e.type === "tool_execution_end")
+		expect(end?.toolCallId).toBe("cm-1/1")
+		expect(end?.toolName).toBe("read")
+		expect(end?.parentToolCallId).toBe("cm-1")
+
+		// The telemetry handler received the field and marked the emitted record.
+		const tm = _getTelemetryCtx()
+		tm?.flushLogBuffer()
+		await Promise.allSettled([...(tm?.inFlight ?? [])])
+		const toolResult = logEvents(fetchMock).find((e) => e.eventName === "tool_result")
+		expect(toolResult?.attrs.tool_name).toBe("read")
+		expect(toolResult?.attrs.nested).toBe("true")
+		expect(toolResult?.attrs.parent_tool_use_id).toBe("cm-1")
 	})
 
 	it("emits ACP client_name and client_version when ACP client info is set", async () => {
