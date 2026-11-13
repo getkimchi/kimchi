@@ -453,7 +453,11 @@ export interface ContinuationProgress {
 	historySince?: number
 	/** Per-journal stats of the last pass that built the incremental state, to tell append-only growth from rewrites. */
 	journalStats?: Map<string, { size: string; mtimeNs: string; ctimeNs: string }>
-	/** The ledger record count when the state was built; a decrease forces a full rebuild. */
+	/**
+	 * The ledger record count when the state was built; a decrease forces a full rebuild. Snapshot
+	 * comparison only: a shrink that re-grows past this count within one pass interval is invisible
+	 * until an unrelated rebuild (closing that needs a monotone ledger position, not a count).
+	 */
 	historyRecords?: number
 }
 
