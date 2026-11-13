@@ -5,9 +5,13 @@ import {
 	buildGroupSummaryText,
 	buildGroupView,
 	classifyTool,
+	computeExpandPropagation,
+	decideAssistantTextFold,
 	findToolGroup,
 	formatSummary,
 	getParent,
+	isSupersededByLaterTool,
+	muteAssistantLines,
 	patchAddChild,
 } from "./tool-grouping.js"
 
@@ -230,13 +234,13 @@ describe("findToolGroup", () => {
 		expect(findToolGroup(c, children)).toEqual([c])
 	})
 
-	it("failed tool (isError) breaks the run — excluded from group", () => {
+	it("failed tool joins the run — folds like other work once the agent moves on", () => {
 		const a = mockTool("a")
 		const b = mockTool("b", { isError: true })
 		const c = mockTool("c")
 		const children = [a, b, c]
-		expect(findToolGroup(a, children)).toEqual([a])
-		expect(findToolGroup(c, children)).toEqual([c])
+		expect(findToolGroup(a, children)).toEqual([a, b, c])
+		expect(findToolGroup(c, children)).toEqual([a, b, c])
 	})
 
 	it("in-progress tools are included in the run", () => {
@@ -254,24 +258,143 @@ describe("findToolGroup", () => {
 		expect(findToolGroup(other, children)).toEqual([other])
 	})
 
-	it("returns [] when self is a failed tool not present in children", () => {
+	it("returns [self] for a failed tool not present in children", () => {
 		const failed = mockTool("z", { isError: true })
 		const children: object[] = []
-		expect(findToolGroup(failed, children)).toEqual([])
+		expect(findToolGroup(failed, children)).toEqual([failed])
 	})
 
-	it("operation tool breaks the run and renders on its own", () => {
+	it("operation tool joins the run", () => {
 		const a = mockTool("a")
 		const op = { toolName: "some_mcp_tool", toolCallId: "op1", args: {}, isPartial: false }
 		const b = mockTool("b")
 		const children = [a, op, b]
+		expect(findToolGroup(a, children)).toEqual([a, op, b])
+		expect(findToolGroup(b, children)).toEqual([a, op, b])
+	})
+
+	it("operation tool not in children returns [self]", () => {
+		const op = { toolName: "some_mcp_tool", toolCallId: "op1", args: {}, isPartial: false }
+		expect(findToolGroup(op, [])).toEqual([op])
+	})
+
+	it("assistant text between tools joins the run without being counted", () => {
+		const a = mockTool("a")
+		const text = { lastMessage: { role: "assistant" }, render: () => [], invalidate: () => {} }
+		const b = mockTool("b")
+		const children = [a, text, b]
+		expect(findToolGroup(a, children)).toEqual([a, b])
+	})
+
+	it("user message breaks the run", () => {
+		const a = mockTool("a")
+		const userTurn = { lastMessage: { role: "user" }, render: () => [], invalidate: () => {} }
+		const b = mockTool("b")
+		const children = [a, userTurn, b]
 		expect(findToolGroup(a, children)).toEqual([a])
 		expect(findToolGroup(b, children)).toEqual([b])
 	})
+})
 
-	it("operation tool not in children returns []", () => {
-		const op = { toolName: "some_mcp_tool", toolCallId: "op1", args: {}, isPartial: false }
-		expect(findToolGroup(op, [])).toEqual([])
+describe("isSupersededByLaterTool", () => {
+	it("is true when a later tool exists, even across text and spacers", () => {
+		const a = mockTool("a")
+		const text = { lastMessage: { role: "assistant" } }
+		const b = mockTool("b")
+		const children = [a, text, new Spacer(1), b]
+		expect(isSupersededByLaterTool(children, 0)).toBe(true)
+	})
+
+	it("is false for the last tool", () => {
+		const a = mockTool("a")
+		const b = mockTool("b")
+		const children = [a, b]
+		expect(isSupersededByLaterTool(children, 1)).toBe(false)
+	})
+
+	it("is false when only text follows", () => {
+		const a = mockTool("a")
+		const text = { lastMessage: { role: "assistant" } }
+		const children = [a, text]
+		expect(isSupersededByLaterTool(children, 0)).toBe(false)
+	})
+})
+
+describe("decideAssistantTextFold", () => {
+	it("folds text strictly between two tools of the same run", () => {
+		const a = mockTool("a")
+		const text = { lastMessage: { role: "assistant" } }
+		const b = mockTool("b")
+		const children = [a, text, b]
+		const decision = decideAssistantTextFold(children, 1)
+		expect(decision.fold).toBe(true)
+		expect(decision.expandController).toBe(b)
+	})
+
+	it("does not fold trailing text after the last tool", () => {
+		const a = mockTool("a")
+		const text = { lastMessage: { role: "assistant" } }
+		const children = [a, text]
+		expect(decideAssistantTextFold(children, 1).fold).toBe(false)
+	})
+
+	it("does not fold leading text before any tool", () => {
+		const text = { lastMessage: { role: "assistant" } }
+		const b = mockTool("b")
+		const children = [text, b]
+		expect(decideAssistantTextFold(children, 0).fold).toBe(false)
+	})
+
+	it("does not fold across a user message", () => {
+		const a = mockTool("a")
+		const text = { lastMessage: { role: "assistant" } }
+		const userTurn = { lastMessage: { role: "user" } }
+		const b = mockTool("b")
+		const children = [a, text, userTurn, b]
+		expect(decideAssistantTextFold(children, 1).fold).toBe(false)
+	})
+})
+
+describe("muteAssistantLines", () => {
+	const FG = "\x1b[38;2;140;140;140m"
+
+	it("wraps body text in the muted color with a default-fg reset", () => {
+		expect(muteAssistantLines(["plain text"], FG)).toEqual([`${FG}plain text\x1b[39m`])
+	})
+
+	it("re-asserts the muted color after embedded markdown resets", () => {
+		const line = `\x1b[1mbold\x1b[0m and default tail`
+		expect(muteAssistantLines([line], FG)).toEqual([`${FG}\x1b[1mbold\x1b[0m${FG} and default tail\x1b[39m`])
+	})
+
+	it("preserves leading and trailing OSC 133 markers untouched", () => {
+		const line = `\x1b]133;A\x07text\x1b]133;B\x07\x1b]133;C\x07`
+		expect(muteAssistantLines([line], FG)).toEqual([`\x1b]133;A\x07${FG}text\x1b[39m\x1b]133;B\x07\x1b]133;C\x07`])
+	})
+
+	it("leaves blank lines untouched", () => {
+		expect(muteAssistantLines(["", "   "], FG)).toEqual(["", "   "])
+	})
+
+	it("returns lines unchanged when no fg is available", () => {
+		const lines = ["text"]
+		expect(muteAssistantLines(lines, "")).toBe(lines)
+	})
+})
+
+describe("computeExpandPropagation", () => {
+	it("returns run members with a differing expanded flag, excluding self", () => {
+		const a = { ...mockTool("a"), expanded: false }
+		const b = { ...mockTool("b"), expanded: true }
+		const c = { ...mockTool("c"), expanded: false }
+		const run = [a, b, c]
+		expect(computeExpandPropagation(run, a, true)).toEqual([c])
+		expect(computeExpandPropagation(run, a, false)).toEqual([b])
+	})
+
+	it("returns nothing for a run of one", () => {
+		const a = { ...mockTool("a"), expanded: false }
+		expect(computeExpandPropagation([a], a, true)).toEqual([])
 	})
 })
 
@@ -386,5 +509,41 @@ describe("buildGroupView", () => {
 		const headerLine = lines[0]
 		expect(headerLine).toContain("ctrl+o to expand")
 		expect(headerLine).toContain("5.0s")
+	})
+
+	it("shows 'Worked for' duration, counts, and failed count when completed", () => {
+		const run = [mockToolFull("read", { path: "a.ts" }), mockTool("b", { isError: true })]
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(run[0] as any).rendererState = { _executionStartedAt: Date.now() - 5000, _executionEndedAt: Date.now() }
+		const view = buildGroupView(run, plainTheme)
+		const headerLine = view.render(120)[0]
+		expect(headerLine).toContain("Worked for 5.0s")
+		expect(headerLine).toContain("read 2 files")
+		expect(headerLine).toContain("1 failed")
+	})
+
+	it("shows 'Working…' with duration while in progress", () => {
+		const now = new Date("2026-01-01T00:00:05.000Z")
+		vi.useFakeTimers()
+		vi.setSystemTime(now)
+		const run = [
+			mockToolFull("read", { path: "a.ts" }),
+			mockToolFull("bash", { command: "cargo build" }, { isPartial: true }),
+		]
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(run[1] as any).rendererState = { _executionStartedAt: now.getTime() - 5000 }
+		const view = buildGroupView(run, plainTheme)
+		const headerLine = view.render(120)[0]
+		expect(headerLine).toContain("Working…")
+		expect(headerLine).toContain("5.0s")
+		expect(headerLine).toContain("ctrl+o to expand")
+	})
+
+	it("falls back to counts-only when no timestamps are available", () => {
+		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("read", { path: "b.ts" })]
+		const view = buildGroupView(run, plainTheme)
+		const headerLine = view.render(120)[0]
+		expect(headerLine).toContain("Worked")
+		expect(headerLine).toContain("read 2 files")
 	})
 })
