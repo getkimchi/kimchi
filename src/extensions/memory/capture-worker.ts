@@ -72,6 +72,7 @@ import {
 	MEMORY_CAPTURE_WINDOW_CHARS,
 	MEMORY_DRAIN_CONCURRENCY,
 	MEMORY_DRAIN_HARD_TIMEOUT_MS,
+	MEMORY_DRAIN_RELIST_PASSES,
 	MEMORY_FACT_MAX_CHARS,
 	MEMORY_SUPERSEDE_BATCH_FACTS,
 	MEMORY_USER_ID,
@@ -1485,8 +1486,14 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	const dbPath = argv[dbIndex + 1]
 
 	// Serialize drains (the P2 race fix): one worker holds the lock for its
-	// entire run; later spawns wait — see lock.ts.
+	// entire run. Contention with a LIVE holder fails fast — the pending/
+	// queue is durable and this spawn's --job file was only the trigger, so
+	// this process exits 0 instead of parking a runtime on the poller.
 	const release = await acquireCaptureLock(defaultMemoryDir())
+	if (release === null) {
+		console.log("[memory-capture] drain already running — deferring to the active drain")
+		return 0
+	}
 	try {
 		// Per-drain tracer (null when tracing is off) + ring enforcement of
 		// the trace store — both fail-soft, see trace.ts. An injected
@@ -1506,7 +1513,21 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		const budget = options.drainTimeoutMs ?? MEMORY_DRAIN_HARD_TIMEOUT_MS
 		const watchdog = setTimeout(() => abort.abort(new DrainWatchdogError(budget)), budget)
 		try {
-			return await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal, trace })
+			const pendingDir = join(defaultMemoryDir(), "pending")
+			const pendingNames = (): Set<string> => new Set(existsSync(pendingDir) ? readdirSync(pendingDir).filter((n) => n.endsWith(".json")) : [])
+			const seen = pendingNames() // pre-drain: anything appearing LATER is fresh
+			let captured = await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal, trace })
+			// Re-list: job files written WHILE this drain ran (mid-loop
+			// increments, another session) otherwise wait for the next spawner.
+			// Bounded so the watchdog keeps meaning; a pass that re-drains
+			// earlier failures is bounded by their attempts counters.
+			for (let pass = 1; pass < MEMORY_DRAIN_RELIST_PASSES; pass++) {
+				const fresh = [...pendingNames()].filter((n) => !seen.has(n))
+				if (fresh.length === 0) break
+				for (const n of fresh) seen.add(n)
+				captured += await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal, trace })
+			}
+			return captured
 		} finally {
 			clearTimeout(watchdog)
 		}

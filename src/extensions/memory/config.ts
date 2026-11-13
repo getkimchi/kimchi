@@ -186,6 +186,13 @@ export const PENDING_JOB_MAX_AGE_MS = 7 * 86_400_000
 export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 12 * 60_000
 
 /**
+ * Re-list passes after a drain: job files written while this drain ran get
+ * consumed by the SAME worker (fail-fast locking means the spawn that wrote
+ * them exited without draining). Bounded so the watchdog keeps meaning.
+ */
+export const MEMORY_DRAIN_RELIST_PASSES = 3
+
+/**
  * Drains a capture job with a deterministic (poison) extraction failure
  * gets before quarantine. Each drain already pays the strict-format retry
  * per poisoned window, so the second failed drain confirms determinism and

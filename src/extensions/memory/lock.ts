@@ -4,13 +4,16 @@
  * realpath (which requires the file to exist), so the lock target is
  * touched first — same pattern as src/ferment/event-store.ts.
  *
- * Fast-break for dead holders: the lock records its owning pid in a
- * sidecar file (`capture.lock.pid`). A competing worker polls the lock
- * every POLL_MS; before each retry it checks the sidecar — if the holder
- * pid is dead (ESRCH), it breaks the lock immediately instead of waiting
- * the full CAPTURE_LOCK_STALE_MS mtime window. Stale-by-age remains the
- * fallback for a holder that never wrote a sidecar (a crash between
- * acquire and the sidecar write).
+ * Fail-fast under live contention: a competing worker tries once; if the
+ * lock is held by a LIVE holder (sidecar pid alive), the caller gets null
+ * and defers — the pending/ queue is the durable medium and the holder's
+ * drain re-lists it before releasing, so queue-waiting only parks a full
+ * process runtime per waiter (the bench showed 7 workers idling while one
+ * drained). Dead-holder fast-break: the sidecar records the owning pid;
+ * a dead holder's lock is broken immediately instead of waiting the full
+ * CAPTURE_LOCK_STALE_MS mtime window. Stale-by-age remains the fallback
+ * for a holder that never wrote a sidecar (a crash between acquire and
+ * the sidecar write).
  */
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -18,7 +21,6 @@ import { lock } from "proper-lockfile"
 import { CAPTURE_LOCK_STALE_MS, CAPTURE_LOCK_UPDATE_MS } from "./config.js"
 
 const POLL_MS = 5_000
-const MAX_ATTEMPTS = 720 // 1h — same ceiling as the pre-sidecar retry loop
 
 function isLockConflict(err: unknown): boolean {
 	return (err as { code?: string }).code === "ELOCKED"
@@ -80,12 +82,16 @@ export function breakIfHolderDead(lockFile: string): boolean {
  * soon as a caller sees the dead pid in the sidecar, or (no sidecar)
  * after the staleness window. The returned release logs (never throws)
  * on a best-effort failure.
+ *
+ * Live-holder contention FAILS FAST: returns null so the caller defers
+ * (the active drain processes the whole pending/ queue, including the
+ * caller's own job file). One immediate retry follows a successful
+ * dead-holder break so a steal doesn't cost a spawn.
  */
 export async function acquireCaptureLock(
 	memoryRoot: string,
 	options?: { pollMs?: number },
-): Promise<() => Promise<void>> {
-	const pollMs = options?.pollMs ?? POLL_MS
+): Promise<(() => Promise<void>) | null> {
 	const lockFile = join(memoryRoot, "capture.lock")
 	const pidFile = `${lockFile}.pid`
 	mkdirSync(memoryRoot, { recursive: true })
@@ -119,9 +125,14 @@ export async function acquireCaptureLock(
 				}
 			}
 		} catch (err) {
-			if (!isLockConflict(err) || attempt >= MAX_ATTEMPTS) throw err
-			breakIfHolderDead(lockFile)
-			await sleep(pollMs)
+			if (!isLockConflict(err)) throw err
+			// Dead holder: break immediately and retry right away, one fold
+			// of the poll loop — the only wait a steal pays.
+			if (attempt === 0 && breakIfHolderDead(lockFile)) {
+				await sleep(options?.pollMs ?? POLL_MS)
+				continue
+			}
+			return null // live holder — defer (queue-waiting parks processes)
 		}
 	}
 }

@@ -299,6 +299,10 @@ export async function handleMemoryReset(
 		if (outcome.reason === "no-such-store") {
 			throw RequestError.invalidParams(undefined, `No memory store for ${outcome.scopeId} — nothing to reset.`)
 		}
+		if (outcome.reason === "busy") {
+			// A capture drain holds the store lock — transient and retryable.
+			throw RequestError.internalError(undefined, "memory reset deferred: a capture drain is running — retry shortly")
+		}
 		// yes:true skips the confirm gate, so the other failure reasons are
 		// unreachable here — surface as internal rather than guessing.
 		throw RequestError.internalError(undefined, `unexpected reset outcome: ${outcome.reason}`)
