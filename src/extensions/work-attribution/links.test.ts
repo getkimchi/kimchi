@@ -904,6 +904,62 @@ it("lets receipts that can never link drop out, so passes over more than 25 of t
 	expect(links()).toHaveLength(26)
 })
 
+it("reads only new records between passes while linkable work remains, not the whole ledger", async () => {
+	// More linkable candidates than one pass can process: the backlog spans several passes, and
+	// every pass after the first must read only what changed since the previous one.
+	for (let index = 0; index < 30; index++) acceptedContinuation("plan", `planner-${index}`)
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	const backend = backendFor(dir)
+	const original = backend.readRecords.bind(backend)
+	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	await repair(progress)
+	await repair(progress)
+	const calls = read.mock.calls
+	const fullReads = calls.filter(([query]) => query?.modifiedSince === undefined)
+	read.mockRestore()
+	expect(calls.length).toBeGreaterThan(0)
+	expect(fullReads).toHaveLength(0)
+	expect(links()).toHaveLength(30)
+})
+
+it("rebuilds the accumulated history from scratch after a journal is rewritten, not appended", async () => {
+	acceptedContinuation("plan", "planner")
+	// A legacy-style journal file on disk: its stats are part of the pass fingerprint.
+	const journal = join(dir, "work-attribution", "00000000-rewrite-signal.jsonl")
+	fs.writeFileSync(
+		journal,
+		`${JSON.stringify({
+			version: 1,
+			type: "work",
+			workId: randomUUID(),
+			sessionId: "00000000-rewrite-signal",
+			recordedAt: new Date().toISOString(),
+			cwd: dir,
+		})}\n`,
+	)
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	expect(links()).toHaveLength(1)
+	// A second receipt keeps the next pass from settling into the quiet fast path.
+	acceptedContinuation("plan", "planner-after")
+	await flushWorkSummaries()
+	// A same-size mtime change is a rewrite signal: appends only ever grow a journal.
+	const now = new Date()
+	fs.utimesSync(journal, now, now)
+	const backend = backendFor(dir)
+	const original = backend.readRecords.bind(backend)
+	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	await repair(progress)
+	const calls = read.mock.calls
+	read.mockRestore()
+	// The rewrite signal must force a full rebuild, not an incremental merge.
+	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(true)
+	expect(links()).toHaveLength(2)
+})
+
 it("reads only new ledger records since the last pass once no receipt can still link", async () => {
 	vi.useFakeTimers({ toFake: ["Date"] })
 	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))

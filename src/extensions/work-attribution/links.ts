@@ -238,7 +238,7 @@ export function readContinuationHistory(agentDir: string, checkBudget?: () => vo
 }
 
 /** Unknown record types naming this work or one of its requests; this version cannot tell what they change. */
-function unknownRecords(history: ContinuationHistory, workId: string): WorkRecordProblem[] {
+function unknownRecords(history: Pick<ContinuationHistory, "index" | "unknown">, workId: string): WorkRecordProblem[] {
 	return history.unknown
 		.filter(({ ids }) =>
 			[...ids].some((id) => id === workId || history.index.requests.get(id)?.some((row) => row.workId === workId)),
@@ -428,6 +428,42 @@ export interface ContinuationProgress {
 	done?: Set<string>
 	/** Set while no receipt can link: every receipt known then, and when that history was read. */
 	quiet?: { since: number; receipts: Set<string> }
+	/**
+	 * Incremental history: the index, unknown-type problems, receipt keys, and pending candidates
+	 * accumulated so far, plus the watermark (epoch ms) through which records were read. Kept on
+	 * the progress object so a bounded work quota per pass does not re-read the whole ledger every
+	 * pass; any journal rewrite or truncation drops it and forces one full rebuild.
+	 */
+	historyIndex?: ContinuationIndex
+	historyUnknown?: ContinuationHistory["unknown"]
+	historyReceipts?: Set<string>
+	historyCandidates?: Map<string, { row: WorkRecord; continuation: WorkContinuation }>
+	historySince?: number
+	/** Per-journal stats of the last pass that built the incremental state, to tell append-only growth from rewrites. */
+	journalStats?: Map<string, { size: string; mtimeNs: string; ctimeNs: string }>
+}
+
+/** File stats from a workJournalFingerprint value; coupled to its JSON shape by construction. */
+function fingerprintFiles(fingerprint: string): Map<string, { size: string; mtimeNs: string; ctimeNs: string }> {
+	const parsed = JSON.parse(fingerprint) as [string, string[][]]
+	const files = new Map<string, { size: string; mtimeNs: string; ctimeNs: string }>()
+	for (const [path, , , size, mtimeNs, ctimeNs] of parsed[1]) files.set(path, { size, mtimeNs, ctimeNs })
+	return files
+}
+
+/** Appends only ever grow a journal: shrink or same-size-change means a rewrite, which the incremental state cannot absorb. */
+function journalGrewOnly(
+	previous: Map<string, { size: string; mtimeNs: string; ctimeNs: string }>,
+	current: Map<string, { size: string; mtimeNs: string; ctimeNs: string }>,
+): boolean {
+	if (previous.size > current.size) return false
+	for (const [path, was] of previous) {
+		const now = current.get(path)
+		if (!now) return false
+		if (Number(now.size) < Number(was.size)) return false
+		if (now.size === was.size && (now.mtimeNs !== was.mtimeNs || now.ctimeNs !== was.ctimeNs)) return false
+	}
+	return true
 }
 
 /** Retry accepted evidence locally; unresolved receipts are never marked permanently complete. */
@@ -467,20 +503,58 @@ export async function reconcileWorkContinuations(
 	}
 	progress.done ??= new Set()
 	const done = progress.done
-	const history = readContinuationHistory(agentDir, checkBudget)
-	const { index } = history
-	const receipts = new Set<string>()
-	const candidates = new Map<string, { row: WorkRecord; continuation: WorkContinuation }>()
-	for (const row of history.records) {
-		const found = receipt(row)
-		if (!found) continue
-		receipts.add(found.key)
-		// A linked producer is already confirmed or corrected, and its link would be refused anyway.
-		if (index.linked.has(found.continuation.evidence.requestId)) done.add(found.key)
-		// A work named by an unknown record type waits without holding back the other receipts.
-		if (!done.has(found.key) && !unknownRecords(history, row.workId).length)
-			candidates.set(found.key, { row, continuation: found.continuation })
+	const files = fingerprintFiles(journals)
+	const since = progress.historySince
+	const incremental =
+		progress.historyIndex !== undefined &&
+		progress.historyReceipts !== undefined &&
+		progress.historyCandidates !== undefined &&
+		since !== undefined &&
+		journalGrewOnly(progress.journalStats ?? new Map(), files)
+	let index: ContinuationIndex
+	let receipts: Set<string>
+	let candidates: Map<string, { row: WorkRecord; continuation: WorkContinuation }>
+	if (incremental && progress.historyIndex && progress.historyReceipts && progress.historyCandidates) {
+		// Append-only since the last pass: merge the new records into the accumulated state.
+		index = progress.historyIndex
+		receipts = progress.historyReceipts
+		candidates = progress.historyCandidates
+		const fresh = readWorkRecords(agentDir, since - MTIME_SLACK_MS, checkBudget)
+		for (const row of fresh) {
+			checkBudget()
+			indexRecord(index, row)
+			const found = receipt(row)
+			if (!found) continue
+			receipts.add(found.key)
+			if (index.linked.has(found.continuation.evidence.requestId)) done.add(found.key)
+			if (!done.has(found.key) && !unknownRecords({ index, unknown: progress.historyUnknown ?? [] }, row.workId).length)
+				candidates.set(found.key, { row, continuation: found.continuation })
+		}
+		// Settled receipts must leave the pending map, or the per-pass cap counts dead work forever.
+		for (const key of done) candidates.delete(key)
+	} else {
+		// First pass, or a rewrite invalidated the accumulated state: one full read rebuilds it.
+		const history = readContinuationHistory(agentDir, checkBudget)
+		index = history.index
+		receipts = new Set()
+		candidates = new Map()
+		for (const row of history.records) {
+			const found = receipt(row)
+			if (!found) continue
+			receipts.add(found.key)
+			// A linked producer is already confirmed or corrected, and its link would be refused anyway.
+			if (index.linked.has(found.continuation.evidence.requestId)) done.add(found.key)
+			// A work named by an unknown record type waits without holding back the other receipts.
+			if (!done.has(found.key) && !unknownRecords(history, row.workId).length)
+				candidates.set(found.key, { row, continuation: found.continuation })
+		}
+		progress.historyIndex = index
+		progress.historyUnknown = history.unknown
+		progress.historyReceipts = receipts
+		progress.historyCandidates = candidates
 	}
+	progress.historySince = startedAt
+	progress.journalStats = files
 	const keys = [...candidates.keys()].sort()
 	const start = Math.max(0, keys.indexOf(progress.nextContinuation ?? ""))
 	let wrote = false
