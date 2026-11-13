@@ -128,8 +128,10 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import { listWorktreeDirsUnder } from "../../shared/git/worktree.js"
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
+import { encodeSessionCwdDir } from "../../shared/session-dir.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -3264,11 +3266,9 @@ export function toAcpSessionInfo(info: PiSessionInfo): AcpSessionInfo {
 // listSessions points at kimchi's agentDir (~/.config/kimchi/harness/sessions/...)
 // instead of pi's own ~/.pi/agent/sessions/... — pi reads PI_CODING_AGENT_DIR,
 // not KIMCHI_CODING_AGENT_DIR, so without explicit sessionDir threading the
-// default lookup misses every kimchi session. Encoding is a public on-disk
-// format; drift surfaces as "no sessions found" rather than silent corruption.
-function encodeCwdDir(cwd: string): string {
-	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`
-}
+// default lookup misses every kimchi session. Encoding lives in
+// src/shared/session-dir.ts (encodeSessionCwdDir); drift surfaces as "no
+// sessions found" rather than silent corruption.
 
 // Find the on-disk JSONL for a sessionId. pi names files
 // `<isoTimestamp>_<sessionId>.jsonl` — match that suffix, with a fallback to
@@ -3350,6 +3350,16 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 		for (const dir of legacyAdditionalDirs ?? []) {
 			if (!roots.includes(dir)) roots.push(dir)
 		}
+		// Worktree sessions are invisible from the main checkout unless their
+		// roots are added here (sessions live per-encoded-cwd). Each provided
+		// root that sits in a repo also contributes every linked worktree's
+		// dir, so `listSessions` from the main checkout shows sessions started
+		// with `kimchi --worktree` too. Root directories are deduped.
+		for (const root of [...roots]) {
+			for (const wt of listWorktreeDirsUnder(root)) {
+				if (!roots.includes(wt)) roots.push(wt)
+			}
+		}
 		if (roots.length === 0) {
 			// listAll has no agentDir slot in pi today, so a non-default agentDir
 			// won't be honored for the unscoped path. Acceptable v1 limitation:
@@ -3357,7 +3367,7 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 			return SessionManager.listAll()
 		}
 		const lists = await Promise.all(
-			roots.map((root) => SessionManager.list(root, join(options.agentDir, "sessions", encodeCwdDir(root)))),
+			roots.map((root) => SessionManager.list(root, join(options.agentDir, "sessions", encodeSessionCwdDir(root)))),
 		)
 		return lists.flat()
 	}
@@ -3427,7 +3437,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 		// agentDir explicitly is load-bearing — pi reads PI_CODING_AGENT_DIR,
 		// not KIMCHI_CODING_AGENT_DIR, so default lookups would miss kimchi
 		// sessions stored under the kimchi agent dir.
-		const sessionDir = join(options.agentDir, "sessions", encodeCwdDir(cwd))
+		const sessionDir = join(options.agentDir, "sessions", encodeSessionCwdDir(cwd))
 		// pi writes session files as `<isoTimestamp>_<sessionId>.jsonl` (see
 		// SessionManager.setSessionFile auto-generation). Looking up by bare
 		// `<sessionId>.jsonl` would miss every real session — match the

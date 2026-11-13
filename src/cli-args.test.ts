@@ -8,6 +8,7 @@ import {
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
+	hasWorktreeArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -19,6 +20,7 @@ import {
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 	stripMultiModelArgs,
+	stripWorktreeArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 
@@ -329,6 +331,38 @@ describe("stripMultiModelArgs", () => {
 	it("strips --multi-model when combined with a real --model value", () => {
 		expect(stripMultiModelArgs(["--model", "real-model", "--multi-model"])).toEqual(["--model", "real-model"])
 		expect(stripMultiModelArgs(["--multi-model", "--model", "real-model"])).toEqual(["--model", "real-model"])
+	})
+})
+
+describe("stripWorktreeArgs / hasWorktreeArg", () => {
+	it("strips bare --worktree and -w, leaving the rest untouched", () => {
+		expect(stripWorktreeArgs(["--worktree"])).toEqual({ name: undefined, args: [] })
+		expect(stripWorktreeArgs(["-w"])).toEqual({ name: undefined, args: [] })
+		expect(stripWorktreeArgs(["--worktree", "--model", "x"])).toEqual({ name: undefined, args: ["--model", "x"] })
+		expect(hasWorktreeArg(["-w"])).toBe(true)
+		expect(hasWorktreeArg(["--model", "x"])).toBe(false)
+	})
+
+	it("consumes a name token for --worktree name and -w name", () => {
+		expect(stripWorktreeArgs(["--worktree", "feature-x"])).toEqual({ name: "feature-x", args: [] })
+		expect(stripWorktreeArgs(["-w", "feature-x"])).toEqual({ name: "feature-x", args: [] })
+		expect(stripWorktreeArgs(["--worktree=", "keep"])).toEqual({ name: undefined, args: ["keep"] })
+		expect(hasWorktreeArg(["--worktree", "feature-x"])).toBe(true)
+	})
+
+	it("does not consume a following flag or an invalid name", () => {
+		expect(stripWorktreeArgs(["--worktree", "--print"])).toEqual({ name: undefined, args: ["--print"] })
+		expect(stripWorktreeArgs(["-w", "-p"])).toEqual({ name: undefined, args: ["-p"] })
+		// A name containing a space is not a valid worktree name — the token
+		// stays put and the worktree stays anonymous.
+		expect(stripWorktreeArgs(["--worktree", "not a name"])).toEqual({ name: undefined, args: ["not a name"] })
+		expect(hasWorktreeArg(["--worktree", "not a name"])).toBe(true)
+	})
+
+	it("handles --worktree=name form", () => {
+		expect(stripWorktreeArgs(["--worktree=feature-x"])).toEqual({ name: "feature-x", args: [] })
+		expect(stripWorktreeArgs(["a", "--worktree=feature-x", "b"])).toEqual({ name: "feature-x", args: ["a", "b"] })
+		expect(hasWorktreeArg(["--worktree=feature-x"])).toBe(true)
 	})
 })
 

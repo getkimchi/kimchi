@@ -12,6 +12,7 @@ import {
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	hasPrintFlag,
+	hasWorktreeArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -20,6 +21,7 @@ import {
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
 	stripMultiModelArgs,
+	stripWorktreeArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -28,6 +30,7 @@ import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 import { installThinkingLevelAdvisor } from "./thinking-selection.js"
+import { KIMCHI_WORKTREE_ENV } from "./worktree-cli.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -190,6 +193,7 @@ import {
 	prepareProviderRequest,
 	recordProviderResponse,
 } from "./extensions/work-attribution.js"
+import worktreeSessionBindingExtension from "./extensions/worktree-session-binding.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -459,6 +463,16 @@ async function cliMain(): Promise<void> {
 		// top-level --help take ownership before any harness setup runs.
 		// `--version` falls through to pi-coding-agent's main below so it prints
 		// the version using piConfig.name = "kimchi".
+		//
+		// `--worktree [name]` (slice 1 of the worktree plan) runs the session
+		// inside a git worktree under <main>/.kimchi/worktrees/. It must run
+		// BEFORE the trust block below (trust resolves from process.cwd()) and
+		// before any project config read: the hook creates/reuses the worktree,
+		// chdirs into it, seeds trust for the new path, and exports
+		// KIMCHI_WORKTREE/KIMCHI_WORKTREE_MAIN so extensions and subprocesses
+		// can tell. Stripped from the args list handed to pi (kimchi-local flag,
+		// same as --enable-experimental-features).
+		//
 		// Prime the kimchi project-scope gate BEFORE any project-config read and
 		// before subcommand dispatch — dispatched commands (e.g. `kimchi resources
 		// list`) use the gated discovery functions and previously trusted folders
@@ -468,10 +482,25 @@ async function cliMain(): Promise<void> {
 		// decision recorded this resolves untrusted (fail closed) and the prompt
 		// inside pi's main() decides; settingsTrustSyncExtension then syncs the
 		// outcome onto the gate at session_start.
+		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
 		const cliTrustOptions = getParsedCliArgs().options
 		const cliTrustOverride =
 			cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
-		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+		if (!helpOrVersion && hasWorktreeArg(originalArgs)) {
+			const { ensurePreMainWorktree, maybePrintWorktreeIncludeHint } = await import("./worktree-cli.js")
+			try {
+				const worktree = await ensurePreMainWorktree({
+					cwd: process.cwd(),
+					requestedName: stripWorktreeArgs(originalArgs).name,
+					agentDir: preMainAgentDir,
+					trustOverride: cliTrustOverride,
+				})
+				maybePrintWorktreeIncludeHint(worktree.mainRoot, worktree)
+			} catch (err) {
+				console.error(err instanceof Error ? err.message : String(err))
+				process.exit(1)
+			}
+		}
 		setProjectScopeTrusted(
 			process.cwd(),
 			resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),
@@ -485,7 +514,7 @@ async function cliMain(): Promise<void> {
 
 		if (helpOrVersion) {
 			const { main } = await import("@earendil-works/pi-coding-agent")
-			await main(originalArgs, { extensionFactories: [] })
+			await main(stripWorktreeArgs(originalArgs).args, { extensionFactories: [] })
 		} else {
 			const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
 			// Publish to the module-level flag so extensions (daemon tools,
@@ -762,7 +791,7 @@ async function cliMain(): Promise<void> {
 			mkdirSync(themesDir, { recursive: true })
 
 			const atFileArgs = normalizeAtFileArgs(
-				normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
+				normalizeResumeIdArgs(stripExperimentalFeaturesArg(stripWorktreeArgs(originalArgs).args)),
 				process.cwd(),
 				isCliAtFileArg,
 			)
@@ -883,6 +912,9 @@ async function cliMain(): Promise<void> {
 				packageInstallGuardExtension,
 				sessionNameExtension(),
 				shutdownMarkerExtension,
+				// Appends a `kimchi_worktree` entry when the session launched with
+				// --worktree — the durable record the exit prompt and resume logic read.
+				worktreeSessionBindingExtension(),
 				buildInfoExtension,
 				// skill_view must always be present: the skills catalog in the system
 				// prompt directs the model to load skills through it. skill_manage
@@ -1065,6 +1097,25 @@ async function cliMain(): Promise<void> {
 				// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 				const { main } = await import("@earendil-works/pi-coding-agent")
 				await main(rawArgsWithoutMultiModel, { extensionFactories })
+			}
+			// Worktree exit prompt (slice 1): only for the interactive TUI; the
+			// headless -p / ACP / non-TTY paths skip it (`interactive` false).
+			// KIMCHI_WORKTREE_NO_PROMPT is a deterministic no-UI escape for e2e
+			// (clack prompts cannot be answered through the test pty).
+			// Best-effort — never changes the session's exit path.
+			if (!hasPrintFlag(rawArgs) && process.env.KIMCHI_WORKTREE_NO_PROMPT !== "1" && process.env[KIMCHI_WORKTREE_ENV]) {
+				const { runWorktreeExitPrompt } = await import("./worktree-exit-prompt.js")
+				const { readWorktreeBindingFromEnv } = await import("./extensions/worktree-session-binding.js")
+				const binding = readWorktreeBindingFromEnv()
+				if (binding) {
+					await runWorktreeExitPrompt({
+						dir: binding.dir,
+						mainRoot: binding.mainRoot,
+						name: binding.name,
+						named: binding.named,
+						interactive: terminalIo.stdinIsTTY && terminalIo.stdoutIsTTY,
+					})
+				}
 			}
 			applyPostMainInfrastructureExitPolicy(
 				infrastructureErrorTracker.getFailure(),

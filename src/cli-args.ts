@@ -148,6 +148,13 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		description: "Resume by id, or pick a previous session interactively when omitted",
 		placeholder: "[id]",
 	},
+	worktree: {
+		type: "string",
+		optional: true,
+		short: "w",
+		description: "Run the session inside a git worktree (optionally named) under .kimchi/worktrees",
+		placeholder: "[name]",
+	},
 	session: {
 		type: "string",
 		description: "Resume a specific session file (full path or partial UUID)",
@@ -445,6 +452,48 @@ export function isTerminalUiMode(args: string[], io: { stdinIsTTY: boolean; stdo
 
 export function isExperimentalFeaturesArg(args: string[]): boolean {
 	return args.includes("--enable-experimental-features")
+}
+
+/** A valid worktree name token as typed after `--worktree` / `-w`. */
+const WORKTREE_NAME_RE = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Extract the kimchi-local `--worktree` / `-w [name]` flag from a raw argv
+ * list. Returns the optional name and the remaining args. The flag is
+ * kimchi-local (like `--enable-experimental-features`): it must be stripped
+ * before pi-mono parses the args, and consumed before the pre-main cwd is
+ * read (project trust, session dir).
+ *
+ * The name token is consumed only when it does not look like a flag and
+ * matches the worktree-name charset (`[A-Za-z0-9._-]+`): `--worktree` before
+ * a positional prompt stays anonymous, `-w feature-x` binds the name.
+ */
+export function stripWorktreeArgs(args: readonly string[]): { name?: string; args: string[] } {
+	const rest: string[] = []
+	let name: string | undefined
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i]
+		if (arg === "--worktree" || arg === "-w") {
+			const next = args[i + 1]
+			if (next !== undefined && !next.startsWith("-") && WORKTREE_NAME_RE.test(next)) {
+				name = next
+				i += 1
+			}
+			continue
+		}
+		if (arg.startsWith("--worktree=")) {
+			const value = arg.slice("--worktree=".length)
+			if (value.length > 0) name = value
+			continue
+		}
+		rest.push(arg)
+	}
+	return { name, args: rest }
+}
+
+/** True when argv requests a worktree session (`--worktree` / `-w`). */
+export function hasWorktreeArg(args: readonly string[]): boolean {
+	return args.includes("--worktree") || args.includes("-w") || args.some((a) => a.startsWith("--worktree="))
 }
 
 /** True when argv requests a ferment one-shot `--ferment-oneshot[=true]` or the

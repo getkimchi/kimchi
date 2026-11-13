@@ -1,10 +1,11 @@
 import { homedir } from "node:os"
-import { basename } from "node:path"
+import { basename, join } from "node:path"
 import {
 	getMarkdownTheme,
 	getSelectListTheme,
 	keyHint,
 	type SessionInfo,
+	SessionManager,
 	SessionSelectorComponent,
 } from "@earendil-works/pi-coding-agent"
 import {
@@ -20,6 +21,8 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
 import { getSessionRoles, type SessionRoleInfo } from "./session-visibility.js"
+import { listWorktreeDirsUnder } from "./shared/git/worktree.js"
+import { sessionDirForCwd } from "./shared/session-dir.js"
 
 // Pi 0.85.1 exposes the selector but not its presentation state. Keep this private
 // boundary here; the contract tests instantiate the real upstream component.
@@ -263,6 +266,16 @@ function renderSessions(
 	return lines.map((line) => truncateToWidth(line, width))
 }
 
+/**
+ * Session dirs of linked worktrees under the launch directory's repo, for the
+ * resume picker merge. Resolved once per component install: when the launch
+ * cwd is itself a worktree (or not a repo), nothing is merged.
+ */
+function worktreePickerSessionDirs(cwd: string): Array<{ dir: string; sessionDir: string }> {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? join(homedir(), ".config", "kimchi", "harness")
+	return listWorktreeDirsUnder(cwd).map((dir) => ({ dir, sessionDir: sessionDirForCwd(agentDir, dir) }))
+}
+
 const installed = new WeakSet<SessionListState>()
 const prototype = SessionSelectorComponent.prototype as unknown as SelectorState
 const buildBaseLayout = prototype.buildBaseLayout
@@ -284,12 +297,35 @@ prototype.buildBaseLayout = function (content, options) {
 			return role !== undefined && role.kind !== "subagent"
 		}
 		let showInternal = true
+		// Merge sessions persisted inside linked worktrees (`kimchi --worktree`)
+		// into the picker so they're resumable from the main checkout. Each
+		// worktree's sessions live in its own per-cwd session dir; upstream's
+		// loaders only see the launch cwd's dir.
+		const mergedSessionDirs = worktreePickerSessionDirs(process.cwd())
+		const worktreeMarker = new Map<string, string>() // session cwd → worktree name
+		for (const { dir } of mergedSessionDirs) worktreeMarker.set(dir, basename(dir))
 		for (const key of ["currentSessionsLoader", "allSessionsLoader"] as const) {
 			const loader = this[key].bind(this)
 			this[key] = async (onProgress) => {
 				const sessions = await loader(onProgress)
-				for (const [session, role] of await getSessionRoles(sessions)) sessionRoles.set(session, role)
-				return sessions
+				const merged = [...sessions]
+				if (mergedSessionDirs.length > 0) {
+					const listed = await Promise.all(
+						mergedSessionDirs.map(({ dir, sessionDir }) =>
+							SessionManager.list(dir, sessionDir).catch(() => [] as SessionInfo[]),
+						),
+					)
+					for (const session of listed.flat()) {
+						if (merged.some((s) => s.path === session.path)) continue
+						const name = worktreeMarker.get(session.cwd)
+						if (name) {
+							session.name = session.name?.trim() ? `[worktree ${name}] ${session.name.trim()}` : `[worktree ${name}]`
+						}
+						merged.push(session)
+					}
+				}
+				for (const [session, role] of await getSessionRoles(merged)) sessionRoles.set(session, role)
+				return merged
 			}
 		}
 		this.sortMode = "threaded"
