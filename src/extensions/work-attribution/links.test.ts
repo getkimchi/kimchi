@@ -12,6 +12,7 @@ import * as attribution from "../work-attribution.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest } from "../work-attribution.js"
 import type { WorkContinuation } from "./continuation.js"
 import { calculatePullRequestCosts } from "./costs.js"
+import type { ContinuationProgress } from "./links.js"
 import {
 	confirmWorkContinuation,
 	correctWorkLink,
@@ -1081,6 +1082,28 @@ it("an incremental pass over a spanning backlog withholds a work named by a fres
 	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(false)
 	// The named work stays unconfirmed; the other pending receipts may proceed.
 	expect(links().every((row) => row.workId !== remaining[0])).toBe(true)
+})
+
+it("a missing stats snapshot forces a full rebuild instead of a vacuous grew-only check", async () => {
+	// Without the gate, an empty previous map makes journalGrewOnly trivially true, so a
+	// rewrite between passes could be merged incrementally with no stat comparison at all.
+	// Spanning backlog keeps the pass active so the incremental gate decides the shape.
+	for (let index = 0; index < 30; index++) acceptedContinuation("plan", `planner-stats-${index}`)
+	await flushWorkSummaries()
+	const progress: ContinuationProgress = {}
+	await repair(progress)
+	expect(links()).toHaveLength(25)
+	progress.journalStats = undefined
+	acceptedContinuation("plan", "planner-stats-late")
+	await flushWorkSummaries()
+	const backend = backendFor(dir)
+	const original = backend.readRecords.bind(backend)
+	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	await repair(progress)
+	const calls = read.mock.calls
+	read.mockRestore()
+	// Strictly a full read: the vacuous path is not a substitute for stat comparison.
+	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(true)
 })
 
 it("reads only new ledger records since the last pass once no receipt can still link", async () => {
