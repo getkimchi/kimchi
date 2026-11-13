@@ -1277,6 +1277,22 @@ describe("handlers/tools", () => {
 				result: codemodeResult({ calls: [] }, truncatedNoSpill),
 			})
 
+			// Truncated, with an image: upstream joins the saved image's label onto
+			// the truncated block, after the spill note, and the image follows.
+			handleToolExecutionStart(ctx, { toolCallId: "cm-9", toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "cm-9",
+				isError: false,
+				result: {
+					content: [
+						{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" },
+						{ type: "text", text: `${truncatedOutput}\n[Image saved to /tmp/img-1.png (image/png, 45.2 kB)]` },
+						{ type: "image", data: "aGk=", mimeType: "image/png" },
+					],
+					details: { calls: [] },
+				},
+			})
+
 			// Not truncated, though the script's own output starts with the warning
 			// text (e.g. it echoed an earlier truncated result).
 			handleToolExecutionStart(ctx, { toolCallId: "cm-8", toolName: "codemode", args: {} })
@@ -1312,6 +1328,9 @@ describe("handlers/tools", () => {
 
 			const echoed = events.find((e) => e.attrs.tool_use_id === "cm-8" && e.eventName === "codemode.completed")
 			expect(echoed?.attrs.output_truncated).toBe("false")
+
+			const withImage = events.find((e) => e.attrs.tool_use_id === "cm-9" && e.eventName === "codemode.completed")
+			expect(withImage?.attrs.output_truncated).toBe("true")
 		})
 
 		it("records an aborted script in codemode.completed but emits no error", async () => {

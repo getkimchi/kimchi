@@ -120,15 +120,17 @@ const COST_BEARING_MODELS_METHODS = new Set(["models.classify", "models.generate
 const CODEMODE_NESTED_STATUSES = new Set(["running", "ok", "error", "cancelled"])
 
 /** Pi's truncated output (upstream codemode truncateOutput) is one text block
- *  that starts with this warning and ends with the spill-file note — either
- *  the saved path or the save error. Requiring both ends keeps a script whose
- *  own output merely starts with the warning text from counting as truncated.
+ *  that starts with this warning and carries the spill-file note — either the
+ *  saved path or the save error — followed by the end of the block or by the
+ *  labels of saved images, which upstream joins onto the same block. Requiring
+ *  both keeps a script whose own output merely starts with the warning text
+ *  from counting as truncated.
  *  `details.fullOutputPath` alone is insufficient: truncation also happens
  *  when writing the spill file fails. telemetry/index.test.ts pins both
  *  strings against the installed pi. */
 export const CODEMODE_TRUNCATION_WARNING = "Warning: truncated output (original token count: "
 const CODEMODE_TRUNCATION_SPILL_NOTE =
-	/\n\n\[(?:Full output: .* \(read with offset\/limit\)|Could not save the full output: [\s\S]*)\]$/
+	/\n\n\[(?:Full output: .* \(read with offset\/limit\)|Could not save the full output: [\s\S]*)\](?=\n|$)/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
