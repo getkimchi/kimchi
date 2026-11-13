@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -57,13 +57,35 @@ describe("capture lock — dead-holder break", () => {
 		expect(existsSync(lockDir())).toBe(true)
 	})
 
+	it("breaks a sidecar-absent lock whose mtime froze past three update cycles", () => {
+		mkdirSync(lockDir(), { recursive: true })
+		writeFileSync(lockFile(), "")
+		// A live holder refreshes the dir mtime every update cycle — this
+		// freeze (past 3x the 30s update) is the dead-hold signature from
+		// the crash-without-sidecar bench incident.
+		const frozen = new Date(Date.now() - 120_000)
+		utimesSync(lockDir(), frozen, frozen)
+		expect(breakIfHolderDead(lockFile())).toBe(true)
+		expect(existsSync(lockDir())).toBe(false)
+	})
+
+	it("keeps a sidecar-absent lock whose mtime is still fresh (live holder)", () => {
+		mkdirSync(lockDir(), { recursive: true })
+		writeFileSync(lockFile(), "")
+		const fresh = new Date(Date.now() - 30_000)
+		utimesSync(lockDir(), fresh, fresh)
+		expect(breakIfHolderDead(lockFile())).toBe(false)
+		expect(existsSync(lockDir())).toBe(true)
+	})
+
 	it("acquire succeeds immediately after a dead holder's lock is broken", async () => {
 		makeStaleLock(deadPid())
 		const release = await acquireCaptureLock(dir, { pollMs: 50 })
 		expect(release).not.toBeNull()
 		// The acquisition wrote its own pid sidecar.
 		expect(readFileSync(pidFile(), "utf-8").trim()).toBe(String(process.pid))
-		await release!()
+		if (!release) throw new Error("expected the dead-holder lock to be stealable")
+		await release()
 		expect(existsSync(pidFile())).toBe(false)
 	})
 
@@ -79,6 +101,7 @@ describe("capture lock — dead-holder break", () => {
 		// Fail-fast: breaks only come from dead pids, so contention returns
 		// immediately — no poll loops (previously up to an hour).
 		expect(Date.now() - started).toBeLessThan(1_000)
-		await first!()
+		if (!first) throw new Error("expected the initial acquisition to succeed")
+		await first()
 	})
 })

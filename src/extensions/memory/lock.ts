@@ -15,12 +15,17 @@
  * for a holder that never wrote a sidecar (a crash between acquire and
  * the sidecar write).
  */
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
 import { CAPTURE_LOCK_STALE_MS, CAPTURE_LOCK_UPDATE_MS } from "./config.js"
 
 const POLL_MS = 5_000
+
+/** Dead-hold signature: a live holder refreshes the lock dir mtime every
+ * CAPTURE_LOCK_UPDATE_MS — an mtime frozen past three update cycles can
+ * only be a dead holder, sidecar or not. */
+const DEAD_MTIME_FREEZE_MS = CAPTURE_LOCK_UPDATE_MS * 3
 
 function isLockConflict(err: unknown): boolean {
 	return (err as { code?: string }).code === "ELOCKED"
@@ -44,18 +49,32 @@ function processAlive(pid: number): boolean {
  * Best-effort break of a lock whose recorded holder is no longer running.
  * Returns true when the lock was broken; any failure (missing sidecar,
  * alive holder, concurrent re-acquire mid-break) leaves the lock alone.
+ *
+ * Sidecar-absent fallback: no pid to liveness-check, but a holder with
+ * update: CAPTURE_LOCK_UPDATE_MS refreshes the dir mtime every cycle —
+ * an mtime frozen past DEAD_MTIME_FREEZE_MS (3 cycles) is a dead hold
+ * (this is how the no-sidecar crash path recovers long before the
+ * 15-min staleness window).
  */
 export function breakIfHolderDead(lockFile: string): boolean {
 	const pidFile = `${lockFile}.pid`
-	if (!existsSync(pidFile)) return false
-	let pid: number
-	try {
-		pid = Number(readFileSync(pidFile, "utf-8").trim())
-	} catch {
-		return false
+	if (!existsSync(pidFile)) {
+		try {
+			const dirMtime = statSync(`${lockFile}.lock`).mtimeMs
+			if (Date.now() - dirMtime < DEAD_MTIME_FREEZE_MS) return false
+		} catch {
+			return false
+		}
+	} else {
+		let pid: number
+		try {
+			pid = Number(readFileSync(pidFile, "utf-8").trim())
+		} catch {
+			return false
+		}
+		if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false
+		if (processAlive(pid)) return false
 	}
-	if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false
-	if (processAlive(pid)) return false
 	// Break by removing the lock DIR directly: proper-lockfile's own
 	// break primitive refuses a lock younger than the stale window, which
 	// is exactly the case we are handling (dead holder, fresh mtime).
