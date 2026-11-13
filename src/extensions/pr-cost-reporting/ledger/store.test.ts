@@ -257,16 +257,20 @@ test("the outbox status aggregate has covering indexes available to every open",
 	expect(LEDGER_ADDITIVE_SCHEMA).toContain(
 		"CREATE INDEX IF NOT EXISTS outbox_batches_by_account ON outbox_batches(account_key, order_key, created_at)",
 	)
+	// The incremental reconcile read filters WHERE imported_at >= ? — at six figures that is a
+	// full-table scan per pass without this index.
+	expect(LEDGER_ADDITIVE_SCHEMA).toContain(
+		"CREATE INDEX IF NOT EXISTS work_records_imported ON work_records(imported_at)",
+	)
 })
 
 test("an existing ledger gains the additive indexes on open (bun driver)", () => {
 	const dir = agentDir()
-	// The driver opens the ledger, drops both covering indexes, reopens it, and reports what the
+	// The driver opens the ledger, drops the additive indexes, reopens it, and reports what the
 	// every-open additive apply restored — a pre-existing ledger behaves identically to a fresh one.
 	const result = driver("schema-check", dir)
-	const indexes = (result.afterReopen as string[]).filter((name) =>
-		["outbox_pending_cover", "outbox_batches_by_account"].includes(name),
-	)
-	expect((result.afterDrop as string[]).some((name) => name === "outbox_pending_cover")).toBe(false)
-	expect(indexes.sort()).toEqual(["outbox_batches_by_account", "outbox_pending_cover"])
+	const expected = ["outbox_batches_by_account", "outbox_pending_cover", "work_records_imported"]
+	const indexes = (result.afterReopen as string[]).filter((name) => expected.includes(name))
+	expect((result.afterDrop as string[]).some((name) => expected.includes(name))).toBe(false)
+	expect(indexes.sort()).toEqual(expected)
 })

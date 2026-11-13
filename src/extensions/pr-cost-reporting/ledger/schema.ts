@@ -122,6 +122,9 @@ export const LEDGER_ADDITIVE_SCHEMA = `
 CREATE INDEX IF NOT EXISTS outbox_pending_cover ON outbox_events(account_key, acked_at, blocked);
 -- Covers the status aggregate's "earliest batch per account" scalar lookup.
 CREATE INDEX IF NOT EXISTS outbox_batches_by_account ON outbox_batches(account_key, order_key, created_at);
+-- The reconcile incremental read filters WHERE imported_at >= ? on the full authority: without this,
+-- every pass scans six-figure row count to extract the few fresh ones.
+CREATE INDEX IF NOT EXISTS work_records_imported ON work_records(imported_at);
 `
 
 /** Meta key. */
