@@ -168,7 +168,9 @@ export class DecisionBreaker {
 	}
 	recordFailure(detail: string, wasProbe = false): void {
 		this.consecutive += 1
-		this.probeInFlight = false
+		// Only the probe HOLDER may clear the slot — a straggler failing
+		// while the real probe is in flight must not admit a second probe.
+		if (wasProbe) this.probeInFlight = false
 		if (!this.open) {
 			if (this.consecutive < this.threshold) return // specimen failures eat the bill silently
 			this.open = true
@@ -310,7 +312,7 @@ export async function decide(
 				request: requestBody,
 				error: `unparseable response body: ${err instanceof Error ? err.message : String(err)}`,
 			})
-			breaker.recordFailure(err instanceof Error ? err.message : String(err))
+			breaker.recordFailure(err instanceof Error ? err.message : String(err), heldProbe)
 			throw err
 		})) as Partial<DecisionResponse>
 		if (typeof body !== "object" || body === null || typeof body.answers !== "object" || body.answers === null) {
