@@ -50,7 +50,7 @@ import { discoveryFailureMessage, fetchSelfHostedEndpoints } from "../../self-ho
 import { GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "../auto-model/constants.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 import { requestStatusIdentityRefresh } from "../status/refresh.js"
-import { isCodexGatewayAvailable } from "./codex-gateway.js"
+import { filterCodexSubscription } from "./codex-gateway.js"
 
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
@@ -1028,10 +1028,7 @@ export function getSubscriptionProviderOptions(
 					return { id, name: provider.name ?? provider.auth.oauth.name ?? id }
 				})
 				.filter((provider): provider is { id: string; name: string } => provider !== undefined)
-	const codexOffered = isCodexGatewayAvailable()
-	return providers
-		.filter((provider) => !isKimchiProvider(provider.id))
-		.filter((provider) => provider.id !== CODEX_PROVIDER_ID || codexOffered)
+	return filterCodexSubscription(providers.filter((provider) => !isKimchiProvider(provider.id)))
 		.map((provider) => ({
 			id: provider.id,
 			name: provider.name,

@@ -12,6 +12,7 @@ import {
 	__clearModelDescriptionsForTest,
 	__clearModelThinkingLevelsForTest,
 	buildModelsConfig,
+	discoverModelsConfig,
 	getModelDescription,
 	getModelLabel,
 	getModelThinkingLevels,
@@ -217,6 +218,27 @@ describe("updateModelsConfig", () => {
 		written = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(written.providers["openai-codex"]).toBeUndefined()
 		expect(written.providers["kimchi-dev"]).toBeDefined()
+	})
+
+	it("keeps an old Codex login's models out of the gateway blocks when the refresh fails", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ models: [KIMI] }) } as Response)
+		await updateModelsConfig(modelsJsonPath, "key", { sleep: async () => {} })
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		// Shape the pre-gateway Codex login wrote: pi's hardcoded models, no feed provider.
+		config.providers["openai-codex"] = {
+			baseUrl: "https://chatgpt.com/backend-api",
+			api: "openai-codex-responses",
+			models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, input: ["text"], contextWindow: 1, maxTokens: 1 }],
+		}
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
+		vi.mocked(fetch).mockRejectedValue(new Error("network down"))
+
+		const result = await discoverModelsConfig(modelsJsonPath, "key", { sleep: async () => {} })
+
+		expect(result.refreshed).toBe(false)
+		expect(result.models.map((m) => m.slug)).not.toContain("gpt-5.4")
+		const blockModels = Object.values(result.providers).flatMap((p) => (p.models ?? []).map((m) => m.id))
+		expect(blockModels).not.toContain("gpt-5.4")
 	})
 
 	it("maps each metadata field into the pi-mono model config", async () => {
@@ -2121,6 +2143,12 @@ describe("chatgpt feed entries", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			thinkingLevels: ["low", "medium", "high"],
 		})
+	})
+
+	it("omits openai-codex for an SSO organization: the gateway takes only an API key next to a ChatGPT login", () => {
+		const { providers } = buildModelsConfig([KIMI, CODEX] as never, "https://gw.example", "org-123")
+		expect(providers["openai-codex"]).toBeUndefined()
+		expect(providers["kimchi-dev/chatgpt"]).toBeUndefined()
 	})
 
 	it("omits openai-codex when the feed has no chatgpt entries", () => {

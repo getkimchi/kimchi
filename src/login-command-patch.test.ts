@@ -26,7 +26,8 @@ vi.mock("@earendil-works/pi-ai/compat", async () => {
 const { codexAvailableMock } = vi.hoisted(() => ({ codexAvailableMock: vi.fn(() => true) }))
 vi.mock("./extensions/login/codex-gateway.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("./extensions/login/codex-gateway.js")>()),
-	isCodexGatewayAvailable: codexAvailableMock,
+	filterCodexSubscription: <T extends { id: string }>(providers: T[]) =>
+		providers.filter((provider) => provider.id !== "openai-codex" || codexAvailableMock()),
 }))
 
 vi.mock("./self-hosted-discovery.js", async (importOriginal) => {

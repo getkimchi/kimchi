@@ -4,9 +4,9 @@ import type { StreamOptions } from "@earendil-works/pi-ai"
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy"
 import { registerApiProvider } from "@earendil-works/pi-ai/compat"
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex"
-import { gatewayAuthHeaders, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
-import { CODEX_PROVIDER_ID } from "../../models.js"
+import { CODEX_PROVIDER_ID, chatCompletionsApi } from "../../models.js"
 import { getVersion } from "../../utils.js"
 
 type CodexProvider = ReturnType<typeof openaiCodexProvider>
@@ -16,11 +16,13 @@ export const KIMCHI_KEY_HEADER = "X-API-Key"
 
 /**
  * True when the model feed listed chatgpt rows (persisted by the models
- * refresh as the `openai-codex` block) and a Kimchi credential is present.
+ * refresh as the `openai-codex` block) and the session uses a Kimchi API key.
+ * The ChatGPT login takes `Authorization`, and the gateway reads `X-API-Key`
+ * only as an API key, so SSO sessions cannot reach it.
  * Gates the "OpenAI Codex" entry under "Use a subscription".
  */
 export function isCodexGatewayAvailable(): boolean {
-	if (resolveGatewayCredentials(loadConfig()).source === "none") return false
+	if (resolveGatewayCredentials(loadConfig()).source !== "api-key") return false
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return false
 	const modelsPath = resolve(agentDir, "models.json")
@@ -35,21 +37,37 @@ export function isCodexGatewayAvailable(): boolean {
 	}
 }
 
-function withGatewayOptions<T extends { headers?: Record<string, string | null> } | undefined>(options: T) {
-	const { token, organizationId } = resolveGatewayCredentials(loadConfig())
-	const kimchiHeaders = token ? { [KIMCHI_KEY_HEADER]: token, ...gatewayOrgHeader(organizationId) } : {}
+/** Drops "OpenAI Codex" from a provider list unless the gateway offers it. */
+export function filterCodexSubscription<T extends { id: string }>(providers: T[]): T[] {
+	const codexOffered = isCodexGatewayAvailable()
+	return providers.filter((provider) => provider.id !== CODEX_PROVIDER_ID || codexOffered)
+}
+
+/**
+ * Gateway options for a Codex request: SSE, the kimchi user agent and the
+ * Kimchi key. Only for a model whose baseUrl is the configured gateway and an
+ * API key session; anything else (e.g. an old Codex login pointing at
+ * chatgpt.com) is left untouched so the Kimchi key never leaves the gateway.
+ */
+export function withGatewayOptions<T extends { headers?: Record<string, string | null> } | undefined>(
+	model: { baseUrl: string },
+	options: T,
+) {
+	const config = loadConfig()
+	const { token, source } = resolveGatewayCredentials(config)
+	if (source !== "api-key" || model.baseUrl !== chatCompletionsApi(config.customLlmEndpoint)) return options
 	// pi's Codex client defaults User-Agent to "pi (...)"; the gateway attributes traffic by `kimchi/<version>`.
 	return {
 		...options,
 		transport: "sse" as const,
-		headers: { "User-Agent": `kimchi/${getVersion()}`, ...options?.headers, ...kimchiHeaders },
+		headers: { "User-Agent": `kimchi/${getVersion()}`, ...options?.headers, [KIMCHI_KEY_HEADER]: token },
 	}
 }
 
 /**
- * Wrap pi's stock Codex Responses client so every request goes over SSE and
- * carries the Kimchi credential in `X-API-Key` next to the ChatGPT Bearer token
- * pi adds itself. The credential is resolved per request so a re-login or key
+ * Wrap pi's stock Codex Responses client so gateway requests go over SSE and
+ * carry the Kimchi key in `X-API-Key` next to the ChatGPT Bearer token pi adds
+ * itself (see withGatewayOptions). The credential is resolved per request so a re-login or key
  * change applies without a restart. Replaces the registry entry for the
  * `openai-codex-responses` api (only the Codex provider uses it).
  */
@@ -58,8 +76,8 @@ export function registerGatewayCodexApi(): void {
 	registerApiProvider<"openai-codex-responses", StreamOptions>(
 		{
 			api: "openai-codex-responses",
-			stream: (model, context, options) => stock.stream(model, context, withGatewayOptions(options)),
-			streamSimple: (model, context, options) => stock.streamSimple(model, context, withGatewayOptions(options)),
+			stream: (model, context, options) => stock.stream(model, context, withGatewayOptions(model, options)),
+			streamSimple: (model, context, options) => stock.streamSimple(model, context, withGatewayOptions(model, options)),
 		},
 		"kimchi-codex-gateway",
 	)
@@ -76,9 +94,4 @@ export function createGatewayCodexProvider(): CodexProvider {
 		getModels: () => [],
 		getAllModels: () => [],
 	}
-}
-
-function gatewayOrgHeader(organizationId: string | undefined): Record<string, string> {
-	const { Authorization: _bearer, ...org } = gatewayAuthHeaders({ token: "x", organizationId })
-	return org
 }

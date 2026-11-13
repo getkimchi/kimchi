@@ -449,7 +449,9 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string, or
 	// login as Bearer) through the gateway; the Kimchi key header is added at
 	// runtime by the login extension. No chatgpt rows means no block, so the
 	// models disappear on refresh while the stored login stays in auth.json.
-	if (chatgptModels.length > 0) {
+	// SSO sessions get no block: the ChatGPT login takes `Authorization`, and
+	// the gateway reads `X-API-Key` only as an API key.
+	if (chatgptModels.length > 0 && !organizationId) {
 		providers[CODEX_PROVIDER_ID] = {
 			baseUrl: chatCompletionsApi(endpoint),
 			api: "openai-codex-responses",
@@ -732,7 +734,12 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 			if (!name.startsWith("kimchi-dev") && name !== CODEX_PROVIDER_ID) continue
 			const models = (provider as { models?: PiModelConfig[] }).models
 			if (!Array.isArray(models) || models.length === 0) continue
-			result.push(...models.map(modelToMetadata))
+			// An `openai-codex` block from the pre-gateway Codex login has no feed
+			// provider on its models; only the gateway feed's chatgpt rows belong here.
+			const metadata = models.map(modelToMetadata)
+			result.push(
+				...(name === CODEX_PROVIDER_ID ? metadata.filter((m) => m.provider === CHATGPT_FEED_PROVIDER) : metadata),
+			)
 		}
 		if (result.length === 0) return undefined
 		return result
