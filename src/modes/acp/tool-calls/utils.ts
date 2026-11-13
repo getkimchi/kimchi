@@ -8,11 +8,7 @@ import type {
 	ToolCallStatus,
 	ToolKind,
 } from "@agentclientprotocol/sdk"
-import {
-	type ProcessDisplaySnapshot,
-	type ProcessRegistry,
-	summarizeCommand,
-} from "../../../extensions/bash-background/process-registry.js"
+import type { ProcessDisplaySnapshot, ProcessRegistry } from "../../../extensions/bash-background/process-registry.js"
 import { asString, truncate } from "../utils.js"
 
 // Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
@@ -131,8 +127,11 @@ export function resolveBashControlWaitInfo(
 	const runningEntries = entries.filter((s) => s.state === "running")
 	const elapsedHead = runningEntries[0] ?? entries[0]
 	return {
+		// Full command, never truncated: ACP clients (Studio) render these
+		// _meta commands verbatim and need the complete text, unlike the
+		// bounded model-facing summaries produced by summarizeCommand.
 		commands: entries.map((s) => ({
-			command: summarizeCommand(s.command, 48),
+			command: s.command,
 			startedAt: new Date(s.startedAt).toISOString(),
 		})),
 		elapsedSeconds: snapshotElapsedSeconds(elapsedHead),
