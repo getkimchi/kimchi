@@ -85,15 +85,16 @@ export function codexCorrelation(sessionId: string): {
  * API key session; anything else (e.g. an old Codex login pointing at
  * chatgpt.com) is left untouched so the Kimchi key never leaves the gateway.
  */
-export function withGatewayOptions<T extends Pick<StreamOptions, "sessionId" | "onPayload" | "headers"> | undefined>(
-	model: { baseUrl: string },
-	options: T,
-) {
+export function withGatewayOptions<
+	T extends Pick<StreamOptions, "sessionId" | "cacheRetention" | "onPayload" | "headers"> | undefined,
+>(model: { baseUrl: string }, options: T) {
 	const config = loadConfig()
 	const { token, source } = resolveGatewayCredentials(config)
 	if (source !== "api-key" || model.baseUrl !== chatCompletionsApi(config.customLlmEndpoint)) return options
 	// pi's Codex client defaults User-Agent to "pi (...)"; the gateway attributes traffic by `kimchi/<version>`.
-	const correlatedSession = resolveCodexSession(options?.sessionId)
+	// pi drops the session id upstream when cacheRetention is "none", so no thread/window data is sent for it.
+	// A compaction request (pi sets "none" with a random id) still maps to the compacting session.
+	const correlatedSession = resolveCodexSession(options?.cacheRetention === "none" ? undefined : options?.sessionId)
 	const correlation = correlatedSession ? codexCorrelation(correlatedSession) : undefined
 	const callerOnPayload = options?.onPayload
 	return {

@@ -223,4 +223,30 @@ describe("withGatewayOptions correlation", () => {
 		expect(headers).not.toHaveProperty("x-codex-turn-metadata")
 		expect(options?.onPayload).toBeUndefined()
 	})
+
+	it("treats cacheRetention none like a missing session id (pi drops it upstream)", () => {
+		startCodexTurn("s1", 0)
+		const options: StreamOptions | undefined = withGatewayOptions(model, { sessionId: "s1", cacheRetention: "none" })
+		const headers = options?.headers as Record<string, string>
+		expect(headers.originator).toBe("kimchi")
+		expect(headers).not.toHaveProperty("thread-id")
+		expect(headers).not.toHaveProperty("x-codex-window-id")
+		expect(headers).not.toHaveProperty("x-codex-turn-metadata")
+		expect(options?.onPayload).toBeUndefined()
+		resetCodexSession("s1")
+	})
+
+	it("still maps a cacheRetention none compaction request to the compacting session", () => {
+		startCodexTurn("s1", 1)
+		beginCodexCompaction("s1")
+		const options: StreamOptions | undefined = withGatewayOptions(model, {
+			sessionId: "random-uuid",
+			cacheRetention: "none",
+		})
+		const headers = options?.headers as Record<string, string>
+		expect(headers["thread-id"]).toBe("s1")
+		expect(JSON.parse(headers["x-codex-turn-metadata"])).toMatchObject({ request_kind: "compaction" })
+		endCodexCompaction("s1", 1)
+		resetCodexSession("s1")
+	})
 })
