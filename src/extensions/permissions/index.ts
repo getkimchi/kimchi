@@ -455,6 +455,33 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 		if (current === "plan" && next.mode !== "plan") {
 			restoreToolsFromPlanMode()
+			// Leaving plan mode must also forget the profile-snapshot state. Do
+			// NOT drop this clear as dead bookkeeping: removal looks safe — the vote
+			// restore above keeps the surface correct for this very turn — but the
+			// failure is delayed. The first MCP keep-alive/tool-metadata resync
+			// (within a minute) calls reapplyCurrentProfile, which re-imposes the
+			// stale read-only "planning-adhoc" profile on the executing session,
+			// stripping edit/write/Agent/MCP permanently — and the symptom reads as
+			// model behavior (the model "prefers" bash heredocs), not as an error,
+			// which is why this survived a month of user reports before diagnosis.
+			// The regression test "leaving plan mode forgets the profile snapshot so
+			// keep-alive resyncs cannot re-impose the plan surface" fails without
+			// it. Only the planning profile is ours to clear: a ferment profile
+			// (e.g. applied mid-turn by activate_ferment_phase under an org-policy
+			// restriction) is owned by the ferment lifecycle and its own re-apply
+			// paths.
+			try {
+				if (ToolProfileManager.getCurrentProfile(pi) === "planning-adhoc") {
+					ToolProfileManager.clearCurrentProfile(pi)
+				}
+			} catch (error) {
+				// The vote restore above still covers this turn, but a failed clear
+				// means the stale planning-adhoc profile persists and the MCP resyncs
+				// will re-impose it — surface that degradation, not just the console.
+				const message = `permissions: failed to clear the plan-mode tool profile — the read-only surface may be re-imposed by MCP resyncs (${error instanceof Error ? error.message : String(error)})`
+				if (ctx.hasUI) ctx.ui.notify(message, "warning")
+				else console.error(message)
+			}
 			activePlanSlug = undefined
 			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		}
@@ -740,6 +767,33 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 
 		changeMode(ctx, current.mode, next, "session_start")
+
+		// Self-heal stale plan/ferment profile recordings. A session that ENDED
+		// while still in plan mode (or during a ferment phase) leaves its profile
+		// recorded — and the plan case also leaves the restricted ACTIVE surface:
+		// the clear in changeMode only runs on the mode-exit transition, which a
+		// session that dies in-plan never takes. If the scope survives in-process
+		// session reuse, the stale read-only profile would be re-imposed on this
+		// session by the MCP resyncs. Plan-mode entry above re-records fresh; a
+		// ferment resume re-applies its own profile; so dropping a planning
+		// recording that does not match this session's live state is always safe.
+		try {
+			const recorded = ToolProfileManager.getCurrentProfile(pi)
+			if (recorded === "planning-adhoc" && getRuntimePermissionMode().mode !== "plan") {
+				// Mirror the exit transition: restore the pre-plan surface through
+				// the same vote mechanism, then forget the recording.
+				restoreToolsFromPlanMode()
+				ToolProfileManager.clearCurrentProfile(pi)
+			} else if (recorded === "planning-ferment" && !hasActiveFerment()) {
+				ToolProfileManager.clearCurrentProfile(pi)
+			}
+		} catch (error) {
+			// A failed self-heal leaves the stale recording in place — surfaced
+			// rather than degrading silently into the resync bug.
+			const message = `permissions: failed to self-heal a stale tool profile at session start (${error instanceof Error ? error.message : String(error)})`
+			if (ctx.hasUI) ctx.ui.notify(message, "warning")
+			else console.error(message)
+		}
 
 		const sessionId = ctx.sessionManager.getSessionId()
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {

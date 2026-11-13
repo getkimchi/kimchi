@@ -375,3 +375,19 @@ export function reapplyCurrentProfile(pi: ExtensionAPI): boolean {
 export function getCurrentProfile(pi: ExtensionAPI): ToolProfile | undefined {
 	return lastProfileByScope.get(getToolSessionScope(pi))
 }
+
+/** Forget the recorded profile-snapshot state for this session's scope.
+ *
+ *  Used when a mode transition abandons the profile machinery in favor of a
+ *  cooperative-vote restore — notably leaving plan mode, which re-enables the
+ *  pre-plan surface via votes. Without this, the recorded profile stays stale
+ *  ("planning-adhoc"), and any later `reapplyCurrentProfile` — the MCP
+ *  adapter's keep-alive/tool-metadata resyncs fire within a minute — would
+ *  re-impose the abandoned profile on the live session, stripping tools the
+ *  restore just brought back. After a clear, those resyncs degrade to
+ *  surface-preserving cooperative tweaks instead. */
+export function clearCurrentProfile(pi: ExtensionAPI): void {
+	const scope = getToolSessionScope(pi)
+	lastProfileByScope.delete(scope)
+	snapshotAppliedByScope.delete(scope)
+}

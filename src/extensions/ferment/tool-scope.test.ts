@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase } from "../../ferment/types.js"
+import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import type { PendingPlanReview } from "./plan-review.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -44,6 +45,26 @@ function buildFerment(phaseStatus: Phase["status"] | undefined): Ferment {
 		updatedAt: new Date().toISOString(),
 	}
 }
+
+describe("profile recording (staleness audit)", () => {
+	it("every ferment transition re-applies and records its profile — no vote-only restores", () => {
+		// The plan-mode exit path once restored tools through cooperative votes
+		// only, leaving a stale recorded profile behind for resyncs to re-impose
+		// (see PR #1739). The ferment layer must never have that asymmetry:
+		// each lifecycle transition records the profile it just applied, so a
+		// later reapplyCurrentProfile can only re-impose a CURRENT surface.
+		const pi = createPi([...PLANNING_TOOL_NAMES], [...PLANNING_TOOL_NAMES, "edit", "write"])
+
+		applyFermentToolProfile(pi, "planning")
+		expect(ToolProfileManager.getCurrentProfile(pi)).toBe("planning-ferment")
+
+		applyFermentToolProfile(pi, "implementation")
+		expect(ToolProfileManager.getCurrentProfile(pi)).toBe("implementation-ferment")
+
+		applyFermentToolProfile(pi, "idle")
+		expect(ToolProfileManager.getCurrentProfile(pi)).toBe("idle")
+	})
+})
 
 describe("profileForFerment", () => {
 	it("returns idle when ferment is undefined", () => {
