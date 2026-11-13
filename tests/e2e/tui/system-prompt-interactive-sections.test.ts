@@ -33,7 +33,8 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			// Selection and the dynamic function declaration.
 			expect(prompt).toContain("Use `codemode` when intermediate output can be filtered before it reaches you")
 			const codemodeDescription = toolDescriptionOf(chat[0], "codemode")
-			expect(codemodeDescription).toContain("Use to filter large output before it reaches the model")
+			// Exactly once: pi's built-in codemode is replaced, not stacked.
+			expect(codemodeDescription?.split("Use to filter large output before it reaches the model")).toHaveLength(2)
 			expect(codemodeDescription).not.toContain("const hits")
 			expect(prompt).not.toContain("Use read to examine files instead of cat or sed.")
 			expect(prompt).not.toContain("Use codemode to batch independent tool calls (Promise.allSettled),")

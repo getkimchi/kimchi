@@ -908,10 +908,13 @@ async function cliMain(): Promise<void> {
 			// extensions/bash-background/session-policy.ts.
 			if (getCliModeArg(rawArgs) === "rpc") setBackgroundRunsPermitted(true)
 			const extensionFactories = [
-				createGuidedCodemodeExtension(),
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
+				// Registers `codemode` with kimchi's selection rule. In TUI/print it
+				// replaces pi's built-in codemode extension (marked replaceable);
+				// ACP sessions load no pi built-ins, so this is their only codemode.
+				createGuidedCodemodeExtension(),
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,
 				backgroundUpdateExtension,
@@ -1094,8 +1097,6 @@ async function cliMain(): Promise<void> {
 			if (IS_ACP_MODE) {
 				const { runAcpMode } = await import("./modes/acp/server.js")
 				await runAcpMode({
-					// ACP creates SDK sessions directly; the same guided codemode
-					// extension in extensionFactories serves every surface.
 					extensionFactories,
 					agentDir,
 					...(mcpAdapterExtensions.length > 0

@@ -14,11 +14,11 @@ export function createGuidedCodemodeExtension(): ExtensionFactory {
 	return (pi) => {
 		const registerTool: ExtensionAPI["registerTool"] = (tool) => {
 			if (tool.name !== "codemode") return pi.registerTool(tool)
-			const prepareLoadout = tool.prepareLoadout
 			pi.registerTool({
 				...tool,
 				prepareLoadout(loadout) {
-					const changes = prepareLoadout?.(loadout)
+					// Called on the original definition so pi's receiver is preserved.
+					const changes = tool.prepareLoadout?.(loadout)
 					const description = changes?.descriptions?.codemode
 					if (!description) return changes
 					return {

@@ -23,7 +23,8 @@ it.each([true, false])(
 			const prompt = systemPromptOf(request)
 			const codemodeDescription = toolDescriptionOf(request, "codemode")
 			if (enabled) {
-				expect(codemodeDescription).toContain("Use to filter large output before it reaches the model")
+				// Exactly once: pi's built-in codemode is replaced, not stacked.
+				expect(codemodeDescription?.split("Use to filter large output before it reaches the model")).toHaveLength(2)
 				expect(codemodeDescription).not.toContain("const hits")
 				expect(codemodeDescription).toContain("Run JavaScript that calls other tools")
 			} else {
