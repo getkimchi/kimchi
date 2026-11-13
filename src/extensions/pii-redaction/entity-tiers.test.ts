@@ -9,6 +9,7 @@ import {
 	isRedactionCategory,
 	listRedactionCatalog,
 	listRegisteredEntities,
+	PERMANENT_ENGINE_EXCLUSIONS,
 	REDACTION_CATEGORIES,
 } from "./entity-tiers.js"
 import { applyCustomPatterns, CUSTOM_PATTERN_NAMES, createRedactionEngine, detectAndCompose } from "./redactor.js"
@@ -70,9 +71,14 @@ describe("entity tier registry", () => {
 	it("every emitted entity type is registered (engine-vocabulary drift guard)", async () => {
 		const engine = createRedactionEngine([])
 		const composed = await detectAndCompose(corpus, engine, new Set())
-		const unknown = [...markerTypesOf(composed)].filter((t) => !isKnownEntity(t))
+		const unknown = [...markerTypesOf(composed)].filter(
+			(t) => !isKnownEntity(t) && !PERMANENT_ENGINE_EXCLUSIONS.includes(t),
+		)
 		// A bulkhead upgrade that introduces a new entity fails here and must
-		// be classified in entity-tiers.ts — never silently shipped.
+		// be classified in entity-tiers.ts — never silently shipped. The
+		// permanently-excluded names are expected here: the engine runs
+		// unfiltered in this fixture, and their bare shapes are exactly what
+		// production never runs.
 		expect(unknown).toEqual([])
 	})
 
@@ -85,10 +91,41 @@ describe("entity tier registry", () => {
 			new URL("../../../node_modules/@bulkhead-ai/core/dist/index.js", import.meta.url),
 			"utf-8",
 		)
-		const inventory = new Set([...dist.matchAll(/secretType:\s*"([A-Z0-9_]+)"/g)].map((m) => m[1]))
-		expect(inventory.size).toBeGreaterThan(100) // extraction still works
-		const unregistered = [...inventory].filter((name) => !isKnownEntity(name))
+		const inventory = new Set([...dist.matchAll(/(?:entityType|secretType):\s*"([A-Z0-9_]+)"/g)].map((m) => m[1]))
+		expect(inventory.size).toBeGreaterThan(150) // extraction still works
+		// Deliberately unregistered engine names — everything else must have a
+		// tier entry. A bulkhead upgrade that adds a detector fails here and
+		// must be classified in entity-tiers.ts — never silently shipped.
+		const DELIBERATELY_UNREGISTERED = new Set([
+			"PROMPT_INJECTION", // disabled injection guard — not a redaction entity
+			"PROMPT_LEAKAGE", // same
+			"TEST_DATA_CREDIT_CARD", // engine's test-data labeling pass, filtered from its own output
+			"TEST_DATA_DATE",
+			"TEST_DATA_EMAIL",
+			"TEST_DATA_GUID",
+			"TEST_DATA_PHONE",
+			"TEST_DATA_SEQUENTIAL",
+			"TEST_DATA_SSN",
+			"GUID", // removed: structural identifiers, redacting session/ferment IDs breaks flows
+			"DATE_TIME", // removed: log/build chatter, not PII
+			"UK_POSTCODE", // removed: shape-only postal code, too low-value as a redaction choice
+			"URL", // removed: any-URL bare shape never fires; credentialed forms covered by URL_WITH_CREDENTIALS customs
+			"MONGODB_SRV", // removed: same — scheme-agnostic Mongo bare shape
+			"ELASTICSEARCH_URL", // removed: same — credential-bearing shape already a subset of the customs
+			"FIREBASE_URL", // removed: bare shape carries no credentials at all
+			"CRATES_IO_TOKEN", // removed: measured 0% precision on production transcripts
+			"NUGET_KEY", // removed: same
+			"AIRTABLE_KEY", // removed: public-shaped key with ~3% measured precision
+			"TWILIO_ACCOUNT_SID", // removed: public identifier, not a secret
+			"CLERK_PUBLISHABLE_KEY", // removed: public-by-design client key
+		])
+		const unregistered = [...inventory].filter((name) => !isKnownEntity(name) && !DELIBERATELY_UNREGISTERED.has(name))
 		expect(unregistered).toEqual([])
+		// And the allowlist stays honest: every name on it really is absent
+		// from the registry, or the pins above silently stop testing anything.
+		for (const name of DELIBERATELY_UNREGISTERED) {
+			expect(isKnownEntity(name), name).toBe(false)
+		}
 	})
 
 	it("with default exclusions, only checksum/anchored tiers emit at engine level", async () => {
@@ -101,10 +138,11 @@ describe("entity tier registry", () => {
 		const leaked = [...markerTypesOf(composed)].filter((t) => {
 			const tier = getEntityTier(t)
 			if (tier !== "bare_shape" && tier !== "anchor_required") return false
-			// BARE_SHAPE_KEPT names are shape-precise exceptions deliberately
-			// left on at engine level (dotted quads and MAC addresses do not
+			// BARE_SHAPE_KEPT names are shape-based exceptions deliberately
+			// left on at engine level (dotted quads, MAC addresses, and email
+			// shapes with their own non-identifying filter upstream do not
 			// collide with common text).
-			return !(t === "IP_ADDRESS" || t === "MAC_ADDRESS")
+			return !(t === "IP_ADDRESS" || t === "MAC_ADDRESS" || t === "EMAIL_ADDRESS")
 		})
 		expect(leaked).toEqual([])
 		// Custom markers (post-pass) are all registered — anchored re-additions
@@ -132,7 +170,7 @@ describe("entity tier registry", () => {
 		}
 	})
 
-	it("every registered entity except GUID has exactly one category; every category member is registered", () => {
+	it("every registered entity has exactly one category; every category member is registered", () => {
 		const catalog = listRedactionCatalog()
 		expect(catalog.length).toBeGreaterThan(100)
 		// Reverse direction too: a future tier-array addition forgotten in
@@ -140,7 +178,6 @@ describe("entity tier registry", () => {
 		// non-configurable (local toggle throws, telemetry attributes "custom").
 		const cataloged = new Set(catalog.map((e) => e.entity))
 		for (const name of listRegisteredEntities()) {
-			if (name === "GUID") continue
 			expect(cataloged.has(name), `${name} is registered but has no category entry`).toBe(true)
 		}
 		// Sorted by entity name (stable wire for the console), no duplicates.
@@ -156,10 +193,21 @@ describe("entity tier registry", () => {
 			expect(getEntityCategory(entry.entity)).toBe(entry.category)
 			expect(getEntityDefaultOn(entry.entity)).toBe(entry.defaultOn)
 		}
-		// GUID is never configurable: not in the catalog, no category.
-		expect(catalog.some((e) => e.entity === "GUID")).toBe(false)
-		expect(getEntityCategory("GUID")).toBeUndefined()
-		expect(getEntityDefaultOn("GUID")).toBe(false)
+		// GUID and DATE_TIME were removed from the registry entirely (the
+		// UK_POSTCODE treatment): not configurable, not detected, names free
+		// for user-defined custom entities, engine shapes suppressed via
+		// PERMANENT_ENGINE_EXCLUSIONS.
+		for (const removed of ["GUID", "DATE_TIME"]) {
+			expect(
+				catalog.some((e) => e.entity === removed),
+				removed,
+			).toBe(false)
+			expect(getEntityCategory(removed), removed).toBeUndefined()
+			expect(getEntityDefaultOn(removed), removed).toBe(false)
+			expect(isKnownEntity(removed), removed).toBe(false)
+			expect(listRegisteredEntities(), removed).not.toContain(removed)
+			expect(PERMANENT_ENGINE_EXCLUSIONS, removed).toContain(removed)
+		}
 		// Nine categories, all populated.
 		expect(REDACTION_CATEGORIES).toHaveLength(9)
 		for (const category of REDACTION_CATEGORIES) {
@@ -190,15 +238,11 @@ describe("entity tier registry", () => {
 		// Default-off: bare shapes, inert anchor-required entities.
 		for (const name of [
 			"PHONE_NUMBER",
-			"DATE_TIME",
 			"US_SSN",
 			"CRYPTO",
 			"PERSON",
 			"LOCATION",
 			"ORGANIZATION",
-			"URL",
-			"ELASTICSEARCH_URL",
-			"MONGODB_SRV",
 			"ABA_ROUTING_NUMBER",
 		]) {
 			expect(getEntityDefaultOn(name), name).toBe(false)
@@ -212,10 +256,24 @@ describe("entity tier registry", () => {
 		expect(getEntityCategory("US_SSN")).toBe("identity_documents")
 		expect(getEntityCategory("US_NPI")).toBe("identity_documents")
 		expect(getEntityCategory("PERSON")).toBe("personal_details")
-		expect(getEntityCategory("UK_POSTCODE")).toBe("personal_details")
 		expect(getEntityCategory("URL_WITH_CREDENTIALS")).toBe("credentialed_urls")
 		expect(getEntityCategory("GITHUB_TOKEN")).toBe("secrets")
-		expect(getEntityCategory("AZURE_CONNECTION_STRING")).toBe("secrets")
+		expect(getEntityCategory("AZURE_CONNECTION_STRING")).toBe("credentialed_urls")
+		expect(getEntityCategory("SLACK_WEBHOOK")).toBe("credentialed_urls")
+		expect(getEntityCategory("SENTRY_DSN")).toBe("credentialed_urls")
+		// Removed from the registry entirely — see the removed-names block.
+		for (const removed of [
+			"GUID",
+			"DATE_TIME",
+			"UK_POSTCODE",
+			"URL",
+			"CRATES_IO_TOKEN",
+			"AIRTABLE_KEY",
+			"TWILIO_ACCOUNT_SID",
+			"CLERK_PUBLISHABLE_KEY",
+		]) {
+			expect(getEntityCategory(removed), removed).toBeUndefined()
+		}
 	})
 
 	it("covers every entity the bundled engine can emit today", async () => {
@@ -225,12 +283,11 @@ describe("entity tier registry", () => {
 		for (const entity of [
 			"AZURE_STORAGE_KEY",
 			"DATABASE_CONNECTION_STRING",
-			"ELASTICSEARCH_URL",
-			"FIREBASE_URL",
-			"MONGODB_SRV",
 			"BASIC_AUTH",
 			"DOCKER_REGISTRY_AUTH",
 			"GENERIC_SECRET",
+			"TELEGRAM_BOT_TOKEN",
+			"OKTA_TOKEN",
 			"LOCATION",
 			"PERSON",
 			"ORGANIZATION",
@@ -250,6 +307,92 @@ describe("entity tier registry", () => {
 			"URL_WITH_CREDENTIALS",
 		]) {
 			expect(isKnownEntity(entity), entity).toBe(true)
+		}
+	})
+
+	it("liveState classifies every entity's engine-side disposition", () => {
+		const catalog = listRedactionCatalog()
+		expect(catalog.length).toBeGreaterThan(200)
+		// Every entry carries a valid liveState.
+		for (const entry of catalog) {
+			expect(["active", "alias_of", "no_matcher"], entry.entity).toContain(entry.liveState)
+			expect(entry.aliasOf, entry.entity).toBeUndefined()
+		}
+		// Pinned dispositions — the meanings "defaultOn: false" used to collapse.
+		const byName = new Map(catalog.map((e) => [e.entity, e]))
+		// Policy-off, matcher live: flipping on is a meaningful choice.
+		expect(byName.get("PHONE_NUMBER")?.liveState).toBe("active")
+		expect(byName.get("PERSON")?.liveState).toBe("active")
+		// Removed names: no catalog row at all — not dead toggles, gone from
+		// the registry like UK_POSTCODE (suppressed via PERMANENT_ENGINE_EXCLUSIONS).
+		for (const name of [
+			"URL",
+			"MONGODB_SRV",
+			"ELASTICSEARCH_URL",
+			"FIREBASE_URL",
+			"CRATES_IO_TOKEN",
+			"NUGET_KEY",
+			"AIRTABLE_KEY", // public-shaped key[14] with measured ~3% precision
+			"TWILIO_ACCOUNT_SID", // public identifier, not a secret
+			"CLERK_PUBLISHABLE_KEY", // public-by-design client key
+		]) {
+			expect(byName.has(name), name).toBe(false)
+			expect(isKnownEntity(name), name).toBe(false)
+			expect(PERMANENT_ENGINE_EXCLUSIONS, name).toContain(name)
+		}
+		// Chunk-5 promotions: these now have their own anchored customs.
+		expect(byName.get("AZURE_CONNECTION_STRING")?.liveState).toBe("active")
+		expect(byName.get("DATABASE_CONNECTION_STRING")?.liveState).toBe("active")
+		// Re-tiered from bare_shape: their keyword-anchored customs carry
+		// coverage, so explicit ON must not un-exclude the noisy bare shapes.
+		expect(byName.get("TELEGRAM_BOT_TOKEN")?.tier).toBe("anchor_required")
+		expect(byName.get("OKTA_TOKEN")?.tier).toBe("anchor_required")
+		expect(byName.get("SUPABASE_KEY")?.tier).toBe("anchor_required")
+		expect(byName.get("SUPABASE_KEY")?.defaultOn).toBe(true)
+	})
+
+	it("the published generator output contains only actionable rows", async () => {
+		// scripts/redaction-catalog.ts publishes liveState === "active" only: dead
+		// toggles (no_matcher: nothing fires; alias_of: policy ON cannot activate
+		// the bare shape post-#1699 — anchor_required ON runs anchored customs,
+		// and none exist under the alias names) are worse than missing rows for
+		// policy-UI consumers. The registry keeps those entities (drift test,
+		// settings validation); only the published contract drops them.
+		const { execFileSync } = await import("node:child_process")
+		const { fileURLToPath } = await import("node:url")
+		const { join, dirname } = await import("node:path")
+		const here = dirname(fileURLToPath(import.meta.url))
+		const script = join(here, "..", "..", "..", "scripts", "redaction-catalog.ts")
+		const out = execFileSync("bun", [script], { encoding: "utf8" })
+		const published = JSON.parse(out) as Array<{ entity: string; liveState: string }>
+		expect(published.length).toBe(listRedactionCatalog().filter((e) => e.liveState === "active").length)
+		for (const entry of published) {
+			expect(entry.liveState, entry.entity).toBe("active")
+		}
+		const names = published.map((e) => e.entity)
+		// Removed from the registry entirely (UK_POSTCODE treatment): these must
+		// never resurface as published rows.
+		for (const removed of [
+			"CRATES_IO_TOKEN",
+			"NUGET_KEY",
+			"URL",
+			"MONGODB_SRV",
+			"ELASTICSEARCH_URL",
+			"FIREBASE_URL",
+			"UK_POSTCODE",
+		]) {
+			expect(names, removed).not.toContain(removed)
+		}
+		// The general credentialed-URL marker that owns URL-family coverage stays.
+		expect(names).toContain("URL_WITH_CREDENTIALS")
+	})
+
+	it("every active anchor_required entity has a custom pattern (liveState drift guard)", async () => {
+		const { CUSTOM_PATTERN_NAMES } = await import("./redactor.js")
+		const customs = new Set(CUSTOM_PATTERN_NAMES)
+		for (const entry of listRedactionCatalog()) {
+			if (entry.tier !== "anchor_required" || entry.liveState !== "active") continue
+			expect(customs.has(entry.entity), entry.entity).toBe(true)
 		}
 	})
 })

@@ -44,6 +44,7 @@ import {
 	isKnownEntity,
 	isRedactionCategory,
 	listRedactionCatalog,
+	PERMANENT_ENGINE_EXCLUSIONS,
 	type RedactionCategory,
 } from "./entity-tiers.js"
 
@@ -450,7 +451,9 @@ function resolveRedactionPolicyUncached(managed?: RedactionPolicy, local?: Local
 	let engineExclusions: string[]
 	const disabled = new Set<string>()
 	if (legacy !== undefined) {
-		engineExclusions = [...legacy]
+		// The legacy list replaces the tier-driven baseline wholesale — except
+		// PERMANENT_ENGINE_EXCLUSIONS, which no path may un-exclude.
+		engineExclusions = [...new Set([...legacy, ...PERMANENT_ENGINE_EXCLUSIONS])]
 		for (const name of legacy) disabled.add(name)
 	} else {
 		engineExclusions = getDefaultExcludedEntities()
@@ -511,7 +514,11 @@ export function parseLegacyExcludedEntities(raw: unknown): string[] {
 		throw new Error('settings.json "redaction.excludedEntities" must be an array of strings')
 	}
 	for (const name of raw as string[]) {
-		if (!isKnownEntity(name)) {
+		// PERMANENT_ENGINE_EXCLUSIONS names describe real engine detectors we
+		// suppress (UK_POSTCODE has no registry entry — it was removed from the
+		// product), so they are valid things to keep off; users copying the
+		// default exclusion list into settings must not hit "unknown entity".
+		if (!isKnownEntity(name) && !PERMANENT_ENGINE_EXCLUSIONS.includes(name)) {
 			throw new Error(`settings.json "redaction.excludedEntities": unknown entity "${name}"`)
 		}
 	}

@@ -352,10 +352,7 @@ export function isNonIdentifyingDetection(entityType: string, span: string): boo
  */
 const BASE64_SHADOW_ENTITIES: ReadonlySet<string> = new Set([
 	"FACEBOOK_TOKEN",
-	"AIRTABLE_KEY",
 	"TWITTER_BEARER_TOKEN",
-	"CRATES_IO_TOKEN",
-	"NUGET_KEY",
 	"SQUARE_ACCESS_TOKEN",
 	"ALIBABA_CLOUD_KEY",
 	"GCP_API_KEY",
@@ -672,6 +669,16 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	{
 		name: "OKTA_TOKEN",
 		regex: /(okta(?:_api)?_token\s*[:=]\s*["']?)([A-Za-z0-9_-]{40,44})/gi,
+		secretGroup: 2,
+	},
+	// Supabase secret keys only. The engine detector fires on
+	// SUPABASE_ANON_KEY too — public-by-design browser keys — so it stays
+	// excluded and this keyword-anchored custom carries the coverage:
+	// SUPABASE_KEY / SUPABASE_SERVICE_KEY assignments (eyJ… 100+ JWT), never
+	// the anon key.
+	{
+		name: "SUPABASE_KEY",
+		regex: /((?:supabase(?:_service)?_key)\s*[:=]\s*["']?)(eyJ[A-Za-z0-9_-]{100,})/gi,
 		secretGroup: 2,
 	},
 	// Keyword-anchored free-text secrets: `password: …`, `secret = …`,

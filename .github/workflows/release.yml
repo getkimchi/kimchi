@@ -102,6 +102,14 @@ jobs:
         if: ${{ matrix.os == 'windows' }}
         run: node scripts/set-version.js $env:RELEASE_VERSION
 
+      # The redaction catalog is generated once per release (not per target)
+      # and attached to the GitHub release as redaction-catalog.json — the
+      # ai-enabler-console fetches it from there to regenerate its policy-UI
+      # constants. Generated from this tagged tree only; never committed.
+      - name: Generate redaction catalog
+        if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
+        run: bun scripts/redaction-catalog.ts > redaction-catalog.json
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: tools/proxy-helper/go.mod
@@ -235,6 +243,13 @@ jobs:
           name: kimchi_${{ matrix.os }}_${{ matrix.arch }}
           path: kimchi_${{ matrix.os }}_${{ matrix.arch }}.*
 
+      - name: Upload redaction catalog artifact
+        if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: redaction_catalog
+          path: redaction-catalog.json
+
   smoke-test:
     needs: [build]
     runs-on: ubuntu-latest
@@ -288,6 +303,7 @@ jobs:
             artifacts/kimchi_*.tar.gz
             artifacts/kimchi_*.zip
             artifacts/checksums.txt
+            artifacts/redaction-catalog.json
             scripts/install.sh
             scripts/install.ps1
           generate_release_notes: true

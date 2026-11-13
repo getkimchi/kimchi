@@ -7,7 +7,7 @@ import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { getResourceSettingsPath, setResourceOverride } from "../../resources/store.js"
 import { getRedactionConfig } from "./config.js"
-import { getDefaultExcludedEntities } from "./entity-tiers.js"
+import { getDefaultExcludedEntities, PERMANENT_ENGINE_EXCLUSIONS } from "./entity-tiers.js"
 import {
 	applyCustomPatterns,
 	collectDetections,
@@ -614,10 +614,10 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 		expect(config.resolved.customPatterns).toEqual([])
 	})
 
-	it("a present array replaces the defaults wholesale (raw list preserved)", () => {
+	it("a present array replaces the defaults wholesale — except permanently-excluded names", () => {
 		writeSettings({ excludedEntities: ["GUID"] })
 		const config = getRedactionConfig()
-		expect(config.resolved.engineExclusions).toEqual(["GUID"])
+		expect(config.resolved.engineExclusions).toEqual([...PERMANENT_ENGINE_EXCLUSIONS].sort())
 		expect(config.resolved.disabledEntities).toEqual(new Set(["GUID"]))
 	})
 
@@ -772,6 +772,18 @@ describe("anchored splice and re-additions — review regressions", () => {
 		expect(anchored).not.toContain(okta(44))
 		expect(anchored).toContain("[REDACTED-TELEGRAM_BOT_TOKEN]")
 		expect(anchored.split("[REDACTED-OKTA_TOKEN]").length - 1).toBe(3)
+	})
+
+	it("re-adds SUPABASE_KEY behind secret keywords only, never the public anon key", async () => {
+		const jwt = (n: number) => ["eyJ", "a".repeat(n)].join("")
+		// The public-by-design anon key must survive untouched.
+		const anon = ["NEXT_PUBLIC_SUPABASE_ANON_KEY=", jwt(120)].join("")
+		expect(await redactText(anon)).toBe(anon)
+		// Secret-key spellings redact behind their keyword.
+		const secret = await redactText(["SUPABASE_KEY=", jwt(120), " supabase_service_key: ", jwt(110)].join(""))
+		expect(secret).not.toContain(jwt(120))
+		expect(secret).not.toContain(jwt(110))
+		expect(secret.split("[REDACTED-SUPABASE_KEY]").length - 1).toBe(2)
 	})
 
 	it("catches credential query parameters across separators and names", async () => {
@@ -1275,10 +1287,7 @@ describe("base64-shadow suppression", () => {
 
 	it.each([
 		"FACEBOOK_TOKEN",
-		"AIRTABLE_KEY",
 		"TWITTER_BEARER_TOKEN",
-		"CRATES_IO_TOKEN",
-		"NUGET_KEY",
 		"SQUARE_ACCESS_TOKEN",
 		"ALIBABA_CLOUD_KEY",
 		"GCP_API_KEY",
@@ -1591,11 +1600,13 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 	// Real-session shape: base64 of an ordinary PNG happened to contain a run
 	// matching an api-key pattern. Replacing it corrupted the image,
 	// and the provider rejected every later turn with a 400.
-	// tokenShaped: redactable fixture (Airtable shape) for the "still scans" cases.
+	// tokenShaped: redactable fixture (Anthropic sk-ant shape) for the "still
+	// scans" cases — default-on, so the fixture asserts pipeline behavior, not
+	// an opt-in entity (Airtable was demoted to opt-in at measured ~3% precision).
 	// blobTokenShaped: crates.io shape — anchor-required (never fires) since the
 	// byte-identical cases assert the payload bypass, not entity detection; the
 	// pure-base64-alphabet shape keeps payload alignment semantics intact.
-	const tokenShaped = ["key", "aB3dE6gH9jK2mN"].join("")
+	const tokenShaped = ["sk-ant-", "aB3dE6gH9jK2mN"].join("")
 	const blobTokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
 	const base64 = `iVBORw0KGgoA/+${blobTokenShaped}/+AAAAElFTkSuQmCC==`
 	const fromBytes = (head: string) =>
@@ -1640,10 +1651,10 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 		["non-image data URL", { image_url: { url: `data:text/plain;base64,${tokenShaped}` } }],
 		["bare secret labelled as an image", { mimeType: "image/png", data: tokenShaped }],
 		["bare secret with an empty image subtype", { mimeType: "image/", data: tokenShaped }],
-		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo${tokenShaped}A` }],
+		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo ${tokenShaped}A` }],
 		["image data URL whose bytes are not an image", { image_url: { url: `data:image/png;base64,${tokenShaped}A` } }],
 	])("still scans %s", async (_name, block) => {
-		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-AIRTABLE_KEY]")
+		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-ANTHROPIC_KEY]")
 	})
 
 	it.each([
