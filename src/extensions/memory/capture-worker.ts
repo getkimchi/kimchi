@@ -1514,7 +1514,8 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		const watchdog = setTimeout(() => abort.abort(new DrainWatchdogError(budget)), budget)
 		try {
 			const pendingDir = join(defaultMemoryDir(), "pending")
-			const pendingNames = (): Set<string> => new Set(existsSync(pendingDir) ? readdirSync(pendingDir).filter((n) => n.endsWith(".json")) : [])
+			const pendingNames = (): Set<string> =>
+				new Set(existsSync(pendingDir) ? readdirSync(pendingDir).filter((n) => n.endsWith(".json")) : [])
 			const seen = pendingNames() // pre-drain: anything appearing LATER is fresh
 			let captured = await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal, trace })
 			// Re-list: job files written WHILE this drain ran (mid-loop

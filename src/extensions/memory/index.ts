@@ -58,12 +58,12 @@ import { createMemoryBackend, memoryDbPath } from "./backend.js"
 import { messageText, readCaptureSessionSaved, wireMemoryCapture } from "./capture.js"
 import {
 	DIGEST_SCORE_THRESHOLD,
+	loopContextTurns,
 	MEMORY_PRE_REQUEST_TIMEOUT_MS,
 	MEMORY_SEARCH_TIMEOUT_MS,
 	MEMORY_STEP_ENV_RECEIPT_KEEP_CHARS,
 	MEMORY_USER_ID,
 	stateFingerprintCap,
-	loopContextTurns,
 	stepRecallInterval,
 	TURN_RECALL_QUERY_MAX_CHARS,
 	TURN_RECALL_RESPONSE_CHARS,

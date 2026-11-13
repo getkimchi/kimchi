@@ -980,6 +980,13 @@ async function opReset(
 			code: 1,
 		})
 	}
+	if (outcome.reason === "busy") {
+		return result({
+			text: "A capture drain is currently running — retry shortly.",
+			data: { error: "busy" },
+			code: 1,
+		})
+	}
 	return {
 		text: "error: reset requires --yes or an interactive confirmation",
 		json: JSON.stringify({ error: "confirmation required" }, null, 2),
@@ -1022,6 +1029,15 @@ async function opConsolidate(
 	if (stores.length === 0) {
 		return result({ text: "No memory stores in this scope — nothing to consolidate.", data: { scans: [] } })
 	}
+	// Busy probe BEFORE the classification batch — a running drain would
+	// fail the mutation acquire below anyway; checking now avoids burning
+	// the multi-minute d3 classification for nothing. Not held across the
+	// classification: classification is read-only against the stores.
+	const probe = await deps.acquireLock(deps.memoryRoot)
+	if (probe === null) {
+		return result({ text: "A capture drain is currently running — retry shortly.", data: { error: "busy" }, code: 1 })
+	}
+	await probe()
 	const lines: string[] = []
 	const deletions: ConsolidateDeletion[] = []
 	const scans: Array<Record<string, unknown>> = []

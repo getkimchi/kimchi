@@ -207,7 +207,9 @@ export function buildLoopRecallQuery(
 	envReceipts: readonly string[],
 	recentTurns: readonly string[] = [],
 ): string {
-	return buildLoopRecallQueries(reasoningText, envReceipts, recentTurns).join("\n").slice(0, MEMORY_STEP_QUERY_MAX_CHARS)
+	return buildLoopRecallQueries(reasoningText, envReceipts, recentTurns)
+		.join("\n")
+		.slice(0, MEMORY_STEP_QUERY_MAX_CHARS)
 }
 
 // Volatile counters: a counter keyword followed only by counter phrasing

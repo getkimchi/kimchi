@@ -236,7 +236,7 @@ describe("buildTurnRecall (progressive-recall value gate)", () => {
 		// 0.5 to 0.495 spans are all within tie epsilon of the cap score;
 		// candidates at 0.30 are far below and count as overflow.
 		const hits = [
-			...([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5].map((score, i) => ({ memory: `tied ${i}`, score }))),
+			...[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5].map((score, i) => ({ memory: `tied ${i}`, score })),
 			{ memory: "distant loser", score: 0.3 },
 		]
 		const recall = buildTurnRecall(hits, new Set(), "")

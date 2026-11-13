@@ -1703,7 +1703,10 @@ describe("mid-loop recall (step-budget trigger)", () => {
 		const { start } = rig
 		const tri = getToolResultHandler(rig)
 		const assistant = (text: string) =>
-			({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } }) as unknown as SessionEntry
+			({
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text }] },
+			}) as unknown as SessionEntry
 		const user = (text: string) =>
 			({ type: "message", message: { role: "user", content: [{ type: "text", text }] } }) as unknown as SessionEntry
 		const entries = [
