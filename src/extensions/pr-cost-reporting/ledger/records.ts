@@ -286,6 +286,7 @@ async function readRecordPrefixAsync<T>(
 	agentDir: string,
 	checkBudget: () => void,
 	project: (row: StoredRecord) => T | undefined,
+	stretch: () => Promise<void> = () => setImmediate(),
 ): Promise<T[]> {
 	checkBudget()
 	const backend = backendFor(agentDir)
@@ -293,7 +294,7 @@ async function readRecordPrefixAsync<T>(
 	const records: T[] = []
 	let after = 0
 	while (after < through) {
-		await setImmediate()
+		await stretch()
 		checkBudget()
 		const page = backend.readRecordPage(after, through, 128, checkBudget)
 		if (!page.length) break
@@ -309,19 +310,32 @@ async function readRecordPrefixAsync<T>(
 }
 
 /** Retain original capture/import hashes for atomic translation; never hash the reserialized body instead. */
-export function readStoredRecordsAsync(agentDir: string, checkBudget: () => void): Promise<StoredRecord[]> {
-	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row)
+export function readStoredRecordsAsync(
+	agentDir: string,
+	checkBudget: () => void,
+	stretch?: () => Promise<void>,
+): Promise<StoredRecord[]> {
+	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row, stretch)
 }
 
-export function readRecordsAsync(agentDir: string, checkBudget: () => void): Promise<WorkRecord[]> {
-	return readRecordPrefixAsync(agentDir, checkBudget, (row) => {
-		try {
-			return JSON.parse(row.body) as WorkRecord
-		} catch {
-			// Match the synchronous reader's damaged-body behavior.
-			return undefined
-		}
-	})
+export function readRecordsAsync(
+	agentDir: string,
+	checkBudget: () => void,
+	stretch?: () => Promise<void>,
+): Promise<WorkRecord[]> {
+	return readRecordPrefixAsync(
+		agentDir,
+		checkBudget,
+		(row) => {
+			try {
+				return JSON.parse(row.body) as WorkRecord
+			} catch {
+				// Match the synchronous reader's damaged-body behavior.
+				return undefined
+			}
+		},
+		stretch,
+	)
 }
 
 /** Changes whenever new records exist; capture-skip logic only needs that much honesty. */

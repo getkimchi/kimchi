@@ -18,6 +18,7 @@ import {
 	correctWorkLink,
 	pinWorkContinuation,
 	readContinuationHistory,
+	readContinuationHistoryAsync,
 	reconcileWorkContinuations,
 	requestWorkLinks,
 } from "./links.js"
@@ -572,7 +573,7 @@ it.each(["active", "revoked"])("never replaces an existing %s correction", async
 it("does not use a partial ledger scan and retries the complete scan later", async () => {
 	acceptedContinuation()
 	await flushWorkSummaries()
-	const failure = vi.spyOn(backendFor(dir), "readRecords").mockImplementationOnce(() => {
+	const failure = vi.spyOn(backendFor(dir), "readRecordPage").mockImplementationOnce(() => {
 		throw new Error("Could not read work ledger: Denied")
 	})
 	await expect(repair()).rejects.toThrow("Could not read work ledger")
@@ -782,10 +783,10 @@ it("abandons an over-budget source scan before writing and retries it later", as
 	let now = 0
 	vi.spyOn(Date, "now").mockImplementation(() => now)
 	const backend = backendFor(dir)
-	const read = backend.readRecords.bind(backend)
-	const slow = vi.spyOn(backend, "readRecords").mockImplementation((options, checkBudget) => {
+	const read = backend.readRecordPage.bind(backend)
+	const slow = vi.spyOn(backend, "readRecordPage").mockImplementation((after, through, limit, checkBudget) => {
 		now += 4000
-		return read(options, checkBudget)
+		return read(after, through, limit, checkBudget)
 	})
 	await expect(repair()).rejects.toThrow("time limit")
 	slow.mockRestore()
@@ -840,12 +841,12 @@ it("reads ledger history once and no retained plan in a full pass over confirmed
 	await flushWorkSummaries()
 	const backend = backendFor(dir)
 	const count = backend.recordCount()
-	const history = vi.spyOn(backend, "readRecords")
+	const history = vi.spyOn(backend, "readRecordPage")
 	const read = vi.spyOn(fs, "readFileSync")
-	// A restarted process has no progress, so it reads the whole authority once.
+	// A restarted process has no progress, so it reads the whole authority once, paged and from position zero.
 	await repair()
-	expect(history).toHaveBeenCalledTimes(1)
-	expect(history.mock.results[0].value).toHaveLength(count)
+	expect(history.mock.calls[0][0]).toBe(0)
+	expect(history.mock.results.flatMap((result) => result.value as unknown[])).toHaveLength(count)
 	expect(read.mock.calls.map(([path]) => String(path)).filter((path) => path.endsWith(".md"))).toEqual([])
 	expect(links()).toHaveLength(30)
 })
@@ -856,10 +857,14 @@ it("skips unchanged history after a pass that examined every receipt without wri
 	const progress = {}
 	await repair(progress)
 	expect(links()).toEqual([])
-	const read = vi.spyOn(backendFor(dir), "readRecords")
+	const read = vi.spyOn(backendFor(dir), "readRecordPage")
+	const windowed = vi.spyOn(backendFor(dir), "readRecords")
 	await repair(progress)
+	// A settled pass performs no ledger read at all — neither the paged rebuild walk nor a windowed increment.
 	expect(read).not.toHaveBeenCalled()
+	expect(windowed).not.toHaveBeenCalled()
 	read.mockRestore()
+	windowed.mockRestore()
 	// A newly available producer changes the authority fingerprint and makes the receipt eligible again.
 	capture(dir, flow.originRecord, attribution.workLedgerPath(flow.ctx))
 	await repair(progress)
@@ -879,10 +884,14 @@ it("does not retry plan receipts saved without an acceptance hash, so their hist
 	await flushWorkSummaries()
 	const progress = {}
 	await repair(progress)
-	const read = vi.spyOn(backendFor(dir), "readRecords")
+	const read = vi.spyOn(backendFor(dir), "readRecordPage")
+	const windowed = vi.spyOn(backendFor(dir), "readRecords")
 	await repair(progress)
+	// A settled pass performs no ledger read at all — neither the paged rebuild walk nor a windowed increment.
 	expect(read).not.toHaveBeenCalled()
+	expect(windowed).not.toHaveBeenCalled()
 	read.mockRestore()
+	windowed.mockRestore()
 	expect(links()).toEqual([])
 })
 
@@ -898,10 +907,14 @@ it("lets receipts that can never link drop out, so passes over more than 25 of t
 	const progress = {}
 	await repair(progress)
 	await repair(progress)
-	const read = vi.spyOn(backendFor(dir), "readRecords")
+	const read = vi.spyOn(backendFor(dir), "readRecordPage")
+	const windowed = vi.spyOn(backendFor(dir), "readRecords")
 	await repair(progress)
+	// A settled pass performs no ledger read at all — neither the paged rebuild walk nor a windowed increment.
 	expect(read).not.toHaveBeenCalled()
+	expect(windowed).not.toHaveBeenCalled()
 	read.mockRestore()
+	windowed.mockRestore()
 	expect(links()).toHaveLength(26)
 })
 
@@ -913,15 +926,20 @@ it("reads only new records between passes while linkable work remains, not the w
 	const progress = {}
 	await repair(progress)
 	const backend = backendFor(dir)
-	const original = backend.readRecords.bind(backend)
-	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	const original = backend.readRecordPage.bind(backend)
+	const read = vi.spyOn(backend, "readRecordPage").mockImplementation((...args) => original(...args))
+	const windowed = vi.spyOn(backend, "readRecords")
 	await repair(progress)
 	await repair(progress)
 	const calls = read.mock.calls
-	const fullReads = calls.filter(([query]) => query?.modifiedSince === undefined)
+	const windowedCalls = windowed.mock.calls
 	read.mockRestore()
-	expect(calls.length).toBeGreaterThan(0)
-	expect(fullReads).toHaveLength(0)
+	windowed.mockRestore()
+	// Incremental ledger reads never touch the paged whole-authority walk …
+	expect(calls).toHaveLength(0)
+	// … but they do read, always pinned to a time window after the previous pass.
+	expect(windowedCalls.length).toBeGreaterThan(0)
+	expect(windowedCalls.every(([query]) => query?.modifiedSince !== undefined)).toBe(true)
 	expect(links()).toHaveLength(30)
 })
 
@@ -951,13 +969,13 @@ it("rebuilds the accumulated history from scratch after a journal is rewritten, 
 	const now = new Date()
 	fs.utimesSync(journal, now, now)
 	const backend = backendFor(dir)
-	const original = backend.readRecords.bind(backend)
-	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	const original = backend.readRecordPage.bind(backend)
+	const read = vi.spyOn(backend, "readRecordPage").mockImplementation((...args) => original(...args))
 	await repair(progress)
 	const calls = read.mock.calls
 	read.mockRestore()
 	// The rewrite signal must force a full rebuild, not an incremental merge.
-	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(true)
+	expect(calls.some(([after]) => after === 0)).toBe(true)
 	expect(links()).toHaveLength(2)
 })
 
@@ -1043,13 +1061,13 @@ it("an incremental pass over a spanning backlog fails loudly on fresh damage", a
 	fs.appendFileSync(join(dir, "work-attribution", "00000000-damaged-mid.jsonl"), "{ broken json\n")
 	await flushWorkSummaries()
 	const backend = backendFor(dir)
-	const original = backend.readRecords.bind(backend)
-	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	const original = backend.readRecordPage.bind(backend)
+	const read = vi.spyOn(backend, "readRecordPage").mockImplementation((...args) => original(...args))
 	await expect(repair(progress)).rejects.toThrow(/invalid records/)
 	const calls = read.mock.calls
 	read.mockRestore()
 	// The rejecting pass must be the incremental branch itself, not a full rebuild.
-	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(false)
+	expect(calls.some(([after]) => after === 0)).toBe(false)
 })
 
 it("an incremental pass over a spanning backlog withholds a work named by a fresh unknown record", async () => {
@@ -1074,12 +1092,12 @@ it("an incremental pass over a spanning backlog withholds a work named by a fres
 	)
 	await flushWorkSummaries()
 	const backend = backendFor(dir)
-	const original = backend.readRecords.bind(backend)
-	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	const original = backend.readRecordPage.bind(backend)
+	const read = vi.spyOn(backend, "readRecordPage").mockImplementation((...args) => original(...args))
 	await repair(progress)
 	const calls = read.mock.calls
 	read.mockRestore()
-	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(false)
+	expect(calls.some(([after]) => after === 0)).toBe(false)
 	// The named work stays unconfirmed; the other pending receipts may proceed.
 	expect(links().every((row) => row.workId !== remaining[0])).toBe(true)
 })
@@ -1097,13 +1115,13 @@ it("a missing stats snapshot forces a full rebuild instead of a vacuous grew-onl
 	acceptedContinuation("plan", "planner-stats-late")
 	await flushWorkSummaries()
 	const backend = backendFor(dir)
-	const original = backend.readRecords.bind(backend)
-	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => original(...args))
+	const original = backend.readRecordPage.bind(backend)
+	const read = vi.spyOn(backend, "readRecordPage").mockImplementation((...args) => original(...args))
 	await repair(progress)
 	const calls = read.mock.calls
 	read.mockRestore()
 	// Strictly a full read: the vacuous path is not a substitute for stat comparison.
-	expect(calls.some(([query]) => query?.modifiedSince === undefined)).toBe(true)
+	expect(calls.some(([after]) => after === 0)).toBe(true)
 })
 
 it("reads only new ledger records since the last pass once no receipt can still link", async () => {
@@ -1183,4 +1201,32 @@ it("keeps a concurrent revocation authoritative when its append follows the repa
 		reason: "work-link-unresolved",
 		totalCostUsd: "0.125000000",
 	})
+})
+
+it("breathes the stretcher while reading, indexing and collecting a massive history", async () => {
+	const stretch = vi.fn(async () => {})
+	const lines: string[] = []
+	for (let index = 0; index < 2_050; index++) {
+		const workId = `aaaaaaaa-0000-4000-8000-${String(index).padStart(12, "0")}`
+		lines.push(
+			JSON.stringify({
+				version: 1,
+				type: "request",
+				workId,
+				sessionId: "stretch-session",
+				requestId: `bbbbbbbb-0000-4000-8000-${String(index).padStart(12, "0")}`,
+				recordedAt: "2026-10-04T12:00:00.000Z",
+			}),
+		)
+	}
+	fs.appendFileSync(join(dir, "work-attribution", "source.jsonl"), `${lines.join("\n")}\n`)
+	const history = await readContinuationHistoryAsync(dir, () => {}, stretch)
+	expect(history.records).toHaveLength(2_050)
+	// The index build breathes once per record: without it the count collapses to ledger pages only.
+	expect(stretch.mock.calls.length).toBeGreaterThanOrEqual(2_050)
+
+	stretch.mockClear()
+	await reconcileWorkContinuations(dir, new AbortController().signal, () => {}, {}, stretch)
+	// The receipt sweep breathes on top of read and index: with records at this scale both contribute.
+	expect(stretch.mock.calls.length).toBeGreaterThanOrEqual(2 * 2_050)
 })

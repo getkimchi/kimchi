@@ -21,7 +21,13 @@ import { closeSync, mkdirSync, openSync } from "node:fs"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
 import { reportingDirectory } from "../queue.js"
-import { LEDGER_SCHEMA, META_PROJECTION_VERSION, PROJECTION_VERSION, SCHEMA_VERSION } from "./schema.js"
+import {
+	LEDGER_ADDITIVE_SCHEMA,
+	LEDGER_SCHEMA,
+	META_PROJECTION_VERSION,
+	PROJECTION_VERSION,
+	SCHEMA_VERSION,
+} from "./schema.js"
 
 /** Thrown when the database cannot be opened in this runtime (no bun:sqlite). */
 export class LedgerUnavailableError extends Error {
@@ -150,6 +156,23 @@ export function openStore(agentDir: string): LedgerStore {
 						ledger.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
 					})
 					.immediate()
+			}
+			// Indexes added after SCHEMA_VERSION shipped still land on pre-existing ledgers: every statement is
+			// idempotent, so applying them on each open keeps older databases at size with fresh ones. A held
+			// writer lock skips the pass rather than stalling a reader; the next open reapplies it.
+			ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS / 20}`)
+			try {
+				ledger
+					.transaction(() => {
+						ledger.exec(LEDGER_ADDITIVE_SCHEMA)
+					})
+					.immediate()
+			} catch (error) {
+				const code = typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : ""
+				const message = error instanceof Error ? error.message : String(error)
+				if (!code.startsWith("SQLITE_BUSY") && !/database is (locked|busy)/.test(message)) throw error
+			} finally {
+				ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`)
 			}
 			return {
 				db: ledger,
