@@ -399,7 +399,7 @@ describe("entity tier registry", () => {
 		// pins custom ⇒ active: a pattern added to redactor.ts for an
 		// anchor_required entity without registry membership in
 		// ANCHOR_REQUIRED_WITH_OWN_CUSTOMS would drop the row from the
-		// published catalog while firing in production (design-002).
+		// published catalog while firing in production.
 		const byName = new Map(listRedactionCatalog().map((e) => [e.entity, e]))
 		for (const name of CUSTOM_PATTERN_NAMES) {
 			const entry = byName.get(name)

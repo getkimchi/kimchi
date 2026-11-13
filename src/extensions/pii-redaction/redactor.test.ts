@@ -393,7 +393,7 @@ describe("redactText — custom secret patterns", () => {
 		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
 	})
 
-	it("relates realistic-length sk-ant- keys to ANTHROPIC_KEY even when the engine claims them (correctness-001)", async () => {
+	it("relates realistic-length sk-ant- keys to ANTHROPIC_KEY even when the engine claims them", async () => {
 		const key = `sk-ant-api03-${"a1B2c3D4e5F6g7H8".repeat(6)}`
 		const text = `claude key: ${key}`
 		const result = await redactText(text)
@@ -402,7 +402,7 @@ describe("redactText — custom secret patterns", () => {
 		expect(result).not.toContain("[REDACTED-OPENAI_KEY]")
 	})
 
-	it("honors user exclusions on the relabeled label (correctness-007)", async () => {
+	it("honors user exclusions on the relabeled label", async () => {
 		const key = `sk-ant-api03-${"a1B2c3D4e5F6g7H8".repeat(6)}`
 		const text = `claude key: ${key}`
 		const engine = createRedactionEngine(getDefaultExcludedEntities().filter((e) => e !== "ANTHROPIC_KEY"))
@@ -834,7 +834,7 @@ describe("anchored splice and re-additions — review regressions", () => {
 
 	it("keeps redacting SNAKE_CASE env keys and dashed CLI flags", async () => {
 		// `_` / `-` are keyword boundaries, not identifier chars: MY_TOKEN=…
-		// and --token=… are real secret habitats (contracts-001 fix).
+		// and --token=… are real secret habitats.
 		const secret = ["s", "c9f2b7a1d3e5f7a9c1b3d5e7f9a1c3e5"].join("")
 		const envLine = `MY_TOKEN=${secret}`
 		const env = await redactText(envLine)
@@ -862,7 +862,7 @@ describe("anchored splice and re-additions — review regressions", () => {
 	})
 })
 
-describe("review round 3: base64-witness boundary classes (security-001 / correctness-001 / design-p03)", () => {
+describe("base64-witness boundary classes", () => {
 	beforeEach(() => resetRedactorEngine())
 	afterEach(() => resetRedactorEngine())
 
@@ -907,7 +907,7 @@ describe("review round 3: base64-witness boundary classes (security-001 / correc
 	})
 })
 
-describe("review round 3: $-leading values (correctness-005)", () => {
+describe("$-leading values", () => {
 	beforeEach(() => resetRedactorEngine())
 	afterEach(() => resetRedactorEngine())
 
@@ -925,7 +925,7 @@ describe("review round 3: $-leading values (correctness-005)", () => {
 	})
 })
 
-describe("review round 3: AZURE pattern ownership (correctness-002)", () => {
+describe("AZURE pattern ownership", () => {
 	beforeEach(() => resetRedactorEngine())
 	afterEach(() => resetRedactorEngine())
 
@@ -1360,9 +1360,9 @@ describe("precision defaults — true-positive guards", () => {
 		["192.168.1.10", "RFC1918 /16"],
 		["172.16.5.4", "RFC1918 /12"],
 		["fc00::1", "ipv6 ULA"],
-		["2607::", "routable global-unicast base (security-003)"],
-		["2a00::", "RIPE global-unicast base (security-003)"],
-		["fd12::", "ULA /48 base (security-003)"],
+		["2607::", "routable global-unicast base"],
+		["2a00::", "RIPE global-unicast base"],
+		["fd12::", "ULA /48 base"],
 		["2001:4860:4860::8888", "global IPv6 (must not be caught by the db8 rule)"],
 	])("keeps %s (%s)", (span) => {
 		expect(isNonSensitiveIp(span)).toBe(false)
@@ -1416,7 +1416,7 @@ describe("base64-shadow suppression", () => {
 		expect(delimited).toContain("[REDACTED-FACEBOOK_TOKEN]")
 	})
 
-	it("over-length vendor keys in ordinary assignments still redact (security-002)", async () => {
+	it("over-length vendor keys in ordinary assignments still redact", async () => {
 		// Engine spans are length-capped (LTAI{12,20}): past the cap the
 		// end-neighbor is alphanumeric — truncation, not entropy embedding.
 		const longKey = "LTAI" + "aB3dE6gH9jK2mN5pQ8sT1v2W4yZ6"
@@ -1430,7 +1430,7 @@ describe("base64-shadow suppression", () => {
 		const prose = await redactText(`the gcp key ${gcp} leaked`)
 		expect(prose).not.toContain(gcp)
 		expect(prose).toContain("[REDACTED-GCP_API_KEY]")
-		// A URL path separator is not base64 evidence (correctness-003).
+		// A URL path separator is not base64 evidence.
 		const url = `https://example.com/v1/${gcp}/resource`
 		const apiCall = await redactText(`curl ${url}`)
 		expect(apiCall).not.toContain(gcp)

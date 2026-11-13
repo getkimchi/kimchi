@@ -361,14 +361,14 @@ const BASE64_SHADOW_ENTITIES: ReadonlySet<string> = new Set([
 /**
  * Char sets for shadow evidence. START-side: the base64 alphabet, but NOT
  * `=` — the assignment byte (`KEY=<token>`) is the most common real-secret
- * framing and must never be treated as entropy (security-002). END-side:
+ * framing and must never be treated as entropy. END-side:
  * only the blob terminator bytes `+`, `/`, `=` — engine value regexes are
  * greedy alnum tails, so an alphanumeric end-neighbor is truncation of a
  * real (over-long) key, not embedding; inside a blob the span's boundary is
  * always one of the three.
  */
 function isBase64RunChar(c: string): boolean {
-	if (c.length === 0 || c === "/") return false // URL path separator (correctness-003)
+	if (c.length === 0 || c === "/") return false // URL path separator
 	return IS_BASE64_CHAR[c.charCodeAt(0)] === 1
 }
 function isBase64TailChar(c: string): boolean {
@@ -395,7 +395,7 @@ function isBase64TailChar(c: string): boolean {
 export function base64RunBefore(text: string, start: number): number {
 	let n = 0
 	for (let i = start - 1; i >= 0 && isBase64RunChar(text.charAt(i)); i--) {
-		if (++n >= 16) return n // every caller compares >= 16 — constant-bound the walk (design-005)
+		if (++n >= 16) return n // every caller compares >= 16 — constant-bound the walk
 	}
 	return n
 }
@@ -460,14 +460,14 @@ export async function collectDetections(
 	const active: EngineDetection[] = []
 	for (const r of results) {
 		for (const d of r.detections) {
-			// Attribution correction (correctness-001): the engine claims
+			// Attribution correction: the engine claims
 			// realistic-length sk-ant- keys as OPENAI_KEY long before the
 			// custom-anchored ANTHROPIC_KEY pattern gets a turn. Real Anthropic
 			// keys are ~100+ chars, well over the engine's OPENAI threshold,
 			// so without this relabel the label fix below is a no-op for real
 			// keys. Fire only on the distinct prefix — never on content alone.
 			const entityType = d.entityType === "OPENAI_KEY" && d.text.startsWith("sk-ant-") ? "ANTHROPIC_KEY" : d.entityType
-			// Exclusion check uses the corrected label (correctness-007).
+			// Exclusion check uses the corrected label.
 			if (excluded.has(entityType)) continue
 			if (isNonIdentifyingDetection(entityType, d.text)) continue
 			if (isBase64ShadowDrop(entityType, text, d.start, d.end)) continue
@@ -732,9 +732,8 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
  */
 export function isGenericNonSecretValue(value: string): boolean {
 	// `$`-leading shell expansions and command substitutions only:
-	// ${VAR}, $[idx], $(cmd), $VAR — the previous /\$/\w clause rejected any
-	// word-char after `$`, which let bcrypt/argon2 hashes ($2b$12$…) and
-	// $-prefixed secrets through (correctness-005).
+	// ${VAR}, $[idx], $(cmd), $VAR — a broader any-word-char clause would
+	// reject bcrypt/argon2 hashes ($2b$12$…) and $-prefixed secrets.
 	if (/^\$(?:[{([]|[A-Za-z_])/.test(value) || /^<[A-Za-z0-9_\s-]*>$/.test(value)) return true
 	// Paths: anchored start (/, ~/, ./, ../, $VAR/) with path-ish body.
 	if (/^(?:~?\/|\.\.?\/|\$[A-Za-z_][\w]*\/)[\w.+=/@-]+\/?$/.test(value)) return true
@@ -837,8 +836,7 @@ export function applyCustomPatterns(
 				// other delimiter (space, quote, `=`, `:`, `;`, `,`, tab, newline)
 				// is real secret framing and must redact — the measured across-
 				// the-delimiter run let any 16+ alnum token before a keyword
-				// suppress the adjacent true secret (severe security-001 /
-				// correctness-001 / design-p03). Residual accepted tradeoff,
+				// suppress the adjacent true secret. Residual accepted tradeoff,
 				// mirroring the engine witness: a ≥16-base64-char run glued to
 				// `+`/`/`/`-`/`_` still reads as payload.
 				if (typeof offset === "number" && typeof input === "string") {
