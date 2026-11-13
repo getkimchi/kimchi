@@ -32,6 +32,13 @@ export interface RecallRunArgs {
 	ctx: ExtensionContext
 	/** Caller-wrapped search (indicator widget + searcher cache + timeout). Null = a search that ran and returned nothing (traced with empty hits); undefined = no backend (skipped silently, like the old path). The argument is the facet query to embed — the caller must use it (multi-facet lookups pass different facet texts). */
 	search: (query: string) => Promise<MemorySearchHit[] | null | undefined>
+	/**
+	 * Delivery permission re-checked before mutations: a detached recall may
+	 * settle after the session flipped off — a flip mid-flight must suppress
+	 * the steer AND the ledger/budget mutations (master #1701 semantics), so
+	 * the post-flip state stays clean. Omitted = always deliver.
+	 */
+	mayDeliver?: () => boolean
 	/** Caller-wrapped d3 gate. Null = pre-gate behavior (search whenever uncovered). */
 	decideGate: (() => Promise<boolean>) | null
 	/** Shared delivered state — ALSO the user-turn path's, so cross-path dedupe is by construction. */
@@ -115,7 +122,10 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 	// agent event.
 	let recall: ReturnType<typeof buildTurnRecall>
 	try {
-		recall = list.length > 0 ? buildTurnRecall(list, deliveredKeys, query) : undefined
+		// Delivery re-check for the detached path: a mid-flight toggle-off
+		// suppresses the steer AND the ledger mutation (#1701 contract).
+		const deliverable = args.mayDeliver ? args.mayDeliver() : true
+		recall = list.length > 0 && deliverable ? buildTurnRecall(list, deliveredKeys, query) : undefined
 		if (recall) {
 			for (const fact of recall.facts) {
 				deliveredKeys.add(factKey(fact))
@@ -127,7 +137,7 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 					content: [{ type: "text", text: markHarnessSteer(`${RECALL_STEER_PREFIX}${recall.text}`) }],
 					display: false,
 				},
-				{ deliverAs: "steer" },
+				{ deliverAs: "steer", triggerTurn: false },
 			)
 			console.info(`[memory] recall delivered: ${JSON.stringify(recall.composition)}`)
 		} else if (list.length > 0) {

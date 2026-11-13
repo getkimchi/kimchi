@@ -44,6 +44,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { MEMORY_SAVED_STATUS_KEY, MEMORY_STATUS_KEY } from "../../components/status-line.js"
 import { loadConfig } from "../../config.js"
+import { submitTimingMark } from "../submit-timing.js"
 import {
 	type AdminCommand,
 	adminDeleteFacts,
@@ -87,6 +88,7 @@ import {
 	digestCandidateTexts,
 	digestSelectionFloor,
 	factKey,
+	isCovered,
 	MEMORY_ENABLED_NOTICE,
 	MEMORY_ENABLED_NOTICE_AUTHORED,
 	shouldRunDigestSelection,
@@ -774,14 +776,14 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 
 		// Shared d3 gate builder: null = pre-gate behavior (search whenever
 		// uncovered). Used by the user-turn and the step trigger alike.
-		const makeRecallGate = (query: string): (() => Promise<boolean>) | null => {
+		const makeRecallGate = (query: string, budgetMs = MEMORY_SEARCH_TIMEOUT_MS): (() => Promise<boolean>) | null => {
 			const decision = resolveDecision()
 			if (!(decision.enabled.has("recall") && decision.gate)) return null
 			const gate = decision.gate
 			return async () => {
 				const judged = await withTimeout(
 					decide(gate, recallState(deliveredFacts.join("\n"), query), recallQuestion(), "recall"),
-					MEMORY_SEARCH_TIMEOUT_MS,
+					budgetMs,
 					"recall gating",
 				)
 				return judged?.answers.lookup?.choice === "skip"
@@ -823,7 +825,6 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					// The flip emptied the ledger — drop any stale count.
 					updateMemoryStatus(ctx)
 					clearSavedStatus(ctx)
-
 				}
 				lastActive = active
 			}
@@ -900,41 +901,80 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				const responseTail = lastAssistantText(ctx).slice(-TURN_RECALL_RESPONSE_CHARS)
 				const promptHead = event.prompt.slice(0, TURN_RECALL_QUERY_MAX_CHARS - responseTail.length - 1)
 				const recent = `${promptHead}\n${responseTail}`
-				// Recall gating (spike E4): the free lexical gate says the
-				// conversation drifted out of delivered territory, so the d3
-				// judge decides whether an archive search pays at all. A gate
-				// failure keeps the pre-gate behavior — always search when
-				// uncovered (runRecall classifies and logs once).
-				const outcome = await runRecall({
-					trigger: "user-turn",
-					query: recent,
-					pi,
-					ctx,
-					search: async (q) => {
-						return withRecallIndicator(ctx, async () => {
-							const s = await getSearcher()
-							if (!s) return undefined
-							return withTimeout(s.search(q), MEMORY_SEARCH_TIMEOUT_MS, "turn recall search")
-						})
-					},
-					decideGate: makeRecallGate(recent),
-					deliveredFacts,
-					deliveredKeys,
-					emit: (partial) =>
-						createRecallRecorder()?.emit({ type: "recall", kind: "digest-progressive", query: recent, ...partial }),
-				})
-				if (outcome === "injected") {
-					// Cross-path suppression: a user-turn injection blocks the
-					// step trigger for one full budget window (K = interval).
-					lastRecallAtStep = loopStepCount
-				} else if (outcome === "failed") {
-					recallFailed = true
-					logDegrade(
-						"turn recall failed, disabling progressive recall for this session",
-						new Error("recall pipeline failure (see trace)"),
-					)
+
+				// The gate→search→delivery chain runs DETACHED from the turn
+				// start (#1701): the request never waits on retrieval; the steer
+				// arrives when ready. Drift skipped while one runs coalesces
+				// (last-wins) into pendingRecallQuery and refires on settle.
+				const fireDetachedRecall = (query: string): void => {
+					recallInFlight = true
+					// Anchor the suppression window at FIRE time: a settle-time read
+					// stretches the step budget past K for slow recollections.
+					const fireStep = loopStepCount
+					// Serialize with the loop scheduler's chain: both paths touch the
+					// same delivery ledger — detached and step recalls must never
+					// interleave delivery mutations.
+					const run = loopRecallChain.then(async () => {
+						try {
+							const outcome = await runRecall({
+								trigger: "user-turn",
+								query,
+								pi,
+								ctx,
+								mayDeliver: memoryActive,
+								search: async (q) => {
+									return withRecallIndicator(ctx, q, async () => {
+										const s = await getSearcher()
+										if (!s) return undefined
+										return withTimeout(s.search(q), MEMORY_SEARCH_TIMEOUT_MS, "turn recall search")
+									})
+								},
+								decideGate: makeRecallGate(query, MEMORY_PRE_REQUEST_TIMEOUT_MS),
+								deliveredFacts,
+								deliveredKeys,
+								emit: (partial) =>
+									createRecallRecorder()?.emit({ type: "recall", kind: "digest-progressive", query, ...partial }),
+							})
+							if (outcome === "injected") {
+								// Cross-path suppression: a user-turn injection blocks the
+								// step trigger for one full budget window (K = interval);
+								// monotonic: a concurrently-anchored step injection's
+								// newer anchor is never rewound by this settle.
+								lastRecallAtStep = Math.max(lastRecallAtStep, fireStep)
+								updateMemoryStatus(ctx)
+							} else if (outcome === "failed") {
+								throw new Error("recall pipeline failure (see trace)")
+							}
+						} catch (err) {
+							recallFailed = true
+							logDegrade("turn recall failed, disabling progressive recall for this session", err)
+						} finally {
+							recallInFlight = false
+							// Refire the newest coalesced drift (last-wins); coverage
+							// re-checked — the settled recall may already cover it. A
+							// mid-recall toggle-off drops the pending drift.
+							if (!recallFailed && memoryActive() && pendingRecallQuery !== undefined) {
+								const next = pendingRecallQuery
+								pendingRecallQuery = undefined
+								if (isCovered(next, deliveredFacts)) {
+									console.info("[memory] coalesced recall skipped: settled recall covered the deferred drift")
+								} else {
+									fireDetachedRecall(next)
+								}
+							}
+						}
+					})
+					loopRecallChain = run.catch((err) => {
+						console.error("[memory] user-turn recall chain rejected:", err instanceof Error ? err.message : err)
+					})
 				}
+				if (recallInFlight) {
+					pendingRecallQuery = recent
+					console.info("[memory] turn recall deferred: previous recall still in flight — drift coalesced for refire")
+				} else {
+					fireDetachedRecall(recent)
 				}
+			}
 
 			if (digest === null) {
 				return { systemPrompt: `${event.systemPrompt}${memoryEnabledNotice()}` }

@@ -825,8 +825,12 @@ describe("memory extension", () => {
 		}
 		// Turn 1 (digest) + one drift retrieval per follow-up turn — every user
 		// message is fresh signal, so recall keeps running for the whole session.
-		expect(search).toHaveBeenCalledTimes(8)
-		expect(sendMessage).toHaveBeenCalledTimes(7)
+		// Turn 1 (digest) + one drift retrieval per follow-up turn — every user
+		// message is fresh signal, so recall keeps running for the whole session.
+		// The final SEND lands one settle hop after the last search: poll it
+		// too (the search-flush above only proves retrieval, not delivery).
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(8))
+		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(7))
 	})
 
 	it("the drift recall runs detached — the turn never waits on retrieval", async () => {
@@ -1596,9 +1600,11 @@ describe("mid-loop recall (step-budget trigger)", () => {
 		const { sendMessage, start } = rig
 		const tri = getToolResultHandler(rig)
 		await start(startEvent("entry"), fakeCtx)
-		// Second user turn: progressive recall injects at loop step 0.
+		// Second user turn: progressive recall injects at loop step 0 —
+		// delivery is detached from the turn (#1701 semantics), so poll the
+		// settle before counting.
 		await start(startEvent("new topic, please adjust"), fakeCtx)
-		expect(sendMessage.mock.calls.length).toBe(1)
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
 		// K-1 tool steps: inside the suppression window — no step injection.
 		fireToolResults(tri, K - 1, "suppressed")
 		await flushChain()
@@ -1620,7 +1626,7 @@ describe("mid-loop recall (step-budget trigger)", () => {
 		await flushChain()
 		expect(sendMessage.mock.calls.length).toBe(0)
 		await start(startEvent("continuation after compact"), fakeCtx) // has hits now: user-turn injects (1)
-		expect(sendMessage.mock.calls.length).toBe(1)
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
 		rig.getHandler("session_compact")({}, fakeCtx)
 		// Counter zeroed: K-1 further steps stay inside the fresh window,
 		// NOT crossing an old boundary at K total.
@@ -1646,7 +1652,7 @@ describe("mid-loop recall (step-budget trigger)", () => {
 		// steps stay within the fresh window: only the crossing step fires.
 		setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
 		await start(startEvent("memory back on"), fakeCtx) // user-turn injects: 1
-		expect(sendMessage.mock.calls.length).toBe(1)
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
 		fireToolResults(tri, K - 1, "after-flip")
 		await flushChain()
 		expect(sendMessage.mock.calls.length).toBe(1)
