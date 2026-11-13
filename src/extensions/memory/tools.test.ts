@@ -13,6 +13,15 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
 }
 
 describe("memory_search tool", () => {
+	it("advertises a prompt snippet and call-through guidelines", () => {
+		// Upstream omits custom tools from the system prompt's Available
+		// tools section when promptSnippet is unset — without these the tool
+		// exists in the schema but the model never hears it sanctioned.
+		const tool = createMemorySearchTool({ search: async () => [], isEnabled: () => true })
+		expect(tool.promptSnippet).toBeTruthy()
+		expect(tool.promptGuidelines?.length).toBeGreaterThan(0)
+	})
+
 	it("returns formatted hits with scores", async () => {
 		const deps: MemorySearchDeps = {
 			search: async () => [
@@ -128,5 +137,11 @@ describe("save_memory tool", () => {
 		const result = await call(createMemorySaveTool(deps), "a durable fact worth keeping for later")
 		expect(textOf(result)).toContain("currently disabled")
 		expect(saved).toHaveLength(0)
+	})
+
+	it("advertises a prompt snippet and durablity guidelines", () => {
+		const tool = createMemorySaveTool(saveDeps({}).deps)
+		expect(tool.promptSnippet).toBeTruthy()
+		expect(tool.promptGuidelines?.length).toBeGreaterThan(0)
 	})
 })

@@ -63,6 +63,11 @@ export function createMemorySaveTool(deps: MemorySaveDeps): ToolDefinition<typeo
 		label: "Save memory",
 		description:
 			"Save a durable memory for future sessions: a verified convention you just confirmed, a trap and its correction you just discovered, or a settled decision with its rationale. Write one short self-contained sentence. Saved memories persist across sessions and surface automatically when relevant. Do not save transient task state, session progress, or bare answers.",
+		promptSnippet: "Save one durable fact for future sessions",
+		promptGuidelines: [
+			"Use save_memory only when you just established something durable: a verified convention, a trap and its correction, or a settled decision with rationale — never transient task state.",
+			"Write one short self-contained sentence (12–300 characters); if it needs 'as discussed' or names the session, it is not durable.",
+		],
 		parameters: MemorySaveSchema,
 		execute: async (_toolCallId, params) => {
 			if (!deps.isEnabled()) {
@@ -99,6 +104,12 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 		label: "Memory search",
 		description:
 			"Search the user's persistent local memory (facts, preferences, and decisions from previous sessions). Use when the user references something from earlier conversations, asks 'what do you know about…', when a preference would change how you act, or when a question asks about a specific item, event, or date that the recalled digest did not surface. Capture is automatic at session end — this tool is read-only; there is nothing to write.",
+		promptSnippet: "Search the user's persistent memory across sessions",
+		promptGuidelines: [
+			"Call memory_search when earlier-session facts would change your current action: referenced decisions, named conventions, preferences, or specific items/events/dates the injected digest did not surface.",
+			"Do not call it for content already in context (delivered digest or injected recalls) — search only when the answer to 'would this change what I do' is yes and the facts are missing.",
+			"This tool is read-only; capture is automatic at session end.",
+		],
 		parameters: MemorySearchSchema,
 		execute: async (_toolCallId, params) => {
 			if (!deps.isEnabled()) {
