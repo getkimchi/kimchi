@@ -1,15 +1,23 @@
 import { readFileSync } from "node:fs"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	batchChoice,
 	DECISION_BATCH_SIZE,
 	DECISION_QUESTION_CAP,
+	DecisionBreaker,
 	DecisionGateError,
 	decide,
 	MEMORY_DECISION_TAG,
+	sharedDecisionBreaker,
 	systemoneEndpoint,
 } from "./decision-gate.js"
 import { usageLedgerPath } from "./usage-ledger.js"
+
+beforeEach(() => {
+	// The shared breaker is process-global state: failure-injecting tests
+	// would otherwise wedge later tests' decides into circuit-open mode.
+	sharedDecisionBreaker.recordSuccess()
+})
 
 /** The last usage-ledger row (rows accumulate across this file's tests). */
 function lastLedgerRow(): Record<string, unknown> {
@@ -237,5 +245,105 @@ describe("decide onExchange hook", () => {
 		const result = await decide({ ...GATE, fetchImpl }, "s", { q1: question })
 		expect(result.answers.q1?.choice).toBe("yes")
 		expect(result.usage.input_tokens).toBe(10)
+	})
+})
+
+describe("DecisionBreaker circuit state machine", () => {
+	const question = {
+		type: "choice" as const,
+		instructions: "is it?",
+		criteria: { yes: "yes", no: "no" },
+	}
+
+	it("closed circuit passes decides through untouched", async () => {
+		const t = 0
+		const breaker = new DecisionBreaker({ now: () => t, probeDelayMs: 60_000 })
+		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q"]))) as unknown as typeof fetch
+		for (let i = 0; i < 3; i++) {
+			const r = await decide({ ...GATE, breaker, fetchImpl }, "s", { q: question })
+			expect(r.answers.q?.choice).toBe("yes")
+		}
+		expect(fetchImpl).toHaveBeenCalledTimes(3)
+		expect(breaker.shouldSkip()).toBe(false)
+	})
+
+	it("opens only after the consecutive-failure threshold; skips without fetching once open", async () => {
+		const t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 2, probeDelayMs: 60_000 })
+		const bad = vi.fn(async () => {
+			throw new Error("read ETIMEDOUT")
+		}) as unknown as typeof fetch
+		const opts = { ...GATE, breaker, fetchImpl: bad, maxRetries: 0 } as const
+		await expect(decide(opts, "s", { q: question })).rejects.toThrow("ETIMEDOUT")
+		expect(breaker.shouldSkip()).toBe(false) // one specimen is NOT an outage
+		await expect(decide(opts, "s", { q: question })).rejects.toThrow("ETIMEDOUT")
+		expect(breaker.shouldSkip()).toBe(true) // second consecutive failure opens
+		for (let i = 0; i < 5; i++) {
+			await expect(decide(opts, "s", { q: question })).rejects.toBeInstanceOf(DecisionGateError)
+		}
+		expect(bad).toHaveBeenCalledTimes(2) // skipped calls never touched the wire
+	})
+
+	it("probe window admits exactly one specimen; success closes the circuit", async () => {
+		let t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 1, probeDelayMs: 60_000 })
+		const bad = vi.fn(async () => {
+			throw new Error("EHOSTUNREACH")
+		}) as unknown as typeof fetch
+		await expect(decide({ ...GATE, breaker, fetchImpl: bad, maxRetries: 0 }, "s", { q: question })).rejects.toThrow()
+		expect(breaker.shouldSkip()).toBe(true)
+		t = 61_000
+		expect(breaker.shouldSkip()).toBe(false) // probe due
+		const good = vi.fn(async () => jsonResponse(answersBody(["q"]))) as unknown as typeof fetch
+		const r = await decide({ ...GATE, breaker, fetchImpl: good }, "s", { q: question })
+		expect(r.answers.q?.choice).toBe("yes")
+		expect(breaker.shouldSkip()).toBe(false) // closed again
+	})
+
+	it("failed probe re-opens with doubled backoff (per interval, not per failure)", async () => {
+		let t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 1, probeDelayMs: 60_000 })
+		const bad = vi.fn(async () => {
+			throw new Error("reset")
+		}) as unknown as typeof fetch
+		const opts = { ...GATE, breaker, fetchImpl: bad, maxRetries: 0 } as const
+		await expect(decide(opts, "s", { q: question })).rejects.toThrow()
+		t = 61_000
+		await expect(decide(opts, "s", { q: question })).rejects.toThrow() // probe 1 fails → 120s
+		t = 61_000 + 61_000
+		expect(breaker.shouldSkip()).toBe(true)
+		t = 61_000 + 121_000
+		expect(breaker.shouldSkip()).toBe(false)
+	})
+
+	it("contract failures (valid HTTP, unparseable answers) never trip the breaker", async () => {
+		const t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 1, probeDelayMs: 60_000 })
+		const badContract = vi.fn(async () =>
+			jsonResponse({ id: "x", model: "d3", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }),
+		) as unknown as typeof fetch
+		const opts = { ...GATE, breaker, fetchImpl: badContract } as const
+		await expect(decide(opts, "s", { q: question })).rejects.toBeInstanceOf(DecisionGateError)
+		expect(breaker.shouldSkip()).toBe(false)
+		await expect(decide(opts, "s", { q: question })).rejects.toBeInstanceOf(DecisionGateError)
+		expect(badContract).toHaveBeenCalledTimes(2)
+	})
+
+	it("probe-slot release: an aborted probe leaves the circuit probeable", async () => {
+		let t = 0
+		const breaker = new DecisionBreaker({ now: () => t, threshold: 1, probeDelayMs: 60_000 })
+		// Open via one specimen failure.
+		const bad = vi.fn(async () => {
+			throw new Error("down")
+		}) as unknown as typeof fetch
+		await expect(decide({ ...GATE, breaker, fetchImpl: bad, maxRetries: 0 }, "s", { q: question })).rejects.toThrow()
+		t = 61_000
+		// Reserve the probe slot (the path decide() takes before awaiting).
+		expect(breaker.shouldSkip()).toBe(false)
+		breaker.reserveProbe()
+		expect(breaker.shouldSkip()).toBe(true)
+		// Simulate the unexpected-exit guard decide() runs in finally.
+		breaker.releaseProbe()
+		expect(breaker.shouldSkip()).toBe(false)
 	})
 })
