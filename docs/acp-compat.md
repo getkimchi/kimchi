@@ -172,6 +172,25 @@ The workstream that produced this doc:
 
 Earlier instances of the same class, all fixed after the fact:
 
+- **Tool-call ids reused upstream leaked onto the wire** (#964). Pi recycles tool-call
+  ids after compaction, so clients keyed on them collided; the ACP surface began
+  allocating session-unique ids (keeping the Pi id in `_meta.piToolCallId`) and
+  seeding the map on loadSession so replay re-emits the same ids. The direct
+  ancestor of rule 6's identity machinery, and of the replay re-allocation
+  incident above.
+- **Premature `end_turn`** (#730). pi-mono chains several `agent.prompt()` calls per
+  client turn (retries, compaction, follow-ups), each with its own `agent_start` /
+  `agent_end` pair; finalizing on the first `agent_end` ended the client's turn
+  mid-stream and its next prompt hit "Agent is already processing". The
+  prompt-turn lifecycle anchor, in miniature.
+- **Steers leaked into history on cancel** (#1125). pi-mono chains queued steering
+  messages into the running prompt, so abort-before-drain delivered every queued
+  steer into session history with full replies, replayed on load.
+- **Silently failed credentials** (#1161). Pi resolves an expired-key turn normally
+  with a terminal `stopReason` error and zero chunks, so a client showed "send
+  succeeded, nothing came back" with no error to act on. The fix maps it to a
+  visible wire error; the degrade-by-design exemplar for the umbrella contract.
+
 - **Subagents backgrounded by default** (#1388; follow-up #1509). A TUI-side
   background-by-default change swept rpc-mode sessions into the interactive bucket,
   so backgrounded subagents outlived their turn with no client surface. The fix
