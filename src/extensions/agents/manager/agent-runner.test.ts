@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
+import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
@@ -9,7 +10,7 @@ import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
 import * as diagnostics from "../../work-attribution/diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
-import type { WorkSegment } from "../../work-attribution.js"
+import { createWorkAttributionExtension, type WorkSegment } from "../../work-attribution.js"
 
 let attributionDir: string
 beforeEach(() => {
@@ -141,6 +142,28 @@ vi.mock("../../auto-model/index.js", () => ({
 	createAutoModelRoutingExtension: vi.fn(() => () => {}),
 }))
 
+// Partial mocks: real extension behaviour with an identity spy on top, so the
+// buildInlineExtensionFactories composition tests can assert factory wiring
+// without changing what the factories do.
+vi.mock("../../work-attribution.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../work-attribution.js")>()
+	return { ...actual, createWorkAttributionExtension: vi.fn(actual.createWorkAttributionExtension) }
+})
+vi.mock("../subagent-bash-clamp.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../subagent-bash-clamp.js")>()
+	return { ...actual, createSubagentBashClampExtension: vi.fn(actual.createSubagentBashClampExtension) }
+})
+vi.mock("../worker-report.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../worker-report.js")>()
+	return { ...actual, createWorkerReportExtension: vi.fn(actual.createWorkerReportExtension) }
+})
+// Full mock: the real MCP adapter module pulls pi-mcp-adapter and network
+// boundaries; these tests only observe that the factory is wired into the
+// list. The extension's own behaviour is covered by src/extensions/mcp.
+vi.mock("../../mcp/index.js", () => ({
+	createKimchiMcpAdapterExtension: vi.fn(() => () => {}),
+}))
+
 import {
 	type AgentSession,
 	type BeforeProviderHeadersEvent,
@@ -148,22 +171,40 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
+	type ExtensionFactory,
 	type InlineExtension,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
-import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../agents/subagent-bash-clamp.js"
+import {
+	createSubagentBashClampExtension,
+	DEFAULT_BASH_TIMEOUT_SECONDS,
+	subagentBashDefaultTimeoutExtension,
+} from "../../agents/subagent-bash-clamp.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
+import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import requestTimingExtension from "../../request-timing.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
-import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
+import { createWorkerReportExtension } from "../worker-report.js"
+import {
+	buildInlineExtensionFactories,
+	getActiveSubagentToolNames,
+	type InlineExtensionFactoryDeps,
+	type RunOptions,
+	resumeAgent,
+	runAgent,
+	shouldRegisterDapForTools,
+} from "./agent-runner.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { formatRunResultText } from "./result-text.js"
 
@@ -181,6 +222,10 @@ const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
 const mockGetCurrentPhase = vi.mocked(getCurrentPhase)
 const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
+const mockCreateWorkAttributionExtension = vi.mocked(createWorkAttributionExtension)
+const mockCreateWorkerReportExtension = vi.mocked(createWorkerReportExtension)
+const mockCreateSubagentBashClampExtension = vi.mocked(createSubagentBashClampExtension)
+const mockCreateKimchiMcpAdapterExtension = vi.mocked(createKimchiMcpAdapterExtension)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
@@ -406,7 +451,7 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg?.extensionFactories).toHaveLength(5)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
-		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 		const childApi = createExtensionApi()
 		await runInlineExtension(ctorArg?.extensionFactories?.[1], childApi.api)
 		const child = createContext({ cwd: attributionDir, sessionManager: { getSessionId: () => "child-segment" } })
@@ -491,7 +536,7 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg?.extensionFactories).toHaveLength(5)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
-		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 	})
 
 	it("registers Auto routing only for children that use Auto", async () => {
@@ -622,8 +667,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(6)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(5)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(7)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(6)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -1274,6 +1319,24 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")
 	})
+	it("resumeAgent: re-emits session_start so extensions torn down by the run-end flush restart", async () => {
+		const emitSpy = vi.fn()
+		const session = {
+			subscribe: vi.fn(() => () => {}),
+			abort: vi.fn(),
+			steer: vi.fn(),
+			messages: [],
+			extensionRunner: { emit: emitSpy },
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockResolvedValue(undefined),
+		}
+
+		await resumeAgent(session as unknown as AgentSession, "continue", {})
+
+		expect(emitSpy).toHaveBeenCalledWith({ type: "session_start", reason: "resume" })
+	})
 })
 
 describe("runAgent — profile tool access", () => {
@@ -1427,6 +1490,152 @@ describe("runAgent — profile tool access", () => {
 		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("grep")
 		expect(calledWith).toContain("web_search")
+	})
+})
+
+describe("runAgent — subagent MCP tool inheritance (LLM-4465)", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	// Mirrors the real MCP factory's observable contract: when the extension is
+	// bound to a child session it registers one tool named "mcp" (the adapter's
+	// proxy tool). This is the stub whose registration must survive the runner's
+	// active-tool filter for non-isolated children — the direct regression for
+	// LLM-4465, where subagent sessions silently dropped extension tools.
+	const stubMcpExtension = (): ExtensionFactory => (childPi) => {
+		childPi.registerTool({
+			name: "mcp",
+			label: "MCP",
+			description: "stub MCP gateway tool",
+			parameters: Type.Object({}),
+			execute: vi.fn<ToolDefinition["execute"]>(),
+		})
+	}
+
+	// A fake session whose bindExtensions runs the inline extension factories
+	// the runner handed to the resource loader — what a real session does with
+	// them — and reflects extension-registered tools into the registry and the
+	// active tool list, like a real session after binding.
+	function makeExtensionBindFakeSession(): ReturnType<typeof makeFakeSession> {
+		const activeToolNames = ["read", "grep"]
+		const baseRegistered = [...DEFAULT_REGISTERED_TOOL_NAMES, ...activeToolNames]
+		const session = makeFakeSession({ activeToolNames })
+		session.bindExtensions.mockImplementation(async () => {
+			const loaderDeps = mockDefaultResourceLoader.mock.calls.at(-1)?.[0] as
+				| { extensionFactories?: InlineExtension[] }
+				| undefined
+			const childApi = createExtensionApi()
+			for (const extension of loaderDeps?.extensionFactories ?? []) {
+				await runInlineExtension(extension, childApi.api)
+			}
+			const registered = childApi.getRegisteredTools().map((tool) => tool.name)
+			session.getToolDefinition.mockImplementation((name: string) =>
+				[...baseRegistered, ...registered].includes(name) ? { name } : undefined,
+			)
+			session.getActiveToolNames.mockReturnValue([...activeToolNames, ...registered])
+		})
+		return session
+	}
+
+	function createSessionResult(session: ReturnType<typeof makeFakeSession>) {
+		return {
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		}
+	}
+
+	function firstActiveToolsCall(session: ReturnType<typeof makeFakeSession>): string[] {
+		return vi.mocked(session.setActiveToolsByName).mock.calls[0][0] as string[]
+	}
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Researcher", description: "Research agent" }))
+		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+		mockCreateKimchiMcpAdapterExtension.mockImplementation(() => stubMcpExtension())
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+		// vi.clearAllMocks does not restore implementations: put back the module
+		// mock's defaults so later describes don't inherit this suite's setup
+		// (the leaked MCP stub was registering "mcp" in their sessions).
+		mockGetConfig.mockReturnValue(makeTypeConfig())
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+		mockCreateKimchiMcpAdapterExtension.mockImplementation(() => () => {})
+	})
+
+	it("activates an extension-registered tool on a non-isolated child session", async () => {
+		const session = makeExtensionBindFakeSession()
+		mockCreateAgentSession.mockResolvedValue(createSessionResult(session))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalled()
+		expect(session.setActiveToolsByName).toHaveBeenCalled()
+		expect(firstActiveToolsCall(session)).toContain("mcp")
+	})
+
+	it("keeps extension-registered tools off an isolated child session", async () => {
+		const session = makeExtensionBindFakeSession()
+		mockCreateAgentSession.mockResolvedValue(createSessionResult(session))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+			isolated: true,
+		})
+
+		// The isolated branch must never receive the MCP stub: neither the
+		// factory list nor the active tools handed to the session may contain it.
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+		expect(firstActiveToolsCall(session)).not.toContain("mcp")
+	})
+})
+
+describe("getActiveSubagentToolNames — persona extension allowlists", () => {
+	const isRegistered = (name: string) =>
+		["read", "grep", "mcp", "mcp__jira__get_issue", "web_search", "Agent"].includes(name)
+
+	it("keeps the MCP gateway tool for a persona allowlisting the mcp extension", () => {
+		expect(getActiveSubagentToolNames(["read", "grep"], ["read", "grep", "mcp"], ["mcp"], isRegistered)).toEqual([
+			"read",
+			"grep",
+			"mcp",
+		])
+	})
+
+	it("admits namespaced MCP tools for an mcp allowlist", () => {
+		expect(getActiveSubagentToolNames(["read"], ["read", "mcp__jira__get_issue"], ["mcp"], isRegistered)).toEqual([
+			"read",
+			"mcp__jira__get_issue",
+		])
+	})
+
+	it("drops extension tools outside the persona's allowlist", () => {
+		expect(getActiveSubagentToolNames(["read", "grep"], ["read", "grep", "mcp"], ["unrelated"], isRegistered)).toEqual([
+			"read",
+			"grep",
+		])
+	})
+
+	it("keeps extension tools when the persona inherits all extensions", () => {
+		expect(getActiveSubagentToolNames(["read", "grep"], ["read", "grep", "mcp"], true, isRegistered)).toEqual([
+			"read",
+			"grep",
+			"mcp",
+		])
+	})
+
+	it("never resurrects excluded tools via the extension allowlist", () => {
+		expect(getActiveSubagentToolNames(["read"], ["read", "Agent"], ["Agent"], isRegistered)).toEqual(["read"])
 	})
 })
 
@@ -2536,5 +2745,216 @@ describe("formatRunResultText", () => {
 	it("leaves plain responses untouched when nothing was auto-loaded", () => {
 		expect(formatRunResultText("plain", undefined, undefined)).toBe("plain")
 		expect(formatRunResultText("plain", "/plans/x.md", [])).toBe("plain\n\nPlan saved to: /plans/x.md")
+	})
+})
+
+describe("buildInlineExtensionFactories", () => {
+	const DEBUG_TOOL_NAMES = ["read", "grep", "debug_state_at", "debug_launch", "step_in"]
+	const CONCRETE_MODEL: Model<Api> = { ...AUTO_MODEL, provider: "kimchi-dev", id: "gemini-3-pro" }
+	let agentDir: string
+
+	function makeDeps(overrides: Partial<InlineExtensionFactoryDeps> = {}): InlineExtensionFactoryDeps {
+		return {
+			effectiveMaxDuration: 900,
+			type: "General-Purpose",
+			model: undefined,
+			toolNames: ["read", "bash"],
+			workerReport: undefined,
+			costPerPrEnabled: false,
+			inheritedWorkId: undefined,
+			inheritedSegment: undefined,
+			effectiveExtensions: true,
+			effectiveCwd: "/repo",
+			buildSystemPrompt: vi.fn(() => "System prompt text"),
+			onSystemPrompt: undefined,
+			...overrides,
+		}
+	}
+
+	beforeEach(() => {
+		// Deterministic resource gates: a fresh empty agent dir has no
+		// settings.json, so the definitions' defaults apply (dap enabled).
+		agentDir = mkdtempSync(join(tmpdir(), "inline-ext-deps-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+	})
+
+	afterEach(() => {
+		rmSync(agentDir, { recursive: true, force: true })
+		vi.clearAllMocks()
+	})
+
+	it("composes every factory in the canonical order when all gates are on", () => {
+		const telemetryFactory: InlineExtension = () => {}
+		const attributionFactory: InlineExtension = () => {}
+		const autoRoutingFactory: InlineExtension = () => {}
+		const clampFactory: InlineExtension = () => {}
+		const workerReportFactory: InlineExtension = () => {}
+		mockTelemetryExtension.mockReturnValueOnce(telemetryFactory)
+		mockCreateWorkAttributionExtension.mockReturnValueOnce(attributionFactory)
+		mockCreateAutoModelRoutingExtension.mockReturnValueOnce(autoRoutingFactory)
+		mockCreateSubagentBashClampExtension.mockReturnValueOnce(clampFactory)
+		mockCreateWorkerReportExtension.mockReturnValueOnce(workerReportFactory)
+		const segment: WorkSegment = { id: "parent-input", attribution: "unknown", reason: "model-uncertain" }
+		const workerReport = { submit: vi.fn(), isAccepted: vi.fn(() => false) }
+
+		const factories = buildInlineExtensionFactories(
+			makeDeps({
+				costPerPrEnabled: true,
+				inheritedWorkId: "work-1",
+				inheritedSegment: segment,
+				model: AUTO_MODEL,
+				toolNames: DEBUG_TOOL_NAMES,
+				workerReport,
+			}),
+		)
+
+		expect(factories).toEqual([
+			telemetryFactory,
+			attributionFactory,
+			requestTimingExtension,
+			autoRoutingFactory,
+			expect.any(Function), // auto-model prompt rebuild
+			clampFactory,
+			infrastructureBreakerExtension,
+			dapExtension,
+			workerReportFactory,
+			// MCP adapter — appended last for non-isolated children (LLM-4465).
+			mockCreateKimchiMcpAdapterExtension.mock.results[0].value,
+		])
+		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
+		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
+		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith("work-1", segment)
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(900, expect.any(Number), "General-Purpose")
+		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
+	})
+
+	it("registers work attribution exactly when the cost-per-PR resource is enabled", () => {
+		const enabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: true }))
+		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledTimes(1)
+		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith(null, undefined)
+		const attributionFactory = mockCreateWorkAttributionExtension.mock.results[0].value
+		expect(enabled).toHaveLength(6)
+		expect(enabled).toContain(attributionFactory)
+
+		const disabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: false }))
+		expect(disabled).toHaveLength(5)
+		expect(disabled).not.toContain(attributionFactory)
+	})
+
+	it("uses the bash clamp when effectiveMaxDuration is positive and the default timeout when it is 0", () => {
+		const clamped = buildInlineExtensionFactories(makeDeps({ effectiveMaxDuration: 60 }))
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(60, expect.any(Number), "General-Purpose")
+		expect(clamped).not.toContain(subagentBashDefaultTimeoutExtension)
+
+		mockCreateSubagentBashClampExtension.mockClear()
+		const unlimited = buildInlineExtensionFactories(makeDeps({ effectiveMaxDuration: 0 }))
+		expect(mockCreateSubagentBashClampExtension).not.toHaveBeenCalled()
+		expect(unlimited).toContain(subagentBashDefaultTimeoutExtension)
+	})
+
+	it("registers the auto-model factories only for routed models", () => {
+		const autoRoutingFactory: InlineExtension = () => {}
+		mockCreateAutoModelRoutingExtension.mockReturnValueOnce(autoRoutingFactory)
+
+		const routed = buildInlineExtensionFactories(makeDeps({ model: AUTO_MODEL }))
+		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
+		expect(routed).toContain(autoRoutingFactory)
+		expect(routed).toHaveLength(7)
+
+		mockCreateAutoModelRoutingExtension.mockClear()
+		const concrete = buildInlineExtensionFactories(makeDeps({ model: CONCRETE_MODEL }))
+		expect(mockCreateAutoModelRoutingExtension).not.toHaveBeenCalled()
+		expect(concrete).not.toContain(autoRoutingFactory)
+		expect(concrete).toHaveLength(5)
+	})
+
+	it("registers the dap extension exactly when shouldRegisterDapForTools admits the tool names", () => {
+		expect(shouldRegisterDapForTools(DEBUG_TOOL_NAMES)).toBe(true)
+		expect(buildInlineExtensionFactories(makeDeps({ toolNames: DEBUG_TOOL_NAMES }))).toContain(dapExtension)
+		expect(shouldRegisterDapForTools(["read", "bash"])).toBe(false)
+		expect(buildInlineExtensionFactories(makeDeps({ toolNames: ["read", "bash"] }))).not.toContain(dapExtension)
+	})
+
+	it("registers the worker-report extension only when a capability is provided", () => {
+		const workerReportFactory: InlineExtension = () => {}
+		mockCreateWorkerReportExtension.mockReturnValueOnce(workerReportFactory)
+		const workerReport = { submit: vi.fn(), isAccepted: vi.fn(() => false) }
+
+		expect(buildInlineExtensionFactories(makeDeps({ workerReport }))).toContain(workerReportFactory)
+		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
+
+		mockCreateWorkerReportExtension.mockClear()
+		expect(buildInlineExtensionFactories(makeDeps())).not.toContain(workerReportFactory)
+		expect(mockCreateWorkerReportExtension).not.toHaveBeenCalled()
+	})
+
+	it("appends the MCP adapter factory only when the persona asks for MCP", () => {
+		// true — the default for a persona with no extensions restriction.
+		const enabled = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: true }))
+		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
+		expect(enabled).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
+
+		// Explicit persona extension list that includes MCP.
+		mockCreateKimchiMcpAdapterExtension.mockClear()
+		const explicitList = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["mcp"] }))
+		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
+		expect(explicitList).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
+	})
+
+	it("omits the MCP adapter factory for allowlists that exclude MCP", () => {
+		// An allowlist without "mcp" must not start the adapter (or spawn
+		// servers) only to filter its tool out afterwards.
+		const unrelated = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["unrelated"] }))
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+		expect(unrelated).toHaveLength(4) // telemetry, request-timing, bash default timeout, infrastructure breaker
+
+		// The worker-report edge: workerReport + extensions:false resolves to
+		// [], which no longer registers the adapter either.
+		mockCreateKimchiMcpAdapterExtension.mockClear()
+		const emptyArray = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: [] }))
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+		expect(emptyArray).toHaveLength(4)
+	})
+
+	it("omits the MCP adapter factory for isolated children (effectiveExtensions false)", () => {
+		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: false }))
+
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+		expect(factories).toHaveLength(4) // telemetry, request-timing, bash default timeout, infrastructure breaker
+	})
+
+	it("passes the effective cwd to the MCP adapter factory", () => {
+		buildInlineExtensionFactories(makeDeps({ effectiveExtensions: true, effectiveCwd: "/repo-under-test" }))
+
+		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledWith({
+			cwd: "/repo-under-test",
+			suppressWarnings: true,
+			lazyGatewayConnect: true,
+		})
+	})
+
+	it("rebuilds the system prompt from the routed model before the child's first turn", async () => {
+		const buildSystemPrompt = vi.fn(() => "Rebuilt prompt")
+		const onSystemPrompt = vi.fn()
+		const routed = buildInlineExtensionFactories(makeDeps({ model: AUTO_MODEL, buildSystemPrompt, onSystemPrompt }))
+
+		const childApi = createExtensionApi()
+		childApi.setActiveTools(["tool_a"])
+		for (const factory of routed) {
+			await runInlineExtension(factory, childApi.api)
+		}
+		const beforeAgentStart = childApi.getHandler("before_agent_start") as (
+			event: unknown,
+			ctx: unknown,
+		) => { systemPrompt: string } | undefined
+
+		const result = await beforeAgentStart(
+			{},
+			{ model: CONCRETE_MODEL, sessionManager: { getSessionId: () => "child-1" } },
+		)
+
+		expect(buildSystemPrompt).toHaveBeenCalledWith(["tool_a"], CONCRETE_MODEL.id)
+		expect(onSystemPrompt).toHaveBeenCalledWith("Rebuilt prompt")
+		expect(result).toEqual({ systemPrompt: "Rebuilt prompt" })
 	})
 })
