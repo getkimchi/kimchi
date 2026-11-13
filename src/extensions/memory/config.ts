@@ -199,7 +199,7 @@ export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 60 * 60_000
  * and no job has committed for this long. Replaces the fixed re-list cap:
  * the drain now re-lists until the pending/ queue is EMPTY.
  */
-export const MEMORY_DRAIN_INACTIVITY_MS = 240_000
+export const MEMORY_DRAIN_INACTIVITY_MS = 480_000
 
 /**
  * Drains a capture job with a deterministic (poison) extraction failure
