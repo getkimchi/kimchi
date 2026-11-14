@@ -22,7 +22,7 @@ import { hasImageFileContent, readImageFileFromDisk, sniffImageMimeType } from "
 function stripControlChars(value: string): string {
 	// Built from a string pattern: biome's noControlCharactersInRegex only
 	// applies to literals, and the ranges here are the whole point.
-	return value.replace(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]", "g"), "")
+	return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
 }
 
 function validateClipboardImage(image: { bytes: Uint8Array; mimeType: string } | null): {

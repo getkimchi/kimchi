@@ -980,7 +980,7 @@ it("rebuilds the accumulated history from scratch after a journal is rewritten, 
 })
 
 it("withholds a work named by an unknown record type that arrived between passes", async () => {
-	const flow = acceptedContinuation("plan", "planner")
+	acceptedContinuation("plan", "planner")
 	await flushWorkSummaries()
 	const progress = {}
 	await repair(progress)
@@ -1009,12 +1009,12 @@ it("withholds a work named by an unknown record type that arrived between passes
 })
 
 it("fails loudly when an invalid journal line arrives between passes, writing no new links", async () => {
-	const flow = acceptedContinuation("plan", "planner")
+	acceptedContinuation("plan", "planner")
 	await flushWorkSummaries()
 	const progress = {}
 	await repair(progress)
 	expect(links()).toHaveLength(1)
-	const later = acceptedContinuation("plan", "planner-invalid")
+	acceptedContinuation("plan", "planner-invalid")
 	fs.appendFileSync(join(dir, "work-attribution", "00000000-damaged.jsonl"), "{ broken json\n")
 	await flushWorkSummaries()
 	await expect(repair(progress)).rejects.toThrow(/invalid records/)

@@ -156,7 +156,7 @@ async function planSince(agent: string, seed?: string): Promise<void> {
 }
 
 async function schemaCheck(agent: string): Promise<void> {
-	const listFrom = (db: { query: <T, P>(sql: string) => { all: () => T[] } }): string[] =>
+	const listFrom = (db: { query: <T>(sql: string) => { all: () => T[] } }): string[] =>
 		db
 			.query<{ name: string }, []>(
 				"SELECT name FROM sqlite_master WHERE type='index' AND (name LIKE 'outbox_%' OR name = 'work_records_imported')",
