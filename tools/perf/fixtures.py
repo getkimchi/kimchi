@@ -324,6 +324,28 @@ def _commit_body(repo_path, i):
     }
 
 
+def _work_receipt_body(repo_path, i, now_ms):
+    """A work record with a saved-plan continuation: an unconfirmable receipt.
+
+    acceptedContinuation (links.ts) accepts it as a receipt; the plan it names
+    does not exist and no work_link confirmation ever arrives, so the work
+    stays pending forever — the reconcile can never settle to its quiet path.
+    This is the state that makes every pass re-walk the history: the class the
+    ledger scenario gates (pre-incremental reconcile re-reads the whole ledger
+    on every such pass).
+    """
+    return {
+        "version": 1,
+        "type": "work",
+        "workId": _work_id(i % 40),
+        "sessionId": _session_id(i % 12),
+        "cwd": repo_path, "repository": repo_path, "worktree": repo_path,
+        "continuation": {"source": "saved-plan",
+                         "evidence": {"path": f"plan-{i}.md", "contentHash": _sha(f"plan{i}")} },
+        "recordedAt": _iso(now_ms + i),
+    }
+
+
 def _request_body(repo_path, i):
     return {
         "version": 1,
@@ -451,6 +473,25 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
              "producerId": producer_id, "entries": entries}
     json.dump(state, open(os.path.join(pr_cost, "state.json"), "w"))
     return db_path
+
+
+def ledger_index_census(home):
+    """Which indexes exist on work_records/outbox_events after a run.
+
+    Advisory census for the ledger scenario: the additive indexes
+    (work_records_imported, outbox_pending_cover, outbox_batches_by_account)
+    are applied on open by the fixed binary and by nothing else, so their
+    presence after a scenario is proof the binary's ledger path ran against
+    the scaled fixture. Returns a sorted list, or None when no ledger exists
+    (very old releases created none — a sweep finding, not an error)."""
+    db_path = os.path.join(home, ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return None
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        rows = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('work_records','outbox_events','outbox_batches')"
+        ).fetchall()
+    return sorted(r[0] for r in rows)
 
 
 def retire_queue_retries(home, horizon_ms=3_600_000):

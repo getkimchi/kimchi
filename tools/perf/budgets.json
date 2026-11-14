@@ -49,6 +49,24 @@
    "budget_note": "retained-history memory (whole tree)"
   }
  },
+ "ledger": {
+  "instr": {
+   "limit": 250000000000.0,
+   "budget_note": "per-pass ledger re-reads at production record counts. INTERIM abs: above any post-fix reading so the fix branch's CI stays green; recalibrate to ratio limits from the canonical runner once measured"
+  },
+  "read_mb": {
+   "limit": 3000.0,
+   "budget_note": "per-pass re-reads of the scaled ledger (real-disk runners; page-cache-immune twin of instr). INTERIM abs until first canonical calibration"
+  },
+  "keylat_p95_ms": {
+   "limit": 100.0,
+   "budget_note": "keystroke echo latency while reconcile passes run over the big ledger; absolute event-loop-hold detector (the user-reported stall class)"
+  },
+  "additive_missing": {
+   "limit": 0.0,
+   "budget_note": "additive ledger indexes ABSENT after a run over the scaled fixture; the fix applies work_records_imported, outbox_pending_cover and outbox_batches_by_account on open — 0 missing on fixed binaries, 3 on unfixed"
+  }
+ },
  "idle": {
   "instr": {
    "limit": 23879029438,
