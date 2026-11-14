@@ -51,12 +51,12 @@
  },
  "ledger": {
   "instr": {
-   "limit": 100000000000.0,
-   "budget_note": "per-pass ledger work at production record counts. INTERIM abs from the release sweep (healthy v1.23-v1.34 era 52-54G, full-re-read v1.18-21 era 94G, v2.0.0-rc.7 86.6G, fix branch 49.7G, all on one dev machine); recalibrate to ratio limits on the canonical runner. 100G lets the healthy era clear ~2x and would have caught the v1.18 full-re-read class (94G); catching the rc.7 class (86G) needs the calibrated ratio budget (~1.35x of ~53G)"
+   "limit": 70000000000.0,
+   "budget_note": "per-pass ledger work at production record counts. INTERIM abs from the release sweep on one dev machine: healthy incremental era (v1.23-v1.34, master, fix branch) 49.7-54.5G with +-2% stability; the regression eras measure 86.6G (v2.0.0-rc.7) and 94G (v1.18-21 full re-read). 70G clears the healthy band by ~30% and fails both regression eras; recalibrate to ratio limits on the canonical runner"
   },
   "read_mb": {
-   "limit": 3000.0,
-   "budget_note": "per-pass re-reads of the scaled ledger (real-disk runners; page-cache-immune twin of instr). INTERIM abs until first canonical calibration"
+   "limit": 100.0,
+   "budget_note": "per-pass re-reads of the scaled ledger. INTERIM abs from the release sweep: healthy era 0.6-21MB; the re-read eras measure 522-622MB. 100MB clears healthy ~5x and fails the re-read class outright; recalibrate on the canonical runner"
   },
   "keylat_p95_ms": {
    "limit": 100.0,
