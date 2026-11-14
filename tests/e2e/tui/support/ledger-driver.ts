@@ -28,11 +28,9 @@ import {
 	fingerprint,
 	getNote,
 	readRecords,
+	readRecordsSinceSql,
 	readWorkHead,
 	readWorkSummary,
-} from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-import {
-	readRecordsSinceSql,
 	workRecordsImportedPresent,
 } from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
