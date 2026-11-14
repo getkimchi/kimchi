@@ -338,9 +338,7 @@ export function workRecordsImportedPresent(db: {
 }): boolean {
 	return (
 		db
-			.query<{ name: string }>(
-				"SELECT name FROM sqlite_master WHERE type='index' AND name = 'work_records_imported'",
-			)
+			.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='index' AND name = 'work_records_imported'")
 			.get() !== undefined
 	)
 }
