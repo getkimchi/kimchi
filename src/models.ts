@@ -3,9 +3,9 @@ import { dirname } from "node:path"
 import type {
 	AnthropicMessagesCompat,
 	Model,
+	ModelThinkingLevel,
 	OpenAICompletionsCompat,
 	ThinkingLevelMap,
-	ModelThinkingLevel,
 } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"

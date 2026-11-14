@@ -16,7 +16,7 @@
  * Kept in its own module — not `thinking-levels.ts` — to avoid an import
  * cycle: `models.ts` (registry) already imports from `thinking-levels.ts`.
  */
-import type { Api, Model, ThinkingLevelMap, ModelThinkingLevel } from "@earendil-works/pi-ai"
+import type { Api, Model, ModelThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { getModelThinkingLevels } from "./models.js"
 import { CANONICAL_THINKING_LEVELS } from "./thinking-levels.js"
