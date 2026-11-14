@@ -127,6 +127,8 @@ describe("PR watch extension", () => {
 	it("the tool starts CI fixes by default, watches only on request and finds no PRs gracefully", async () => {
 		expect((await tool({ url, autoFix: false })).details.state.targets[0]).toMatchObject({ autoFix: false, mode: "ci" })
 		expect((await tool({ url, mode: "all" })).details.state.targets[0]).toMatchObject({ autoFix: true, mode: "all" })
+		await tool({ action: "pause" })
+		expect((await tool({ url })).details.state.targets[0]).toMatchObject({ autoFix: true, mode: "ci" })
 		expect((await tool({ action: "stop", url })).details.state.targets[0].enabled).toBe(false)
 		vi.mocked(discoverMyOpenPRs).mockResolvedValue([])
 		expect((await tool({ allMine: true })).details.state.message).toBe("No open PRs or MRs found for your account.")

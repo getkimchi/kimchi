@@ -41,11 +41,6 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
 
-/** The PRs a request could not start or grant, one per line. */
-function failures(errors: string[]): string | null {
-	return errors.length ? errors.join("\n") : null
-}
-
 async function releaseLease(release: () => Promise<void>): Promise<void> {
 	try {
 		await release()
@@ -152,24 +147,12 @@ export class PRWatcher {
 	}
 
 	/** Grants every watched PR again, or starts with this checkout's PR when nothing is watched. */
-	async start(grant: Grant): Promise<PRWatchState> {
-		const watched = this.targets.filter((target) => target.enabled)
-		if (!watched.length) {
-			const url = await this.checkoutPR(this.controller.signal)
-			if (!url) throw new Error("Open a pull request for this branch before watching it.")
-			return this.add([{ url, cwd: this.ctx.cwd }], grant)
-		}
-		this.revision++
-		const errors = watched.flatMap((target) => {
-			try {
-				this.grant(target, grant)
-				return []
-			} catch (error) {
-				return [`${target.url}: ${errorMessage(error)}`]
-			}
-		})
-		this.persistAndPublish()
-		return { ...(await this.refresh()), message: failures(errors) }
+	async start(grant: Grant, toolCtx?: ExtensionToolContext, signal?: AbortSignal): Promise<PRWatchState> {
+		const watched = this.targets.filter((target) => target.enabled).map(({ url }) => ({ url }))
+		if (watched.length) return this.add(watched, grant, toolCtx, signal)
+		const url = await this.checkoutPR(signal ?? this.controller.signal)
+		if (!url) throw new Error("Open a pull request for this branch before watching it.")
+		return this.add([{ url, cwd: this.ctx.cwd }], grant, toolCtx, signal)
 	}
 
 	/** Keeps watching the PRs, or the given ones, without fixes. */
@@ -283,7 +266,7 @@ export class PRWatcher {
 			}
 		}
 		this.persistAndPublish()
-		return { ...(await this.refresh()), message: failures(errors) }
+		return { ...(await this.refresh()), message: errors.length ? errors.join("\n") : null }
 	}
 
 	private grant(target: TargetState, { autoFix, mode, instructions }: Grant): void {

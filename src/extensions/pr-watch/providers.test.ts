@@ -225,16 +225,19 @@ describe("GitLab snapshots", () => {
 		})
 	})
 
-	it("fails the snapshot when a membership check times out instead of distrusting the reviewer", async () => {
+	it("keeps reading CI when a membership check times out, without trusting the reviewer", async () => {
 		vi.mocked(requestJSON).mockImplementation(async (_remote, endpoint) => {
 			if (endpoint.pathname.endsWith("/merge_requests/7")) return response(mr)
 			throw new LookupError("GitLab timed out.", "retry")
 		})
 		const note = { id: 5, body: "Fix it", resolvable: true, resolved: false, author: { id: 6, username: "member" } }
 		vi.mocked(pages).mockImplementation(async (_remote, endpoint) =>
-			endpoint.pathname.endsWith("/jobs") ? [] : [{ id: "a", notes: [note] }],
+			endpoint.pathname.endsWith("/jobs") ? [{ id: 3, name: "Tests", status: "failed" }] : [{ id: "a", notes: [note] }],
 		)
-		await expect(readPRSnapshot(mrURL, signal)).rejects.toThrow("GitLab timed out.")
+		expect(await readPRSnapshot(mrURL, signal)).toMatchObject({
+			checks: [{ name: "Tests", state: "failed" }, { name: "Pipeline" }],
+			feedback: [{ author: "member", trusted: false }],
+		})
 	})
 })
 

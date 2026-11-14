@@ -5,7 +5,7 @@ import type { PRWatcher } from "./watcher.js"
 
 const COMMAND = "/pr-watch"
 const MAX_INSTRUCTIONS = 4000
-const SUBCOMMANDS = "enable, disable, watch, pause, monitor, status, stop, ci, reviews, all or mine"
+const SUBCOMMANDS = ["enable", "disable", "watch", "pause", "monitor", "status", "stop", "ci", "reviews", "all", "mine"]
 const ENABLED = "Automatic watching and fixing enabled for future PRs and sessions. /pr-watch disable turns it off."
 const DISABLED =
 	"Automatic PR watching disabled for future PRs and sessions. Watching stopped. /pr-watch enable turns it on."
@@ -66,7 +66,8 @@ export async function runPRWatchCommand(watcher: PRWatcher, args: string): Promi
 			return { state: await watcher.start({ autoFix: true, mode: action }) }
 	}
 	const parts = words(action)
-	const [first, provider, host, ...extra] = parts
+	const [first, ...rest] = parts
+	const [provider, host, ...extra] = rest
 	if (first === "mine" && !extra.length && (provider === undefined || provider === "github" || provider === "gitlab")) {
 		const items = provider === "gitlab" ? "GitLab MRs" : "GitHub PRs"
 		const where = host ? ` and host=${JSON.stringify(host)}` : ""
@@ -78,8 +79,10 @@ export async function runPRWatchCommand(watcher: PRWatcher, args: string): Promi
 		return {
 			prompt: `Watch these PRs and fix CI failures locally using pr_watch with mode=ci: ${JSON.stringify(parts)}`,
 		}
-	// One word is a mistyped subcommand far more often than a repair instruction.
-	if (parts.length === 1)
-		throw new Error(`Unknown /pr-watch command "${first}". Use ${SUBCOMMANDS}, PR URLs or instructions.`)
+	if ((first === "stop" || first === "pause" || first === "watch") && rest.length && rest.every(isURL))
+		return { state: first === "stop" ? watcher.stop(rest) : watcher.pause(rest) }
+	// A single word or a subcommand with extra words is a typo far more often than repair instructions.
+	if (parts.length === 1 || SUBCOMMANDS.includes(first))
+		throw new Error(`Unknown /pr-watch command "${action}". Use ${SUBCOMMANDS.join(", ")}, PR URLs or instructions.`)
 	return { state: await watcher.start({ autoFix: true, instructions: action }) }
 }

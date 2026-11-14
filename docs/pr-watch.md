@@ -25,10 +25,10 @@ conversation, one PR at a time, so keep the Kimchi process open.
 /pr-watch                             Watch this branch's PR, or grant fixes again to the watched PRs
 /pr-watch only fix lint errors        The same, with instructions for the repairs
 /pr-watch ci | reviews | all          Choose what can start a repair (default: ci)
-/pr-watch watch                       Watch without fixes (alias: pause)
+/pr-watch watch [<URL> ...]           Watch without fixes, all PRs or the given ones (alias: pause)
 /pr-watch status                      Check the PRs now and show them
 /pr-watch monitor                     Open the Monitor view
-/pr-watch stop                        Stop watching and cancel the current repair
+/pr-watch stop [<URL> ...]            Stop watching, all PRs or the given ones, and cancel their repair
 /pr-watch <URL> [<URL> ...]           Watch these PRs and fix CI
 /pr-watch mine [github|gitlab [host]] Watch your open PRs or MRs and fix CI
 /pr-watch enable | disable            Turn automatic watching on or off for future PRs
@@ -37,8 +37,8 @@ conversation, one PR at a time, so keep the Kimchi process open.
 The row above the prompt shows the watched PRs and what needs attention.
 `/pr-watch monitor` lists each PR's failing or running checks and unresolved review
 threads: **R** refreshes, **P** pauses fixes, **S** stops watching and **Esc** closes the
-view while watching continues. Pause and stop apply to every watched PR; ask the agent
-to pause or stop one URL to leave the others running.
+view while watching continues. Pause and stop apply to every watched PR unless you name
+URLs.
 
 ## How repairs run
 

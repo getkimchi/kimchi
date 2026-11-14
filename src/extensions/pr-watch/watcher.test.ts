@@ -313,8 +313,12 @@ describe("PR watcher", () => {
 		expect(started.message).toBe(`${URL8}: Trust /checkouts/8 before enabling auto-fix.`)
 		expect(started.targets.map(({ autoFix }) => autoFix)).toEqual([true, false])
 		expect(repairs()).toHaveLength(1)
-		await watcher.add([{ url: URL8 }], { autoFix: true }, toolCtx)
+		vi.mocked(confirmCheckoutTrust).mockImplementation(async () => {
+			vi.mocked(resolvePreMainProjectTrust).mockReturnValue(true)
+		})
+		const granted = await watcher.start({ autoFix: true }, toolCtx)
 		expect(confirmCheckoutTrust).toHaveBeenCalledWith(toolCtx, "/checkouts/8", expect.any(AbortSignal))
+		expect(granted.targets.map(({ autoFix }) => autoFix)).toEqual([true, true])
 	})
 
 	it("prepares one checkout for concurrent requests and drops it when stopped mid-preparation", async () => {

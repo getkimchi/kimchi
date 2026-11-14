@@ -8,13 +8,7 @@ import {
 	pages,
 	requestJSON,
 } from "../pull-request-status/provider-api.js"
-import {
-	lookupFailureReason,
-	pullRequest,
-	type Repository,
-	repositoryPath,
-	SHA,
-} from "../pull-request-status/provider-records.js"
+import { pullRequest, type Repository, repositoryPath, SHA } from "../pull-request-status/provider-records.js"
 import { object } from "../work-attribution/summary.js"
 import type { PRCheck, PRFeedback, PRSnapshot } from "./types.js"
 
@@ -322,9 +316,9 @@ async function gitlabSnapshot(
 					const member = (await requestJSON(remote, api(remote, `members/all/${id}`), signal, deadline)).value
 					trusted =
 						object(member) && typeof member.access_level === "number" && member.access_level >= GITLAB_DEVELOPER_ACCESS
-				} catch (error) {
-					// Non-members answer 404; their feedback stays visible without authorizing repairs.
-					if (lookupFailureReason(error) === "retry") throw error
+				} catch {
+					// Non-members answer 404. A failed lookup is retried on the next poll; neither authorizes repairs,
+					// and neither may block CI repairs, which never need reviewer trust.
 				}
 			}
 			developers.set(id, trusted)

@@ -32,6 +32,15 @@ describe("/pr-watch", () => {
 		expect(watcher[method as "start"]).toHaveBeenCalledWith(...(grant ? [grant] : []))
 	})
 
+	it("pauses or stops only the URLs given", async () => {
+		const watcher = fakeWatcher(true)
+		await runPRWatchCommand(watcher as unknown as PRWatcher, `stop ${URL7}`)
+		await runPRWatchCommand(watcher as unknown as PRWatcher, `watch ${URL7}`)
+		expect(watcher.stop).toHaveBeenCalledWith([URL7])
+		expect(watcher.pause).toHaveBeenCalledWith([URL7])
+		expect(watcher.start).not.toHaveBeenCalled()
+	})
+
 	it("pauses what is watched and otherwise starts read-only", async () => {
 		const idle = fakeWatcher()
 		await runPRWatchCommand(idle as unknown as PRWatcher, "watch")
@@ -60,9 +69,10 @@ describe("/pr-watch", () => {
 
 	it("refuses a mistyped subcommand and overlong instructions without granting fixes", async () => {
 		const watcher = fakeWatcher()
-		await expect(runPRWatchCommand(watcher as unknown as PRWatcher, "disabel")).rejects.toThrow(
-			'Unknown /pr-watch command "disabel"',
-		)
+		for (const args of ["disabel", "disable now", "status please", "reviews only", "mine gitlb"])
+			await expect(runPRWatchCommand(watcher as unknown as PRWatcher, args)).rejects.toThrow(
+				`Unknown /pr-watch command "${args}"`,
+			)
 		await expect(runPRWatchCommand(watcher as unknown as PRWatcher, "x".repeat(4001))).rejects.toThrow("4000")
 		expect(watcher.start).not.toHaveBeenCalled()
 	})

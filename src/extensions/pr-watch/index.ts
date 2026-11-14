@@ -84,12 +84,12 @@ const prWatchTool = defineTool({
 		else {
 			if (args.allMine)
 				targets.push(...(await discoverMyOpenPRs(args.provider, args.host, abort)).map((url) => ({ url })))
-			const grant = { autoFix: args.autoFix ?? true, mode: args.mode, instructions: args.instructions }
+			const grant = { autoFix: args.autoFix ?? true, mode: args.mode ?? "ci", instructions: args.instructions }
 			state = targets.length
 				? await current.add(targets, grant, ctx, abort)
 				: args.allMine
 					? { ...current.snapshot, message: "No open PRs or MRs found for your account." }
-					: await current.start(grant)
+					: await current.start(grant, ctx, abort)
 		}
 		return { content: [{ type: "text", text: formatPRWatchStatus(state) }], details: { state } }
 	},
