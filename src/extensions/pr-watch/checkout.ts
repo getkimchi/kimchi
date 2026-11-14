@@ -12,9 +12,8 @@ import type { PRSnapshot } from "./types.js"
 
 const GIT_BUDGET_MS = 5000
 const CLONE_TIMEOUT_SECONDS = 120
-const CLONE_ERROR_LIMIT = 600
+// A busy agent loop must not look like a dead lease holder.
 const LEASE_STALE_MS = 30_000
-const LEASE_UPDATE_MS = 5000
 
 function digest(value: string): string {
 	return createHash("sha256").update(value).digest("hex")
@@ -42,7 +41,7 @@ export async function acquirePRLease(
 ): Promise<() => Promise<void>> {
 	const directory = join(getAgentDir(), "pr-watch", "leases", digest(pr.url))
 	await mkdir(directory, { recursive: true, mode: 0o700 })
-	return lock(directory, { retries: 0, stale: LEASE_STALE_MS, update: LEASE_UPDATE_MS, onCompromised })
+	return lock(directory, { retries: 0, stale: LEASE_STALE_MS, onCompromised })
 }
 
 /** Asks before allowing automatic repairs in a checkout outside the session's project. */
@@ -82,8 +81,8 @@ export async function preparePRCheckout(
 		const clone = [cli, "repo", "clone", source.cloneURL, cwd, "--", "--single-branch", "--branch", source.branch]
 		const outcome = await ctx.executeTool("bash", { command: quote(clone), timeout: CLONE_TIMEOUT_SECONDS }, { signal })
 		if (outcome.isError) {
-			const output = outcome.result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join(" ")
-			throw new Error(`Could not prepare ${source.url}. ${output.slice(0, CLONE_ERROR_LIMIT)}`)
+			const output = outcome.result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")
+			throw new Error(`Could not prepare ${source.url}. ${output.trim().split("\n").at(-1) ?? ""}`)
 		}
 	}
 	signal.throwIfAborted()

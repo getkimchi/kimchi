@@ -1,7 +1,7 @@
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { getParsedCliArgs } from "../../cli-args.js"
-import { runPRWatchCommand } from "./command.js"
+import { MAX_INSTRUCTIONS, runPRWatchCommand } from "./command.js"
 import { followCheckoutPR } from "./offer.js"
 import { PRWatchPanel } from "./panel.js"
 import { formatPRWatchStatus } from "./presentation.js"
@@ -22,13 +22,11 @@ const prWatchParameters = Type.Object({
 	action: Type.Optional(
 		Type.Union([Type.Literal("start"), Type.Literal("pause"), Type.Literal("stop"), Type.Literal("status")]),
 	),
-	url: Type.Optional(
-		Type.String({ minLength: 1, maxLength: 2048, description: "The PR/MR URL requested by the user." }),
-	),
+	url: Type.Optional(Type.String({ minLength: 1, description: "The PR/MR URL requested by the user." })),
 	targets: Type.Optional(
 		Type.Array(
 			Type.Object({
-				url: Type.String({ minLength: 1, maxLength: 2048 }),
+				url: Type.String({ minLength: 1 }),
 				cwd: Type.Optional(
 					Type.String({
 						minLength: 1,
@@ -45,7 +43,6 @@ const prWatchParameters = Type.Object({
 	host: Type.Optional(
 		Type.String({
 			minLength: 1,
-			maxLength: 255,
 			description: "Git provider hostname for account discovery, including self-hosted instances.",
 		}),
 	),
@@ -57,7 +54,9 @@ const prWatchParameters = Type.Object({
 	autoFix: Type.Optional(
 		Type.Boolean({ description: "Defaults to true when starting. False explicitly requests watch-only." }),
 	),
-	instructions: Type.Optional(Type.String({ maxLength: 4000, description: "Optional user limits on repairs." })),
+	instructions: Type.Optional(
+		Type.String({ maxLength: MAX_INSTRUCTIONS, description: "Optional user limits on repairs." }),
+	),
 })
 
 export type PRWatchArgs = Static<typeof prWatchParameters>

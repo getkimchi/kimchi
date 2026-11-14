@@ -12,7 +12,6 @@ const CHROME_ROWS = 6
 const RESERVED_TERMINAL_ROWS = 3
 const MIN_WIDTH = 6
 const LABEL_MIN_WIDTH = 62
-const FEEDBACK_PREVIEW = 300
 const REDRAW_MS = 1000
 
 /** The Monitor tab: every watched PR's checks and feedback over the input row. */
@@ -84,7 +83,7 @@ export class PRWatchPanel {
 			for (const feedback of target.pullRequest?.feedback ?? []) {
 				const place = feedback.path ? ` · ${feedback.path}${feedback.line ? `:${feedback.line}` : ""}` : ""
 				add(`${feedback.author}${place}${feedback.trusted ? "" : " · manual review"}`)
-				add(words(feedback.body).join(" ").slice(0, FEEDBACK_PREVIEW))
+				add(words(feedback.body).join(" "))
 			}
 		}
 		return lines

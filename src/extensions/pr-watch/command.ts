@@ -4,7 +4,7 @@ import type { PRWatchState } from "./types.js"
 import type { PRWatcher } from "./watcher.js"
 
 const COMMAND = "/pr-watch"
-const MAX_INSTRUCTIONS = 4000
+export const MAX_INSTRUCTIONS = 4000
 const SUBCOMMANDS = ["enable", "disable", "watch", "pause", "monitor", "status", "stop", "ci", "reviews", "all", "mine"]
 const ENABLED = "Automatic watching and fixing enabled for future PRs and sessions. /pr-watch disable turns it off."
 const DISABLED =
@@ -38,7 +38,8 @@ async function enable(watcher: PRWatcher): Promise<PRWatchState> {
 
 export async function runPRWatchCommand(watcher: PRWatcher, args: string): Promise<PRWatchCommandResult> {
 	const action = args.trim()
-	if (action.length > MAX_INSTRUCTIONS) throw new Error("PR watch instructions must be at most 4000 characters.")
+	if (action.length > MAX_INSTRUCTIONS)
+		throw new Error(`PR watch instructions must be at most ${MAX_INSTRUCTIONS} characters.`)
 	switch (action) {
 		case "enable":
 			return { state: await enable(watcher) }

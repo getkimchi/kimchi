@@ -20,7 +20,6 @@ const POLL_INTERVAL_MS = 30_000
 const MAX_ATTEMPTS = 3
 const PUSH_CHECKS = 3
 const PUSH_CHECK_DELAY_MS = 1000
-const SAVED_EVENTS = 300
 export const PLAN_MODE_MESSAGE = "Switch out of Plan mode before auto-fixing this PR."
 
 interface Grant {
@@ -306,6 +305,8 @@ export class PRWatcher {
 			if (signal.aborted || !target.enabled) return
 			target.pullRequest = pr
 			target.checkedAt = new Date().toISOString()
+			// Check events carry their head, so those of older heads can never come back.
+			target.handled = target.handled.filter((id) => id.startsWith("review:") || id.startsWith(`${pr.headSha}:`))
 			if (pr.state !== "open") {
 				this.cancelRepair(target)
 				target.enabled = false
@@ -475,7 +476,7 @@ export class PRWatcher {
 					mode,
 					instructions,
 					attempts,
-					handled: handled.slice(-SAVED_EVENTS),
+					handled,
 				}),
 			),
 		})

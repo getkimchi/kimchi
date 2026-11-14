@@ -14,8 +14,7 @@ import type { PRCheck, PRFeedback, PRSnapshot } from "./types.js"
 
 const REQUEST_BUDGET_MS = 25_000
 const DISCOVERY_BUDGET_MS = 60_000
-const SUMMARY_LIMIT = 4000
-const BODY_LIMIT = 8000
+const TEXT_LIMIT = 4000
 const REVIEW_THREAD_PAGES = 20
 const GITHUB_SEARCH_LIMIT = 1000
 const SEARCH_PAGE_SIZE = 100
@@ -161,14 +160,14 @@ export function githubChecks(checks: unknown, statuses: unknown): PRCheck[] {
 			name: text(check.name),
 			state: checkState(check.status === "completed" ? check.conclusion : check.status),
 			url: text(check.details_url) || null,
-			summary: object(check.output) ? text(check.output.summary).slice(0, SUMMARY_LIMIT) : "",
+			summary: object(check.output) ? text(check.output.summary).slice(0, TEXT_LIMIT) : "",
 		})),
 		...rows(statuses).map((status) => ({
 			id: `status:${status.id}`,
 			name: text(status.context),
 			state: checkState(status.state),
 			url: text(status.target_url) || null,
-			summary: text(status.description).slice(0, SUMMARY_LIMIT),
+			summary: text(status.description).slice(0, TEXT_LIMIT),
 		})),
 	]
 }
@@ -183,7 +182,7 @@ export function githubFeedback(threads: unknown, appComments = new Set<number>()
 			{
 				id: `review:${thread.id}:${comment.id}:${text(comment.updatedAt)}`,
 				author: object(comment.author) ? text(comment.author.login) : "",
-				body: text(comment.body).slice(0, BODY_LIMIT),
+				body: text(comment.body).slice(0, TEXT_LIMIT),
 				url: text(comment.url),
 				path: text(comment.path) || null,
 				line: typeof comment.line === "number" ? comment.line : null,
@@ -197,7 +196,7 @@ export function githubFeedback(threads: unknown, appComments = new Set<number>()
 
 const reviewQuery = `query($owner:String!,$name:String!,$number:Int!,$after:String){
 	repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:50,after:$after){
-		nodes{id isResolved isOutdated comments(last:20){nodes{id databaseId body url updatedAt path line author{login} authorAssociation}}}
+		nodes{id isResolved isOutdated comments(last:1){nodes{id databaseId body url updatedAt path line author{login} authorAssociation}}}
 		pageInfo{hasNextPage endCursor}
 	}}}
 }`
@@ -331,7 +330,7 @@ async function gitlabSnapshot(
 		feedback.push({
 			id: `review:${discussion.id}:${note.id}:${text(note.updated_at)}`,
 			author: text(author.username),
-			body: text(note.body).slice(0, BODY_LIMIT),
+			body: text(note.body).slice(0, TEXT_LIMIT),
 			url: `${pr.url}#note_${note.id}`,
 			path: text(position.new_path) || null,
 			line: typeof position.new_line === "number" ? position.new_line : null,
