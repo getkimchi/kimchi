@@ -141,6 +141,7 @@ import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import powershellGateExtension from "./extensions/powershell-gate.js"
 import prCostReportingExtension from "./extensions/pr-cost-reporting/index.js"
+import prWatchExtension from "./extensions/pr-watch/index.js"
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -1036,6 +1037,7 @@ async function cliMain(): Promise<void> {
 				tagsExtension,
 				teleportExtension,
 				remoteRunExtension,
+				prWatchExtension,
 				telemetryExtension(telemetryConfig),
 				sessionMetadataExtension(),
 				surveysExtension(),

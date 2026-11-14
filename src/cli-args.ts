@@ -184,6 +184,10 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Start in plan mode (read-only)",
 	},
+	"pr-watch": {
+		type: "boolean",
+		description: "Watch this session's branch for a PR (read-only; /pr-watch enables fixes)",
+	},
 	auto: {
 		type: "boolean",
 		description: "Start in auto mode (run freely, classifier guards)",
@@ -260,6 +264,7 @@ export interface SessionCliArgs {
 		"allow-tool"?: string[]
 		"deny-tool"?: string[]
 		plan?: boolean
+		"pr-watch"?: boolean
 		auto?: boolean
 		yolo?: boolean
 		"dangerously-skip-permissions"?: boolean
@@ -340,6 +345,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"allow-tool",
 	"deny-tool",
 	"plan",
+	"pr-watch",
 	"auto",
 	"yolo",
 	"dangerously-skip-permissions",

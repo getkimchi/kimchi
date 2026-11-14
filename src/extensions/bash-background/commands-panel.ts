@@ -2,15 +2,15 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import {
 	CURSOR_MARKER,
 	matchesKey,
-	TuiMainScreen,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
+import { mountInputPanel, safePanelText as safeBashText } from "../../components/input-panel.js"
 import { claimRawInputCapture } from "../shared-input.js"
-import { bashOutputAge, bashStatus, bashStatusColor, bashTitle, safeBashText } from "./bash-display.js"
+import { bashOutputAge, bashStatus, bashStatusColor, bashTitle } from "./bash-display.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
 
 export class CommandsPanel {
@@ -35,30 +35,7 @@ export class CommandsPanel {
 		private readonly done: () => void,
 		private readonly theme: Theme,
 	) {
-		if (tui instanceof TuiMainScreen) {
-			const render = tui.render
-			const editor = tui.getFocusedComponent()
-			const renderEditor = editor?.render
-			// Compose over the input without Pi's overlay padding to terminal height.
-			// That padding expands output blocks even when the menu needs only a few rows.
-			tui.render = (width) => {
-				const lines = render.call(tui, width)
-				const marker = lines.findIndex((line) => line.includes(CURSOR_MARKER))
-				if (marker < 0) return lines
-				const menu = this.renderContent(width)
-				const editorHeight = editor && renderEditor ? renderEditor.call(editor, width).length : 3
-				lines.splice(marker, menu.length, ...Array<string>(editorHeight).fill(""))
-				const state = tui.captureRenderState()
-				const sameSize = state.previousWidth === width && state.previousHeight === tui.terminal.rows
-				const viewportTop = Math.max(sameSize ? state.previousViewportTop : 0, lines.length - tui.terminal.rows)
-				const row = Math.max(viewportTop, Math.min(marker, viewportTop + tui.terminal.rows - menu.length - 1))
-				for (let i = 0; i < menu.length; i++) lines[row + i] = menu[i]
-				return lines
-			}
-			this.restoreRender = () => {
-				tui.render = render
-			}
-		}
+		this.restoreRender = mountInputPanel(tui, (width) => this.renderContent(width))
 		this.refresh()
 		this.timer = setInterval(() => {
 			this.refresh()

@@ -4,7 +4,8 @@ import {
 	type ThemeColor,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
-import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { safePanelText as safeBashText } from "../../components/input-panel.js"
 import { ToolText, toolHeader, withBranch } from "../tool-rendering.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
 
@@ -35,15 +36,6 @@ function rowsForSession(registry: ProcessRegistry | undefined): Map<string, Bash
 
 function hiddenControl(ctx: Parameters<BashCallRenderer>[2], registry: ProcessRegistry | undefined): boolean {
 	return !ctx.state.bashControlError && !!rowsForSession(registry)?.has(stringArg(ctx.args, "handle"))
-}
-
-/** Shell text is data: never send its terminal controls to the user's terminal. */
-export function safeBashText(text: string): string {
-	return stripTerminalSequences(text)
-		.replace(/\r\n/g, "\n")
-		.replace(/\r/g, "\n")
-		.replace(/\t/g, "    ")
-		.replace(/[\p{Cc}\u202a-\u202e\u2066-\u2069]/gu, (char) => (char === "\n" ? char : ""))
 }
 
 export function bashStatus(snapshot: ProcessDisplaySnapshot, now = snapshot.observedAt): string {

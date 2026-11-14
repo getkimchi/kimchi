@@ -90,7 +90,7 @@ export interface ToolEntry {
 // Catalog arrays
 // ---------------------------------------------------------------------------
 
-/** Read-only discovery tools available in every mode. */
+/** Discovery and session-control tools available in every mode. */
 export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "read", modes: ["shared"] },
 	{ name: "grep", modes: ["shared"] },
@@ -101,6 +101,8 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "skill", modes: ["shared"] },
 	{ name: "web_fetch", modes: ["shared"] },
 	{ name: "web_search", modes: ["shared"] },
+	// Watching stays available in Plan mode; the watcher itself blocks repairs there.
+	{ name: "pr_watch", modes: ["shared"] },
 	// Framework-owned workflow control-plane tools. They are registered only
 	// while a reporting/asking step is active, but must survive restrictive
 	// planning profiles so the step can return its result or questions.
