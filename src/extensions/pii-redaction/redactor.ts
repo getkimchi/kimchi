@@ -695,18 +695,19 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// coverage (anchor_required, excluded by default) for the free-text case
 	// the JSON sensitive-key path cannot see. Value charset excludes `[` so
 	// an earlier pattern's `[REDACTED-…]` marker is never re-consumed.
-	// The anchor consumes a leading non-alphanumeric byte: without it the
-	// keyword matches keyword-shaped suffixes of camelCase identifiers
-	// (`oauthAccessToken = "kimchi-e2e-…"` → "Token = …" — measured ~2,850
-	// false redactions across engineering transcripts). `_` / `-` stay legal
-	// boundaries: MY_TOKEN=… env keys and --token=… CLI flags are real
-	// secret habitats, not identifiers.
+	// The anchor consumes a leading non-letter byte: without it the
+	// keyword matches shape-suffixed identifiers (`oauthAccessToken = "…"`
+	// → "Token = …" — measured ~2,850 false redactions across engineering
+	// transcripts). Leading digits are consumed too (`1password:` is a real
+	// secret habitat); letters are not, so camelCase identifiers stay
+	// excluded. `_` / `-` stay legal boundaries: MY_TOKEN=… env keys and
+	// --token=… CLI flags are real secret habitats, not identifiers.
 	{
 		skipIfEmbeddedInBase64: true,
 		rejectValue: isGenericNonSecretValue,
 		name: "GENERIC_SECRET",
 		regex:
-			/((?:^|[^A-Za-z0-9])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
+			/((?:^|[^A-Za-z])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
 		secretGroup: 2,
 	},
 	// Docker registry auth from a config's JSON `"auth"` key (base64 of
@@ -719,16 +720,16 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 ]
 
 /**
- * Value guards for GENERIC_SECRET (rule-1, amended by two external reviewers
- * against the measured corpus): the keyword anchor still fires on values that
- * are provably not secrets — shell expansions (${VAR:-…}, $(cmd), $VAR/…),
+ * Value guards for GENERIC_SECRET (shaped against the measured corpus):
+ * the keyword anchor still fires on values that are provably not secrets —
+ * shell expansions (${VAR:-…}, $(cmd), $VAR/…),
  * doc placeholders (<your_access_token>), absolute/relative or variable-anchored
- * paths, and digit-free identifier shapes (oauthRefreshToken, options.bearerToken).
+ * paths, and identifier-shaped digit-free lowercase-initial values
+ * (oauthRefreshToken, options.bearerToken).
  * Bounds: base64 secrets containing '/' start alphanumeric, never path-anchored;
- * diceware passphrases carry no digits but are not identifier-shaped — only
- * camelCase-or-dotted digit-free values are rejected, so word-like secrets with
- * an uppercase letter and no symbols DO get rejected intentionally (the corpus
- * found none), while `mysecretpassword` lowercase forms stay redacted.
+ * camelCase rejection requires a lowercase initial, so capital-initial chains
+ * like CorrectHorseBatteryStaple pass as secrets; lowercase word-like values
+ * stay redacted.
  */
 export function isGenericNonSecretValue(value: string): boolean {
 	// `$`-leading shell expansions and command substitutions only:
@@ -737,9 +738,10 @@ export function isGenericNonSecretValue(value: string): boolean {
 	if (/^\$(?:[{([]|[A-Za-z_])/.test(value) || /^<[A-Za-z0-9_\s-]*>$/.test(value)) return true
 	// Paths: anchored start (/, ~/, ./, ../, $VAR/) with path-ish body.
 	if (/^(?:~?\/|\.\.?\/|\$[A-Za-z_][\w]*\/)[\w.+=/@-]+\/?$/.test(value)) return true
-	// Identifier-shaped, digit-free (camelCase single words or dotted paths) —
-	// every measured identifier-FP is digit-free while real secrets carry digits.
-	if (!/\d/.test(value) && /^[A-Za-z$_][\w$]*(?:\.[\w$]+)*[,;]?$/.test(value) && /[A-Z]/.test(value)) return true
+	// Identifier-shaped, digit-free, lowercase-initial (camelCase single words
+	// or dotted property paths) — the measured identifier-FP population; capital-
+	// initial chains and mixed-case secrets with no digits redact normally.
+	if (!/\d/.test(value) && /^[a-z$_][\w$]*(?:\.[\w$]+)*[,;]?$/.test(value) && /[A-Z]/.test(value)) return true
 	return false
 }
 
@@ -830,20 +832,31 @@ export function applyCustomPatterns(
 				const offset = args[args.length - 2]
 				const input = args[args.length - 1]
 				// The anchored match starts AT its consumed boundary byte, so the
-				// byte class decides: only payload-internal bytes keep the run
-				// alive — `+`/`/` (raw base64) and `-`/`_` (base64url/JWT, and the
-				// keyword suffixes of anchored names like FACEBOOK_TOKEN). Every
-				// other delimiter (space, quote, `=`, `:`, `;`, `,`, tab, newline)
-				// is real secret framing and must redact — the measured across-
-				// the-delimiter run let any 16+ alnum token before a keyword
-				// suppress the adjacent true secret. Residual accepted tradeoff,
-				// mirroring the engine witness: a ≥16-base64-char run glued to
-				// `+`/`/`/`-`/`_` still reads as payload.
+				// byte class decides what can keep a base64 run alive: `+`/`/`
+				// (raw base64), `-`/`_` (base64url/JWT and the keyword suffixes of
+				// anchored names like FACEBOOK_TOKEN), and digits — digits are
+				// payload bytes in both base64 alphabets, so a digit-glued anchor
+				// inside a blob (…b64AAAAB5token=…) stays suppressible while
+				// `1password:` at a space boundary still redacts. Every other
+				// delimiter (space, quote, `=`, `:`) is real secret framing and
+				// must redact. Suppression additionally requires interior base64
+				// evidence — a `+` inside the run window (the walk alphabet
+				// contains no other non-alnum byte) — because the boundary byte
+				// itself cannot count as evidence. Pure-alnum runs (hashes,
+				// tokens typed before a keyword, crafted evasions) redact; so do
+				// genuine base64url/JWT-only payloads (no `+`), an accepted
+				// narrowing of the skip.
 				if (typeof offset === "number" && typeof input === "string") {
 					const boundary = input.charAt(offset)
-					const payloadInternal = boundary === "+" || boundary === "/" || boundary === "-" || boundary === "_"
-					const run = base64RunBefore(input, offset) + (isBase64RunChar(boundary) ? 1 : 0)
-					if (payloadInternal && run >= 16) return match
+					const payloadInternal =
+						boundary === "+" || boundary === "/" || boundary === "-" || boundary === "_" || /\d/.test(boundary)
+					const walk = base64RunBefore(input, offset)
+					const run = walk + (isBase64RunChar(boundary) ? 1 : 0)
+					let hasInteriorPlus = false
+					for (let i = offset - walk; i < offset; i++) {
+						if (input.charAt(i) === "+") hasInteriorPlus = true
+					}
+					if (payloadInternal && run >= 16 && hasInteriorPlus) return match
 				}
 			}
 			if (secretGroup !== undefined) {

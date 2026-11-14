@@ -889,13 +889,70 @@ describe("base64-witness boundary classes", () => {
 		["-", "base64url/JWT"],
 		["_", "anchored-name suffix"],
 	])("still skips a keyword embedded mid-payload behind %s (%s)", async (boundary) => {
-		const out = await redactText(`data ${"a".repeat(20)}${boundary}password=${V}`)
+		// Real base64 interiors carry non-alnum payload bytes; with one inside
+		// the 16-char witness window the anchored keyword still reads as blob.
+		const interior = "+"
+		const out = await redactText(`data:${"a".repeat(8)}${interior}${"a".repeat(7)}${boundary}password=${V}`)
 		expect(out).toContain(V)
 	})
 
-	it("keeps a 15-char run below the witness floor redacting", async () => {
-		const out = await redactText(`line ZGVhZGJlZWZjYWZ password: ${V}`)
+	it("redacts a keyword after a pure-alnum run glued to a payload byte (no interior non-alnum)", async () => {
+		// A 16+ alnum run ending in `+` is a token/hash glued to the byte, not a
+		// base64 interior — the boundary itself cannot count as blob evidence.
+		const out = await redactText(`data ${"a".repeat(20)}+password=${V}`)
 		expect(out).not.toContain(V)
+		expect(out).toContain("[REDACTED-GENERIC_SECRET]")
+	})
+
+	it("redacts a capital-initial digit-free value (capital-chain secret), keeps lowercase identifier shapes", async () => {
+		// Identifier rejection covers the measured FP population — lowercase-
+		// initial camelCase words and dotted property paths — so capital-initial
+		// word chains are treated as secrets again.
+		const capitalChain = "CorrectHorseBatteryStapleZZ"
+		for (const anchor of ["password: ", "token: "]) {
+			const out = await redactText(anchor + capitalChain)
+			expect(out).not.toContain(capitalChain)
+			expect(out).toContain("[REDACTED-GENERIC_SECRET]")
+		}
+		for (const [anchor, identifier] of [
+			["token: ", "oauthRefreshTokenabcdefZZ"],
+			["token: ", "options.bearerTokenabcdefZZ"],
+		] as const) {
+			expect(await redactText(anchor + identifier)).toBe(anchor + identifier)
+		}
+	})
+
+	it("redacts digit-glued anchors while camelCase-glued anchors stay excluded", async () => {
+		// `1password:` / `sha256token=` are real secret framings; the glued
+		// boundary consumes the digit and keeps it in the replacement prefix.
+		// Letter-glued identifiers stay excluded by the anchor.
+		const secret = "J7k2M9p4Q1r8S6t3U0v5W2x7Y9z4A3n6"
+		expect(await redactText("1password: " + secret)).toBe("1password: [REDACTED-GENERIC_SECRET]")
+		expect(await redactText("sha256token=" + secret)).toBe("sha256token=[REDACTED-GENERIC_SECRET]")
+		const letterGlued = "oauthAccessToken: " + secret
+		expect(await redactText(letterGlued)).toBe(letterGlued)
+	})
+
+	it("requires the interior + within the 16-char witness window", async () => {
+		// The walk caps at 16: a `+` further back supplies no evidence and the
+		// keyword's value redacts — the window edge is load-bearing.
+		const deep = "x" + "+" + "a".repeat(30) + "-password=" + V
+		expect(await redactText(deep)).not.toContain(V)
+	})
+
+	it("base64url-only payloads no longer suppress (accepted narrowing)", async () => {
+		// Genuine base64url/JWT interiors contain `-`/`_` but never `+`; the
+		// walk alphabet excludes them, so no interior evidence exists and the
+		// anchored match redacts. Pinning the narrowing makes it visible.
+		const blob = "e" + "-".repeat(1) + "y".repeat(18) + "_password=" + V
+		expect(await redactText(blob)).not.toContain(V)
+	})
+
+	it("digit-glued anchor inside a base64 run still suppresses", async () => {
+		// Digits are payload bytes in both base64 alphabets: mid-blob digit
+		// glue keeps the run alive and the embedded keyword stays untouched.
+		const blob = `iVBORw0KGg+oAAAAB5token=${V}SUQmCC==`
+		expect(await redactText(blob)).toBe(blob)
 	})
 
 	it("redacts both secrets in an adjacent keyword pair (one delimiter apart)", async () => {
@@ -1407,9 +1464,10 @@ describe("base64-shadow suppression", () => {
 		// occurrences in base64 payloads are the measured FP class.
 		const token = ["EAAC", "g".repeat(60)].join("")
 		// The engine value regex greedily swallows trailing base64 chars into
-		// the span; base64 padding (`=`) breaks the run, as in real payloads.
+		// the span; base64 interior bytes (`+`) keep the anchor reading as
+		// blob, as in real payloads.
 		const kw = "FACEB" + "OOK_TOKEN="
-		const embedded = `data:image/png;base64,iVBORw0KGgo${kw}${token}SUQmCC==`
+		const embedded = `data:image/png;base64,iVBORw0KGg+o${kw}${token}SUQmCC==`
 		expect(await redactText(embedded)).toBe(embedded)
 		const delimited = await redactText(`FACEBOOK_TOKEN="${token}"`)
 		expect(delimited).not.toContain(token)
