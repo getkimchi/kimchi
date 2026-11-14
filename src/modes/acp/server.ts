@@ -141,9 +141,10 @@ import {
 	substituteTokensDeep,
 	vaultForSession,
 } from "../../extensions/pii-redaction/vault.js"
-import { formatPRWatchStatus, runPRWatchCommand } from "../../extensions/pr-monitor/command.js"
-import { getPRMonitor } from "../../extensions/pr-monitor/index.js"
-import { setPRMonitoringPermitted } from "../../extensions/pr-monitor/session-policy.js"
+import { prWatchCommandArgs, runPRWatchCommand } from "../../extensions/pr-watch/command.js"
+import { getPRWatcher } from "../../extensions/pr-watch/index.js"
+import { formatPRWatchStatus } from "../../extensions/pr-watch/presentation.js"
+import { setPRMonitoringPermitted } from "../../extensions/pr-watch/session-policy.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
@@ -195,14 +196,12 @@ import {
 	handleMemoryStatus,
 	handleSetMemoryEnabled,
 } from "./ext-methods/memory.js"
-import { handlePRMonitor } from "./ext-methods/pr-monitor.js"
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { SsoFlowManager, type SsoFlowManagerDeps, ssoError } from "./ext-methods/sso.js"
 import { handleSsoCredential } from "./ext-methods/sso-credential.js"
 import { handleSteering } from "./ext-methods/steering.js"
-import { emitExtNotification } from "./ext-notifications.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
@@ -1525,28 +1524,33 @@ export class KimchiAcpAgent implements Agent {
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
-		if (
-			getClientOptedIntoPRMonitoring(this.clientCapabilities) &&
-			/^\/pr-watch(?:\s|$)/.test(text) &&
-			images.length === 0
-		) {
-			const monitor = getPRMonitor(entry.session.sessionManager)
-			let reply: string
+		const prWatchArgs =
+			getClientOptedIntoPRMonitoring(this.clientCapabilities) && images.length === 0
+				? prWatchCommandArgs(text)
+				: undefined
+		if (prWatchArgs !== undefined) {
+			// Replies go back as agent text; requests that need checkouts continue as an ordinary prompt.
+			let reply: string | undefined
 			try {
-				if (!monitor) throw new Error("The PR monitor session is unavailable.")
-				reply = formatPRWatchStatus(await runPRWatchCommand(monitor, text.slice("/pr-watch".length)))
+				const watcher = getPRWatcher(entry.session.sessionManager)
+				if (!watcher) throw new Error("PR watch is unavailable in this session.")
+				const result = await runPRWatchCommand(watcher, prWatchArgs)
+				if ("prompt" in result) text = result.prompt
+				else reply = formatPRWatchStatus(result.state)
 			} catch (error) {
 				reply = `PR watch: ${error instanceof Error ? error.message : String(error)}`
 			}
-			this.send({
-				sessionId: params.sessionId,
-				update: {
-					sessionUpdate: "agent_message_chunk",
-					messageId: `km.${randomUUID()}`,
-					content: { type: "text", text: `${reply}\n\n` },
-				},
-			})
-			return { stopReason: "end_turn" }
+			if (reply !== undefined) {
+				this.send({
+					sessionId: params.sessionId,
+					update: {
+						sessionUpdate: "agent_message_chunk",
+						messageId: `km.${randomUUID()}`,
+						content: { type: "text", text: `${reply}\n\n` },
+					},
+				})
+				return { stopReason: "end_turn" }
+			}
 		}
 		// An unsolicited run (e.g. a completion-notification wake) may still be
 		// streaming: the client's previous prompt already resolved, so it
@@ -1673,15 +1677,6 @@ export class KimchiAcpAgent implements Agent {
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
 		switch (method) {
-			case AVAILABLE_EXT_METHODS.pr_status:
-			case AVAILABLE_EXT_METHODS.set_pr_monitor:
-				if (!getClientOptedIntoPRMonitoring(this.clientCapabilities)) throw RequestError.methodNotFound(method)
-				return handlePRMonitor(
-					(sessionId) => this.sessions.get(sessionId)?.session,
-					params,
-					method === AVAILABLE_EXT_METHODS.set_pr_monitor,
-					(sessionId, state) => emitExtNotification(this.conn, "_kimchi.dev/pr_update", { sessionId, state }),
-				)
 			case AVAILABLE_EXT_METHODS.probe_mcp_server: {
 				const result = await handleProbeMcpServer(this.mcpProbe, params)
 				return result as Record<keyof ProbeResult, unknown>

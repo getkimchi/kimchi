@@ -101,7 +101,7 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "skill", modes: ["shared"] },
 	{ name: "web_fetch", modes: ["shared"] },
 	{ name: "web_search", modes: ["shared"] },
-	// Tracking controls stay available in Plan mode; PRMonitor gates repair turns separately.
+	// Watching stays available in Plan mode; the watcher itself blocks repairs there.
 	{ name: "pr_watch", modes: ["shared"] },
 	// Framework-owned workflow control-plane tools. They are registered only
 	// while a reporting/asking step is active, but must survive restrictive

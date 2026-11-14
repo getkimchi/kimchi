@@ -6,9 +6,9 @@ export default function mrMonitorApiFixture() {
 	globalThis.fetch = async (input, options) => {
 		const url = new URL(input instanceof Request ? input.url : String(input))
 		if (url.hostname !== "gitlab.fixture.test") return original(input, options)
-		if (new Headers(options?.headers).get("authorization") !== "Bearer pr-monitor-fixture-token")
+		if (new Headers(options?.headers).get("authorization") !== "Bearer pr-watch-fixture-token")
 			throw new Error("Unexpected GitLab fixture credential")
-		const data = JSON.parse(readFileSync(process.env.KIMCHI_TEST_PR_MONITOR, "utf8"))
+		const data = JSON.parse(readFileSync(process.env.KIMCHI_TEST_PR_WATCH, "utf8"))
 		const number = Number(/\/(?:merge_requests|pipelines)\/(\d+)/.exec(url.pathname)?.[1])
 		const seed = data.targets.find((target) => !number || target.number === number)
 		if (!seed) throw new Error(`Unexpected MR target ${url.pathname}`)

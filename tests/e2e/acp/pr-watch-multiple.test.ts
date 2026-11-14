@@ -3,7 +3,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, it, vi } from "vitest"
-import type { PRMonitorState } from "../../../src/extensions/pr-monitor/types.js"
 import { createPRWatchTargets, git } from "../tui/support/pr-watch-targets.js"
 import { chatRequests } from "../tui/support/wire-requests.js"
 import { startAcpFixture } from "./support/acp-fixture.js"
@@ -17,17 +16,15 @@ it.each([
 	const targets = createPRWatchTargets(root, [7, 8], provider)
 	const stateFile = join(root, "state.json")
 	writeFileSync(stateFile, JSON.stringify({ targets }))
-	vi.stubEnv("GH_TOKEN", "pr-monitor-fixture-token")
-	vi.stubEnv("GITLAB_TOKEN", "pr-monitor-fixture-token")
+	vi.stubEnv("GH_TOKEN", "pr-watch-fixture-token")
+	vi.stubEnv("GITLAB_TOKEN", "pr-watch-fixture-token")
 	vi.stubEnv("GITLAB_HOST", "gitlab.fixture.test")
-	vi.stubEnv("KIMCHI_TEST_PR_MONITOR", stateFile)
+	vi.stubEnv("KIMCHI_TEST_PR_WATCH", stateFile)
 	const fixture = await startAcpFixture({
 		artifactName: `pr-watch-multiple-home-${provider}`,
 		clientMeta: { "kimchi.dev": { prMonitoring: true, backgroundRuns: true } },
 		extraArgs: ["--yolo"],
-		extensionPath: fileURLToPath(
-			new URL(provider === "github" ? "./support/pr-monitor-api.js" : "./support/mr-monitor-api.js", import.meta.url),
-		),
+		extensionPath: fileURLToPath(new URL(`./support/pr-watch-${provider}-api.js`, import.meta.url)),
 		responses: [
 			{
 				toolCalls: [
@@ -61,8 +58,12 @@ it.each([
 	})
 	try {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		const initial = await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId })
-		expect(initial.state).toMatchObject({ enabled: false, autoFix: false, pullRequest: null })
+		const status = async () => {
+			const before = fixture.client.agentTextBySession().get(sessionId)?.length ?? 0
+			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch status" }] })
+			return fixture.client.agentTextBySession().get(sessionId)?.slice(before) ?? ""
+		}
+		expect(await status()).toContain("PR watch · Not watching")
 		await fixture.conn.prompt({
 			sessionId,
 			prompt: [{ type: "text", text: `Watch and fix these PRs: ${targets.map(({ url }) => url).join(" ")}` }],
@@ -74,18 +75,10 @@ it.each([
 			expect(git(target.cwd, "status", "--porcelain")).toBe("")
 			expect(git(target.cwd, "rev-list", "--count", `${target.head}..HEAD`)).toBe("1")
 		}
-		await expect
-			.poll(async () => (await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId })).state, {
-				timeout: 20_000,
-			})
-			.toMatchObject({
-				enabled: true,
-				phase: "watching",
-				watches: [
-					{ cwd: targets[0].cwd, state: { mode: "ci" } },
-					{ cwd: targets[1].cwd, state: { mode: "ci" } },
-				],
-			})
+		await expect.poll(status, { timeout: 20_000 }).toContain("PR watch · 2 ")
+		const watching = await status()
+		for (const target of targets) expect(watching).toContain(`Checkout: ${target.cwd}`)
+		expect(watching.split("Watching · Auto-fix on · CI only")).toHaveLength(3)
 		expect(() => git(fixture.workDir, "rev-parse", "--show-toplevel")).toThrow()
 		expect(fixture.client.agentTextBySession().get(sessionId)).toContain("Fixed and pushed PR 8.")
 		expect(
@@ -98,16 +91,12 @@ it.each([
 				targets: targets.map((target) => ({ ...target, head: git(target.cwd, "rev-parse", "HEAD"), kind: "review" })),
 			}),
 		)
-		const reviews = (await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId })).state as PRMonitorState
-		expect(reviews.watches?.every(({ state }) => state.pullRequest?.feedback.length === 1 && state.mode === "ci")).toBe(
-			true,
-		)
+		expect((await status()).split("Review threads 1")).toHaveLength(3)
 		expect(chatRequests(fixture)).toHaveLength(count)
 		for (const target of targets)
 			expect(readFileSync(join(target.cwd, "answer.txt"), "utf8")).toBe(`fixed ${target.number}\n`)
 		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch stop" }] })
-		const stopped = (await fixture.conn.extMethod("_kimchi.dev/pr_status", { sessionId })).state as PRMonitorState
-		expect(stopped.watches?.every(({ state }) => !state.enabled && !state.autoFix)).toBe(true)
+		expect((await status()).split("Stopped · Auto-fix off")).toHaveLength(3)
 		expect(chatRequests(fixture)).toHaveLength(count)
 	} finally {
 		await fixture.stop()

@@ -1,4 +1,3 @@
-export const PLAN_MODE_MESSAGE = "Switch out of Plan mode before auto-fixing this PR."
 export type PRRepairMode = "ci" | "reviews" | "all"
 
 export interface PRCheck {
@@ -29,17 +28,29 @@ export interface PRSnapshot {
 	checks: PRCheck[]
 	feedback: PRFeedback[]
 }
-export interface PRMonitorState {
-	revision: number
+
+/** One watched PR and what the user granted for it; saved with the session. */
+export interface WatchTarget {
+	url: string
+	cwd: string
+	/** False once stopped. Stopped targets stay listed so the saved general choice never restarts them. */
 	enabled: boolean
 	autoFix: boolean
-	phase: "idle" | "watching" | "fixing" | "attention" | "error"
+	mode: PRRepairMode
+	instructions: string
+	attempts: number
+	handled: string[]
+}
+
+export interface TargetState extends WatchTarget {
+	phase: "watching" | "fixing" | "attention" | "error"
 	pullRequest: PRSnapshot | null
 	checkedAt: string | null
 	message: string | null
-	mode?: PRRepairMode
-	watches?: { cwd: string; state: PRMonitorState }[]
 }
-export function prKey(pr: PRSnapshot): string {
-	return pr.url
+
+export interface PRWatchState {
+	targets: TargetState[]
+	/** Requests that failed for some targets while the others started. */
+	message: string | null
 }

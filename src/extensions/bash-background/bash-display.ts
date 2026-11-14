@@ -38,8 +38,6 @@ function hiddenControl(ctx: Parameters<BashCallRenderer>[2], registry: ProcessRe
 	return !ctx.state.bashControlError && !!rowsForSession(registry)?.has(stringArg(ctx.args, "handle"))
 }
 
-export { safeBashText }
-
 export function bashStatus(snapshot: ProcessDisplaySnapshot, now = snapshot.observedAt): string {
 	const elapsed = `${Math.max(0, Math.floor(((snapshot.finishedAt ?? now) - snapshot.startedAt) / 1000))}s`
 	if (snapshot.reason === "deadline") return `Deadline reached · ${elapsed}`

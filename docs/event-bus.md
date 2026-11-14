@@ -4,11 +4,9 @@ Extensions communicate through the pi event bus (`pi.events`), available to ever
 
 `kimchi:branch-pr-observed` publishes `{ sessionId, cwd, branch?, pullRequest? }`
 from the existing current-branch PR lookup. `cwd` is the observed checkout; a
-branch change clears `pullRequest` before lookup. The PR Monitor uses this to
-offer the one-time general preference or apply the saved choice to the checkout's PR.
-Each watcher remains scoped to its own session and checkout; normal trust and
-permissions still gate repairs. Types live in
-`src/extensions/pull-request-status/events.ts`.
+branch change clears `pullRequest` before lookup. PR watch uses it to ask the
+one-time question, apply the saved choice or follow the PR with `--pr-watch`.
+Types live in `src/extensions/pull-request-status/events.ts`.
 
 ---
 

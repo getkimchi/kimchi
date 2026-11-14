@@ -8,9 +8,9 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
-import { mountInputPanel } from "../../components/input-panel.js"
+import { mountInputPanel, safePanelText as safeBashText } from "../../components/input-panel.js"
 import { claimRawInputCapture } from "../shared-input.js"
-import { bashOutputAge, bashStatus, bashStatusColor, bashTitle, safeBashText } from "./bash-display.js"
+import { bashOutputAge, bashStatus, bashStatusColor, bashTitle } from "./bash-display.js"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
 
 export class CommandsPanel {
