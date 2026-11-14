@@ -230,7 +230,7 @@ def run_selfcheck():
                                 "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 1},
                                {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
                                 "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 1}],
-                   "keylat_p95_ms": 5.0, "ledger_indexes": ["work_records_imported", "outbox_pending_cover", "outbox_batches_by_account"]},
+                   "keylat_p95_ms": 5.0, "keylat_max_ms": 6.0, "ledger_indexes": ["work_records_imported", "outbox_pending_cover", "outbox_batches_by_account"]},
     }
 
     def budgets_for(over=None):
