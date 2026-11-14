@@ -1598,12 +1598,16 @@ export class KimchiAcpAgent implements Agent {
 			// state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
 		}
-		// A prompt whose first text block starts with "/compact" invokes the
-		// locally-handled compaction command (advertised in availableCommands)
-		// instead of a model turn: parse per the ACP command contract (exact
-		// name, whitespace or end), then drive the same handler as the
-		// _kimchi.dev/compact ext method.
-		const compactCommand = tryParseCompactCommand(text)
+		// A prompt consisting of exactly one text block that starts with
+		// "/compact" invokes the locally-handled compaction command
+		// (advertised in availableCommands) instead of a model turn: parse per
+		// the ACP command contract (exact name, whitespace or end), then drive
+		// the same handler as the _kimchi.dev/compact ext method. A prompt
+		// carrying anything else — further text blocks, attachments — falls
+		// through to the model: silently dropping the extra content would
+		// leave the user with no signal it was ignored.
+		const singleTextBlock = params.prompt.length === 1 && params.prompt[0]?.type === "text"
+		const compactCommand = singleTextBlock ? tryParseCompactCommand(text) : undefined
 		if (compactCommand) {
 			return await this.runCompactCommand(params.sessionId, text, compactCommand, pending)
 		}
@@ -1676,11 +1680,13 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	/**
-	 * Run the locally-handled /compact command. The prompt's first text block
-	 * is "/compact" (optionally followed by free-text instructions) per the
-	 * ACP command contract, so the turn never reaches the model: surface the
-	 * invocation as a live-only user message (the runtime records only the
-	 * summary, so the command text itself would otherwise never appear), run
+	 * Run the locally-handled /compact command. The prompt is a single text
+	 * block holding "/compact" (optionally followed by free-text
+	 * instructions) per the ACP command contract — prompts carrying extra
+	 * blocks fall through to a model turn — so the turn never reaches the
+	 * model: surface the invocation as a live-only user message (the runtime
+	 * records only the summary, so the command text itself would otherwise
+	 * never appear), run
 	 * the same handler as the _kimchi.dev/compact ext method (progress streams
 	 * through the agent_activity notifications, the usage gauge refreshes via
 	 * the compaction_end event), and report the terminal outcome as an

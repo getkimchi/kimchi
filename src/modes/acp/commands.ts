@@ -39,9 +39,6 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 	},
 ]
 
-/** The advertised name of the manual compaction command. */
-export const COMPACT_COMMAND_NAME = "compact"
-
 /**
  * Parse a prompt invoking the compaction command: "/compact" alone or
  * "/compact <free-text instructions>" (the text after the command maps onto
@@ -51,7 +48,7 @@ export const COMPACT_COMMAND_NAME = "compact"
  * undefined for anything else.
  */
 export function tryParseCompactCommand(text: string): { instructions?: string } | undefined {
-	const name = `/${COMPACT_COMMAND_NAME}`
+	const name = "/compact"
 	if (!text.startsWith(name)) return undefined
 	// Any whitespace (space, tab, newline) separates the name from the
 	// instructions — palette input is space-separated, but a typed prompt

@@ -9741,6 +9741,34 @@ describe("setSessionConfigOption", () => {
 			expect(fake.promptCalls.map((c) => c.prompt)).toEqual(["/compactfoo now"])
 		})
 
+		it("treats a /compact prompt carrying extra blocks as an ordinary turn", async () => {
+			// The command dispatch only matches a lone text block; with an
+			// attachment or further text the extra content would otherwise be
+			// silently dropped — the user gets no signal it was ignored.
+			const fake = new FakeAgentSession("test-session-compact-extra")
+			fake.model = { provider: "test", id: "vision-model", input: ["text", "image"] }
+			const { agent } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-extra",
+				prompt: [
+					{ type: "text", text: "/compact" },
+					{ type: "image", data: "base64data", mimeType: "image/png" },
+				],
+			})
+			await agent.prompt({
+				sessionId: "test-session-compact-extra",
+				prompt: [
+					{ type: "text", text: "/compact" },
+					{ type: "text", text: "see above" },
+				],
+			})
+
+			expect(fake.compactCalls).toEqual([])
+			expect(fake.promptCalls).toHaveLength(2)
+		})
+
 		it("reports a cancelled compaction as stopReason cancelled", async () => {
 			const fake = new FakeAgentSession("test-session-compact-cancelled")
 			fake.compactImpl = async () => {
