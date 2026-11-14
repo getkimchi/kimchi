@@ -144,6 +144,41 @@ EXTRACTORS = {
         "keylat_p95_ms": (lambda r: r.get("keylat_p95_ms"), "ms p95",
                           "keystroke echo latency; absolute event-loop-blocker detector", (ABS, 100.0)),
     },
+    "ledger": {
+        # Production-scale ledger (LEDGER_RECORDS seeded records), idle timeline.
+        # Same skip-first-bucket rule as idle: bucket 0 mixes startup with the
+        # first background pass. The metric pair catches the two classes that
+        # only exist at this scale:
+        #   - instr: per-pass full-history re-reads. Pre-incremental reconcile
+        #     pays the whole ledger every ~30s pass; incremental reads pay
+        #     only the new records. Cache-immune (kernel counter), so it fires
+        #     on CI's page-cache-warm runs where read_mb cannot.
+        # INTERIM abs: above any post-fix reading so the first CI run on the
+        # fix branch stays green; recalibrate to ratio limits from the
+        # canonical runner once measured (see think_instr's precedent).
+        "instr": (lambda r: sum(_wu(b.get("instr", 0), b.get("cycles", 0), b.get("cpu_ms", 0)) +
+                                 _wu(b.get("desc_instr", 0), b.get("desc_cycles", 0), b.get("desc_cpu_ms", 0))
+                                 for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]),
+                  "work units", "per-pass ledger re-reads at production record counts", (ABS, 250e9)),
+        "read_mb": (lambda r: sum((b.get("disk_r", 0) + b.get("desc_disk_r", 0)) for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]) / 1e6,
+                    "MB read", "per-pass re-reads of the scaled ledger (real-disk runners; page-cache-immune twin of instr)", (ABS, 3000.0)),
+        "keylat_p95_ms": (lambda r: r.get("keylat_p95_ms"), "ms p95",
+                          "keystroke echo latency while reconcile passes run over the big ledger; "
+                          "absolute event-loop-hold detector (the user-reported stall class)", (ABS, 100.0)),
+        # The additive index set (work_records_imported, outbox_pending_cover,
+        # outbox_batches_by_account) is applied per-open by the ledger fix and
+        # by nothing else: a binary that opens the scaled fixture and leaves
+        # all three behind is proven to run its ledger path against production
+        # scale with covering indexes; one that leaves them absent re-scans.
+        # Measured as MISSING (3 - present): the healthy reading is 0, the
+        # pre-fix reading is 3 — a ceiling budget where zero is legitimate,
+        # hence zero_ok (a zero here is a passing count, not a dead counter).
+        "additive_missing": (lambda r: 3 - sum(1 for n in (r.get("ledger_indexes") or [])
+                                               if n in ("work_records_imported", "outbox_pending_cover",
+                                                        "outbox_batches_by_account")),
+                             "count",
+                             "additive ledger indexes ABSENT after a run over the scaled fixture (the windowed-read/outbox fix applies them on open)", (ABS, 0.0, "zero_ok")),
+    },
 }
 
 def tier_mismatch(recs, expected):
@@ -180,6 +215,14 @@ def run_selfcheck():
                              {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
                               "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 2}],
                  "pids_peak": 4, "keylat_p95_ms": 5.0},
+        "ledger": {"scenario": "ledger", "ok": True, "counter": "cgroup-instructions",
+                   "buckets": [{"instr": 0, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
+                                "desc_cpu_ms": 0, "disk_r": 0, "desc_disk_r": 0},
+                               {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
+                                "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 1},
+                               {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
+                                "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 1}],
+                   "keylat_p95_ms": 5.0, "ledger_indexes": ["work_records_imported", "outbox_pending_cover", "outbox_batches_by_account"]},
     }
 
     def budgets_for(over=None):
@@ -340,9 +383,11 @@ def compare(scenario, metrics, budgets):
             continue
         ratio = measured / limit if limit else float("inf")
         status = "PASS" if measured <= limit else f"FAIL ({ratio:.2f}x limit)"
-        if measured <= 0:
+        if measured <= 0 and "zero_ok" not in EXTRACTORS[scenario][m][3]:
             # A gated metric of exactly zero means the counter did not fire
-            # (unsupported on this runner) — never a pass.
+            # (unsupported on this runner) — never a pass. Count-style metrics
+            # where zero is a legitimate reading (and their budget note says so)
+            # mark the mode tuple with "zero_ok".
             status = "FAIL (counter reads zero; runner/kernel does not report it)"
             failures.append((scenario, m, measured, limit, None))
         elif measured > limit:
@@ -466,7 +511,7 @@ def main():
     ap.add_argument("--budgets", default=DEFAULT_BUDGETS)
     ap.add_argument("--out", default=None, help="runs directory (default: <temp>/kimchi-perf-gate; must be outside any kimchi project)")
     ap.add_argument("--reps", type=int, default=2)
-    ap.add_argument("--scenarios", default="session,resume,idle")
+    ap.add_argument("--scenarios", default="session,resume,idle,ledger")
     ap.add_argument("--idle", type=float, default=90.0)  # whole 30s pass periods
     ap.add_argument("--stuck", type=float, default=60.0,
                     help="idle stuck-queue phase window (s): retries retired past the window, work must collapse")

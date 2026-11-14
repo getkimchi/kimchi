@@ -49,6 +49,24 @@
    "budget_note": "retained-history memory (whole tree)"
   }
  },
+ "ledger": {
+  "instr": {
+   "limit": 70000000000.0,
+   "budget_note": "per-pass ledger work at production record counts. INTERIM abs from the release sweep on one dev machine: the healthy incremental era (v1.23-v1.34 releases, master, fix branch) measures 49.7-54.5G with +-2% stability; the v1.18-21 full-re-read era measures 94G. 70G clears the healthy band by ~30% and fails the re-read era; recalibrate to ratio limits on the canonical runner"
+  },
+  "read_mb": {
+   "limit": 100.0,
+   "budget_note": "per-pass re-reads of the scaled ledger. INTERIM abs from the release sweep: the healthy era measures 0.6-21MB; the v1.18-21 full-re-read era measures 622MB. 100MB clears healthy ~5x and fails the re-read class outright; recalibrate on the canonical runner"
+  },
+  "keylat_p95_ms": {
+   "limit": 100.0,
+   "budget_note": "keystroke echo latency while reconcile passes run over the big ledger; absolute event-loop-hold detector (the user-reported stall class)"
+  },
+  "additive_missing": {
+   "limit": 0.0,
+   "budget_note": "additive ledger indexes ABSENT after a run over the scaled fixture; the fix applies work_records_imported, outbox_pending_cover and outbox_batches_by_account on open — 0 missing on fixed binaries, 3 on unfixed"
+  }
+ },
  "idle": {
   "instr": {
    "limit": 23879029438,
