@@ -10,6 +10,7 @@ import {
 	createCommandsRefresher,
 	discoverSkillCommandsMap,
 	reloadSkillCommandsMap,
+	tryParseCompactCommand,
 } from "./commands.js"
 import { waitFor as sharedWaitFor } from "./test-utils.js"
 
@@ -58,6 +59,38 @@ function makeSession(opts: {
 	})
 	return asSession(fake)
 }
+
+describe("tryParseCompactCommand", () => {
+	it("matches the bare command with no instructions", () => {
+		expect(tryParseCompactCommand("/compact")).toEqual({})
+	})
+
+	it("splits space-separated instructions", () => {
+		expect(tryParseCompactCommand("/compact keep the API notes")).toEqual({
+			instructions: "keep the API notes",
+		})
+	})
+
+	it("accepts any whitespace as the separator, not just a space", () => {
+		expect(tryParseCompactCommand("/compact\tkeep the API notes")).toEqual({
+			instructions: "keep the API notes",
+		})
+		expect(tryParseCompactCommand("/compact\nkeep the API notes")).toEqual({
+			instructions: "keep the API notes",
+		})
+		// A trailing newline alone is still the bare command.
+		expect(tryParseCompactCommand("/compact\n")).toEqual({})
+	})
+
+	it("does not collide with a longer command name sharing the prefix", () => {
+		expect(tryParseCompactCommand("/compactfoo")).toBeUndefined()
+		expect(tryParseCompactCommand("/compaction please")).toBeUndefined()
+	})
+
+	it("ignores unrelated text", () => {
+		expect(tryParseCompactCommand("please compact the context")).toBeUndefined()
+	})
+})
 
 describe("composeAvailableCommands", () => {
 	it("puts static commands first, then skill commands in map order", () => {

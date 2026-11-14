@@ -51,10 +51,14 @@ export const COMPACT_COMMAND_NAME = "compact"
  * undefined for anything else.
  */
 export function tryParseCompactCommand(text: string): { instructions?: string } | undefined {
-	if (text === `/${COMPACT_COMMAND_NAME}`) return {}
-	const prefix = `/${COMPACT_COMMAND_NAME} `
-	if (!text.startsWith(prefix)) return undefined
-	const instructions = text.slice(prefix.length).trim()
+	const name = `/${COMPACT_COMMAND_NAME}`
+	if (!text.startsWith(name)) return undefined
+	// Any whitespace (space, tab, newline) separates the name from the
+	// instructions — palette input is space-separated, but a typed prompt
+	// may carry e.g. a trailing newline before free-text instructions.
+	const separator = text.charAt(name.length)
+	if (separator !== "" && !/\s/.test(separator)) return undefined
+	const instructions = text.slice(name.length).trim()
 	return instructions ? { instructions } : {}
 }
 
