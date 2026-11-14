@@ -52,11 +52,11 @@
  "ledger": {
   "instr": {
    "limit": 70000000000.0,
-   "budget_note": "per-pass ledger work at production record counts. INTERIM abs from the release sweep on one dev machine: healthy incremental era (v1.23-v1.34, master, fix branch) 49.7-54.5G with +-2% stability; the regression eras measure 86.6G (v2.0.0-rc.7) and 94G (v1.18-21 full re-read). 70G clears the healthy band by ~30% and fails both regression eras; recalibrate to ratio limits on the canonical runner"
+   "budget_note": "per-pass ledger work at production record counts. INTERIM abs from the release sweep on one dev machine: the healthy incremental era (v1.23-v1.34 releases, master, fix branch) measures 49.7-54.5G with +-2% stability; the v1.18-21 full-re-read era measures 94G. 70G clears the healthy band by ~30% and fails the re-read era; recalibrate to ratio limits on the canonical runner"
   },
   "read_mb": {
    "limit": 100.0,
-   "budget_note": "per-pass re-reads of the scaled ledger. INTERIM abs from the release sweep: healthy era 0.6-21MB; the re-read eras measure 522-622MB. 100MB clears healthy ~5x and fails the re-read class outright; recalibrate on the canonical runner"
+   "budget_note": "per-pass re-reads of the scaled ledger. INTERIM abs from the release sweep: the healthy era measures 0.6-21MB; the v1.18-21 full-re-read era measures 622MB. 100MB clears healthy ~5x and fails the re-read class outright; recalibrate on the canonical runner"
   },
   "keylat_p95_ms": {
    "limit": 100.0,
