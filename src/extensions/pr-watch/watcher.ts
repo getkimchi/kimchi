@@ -10,7 +10,13 @@ import { resolvePreMainProjectTrust } from "../../project-trust.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { lookupBranchPullRequest } from "../pull-request-status/branch-status.js"
 import { object } from "../work-attribution/summary.js"
-import { acquirePRLease, checkoutProblem, confirmCheckoutTrust, preparePRCheckout } from "./checkout.js"
+import {
+	acquirePRLease,
+	checkoutProblem,
+	confirmCheckoutTrust,
+	preparePRCheckout,
+	syncManagedCheckout,
+} from "./checkout.js"
 import { parsePRUrl, readPRSnapshot } from "./providers.js"
 import { readPRWatchPreference } from "./settings.js"
 import type { PRCheck, PRRepairMode, PRSnapshot, PRWatchState, TargetState, WatchTarget } from "./types.js"
@@ -337,6 +343,7 @@ export class PRWatcher {
 		if (this.planMode()) return this.markAttention(target, PLAN_MODE_MESSAGE)
 		if (target.attempts >= MAX_ATTEMPTS)
 			return this.pauseFixes(target, "Auto-fix stopped after 3 attempts. Review the result before enabling it again.")
+		await syncManagedCheckout(target.cwd, pr, signal)
 		const problem = await checkoutProblem(target.cwd, pr, signal)
 		if (!this.ready(target, signal)) return
 		if (problem) return this.markAttention(target, problem)

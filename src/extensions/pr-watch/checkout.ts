@@ -19,6 +19,11 @@ function digest(value: string): string {
 	return createHash("sha256").update(value).digest("hex")
 }
 
+/** Kimchi's own clones of PRs that are not checked out where the session runs. */
+function checkoutsDir(): string {
+	return join(getAgentDir(), "pr-watch", "checkouts")
+}
+
 export async function checkoutProblem(cwd: string, pr: PRSnapshot, signal: AbortSignal): Promise<string | null> {
 	const deadline = Date.now() + GIT_BUDGET_MS
 	const git = (...args: string[]) => command("git", ["-C", cwd, ...args], cwd, signal, deadline)
@@ -32,6 +37,16 @@ export async function checkoutProblem(cwd: string, pr: PRSnapshot, signal: Abort
 	const header = status.split("\n")[0]
 	if (header !== `## ${pr.branch}` && !header.startsWith(`## ${pr.branch}...`)) return "The checked-out branch changed."
 	return status.includes("\n") ? "Commit or stash local changes before auto-fixing this PR." : null
+}
+
+/** Fast-forwards one of Kimchi's own clean clones to the PR head. Other checkouts are never changed. */
+export async function syncManagedCheckout(cwd: string, pr: PRSnapshot, signal: AbortSignal): Promise<void> {
+	if (dirname(cwd) !== checkoutsDir()) return
+	const git = (...args: string[]) => command("git", ["-C", cwd, ...args], cwd, signal, Date.now() + GIT_BUDGET_MS)
+	if ((await git("rev-parse", "HEAD")) === pr.headSha) return
+	if ((await git("symbolic-ref", "--quiet", "--short", "HEAD")) !== pr.branch) return
+	if (await git("status", "--porcelain")) return
+	await git("pull", "--ff-only", "--quiet")
 }
 
 /** One repair per PR across Kimchi sessions and processes. */
@@ -72,7 +87,7 @@ export async function preparePRCheckout(
 	if (source.state !== "open") throw new Error("This PR is no longer open.")
 	const cwd = directory
 		? resolve(ctx.cwd, directory)
-		: join(getAgentDir(), "pr-watch", "checkouts", digest(`${ctx.sessionManager.getSessionId()}:${source.url}`))
+		: join(checkoutsDir(), digest(`${ctx.sessionManager.getSessionId()}:${source.url}`))
 	if (!existsSync(join(cwd, ".git"))) {
 		if (directory || existsSync(cwd))
 			throw new Error(`No Git checkout at ${cwd}. Choose a checkout or let Kimchi create an isolated one.`)

@@ -6,7 +6,7 @@ import { parse } from "shell-quote"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolvePreMainProjectTrust } from "../../project-trust.js"
 import { createToolContext } from "../__mocks__/context.js"
-import { acquirePRLease, checkoutProblem, preparePRCheckout } from "./checkout.js"
+import { acquirePRLease, checkoutProblem, preparePRCheckout, syncManagedCheckout } from "./checkout.js"
 import { readPRSource } from "./providers.js"
 import type { PRSnapshot } from "./types.js"
 
@@ -128,5 +128,47 @@ describe("PR repair lease", () => {
 		await release()
 		const again = await acquirePRLease(pr, vi.fn())
 		await again()
+	})
+})
+
+describe("Kimchi's own checkouts", () => {
+	const git = (cwd: string, ...args: string[]) =>
+		execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim()
+	const commit = (cwd: string, file: string) => {
+		writeFileSync(join(cwd, file), `${file}\n`)
+		git(cwd, "add", file)
+		git(
+			cwd,
+			"-c",
+			"user.name=PR fixture",
+			"-c",
+			"user.email=fixture@example.invalid",
+			"-c",
+			"commit.gpgSign=false",
+			"commit",
+			"-qm",
+			file,
+		)
+	}
+	it("fast-forwards a clean clone to the PR head and leaves other checkouts alone", async () => {
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
+		const origin = join(root, "origin.git")
+		const author = join(root, "author")
+		git(root, "init", "-q", "--bare", "-b", "feature", origin)
+		git(root, "init", "-q", "-b", "feature", author)
+		commit(author, "a.txt")
+		git(author, "push", "-q", origin, "feature")
+		const managed = join(root, "agent", "pr-watch", "checkouts", "pr")
+		const dirty = join(root, "agent", "pr-watch", "checkouts", "dirty")
+		const mine = join(root, "mine")
+		for (const cwd of [managed, dirty, mine])
+			git(root, "clone", "-q", "--single-branch", "--branch", "feature", origin, cwd)
+		writeFileSync(join(dirty, "draft.txt"), "unfinished\n")
+		const old = git(mine, "rev-parse", "HEAD")
+		commit(author, "b.txt")
+		git(author, "push", "-q", origin, "feature")
+		const pr = { branch: "feature", headSha: git(author, "rev-parse", "HEAD") } as PRSnapshot
+		for (const cwd of [managed, dirty, mine]) await syncManagedCheckout(cwd, pr, signal())
+		expect([managed, dirty, mine].map((cwd) => git(cwd, "rev-parse", "HEAD"))).toEqual([pr.headSha, old, old])
 	})
 })

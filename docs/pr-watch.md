@@ -46,7 +46,8 @@ A repair starts when a watched PR has a new failing check (in `reviews` or `all`
 also new trusted review feedback) and:
 
 - the agent is idle with no queued input, and the session is not in Plan mode;
-- the checkout is clean, on the PR branch, at the PR head;
+- the checkout is clean, on the PR branch, at the PR head. Kimchi first fast-forwards its own
+  clones to the PR head; it never changes your own checkouts;
 - the checkout is trusted and no other Kimchi session is repairing the same PR.
 
 The agent reads the failed job logs, makes the smallest fix, runs checks, commits and

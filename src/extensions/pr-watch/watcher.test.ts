@@ -5,7 +5,13 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { lookupBranchPullRequest } from "../pull-request-status/branch-status.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import { acquirePRLease, checkoutProblem, confirmCheckoutTrust, preparePRCheckout } from "./checkout.js"
+import {
+	acquirePRLease,
+	checkoutProblem,
+	confirmCheckoutTrust,
+	preparePRCheckout,
+	syncManagedCheckout,
+} from "./checkout.js"
 import { readPRSnapshot } from "./providers.js"
 import { readPRWatchPreference } from "./settings.js"
 import type { PRFeedback, PRSnapshot } from "./types.js"
@@ -17,6 +23,7 @@ vi.mock("./checkout.js", () => ({
 	acquirePRLease: vi.fn(),
 	preparePRCheckout: vi.fn(),
 	confirmCheckoutTrust: vi.fn(),
+	syncManagedCheckout: vi.fn(),
 }))
 vi.mock("./settings.js", () => ({ readPRWatchPreference: vi.fn() }))
 vi.mock("../permissions/mode-controller.js", () => ({ getPermissionMode: vi.fn() }))
@@ -93,6 +100,13 @@ describe("PR watcher", () => {
 		expect(watcher.snapshot.targets[0].phase).toBe("fixing")
 		expect(repairs()).toEqual([expect.objectContaining({ customType: "pr_autofix" })])
 		expect(repairs()[0].content).toContain(`Work only in the checkout at "${HERE}"`)
+		expect(syncManagedCheckout).toHaveBeenCalledWith(
+			HERE,
+			expect.objectContaining({ url: URL7 }),
+			expect.any(AbortSignal),
+		)
+		const [synced] = vi.mocked(syncManagedCheckout).mock.invocationCallOrder
+		expect(synced).toBeLessThan(vi.mocked(checkoutProblem).mock.invocationCallOrder[0])
 		await watcher.refresh()
 		expect(repairs()).toHaveLength(1)
 	})
