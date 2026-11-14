@@ -1139,6 +1139,17 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
 		}
 		await this.doSetModel(record, params.modelId)
+		// The legacy wire shape returns only {} — the refreshed config options
+		// (model picker's currentValue, the model-dependent reasoning_effort
+		// set) can't ride the response the way session/set_config_option's
+		// does, so push them as a config_option_update notification.
+		this.send({
+			sessionId: params.sessionId,
+			update: {
+				sessionUpdate: "config_option_update",
+				configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
+			},
+		})
 		return {}
 	}
 

@@ -9222,6 +9222,50 @@ describe("unstable_setSessionModel", () => {
 		expect(fake.model?.id).toBe("model-b")
 	})
 
+	it("pushes config_option_update with refreshed options on switch", async () => {
+		// The legacy wire shape returns {}, so a client tracking the model-dependent
+		// reasoning_effort option can only learn the new selection from this push.
+		registerModelThinkingLevels("provider-a/model-a", ["low", "high", "max"])
+		const fake = new FakeAgentSession("switch-session")
+		fake.model = {
+			provider: "provider-a",
+			id: "model-a",
+			name: "Model A",
+			input: ["text"],
+			contextWindow: 200_000,
+			reasoning: true,
+			thinkingLevelMap: { low: "low", high: "high", max: "max" },
+		}
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "provider-a", id: "model-a", name: "Model A" },
+				{ provider: "provider-b", id: "model-b", name: "Model B" },
+			],
+		}
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const { configOptions } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(configOptions?.find((o) => o.id === "reasoning_effort")).toBeDefined()
+		const updatesBeforeSwitch = updates.length
+
+		await agent.unstable_setSessionModel({
+			sessionId: "switch-session",
+			modelId: "provider-b/model-b",
+		})
+
+		const pushed = updates.slice(updatesBeforeSwitch).find((u) => u.update.sessionUpdate === "config_option_update")
+		const options = (pushed?.update as { configOptions?: Array<{ id: string; currentValue?: string }> })?.configOptions
+		expect(options?.find((o) => o.id === "model")?.currentValue).toBe("provider-b/model-b")
+		// The non-reasoning target offers no selectable levels — the push drops
+		// the option so the client doesn't keep advertising the stale set.
+		expect(options?.find((o) => o.id === "reasoning_effort")).toBeUndefined()
+	})
+
 	it("throws invalidParams for unknown modelId", async () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
