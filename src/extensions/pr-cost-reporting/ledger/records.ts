@@ -333,7 +333,7 @@ function recordColumnsSql(): string {
 }
 
 /** Probe applied per open; statements prepared after openStore's additive apply see the index. */
-export function workRecordsImportedPresent(db: { query: <T, P>(sql: string) => { get: () => T | null | undefined } }): boolean {
+export function workRecordsImportedPresent(db: { query: <T>(sql: string) => { get: () => T | null | undefined } }): boolean {
 	return (
 		db
 			.query<{ name: string }, []>(
