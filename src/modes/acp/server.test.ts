@@ -9598,6 +9598,27 @@ describe("setSessionConfigOption", () => {
 			expect(fake.setThinkingLevelCalls).toEqual([])
 		})
 
+		it("rejects a set when the session has no model", async () => {
+			// buildThinkingConfigOption omits the option without a model; the
+			// setter must reject the same state instead of applying a level
+			// against thinkingSelection(undefined)'s canonical fallback set.
+			// (newSession itself refuses model-less sessions, so the state is
+			// only reachable if the model drops after creation.)
+			const fake = new FakeAgentSession("test-session-effort-nomodel")
+			const agent = makeAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			fake.model = undefined
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-effort-nomodel",
+					configId: "reasoning_effort",
+					value: "high",
+				}),
+			).rejects.toMatchObject({ code: -32602 })
+			expect(fake.setThinkingLevelCalls).toEqual([])
+		})
+
 		it("clamps currentValue to the rank-nearest selectable level", async () => {
 			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
 			const fake = new FakeAgentSession("test-session-effort-clamp")

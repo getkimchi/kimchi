@@ -1210,6 +1210,13 @@ export class KimchiAcpAgent implements Agent {
 	 */
 	private doSetThinkingLevel(record: SessionRecord, value: string): void {
 		const { session } = record
+		// Mirror buildThinkingConfigOption's guard: the option is not
+		// advertised without a model, so a set request in that state is
+		// invalid params, not a level applied against a stale selection
+		// (thinkingSelection(undefined) falls back to the full canonical set).
+		if (!session.model) {
+			throw RequestError.invalidParams(undefined, "no model is selected for this session")
+		}
 		const selection = thinkingSelection(session.model)
 		if (selection.mode !== "levels" || selection.selectable.length === 0) {
 			throw RequestError.invalidParams(undefined, "the current model offers no selectable thinking levels")
