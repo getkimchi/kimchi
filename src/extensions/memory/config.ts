@@ -202,7 +202,7 @@ export const PENDING_JOB_MAX_AGE_MS = 7 * 86_400_000
  * budget aborted healthy catch-up drains mid-flight, which seeded the
  * backlog death spiral on high-throughput bench runs.
  */
-export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 60 * 60_000
+export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 4 * 60 * 60_000
 
 /**
  * Inactivity watchdog: the drain aborts ONLY when no window has settled
