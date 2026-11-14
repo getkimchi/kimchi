@@ -85,7 +85,14 @@ import {
 	TRANSIENT_JOB_MAX_ATTEMPTS,
 	UNKNOWN_CAPTURE_SESSION_ID,
 } from "./config.js"
-import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
+import {
+	batchChoice,
+	type ChoiceAnswer,
+	type DecisionGateOptions,
+	decide,
+	sharedDecisionBreaker,
+	systemoneEndpoint,
+} from "./decision-gate.js"
 import { factClassesEnabled, parseBooleanFlag } from "./flags.js"
 import type { DecisionGateKind } from "./gates.js"
 import {
@@ -2128,6 +2135,12 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	//
 	// The d3 judge (spike E7 Part A) replaces the chat judge when enabled;
 	// its criteria text is the spike-validated conservative contract.
+	//
+	// Circuit-open shortcut: the candidate SEARCHES run before the judge
+	// (per-fact embedder round trips — 43min on the 2026-11-14 field run),
+	// and with the judge degraded they buy nothing. Skip the whole phase.
+	const supersedeD3Blocked =
+		decision.enabled.has("supersede") && decision.gate && (decision.gate.breaker ?? sharedDecisionBreaker).shouldSkip()
 	const makeSupersedeJudge = (store: string): SupersedeJudge => {
 		if (decision.enabled.has("supersede") && decision.gate) {
 			const gate = trace ? withGateApiHook(decision.gate, "supersede-d3", { store }, trace) : decision.gate
@@ -2141,15 +2154,22 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			return chatWithRetry(llmTraced, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray, "supersede")
 		}
 	}
-	await runBatchedSupersede(personalBackend, personalAdded, makeSupersedeJudge("personal"), {
-		trace,
-		store: "personal",
-	})
-	for (const [projectId, backend] of projectBackends) {
-		await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], makeSupersedeJudge(projectId), {
+	if (supersedeD3Blocked) {
+		console.info("[memory-capture] supersede skipped — d3 circuit open (facts committed; cleanup deferred)")
+		trace?.emit({ type: "phase", phase: "supersede-skipped", reason: "circuit-open" })
+	} else {
+		await runBatchedSupersede(personalBackend, personalAdded, makeSupersedeJudge("personal"), {
 			trace,
-			store: projectId,
+			store: "personal",
+			onProgress: options.onProgress,
 		})
+		for (const [projectId, backend] of projectBackends) {
+			await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], makeSupersedeJudge(projectId), {
+				trace,
+				store: projectId,
+				onProgress: options.onProgress,
+			})
+		}
 	}
 	// One summary line per drain — the bench's per-wave cost signal.
 	console.info(
@@ -2706,7 +2726,7 @@ async function runBatchedSupersede(
 	backend: Backend,
 	newFacts: string[],
 	judge: SupersedeJudge,
-	ctx?: { trace: TraceRecorder | null; store: string },
+	ctx?: { trace: TraceRecorder | null; store: string; onProgress?: () => void },
 ): Promise<void> {
 	if (newFacts.length === 0) return
 	const searchAll = async (query: string) => {
@@ -2746,6 +2766,9 @@ async function runBatchedSupersede(
 	}
 	for (let start = 0; start < newFacts.length; start += MEMORY_SUPERSEDE_BATCH_FACTS) {
 		const batch = newFacts.slice(start, start + MEMORY_SUPERSEDE_BATCH_FACTS)
+		// Heartbeat per batch: the per-fact candidate searches dominate
+		// supersede wall-time on deep stores — the watchdog must see progress.
+		ctx?.onProgress?.()
 		try {
 			const superseded = await findSupersededIds(batch, searchAll, instrumented)
 			for (const id of superseded) {
@@ -2756,6 +2779,8 @@ async function runBatchedSupersede(
 				"[memory-capture] supersede judge failed — conflicting facts left in place:",
 				err instanceof Error ? err.message : err,
 			)
+		} finally {
+			ctx?.onProgress?.()
 		}
 	}
 }
