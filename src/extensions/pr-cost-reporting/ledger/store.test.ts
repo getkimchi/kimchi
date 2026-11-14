@@ -4,8 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, onTestFinished, test } from "vitest"
-import { LEDGER_ADDITIVE_SCHEMA } from "./schema.js"
 import { readRecordsSinceSql } from "./records.js"
+import { LEDGER_ADDITIVE_SCHEMA } from "./schema.js"
 import { classifyUserVersion, LedgerUnavailableError, ledgerDbPath, openStore, retryOnBusy } from "./store.js"
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
