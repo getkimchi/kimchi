@@ -62,6 +62,10 @@
    "limit": 100.0,
    "budget_note": "keystroke echo latency while reconcile passes run over the big ledger; absolute event-loop-hold detector (the user-reported stall class)"
   },
+  "keylat_max_ms": {
+   "limit": 150.0,
+   "budget_note": "steady-state worst keystroke echo after the 10s post-ready settle (startup artifact excluded). Observed: fix branch <=10ms across a full window of passes; unfixed builds hold ~270ms per pass at this scale. 150 sits 15x above healthy and 1.8x below the measured unfixed hold"
+  },
   "additive_missing": {
    "limit": 0.0,
    "budget_note": "additive ledger indexes ABSENT after a run over the scaled fixture; the fix applies work_records_imported, outbox_pending_cover and outbox_batches_by_account on open — 0 missing on fixed binaries, 3 on unfixed"

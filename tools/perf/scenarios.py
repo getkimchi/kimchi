@@ -753,6 +753,13 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
         res["ready_s"] = time.time() - t0
         sampler.sample()
         prev = sampler.totals()
+        # Settle past the startup tail before probing: the ready marker is the
+        # TUI's first output, and a probe fired at that instant times residual
+        # startup work (0.6-1.2s on every binary ever measured) — a harness
+        # artifact, not a steady-state hold. keylat_max/keylat_p95 measure the
+        # window AFTER the settle; per-pass work (first reconcile pass ~t=30s)
+        # is well inside the probed window.
+        time.sleep(10.0)
 
         def window(seconds):
             n = int(seconds / bucket_s)

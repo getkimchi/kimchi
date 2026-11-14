@@ -165,6 +165,14 @@ EXTRACTORS = {
         "keylat_p95_ms": (lambda r: r.get("keylat_p95_ms"), "ms p95",
                           "keystroke echo latency while reconcile passes run over the big ledger; "
                           "absolute event-loop-hold detector (the user-reported stall class)", (ABS, 100.0)),
+        # Steady-state worst hold: probes start only after the 10s post-ready
+        # settle, so this measures per-pass event-loop holds, not startup
+        # (the raw first-probe artifact measures 0.6-1.2s on every binary).
+        # Observed: fix branch <=10ms over a full window of passes; unfixed
+        # builds hold ~270ms per pass at this fixture's scale (the production
+        # 650k-record scale of the same hold is the multi-second stall).
+        "keylat_max_ms": (lambda r: r.get("keylat_max_ms"), "ms max",
+                          "steady-state worst keystroke echo (post-settle); per-pass event-loop hold detector", (ABS, 150.0)),
         # The additive index set (work_records_imported, outbox_pending_cover,
         # outbox_batches_by_account) is applied per-open by the ledger fix and
         # by nothing else: a binary that opens the scaled fixture and leaves
