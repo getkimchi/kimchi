@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { getDefaultExcludedEntities, REDACTION_CATEGORIES } from "./entity-tiers.js"
+import { getDefaultExcludedEntities, PERMANENT_ENGINE_EXCLUSIONS, REDACTION_CATEGORIES } from "./entity-tiers.js"
 import { parseLocalPolicy, parseManagedPolicy, type RedactionPolicy, resolveRedactionPolicy } from "./policy.js"
 
 const ACME_PATTERN = "(emp[-_ ]?id\\s*[:=]\\s*)(E\\d{6})"
@@ -10,7 +10,7 @@ describe("resolveRedactionPolicy — defaults", () => {
 		expect(resolved.engineExclusions).toEqual(getDefaultExcludedEntities())
 		expect(resolved.disabledEntities.size).toBe(0)
 		expect(resolved.customPatterns).toEqual([])
-		// GUID is not part of the configurable universe.
+		// GUID sits outside the configurable universe.
 		expect(resolved.categories.has("GUID")).toBe(false)
 	})
 
@@ -81,8 +81,18 @@ describe("resolveRedactionPolicy — precedence (managed > local; entity > categ
 describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 	it("replaces the engine exclusions wholesale (pre-policy meaning)", () => {
 		const resolved = resolveRedactionPolicy(undefined, { legacyExcluded: ["GUID"] })
-		expect(resolved.engineExclusions).toEqual(["GUID"])
+		// The permanently-excluded names survive the replace.
+		expect(resolved.engineExclusions).toEqual([...PERMANENT_ENGINE_EXCLUSIONS].sort())
 		expect(resolved.disabledEntities).toEqual(new Set(["GUID"]))
+	})
+
+	it("permanently-excluded names survive the wholesale replace", () => {
+		const resolved = resolveRedactionPolicy(undefined, { legacyExcluded: ["DATE_TIME"] })
+		// The permanent set never becomes detectable — the legacy list may
+		// drop every other engine exclusion, but not these; a legacy entry
+		// naming a permanent member collapses into the union.
+		expect([...resolved.engineExclusions].sort()).toEqual([...PERMANENT_ENGINE_EXCLUSIONS].sort())
+		expect(resolved.disabledEntities).toEqual(new Set(["DATE_TIME"]))
 	})
 
 	it("managed states still apply per key on top of the legacy result", () => {
@@ -110,16 +120,32 @@ describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 		expect(Object.isFrozen(resolved.engineExclusions)).toBe(true)
 	})
 
+	it("UK_POSTCODE is free for a user-defined custom entity — the engine bare shape never fires", () => {
+		// A name in PERMANENT_ENGINE_EXCLUSIONS has no built-in coverage and
+		// no collision rejection: a user re-defining it gets their own custom
+		// pass only — the engine detector stays excluded on every path.
+		const resolved = resolveRedactionPolicy(undefined, {
+			customEntities: [{ name: "UK_POSTCODE", category: "personal_details", pattern: "\\bGIR\\s?0AA\\b" }],
+		})
+		expect(resolved.customPatterns.map((c) => c.name)).toEqual(["UK_POSTCODE"])
+		expect(resolved.engineExclusions).toContain("UK_POSTCODE")
+		expect(resolved.disabledEntities.has("UK_POSTCODE")).toBe(false)
+	})
+
 	it("an anchor-required entity ON cannot un-exclude its bare detector even against a legacy list", () => {
-		// The legacy list excluded URL at the engine. A managed entities.URL=on
-		// must keep it excluded — anchor_required ON means "anchored patterns
-		// run", never the bare shape; only the legacy list itself re-enables it.
+		// The legacy list excluded TELEGRAM_BOT_TOKEN at the engine. A managed
+		// entities.TELEGRAM_BOT_TOKEN=on must keep it excluded — anchor_required
+		// ON means "anchored patterns run", never the bare shape; only the
+		// legacy list itself re-enables it. Same for OKTA_TOKEN, re-tiered from
+		// bare_shape: explicit ON must not un-exclude its 42-char base62 blob.
 		const anchoredOn = resolveRedactionPolicy(
-			{ entities: { URL: "on", GENERIC_SECRET: "off" } },
-			{ legacyExcluded: ["GUID", "URL", "GENERIC_SECRET"] },
+			{ entities: { TELEGRAM_BOT_TOKEN: "on", OKTA_TOKEN: "on", GENERIC_SECRET: "off" } },
+			{ legacyExcluded: ["GUID", "TELEGRAM_BOT_TOKEN", "OKTA_TOKEN", "GENERIC_SECRET"] },
 		)
-		expect(anchoredOn.engineExclusions).toContain("URL")
-		expect(anchoredOn.disabledEntities.has("URL")).toBe(false)
+		expect(anchoredOn.engineExclusions).toContain("TELEGRAM_BOT_TOKEN")
+		expect(anchoredOn.engineExclusions).toContain("OKTA_TOKEN")
+		expect(anchoredOn.disabledEntities.has("TELEGRAM_BOT_TOKEN")).toBe(false)
+		expect(anchoredOn.disabledEntities.has("OKTA_TOKEN")).toBe(false)
 		// OFF removes GENERIC_SECRET's anchored coverage on top of the legacy list.
 		expect(anchoredOn.disabledEntities.has("GENERIC_SECRET")).toBe(true)
 	})
@@ -182,8 +208,11 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 		expect(() => parseLocalPolicy({ entities: { NOPE: "off" } })).toThrow(/unknown entity/)
 	})
 
-	it("GUID is not configurable", () => {
-		expect(() => parseLocalPolicy({ entities: { GUID: "on" } })).toThrow(/not configurable/)
+	it("removed names are not configurable", () => {
+		// A PERMANENT_ENGINE_EXCLUSIONS name is free for user-defined custom
+		// entities, and a bare toggle referencing it fails as an unknown
+		// entity.
+		expect(() => parseLocalPolicy({ entities: { GUID: "on" } })).toThrow(/unknown entity/)
 	})
 
 	it("entity states must be on/off", () => {

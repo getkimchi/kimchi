@@ -7,11 +7,15 @@ import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { getResourceSettingsPath, setResourceOverride } from "../../resources/store.js"
 import { getRedactionConfig } from "./config.js"
-import { getDefaultExcludedEntities } from "./entity-tiers.js"
+import { getDefaultExcludedEntities, PERMANENT_ENGINE_EXCLUSIONS } from "./entity-tiers.js"
 import {
 	applyCustomPatterns,
+	collectDetections,
+	createRedactionEngine,
 	getRedactionConfigError,
+	isBase64ShadowDrop,
 	isGenericLocalPart,
+	isGenericNonSecretValue,
 	isNonIdentifyingDetection,
 	isNonIdentifyingEmail,
 	isNonSensitiveIp,
@@ -374,6 +378,38 @@ describe("redactText — custom secret patterns", () => {
 		expect(result).toContain("Gateway key:")
 	})
 
+	it("labels sk-ant- keys ANTHROPIC_KEY, not OPENAI_API_KEY", async () => {
+		const key = ["sk-ant-", "a".repeat(24), "9K"].join("")
+		const result = await redactText(`claude key: ${key}`)
+		expect(result).not.toContain(key)
+		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
+		expect(result).not.toContain("[REDACTED-OPENAI_API_KEY]")
+	})
+
+	it("short-tailed sk-ant- keys keep the pre-split coverage floor", async () => {
+		const key = ["sk-ant-", "K9", "d7q2"].join("")
+		const result = await redactText(`key: ${key}`)
+		expect(result).not.toContain(key)
+		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
+	})
+
+	it("relates realistic-length sk-ant- keys to ANTHROPIC_KEY even when the engine claims them", async () => {
+		const key = `sk-ant-api03-${"a1B2c3D4e5F6g7H8".repeat(6)}`
+		const text = `claude key: ${key}`
+		const result = await redactText(text)
+		expect(result).not.toContain(key)
+		expect(result).toContain("[REDACTED-ANTHROPIC_KEY]")
+		expect(result).not.toContain("[REDACTED-OPENAI_KEY]")
+	})
+
+	it("honors user exclusions on the relabeled label", async () => {
+		const key = `sk-ant-api03-${"a1B2c3D4e5F6g7H8".repeat(6)}`
+		const text = `claude key: ${key}`
+		const engine = createRedactionEngine(getDefaultExcludedEntities().filter((e) => e !== "ANTHROPIC_KEY"))
+		const dropped = await collectDetections(text, engine, new Set(["ANTHROPIC_KEY"]))
+		expect(dropped.map((d) => d.entityType)).not.toContain("ANTHROPIC_KEY")
+	})
+
 	it("redacts standalone GitHub tokens whole (ghp_ numeric tails, mixed PATs)", async () => {
 		const result = await redactText(`Token ${fx.ghpToken} leaked`)
 		expectRedacted(result, fx.ghpToken, "GITHUB_TOKEN")
@@ -579,10 +615,10 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 		expect(config.resolved.customPatterns).toEqual([])
 	})
 
-	it("a present array replaces the defaults wholesale (raw list preserved)", () => {
+	it("a present array replaces the defaults wholesale — except permanently-excluded names", () => {
 		writeSettings({ excludedEntities: ["GUID"] })
 		const config = getRedactionConfig()
-		expect(config.resolved.engineExclusions).toEqual(["GUID"])
+		expect(config.resolved.engineExclusions).toEqual([...PERMANENT_ENGINE_EXCLUSIONS].sort())
 		expect(config.resolved.disabledEntities).toEqual(new Set(["GUID"]))
 	})
 
@@ -636,6 +672,53 @@ describe("anchored splice and re-additions — review regressions", () => {
 	beforeEach(() => resetRedactorEngine())
 	afterEach(() => resetRedactorEngine())
 
+	describe("connection-string promotion (chunk 5)", () => {
+		// A DSN without credentials is not a secret — must pass through intact.
+		it("leaves credentialless database URIs untouched", async () => {
+			for (const dsn of [
+				"postgres://db.prod.internal:5432/telemetry",
+				"mysql://db.internal:3306/app",
+				"mongodb://mongo.internal:27017/analytics",
+				"redis://cache.internal:6379",
+				"amqp://rabbit.internal:5672",
+				"mssql://sql.internal:1433;databaseName=app",
+			]) {
+				const out = await redactText(`dsn: ${dsn}`)
+				expect(out, dsn).toContain(dsn)
+			}
+		})
+
+		it("redacts only the userinfo of credential-bearing database URIs", async () => {
+			const password = "sTr0ng" + "P4ss" + "w0rd" + "!9z"
+			for (const scheme of ["postgres", "postgresql", "mysql", "mongodb", "amqp", "mssql"]) {
+				const user = `svc_${scheme}`
+				const host = "db.intern" + "al:5432/app"
+				const out = await redactText(`dsn: ${scheme}://${user}:${password}@${host}`)
+				expect(out, scheme).toMatch(/\[REDACTED-(DATABASE_CONNECTION_STRING|URL_WITH_CREDENTIALS|EMAIL_ADDRESS)\]/)
+				// label: engine EMAIL/URL claims win email-shaped userinfo spans before customs
+				expect(out, scheme).not.toContain(password)
+			}
+		})
+
+		it("redacts Azure connection-string secrets, value-only", async () => {
+			const sasKey = "RW1iZWRkZWRTQVNLZXl" + "hYmNkZWYxMjM0NTY3ODkwQUJDREVGRw" + "="
+			const out = await redactText(
+				`sb: Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=${sasKey};`,
+			)
+			expect(out).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
+			expect(out).not.toContain(sasKey)
+			expect(out).toContain("SharedAccessKeyName=RootManageSharedAccessKey") // identifier kept
+		})
+
+		it("leaves credentialless Azure connection strings untouched", async () => {
+			const cs = "DefaultEndpointsProtocol=https;AccountName=prodcfg;EndpointSuffix=core.windows.net"
+			expect(await redactText(`cs: ${cs}`)).toContain(cs)
+			expect(await redactText("k: SharedAccessKeyName=RootManageSharedAccessKey")).toContain(
+				"SharedAccessKeyName=RootManageSharedAccessKey",
+			)
+		})
+	})
+
 	it("splices by position: a password equal to the username does not survive (no substring replace)", () => {
 		// Regression for the substring-replace bug: with user == pass, the
 		// first occurrence of the secret text is inside the anchor, and the
@@ -644,7 +727,7 @@ describe("anchored splice and re-additions — review regressions", () => {
 		const input = ["db at postgres", "ql://", "admin", ":", "admin", "@db.internal/app"].join("")
 		const out = applyCustomPatterns(input, new Set())
 		expect(out).not.toContain("admin") // neither user nor pass may survive
-		expect(out).toContain("[REDACTED-URL_WITH_CREDENTIALS]")
+		expect(out).toContain("[REDACTED-DATABASE_CONNECTION_STRING]")
 		expect(out).toContain("db.internal/app")
 	})
 
@@ -692,6 +775,18 @@ describe("anchored splice and re-additions — review regressions", () => {
 		expect(anchored.split("[REDACTED-OKTA_TOKEN]").length - 1).toBe(3)
 	})
 
+	it("re-adds SUPABASE_KEY behind secret keywords only, never the public anon key", async () => {
+		const jwt = (n: number) => ["eyJ", "a".repeat(n)].join("")
+		// The public-by-design anon key must survive untouched.
+		const anon = ["NEXT_PUBLIC_SUPABASE_ANON_KEY=", jwt(120)].join("")
+		expect(await redactText(anon)).toBe(anon)
+		// Secret-key spellings redact behind their keyword.
+		const secret = await redactText(["SUPABASE_KEY=", jwt(120), " supabase_service_key: ", jwt(110)].join(""))
+		expect(secret).not.toContain(jwt(120))
+		expect(secret).not.toContain(jwt(110))
+		expect(secret.split("[REDACTED-SUPABASE_KEY]").length - 1).toBe(2)
+	})
+
 	it("catches credential query parameters across separators and names", async () => {
 		// `;`-delimited connection strings (Azure SAS) and extended names.
 		const sas = ["SharedAccessSignature", "=sig=".slice(0, 4), "x".repeat(24)].join("")
@@ -708,7 +803,10 @@ describe("anchored splice and re-additions — review regressions", () => {
 		expect(out).not.toContain("x".repeat(24))
 		expect(out).not.toContain("r".repeat(24))
 		expect(out).not.toContain("c".repeat(24))
-		expect(out.split("[REDACTED-URL_WITH_CREDENTIALS]").length - 1).toBe(3)
+		// SharedAccessSignature= is claimed by the AZURE_CONNECTION_STRING
+		// custom; the other two stay URL_WITH_CREDENTIALS.
+		expect(out.split("[REDACTED-URL_WITH_CREDENTIALS]").length - 1).toBe(2)
+		expect(out.split("[REDACTED-AZURE_CONNECTION_STRING]").length - 1).toBe(1)
 	})
 
 	it("re-adds GENERIC_SECRET behind keyword:value pairs only", async () => {
@@ -720,6 +818,32 @@ describe("anchored splice and re-additions — review regressions", () => {
 		// A 16+ run without a keyword passes (bare-shape precision).
 		const bare = `blob ${secret} tail`
 		expect(await redactText(bare)).toBe(bare)
+	})
+
+	it("rejects keyword-shaped identifier suffixes as GENERIC_SECRET anchors", async () => {
+		// The keyword must stand alone — inside a camelCase identifier it is not
+		// a keyword (`oauthAccessToken = …`, measured FP class).
+		const fixture = "c" + "zk7dj39sl4kf8tn2qp0a5wbxreu"
+		const assignment = `oauthAccessToken = "${fixture}"`
+		expect(await redactText(assignment)).toBe(assignment)
+		// The same value behind a real keyword still redacts.
+		const positive = await redactText(`token: ${fixture}`)
+		expect(positive).not.toContain(fixture)
+		expect(positive).toContain("[REDACTED-GENERIC_SECRET]")
+	})
+
+	it("keeps redacting SNAKE_CASE env keys and dashed CLI flags", async () => {
+		// `_` / `-` are keyword boundaries, not identifier chars: MY_TOKEN=…
+		// and --token=… are real secret habitats.
+		const secret = ["s", "c9f2b7a1d3e5f7a9c1b3d5e7f9a1c3e5"].join("")
+		const envLine = `MY_TOKEN=${secret}`
+		const env = await redactText(envLine)
+		expect(env).not.toContain(secret)
+		expect(env).toContain("[REDACTED-GENERIC_SECRET]")
+		const flag = await redactText(`run --token=${secret} now`)
+		expect(flag).not.toContain(secret)
+		expect(flag).toContain("[REDACTED-GENERIC_SECRET]")
+		expect(flag).toContain("--token=")
 	})
 
 	it("re-adds DOCKER_REGISTRY_AUTH from the config's JSON auth key", async () => {
@@ -735,6 +859,157 @@ describe("anchored splice and re-additions — review regressions", () => {
 		// Object-valued auth stays structural (OAuth configs).
 		const nested = await redactObjectStrings({ auth: { url: "https://sso.example.com" } })
 		expect(nested).toEqual({ auth: { url: "https://sso.example.com" } })
+	})
+})
+
+describe("base64-witness boundary classes", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	const V = "K9xT2mQ7pL4wR8vZ3nB6yH"
+
+	it.each([
+		`line ZGVhZGJlZWZjYWZl password: ${V}`, // space delimiter
+		`line ZGVhZGJlZWZjYWZl=password: ${V}`, // '=' delimiter
+		`line ZGVhZGJlZWZjYWZl"password: ${V}`, // quote delimiter
+		`salt=abcdefghijklmnopqrstuvwxyz1234\npassword=${V}`, // newline (env dump)
+		`digest a1b2c3d4e5f6a7b8c9d0e1f2 token: ${V}`, // hex digest + space
+		`line SGVsbG8gV29ybGQgZnJvbSBiNjQK password: ${V}`, // 20-char run
+	])("redacts a keyword-framed secret after a ≥16-char alnum token: %s", async (input) => {
+		// The across-the-delimiter witness used to skip these, leaking the
+		// true secret to the provider.
+		const out = await redactText(input)
+		expect(out).not.toContain(V)
+		expect(out).toContain("[REDACTED-GENERIC_SECRET]")
+	})
+
+	it.each([
+		["+", "raw base64"],
+		["/", "raw base64 path"],
+		["-", "base64url/JWT"],
+		["_", "anchored-name suffix"],
+	])("still skips a keyword embedded mid-payload behind %s (%s)", async (boundary) => {
+		// Real base64 interiors carry non-alnum payload bytes; with one inside
+		// the 16-char witness window the anchored keyword still reads as blob.
+		const interior = "+"
+		const out = await redactText(`data:${"a".repeat(8)}${interior}${"a".repeat(7)}${boundary}password=${V}`)
+		expect(out).toContain(V)
+	})
+
+	it("redacts a keyword after a pure-alnum run glued to a payload byte (no interior non-alnum)", async () => {
+		// A 16+ alnum run ending in `+` is a token/hash glued to the byte, not a
+		// base64 interior — the boundary itself cannot count as blob evidence.
+		const out = await redactText(`data ${"a".repeat(20)}+password=${V}`)
+		expect(out).not.toContain(V)
+		expect(out).toContain("[REDACTED-GENERIC_SECRET]")
+	})
+
+	it("redacts a capital-initial digit-free value (capital-chain secret), keeps lowercase identifier shapes", async () => {
+		// Identifier rejection covers the measured FP population — lowercase-
+		// initial camelCase words and dotted property paths — so capital-initial
+		// word chains are treated as secrets again.
+		const capitalChain = "CorrectHorseBatteryStapleZZ"
+		for (const anchor of ["password: ", "token: "]) {
+			const out = await redactText(anchor + capitalChain)
+			expect(out).not.toContain(capitalChain)
+			expect(out).toContain("[REDACTED-GENERIC_SECRET]")
+		}
+		for (const [anchor, identifier] of [
+			["token: ", "oauthRefreshTokenabcdefZZ"],
+			["token: ", "options.bearerTokenabcdefZZ"],
+		] as const) {
+			expect(await redactText(anchor + identifier)).toBe(anchor + identifier)
+		}
+	})
+
+	it("redacts digit-glued anchors while camelCase-glued anchors stay excluded", async () => {
+		// `1password:` / `sha256token=` are real secret framings; the glued
+		// boundary consumes the digit and keeps it in the replacement prefix.
+		// Letter-glued identifiers stay excluded by the anchor.
+		const secret = "J7k2M9p4Q1r8S6t3U0v5W2x7Y9z4A3n6"
+		expect(await redactText("1password: " + secret)).toBe("1password: [REDACTED-GENERIC_SECRET]")
+		expect(await redactText("sha256token=" + secret)).toBe("sha256token=[REDACTED-GENERIC_SECRET]")
+		const letterGlued = "oauthAccessToken: " + secret
+		expect(await redactText(letterGlued)).toBe(letterGlued)
+	})
+
+	it("requires the interior + within the 16-char witness window", async () => {
+		// The walk caps at 16: a `+` further back supplies no evidence and the
+		// keyword's value redacts — the window edge is load-bearing.
+		const deep = "x" + "+" + "a".repeat(30) + "-password=" + V
+		expect(await redactText(deep)).not.toContain(V)
+	})
+
+	it("base64url-only payloads no longer suppress (accepted narrowing)", async () => {
+		// Genuine base64url/JWT interiors contain `-`/`_` but never `+`; the
+		// walk alphabet excludes them, so no interior evidence exists and the
+		// anchored match redacts. Pinning the narrowing makes it visible.
+		const blob = "e" + "-".repeat(1) + "y".repeat(18) + "_password=" + V
+		expect(await redactText(blob)).not.toContain(V)
+	})
+
+	it("digit-glued anchor inside a base64 run still suppresses", async () => {
+		// Digits are payload bytes in both base64 alphabets: mid-blob digit
+		// glue keeps the run alive and the embedded keyword stays untouched.
+		const blob = `iVBORw0KGg+oAAAAB5token=${V}SUQmCC==`
+		expect(await redactText(blob)).toBe(blob)
+	})
+
+	it("redacts both secrets in an adjacent keyword pair (one delimiter apart)", async () => {
+		const B = "M4nU8wQ2sP7vL5xR9yB3zK6t"
+		const out = await redactText(`token=${V} password=${B}`)
+		expect(out).not.toContain(V)
+		expect(out).not.toContain(B)
+		expect(out.split("[REDACTED-GENERIC_SECRET]").length - 1).toBe(2)
+	})
+})
+
+describe("$-leading values", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	it("redacts a $2b$ bcrypt hash value behind a keyword", async () => {
+		const hash = "$2b$12$KIXQePFzsv1ZUGzTEWqA9."
+		const out = await redactText(`password: ${hash}`)
+		expect(out).not.toContain(hash)
+	})
+
+	it("still rejects shell expansions", () => {
+		for (const v of ["${CI_BUILD_TOKEN}", "$(vault read)", "$MY_SECRET"]) {
+			expect(isGenericNonSecretValue(v), v).toBe(true)
+		}
+		expect(isGenericNonSecretValue("$2b$12$KIXQePFzsv1ZUGzTEWqA9.")).toBe(false)
+	})
+})
+
+describe("AZURE pattern ownership", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	// Azure's documented example storage key.
+	const key = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+
+	it("AccountKey values are owned by AZURE_STORAGE_KEY, not the connection-string pattern", async () => {
+		const out = await redactText(
+			`DefaultEndpointsProtocol=https;AccountName=myacct;AccountKey=${key};EndpointSuffix=core.windows.net`,
+		)
+		expect(out).not.toContain(key)
+		expect(out).toContain("[REDACTED-AZURE_STORAGE_KEY]")
+		expect(out).not.toContain("[REDACTED-AZURE_CONNECTION_STRING]")
+	})
+
+	it("SharedAccessSignature values stay owned by AZURE_CONNECTION_STRING", async () => {
+		const sig = "a".repeat(20)
+		const out = await redactText(`SharedAccessSignature=${sig}`)
+		expect(out).not.toContain(sig)
+		expect(out).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
+	})
+
+	it("redacts truncated AccountKey values (20-39 chars) — fail-open on export truncation", async () => {
+		const truncated = "Eby8vdM02xNOcqFlqUwJ" // 20 chars
+		const out = await redactText(`AccountKey=${truncated}`)
+		expect(out).not.toContain(truncated)
+		expect(out).toContain("[REDACTED-AZURE_STORAGE_KEY]")
 	})
 })
 
@@ -1083,6 +1358,11 @@ describe("precision defaults — measured false-positive families", () => {
 		["fe80::1", "ipv6 link-local"],
 		["2001:db8::", "ipv6 documentation prefix"],
 		["2001:db8::1", "ipv6 documentation address"],
+		// Prefix-only fragments are not addresses.
+		["DB::", "ClickHouse scope marker"],
+		["0136::", "Go module version in scoped path"],
+		["127::", "unknown-protocol scope fragment"],
+		["fc00::", "bare ULA network prefix"],
 	])("drops %s (%s)", (span) => {
 		expect(isNonSensitiveIp(span)).toBe(true)
 		expect(isNonIdentifyingDetection("IP_ADDRESS", span)).toBe(true)
@@ -1137,10 +1417,85 @@ describe("precision defaults — true-positive guards", () => {
 		["192.168.1.10", "RFC1918 /16"],
 		["172.16.5.4", "RFC1918 /12"],
 		["fc00::1", "ipv6 ULA"],
+		["2607::", "routable global-unicast base"],
+		["2a00::", "RIPE global-unicast base"],
+		["fd12::", "ULA /48 base"],
 		["2001:4860:4860::8888", "global IPv6 (must not be caught by the db8 rule)"],
 	])("keeps %s (%s)", (span) => {
 		expect(isNonSensitiveIp(span)).toBe(false)
 		expect(isNonIdentifyingDetection("IP_ADDRESS", span)).toBe(false)
+	})
+})
+
+describe("base64-shadow suppression", () => {
+	const fbShape = () => ["EAAC", "g".repeat(80)].join("")
+
+	it("drops base64-shadow-prone entities embedded in an entropy block", () => {
+		const token = fbShape()
+		const text = `iVBORw0KGgo${token}+`
+		const start = text.indexOf(token)
+		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", text, start, start + token.length)).toBe(true)
+	})
+
+	it.each([
+		"FACEBOOK_TOKEN",
+		"TWITTER_BEARER_TOKEN",
+		"SQUARE_ACCESS_TOKEN",
+		"ALIBABA_CLOUD_KEY",
+		"GCP_API_KEY",
+	])("applies to %s", (entity) => {
+		const text = `q+${"a".repeat(60)}/w`
+		expect(isBase64ShadowDrop(entity, text, 2, 62)).toBe(true)
+	})
+
+	it("fails toward redaction: edges, unknown entities, non-base64 neighbor", () => {
+		const token = fbShape()
+		// String edges have no neighbor to prove embedding.
+		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", token, 0, token.length)).toBe(false)
+		// Unknown entity types are never filtered.
+		expect(isBase64ShadowDrop("OPENAI_KEY", `q${token}w`, 1, 1 + token.length)).toBe(false)
+		// One delimiting neighbor is enough to keep the span.
+		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", `${token},`, 0, token.length)).toBe(false)
+		expect(isBase64ShadowDrop("FACEBOOK_TOKEN", `"${token}"`, 1, 1 + token.length)).toBe(false)
+	})
+
+	it("pipeline: base64-embedded keyword-anchored runs pass through, delimited ones redact", async () => {
+		// The engine's FACEBOOK_TOKEN shape is keyword-anchored; embedded
+		// occurrences in base64 payloads are the measured FP class.
+		const token = ["EAAC", "g".repeat(60)].join("")
+		// The engine value regex greedily swallows trailing base64 chars into
+		// the span; base64 interior bytes (`+`) keep the anchor reading as
+		// blob, as in real payloads.
+		const kw = "FACEB" + "OOK_TOKEN="
+		const embedded = `data:image/png;base64,iVBORw0KGg+o${kw}${token}SUQmCC==`
+		expect(await redactText(embedded)).toBe(embedded)
+		const delimited = await redactText(`FACEBOOK_TOKEN="${token}"`)
+		expect(delimited).not.toContain(token)
+		expect(delimited).toContain("[REDACTED-FACEBOOK_TOKEN]")
+	})
+
+	it("over-length vendor keys in ordinary assignments still redact", async () => {
+		// Engine spans are length-capped (LTAI{12,20}): past the cap the
+		// end-neighbor is alphanumeric — truncation, not entropy embedding.
+		const longKey = "LTAI" + "aB3dE6gH9jK2mN5pQ8sT1v2W4yZ6"
+		const result = await redactText(`ACCESS_KEY_ID=${longKey}`)
+		expect(result).not.toContain(longKey)
+		expect(result).toContain("[REDACTED-ALIBABA_CLOUD_KEY]")
+	})
+
+	it("shadow-entity keys in prose, URL paths, and marker-laden strings stay redacted", async () => {
+		const gcp = "AIza" + "SyD4kN8pQr2tW5xZ9bC1eF3hJ6mL0nP4qR7sT5u"
+		const prose = await redactText(`the gcp key ${gcp} leaked`)
+		expect(prose).not.toContain(gcp)
+		expect(prose).toContain("[REDACTED-GCP_API_KEY]")
+		// A URL path separator is not base64 evidence.
+		const url = `https://example.com/v1/${gcp}/resource`
+		const apiCall = await redactText(`curl ${url}`)
+		expect(apiCall).not.toContain(gcp)
+		// Marker text breaks base64 runs: fixture strings keep redacting.
+		const laden = `[REDACTED-GCP_API_KEY]iVBORw0KGgo${gcp}SUQmCC==`
+		const twice = await redactText(laden)
+		expect(twice).not.toContain(gcp)
 	})
 })
 
@@ -1396,14 +1751,22 @@ describe("token mode — composition and tally parity", () => {
 
 describe("redactObjectStrings — image payloads are binary, not text", () => {
 	// Real-session shape: base64 of an ordinary PNG happened to contain a run
-	// matching the crates.io token pattern. Replacing it corrupted the image,
+	// matching an api-key pattern. Replacing it corrupted the image,
 	// and the provider rejected every later turn with a 400.
-	const tokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
-	const base64 = `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC==`
-	const fromBytes = (head: string) => `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+	// tokenShaped: redactable fixture (Anthropic sk-ant shape) for the "still
+	// scans" cases — default-on, so the fixture asserts pipeline behavior, not
+	// an opt-in entity (Airtable was demoted to opt-in at measured ~3% precision).
+	// blobTokenShaped: crates.io shape — anchor-required (never fires) since the
+	// byte-identical cases assert the payload bypass, not entity detection; the
+	// pure-base64-alphabet shape keeps payload alignment semantics intact.
+	const tokenShaped = ["sk-ant-", "aB3dE6gH9jK2mN"].join("")
+	const blobTokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
+	const base64 = `iVBORw0KGgoA/+${blobTokenShaped}/+AAAAElFTkSuQmCC==`
+	const fromBytes = (head: string) =>
+		`${Buffer.from(head, "latin1").toString("base64")}${blobTokenShaped}A`.padEnd(64, "A")
 	// A break inside the first 16 base64 chars shrinks the signature window.
 	const breakInSignature = (head: string) => {
-		const raw = `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+		const raw = `${Buffer.from(head, "latin1").toString("base64")}${blobTokenShaped}A`.padEnd(64, "A")
 		return `${raw.slice(0, 8)}\n${raw.slice(8)}`
 	}
 
@@ -1441,17 +1804,26 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 		["non-image data URL", { image_url: { url: `data:text/plain;base64,${tokenShaped}` } }],
 		["bare secret labelled as an image", { mimeType: "image/png", data: tokenShaped }],
 		["bare secret with an empty image subtype", { mimeType: "image/", data: tokenShaped }],
-		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo${tokenShaped}` }],
+		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo ${tokenShaped}A` }],
 		["image data URL whose bytes are not an image", { image_url: { url: `data:image/png;base64,${tokenShaped}A` } }],
+	])("still scans %s", async (_name, block) => {
+		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-ANTHROPIC_KEY]")
+	})
+
+	it.each([
 		["image data URL inside a text block", { type: "text", text: `data:image/png;base64,${base64}` }],
 		["image data URL as a tool argument", { command: `data:image/png;base64,${base64}` }],
 		["image data URL under a generic url key", { url: `data:image/png;base64,${base64}` }],
-	])("still scans %s", async (_name, block) => {
-		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-CRATES_IO_TOKEN]")
+	])("base64-embedded token shapes in %s pass through unmodified", async (_name, block) => {
+		// The shadow-entity match inside an entropy block is payload noise —
+		// splicing a marker into base64 corrupts the image (the provider 400
+		// bug documented above). Scanning stays on: the grid above redacts
+		// genuinely delimited secrets in these same contexts.
+		expect(await redactObjectStrings(block)).toEqual(block)
 	})
 
-	it("scans a bare top-level image data URL as text", async () => {
-		expect(await redactObjectStrings(`data:image/png;base64,${base64}`)).toContain("[REDACTED-CRATES_IO_TOKEN]")
+	it("passes a bare top-level image data URL through byte-identical", async () => {
+		expect(await redactObjectStrings(`data:image/png;base64,${base64}`)).toBe(`data:image/png;base64,${base64}`)
 	})
 
 	it("keeps Bedrock's binary image bytes as a typed array", async () => {

@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
 /**
  * Print the redaction entity catalog as JSON: every configurable entity
- * with its tier, category, and effective default (redacts today or not).
+ * with its tier, category, effective default (redacts today or not), and
+ * liveState (engine-side disposition: active / no_matcher — alias_of is
+ * reserved, no current aliases).
  *
- * Consumers: the ai-enabler-console copies this output into its generated
- * redactionCatalog constant (see its header for the regenerate step); the
- * harness never serves it at runtime.
+ * Consumers: the release workflow attaches this output to the GitHub
+ * release as redaction-catalog.json (the policy-UI console's fetch script
+ * regenerates its constants from that asset); the harness never serves it
+ * at runtime.
  *
  * Usage:
  *   bun scripts/redaction-catalog.ts
@@ -14,4 +17,13 @@
  */
 import { listRedactionCatalog } from "../src/extensions/pii-redaction/entity-tiers.js"
 
-console.log(JSON.stringify(listRedactionCatalog(), null, 2))
+// Only actionable rows publish. no_matcher rows (anchor_required entities
+// without an anchored custom — none today) would be dead toggles for
+// consumers; names in PERMANENT_ENGINE_EXCLUSIONS never reach the catalog
+// at all — no registry entry, suppressed engine-side on every path. The
+// filter stays as the guard: a future anchor_required addition without a
+// custom auto-classifies as no_matcher and stays out of the published
+// contract.
+const published = listRedactionCatalog().filter((entry) => entry.liveState === "active")
+
+console.log(JSON.stringify(published, null, 2))
