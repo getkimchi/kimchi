@@ -12,11 +12,17 @@ import { pullRequestKey } from "../pull-request-status/links.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
-import { readWorkCostReport } from "../work-attribution/cost-sync.js"
+import { readWorkCostReportAsync } from "../work-attribution/cost-sync.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
-import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
+import {
+	isWorkAccount,
+	isWorkScope,
+	platformApiUrl,
+	sameWorkAccount,
+	type WorkAccount,
+} from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
-import { buildEvents } from "./events.js"
+import { buildEvents, type EventUnit } from "./events.js"
 import { legacyInputSignature } from "./ledger/import.js"
 import {
 	acknowledgeBatch,
@@ -27,7 +33,8 @@ import {
 	pendingBatch,
 	readOutboxStatus,
 } from "./ledger/outbox.js"
-import { backendFor, type OutboxBatch, type RecordBackend } from "./ledger/records.js"
+import { backendFor, type OutboxBatch, type RecordBackend, type StoredRecord } from "./ledger/records.js"
+import { preludeStretch } from "./prelude.js"
 import type { Acknowledgement } from "./protocol.js"
 import {
 	ACCOUNT_SCOPES,
@@ -980,10 +987,131 @@ export async function reconcileReporting(
 
 /** At most this many requests or auxiliary records commit their events in one transaction. */
 const CHUNK_UNITS = 100
+
+export { preludeStretch } from "./prelude.js"
+
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
 /** The group translation in progress: units committed while its marked records stay unchanged. */
 const PROGRESS_NOTE = "translation-progress"
+
+/** The built plan of a translation pass's prelude lives in its own note, written once per input signature. */
+const PLAN_NOTE = "translation-plan"
+
+/** The persisted composition of a translation pass's prelude, JSON round-trippable through the plan note. */
+interface PlanTail {
+	signature: string
+	generation: number
+	units: EventUnit[]
+	accounts: readonly { account: WorkAccount; facts: Fact[] }[]
+	unresolved: number
+	settled: boolean
+}
+
+/**
+ * Plans do not cross process boundaries: a resumed process re-runs the prelude so repository identities retry with
+ * the fresh lookup cache instead of clearing markers against a snapshot the tail froze before the restart.
+ */
+const PLAN_GENERATION = Date.now()
+
+/** Full input fingerprint of a group pass: which works, and which marked records in each. */
+function planSignature(works: readonly string[], changed: ReadonlyMap<string, string>): string {
+	return (
+		"v1\0" +
+		[...works].sort().join("\0") +
+		"\0" +
+		[...changed]
+			.map(([recordHash, type]) => `${recordHash}:${type}`)
+			.sort()
+			.join("\0")
+	)
+}
+
+/**
+ * A note left by another version, or corrupted storage, never substitutes for a rebuilt plan. The elements are
+ * checked one by one — not only the envelope — and every unit's entities must resolve to facts the note itself
+ * carries: a partial tail would otherwise be replayed as empty events with the markers still cleared.
+ */
+function readPlanTail(value: unknown, signature: string): PlanTail | undefined {
+	if (!object(value)) return undefined
+	if (
+		value.signature !== signature ||
+		value.generation !== PLAN_GENERATION ||
+		!Array.isArray(value.units) ||
+		!Array.isArray(value.accounts) ||
+		!Number.isSafeInteger(value.unresolved)
+	)
+		return undefined
+	for (const unit of value.units)
+		if (
+			!object(unit) ||
+			typeof unit.account !== "string" ||
+			!Array.isArray(unit.entities) ||
+			!unit.entities.every((entity) => typeof entity === "string") ||
+			!Array.isArray(unit.recordHashes) ||
+			!unit.recordHashes.every((recordHash) => typeof recordHash === "string")
+		)
+			return undefined
+	const units = value.units as EventUnit[]
+	const accounts = value.accounts as PlanTail["accounts"]
+	for (const group of accounts)
+		if (
+			!object(group) ||
+			!object(group.account) ||
+			!Array.isArray(group.facts) ||
+			!group.facts.every((fact) => object(fact) && typeof fact.entityId === "string")
+		)
+			return undefined
+	// Every entity a unit names must resolve to a fact the tail itself carries; a tail whose halves disagree
+	// is corruption, and replaying it commits empty claims for the whole group with the markers cleared.
+	const carried = new Map(
+		accounts.map((group) => [accountKey(group.account), new Set(group.facts.map((fact) => fact.entityId))]),
+	)
+	for (const unit of units) {
+		const entities = carried.get(unit.account)
+		if (!entities || !unit.entities.every((entity) => entities.has(entity))) return undefined
+	}
+	return {
+		signature,
+		generation: PLAN_GENERATION,
+		units,
+		accounts,
+		unresolved: Number(value.unresolved),
+		settled: value.settled === true,
+	}
+}
+
+function factsMapOf(accounts: PlanTail["accounts"]): Map<string, Map<string, Fact>> {
+	return new Map(
+		accounts.map((group) => [accountKey(group.account), new Map(group.facts.map((fact) => [fact.entityId, fact]))]),
+	)
+}
+
+const STALLED_NOTE = "translation-stalled"
+
+/**
+ * A group whose translation completed but left requests waiting for evidence larger than the records alone (a PR
+ * merge, a repository lookup that failed then) resolves only when its inputs move: new markers, or external state
+ * gathered during translation. Re-running the identical group every pass blocks the UI for its whole read cost; a
+ * group with the identical signature waits this long between full retries. New markers flip the signature and the
+ * group re-runs immediately.
+ */
+const STALLED_RETRY_MS = 5 * 60_000
+
+/** Both parts of a group's input: the works it spans and the marked records awaiting translation. */
+function groupSignature(works: readonly string[], changed: ReadonlyMap<string, string>): string {
+	const hash = createHash("sha256")
+	hash.update(
+		"v1\0" +
+			[...works].sort().join("\0") +
+			"\0" +
+			[...changed]
+				.map(([h, t]) => `${h}:${t}`)
+				.sort()
+				.join("\0"),
+	)
+	return hash.digest("hex")
+}
 
 /**
  * Translates the works whose records changed since their last translation, one connected group at a time, without
@@ -1016,13 +1144,56 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 		return
 	}
 	const producer = await reportingProducer(agentDir, check)
+	const groups = changedWorkGroups(backend, new Set(marked.keys()))
+	const signatures = groups.map((works) => ({
+		works,
+		signature: groupSignature(works, new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))),
+	}))
+	// A group whose last full attempt resolved nothing waits out the retry window while its inputs stand still; the
+	// stale entries of groups that resolved or dissolved since are pruned on sight. Corrupt storage starts fresh: an
+	// unreadable note discards every window, and every group retries immediately — never a permanent failure.
+	let stalled: Record<string, { at: number }>
+	try {
+		const parsed: unknown = JSON.parse(backend.getNote("agent", STALLED_NOTE) ?? "{}")
+		stalled = object(parsed) ? (parsed as Record<string, { at: number }>) : {}
+	} catch {
+		stalled = {}
+	}
+	{
+		const current = new Set(signatures.map(({ signature }) => signature))
+		let pruned = false
+		for (const key of Object.keys(stalled))
+			if (
+				!current.has(key) ||
+				!stalled[key] ||
+				// A clock skew stamps a little ahead; anything beyond that is not a window but a lock-out.
+				!Number.isSafeInteger(stalled[key].at) ||
+				stalled[key].at > Date.now() + 60_000
+			) {
+				delete stalled[key]
+				pruned = true
+			}
+		if (pruned) backend.tx(() => backend.putNote("agent", STALLED_NOTE, JSON.stringify(stalled)))
+	}
 	let waiting = false
-	for (const works of changedWorkGroups(backend, new Set(marked.keys()))) {
+	for (const { works, signature } of signatures) {
 		if (Date.now() >= deadline - CHUNK_RESERVE_MS) return
+		const seen = stalled[signature]
+		if (seen && Date.now() - seen.at < STALLED_RETRY_MS) {
+			// Nothing new since the attempt that left it unresolved: it still waits, without re-paying its read.
+			waiting = true
+			continue
+		}
 		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
 		const translated = await translateGroup(agentDir, works, changed, producer, deadline, bounded, check)
 		if (translated === undefined) return
 		waiting ||= translated
+		// Every retry that still leaves the group unresolved rests the window from now; a group that invoked every
+		// attempt and still waits for evidence otherwise re-runs on every pass once its first window elapsed.
+		const stamped = translated || signature in stalled
+		if (translated) stalled[signature] = { at: Date.now() }
+		else delete stalled[signature]
+		if (stamped) backend.tx(() => backend.putNote("agent", STALLED_NOTE, JSON.stringify(stalled)))
 	}
 	await recordReportingError(
 		agentDir,
@@ -1086,48 +1257,118 @@ async function translateGroup(
 	check: () => void,
 ): Promise<boolean | undefined> {
 	const backend = backendFor(agentDir)
-	const stored = works.flatMap((workId) => backend.readRecords({ workId }, check))
-	const records = stored.map((row) => {
-		check()
-		return JSON.parse(row.body) as WorkRecord
-	})
-	const { report } = readWorkCostReport(agentDir, records)
-	const { repositories, settled } = await repositoryIdentities(agentDir, records, report, deadline, bounded, check)
-	// A commit or work link can move any request of the group; other records touch only their own request.
-	const structural = [...changed.values()].some((type) => type === "commit" || type === "work_link")
-	const touched = structural
-		? undefined
-		: {
-				requests: new Set(
-					records.flatMap((row, index) =>
-						changed.has(stored[index].recordHash) && typeof row.requestId === "string" ? [row.requestId] : [],
-					),
-				),
-				records: new Set(changed.keys()),
-			}
-	const built = buildEvents(
-		stored,
-		report,
-		repositories,
-		producer,
-		check,
-		(account, entity) => effectiveClaim(backend, account, entity),
-		touched,
-	)
-	check()
-	const facts = new Map(
-		built.accounts.map((group) => [
-			accountKey(group.account),
-			new Map(group.facts.map((fact) => [fact.entityId, fact])),
-		]),
-	)
 	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
-	const progress = {
-		group: hash(works),
-		markers: changed.size,
-		plan: hash(built.units.map((unit) => unit.requestId ?? unit.recordHashes.join())),
+	const groupKey = hash(works)
+	const signature = planSignature(works, changed)
+	// A note written by another version, or corrupted storage, never substitutes for a rebuild: it reads as absent.
+	const readNote = (note: string): unknown => {
+		try {
+			return JSON.parse(backend.getNote("agent", note) ?? "null")
+		} catch {
+			return null
+		}
 	}
-	const saved: unknown = JSON.parse(backend.getNote("agent", PROGRESS_NOTE) ?? "null")
+	const saved: unknown = readNote(PROGRESS_NOTE)
+	// A deadline that lands inside this function's prelude (reads, report, attribution) discards the built plan; on a
+	// large attributed group the prelude alone exceeds the pass budget, so the identical pass repeats the prelude on
+	// every interval and blocks the UI loop each time. The plan persists in its own note, written once per identical
+	// inputs, and a pass over the exact same works and markers resumes after the prelude instead of re-paying it.
+	const existingPlan = (() => {
+		if (!object(saved) || saved.group !== groupKey) return undefined
+		const plan = readPlanTail(readNote(PLAN_NOTE), signature)
+		// A committed count cannot point beyond the plan it indexes: an out-of-range counter degrades the plan
+		// to a full rebuild — never to a skipped loop that retires the markers without uploading the facts.
+		if (
+			plan &&
+			Number.isSafeInteger(saved.units) &&
+			(Number(saved.units) < 0 || Number(saved.units) > plan.units.length)
+		)
+			return undefined
+		return plan
+	})()
+	let builtUnits: EventUnit[]
+	let facts: Map<string, Map<string, Fact>>
+	let unresolved: number
+	let settled: boolean
+	let serializedAccounts: PlanTail["accounts"]
+	if (existingPlan) {
+		builtUnits = existingPlan.units
+		unresolved = existingPlan.unresolved
+		settled = existingPlan.settled
+		serializedAccounts = existingPlan.accounts
+		facts = factsMapOf(serializedAccounts)
+	} else {
+		// Reads and parses pull one record at a time, so a big group can breathe inside the stretch: every
+		// few thousand rows or ~50ms of work, wait a turn — otherwise the whole read owns the UI loop.
+		const stretch = preludeStretch()
+		const stored: StoredRecord[] = []
+		for (const workId of works) {
+			for (const row of backend.readRecords({ workId }, check)) {
+				stored.push(row)
+				await stretch()
+			}
+			// Between works, let the loop breathe: a big group's reads otherwise block the UI for the whole stretch.
+			await setImmediate()
+		}
+		const records: WorkRecord[] = []
+		for (const row of stored) {
+			check()
+			records.push(JSON.parse(row.body) as WorkRecord)
+			await stretch()
+		}
+		// The report shares the prelude's stretch cadence: a big group breathes between the calculation's
+		// 2,000-step or ~50ms stretches instead of owning the loop end-to-end.
+		const { report } = await readWorkCostReportAsync(agentDir, records, preludeStretch())
+		const { repositories, settled: identitiesSettled } = await repositoryIdentities(
+			agentDir,
+			records,
+			report,
+			deadline,
+			bounded,
+			check,
+		)
+		// A commit or work link can move any request of the group; other records touch only their own request.
+		const structural = [...changed.values()].some((type) => type === "commit" || type === "work_link")
+		const touched = structural
+			? undefined
+			: {
+					requests: new Set(
+						records.flatMap((row, index) =>
+							changed.has(stored[index].recordHash) && typeof row.requestId === "string" ? [row.requestId] : [],
+						),
+					),
+					records: new Set(changed.keys()),
+				}
+		const built = await buildEvents(
+			stored,
+			report,
+			repositories,
+			producer,
+			check,
+			(account, entity) => effectiveClaim(backend, account, entity),
+			touched,
+			stretch,
+		)
+		builtUnits = built.units
+		unresolved = built.unresolved.length
+		settled = identitiesSettled
+		serializedAccounts = built.accounts
+		facts = factsMapOf(serializedAccounts)
+	}
+	check()
+	const progress = {
+		group: groupKey,
+		markers: changed.size,
+		plan: hash(builtUnits.map((unit) => unit.requestId ?? unit.recordHashes.join())),
+	}
+	const tail: PlanTail = {
+		signature,
+		generation: PLAN_GENERATION,
+		units: builtUnits,
+		accounts: serializedAccounts,
+		unresolved,
+		settled,
+	}
 	let done =
 		object(saved) &&
 		saved.group === progress.group &&
@@ -1136,10 +1377,20 @@ async function translateGroup(
 		Number.isSafeInteger(saved.units)
 			? Number(saved.units)
 			: 0
+	if (!existingPlan) {
+		// A rebuilt plan restarts any count that does not fit inside it; a skipped loop with the markers
+		// cleared would retire the group without committing its facts.
+		if (done < 0 || done > builtUnits.length) done = 0
+		// The plan persists before the first chunk: a deadline abort anywhere below resumes after the prelude.
+		backend.tx(() => {
+			backend.putNote("agent", PLAN_NOTE, JSON.stringify(tail))
+			backend.putNote("agent", PROGRESS_NOTE, JSON.stringify({ ...progress, units: done }))
+		})
+	}
 	const observed = new Set<string>()
-	while (done < built.units.length) {
+	while (done < builtUnits.length) {
 		if (Date.now() >= deadline - CHUNK_RESERVE_MS) return undefined
-		const chunk = built.units.slice(done, done + CHUNK_UNITS)
+		const chunk = builtUnits.slice(done, done + CHUNK_UNITS)
 		const byAccount = new Map<string, Fact[]>()
 		for (const unit of chunk)
 			for (const entity of unit.entities) {
@@ -1163,8 +1414,9 @@ async function translateGroup(
 		// A repository lookup that failed or ran out of time retries the group with a later pass.
 		if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
 		backend.deleteNote("agent", PROGRESS_NOTE)
+		backend.deleteNote("agent", PLAN_NOTE)
 	})
-	return built.unresolved.length > 0
+	return unresolved > 0
 }
 
 /**

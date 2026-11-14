@@ -4,6 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, onTestFinished, test } from "vitest"
+import { readRecordsSinceSql } from "./records.js"
+import { LEDGER_ADDITIVE_SCHEMA } from "./schema.js"
 import { classifyUserVersion, LedgerUnavailableError, ledgerDbPath, openStore, retryOnBusy } from "./store.js"
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
@@ -244,4 +246,50 @@ test("known regression: initialization rechecks a future version after obtaining
 	expect(result.code).toBe("pr-cost-ledger/future-schema")
 	expect(result.version).toBe(777)
 	expect(result.tables).toEqual(["future_only"])
+})
+
+test("the outbox status aggregate has covering indexes available to every open", () => {
+	// LEDGER_SCHEMA only executes at database creation; pre-existing ledgers receive indexes through the
+	// additive block that store.ts runs on every open, so both statements must live there.
+	expect(LEDGER_ADDITIVE_SCHEMA).toContain(
+		"CREATE INDEX IF NOT EXISTS outbox_pending_cover ON outbox_events(account_key, acked_at, blocked)",
+	)
+	// The earliest-batch-per-account scalar lookup must not scan the batch authority either.
+	expect(LEDGER_ADDITIVE_SCHEMA).toContain(
+		"CREATE INDEX IF NOT EXISTS outbox_batches_by_account ON outbox_batches(account_key, order_key, created_at)",
+	)
+	// The incremental reconcile read filters WHERE imported_at >= ? — at six figures that is a
+	// full-table scan per pass without this index.
+	expect(LEDGER_ADDITIVE_SCHEMA).toContain(
+		"CREATE INDEX IF NOT EXISTS work_records_imported ON work_records(imported_at)",
+	)
+})
+
+test("an existing ledger gains the additive indexes on open (bun driver)", () => {
+	const dir = agentDir()
+	// The driver opens the ledger, drops the additive indexes, reopens it, and reports what the
+	// every-open additive apply restored — a pre-existing ledger behaves identically to a fresh one.
+	const result = driver("schema-check", dir)
+	const expected = ["outbox_batches_by_account", "outbox_pending_cover", "work_records_imported"]
+	const indexes = (result.afterReopen as string[]).filter((name) => expected.includes(name))
+	expect((result.afterDrop as string[]).some((name) => expected.includes(name))).toBe(false)
+	expect(indexes.sort()).toEqual(expected)
+})
+
+test("the windowed read is hinted onto the imported index; unhinted SQL stays rowid-ordered", () => {
+	expect(readRecordsSinceSql(true)).toContain("INDEXED BY work_records_imported")
+	expect(readRecordsSinceSql(true)).toContain("ORDER BY rowid")
+	// An indexless open (a contended first open defers the additive apply) must degrade to the scan, not error.
+	expect(readRecordsSinceSql(false)).not.toContain("INDEXED BY")
+})
+
+test("the planner answers the windowed read from the index, not a full scan (bun driver)", () => {
+	const dir = agentDir()
+	// At table sizes past ~20k rows, the unhinted ORDER BY rowid read loses to a full scan without
+	// STAT4; the driver seeds 25k rows so the planner's choice is the one the soak measured.
+	const result = driver("plan-since", dir, "seed")
+	expect(result.hinted).toBe(true)
+	const plan = (result.plan as string[]).join(" ")
+	expect(plan).toContain("work_records_imported")
+	expect(plan).not.toContain("SCAN work_records")
 })

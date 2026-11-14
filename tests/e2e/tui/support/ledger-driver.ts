@@ -10,6 +10,7 @@
  *   foreign-check  plant a foreign user_version, then prove openStore refuses it
  *   hold-writer    BEGIN IMMEDIATE, print {"held":true}, sleep <arg>ms, COMMIT
  *   read-only      open the store in a second process; count meta rows
+ *   schema-check   open, drop the additive indexes, reopen; print the additive apply's effect
  *   write-probe    try BEGIN IMMEDIATE; report acquisition or lock error + elapsed
  *   capture        capture one record JSON (<arg>) via the v2 records seam
  *   head           print the saved projection head for work <arg>
@@ -27,8 +28,10 @@ import {
 	fingerprint,
 	getNote,
 	readRecords,
+	readRecordsSinceSql,
 	readWorkHead,
 	readWorkSummary,
+	workRecordsImportedPresent,
 } from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
 import {
@@ -123,6 +126,54 @@ async function readOnly(agent: string): Promise<void> {
 	const count = store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM meta").get()?.count ?? -1
 	out({ count })
 	store.close()
+}
+
+async function planSince(agent: string, seed?: string): Promise<void> {
+	const store = openStore(agent)
+	// The planner's choice only diverges at scale: without statistics, table sizes past ~20k rows
+	// make the unhinted windowed read lose to a full scan; a fresh ledger cannot show it.
+	if (seed === "seed") {
+		const count = store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records").get()?.count ?? 0
+		if (count < 20_000) {
+			const insert = store.db.query(
+				"INSERT INTO work_records (record_hash, type, work_id, session_id, body, source_path, source_generation, source_offset, imported_at) VALUES (?, 'request', 'plan-since-seed', 'plan-since', ?, 'seed', 0, NULL, ?)",
+			)
+			store.tx(() => {
+				for (let index = 0; index < 25_000; index++) insert.run(`plan-since-${index}`, "{}", 1_700_000_000_000 + index)
+			})
+		}
+	}
+	const present = workRecordsImportedPresent(store.db)
+	const sql = readRecordsSinceSql(present).replace("?", "1730000000000")
+	const plan = store.db
+		.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${sql}`)
+		.all()
+		.map((row) => row.detail)
+	store.close()
+	out({ plan, hinted: present })
+}
+
+async function schemaCheck(agent: string): Promise<void> {
+	const listFrom = (db: { query: <T>(sql: string) => { all: () => T[] } }): string[] =>
+		db
+			.query<{ name: string }, []>(
+				"SELECT name FROM sqlite_master WHERE type='index' AND (name LIKE 'outbox_%' OR name = 'work_records_imported')",
+			)
+			.all()
+			.map((row) => row.name)
+			.sort()
+	// One handle for the drop: opening again would re-apply the additive schema before we could measure it.
+	const first = openStore(agent)
+	const before = listFrom(first.db)
+	first.db.exec(
+		"DROP INDEX IF EXISTS outbox_pending_cover; DROP INDEX IF EXISTS outbox_batches_by_account; DROP INDEX IF EXISTS work_records_imported",
+	)
+	const afterDrop = listFrom(first.db)
+	first.close()
+	const second = openStore(agent)
+	const afterReopen = listFrom(second.db)
+	second.close()
+	out({ before, afterDrop, afterReopen })
 }
 
 async function writeProbe(agent: string): Promise<void> {
@@ -335,7 +386,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 			stored.map((row) => JSON.parse(row.body)),
 		)
 		const producer = "33333333-3333-4333-8333-333333333333"
-		const built = buildEvents(
+		const built = await buildEvents(
 			stored,
 			report,
 			new Map([[agent, { provider: "github", host: "github.com", id: "999", name: "fork/repo" }]]),
@@ -1997,6 +2048,8 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"foreign-check": (agent) => foreignCheck(agent),
 	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),
 	"read-only": (agent) => readOnly(agent),
+	"schema-check": (agent) => schemaCheck(agent),
+	"plan-since": (agent, arg) => planSince(agent, arg),
 	"write-probe": (agent) => writeProbe(agent),
 	capture: (agent, json) => captureRecord(agent, json ?? "{}"),
 	head: (agent, workId) => printHead(agent, workId ?? ""),

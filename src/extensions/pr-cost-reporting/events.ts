@@ -12,6 +12,7 @@ import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary
 import { type Fact, validateClaimUpdate } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
 import { nativeObservations } from "./native.js"
+import { preludeStretch } from "./prelude.js"
 import {
 	type Event,
 	encodeEvent,
@@ -52,8 +53,11 @@ type RequestOwner = { row: WorkRecord; scope: WorkScope }
 /**
  * Builds every fact the records support. Shared work and PR facts always aggregate every request, but with `touched`
  * only the named requests and auxiliary records become units, so untouched requests skip their claim reads.
+ *
+ * The default stretch creates a fresh preludeStretch() per call, so a long translation breathes on the same budget
+ * as the prelude; pass a shared stretcher to fold translation into a caller-owned budget.
  */
-export function buildEvents(
+export async function buildEvents(
 	stored: readonly StoredRecord[],
 	report: PullRequestCostReport,
 	repositories: Map<string, RepositoryIdentity>,
@@ -61,17 +65,21 @@ export function buildEvents(
 	check: () => void,
 	existingClaim: (account: string, entity: string) => Event | undefined,
 	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
-): CommonEvents {
-	const records = stored.map((row) => {
+	stretch: () => Promise<void> = preludeStretch(),
+): Promise<CommonEvents> {
+	const records = new Array<WorkRecord>(stored.length)
+	for (let index = 0; index < stored.length; index++) {
+		await stretch()
 		check()
-		return JSON.parse(row.body) as WorkRecord
-	})
+		records[index] = JSON.parse(stored[index].body) as WorkRecord
+	}
 	const native = nativeObservations(stored)
 	const observations = new Map(native.observations.map((row) => [row.requestId, row]))
 	const nativeProblems = new Map(native.unresolved.map((row) => [row.requestId, row]))
 	const attribution = requestAttributions(records, report, repositories)
 	const requests = new Map<string, { row: WorkRecord; hash: string }[]>()
 	for (let i = 0; i < records.length; i++) {
+		await stretch()
 		check()
 		const row = records[i]
 		if (row.type !== "request" && row.type !== "request_dispatch" && row.type !== "request_response") continue
@@ -87,6 +95,7 @@ export function buildEvents(
 	const unresolved: CommonEvents["unresolved"] = []
 	const units: EventUnit[] = []
 	for (const [requestId, evidence] of attribution) {
+		await stretch()
 		check()
 		const source = requests.get(requestId) ?? []
 		const recordHashes = [...new Set(source.map(({ hash }) => hash))]
@@ -370,6 +379,7 @@ export function buildEvents(
 		}
 	}
 	for (let index = 0; index < records.length; index++) {
+		await stretch()
 		check()
 		const row = records[index]
 		if (!["work", "tool_execution", "file_transition", "file_observation", "plan", "commit"].includes(row.type))
@@ -588,6 +598,7 @@ export function buildEvents(
 	const valid = new Map<string, boolean>()
 	for (const unit of units) {
 		if (unit.requestId === undefined) continue
+		await stretch()
 		check()
 		const facts = accounts.get(unit.account)?.facts
 		const [request] = unit.entities

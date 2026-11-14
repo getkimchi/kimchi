@@ -228,7 +228,7 @@ describe("classifyTransportError (direct)", () => {
 	it("keeps the bounded-length contract on the fail-open branch", () => {
 		// Defensive branch: a transport error gated in but matching no family
 		// keeps the raw head, truncated to 300 chars.
-		const c = classifyTransportError("unknown transport failure " + "x".repeat(400))
+		const c = classifyTransportError(`unknown transport failure ${"x".repeat(400)}`)
 		expect(c.message.length).toBe(300)
 		expect(c.message.endsWith("xxx")).toBe(true)
 		expect(c.attrs).toBeUndefined()

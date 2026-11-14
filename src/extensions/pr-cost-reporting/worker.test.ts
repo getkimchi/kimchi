@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import * as timers from "node:timers/promises"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as durableFiles from "../../config/json.js"
 import { createContext } from "../__mocks__/context.js"
@@ -35,6 +36,7 @@ import {
 	deliverEvents,
 	deliverSnapshots,
 	LIMIT_RETRY_MS,
+	preludeStretch,
 	reconcileReporting,
 	resetReportingPassGates,
 	serverLimit,
@@ -46,6 +48,23 @@ vi.mock("../work-attribution/costs.js", async (original) => ({ ...(await origina
 vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
 vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], units: [], unresolved: [] })) }))
 vi.mock("./ledger/outbox.js", async (original) => ({ ...(await original<typeof outbox>()), observeEvents: vi.fn() }))
+// Pass-through timers: real macrotask semantics, with a call counter the tests can read.
+vi.mock("node:timers/promises", async (original) => {
+	const real = await original<typeof import("node:timers/promises")>()
+	let calls = 0
+	return {
+		...real,
+		setImmediate: (...args: Parameters<typeof real.setImmediate>) => {
+			calls += 1
+			return real.setImmediate(...args)
+		},
+		__calls: () => {
+			const count = calls
+			calls = 0
+			return count
+		},
+	}
+})
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: config.key }),
 	resolveEndpoints: () => ({ platformApiUrl: config.endpoint }),
@@ -469,7 +488,7 @@ describe("account-fenced reporting delivery", () => {
 			recordHashes: ["a".repeat(64)],
 		}
 		const units = [{ account: accountKey(content.account), entities: ["work"], recordHashes: group.recordHashes }]
-		vi.mocked(eventBuilder.buildEvents).mockReturnValueOnce({ accounts: [group], units, unresolved: [] })
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValueOnce({ accounts: [group], units, unresolved: [] })
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(outbox.observeEvents).toHaveBeenCalledWith(
 			directory,
@@ -1871,6 +1890,85 @@ describe("repository identity for work without a PR", () => {
 	}, 30_000)
 })
 
+describe("prelude stretching of a big group", () => {
+	it("crossing the row budget yields in the prelude's read and parse loops", async () => {
+		await seedLinked()
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		const calls = () => (timers as unknown as { __calls: () => number }).__calls()
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		calls()
+		// Two structurally identical passes, each introducing exactly one new marker batch for the same
+		// work: a 1-row pass, then a 2,000-row pass. The 2,001 rows total cross the shared row budget
+		// and the pass machinery fires the same immediates in both phases: with identical surroundings,
+		// at least two extra immediates appear only because the stretcher parked the loop somewhere in
+		// the read and parse walks — a directional binding, since the floor can't see WHICH loop each
+		// yield came from (loop-level floors live in events.test and links.test).
+		const source = join(directory, "work-attribution", "source.jsonl")
+		const work = "65656565-6565-4565-8565-656565656565"
+		const rows = (count: number, offset: number) => {
+			let lines = ""
+			for (let index = offset; index < offset + count; index++) {
+				const hex = String(index).padStart(12, "0")
+				lines += `${JSON.stringify({
+					version: 1,
+					type: "request",
+					workId: work,
+					sessionId: "records-only",
+					requestId: `${hex.slice(0, 8)}-${hex.slice(8)}-4777-8777-${hex}`,
+					startedAt: "2026-10-04T12:00:00.000Z",
+					recordedAt: "2026-10-04T12:00:00.000Z",
+					scope: { account: content.account, repository: "/other/.git" },
+				})}\n`
+			}
+			return lines
+		}
+		await appendFile(source, rows(1, 0))
+		await run()
+		const small = calls()
+		await appendFile(source, rows(2_000, 1))
+		await run()
+		expect(calls()).toBeGreaterThanOrEqual(small + 2)
+	})
+})
+
+describe("prelude stretch", () => {
+	/** A stretch call that yields runs every already-scheduled macrotask first; a fast one leaves them parked. */
+	const yielded = async (stretch: () => Promise<void>) => {
+		let ran = false
+		const timer = setImmediate(() => {
+			ran = true
+		})
+		try {
+			await stretch()
+		} finally {
+			clearImmediate(timer)
+		}
+		return ran
+	}
+
+	it("yields after the row budget, and after the time budget even for few rows", async () => {
+		const stretch = preludeStretch(2, 60_000)
+		expect(await yielded(stretch)).toBe(false)
+		expect(await yielded(stretch)).toBe(true)
+		expect(await yielded(stretch)).toBe(false)
+
+		const slow = preludeStretch(10_000, 60_000)
+		const clock = vi.spyOn(Date, "now")
+		try {
+			// One row but the stretch has already owned the loop past its time budget.
+			clock.mockReturnValue(Date.now() + 60_001)
+			expect(await yielded(slow)).toBe(true)
+		} finally {
+			clock.mockRestore()
+		}
+	})
+})
+
 describe("incremental translation", () => {
 	it("commits events in chunks, so a pass that runs out of time resumes where it stopped", async () => {
 		await seedLinked()
@@ -1884,7 +1982,7 @@ describe("incremental translation", () => {
 			observeTime: "2026-10-04T12:00:00Z",
 			coverage: { code: "fixture", count: "1" },
 		}))
-		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
 			accounts: [{ account: content.account, facts, recordHashes: [] }],
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
@@ -1906,6 +2004,289 @@ describe("incremental translation", () => {
 		await run()
 		expect(observed()).toEqual(entities)
 		expect(backendFor(directory).markedRecords()).toEqual([])
+	})
+
+	it("a pass over an unresolvable group skips its full rebuild while inputs stand still", async () => {
+		await seedLinked()
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		// Identical markers: no retranslation until the retry window passes — the stall the user feels.
+		await run()
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		// New evidence flips the signature: the input stands still rule does not hide it.
+		const path = join(directory, "work-attribution", "source.jsonl")
+		await appendFile(
+			path,
+			`${JSON.stringify({ version: 1, workId: "55555555-5555-4555-8555-555555555555", sessionId: "private-session", type: "work", recordedAt: new Date().toISOString() })}\n`,
+		)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+	})
+
+	it("a persistently unsettled group retries only after the stalled window passes", async () => {
+		await seedLinked()
+		// An identity lookup that keeps failing leaves the group's markers in place, so the pass runs again —
+		// but the full rebuild waits out the window while the identical inputs produce the identical outcome.
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		expect(backendFor(directory).markedRecords().length).toBeGreaterThan(0)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const clock = vi.spyOn(Date, "now")
+		try {
+			clock.mockReturnValue(Date.now() + 5 * 60_000 + 1_000)
+			await run()
+			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+			// The window restarts from the retry, so the next pass waits again — it does not revert to re-running
+			// the identical group on every tick.
+			await run()
+			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+			clock.mockReturnValue(Date.now() + 10 * 60_000 + 2_000)
+			await run()
+		} finally {
+			clock.mockRestore()
+		}
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(3)
+	})
+
+	it("a corrupt stalled note discards the windows rather than freezing every pass", async () => {
+		await seedLinked()
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		backendFor(directory).putNote("agent", "translation-stalled", "{corrupt")
+		// The note reads as absent: the group retries at the next window and the windows start fresh.
+		const clock = vi.spyOn(Date, "now")
+		try {
+			clock.mockReturnValue(Date.now() + 5 * 60_000 + 1_000)
+			await run()
+			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+			// The group still reports its own waiting state; a corrupt note never becomes a capture failure.
+			expect((await readReportingState(directory)).error).toBe(
+				"Some PR cost events are waiting for complete original evidence",
+			)
+			clock.mockReturnValue(Date.now() + 30_000)
+			await run()
+		} finally {
+			clock.mockRestore()
+		}
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+	})
+
+	it("a stalled window stamped far into the future is pruned, not a lock-out", async () => {
+		await seedLinked()
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const backend = backendFor(directory)
+		const body = backend.getNote("agent", "translation-stalled")
+		if (!body) throw new Error("the first unresolved attempt stamps a window")
+		const windows: Record<string, { at: number }> = JSON.parse(body)
+		for (const key of Object.keys(windows)) windows[key] = { at: Date.now() + 365 * 24 * 3_600_000 }
+		backend.putNote("agent", "translation-stalled", JSON.stringify(windows))
+		const clock = vi.spyOn(Date, "now")
+		try {
+			// Still impossibly far ahead after the window: the entry is invalid on its face, not waiting.
+			clock.mockReturnValue(Date.now() + 5 * 60_000 + 1_000)
+			await run()
+		} finally {
+			clock.mockRestore()
+		}
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+	})
+
+	it("a later attempt that resolves the group lifts its stalled window", async () => {
+		await seedLinked()
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValueOnce({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({ accounts: [], units: [], unresolved: [] })
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const backend = backendFor(directory)
+		const stamped = backend.getNote("agent", "translation-stalled")
+		expect(Object.keys(JSON.parse(stamped ?? "{}"))).toHaveLength(1)
+		const clock = vi.spyOn(Date, "now")
+		try {
+			clock.mockReturnValue(Date.now() + 5 * 60_000 + 1_000)
+			await run()
+		} finally {
+			clock.mockRestore()
+		}
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		// Resolved groups leave no window behind: the next pass is free to run them again.
+		expect(Object.keys(JSON.parse(backend.getNote("agent", "translation-stalled") ?? "{}"))).toHaveLength(0)
+	})
+
+	it.each([
+		"damaged elements",
+		"missing facts",
+	] as const)("a plan for a suspended pass with %s falls back to a full rebuild", async (kind) => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 250 }, (_, index) => `entity-${index}`)
+		const facts = entities.map((entityId) => ({
+			entityId,
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [{ account: content.account, facts, recordHashes: [] }],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		// The first chunk leaves the pass without time for another: the notes suspend the group mid-way.
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		const observed = () =>
+			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed()).toEqual(entities.slice(0, 100))
+		// Storage damage that still parses: units of null, or facts emptied so replaying the plan would
+		// commit nothing and still clear the markers.
+		const plan = JSON.parse(backend.getNote("agent", "translation-plan") ?? "{}") as {
+			units?: unknown
+			accounts: { facts: unknown[] }[]
+		}
+		if (kind === "damaged elements") plan.units = [null]
+		else for (const group of plan.accounts) group.facts = []
+		backend.putNote("agent", "translation-plan", JSON.stringify(plan))
+		// The corrupt plan rebuilds instead of substituting: the prelude re-runs and every entity commits.
+		vi.mocked(eventBuilder.buildEvents).mockClear()
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		expect(observed()).toEqual(expect.arrayContaining(entities))
+		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("a progress count beyond its plan's units rebuilds the plan instead of retiring the group", async () => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 150 }, (_, index) => `entity-${index}`)
+		const facts = entities.map((entityId) => ({
+			entityId,
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [{ account: content.account, facts, recordHashes: [] }],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		const progress = JSON.parse(backend.getNote("agent", "translation-progress") ?? "{}") as Record<string, unknown>
+		// A count beyond the plan's units would skip the loop and clear the markers without committing a fact.
+		progress.units = 999_999
+		backend.putNote("agent", "translation-progress", JSON.stringify(progress))
+		await run()
+		const observed = vi
+			.mocked(outbox.observeEvents)
+			.mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		expect(observed).toEqual(expect.arrayContaining(entities))
+		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("a pass that runs out of time during a big group resumes after the prelude, without rebuilding it", async () => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 250 }, (_, index) => `entity-${index}`)
+		const facts = entities.map((entityId) => ({
+			entityId,
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [{ account: content.account, facts, recordHashes: [] }],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		await run()
+		// The plan carried over: the resume does NOT re-run the prelude — one build across both passes.
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const observed = () =>
+			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed()).toEqual(entities)
+		expect(backendFor(directory).markedRecords()).toEqual([])
+	})
+
+	it("drives event translation with the stretcher the prelude uses", async () => {
+		await seedLinked()
+		respond(accepted)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const call = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)
+		expect(call?.[7]).toBeTypeOf("function")
+		// Identity, not just presence: the captured fn must carry the prelude budget — after 2_000
+		// rows it must park the loop for real (a no-op stretch would never let this tick fire).
+		const stretch = call?.[7] as () => Promise<void>
+		let ticked = false
+		setImmediate(() => {
+			ticked = true
+		})
+		for (let index = 0; index < 2_001; index++) await stretch()
+		expect(ticked).toBe(true)
 	})
 
 	it("rebuilds only the group of works whose records changed", async () => {
@@ -1965,7 +2346,7 @@ describe("idle reporting passes", () => {
 			scope: null,
 		}
 		await appendFile(path, `${duplicates}${JSON.stringify(tail)}\n`)
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCostsAsync")
 		await run()
 		if (kind === "new") {
 			expect(readRecords(directory)).toContainEqual(tail)
@@ -1988,7 +2369,7 @@ describe("idle reporting passes", () => {
 		await run()
 		const path = join(directory, "work-attribution", "source.jsonl")
 		const valid = (await readFile(path, "utf8")).split("\n")[0]
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCostsAsync")
 		await appendFile(path, '{"type":"request"\n')
 		await run()
 		expect(calculate).not.toHaveBeenCalled()
@@ -2009,7 +2390,7 @@ describe("idle reporting passes", () => {
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		await run()
 		await run()
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCostsAsync")
 		const blockingRead = vi.spyOn(summary, "readWorkRecords")
 		await run()
 		expect(calculate).not.toHaveBeenCalled()

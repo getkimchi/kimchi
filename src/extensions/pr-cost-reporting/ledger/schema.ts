@@ -112,6 +112,21 @@ CREATE TABLE IF NOT EXISTS work_dirty (
 );
 `
 
+/**
+ * Additive indexes applied on EVERY open, not just at creation: LEDGER_SCHEMA executes only when a
+ * database is first created, so a pre-existing ledger keeps user_version but never gains indexes
+ * added later. Each statement is `CREATE INDEX IF NOT EXISTS`, so re-application is a no-op.
+ */
+export const LEDGER_ADDITIVE_SCHEMA = `
+-- Covers the status aggregate's per-account SUM(acked_at ...) GROUP BY without touching the base table.
+CREATE INDEX IF NOT EXISTS outbox_pending_cover ON outbox_events(account_key, acked_at, blocked);
+-- Covers the status aggregate's "earliest batch per account" scalar lookup.
+CREATE INDEX IF NOT EXISTS outbox_batches_by_account ON outbox_batches(account_key, order_key, created_at);
+-- The reconcile incremental read filters WHERE imported_at >= ? on the full authority: without this,
+-- every pass scans six-figure row count to extract the few fresh ones.
+CREATE INDEX IF NOT EXISTS work_records_imported ON work_records(imported_at);
+`
+
 /** Meta key. */
 export const META_PROJECTION_VERSION = "projectionVersion"
 /** Current derived-projection format; bump when the projection layout changes (forces rebuild). */

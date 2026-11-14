@@ -205,6 +205,19 @@ export function readWorkRecords(
 	} else hydrateQuietly(agentDir)
 	return ledgerReadRecords(agentDir, { modifiedSince }, checkBudget)
 }
+
+/** The strict history read, breathing between ledger pages for a caller driving the UI loop. */
+export async function readWorkRecordsForHistoryAsync(
+	agentDir: string,
+	checkBudget: () => void,
+	stretch: () => Promise<void>,
+	onRecordProblem: (problem: WorkRecordProblem) => void,
+): Promise<WorkRecord[]> {
+	// Same strictness as readWorkRecords: an unfinished import or consumed damage never authorizes silently.
+	if (importJournalSlice(agentDir, checkBudget)) throw new Error("Legacy work history is still importing")
+	reportJournalProblems(agentDir, onRecordProblem, checkBudget)
+	return ledgerReadRecordsAsync(agentDir, checkBudget, stretch)
+}
 /** Records of one type, oldest first; background scans read only the rows they use through the type index. */
 export function readWorkRecordsOfType(agentDir: string, type: WorkRecord["type"]): WorkRecord[] {
 	hydrateQuietly(agentDir)
