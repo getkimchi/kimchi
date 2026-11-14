@@ -24,7 +24,7 @@ it.each([
 		artifactName: `pr-watch-multiple-home-${provider}`,
 		clientMeta: { "kimchi.dev": { prMonitoring: true, backgroundRuns: true } },
 		extraArgs: ["--yolo"],
-		extensionPath: fileURLToPath(new URL(`./support/pr-watch-${provider}-api.js`, import.meta.url)),
+		extensionPath: fileURLToPath(new URL(`../fixtures/pr-watch-${provider}-api.js`, import.meta.url)),
 		responses: [
 			{
 				toolCalls: [

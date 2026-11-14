@@ -6,8 +6,7 @@ import { parse } from "shell-quote"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolvePreMainProjectTrust } from "../../project-trust.js"
 import { createToolContext } from "../__mocks__/context.js"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import { checkoutProblem, preparePRCheckout } from "./checkout.js"
+import { acquirePRLease, checkoutProblem, preparePRCheckout } from "./checkout.js"
 import { readPRSource } from "./providers.js"
 import type { PRSnapshot } from "./types.js"
 
@@ -70,12 +69,9 @@ describe("PR checkout preparation", () => {
 		vi.mocked(resolvePreMainProjectTrust).mockReturnValue(true)
 		vi.mocked(readPRSource).mockResolvedValue({
 			url,
-			number: 7,
-			repository: { provider: "github", host: "github.com", name: "owner/repo" },
-			pullRequest: { url, state: "open" } as WorkPullRequest,
+			provider: "github",
+			state: "open",
 			branch: "fix",
-			record: {},
-			deadline: 0,
 			cloneURL: "https://github.com/author/fork.git",
 		})
 	})
@@ -120,5 +116,17 @@ describe("PR checkout preparation", () => {
 		await expect(preparePRCheckout(ctx, url, signal(), root)).rejects.toThrow("Trust")
 		expect(ctx.executeTool).not.toHaveBeenCalled()
 		await expect(preparePRCheckout(ctx, url, signal(), root, false)).resolves.toBe(root)
+	})
+})
+
+describe("PR repair lease", () => {
+	it("lets one holder repair a PR until it releases the lease", async () => {
+		vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
+		const pr = { url: "https://github.com/owner/repo/pull/7" } as PRSnapshot
+		const release = await acquirePRLease(pr, vi.fn())
+		await expect(acquirePRLease(pr, vi.fn())).rejects.toMatchObject({ code: "ELOCKED" })
+		await release()
+		const again = await acquirePRLease(pr, vi.fn())
+		await again()
 	})
 })

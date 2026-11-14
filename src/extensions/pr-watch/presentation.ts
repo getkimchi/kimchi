@@ -1,15 +1,19 @@
-import type { PRSnapshot, PRWatchState, TargetState } from "./types.js"
+import type { PRCheck, PRSnapshot, PRWatchState, TargetState } from "./types.js"
 
 const SCOPES = { ci: "CI only", reviews: "reviews only", all: "CI + reviews" } as const
-const CHECK_STATES = ["failed", "pending", "passed", "skipped"] as const
-const WHITESPACE = " \t\n\r\v\f"
+const CHECK_LABELS: Record<PRCheck["state"], string> = {
+	failed: "failed",
+	pending: "running",
+	passed: "passed",
+	skipped: "skipped",
+}
 
-/** Splits on ASCII whitespace runs, dropping empty words. */
+/** Splits on whitespace runs, as `trim()` defines whitespace, dropping empty words. */
 export function words(text: string): string[] {
 	const found: string[] = []
 	let word = ""
 	for (const char of text) {
-		if (!WHITESPACE.includes(char)) word += char
+		if (char.trim() !== "") word += char
 		else if (word) {
 			found.push(word)
 			word = ""
@@ -42,9 +46,9 @@ export function fixesLabel(target: TargetState): string {
 export function ciSummary(target: TargetState): string {
 	const pr = target.pullRequest
 	if (!pr) return target.phase === "error" ? "CI unavailable" : "Checking the PR"
-	const counts = CHECK_STATES.flatMap((state) => {
+	const counts = Object.entries(CHECK_LABELS).flatMap(([state, label]) => {
 		const count = pr.checks.filter((check) => check.state === state).length
-		return count ? [`${count} ${state === "pending" ? "running" : state}`] : []
+		return count ? [`${count} ${label}`] : []
 	})
 	const label = target.phase === "error" || !target.enabled ? "CI (last known)" : "CI"
 	const ci = counts.length
@@ -55,7 +59,7 @@ export function ciSummary(target: TargetState): string {
 	return `${ci} · Review threads ${pr.feedback.length}`
 }
 
-export interface Overview {
+interface Overview {
 	label: string
 	phase: string
 	tone: "error" | "warning" | "text"
@@ -75,7 +79,7 @@ function targetOverview(target: TargetState, message: string | null): Overview {
 	}
 }
 
-function setOverview(watched: TargetState[], message: string | null): Overview {
+function groupOverview(watched: TargetState[], message: string | null): Overview {
 	const fixing = watched.find((target) => target.phase === "fixing")
 	const attention = watched.filter((target) => target.phase === "attention" || target.phase === "error").length
 	const providers = new Set(watched.flatMap(({ pullRequest }) => (pullRequest ? [pullRequest.provider] : [])))
@@ -95,7 +99,7 @@ function setOverview(watched: TargetState[], message: string | null): Overview {
 export function overview(state: PRWatchState): Overview | undefined {
 	const watched = state.targets.filter((target) => target.enabled)
 	if (watched.length === 1) return targetOverview(watched[0], state.message ?? watched[0].message)
-	return watched.length ? setOverview(watched, state.message) : undefined
+	return watched.length ? groupOverview(watched, state.message) : undefined
 }
 
 export function formatPRWatchStatus(state: PRWatchState): string {

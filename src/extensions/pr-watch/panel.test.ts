@@ -52,7 +52,7 @@ describe("PR watch Monitor", () => {
 			return () => {}
 		}),
 		refresh: vi.fn(async () => state),
-		pause: vi.fn(async () => state),
+		pause: vi.fn(() => state),
 		stop: vi.fn(() => state),
 	}
 	const view = (width = 110) => panel.render(width).map(stripTerminalSequences).join("\n")

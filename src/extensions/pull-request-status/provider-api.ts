@@ -91,7 +91,7 @@ export function command(
 	})
 }
 
-function configuredHost(value: string | undefined): string | undefined {
+export function configuredHost(value: string | undefined): string | undefined {
 	if (!value) return undefined
 	try {
 		const url = httpsURL(value.includes("://") ? value : `https://${value}`)
@@ -104,6 +104,12 @@ function configuredHost(value: string | undefined): string | undefined {
 function gitlabHost(): string | undefined {
 	// An explicit but invalid host must not send its token to the cloud default.
 	return configuredHost(process.env.GITLAB_HOST ?? process.env.GL_HOST ?? process.env.GITLAB_URI ?? "gitlab.com")
+}
+
+/** The host gh or glab is configured for, or undefined when that setting is invalid. */
+export function defaultHost(provider: Repository["provider"]): string | undefined {
+	if (provider === "gitlab") return gitlabHost()
+	return process.env.GH_HOST ? configuredHost(process.env.GH_HOST) : "github.com"
 }
 
 /** GitHub Enterprise Cloud with data residency gives each enterprise one subdomain of ghe.com. */
@@ -204,9 +210,15 @@ export async function credential(
 }
 
 /** GitHub.com and GHE.com serve the REST API from an api. subdomain; Enterprise Server serves it under /api/v3. */
-function githubAPI(host: string): string {
+export function githubAPI(host: string): string {
 	if (host === "github.com") return "https://api.github.com"
 	return gheComHost(host) ? `https://api.${host}` : `https://${host}/api/v3`
+}
+
+/** GraphQL sits beside the REST API, except on Enterprise Server, which serves it at /api/graphql. */
+export function githubGraphQL(host: string): URL {
+	if (host === "github.com") return new URL("https://api.github.com/graphql")
+	return new URL(gheComHost(host) ? `https://api.${host}/graphql` : `https://${host}/api/graphql`)
 }
 
 export function api(repository: Pick<Repository, "host" | "provider" | "name">, endpoint = ""): URL {

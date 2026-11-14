@@ -1,5 +1,20 @@
-import { api, credential, pages, requestJSON } from "../pull-request-status/provider-api.js"
-import { pullRequest, type Repository, repositoryPath, SHA } from "../pull-request-status/provider-records.js"
+import {
+	api,
+	configuredHost,
+	credential,
+	defaultHost,
+	githubAPI,
+	githubGraphQL,
+	pages,
+	requestJSON,
+} from "../pull-request-status/provider-api.js"
+import {
+	lookupFailureReason,
+	pullRequest,
+	type Repository,
+	repositoryPath,
+	SHA,
+} from "../pull-request-status/provider-records.js"
 import { object } from "../work-attribution/summary.js"
 import type { PRCheck, PRFeedback, PRSnapshot } from "./types.js"
 
@@ -18,6 +33,8 @@ const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"])
 const failedStates = new Set(["failure", "failed", "error", "timed_out", "action_required", "startup_failure"])
 const pendingStates = new Set([
 	"queued",
+	"waiting_for_resource",
+	"waiting_for_callback",
 	"in_progress",
 	"pending",
 	"waiting",
@@ -28,12 +45,14 @@ const pendingStates = new Set([
 	"scheduled",
 ])
 const passedStates = new Set(["success", "passed"])
-const skippedStates = new Set(["neutral", "skipped", "cancelled", "canceled", "manual"])
+const skippedStates = new Set(["neutral", "skipped", "cancelled", "canceled", "canceling", "manual", "stale"])
 
-export interface PRTarget {
+export interface PRSource {
 	url: string
-	repository: Repository
-	number: number
+	provider: Repository["provider"]
+	state: PRSnapshot["state"]
+	branch: string
+	cloneURL: string
 }
 
 function text(value: unknown): string {
@@ -67,7 +86,7 @@ function prPath(pathname: string): { provider: Repository["provider"]; name: str
 	return { provider: "gitlab", name: path.slice(1, marker), number: path.slice(marker + GITLAB_MR_PATH.length) }
 }
 
-export function parsePRUrl(value: string): PRTarget {
+export function parsePRUrl(value: string) {
 	const url = new URL(value)
 	if (url.protocol !== "https:" || url.username || url.password)
 		throw new Error("Use an HTTPS PR URL without credentials.")
@@ -82,11 +101,8 @@ export function parsePRUrl(value: string): PRTarget {
 		throw new Error("Use a GitHub PR or GitLab merge request URL.")
 	url.search = ""
 	url.hash = ""
-	return {
-		url: withoutTrailingSlash(url.href),
-		repository: { provider: path.provider, host: url.host, name: path.name },
-		number: Number(path.number),
-	}
+	const repository: Repository = { provider: path.provider, host: url.host, name: path.name }
+	return { url: withoutTrailingSlash(url.href), repository, number: Number(path.number) }
 }
 
 async function readPR(value: string, signal: AbortSignal) {
@@ -107,7 +123,7 @@ async function readPR(value: string, signal: AbortSignal) {
 }
 
 /** The PR's source repository, which may be a fork, for cloning its branch. */
-export async function readPRSource(value: string, signal: AbortSignal) {
+export async function readPRSource(value: string, signal: AbortSignal): Promise<PRSource> {
 	const target = await readPR(value, signal)
 	const { repository: remote, record } = target
 	let source: unknown
@@ -131,7 +147,13 @@ export async function readPRSource(value: string, signal: AbortSignal) {
 		!repositoryPath(sourcePath.endsWith(".git") ? sourcePath.slice(0, -4) : sourcePath, remote.provider)
 	)
 		throw new Error("The PR source branch or repository is unavailable.")
-	return { ...target, cloneURL: sourceURL.href }
+	return {
+		url: target.url,
+		provider: remote.provider,
+		state: target.pullRequest.state,
+		branch: target.branch,
+		cloneURL: sourceURL.href,
+	}
 }
 
 function checkState(value: unknown): PRCheck["state"] {
@@ -140,7 +162,7 @@ function checkState(value: unknown): PRCheck["state"] {
 	if (pendingStates.has(state)) return "pending"
 	if (passedStates.has(state)) return "passed"
 	if (skippedStates.has(state)) return "skipped"
-	throw new Error("The Git provider returned an unknown CI state.")
+	throw new Error(`The Git provider returned an unknown CI state: ${JSON.stringify(state)}.`)
 }
 
 export function githubChecks(checks: unknown, statuses: unknown): PRCheck[] {
@@ -214,8 +236,7 @@ async function githubReviewFeedback(
 	signal: AbortSignal,
 	deadline: number,
 ): Promise<PRFeedback[]> {
-	const endpoint = api(remote)
-	endpoint.pathname = endpoint.pathname.startsWith("/api/v3/") ? "/api/graphql" : "/graphql"
+	const endpoint = githubGraphQL(remote.host)
 	const [owner, name] = remote.name.split("/")
 	const appComments = await githubAppComments(remote, number, signal, deadline)
 	const feedback: PRFeedback[] = []
@@ -301,8 +322,9 @@ async function gitlabSnapshot(
 					const member = (await requestJSON(remote, api(remote, `members/all/${id}`), signal, deadline)).value
 					trusted =
 						object(member) && typeof member.access_level === "number" && member.access_level >= GITLAB_DEVELOPER_ACCESS
-				} catch {
+				} catch (error) {
 					// Non-members answer 404; their feedback stays visible without authorizing repairs.
+					if (lookupFailureReason(error) === "retry") throw error
 				}
 			}
 			developers.set(id, trusted)
@@ -350,18 +372,6 @@ export async function readPRSnapshot(url: string, signal: AbortSignal): Promise<
 	}
 }
 
-function providerHost(provider: Repository["provider"], host: string | undefined): URL {
-	const address =
-		host ??
-		(provider === "github"
-			? (process.env.GH_HOST ?? "github.com")
-			: (process.env.GITLAB_HOST ?? process.env.GL_HOST ?? process.env.GITLAB_URI ?? "gitlab.com"))
-	const url = new URL(address.includes("://") ? address : `https://${address}`)
-	if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
-		throw new Error("Use a Git provider hostname without credentials or a path.")
-	return url
-}
-
 async function gitlabAuthoredMRs(remote: Repository, base: string, signal: AbortSignal, deadline: number) {
 	const { value: user } = await requestJSON(remote, new URL("/api/v4/user", base), signal, deadline)
 	if (!object(user) || !Number.isSafeInteger(user.id) || typeof user.id !== "number" || user.id <= 0)
@@ -385,13 +395,13 @@ async function gitlabAuthoredMRs(remote: Repository, base: string, signal: Abort
 	return [...new Set(urls)]
 }
 
-async function githubAuthoredPRs(remote: Repository, base: string, signal: AbortSignal, deadline: number) {
-	const prefix = api(remote).pathname.startsWith("/api/v3/") ? "/api/v3" : ""
-	const { value: user } = await requestJSON(remote, new URL(`${prefix}/user`, base), signal, deadline)
+async function githubAuthoredPRs(remote: Repository, signal: AbortSignal, deadline: number) {
+	const base = githubAPI(remote.host)
+	const { value: user } = await requestJSON(remote, new URL(`${base}/user`), signal, deadline)
 	if (!object(user) || !isLogin(user.login)) throw new Error("GitHub did not return the signed-in user.")
 	const urls = new Set<string>()
 	for (let page = 1; ; page++) {
-		const url = new URL(`${prefix}/search/issues`, base)
+		const url = new URL(`${base}/search/issues`)
 		url.search = new URLSearchParams({
 			q: `is:pr is:open author:${user.login}`,
 			per_page: String(SEARCH_PAGE_SIZE),
@@ -423,19 +433,20 @@ async function githubAuthoredPRs(remote: Repository, base: string, signal: Abort
 
 /** Open PRs or MRs authored by the signed-in user, found only on explicit request. */
 export async function discoverMyOpenPRs(
-	signal: AbortSignal,
 	provider: Repository["provider"] = "github",
-	host?: string,
+	host: string | undefined,
+	signal: AbortSignal,
 ): Promise<string[]> {
-	const remote: Repository = { provider, host: providerHost(provider, host).host, name: "_/_" }
+	const address = host === undefined ? defaultHost(provider) : configuredHost(host)
+	if (!address) throw new Error("Use a Git provider hostname without credentials or a path.")
+	const remote: Repository = { provider, host: address, name: "_/_" }
 	const deadline = Date.now() + DISCOVERY_BUDGET_MS
 	remote.token = await credential(remote, signal, deadline, new Map())
 	if (!remote.token)
 		throw new Error(
 			`Sign in to ${provider === "github" ? "GitHub" : "GitLab"} for ${remote.host} before finding your PRs or MRs.`,
 		)
-	const base = api(remote).origin
 	return provider === "gitlab"
-		? gitlabAuthoredMRs(remote, base, signal, deadline)
-		: githubAuthoredPRs(remote, base, signal, deadline)
+		? gitlabAuthoredMRs(remote, api(remote).origin, signal, deadline)
+		: githubAuthoredPRs(remote, signal, deadline)
 }

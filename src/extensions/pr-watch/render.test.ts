@@ -71,6 +71,20 @@ describe("PR watch chat card", () => {
 		)
 	})
 
+	it("strips terminal controls from a request error shown without a watched PR", () => {
+		const state = { targets: [], message: "https://x\u001b]52;c;secret\u0007: Use a GitHub PR URL." }
+		const raw = renderPRWatchResult(
+			{ content: [{ type: "text", text: "PR watch · Not watching" }], details: { state } },
+			{ expanded: false, isPartial: false },
+			testTheme,
+			createToolRenderContext(),
+		)
+			.render(110)
+			.join("\n")
+		expect(raw).toContain("https://x: Use a GitHub PR URL.")
+		expect(raw).not.toContain("secret")
+	})
+
 	it("keeps errors, progress and the full output available", () => {
 		expect(card(undefined, undefined, true)).toContain("Full status · ctrl+o for details")
 		expect(card(watching(target(7)), { expanded: false, isPartial: true })).toContain("Checking PR…")

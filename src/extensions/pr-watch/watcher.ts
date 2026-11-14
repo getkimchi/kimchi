@@ -10,7 +10,7 @@ import { resolvePreMainProjectTrust } from "../../project-trust.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { lookupBranchPullRequest } from "../pull-request-status/branch-status.js"
 import { object } from "../work-attribution/summary.js"
-import { acquirePRLease, checkoutProblem, preparePRCheckout } from "./checkout.js"
+import { acquirePRLease, checkoutProblem, confirmCheckoutTrust, preparePRCheckout } from "./checkout.js"
 import { parsePRUrl, readPRSnapshot } from "./providers.js"
 import { readPRWatchPreference } from "./settings.js"
 import type { PRCheck, PRRepairMode, PRSnapshot, PRWatchState, TargetState, WatchTarget } from "./types.js"
@@ -23,7 +23,7 @@ const PUSH_CHECK_DELAY_MS = 1000
 const SAVED_EVENTS = 300
 export const PLAN_MODE_MESSAGE = "Switch out of Plan mode before auto-fixing this PR."
 
-export interface Grant {
+interface Grant {
 	autoFix: boolean
 	mode?: PRRepairMode
 	instructions?: string
@@ -39,6 +39,11 @@ interface Repair {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
+}
+
+/** The PRs a request could not start or grant, one per line. */
+function failures(errors: string[]): string | null {
+	return errors.length ? errors.join("\n") : null
 }
 
 async function releaseLease(release: () => Promise<void>): Promise<void> {
@@ -101,7 +106,6 @@ export class PRWatcher {
 	private adding: Promise<unknown> = Promise.resolve()
 	private repair: Repair | undefined
 	private controller = new AbortController()
-	private message: string | null = null
 	private rotation = 0
 	private disposed = false
 	/** Counts the user's changes, so an answer to an older question cannot undo a newer choice. */
@@ -121,7 +125,7 @@ export class PRWatcher {
 	}
 
 	get snapshot(): PRWatchState {
-		return structuredClone({ targets: this.targets, message: this.message })
+		return structuredClone({ targets: this.targets, message: null })
 	}
 
 	/** Whether this session watched the PR, including PRs the user stopped. */
@@ -156,21 +160,23 @@ export class PRWatcher {
 			return this.add([{ url, cwd: this.ctx.cwd }], grant)
 		}
 		this.revision++
-		this.message = null
-		try {
-			for (const target of watched) this.grant(target, grant)
-		} finally {
-			this.changed()
-		}
-		return this.refresh()
+		const errors = watched.flatMap((target) => {
+			try {
+				this.grant(target, grant)
+				return []
+			} catch (error) {
+				return [`${target.url}: ${errorMessage(error)}`]
+			}
+		})
+		this.persistAndPublish()
+		return { ...(await this.refresh()), message: failures(errors) }
 	}
 
-	/** Keeps watching without fixes; with nothing watched it starts read-only on this checkout's PR. */
-	async pause(urls: string[] = []): Promise<PRWatchState> {
-		if (!urls.length && !this.targets.some((target) => target.enabled)) return this.start({ autoFix: false })
+	/** Keeps watching the PRs, or the given ones, without fixes. */
+	pause(urls: string[] = []): PRWatchState {
 		this.revision++
 		for (const target of this.select(urls)) if (target.enabled) this.grant(target, { autoFix: false })
-		this.changed()
+		this.persistAndPublish()
 		return this.snapshot
 	}
 
@@ -179,7 +185,6 @@ export class PRWatcher {
 		if (!urls.length) {
 			this.controller.abort()
 			this.controller = new AbortController()
-			this.message = null
 		}
 		for (const target of this.select(urls)) {
 			this.cancelRepair(target)
@@ -188,7 +193,7 @@ export class PRWatcher {
 			target.phase = "watching"
 			target.message = null
 		}
-		this.changed()
+		this.persistAndPublish()
 		return this.snapshot
 	}
 
@@ -236,6 +241,8 @@ export class PRWatcher {
 				const url = parsePRUrl(request.url).url
 				const existing = this.targets.find((target) => target.url === url)
 				if (existing) {
+					if (grant.autoFix && toolCtx && existing.cwd !== this.ctx.cwd && !this.trusted(existing.cwd))
+						await confirmCheckoutTrust(toolCtx, existing.cwd, abort)
 					this.grant(existing, grant)
 					continue
 				}
@@ -269,19 +276,18 @@ export class PRWatcher {
 			} catch (error) {
 				if (abort.aborted) {
 					this.targets = this.targets.filter((target) => !added.includes(target))
-					this.changed()
+					this.persistAndPublish()
 					throw new Error("PR watch request cancelled.")
 				}
 				errors.push(`${request.url}: ${errorMessage(error)}`)
 			}
 		}
-		this.message = errors.length ? errors.join("\n") : null
-		this.changed()
-		return this.refresh()
+		this.persistAndPublish()
+		return { ...(await this.refresh()), message: failures(errors) }
 	}
 
 	private grant(target: TargetState, { autoFix, mode, instructions }: Grant): void {
-		if (autoFix && !this.trusted(target.cwd)) throw new Error("Trust this project before enabling auto-fix.")
+		if (autoFix && !this.trusted(target.cwd)) throw new Error(`Trust ${target.cwd} before enabling auto-fix.`)
 		if (!autoFix || (mode !== undefined && mode !== target.mode)) this.cancelRepair(target)
 		if (autoFix && !target.autoFix) target.attempts = 0
 		target.enabled = true
@@ -305,13 +311,13 @@ export class PRWatcher {
 		const order = [...this.targets.slice(this.rotation), ...this.targets.slice(0, this.rotation)]
 		for (const target of order) {
 			if (signal.aborted || this.disposed) break
-			if (target.enabled) await this.check(target, signal)
+			if (target.enabled) await this.pollTarget(target, signal)
 		}
 		this.publish()
 		return this.snapshot
 	}
 
-	private async check(target: TargetState, signal: AbortSignal): Promise<void> {
+	private async pollTarget(target: TargetState, signal: AbortSignal): Promise<void> {
 		try {
 			const pr = await readPRSnapshot(target.url, signal)
 			if (signal.aborted || !target.enabled) return
@@ -344,20 +350,21 @@ export class PRWatcher {
 			return this.pauseFixes(target, "Project trust changed. Trust the project before enabling auto-fix again.")
 		const events = repairEvents(target, pr)
 		if (!events.length || !this.idle()) return
-		if (this.planMode()) return this.needsAttention(target, PLAN_MODE_MESSAGE)
+		if (this.planMode()) return this.markAttention(target, PLAN_MODE_MESSAGE)
 		if (target.attempts >= MAX_ATTEMPTS)
 			return this.pauseFixes(target, "Auto-fix stopped after 3 attempts. Review the result before enabling it again.")
 		const problem = await checkoutProblem(target.cwd, pr, signal)
 		if (!this.ready(target, signal)) return
-		if (problem) return this.needsAttention(target, problem)
+		if (problem) return this.markAttention(target, problem)
 		let release: () => Promise<void>
 		try {
 			release = await acquirePRLease(pr, () => {
 				this.cancelRepair(target)
 				this.pauseFixes(target, "PR ownership was lost. Auto-fix stopped.")
 			})
-		} catch {
-			return this.needsAttention(target, "Another session is fixing this PR. Waiting for it to finish.")
+		} catch (error) {
+			if (!object(error) || error.code !== "ELOCKED") throw error
+			return this.markAttention(target, "Another session is fixing this PR. Waiting for it to finish.")
 		}
 		let changed: string | null
 		try {
@@ -368,14 +375,14 @@ export class PRWatcher {
 		}
 		if (changed || !this.ready(target, signal) || !this.trusted(target.cwd)) {
 			await releaseLease(release)
-			if (changed) this.needsAttention(target, changed)
+			if (changed) this.markAttention(target, changed)
 			return
 		}
 		this.repair = { target, head: pr.headSha, events, release, settling: false }
 		target.attempts++
 		target.phase = "fixing"
 		target.message = `Auto-fix attempt ${target.attempts} of ${MAX_ATTEMPTS}`
-		this.changed()
+		this.persistAndPublish()
 		try {
 			this.pi.sendMessage(
 				{
@@ -402,15 +409,15 @@ export class PRWatcher {
 		try {
 			if (!target.enabled) return
 			if (aborted) return this.pauseFixes(target, "Auto-fix was cancelled. Enable it again to continue.")
-			for (let check = 1; target.enabled && !signal.aborted; check++) {
-				await this.check(target, signal)
+			for (let attempt = 1; target.enabled && !signal.aborted; attempt++) {
+				await this.pollTarget(target, signal)
 				if (target.phase !== "error" && target.pullRequest && target.pullRequest.headSha !== repair.head) {
 					target.handled.push(...repair.events)
 					target.phase = "watching"
 					target.message = null
 					return
 				}
-				if (check === PUSH_CHECKS) break
+				if (attempt === PUSH_CHECKS) break
 				// Providers may briefly return the old head after a successful push.
 				await delay(PUSH_CHECK_DELAY_MS, undefined, { signal })
 			}
@@ -427,7 +434,7 @@ export class PRWatcher {
 			this.repair = undefined
 			this.rotation = this.targets.indexOf(target) + 1
 			await releaseLease(repair.release)
-			this.changed()
+			this.persistAndPublish()
 		}
 	}
 
@@ -440,10 +447,10 @@ export class PRWatcher {
 		target.autoFix = false
 		target.phase = "attention"
 		target.message = message
-		this.changed()
+		this.persistAndPublish()
 	}
 
-	private needsAttention(target: TargetState, message: string): void {
+	private markAttention(target: TargetState, message: string): void {
 		target.phase = "attention"
 		target.message = message
 	}
@@ -469,7 +476,7 @@ export class PRWatcher {
 		return pr?.state === "open" ? parsePRUrl(pr.url).url : undefined
 	}
 
-	private changed(): void {
+	private persistAndPublish(): void {
 		this.persist()
 		this.publish()
 	}

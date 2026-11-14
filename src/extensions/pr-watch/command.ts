@@ -5,22 +5,22 @@ import type { PRWatcher } from "./watcher.js"
 
 const COMMAND = "/pr-watch"
 const MAX_INSTRUCTIONS = 4000
+const SUBCOMMANDS = "enable, disable, watch, pause, monitor, status, stop, ci, reviews, all or mine"
 const ENABLED = "Automatic watching and fixing enabled for future PRs and sessions. /pr-watch disable turns it off."
 const DISABLED =
 	"Automatic PR watching disabled for future PRs and sessions. Watching stopped. /pr-watch enable turns it on."
 
 /** A reply to show, or a request for the model, which can prepare checkouts through normal tool permissions. */
-export type PRWatchCommandResult = { state: PRWatchState } | { prompt: string }
+type PRWatchCommandResult = { state: PRWatchState } | { prompt: string }
 
 export function prWatchCommandArgs(text: string): string | undefined {
 	if (!text.startsWith(COMMAND)) return undefined
 	const rest = text.slice(COMMAND.length)
-	return rest === "" || words(rest[0]).length === 0 ? rest : undefined
+	return rest === "" || rest[0].trim() === "" ? rest : undefined
 }
 
 function isURL(word: string): boolean {
-	const address = word.startsWith("https://") ? word.slice(8) : word.startsWith("http://") ? word.slice(7) : ""
-	return address !== ""
+	return (word.startsWith("https://") && word.length > 8) || (word.startsWith("http://") && word.length > 7)
 }
 
 function withNotice(state: PRWatchState, notice: string): PRWatchState {
@@ -55,13 +55,18 @@ export async function runPRWatchCommand(watcher: PRWatcher, args: string): Promi
 			return { state: watcher.stop() }
 		case "watch":
 		case "pause":
-			return { state: await watcher.pause() }
+			return {
+				state: watcher.snapshot.targets.some((target) => target.enabled)
+					? watcher.pause()
+					: await watcher.start({ autoFix: false }),
+			}
 		case "ci":
 		case "reviews":
 		case "all":
 			return { state: await watcher.start({ autoFix: true, mode: action }) }
 	}
-	const [first, provider, host, ...extra] = words(action)
+	const parts = words(action)
+	const [first, provider, host, ...extra] = parts
 	if (first === "mine" && !extra.length && (provider === undefined || provider === "github" || provider === "gitlab")) {
 		const items = provider === "gitlab" ? "GitLab MRs" : "GitHub PRs"
 		const where = host ? ` and host=${JSON.stringify(host)}` : ""
@@ -69,10 +74,12 @@ export async function runPRWatchCommand(watcher: PRWatcher, args: string): Promi
 			prompt: `Watch my open ${items} and fix CI failures locally using pr_watch with allMine=true, provider=${provider ?? "github"}, mode=ci${where}.`,
 		}
 	}
-	const urls = words(action)
-	if (urls.length && urls.every(isURL))
+	if (parts.length && parts.every(isURL))
 		return {
-			prompt: `Watch these PRs and fix CI failures locally using pr_watch with mode=ci: ${JSON.stringify(urls)}`,
+			prompt: `Watch these PRs and fix CI failures locally using pr_watch with mode=ci: ${JSON.stringify(parts)}`,
 		}
+	// One word is a mistyped subcommand far more often than a repair instruction.
+	if (parts.length === 1)
+		throw new Error(`Unknown /pr-watch command "${first}". Use ${SUBCOMMANDS}, PR URLs or instructions.`)
 	return { state: await watcher.start({ autoFix: true, instructions: action }) }
 }

@@ -47,7 +47,9 @@ export function followCheckoutPR(pi: ExtensionAPI, ctx: ExtensionContext, watche
 
 	async function start(pr: CheckoutPR, autoFix: boolean): Promise<void> {
 		const state = await watcher.add([{ url: pr.url, cwd: ctx.cwd }], { autoFix, mode: "ci", instructions: "" })
-		if (autoFix && !disposed && state.targets.some((target) => target.url === pr.url && target.autoFix))
+		const target = state.targets.find((item) => item.url === pr.url && item.enabled)
+		if (!target) report(new Error(state.message ?? `Could not watch ${pr.label}.`))
+		else if (autoFix && target.autoFix && !disposed)
 			ctx.ui.notify(
 				`Watching ${pr.label} with auto-fix. /pr-watch watch pauses fixes. /pr-watch disable turns off automatic watching.`,
 				"info",

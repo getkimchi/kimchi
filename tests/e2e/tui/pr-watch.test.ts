@@ -45,7 +45,7 @@ for (const provider of ["github", "gitlab"] as const) {
 						const extensions = join(homeDir, ".config/kimchi/harness/extensions")
 						mkdirSync(extensions, { recursive: true })
 						copyFileSync(
-							join(repo, `tests/e2e/acp/support/pr-watch-${provider}-api.js`),
+							join(repo, `tests/e2e/fixtures/pr-watch-${provider}-api.js`),
 							join(extensions, "pr-watch-api.js"),
 						)
 						return {
@@ -157,10 +157,7 @@ for (const mode of ["regular", "fullscreen"] as const) {
 					writeFileSync(state, JSON.stringify({ bare, head: git("rev-parse", "HEAD"), kind: "ci" }))
 					const extensions = join(homeDir, ".config/kimchi/harness/extensions")
 					mkdirSync(extensions, { recursive: true })
-					copyFileSync(
-						join(repoRoot, "tests/e2e/acp/support/pr-watch-github-api.js"),
-						join(extensions, "pr-watch-api.js"),
-					)
+					copyFileSync(join(repoRoot, "tests/e2e/fixtures/pr-watch-github-api.js"), join(extensions, "pr-watch-api.js"))
 					return { env: { GH_TOKEN: "pr-watch-fixture-token", KIMCHI_TEST_PR_WATCH: state } }
 				},
 			},

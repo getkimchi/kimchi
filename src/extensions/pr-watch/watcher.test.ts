@@ -5,14 +5,19 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { lookupBranchPullRequest } from "../pull-request-status/branch-status.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import { acquirePRLease, checkoutProblem, preparePRCheckout } from "./checkout.js"
+import { acquirePRLease, checkoutProblem, confirmCheckoutTrust, preparePRCheckout } from "./checkout.js"
 import { readPRSnapshot } from "./providers.js"
 import { readPRWatchPreference } from "./settings.js"
 import type { PRFeedback, PRSnapshot } from "./types.js"
 import { PLAN_MODE_MESSAGE, PRWatcher } from "./watcher.js"
 
 vi.mock("./providers.js", async (original) => ({ ...(await original()), readPRSnapshot: vi.fn() }))
-vi.mock("./checkout.js", () => ({ checkoutProblem: vi.fn(), acquirePRLease: vi.fn(), preparePRCheckout: vi.fn() }))
+vi.mock("./checkout.js", () => ({
+	checkoutProblem: vi.fn(),
+	acquirePRLease: vi.fn(),
+	preparePRCheckout: vi.fn(),
+	confirmCheckoutTrust: vi.fn(),
+}))
 vi.mock("./settings.js", () => ({ readPRWatchPreference: vi.fn() }))
 vi.mock("../permissions/mode-controller.js", () => ({ getPermissionMode: vi.fn() }))
 vi.mock("../pull-request-status/branch-status.js", () => ({ lookupBranchPullRequest: vi.fn() }))
@@ -131,7 +136,7 @@ describe("PR watcher", () => {
 	it("refuses fixes in an untrusted checkout and waits on a dirty one", async () => {
 		const { watcher, ctx, watchHere, repairs } = setup()
 		vi.mocked(ctx.isProjectTrusted).mockReturnValue(false)
-		expect((await watchHere()).message).toContain("Trust this project before enabling auto-fix.")
+		expect((await watchHere()).message).toContain(`Trust ${HERE} before enabling auto-fix.`)
 		expect(watcher.snapshot.targets).toEqual([])
 		vi.mocked(ctx.isProjectTrusted).mockReturnValue(true)
 		vi.mocked(checkoutProblem).mockResolvedValue("Commit or stash local changes before auto-fixing this PR.")
@@ -143,9 +148,13 @@ describe("PR watcher", () => {
 	})
 
 	it("leaves the PR to another session's lease and releases its own on a failed recheck", async () => {
-		vi.mocked(acquirePRLease).mockRejectedValueOnce(new Error("locked"))
+		vi.mocked(acquirePRLease)
+			.mockRejectedValueOnce(Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED" }))
+			.mockRejectedValueOnce(Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }))
 		const { watcher, watchHere, repairs } = setup()
 		expect((await watchHere()).targets[0].message).toContain("Another session is fixing this PR")
+		await watcher.refresh()
+		expect(watcher.snapshot.targets[0]).toMatchObject({ phase: "error", message: "EACCES: permission denied" })
 		vi.mocked(checkoutProblem).mockResolvedValueOnce(null).mockRejectedValueOnce(new Error("Git unavailable"))
 		await watcher.refresh()
 		expect(watcher.snapshot.targets[0]).toMatchObject({ phase: "error", message: "Git unavailable" })
@@ -291,7 +300,21 @@ describe("PR watcher", () => {
 			["https://github.com/owner/repo/pull/9", "/checkouts/9"],
 		])
 		expect(state.message).toBe(`${URL8}: clone denied`)
+		expect(watcher.snapshot.message).toBeNull()
 		expect(watcher.has(URL7)).toBe(true)
+	})
+
+	it("grants every PR it can, reports the rest, and asks to trust a checkout added read-only", async () => {
+		const { watcher, repairs } = setup()
+		const toolCtx = createToolContext({ cwd: HERE })
+		await watcher.add([{ url: URL7, cwd: HERE }, { url: URL8 }], { autoFix: false }, toolCtx)
+		vi.mocked(resolvePreMainProjectTrust).mockReturnValue(false)
+		const started = await watcher.start({ autoFix: true })
+		expect(started.message).toBe(`${URL8}: Trust /checkouts/8 before enabling auto-fix.`)
+		expect(started.targets.map(({ autoFix }) => autoFix)).toEqual([true, false])
+		expect(repairs()).toHaveLength(1)
+		await watcher.add([{ url: URL8 }], { autoFix: true }, toolCtx)
+		expect(confirmCheckoutTrust).toHaveBeenCalledWith(toolCtx, "/checkouts/8", expect.any(AbortSignal))
 	})
 
 	it("prepares one checkout for concurrent requests and drops it when stopped mid-preparation", async () => {
@@ -316,7 +339,7 @@ describe("PR watcher", () => {
 		const { watcher } = setup()
 		await watcher.add([{ url: URL7 }, { url: URL8 }], { autoFix: false }, createToolContext({ cwd: HERE }))
 		watcher.stop([URL8])
-		await expect(watcher.pause(["https://github.com/owner/repo/pull/9"])).rejects.toThrow("not being watched")
+		expect(() => watcher.pause(["https://github.com/owner/repo/pull/9"])).toThrow("not being watched")
 		expect(watcher.snapshot.targets.map(({ enabled }) => enabled)).toEqual([true, false])
 	})
 

@@ -20,6 +20,8 @@ export class PRWatchPanel {
 	private state: PRWatchState
 	private offset = 0
 	private width = 80
+	private lineCount = 0
+	private pageRows = 0
 	private busy = false
 	private error: string | undefined
 	private disposed = false
@@ -41,7 +43,7 @@ export class PRWatchPanel {
 			this.tui.requestRender()
 		})
 		this.timer = setInterval(() => this.tui.requestRender(), REDRAW_MS)
-		this.timer.unref?.()
+		this.timer.unref()
 	}
 
 	dispose(): void {
@@ -63,17 +65,6 @@ export class PRWatchPanel {
 
 	private get watched() {
 		return this.state.targets.filter((target) => target.enabled)
-	}
-
-	private get height(): number {
-		return Math.max(
-			1,
-			Math.min(MAX_HEIGHT, this.tui.terminal.rows - RESERVED_TERMINAL_ROWS, this.body(this.width).length + CHROME_ROWS),
-		)
-	}
-
-	private get pageRows(): number {
-		return Math.max(0, this.height - CHROME_ROWS)
 	}
 
 	private body(width: number): string[] {
@@ -132,7 +123,7 @@ export class PRWatchPanel {
 	}
 
 	private scroll(data: string): void {
-		const max = Math.max(0, this.body(this.width).length - this.pageRows)
+		const max = Math.max(0, this.lineCount - this.pageRows)
 		const page = Math.max(1, this.pageRows)
 		const steps: [KeyId, number][] = [
 			["pageUp", -page],
@@ -158,7 +149,10 @@ export class PRWatchPanel {
 		const w = Math.max(1, width)
 		this.width = Math.max(1, w - 2)
 		const content = this.body(this.width)
-		if (w < MIN_WIDTH || this.height < CHROME_ROWS || (content.length > 0 && this.pageRows === 0))
+		const height = Math.min(MAX_HEIGHT, this.tui.terminal.rows - RESERVED_TERMINAL_ROWS, content.length + CHROME_ROWS)
+		this.lineCount = content.length
+		this.pageRows = Math.max(0, height - CHROME_ROWS)
+		if (w < MIN_WIDTH || height < CHROME_ROWS || (content.length > 0 && this.pageRows === 0))
 			return [truncateToWidth(theme.fg("text", "Esc close · enlarge terminal to monitor"), w, "…", true)]
 		this.offset = Math.max(0, Math.min(this.offset, content.length - this.pageRows))
 		const summary = overview(this.state)

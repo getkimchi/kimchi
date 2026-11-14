@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as ProviderAPI from "../pull-request-status/provider-api.js"
 import { credential, pages, requestJSON } from "../pull-request-status/provider-api.js"
+import { LookupError } from "../pull-request-status/provider-records.js"
 import {
 	discoverMyOpenPRs,
 	githubChecks,
@@ -89,7 +90,9 @@ describe("GitHub snapshots", () => {
 		)
 		expect(checks.map((check) => check.state)).toEqual(["failed", "pending", "skipped", "passed"])
 		expect(checks[0].summary).toBe("A test failed")
-		expect(() => githubChecks([{ id: 1, status: "unknown" }], [])).toThrow("unknown CI state")
+		const stale = githubChecks([{ id: 5, status: "completed", conclusion: "stale" }], [])
+		expect(stale.map((check) => check.state)).toEqual(["skipped"])
+		expect(() => githubChecks([{ id: 1, status: "unknown" }], [])).toThrow('unknown CI state: "unknown"')
 	})
 
 	it("drops resolved and outdated threads and trusts members and verified apps only", () => {
@@ -197,6 +200,7 @@ describe("GitLab snapshots", () => {
 				? [
 						{ id: 3, name: "Tests", status: "failed" },
 						{ id: 4, name: "Optional", status: "failed", allow_failure: true },
+						{ id: 5, name: "Deploy", status: "waiting_for_resource" },
 					]
 				: [
 						{ id: "a", notes: [note(5, 6)] },
@@ -211,6 +215,7 @@ describe("GitLab snapshots", () => {
 			checks: [
 				{ name: "Tests", state: "failed" },
 				{ name: "Optional", state: "skipped" },
+				{ name: "Deploy", state: "pending" },
 				{ name: "Pipeline", state: "failed" },
 			],
 			feedback: [
@@ -218,6 +223,18 @@ describe("GitLab snapshots", () => {
 				{ author: "user7", trusted: false },
 			],
 		})
+	})
+
+	it("fails the snapshot when a membership check times out instead of distrusting the reviewer", async () => {
+		vi.mocked(requestJSON).mockImplementation(async (_remote, endpoint) => {
+			if (endpoint.pathname.endsWith("/merge_requests/7")) return response(mr)
+			throw new LookupError("GitLab timed out.", "retry")
+		})
+		const note = { id: 5, body: "Fix it", resolvable: true, resolved: false, author: { id: 6, username: "member" } }
+		vi.mocked(pages).mockImplementation(async (_remote, endpoint) =>
+			endpoint.pathname.endsWith("/jobs") ? [] : [{ id: "a", notes: [note] }],
+		)
+		await expect(readPRSnapshot(mrURL, signal)).rejects.toThrow("GitLab timed out.")
 	})
 })
 
@@ -236,7 +253,7 @@ describe("discovering my open PRs", () => {
 				})),
 			})
 		})
-		expect(await discoverMyOpenPRs(signal)).toHaveLength(103)
+		expect(await discoverMyOpenPRs("github", undefined, signal)).toHaveLength(103)
 	})
 
 	it.each([
@@ -246,12 +263,12 @@ describe("discovering my open PRs", () => {
 		vi.mocked(requestJSON)
 			.mockResolvedValueOnce(response({ login: "owner" }))
 			.mockResolvedValueOnce(response(value))
-		await expect(discoverMyOpenPRs(signal)).rejects.toThrow(error)
+		await expect(discoverMyOpenPRs("github", undefined, signal)).rejects.toThrow(error)
 	})
 
 	it("requires a signed-in account", async () => {
 		vi.mocked(credential).mockResolvedValue(undefined)
-		await expect(discoverMyOpenPRs(signal)).rejects.toThrow("Sign in")
+		await expect(discoverMyOpenPRs("github", undefined, signal)).rejects.toThrow("Sign in")
 		expect(requestJSON).not.toHaveBeenCalled()
 	})
 
@@ -264,11 +281,11 @@ describe("discovering my open PRs", () => {
 		})
 		vi.mocked(requestJSON).mockResolvedValue(response({ id: 42 }))
 		vi.mocked(pages).mockResolvedValue([mine(7), mine(8)])
-		expect(await discoverMyOpenPRs(signal, "gitlab", host)).toEqual([
+		expect(await discoverMyOpenPRs("gitlab", host, signal)).toEqual([
 			`https://${host}/group/repo/-/merge_requests/7`,
 			`https://${host}/group/repo/-/merge_requests/8`,
 		])
 		vi.mocked(pages).mockResolvedValue([mine(9, 99)])
-		await expect(discoverMyOpenPRs(signal, "gitlab", host)).rejects.toThrow("outside the requested author")
+		await expect(discoverMyOpenPRs("gitlab", host, signal)).rejects.toThrow("outside the requested author")
 	})
 })

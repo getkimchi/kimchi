@@ -45,6 +45,22 @@ export async function acquirePRLease(
 	return lock(directory, { retries: 0, stale: LEASE_STALE_MS, update: LEASE_UPDATE_MS, onCompromised })
 }
 
+/** Asks before allowing automatic repairs in a checkout outside the session's project. */
+export async function confirmCheckoutTrust(ctx: ExtensionToolContext, cwd: string, signal: AbortSignal): Promise<void> {
+	if (resolvePreMainProjectTrust(cwd, getAgentDir())) return
+	const allowed =
+		ctx.hasUI &&
+		(await ctx.ui.confirm(
+			"Trust PR checkout?",
+			`Allow automatic repairs in ${cwd}? Normal tool permissions still apply.`,
+			{
+				signal,
+			},
+		))
+	if (!allowed) throw new Error(`Trust ${cwd} before enabling auto-fix.`)
+	new ProjectTrustStore(getAgentDir()).set(cwd, true)
+}
+
 /** Uses the given checkout, or clones the PR's source branch through permission-checked Bash. */
 export async function preparePRCheckout(
 	ctx: ExtensionToolContext,
@@ -53,34 +69,24 @@ export async function preparePRCheckout(
 	directory?: string,
 	requireTrust = true,
 ): Promise<string> {
-	const target = await readPRSource(url, signal)
-	if (target.pullRequest.state !== "open") throw new Error("This PR is no longer open.")
+	const source = await readPRSource(url, signal)
+	if (source.state !== "open") throw new Error("This PR is no longer open.")
 	const cwd = directory
 		? resolve(ctx.cwd, directory)
-		: join(getAgentDir(), "pr-watch", "checkouts", digest(`${ctx.sessionManager.getSessionId()}:${target.url}`))
+		: join(getAgentDir(), "pr-watch", "checkouts", digest(`${ctx.sessionManager.getSessionId()}:${source.url}`))
 	if (!existsSync(join(cwd, ".git"))) {
 		if (directory || existsSync(cwd))
 			throw new Error(`No Git checkout at ${cwd}. Choose a checkout or let Kimchi create an isolated one.`)
 		await mkdir(dirname(cwd), { recursive: true, mode: 0o700 })
-		const cli = target.repository.provider === "github" ? "gh" : "glab"
-		const clone = [cli, "repo", "clone", target.cloneURL, cwd, "--", "--single-branch", "--branch", target.branch]
+		const cli = source.provider === "github" ? "gh" : "glab"
+		const clone = [cli, "repo", "clone", source.cloneURL, cwd, "--", "--single-branch", "--branch", source.branch]
 		const outcome = await ctx.executeTool("bash", { command: quote(clone), timeout: CLONE_TIMEOUT_SECONDS }, { signal })
 		if (outcome.isError) {
 			const output = outcome.result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join(" ")
-			throw new Error(`Could not prepare ${target.url}. ${output.slice(0, CLONE_ERROR_LIMIT)}`)
+			throw new Error(`Could not prepare ${source.url}. ${output.slice(0, CLONE_ERROR_LIMIT)}`)
 		}
 	}
 	signal.throwIfAborted()
-	if (requireTrust && !resolvePreMainProjectTrust(cwd, getAgentDir())) {
-		const allowed =
-			ctx.hasUI &&
-			(await ctx.ui.confirm(
-				"Trust PR checkout?",
-				`Allow automatic repairs in ${cwd}? Normal tool permissions still apply.`,
-				{ signal },
-			))
-		if (!allowed) throw new Error(`Trust ${cwd} before enabling auto-fix.`)
-		new ProjectTrustStore(getAgentDir()).set(cwd, true)
-	}
+	if (requireTrust) await confirmCheckoutTrust(ctx, cwd, signal)
 	return cwd
 }

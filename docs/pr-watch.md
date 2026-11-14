@@ -25,7 +25,7 @@ conversation, one PR at a time, so keep the Kimchi process open.
 /pr-watch                             Watch this branch's PR, or grant fixes again to the watched PRs
 /pr-watch only fix lint errors        The same, with instructions for the repairs
 /pr-watch ci | reviews | all          Choose what can start a repair (default: ci)
-/pr-watch watch                       Keep watching without fixes (alias: pause)
+/pr-watch watch                       Watch without fixes (alias: pause)
 /pr-watch status                      Check the PRs now and show them
 /pr-watch monitor                     Open the Monitor view
 /pr-watch stop                        Stop watching and cancel the current repair

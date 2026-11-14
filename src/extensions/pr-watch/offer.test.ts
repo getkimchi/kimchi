@@ -162,6 +162,16 @@ describe("following the checkout's PR", () => {
 		expect(second.watcher.add).not.toHaveBeenCalled()
 	})
 
+	it("reports why automatic watching could not start", async () => {
+		vi.mocked(readPRWatchPreference).mockReturnValue(true)
+		const { ctx, watcher, detect } = setup()
+		watcher.add.mockResolvedValue({ targets: [], message: `${url}: Trust this project before enabling auto-fix.` })
+		detect()
+		await vi.waitFor(() =>
+			expect(ctx.ui.notify).toHaveBeenCalledWith(`${url}: Trust this project before enabling auto-fix.`, "error"),
+		)
+	})
+
 	it("reports a failed save and starts nothing", async () => {
 		const { ctx, watcher, detect } = setup()
 		vi.mocked(ctx.ui.confirm).mockResolvedValue(true)

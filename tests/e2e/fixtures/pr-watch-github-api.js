@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { appendFileSync, readFileSync } from "node:fs"
 
 export default function prWatchGitHubFixture() {
 	const original = globalThis.fetch
@@ -9,6 +9,7 @@ export default function prWatchGitHubFixture() {
 		const headers = new Headers(options?.headers)
 		if (headers.get("authorization") !== "Bearer pr-watch-fixture-token")
 			throw new Error("Unexpected fixture credential")
+		appendFileSync(`${process.env.KIMCHI_TEST_PR_WATCH}.requests`, `${url.pathname}${url.search}\n`)
 		const data = JSON.parse(readFileSync(process.env.KIMCHI_TEST_PR_WATCH, "utf8"))
 		const requestedNumber =
 			url.pathname === "/graphql"

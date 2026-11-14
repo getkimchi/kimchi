@@ -32,7 +32,7 @@ it.each([
 		clientMeta: { "kimchi.dev": { prMonitoring: true, backgroundRuns: true } },
 		pretrustWorkDir: true,
 		extraArgs: [kind === "natural-plan" ? "--plan" : "--yolo", ...(kind === "flag" ? ["--pr-watch"] : [])],
-		extensionPath: fileURLToPath(new URL("./support/pr-watch-github-api.js", import.meta.url)),
+		extensionPath: fileURLToPath(new URL("../fixtures/pr-watch-github-api.js", import.meta.url)),
 		responses: [
 			...(natural
 				? [
@@ -202,7 +202,13 @@ it.each([
 			await fixture.conn.prompt({ sessionId: second, prompt: [{ type: "text", text: "/pr-watch disable" }] })
 			expect(JSON.parse(readFileSync(preferencePath, "utf8"))).toEqual({ enabled: false })
 			writeFileSync(stateFile, JSON.stringify({ ...seed, number: 9 }))
+			const lookups = () =>
+				readFileSync(`${stateFile}.requests`, "utf8")
+					.split("\n")
+					.filter((line) => line.includes("/pulls?")).length
+			const before = lookups()
 			const third = await newSession(fixture, cwd)
+			await expect.poll(lookups).toBeGreaterThan(before)
 			expect(await status(third)).toContain("PR watch · Not watching")
 			expect(
 				fixture.client.permissionRequests.filter(

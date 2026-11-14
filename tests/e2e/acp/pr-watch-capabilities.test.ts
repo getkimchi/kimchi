@@ -71,7 +71,7 @@ it("replays an opted-in session without restoring its saved watcher for an unsup
 		homeDirOverride: home,
 		workDirOverride: target.cwd,
 		pretrustWorkDir: true,
-		extensionPath: fileURLToPath(new URL("./support/pr-watch-github-api.js", import.meta.url)),
+		extensionPath: fileURLToPath(new URL("../fixtures/pr-watch-github-api.js", import.meta.url)),
 	}
 	let first: Awaited<ReturnType<typeof startAcpFixture>> | undefined
 	let second: Awaited<ReturnType<typeof startAcpFixture>> | undefined

@@ -1,32 +1,21 @@
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent"
 import { safePanelText } from "../../components/input-panel.js"
 import { type ToolRenderContext, ToolText, toolHeader, withBranch } from "../tool-rendering.js"
+import type { PRWatchArgs } from "./index.js"
 import { overview } from "./presentation.js"
 import type { PRWatchState } from "./types.js"
 
-const ACTIONS: Record<string, string> = {
+const ACTIONS: Record<NonNullable<PRWatchArgs["action"]>, string> = {
 	start: "Start watching",
 	status: "Refresh status",
 	pause: "Pause fixes",
 	stop: "Stop watching",
 }
 
-export function renderPRWatchCall(
-	args: {
-		action?: string
-		url?: string
-		targets?: { url: string }[]
-		allMine?: boolean
-		provider?: string
-		host?: string
-		instructions?: string
-	},
-	theme: Theme,
-	ctx: ToolRenderContext,
-): ToolText {
-	const lines = [
-		toolHeader("PR watch", "", theme) + theme.fg("muted", ` · ${ACTIONS[args.action ?? "start"] ?? ACTIONS.start}`),
-	]
+export function renderPRWatchCall(args: PRWatchArgs, theme: Theme, ctx: ToolRenderContext): ToolText {
+	// Streaming arguments can hold a partial action name.
+	const action = ACTIONS[args.action ?? "start"] ?? ACTIONS.start
+	const lines = [toolHeader("PR watch", "", theme) + theme.fg("muted", ` · ${action}`)]
 	if (ctx.expanded) {
 		const account = args.allMine
 			? `Your open ${args.provider === "gitlab" ? "GitLab MRs" : "GitHub PRs"}${args.host ? ` on ${args.host}` : ""}`
@@ -55,7 +44,7 @@ export function renderPRWatchResult(
 	const summary = state && !ctx.isError ? overview(state) : undefined
 	if (!summary) {
 		const lines = text.trim().split("\n")
-		const first = state?.message || lines[0] || "No PR status returned"
+		const first = safePanelText(state?.message || lines[0] || "No PR status returned")
 		return new ToolText(
 			withBranch(
 				theme.fg(ctx.isError ? "error" : "text", first) +
