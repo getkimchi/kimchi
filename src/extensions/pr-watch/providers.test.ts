@@ -244,8 +244,7 @@ describe("GitLab snapshots", () => {
 describe("discovering my open PRs", () => {
 	it("pages through GitHub search instead of stopping at the first page", async () => {
 		vi.mocked(requestJSON).mockImplementation(async (_remote, endpoint) => {
-			if (endpoint.pathname === "/user") return response({ login: "owner" })
-			expect(endpoint.searchParams.get("q")).toBe("is:pr is:open author:owner")
+			expect(endpoint.searchParams.get("q")).toBe("is:pr is:open author:@me")
 			const page = Number(endpoint.searchParams.get("page"))
 			return response({
 				total_count: 103,
@@ -263,9 +262,7 @@ describe("discovering my open PRs", () => {
 		[{ total_count: 1001, incomplete_results: false, items: [] }, "1000"],
 		[{ total_count: 1, incomplete_results: true, items: [] }, "incomplete"],
 	])("reports search limits instead of a partial set", async (value, error) => {
-		vi.mocked(requestJSON)
-			.mockResolvedValueOnce(response({ login: "owner" }))
-			.mockResolvedValueOnce(response(value))
+		vi.mocked(requestJSON).mockResolvedValueOnce(response(value))
 		await expect(discoverMyOpenPRs("github", undefined, signal)).rejects.toThrow(error)
 	})
 

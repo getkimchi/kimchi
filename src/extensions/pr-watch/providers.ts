@@ -21,7 +21,6 @@ const GITHUB_SEARCH_LIMIT = 1000
 const SEARCH_PAGE_SIZE = 100
 const GITLAB_DEVELOPER_ACCESS = 30
 const GITLAB_MR_PATH = "/-/merge_requests/"
-const LOGIN_CHARACTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 
 const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"])
 const failedStates = new Set(["failure", "failed", "error", "timed_out", "action_required", "startup_failure"])
@@ -64,10 +63,6 @@ function withoutTrailingSlash(value: string): string {
 
 function isDigits(value: string): boolean {
 	return value !== "" && [...value].every((char) => char >= "0" && char <= "9")
-}
-
-function isLogin(value: unknown): value is string {
-	return typeof value === "string" && value !== "" && [...value].every((char) => LOGIN_CHARACTERS.includes(char))
 }
 
 function prPath(pathname: string): { provider: Repository["provider"]; name: string; number: string } | undefined {
@@ -391,13 +386,11 @@ async function gitlabAuthoredMRs(remote: Repository, base: string, signal: Abort
 
 async function githubAuthoredPRs(remote: Repository, signal: AbortSignal, deadline: number) {
 	const base = githubAPI(remote.host)
-	const { value: user } = await requestJSON(remote, new URL(`${base}/user`), signal, deadline)
-	if (!object(user) || !isLogin(user.login)) throw new Error("GitHub did not return the signed-in user.")
 	const urls = new Set<string>()
 	for (let page = 1; ; page++) {
 		const url = new URL(`${base}/search/issues`)
 		url.search = new URLSearchParams({
-			q: `is:pr is:open author:${user.login}`,
+			q: "is:pr is:open author:@me",
 			per_page: String(SEARCH_PAGE_SIZE),
 			page: String(page),
 		}).toString()
