@@ -277,7 +277,7 @@ describe("handleMessageEnd", () => {
 				role: "assistant",
 				responseId: "resp-sub",
 				model: "some-model",
-				provider: "openai-codex",
+				provider: "kimchi-dev/openai-codex",
 				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
 			} as Message,
 		})

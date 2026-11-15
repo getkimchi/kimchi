@@ -26,6 +26,7 @@ import { getEffectiveModel } from "../../auto-model/state.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import codexCorrelationExtension from "../../login/codex-correlation-extension.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -538,6 +539,7 @@ ${skillLines}`
 		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
+		codexCorrelationExtension,
 	]
 	if (shouldRegisterDapForTools(toolNames)) {
 		extensionFactories.push(dapExtension)
