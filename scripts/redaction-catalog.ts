@@ -5,10 +5,11 @@
  * liveState (engine-side disposition: active / no_matcher — alias_of is
  * reserved, no current aliases).
  *
- * Consumers: the release workflow attaches this output to the GitHub
- * release as redaction-catalog.json (the policy-UI console's fetch script
- * regenerates its constants from that asset); the harness never serves it
- * at runtime.
+ * Consumers: the output is committed next to the registry
+ * (src/extensions/pii-redaction/redaction-catalog.json, pinned by a
+ * drift-guard test) and the policy-UI console fetches the tagged raw file
+ * from the public repo to regenerate its constants; the harness never
+ * serves it at runtime.
  *
  * Usage:
  *   bun scripts/redaction-catalog.ts

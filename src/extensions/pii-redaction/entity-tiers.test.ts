@@ -170,6 +170,16 @@ describe("entity tier registry", () => {
 		}
 	})
 
+	it("the committed redaction-catalog.json matches the generator", () => {
+		// The 203-row catalog is committed next to this registry as the
+		// console's sync source (tagged raw file, no release asset). A
+		// tier/category/default edit without regeneration fails here,
+		// loudly, in CI: regenerate with `bun scripts/redaction-catalog.ts >
+		// src/extensions/pii-redaction/redaction-catalog.json` and commit both.
+		const committed = JSON.parse(readFileSync(new URL("./redaction-catalog.json", import.meta.url), "utf8"))
+		expect(committed).toEqual(listRedactionCatalog().filter((e) => e.liveState === "active"))
+	})
+
 	it("every registered entity has exactly one category; every category member is registered", () => {
 		const catalog = listRedactionCatalog()
 		expect(catalog.length).toBeGreaterThan(100)

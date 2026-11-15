@@ -51,9 +51,11 @@ entry); the org-managed wire path drops them tolerantly with one log line.
 The legacy `excludedEntities` list still accepts them (they land inert).
 
 The full machine-readable catalog (entity → tier → category → defaultOn →
-liveState) is emitted by `bun scripts/redaction-catalog.ts`; releases
-publish its active rows as the `redaction-catalog.json` asset, consumed by
-the policy-UI console.
+liveState) is emitted by `bun scripts/redaction-catalog.ts`; its active
+rows are committed next to the registry as
+`src/extensions/pii-redaction/redaction-catalog.json` (a drift-guard test
+pins them — any registry edit must regenerate and commit both), and the
+policy-UI console fetches the tagged raw file from this repo.
 
 ## Local configuration (settings.json)
 
