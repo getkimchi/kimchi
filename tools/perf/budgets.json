@@ -63,8 +63,8 @@
    "budget_note": "keystroke echo latency while reconcile passes run over the big ledger; absolute event-loop-hold detector (the user-reported stall class)"
   },
   "keylat_max_ms": {
-   "limit": 15.0,
-   "budget_note": "steady-state worst keystroke echo after the 10s post-ready settle (startup artifact excluded). Fix branch measures 9.8-16.6ms across mac and CI; every unfixed release holds the loop 163ms-2.2s per pass (serially verified at the boundary tags). 15ms sits just under the worst observed healthy sample"
+   "limit": 25.0,
+   "budget_note": "steady-state worst keystroke echo after the 10s post-ready settle (startup artifact excluded). Fix branch measures 9.8-16.6ms across mac and CI; every unfixed release holds the loop 163ms-2.2s per pass (serially verified at the boundary tags). 25ms clears the worst observed healthy sample by 1.5x and fails the unfixed class by >=6.5x"
   },
   "additive_missing": {
    "limit": 0.0,
