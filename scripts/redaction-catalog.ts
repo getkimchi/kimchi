@@ -14,6 +14,10 @@
  * Usage:
  *   bun scripts/redaction-catalog.ts
  *
+ * Output is tab-indented to match the repo's biome JSON format, so raw
+ * output is byte-identical to the committed file:
+ *   bun scripts/redaction-catalog.ts > src/extensions/pii-redaction/redaction-catalog.json
+ *
  * Dev tooling (not shipped in the binary): run directly with bun.
  */
 import { listRedactionCatalog } from "../src/extensions/pii-redaction/entity-tiers.js"
@@ -27,4 +31,4 @@ import { listRedactionCatalog } from "../src/extensions/pii-redaction/entity-tie
 // contract.
 const published = listRedactionCatalog().filter((entry) => entry.liveState === "active")
 
-console.log(JSON.stringify(published, null, 2))
+console.log(JSON.stringify(published, null, "\t"))
