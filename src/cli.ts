@@ -174,6 +174,7 @@ import statusExtension from "./extensions/status/index.js"
 import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
 import { steerOutcomeWatcherExtension } from "./extensions/steer-outcome-watcher.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import loopTraceExtension from "./extensions/loop-trace.js"
 import submitTimingExtension from "./extensions/submit-timing.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -1102,6 +1103,7 @@ async function cliMain(): Promise<void> {
 				compactionResilienceExtension(),
 				requestTimingExtension,
 				submitTimingExtension,
+				loopTraceExtension,
 				llmResponseLogExtension,
 				activityExtension,
 				infrastructureErrorTracker.extension,
