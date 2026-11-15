@@ -2114,21 +2114,19 @@ describe("curated thinking levels drive the engine thinkingLevelMap", () => {
 		expect(supportedLevels(model)).toEqual(["off", "low", "high", "max"])
 	})
 
-	it("leaves openai and anthropic thinkingLevelMap output unchanged", () => {
+	it("derives openai Responses maps from the curated levels, falling back to the slug family when uncurated", () => {
 		const openai = providerModels(
 			[
 				metadata("gpt-5.1", ["low", "high"], "openai"),
 				metadata("o3", ["low", "high"], "openai"),
 				metadata("gpt-5", [], "openai"),
+				metadata("gpt-6.1-sol", undefined, "openai"),
 			],
 			"kimchi-dev/openai",
 		)
-		expect(openai.map((m) => m.thinkingLevelMap)).toEqual([
-			{ off: "none" },
-			{ off: null, minimal: null },
-			{ off: null },
-		])
-		expect(openai.map((m) => m.compat)).toEqual([undefined, undefined, undefined])
+		const omitted = { off: null, minimal: null, medium: null, xhigh: null, max: null }
+		expect(openai.map((m) => m.thinkingLevelMap)).toEqual([omitted, omitted, { off: null }, { off: "none" }])
+		expect(openai.map((m) => m.compat)).toEqual([undefined, undefined, undefined, undefined])
 
 		const upstream = ANTHROPIC_MODELS["claude-sonnet-4-6"]
 		// Without the catalog entry both sides would be undefined and the
@@ -2173,6 +2171,32 @@ describe("chatgpt feed entries", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			thinkingLevels: ["low", "medium", "high"],
 		})
+	})
+
+	it("takes off/xhigh/max from the curated levels, not the slug family", () => {
+		const row = (slug: string, thinking_levels: string[]) => ({ ...(CODEX as object), slug, thinking_levels })
+		const { providers } = buildModelsConfig(
+			[
+				row("gpt-6-astra", ["low", "medium", "high", "xhigh", "max"]),
+				row("gpt-5.6-luna", ["off", "low", "medium", "high", "xhigh", "max"]),
+			] as never,
+			"https://gw.example",
+		)
+		const [astra, luna] = providers["kimchi-dev/openai-codex"].models as Array<
+			Extract<ProviderModelConfig, { type?: "chat" }>
+		>
+		const supported = (model: typeof astra) =>
+			getSupportedThinkingLevels({
+				...model,
+				api: "openai-codex-responses",
+				provider: "kimchi-dev/openai-codex",
+				baseUrl: "https://gw.example/openai/v1",
+			})
+		// gpt-6-astra rejects effort "none": off must not be selectable even though the slug family would send it.
+		expect(astra.thinkingLevelMap).toEqual({ off: null, minimal: null, xhigh: "xhigh", max: "max" })
+		expect(supported(astra)).toEqual(["low", "medium", "high", "xhigh", "max"])
+		expect(luna.thinkingLevelMap).toEqual({ off: "none", minimal: null, xhigh: "xhigh", max: "max" })
+		expect(supported(luna)).toEqual(["off", "low", "medium", "high", "xhigh", "max"])
 	})
 
 	it("omits kimchi-dev/openai-codex for an SSO organization: the gateway takes only an API key next to a ChatGPT login", () => {

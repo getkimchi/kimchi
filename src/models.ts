@@ -77,8 +77,10 @@ function supportsResponsesApi(provider: string, slug: string): boolean {
 	)
 }
 
-// Effort "none" is only valid on gpt-5.1+/gpt-6; `off: null` makes pi omit the
-// reasoning param rather than send an invalid effort.
+// Uncurated Responses-API models only: effort "none" is assumed valid on
+// gpt-5.1+/gpt-6; `off: null` makes pi omit the reasoning param rather than send
+// an invalid effort. Curated models take off/xhigh/max from the catalog instead
+// (a curated `off` is sent as "none", the Responses API's only off value).
 const RESPONSES_NONE_EFFORT_SLUG_PATTERNS: RegExp[] = [/^gpt-5\.[1-9]/, /^gpt-6/]
 
 const GATEWAY_THINKING_LEVEL_MAP: ThinkingLevelMap = { off: "none", max: "max" }
@@ -343,7 +345,9 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 			? deriveThinkingLevelMap(curatedLevels, GATEWAY_THINKING_LEVEL_MAP)
 			: GATEWAY_THINKING_LEVEL_MAP
 		: responsesApi && m.reasoning
-			? responsesThinkingLevelMap(m.slug)
+			? curatedLevels !== undefined && curatedLevels.length > 0
+				? deriveThinkingLevelMap(curatedLevels, { ...responsesThinkingLevelMap(m.slug), off: "none" })
+				: responsesThinkingLevelMap(m.slug)
 			: upstream?.thinkingLevelMap
 	// Curated-none (`thinking_levels: []`): the model reasons at the provider
 	// default — no level controls and no explicit effort on the wire. Native
