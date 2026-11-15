@@ -2026,6 +2026,11 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// 503 storm). Phase-B failure counts are zero for these, so the
 	// bookkeeping below must count them separately.
 	const commitFailed = new Set<JobPlan>()
+	// Subset of commitFailed whose error classified as infrastructure-
+	// transient: these must burn NO attempt budget anywhere (neither the
+	// add-failure cap nor the cross-drain transient cap) — a bge-m3 outage
+	// must cost delay, never facts.
+	const commitTransient = new Set<JobPlan>()
 	let skippedOversized = 0
 	let addQuarantined = 0
 	// Commits run in parallel across jobs (bounded): each job writes its
@@ -2062,7 +2067,15 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			// Bounded retries: a failing commit re-adds staged facts (no LLM
 			// re-paid) but still pays embedder round-trips — after
 			// ADD_FAILURE_MAX_ATTEMPTS drains the job quarantines to failed/.
-			if (recordAddFailureAttempt(plan)) {
+			//
+			// Transient storms (embedder/gateway 429/5xx or network) must NOT
+			// burn the cap: the cap exists for poison cats — a job whose commit
+			// can NEVER succeed — while an infra storm resolves on its own.
+			// During the 2026-11-15 bge-m3 outage the counter drained whole
+			// backlogs toward quarantine for what was a healthy job.
+			const transientRetry = isRetryableCommitError(err)
+			if (transientRetry) commitTransient.add(plan)
+			if (!transientRetry && recordAddFailureAttempt(plan)) {
 				addQuarantined += 1
 				trace?.emit({
 					type: "job_end",
@@ -2076,7 +2089,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 					type: "job_end",
 					job: basename(plan.jobFile),
 					outcome: "kept-for-retry",
-					reason: "commit-failure",
+					reason: transientRetry ? "commit-failure-transient" : "commit-failure",
 					attempts: plan.addAttempts,
 				})
 			}
@@ -2118,7 +2131,10 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 					attempts: plan.drainAttempts + 1,
 				})
 			}
-		} else if (plan.transientWindowCount > 0 || commitFailed.has(plan)) {
+		} else if (plan.transientWindowCount > 0) {
+			// commit-failed plans are accounted above (add-failure budget for
+			// deterministic, zero-budget for storms) — never the transient
+			// ledger; the transient ledger is window-extraction failures only.
 			if (recordFailedAttempt(plan, "transient")) quarantined += 1
 		}
 	}
@@ -2372,6 +2388,22 @@ function stageExtraction(plan: JobPlan, staged: StagedExtraction): boolean {
 		)
 		return false
 	}
+}
+
+/**
+ * True when a commit failure is infrastructure-transient (rate limit /
+ * 5xx gateway storm / network abort) rather than job-deterministic.
+ * Only deterministic failures may burn the add-failure attempt budget.
+ */
+export function isRetryableCommitError(err: unknown, depth = 0): boolean {
+	if (depth > 1 || err == null) return false
+	const status = (err as { status?: number } | null)?.status
+	if (typeof status === "number" && isRetryableStatus(status)) return true
+	const msg = err instanceof Error ? err.message : String(err)
+	if (/^(429|5\d\d)\b/.test(msg)) return true
+	if (/ECONNRESET|ECONNREFUSED|EAI_AGAIN|ETIMEDOUT|The operation was aborted/.test(msg)) return true
+	const cause = (err as { cause?: unknown } | null)?.cause
+	return cause instanceof Error ? isRetryableCommitError(cause, depth + 1) : false
 }
 
 /**

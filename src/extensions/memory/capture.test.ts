@@ -60,6 +60,8 @@ import {
 } from "./capture-worker.js"
 import {
 	ADD_FAILURE_MAX_ATTEMPTS,
+	CAPTURE_INCREMENT_MIN,
+	captureIncrementalMessages,
 	defaultMemoryDir,
 	MEMORY_CAPTURE_INCREMENTAL_MESSAGES,
 	MEMORY_CAPTURE_WINDOW_CHARS,
@@ -278,6 +280,21 @@ describe("incrementalCapture", () => {
 		incrementalCapture([msgEntry("one"), msgEntry("two")], state, "/test/cwd", spawn, "capture-sess")
 		expect(spawn).not.toHaveBeenCalled()
 		expect(state.spawnedCount).toBe(0)
+	})
+
+	it("environment override raises the capture increment (inflow throttle)", () => {
+		vi.stubEnv("KIMCHI_MEMORY_CAPTURE_INCREMENT", "120")
+		expect(captureIncrementalMessages()).toBe(120)
+		const state = createIncrementalCaptureState()
+		const spawn = vi.fn()
+		// 31 uncaptured messages: under the raised increment nothing spawns.
+		const entries = Array.from({ length: 31 }, (_, i) => msgEntry(`m${i}`))
+		incrementalCapture(entries, state, "/test/cwd", spawn)
+		expect(spawn).not.toHaveBeenCalled()
+		vi.stubEnv("KIMCHI_MEMORY_CAPTURE_INCREMENT", "1") // below floor: clamps loudly
+		expect(captureIncrementalMessages()).toBe(CAPTURE_INCREMENT_MIN)
+		vi.stubEnv("KIMCHI_MEMORY_CAPTURE_INCREMENT", "abc") // non-numeric: default + warning
+		expect(captureIncrementalMessages()).toBe(MEMORY_CAPTURE_INCREMENTAL_MESSAGES)
 	})
 
 	it("spawns the batch at the threshold and advances the mark", () => {
@@ -1018,14 +1035,14 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 	const ledgerPath = () => join(home, ".config", "kimchi", "memory", "captured-hashes.json")
 
 	/** In-memory capture backend — the store seam. */
-	function makeFakeBackend(options: { failAdds?: boolean } = {}) {
+	function makeFakeBackend(options: { failAdds?: boolean; failAddsMessage?: string } = {}) {
 		const added: string[] = []
 		const deleted: string[] = []
 		const items: Array<{ id: string; memory: string }> = []
 		let nextId = 0
 		const backend: CaptureBackend = {
 			add: async (fact) => {
-				if (options.failAdds) throw new Error("store unavailable")
+				if (options.failAdds) throw new Error(options.failAddsMessage ?? "store unavailable")
 				nextId += 1
 				items.push({ id: `m${nextId}`, memory: fact })
 				added.push(fact)
@@ -1542,6 +1559,50 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(transcripts).toHaveLength(1)
 		expect(await drain(() => Promise.resolve(makeFakeBackend().backend))).toBe(0)
 		expect(transcripts).toHaveLength(1)
+	})
+
+	it("transient commit failures (embedder 5xx) never burn ANY attempt budget", async () => {
+		const jobFile = writeJob("job1", [msg("user", "storm marker")])
+		const failing = (): Promise<CaptureBackend> =>
+			Promise.resolve(
+				makeFakeBackend({ failAdds: true, failAddsMessage: "503 Service Temporarily Unavailable" }).backend,
+			)
+		// Drive PAST BOTH caps (add-failure 5 and transient 10): the job must
+		// survive every storm drain — an outage costs delay, never facts.
+		for (let i = 0; i < 12; i++) {
+			const out = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: failing,
+			}).catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+			expect(String(out)).toContain("1 capture job(s) failed")
+			expect(existsSync(jobFile)).toBe(true) // never quarantined under the storm
+			const job = JSON.parse(readFileSync(jobFile, "utf-8")) as { addAttempts?: number; transientAttempts?: number }
+			expect(job.addAttempts ?? 0).toBe(0)
+			expect(job.transientAttempts ?? 0).toBe(0)
+		}
+		// Recovery: the same backend succeeds and the job commits on the next drain.
+		const fake = makeFakeBackend()
+		const committed = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm([]),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(committed).toBe(1)
+		expect(existsSync(jobFile)).toBe(false)
+		expect(fake.added).toEqual(["storm marker"])
+	})
+
+	it("network-abort commit failures are transient, deterministic errors are poison", async () => {
+		const jobFile = writeJob("job1", [msg("user", "abort marker")])
+		const aborting = (): Promise<CaptureBackend> =>
+			Promise.resolve(makeFakeBackend({ failAdds: true, failAddsMessage: "fetch failed: ECONNRESET" }).backend)
+		const out = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm([]),
+			createBackend: aborting,
+		}).catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+		expect(String(out)).toContain("1 capture job(s) failed")
+		expect(existsSync(jobFile)).toBe(true)
+		const job = JSON.parse(readFileSync(jobFile, "utf-8")) as { addAttempts?: number }
+		expect(job.addAttempts ?? 0).toBe(0)
 	})
 
 	it("a staged job with a previously-failed window re-extracts only that window", async () => {
@@ -2839,57 +2900,50 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 		}
 	})
 
-	it("a commit-phase failure (store write 503) counts toward the transient cap even with clean windows", async () => {
-		const random = vi.spyOn(Math, "random").mockReturnValue(0)
-		process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS = "2"
-		try {
-			// Extraction succeeds with one real fact, so commitPlan actually
-			// calls backend.add; the add throws 503 — the observed bench storm
-			// where commitPhase failed with all windows clean.
-			const fetchImpl: typeof fetch = async (_input, init) => {
-				const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
-				const system = body.messages[0]?.content ?? ""
-				if (system.includes("must decide which stored memories")) {
-					return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
-				}
-				return new Response(
-					JSON.stringify({ choices: [{ message: { content: JSON.stringify(["Dog's name is Fred"]) } }] }),
-					{ status: 200 },
-				)
+	it("a deterministic commit-phase failure burns the add-failure budget toward quarantine (and only that)", async () => {
+		// Doctrine change 2026-11-15: retryable storm errors (429/5xx/network)
+		// burn NO budget anywhere; deterministic errors burn addAttempts toward
+		// ADD_FAILURE_MAX_ATTEMPTS with staged facts preserved. This test uses a
+		// non-retryable error string so the classifier routes to the add path.
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				return new Response(JSON.stringify({ choices: [{ message: { content: "[]" } }] }), { status: 200 })
 			}
-			const failingBackend: CaptureBackend = {
-				add: async () => {
-					throw new Error("503 Service Temporarily Unavailable")
-				},
-				delete: async () => ({}),
-				getAll: async () => ({ results: [] }),
-				search: async () => ({ results: [] }),
-			}
-			const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
-			const jobFile = writeJob("commit-fail", [msg("user", "my dog's name is Fred")])
-			// First drain: counters bump to 1 even though windows are clean —
-			// without this hook, commit-only failures never reach quarantine.
-			await expect(
-				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
-					llm,
-					createBackend: () => Promise.resolve(failingBackend),
-				}),
-			).rejects.toThrow()
-			const afterFirst = JSON.parse(readFileSync(jobFile, "utf-8")) as { transientAttempts?: number }
-			expect(afterFirst.transientAttempts).toBe(1)
-			// Second drain: cap hit → quarantined.
-			await expect(
-				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
-					llm,
-					createBackend: () => Promise.resolve(failingBackend),
-				}),
-			).rejects.toThrow()
-			expect(existsSync(jobFile)).toBe(false)
-			expect(existsSync(join(failedDir(), "commit-fail.json"))).toBe(true)
-		} finally {
-			random.mockRestore()
-			delete process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify(["Dog's name is Fred"]) } }] }),
+				{ status: 200 },
+			)
 		}
+		const failingBackend: CaptureBackend = {
+			add: async () => {
+				throw new Error("400 dimension mismatch: expected 1024 floats, found 7")
+			},
+			delete: async () => ({}),
+			getAll: async () => ({ results: [] }),
+			search: async () => ({ results: [] }),
+		}
+		const llm = { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+		const jobFile = writeJob("commit-fail", [msg("user", "my dog's name is Fred")])
+		for (let i = 1; i <= ADD_FAILURE_MAX_ATTEMPTS; i++) {
+			await expect(
+				runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					llm,
+					createBackend: () => Promise.resolve(failingBackend),
+				}),
+			).rejects.toThrow()
+			const after =
+				i < ADD_FAILURE_MAX_ATTEMPTS
+					? (JSON.parse(readFileSync(jobFile, "utf-8")) as { addAttempts?: number; transientAttempts?: number })
+					: undefined
+			if (after) {
+				expect(after.addAttempts).toBe(i)
+				expect(after.transientAttempts ?? 0).toBe(0) // deterministic commit failures never touch the transient ledger
+			}
+		}
+		expect(existsSync(jobFile)).toBe(false)
+		expect(existsSync(join(failedDir(), "commit-fail.json"))).toBe(true)
 	})
 
 	it("sweeps only quarantined jobs older than the failed/ TTL", async () => {

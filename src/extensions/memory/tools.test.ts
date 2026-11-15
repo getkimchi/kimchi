@@ -47,17 +47,20 @@ describe("memory_search tool", () => {
 		expect(textOf(result)).toBe("No memories matched that query.")
 	})
 
-	it("propagates search failures to the tool-error path", async () => {
+	it("surfaces store failures as an explicit unreachable-store message (not a false empty)", async () => {
+		// Live failure class found 2026-11-15: embedder 503 surfaced to the agent
+		// as "No memories matched", teaching it to stop calling memory_search.
 		const deps: MemorySearchDeps = {
 			search: async () => {
-				throw new Error("store unavailable")
+				throw new Error("503 Service Temporarily Unavailable")
 			},
 			isEnabled: () => true,
 		}
 		const tool = createMemorySearchTool(deps)
-		await expect(tool.execute("call-1", { query: "anything" }, undefined, undefined, {} as never)).rejects.toThrow(
-			"store unavailable",
-		)
+		const result = await tool.execute("call-1", { query: "anything" }, undefined, undefined, {} as never)
+		const text = textOf(result)
+		expect(text).toContain("Memory search failed")
+		expect(text).toContain("UNREACHABLE, not empty")
 	})
 
 	it("reports the disabled state instead of searching when the toggle is off", async () => {

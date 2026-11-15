@@ -118,7 +118,19 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 				)
 			}
 			const startedAt = Date.now()
-			const hits = await deps.search(params.query)
+			// Distinguish infrastructure failure from an empty result: an
+			// embedder/cluster outage silhouettes the whole part and otherwise
+			// surfaces as "No memories matched" — the agent then concludes the
+			// store is empty and stops calling memory_search (observed live
+			// during the 2026-11-15 bge-m3 outage).
+			let hits: Awaited<ReturnType<MemorySearchDeps["search"]>>
+			try {
+				hits = await deps.search(params.query)
+			} catch (err) {
+				return textResult(
+					`Memory search failed while reaching the memory store: ${err instanceof Error ? err.message : String(err)}. Treat the store as UNREACHABLE, not empty — retry later instead of assuming there is nothing stored.`,
+				)
+			}
 			// Recall trace: one compact record per search — the dashboard's
 			// retrieval visibility. Fail-soft by construction (null recorder).
 			createRecallRecorder()?.emit({

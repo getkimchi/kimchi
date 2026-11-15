@@ -114,6 +114,34 @@ export const SUPERSEDE_SEARCH_TOPK = 8
 // extract.
 export const MEMORY_CAPTURE_INCREMENTAL_MESSAGES = 30
 
+/**
+ * Operational override for the capture increment: high-churn harnesses
+ * (agentic benchmarks running one tool step every few seconds) spawn a job
+ * every 30 messages — inflow that outpaces drains by design. Raising the
+ * increment is the ONLY real pullback lever (fact quality is unaffected —
+ * extraction sees the same conversation tails, just in wider windows).
+ * Floor at 5: below that, windows are mid-deliberation with nothing
+ * complete to extract.
+ */
+export const CAPTURE_INCREMENT_ENV = "KIMCHI_MEMORY_CAPTURE_INCREMENT"
+export const CAPTURE_INCREMENT_MIN = 5
+export function captureIncrementalMessages(): number {
+	const raw = process.env[CAPTURE_INCREMENT_ENV]
+	if (raw === undefined) return MEMORY_CAPTURE_INCREMENTAL_MESSAGES
+	const v = Number(raw)
+	if (!Number.isFinite(v)) {
+		console.warn(
+			`[memory] ${CAPTURE_INCREMENT_ENV}=${JSON.stringify(raw)} is not a number — using ${MEMORY_CAPTURE_INCREMENTAL_MESSAGES}`,
+		)
+		return MEMORY_CAPTURE_INCREMENTAL_MESSAGES
+	}
+	if (v < CAPTURE_INCREMENT_MIN) {
+		console.warn(`[memory] ${CAPTURE_INCREMENT_ENV}=${raw} below floor — clamping to ${CAPTURE_INCREMENT_MIN}`)
+		return CAPTURE_INCREMENT_MIN
+	}
+	return Math.floor(v)
+}
+
 /** Record key for drain-attributed jobs whose job file predates session
  *  attribution (pre-upgrade pending jobs). Never a live session's id, so
  *  readers must skip it — it is not "some other session". */

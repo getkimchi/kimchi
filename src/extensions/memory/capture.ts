@@ -19,9 +19,9 @@ import { getEnvironmentApiKey } from "../../config.js"
 import { defaultMemoryDir } from "./backend.js"
 import type { CaptureMessage } from "./capture-worker.js"
 import {
+	captureIncrementalMessages,
 	digestDbPath,
 	MEMORY_CAPTURE_ASSISTANT_MAX_CHARS,
-	MEMORY_CAPTURE_INCREMENTAL_MESSAGES,
 	MEMORY_CAPTURE_JOB_MAX_MESSAGES,
 	MEMORY_CAPTURE_TOOL_CALL_CHARS,
 	MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS,
@@ -98,9 +98,10 @@ export function wireMemoryCapture(
 	// end (human-paced sessions) and after every tool step (agentic loops) —
 	// before_agent_start alone never fires inside a 70-step tool loop, which
 	// is how long episodes were accumulating until shutdown.
+	const incrementalThreshold = captureIncrementalMessages() // resolved once at wiring — not per turn_end/tool_result
 	const fireIncrement = (ctx: ExtensionContext): void => {
 		if (!isActive()) return
-		incrementalCapture(ctx.sessionManager.getEntries(), incremented, ctx.cwd, undefined, session)
+		incrementalCapture(ctx.sessionManager.getEntries(), incremented, ctx.cwd, undefined, session, incrementalThreshold)
 	}
 	pi.on("turn_end", (_event, ctx) => {
 		fireIncrement(ctx)
@@ -170,7 +171,8 @@ export function createIncrementalCaptureState(): IncrementalCaptureState {
  * Lever 3: drain new user messages as they accumulate mid-session instead
  * of saving everything for shutdown — shrinks the shutdown tail and the
  * next-session staleness race to the last few turns. Fires when at least
- * MEMORY_CAPTURE_INCREMENTAL_MESSAGES uncaptured user messages exist since
+ * MEMORY_CAPTURE_INCREMENTAL_MESSAGES (env-overridable) uncaptured user
+ * messages exist since
  * the last spawn. The mark is runtime-local (not the ledger): reading the
  * ledger per turn would race the detached workers, and a fresh runtime
  * re-deriving from zero is safe — the worker's ledger filters already
@@ -182,9 +184,10 @@ export function incrementalCapture(
 	cwd: string,
 	spawn: (messages: CaptureMessage[], cwd: string) => boolean | undefined = captureMessagesTail,
 	session?: string,
+	increment: number = captureIncrementalMessages(),
 ): void {
 	const messages = extractMessages(entries)
-	if (messages.length - state.spawnedCount < MEMORY_CAPTURE_INCREMENTAL_MESSAGES) return
+	if (messages.length - state.spawnedCount < increment) return
 	const batch = messages.slice(state.spawnedCount)
 	// The default spawn threads the session's capture id through per-job max
 	// so the worker's completion record can attribute saved counts.
