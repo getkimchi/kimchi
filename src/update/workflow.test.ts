@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
 	refreshBridge: vi.fn<() => string[]>(() => []),
 	reportBridgeRefresh: vi.fn().mockResolvedValue(undefined),
 	smokeTestBinary: vi.fn(),
+	isInstallTargetWritable: vi.fn<(targetPath: string) => boolean>(() => true),
+	resolveExecutablePath: vi.fn<() => string>(),
 }))
 
 vi.mock("./extract.js", () => ({
@@ -23,18 +25,31 @@ vi.mock("./extract.js", () => ({
 	verifyChecksum: mocks.verifyChecksum,
 }))
 
-vi.mock("./install.js", () => ({
-	atomicInstall: mocks.atomicInstall,
-	copySupportingFiles: mocks.copySupportingFiles,
-	macosCodesignReSign: mocks.macosCodesignReSign,
-	refreshBridge: mocks.refreshBridge,
-	reportBridgeRefresh: mocks.reportBridgeRefresh,
-	smokeTestBinary: mocks.smokeTestBinary,
-}))
+vi.mock("./install.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./install.js")>()
+	return {
+		atomicInstall: mocks.atomicInstall,
+		copySupportingFiles: mocks.copySupportingFiles,
+		// The real class: applyUpdate throws it and callers match on instanceof.
+		InstallTargetNotWritableError: actual.InstallTargetNotWritableError,
+		isInstallTargetWritable: mocks.isInstallTargetWritable,
+		macosCodesignReSign: mocks.macosCodesignReSign,
+		refreshBridge: mocks.refreshBridge,
+		reportBridgeRefresh: mocks.reportBridgeRefresh,
+		smokeTestBinary: mocks.smokeTestBinary,
+	}
+})
 
-const { checkForUpdate, parseCanarySha7, applyUpdate, isRestartPending, readInstalledVersion } = await import(
-	"./workflow.js"
-)
+vi.mock("./paths.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./paths.js")>()
+	// Passthrough by default; a test can make the executable path unresolvable.
+	mocks.resolveExecutablePath.mockImplementation(actual.resolveExecutablePath)
+	return { ...actual, resolveExecutablePath: mocks.resolveExecutablePath }
+})
+
+const { checkForUpdate, parseCanarySha7, applyUpdate, installTargetStatus, isRestartPending, readInstalledVersion } =
+	await import("./workflow.js")
+const { InstallTargetNotWritableError } = await import("./install.js")
 
 const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
 
@@ -383,6 +398,8 @@ describe("applyUpdate share destination", () => {
 		mocks.refreshBridge.mockReset()
 		mocks.macosCodesignReSign.mockReset()
 		mocks.smokeTestBinary.mockReset()
+		mocks.isInstallTargetWritable.mockReset()
+		mocks.isInstallTargetWritable.mockReturnValue(true)
 
 		// Create a fake install prefix (e.g. /usr/local or ~/.local).
 		fakePrefix = mkdtempSync(join(tmpdir(), "kimchi-prefix-test-"))
@@ -527,6 +544,65 @@ describe("applyUpdate share destination", () => {
 			Object.defineProperty(process, "platform", { value: origPlatform })
 			Object.defineProperty(process, "arch", { value: origArch })
 		}
+	})
+})
+
+describe("applyUpdate install-target pre-flight", () => {
+	const client = {
+		fetchChecksum: mocks.fetchChecksum,
+		downloadArchive: mocks.downloadArchive,
+	} as unknown as GitHubClient
+
+	beforeEach(() => {
+		mocks.fetchChecksum.mockReset()
+		mocks.downloadArchive.mockReset()
+		mocks.atomicInstall.mockReset()
+		mocks.isInstallTargetWritable.mockReset()
+		mocks.isInstallTargetWritable.mockReturnValue(false)
+	})
+
+	it("fails before any download when the install target is not writable", async () => {
+		await expect(
+			applyUpdate({ tag: "v0.0.24", executablePath: "/usr/local/bin/kimchi", client }),
+		).rejects.toBeInstanceOf(InstallTargetNotWritableError)
+
+		expect(mocks.isInstallTargetWritable).toHaveBeenCalledWith("/usr/local/bin/kimchi")
+		// The gate fires before the release download is spent, and nothing is installed.
+		expect(mocks.fetchChecksum).not.toHaveBeenCalled()
+		expect(mocks.downloadArchive).not.toHaveBeenCalled()
+		expect(mocks.atomicInstall).not.toHaveBeenCalled()
+	})
+})
+
+describe("installTargetStatus", () => {
+	beforeEach(() => {
+		mocks.isInstallTargetWritable.mockReset()
+	})
+
+	it("reports the target and whether its install directory is writable", () => {
+		mocks.isInstallTargetWritable.mockReturnValue(true)
+		expect(installTargetStatus("/opt/kimchi/bin/kimchi")).toEqual({
+			targetPath: "/opt/kimchi/bin/kimchi",
+			writable: true,
+		})
+
+		mocks.isInstallTargetWritable.mockReturnValue(false)
+		expect(installTargetStatus("/opt/kimchi/bin/kimchi")).toEqual({
+			targetPath: "/opt/kimchi/bin/kimchi",
+			writable: false,
+		})
+	})
+
+	it("fails open when the executable path cannot be resolved", () => {
+		// applyUpdate hits the same failure inside the caller's error handling, so a
+		// verdict here would only pre-empt it.
+		mocks.resolveExecutablePath.mockImplementationOnce(() => {
+			throw new Error("ENOENT: no such file or directory, realpath '/gone/kimchi'")
+		})
+		mocks.isInstallTargetWritable.mockReturnValue(false)
+
+		expect(installTargetStatus()).toEqual({ targetPath: process.execPath, writable: true })
+		expect(mocks.isInstallTargetWritable).not.toHaveBeenCalled()
 	})
 })
 

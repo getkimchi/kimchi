@@ -8,6 +8,8 @@ import { assetName, GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
 import {
 	atomicInstall,
 	copySupportingFiles,
+	InstallTargetNotWritableError,
+	isInstallTargetWritable,
 	macosCodesignReSign,
 	refreshBridge,
 	reportBridgeRefresh,
@@ -218,6 +220,23 @@ export interface UpdateOptions {
 }
 
 /**
+ * The install target a self-update would replace, and whether the in-place
+ * swap can write it. Shared by the CLI's early exit and its --dry-run
+ * warning so both predict the same gate applyUpdate enforces.
+ */
+export function installTargetStatus(executablePath?: string): { targetPath: string; writable: boolean } {
+	let targetPath: string
+	try {
+		targetPath = executablePath ?? resolveExecutablePath()
+	} catch {
+		// Unresolvable here means applyUpdate fails the same way, inside the
+		// caller's own error handling; don't pre-empt it with a verdict.
+		return { targetPath: process.execPath, writable: true }
+	}
+	return { targetPath, writable: isInstallTargetWritable(targetPath) }
+}
+
+/**
  * Download → verify checksum → extract → smoke-test → atomic install.
  * Throws on any step's failure with the original error wrapped in context.
  *
@@ -235,6 +254,14 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 	const repo = opts.repo ?? KIMCHI_REPO
 	const client = opts.client ?? new GitHubClient({ signal: opts.signal })
 	const targetPath = opts.executablePath ?? resolveExecutablePath()
+
+	// Fail before the download: a read-only or non-writable install prefix (a
+	// sandboxed runtime with an immutable root, an immutable distro, a
+	// root-owned /usr/local/bin without sudo) makes the swap below fail with
+	// a raw EROFS/EACCES only after the full release has been fetched.
+	if (!isInstallTargetWritable(targetPath)) {
+		throw new InstallTargetNotWritableError(targetPath)
+	}
 
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-update-"))
 	try {

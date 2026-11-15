@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } fr
 const isHomebrewInstallMock = vi.fn(() => false)
 const checkForUpdateMock = vi.fn()
 const applyUpdateMock = vi.fn()
+const installTargetStatusMock = vi.fn()
 const getVersionMock = vi.fn(() => "v0.0.23")
 interface ConfiguredPackageFixture {
 	source: string
@@ -42,6 +43,7 @@ vi.mock("../update/paths.js", () => ({
 vi.mock("../update/workflow.js", () => ({
 	checkForUpdate: (...args: unknown[]) => checkForUpdateMock(...args),
 	applyUpdate: (...args: unknown[]) => applyUpdateMock(...args),
+	installTargetStatus: () => installTargetStatusMock(),
 }))
 vi.mock("../update/lock.js", () => ({
 	acquireUpdaterLock: (...args: unknown[]) => acquireUpdaterLockMock(...args),
@@ -52,6 +54,7 @@ vi.mock("../update/state.js", () => ({
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
 }))
+const { InstallTargetNotWritableError } = await import("../update/install.js")
 const { runUpdate } = await import("./update.js")
 
 describe("runUpdate flag parsing", () => {
@@ -65,6 +68,8 @@ describe("runUpdate flag parsing", () => {
 		isHomebrewInstallMock.mockReturnValue(false)
 		checkForUpdateMock.mockReset()
 		applyUpdateMock.mockReset()
+		installTargetStatusMock.mockReset()
+		installTargetStatusMock.mockReturnValue({ targetPath: "/usr/local/bin/kimchi", writable: true })
 		listConfiguredPackagesMock.mockReset()
 		listConfiguredPackagesMock.mockReturnValue([])
 		packageUpdateMock.mockReset()
@@ -309,6 +314,8 @@ describe("runUpdate non-interactive composition", () => {
 		isHomebrewInstallMock.mockReturnValue(false)
 		checkForUpdateMock.mockReset()
 		applyUpdateMock.mockReset()
+		installTargetStatusMock.mockReset()
+		installTargetStatusMock.mockReturnValue({ targetPath: "/usr/local/bin/kimchi", writable: true })
 		listConfiguredPackagesMock.mockReset()
 		listConfiguredPackagesMock.mockReturnValue([])
 		packageUpdateMock.mockReset()
@@ -435,6 +442,8 @@ describe("self-update takes the updater lock", () => {
 		checkForUpdateMock.mockResolvedValue({ hasUpdate: true, latestVersion: "0.0.24", tag: "v0.0.24", releaseUrl: "" })
 		applyUpdateMock.mockReset()
 		applyUpdateMock.mockResolvedValue(undefined)
+		installTargetStatusMock.mockReset()
+		installTargetStatusMock.mockReturnValue({ targetPath: "/usr/local/bin/kimchi", writable: true })
 		listConfiguredPackagesMock.mockReset()
 		listConfiguredPackagesMock.mockReturnValue([])
 		acquireUpdaterLockMock.mockClear()
@@ -486,5 +495,153 @@ describe("self-update takes the updater lock", () => {
 		expect(code).toBe(1)
 		expect(release).toHaveBeenCalledOnce()
 		expect(saveLastInstalledMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("runUpdate unwritable install target", () => {
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
+
+	beforeEach(() => {
+		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		isHomebrewInstallMock.mockReset()
+		isHomebrewInstallMock.mockReturnValue(false)
+		checkForUpdateMock.mockReset()
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "0.0.24",
+			tag: "v0.0.24",
+			releaseUrl: "https://example/release",
+		})
+		applyUpdateMock.mockReset()
+		applyUpdateMock.mockResolvedValue(undefined)
+		installTargetStatusMock.mockReset()
+		installTargetStatusMock.mockReturnValue({ targetPath: "/usr/local/bin/kimchi", writable: true })
+		listConfiguredPackagesMock.mockReset()
+		listConfiguredPackagesMock.mockReturnValue([])
+		acquireUpdaterLockMock.mockClear()
+		acquireUpdaterLockMock.mockReturnValue({ release: vi.fn() })
+		saveLastInstalledMock.mockClear()
+	})
+
+	afterEach(() => {
+		logSpy.mockRestore()
+		errSpy.mockRestore()
+	})
+
+	it("fails before the download when the install target is not writable", async () => {
+		installTargetStatusMock.mockReturnValue({ targetPath: "/usr/local/bin/kimchi", writable: false })
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("install target is not writable")
+		expect(out).toContain("/usr/local/bin/kimchi")
+		expect(out).toContain("install.sh")
+		// Environmental failure — not a bug-report candidate.
+		expect(out).not.toContain("bug report")
+	})
+
+	it("notes the condition in --dry-run instead of promising an install", async () => {
+		installTargetStatusMock.mockReturnValue({ targetPath: "/usr/local/bin/kimchi", writable: false })
+		const code = await runUpdate(["self", "--dry-run"])
+		expect(code).toBe(0)
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+		const out = logSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("update available")
+		// Names the directory the gate actually checks, not the binary file.
+		expect(out).toContain("install directory /usr/local/bin is not writable")
+	})
+
+	it("maps a raw EROFS from the install to the writable-location guidance", async () => {
+		// Node's copy/rename failures carry the source as `path` and the target as `dest`.
+		const err = Object.assign(
+			new Error("EROFS: read-only file system, copyfile '/tmp/x' -> '/usr/local/bin/kimchi.new.1'"),
+			{ code: "EROFS", path: "/tmp/x", dest: "/usr/local/bin/kimchi.new.1" },
+		)
+		applyUpdateMock.mockRejectedValue(err)
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("EROFS: read-only file system")
+		expect(out).toContain("install.sh")
+		expect(out).not.toContain("bug report")
+	})
+
+	it("does not blame the install location for an unwritable path elsewhere", async () => {
+		// e.g. a root-owned ~/.cache left by an earlier sudo run: the backup dir is
+		// the problem, and guidance about the binary's directory would send the
+		// user to the wrong place.
+		const err = Object.assign(new Error("EACCES: permission denied, mkdir '/home/u/.cache/kimchi/backups'"), {
+			code: "EACCES",
+			path: "/home/u/.cache/kimchi/backups",
+		})
+		applyUpdateMock.mockRejectedValue(err)
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("EACCES: permission denied, mkdir")
+		expect(out).not.toContain("install target is not writable")
+		expect(out).toContain("bug report")
+	})
+
+	it("does not treat a sibling directory sharing the install dir's name prefix as the install dir", async () => {
+		const err = Object.assign(new Error("EACCES: permission denied, open '/usr/local/bin-old/kimchi'"), {
+			code: "EACCES",
+			path: "/usr/local/bin-old/kimchi",
+		})
+		applyUpdateMock.mockRejectedValue(err)
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).not.toContain("install target is not writable")
+		expect(out).toContain("bug report")
+	})
+
+	it("leaves EPERM alone: it also means a locked executable or an immutable flag", async () => {
+		const err = Object.assign(new Error("EPERM: operation not permitted, rename"), {
+			code: "EPERM",
+			dest: "/usr/local/bin/kimchi",
+		})
+		applyUpdateMock.mockRejectedValue(err)
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).not.toContain("install target is not writable")
+		expect(out).toContain("bug report")
+	})
+
+	it("points Windows users at install.ps1 instead of the shell installer", async () => {
+		const platform = Object.getOwnPropertyDescriptor(process, "platform")
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true })
+		try {
+			installTargetStatusMock.mockReturnValue({ targetPath: "/opt/kimchi/kimchi.exe", writable: false })
+			const code = await runUpdate(["self", "--force"])
+			expect(code).toBe(1)
+		} finally {
+			if (platform) Object.defineProperty(process, "platform", platform)
+		}
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("install.ps1")
+		expect(out).not.toContain("install.sh")
+	})
+
+	it("maps the pre-flight error from applyUpdate to the guidance", async () => {
+		applyUpdateMock.mockRejectedValue(new InstallTargetNotWritableError("/usr/local/bin/kimchi"))
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("install target not writable")
+		expect(out).toContain("install.sh")
+		expect(out).not.toContain("bug report")
+	})
+
+	it("still asks for a bug report on unexplained update failures", async () => {
+		applyUpdateMock.mockRejectedValue(new Error("boom"))
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("bug report")
 	})
 })

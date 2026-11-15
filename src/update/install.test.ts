@@ -15,6 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	atomicInstall,
 	copySupportingFiles,
+	InstallTargetNotWritableError,
+	isInstallTargetWritable,
 	macosCodesignReSign,
 	refreshBridge,
 	reportBridgeRefresh,
@@ -223,6 +225,64 @@ describe("atomicInstall", () => {
 		if (tempPathSeen) {
 			expect(() => readFileSync(tempPathSeen)).toThrow()
 		}
+	})
+})
+
+describe("isInstallTargetWritable", () => {
+	let dir: string
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "kimchi-writable-check-"))
+	})
+
+	afterEach(() => {
+		// chmod back so rmSync can clean up a read-only directory.
+		chmodSync(dir, 0o755)
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("reports a writable directory as writable", () => {
+		expect(isInstallTargetWritable(join(dir, "kimchi"))).toBe(true)
+	})
+
+	it("judges a missing target directory by its nearest existing ancestor", () => {
+		// atomicInstall mkdir -p's the leaf, so a writable ancestor is enough.
+		expect(isInstallTargetWritable(join(dir, "made", "up", "kimchi"))).toBe(true)
+	})
+
+	// Root bypasses permission bits, so the denial cases only hold unprivileged.
+	it.skipIf(process.platform === "win32" || (process.getuid?.() ?? 0) === 0)(
+		"reports a read-only directory as not writable",
+		() => {
+			chmodSync(dir, 0o555)
+			expect(isInstallTargetWritable(join(dir, "kimchi"))).toBe(false)
+		},
+	)
+
+	it.skipIf(process.platform === "win32" || (process.getuid?.() ?? 0) === 0)(
+		"reports a directory without search permission as not writable",
+		() => {
+			// Creating or renaming an entry needs x on the directory as well as w.
+			chmodSync(dir, 0o200)
+			expect(isInstallTargetWritable(join(dir, "kimchi"))).toBe(false)
+		},
+	)
+
+	it.skipIf(process.platform === "win32" || (process.getuid?.() ?? 0) === 0)(
+		"reports a missing target directory under a read-only ancestor as not writable",
+		() => {
+			// The walk passes through the missing levels and lets the nearest existing
+			// ancestor decide — here the read-only one.
+			chmodSync(dir, 0o555)
+			expect(isInstallTargetWritable(join(dir, "made", "up", "kimchi"))).toBe(false)
+		},
+	)
+
+	it("names the target path and reason in the error", () => {
+		const err = new InstallTargetNotWritableError("/usr/local/bin/kimchi")
+		expect(err.name).toBe("InstallTargetNotWritableError")
+		expect(err.message).toContain("/usr/local/bin/kimchi")
+		expect(err.message).toContain("read-only")
 	})
 })
 
