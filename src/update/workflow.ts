@@ -229,8 +229,10 @@ export function installTargetStatus(executablePath?: string): { targetPath: stri
 	try {
 		targetPath = executablePath ?? resolveExecutablePath()
 	} catch {
-		// Unresolvable here means applyUpdate fails the same way, inside the
-		// caller's own error handling; don't pre-empt it with a verdict.
+		// realpath failed on process.execPath (e.g. the binary was removed after
+		// launch). applyUpdate fails the same way inside the caller's own error
+		// handling, so don't pre-empt it with a verdict. process.execPath is the very
+		// path that failed to resolve; nothing is checked against it.
 		return { targetPath: process.execPath, writable: true }
 	}
 	return { targetPath, writable: isInstallTargetWritable(targetPath) }
