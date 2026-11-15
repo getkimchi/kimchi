@@ -1298,14 +1298,25 @@ async function translateGroup(
 		serializedAccounts = existingPlan.accounts
 		facts = factsMapOf(serializedAccounts)
 	} else {
-		// Reads and parses pull one record at a time, so a big group can breathe inside the stretch: every
-		// few thousand rows or ~50ms of work, wait a turn — otherwise the whole read owns the UI loop.
+		// Reads page through each work's records — at most 128 rows materialize between
+		// stretches, so a single work with a huge history cannot own the UI loop for its
+		// whole read — and parses pull one record at a time, so a big group keeps breathing:
+		// every few thousand rows or ~50ms of work, wait a turn.
 		const stretch = preludeStretch()
 		const stored: StoredRecord[] = []
 		for (const workId of works) {
-			for (const row of backend.readRecords({ workId }, check)) {
-				stored.push(row)
-				await stretch()
+			// Pin the read to the records committed when it started, like every other
+			// paged walk: pages continue from the last position inside the watermark.
+			const through = backend.recordWatermark()
+			let after = 0
+			for (;;) {
+				const page = backend.readWorkRecordPage(workId, after, through, 128, check)
+				if (!page.length) break
+				for (const row of page) {
+					stored.push(row)
+					await stretch()
+				}
+				after = page[page.length - 1].position
 			}
 			// Between works, let the loop breathe: a big group's reads otherwise block the UI for the whole stretch.
 			await setImmediate()

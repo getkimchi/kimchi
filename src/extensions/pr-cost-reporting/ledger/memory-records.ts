@@ -4,6 +4,7 @@ import type {
 	OutboxAccountStatus,
 	OutboxBatch,
 	OutboxEvent,
+	PositionedRecord,
 	RecordBackend,
 	StoredRecord,
 } from "./records.js"
@@ -284,6 +285,16 @@ export function createMemoryRecords(): RecordBackend {
 				checkBudget?.()
 				return { ...row, position: after + index + 1 }
 			}),
+		readWorkRecordPage: (workId, after, through, limit, checkBudget) => {
+			const end = Math.min(through, order.length)
+			const rows: PositionedRecord[] = []
+			for (let index = after; index < end && rows.length < limit; index++) {
+				checkBudget?.()
+				const row = order[index]
+				if (row.workId === workId) rows.push({ ...row, position: index + 1 })
+			}
+			return rows
+		},
 		recordCount: (workId) => (workId ? order.filter((row) => row.workId === workId).length : order.length),
 		hasProjectionOutput: (workId) => {
 			const byLog = logs.get(workId)

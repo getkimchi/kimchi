@@ -1891,6 +1891,49 @@ describe("repository identity for work without a PR", () => {
 })
 
 describe("prelude stretching of a big group", () => {
+	it("pages each work's records instead of materializing the whole work at once", async () => {
+		await seedLinked()
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		const backend = backendFor(directory)
+		const pagedRead = vi.spyOn(backend, "readWorkRecordPage")
+		const wholeRead = vi.spyOn(backend, "readRecords")
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		// A second work with 300 records: the translation prelude must cross a 128-row page
+		// boundary reading it, and must never fall back to the whole-work synchronous read.
+		const source = join(directory, "work-attribution", "source.jsonl")
+		const work = "65656565-6565-4565-8565-656565656565"
+		let lines = ""
+		for (let index = 0; index < 300; index++) {
+			const hex = String(index).padStart(12, "0")
+			lines += `${JSON.stringify({
+				version: 1,
+				type: "request",
+				workId: work,
+				sessionId: "records-only",
+				requestId: `${hex.slice(0, 8)}-${hex.slice(8)}-4777-8777-${hex}`,
+				startedAt: "2026-10-04T12:00:00.000Z",
+				recordedAt: "2026-10-04T12:00:00.000Z",
+				scope: { account: "10101010-1010-4101-8101-101010101010", repository: "/other/.git" },
+			})}\n`
+		}
+		await appendFile(source, lines)
+		await run()
+		// The paged per-work read ran, capped at 128 rows a page...
+		expect(pagedRead.mock.calls.length).toBeGreaterThan(0)
+		for (const call of pagedRead.mock.calls) expect(call[3]).toBe(128)
+		// ...and crossed a boundary for the 300-record work (at least 3 pages).
+		// (The projection rebuild still reads whole works synchronously inside its
+		// transaction — a separate, out-of-scope path.)
+		const pagesForBigWork = pagedRead.mock.calls.filter((call) => call[0] === work)
+		expect(pagesForBigWork.length).toBeGreaterThanOrEqual(3)
+		pagedRead.mockRestore()
+		wholeRead.mockRestore()
+	})
+
 	it("crossing the row budget yields in the prelude's read and parse loops", async () => {
 		await seedLinked()
 		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({

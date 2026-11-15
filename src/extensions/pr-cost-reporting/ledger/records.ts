@@ -126,6 +126,15 @@ export interface RecordBackend {
 	/** Pins an async read to the records committed when it started. */
 	recordWatermark(): number
 	readRecordPage(after: number, through: number, limit: number, checkBudget?: () => void): PositionedRecord[]
+	/** Pages one work's records in rowid order within a pinned watermark; the
+	 * translation prelude reads big works without materializing them whole. */
+	readWorkRecordPage(
+		workId: string,
+		after: number,
+		through: number,
+		limit: number,
+		checkBudget?: () => void,
+	): PositionedRecord[]
 	recordCount(workId?: string): number
 	/** Whether the projection has any plan or commit rows for the work. */
 	hasProjectionOutput(workId: string): boolean
@@ -657,6 +666,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
+	const workRecordPage = db.query<PositionedRecord, [string, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE work_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
 	const recordCountAll = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records")
 	const recordCountWork = db.query<{ count: number }, [string]>(
 		"SELECT COUNT(*) AS count FROM work_records WHERE work_id = ?",
@@ -819,6 +831,21 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			} catch (error) {
 				// The same Bun cursor-reset rule as the synchronous replay above.
 				recordPage.get(after, through, limit)
+				throw error
+			}
+			return rows
+		},
+		readWorkRecordPage: (workId, after, through, limit, checkBudget) => {
+			checkBudget?.()
+			const rows: PositionedRecord[] = []
+			try {
+				for (const row of workRecordPage.iterate(workId, after, through, limit)) {
+					checkBudget?.()
+					rows.push(row)
+				}
+			} catch (error) {
+				// The same Bun cursor-reset rule as the synchronous replay above.
+				workRecordPage.get(workId, after, through, limit)
 				throw error
 			}
 			return rows
