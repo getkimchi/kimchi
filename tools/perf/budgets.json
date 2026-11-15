@@ -55,16 +55,16 @@
    "budget_note": "per-pass ledger work at production record counts. INTERIM abs from the release sweep on one dev machine: the healthy incremental era (v1.23-v1.34 releases, master, fix branch) measures 49.7-54.5G with +-2% stability; the v1.18-21 full-re-read era measures 94G. 70G clears the healthy band by ~30% and fails the re-read era; recalibrate to ratio limits on the canonical runner"
   },
   "read_mb": {
-   "limit": 3500.0,
-   "budget_note": "per-pass re-reads of the scaled ledger. Calibrated from the first CI perf-gate run on the fix branch: 2,239MB measured healthy on the canonical runner (the mac-tier sweep measured 0.6-26MB for the same binaries — read volume is runner-class-dependent, budgets are runner-class-pinned); 1.56x headroom over the measured healthy value until ratio regeneration"
+   "limit": 2800.0,
+   "budget_note": "per-pass re-reads of the scaled ledger. Calibrated from CI perf-gate runs on the fix branch: 2,238 and 2,239MB across two runs (dead stable; the mac-tier sweep measured 0.6-26MB for the same binaries — read volume is runner-class-dependent, budgets are runner-class-pinned). 2.8G = 1.25x over measured healthy; the full-re-read eras measure an order of magnitude higher"
   },
   "keylat_p95_ms": {
    "limit": 100.0,
    "budget_note": "keystroke echo latency while reconcile passes run over the big ledger; absolute event-loop-hold detector (the user-reported stall class)"
   },
   "keylat_max_ms": {
-   "limit": 150.0,
-   "budget_note": "steady-state worst keystroke echo after the 10s post-ready settle (startup artifact excluded). Observed: fix branch <=10ms across a full window of passes; unfixed builds hold ~270ms per pass at this scale. 150 sits 15x above healthy and 1.8x below the measured unfixed hold"
+   "limit": 60.0,
+   "budget_note": "steady-state worst keystroke echo after the 10s post-ready settle (startup artifact excluded). Fix branch measures 9.8-16.6ms across mac and CI; every unfixed release holds the loop 163ms-2.2s per pass (serially verified at the boundary tags). 60ms = 3.6x above the worst healthy sample and >=2.7x below the lowest unfixed hold"
   },
   "additive_missing": {
    "limit": 0.0,
