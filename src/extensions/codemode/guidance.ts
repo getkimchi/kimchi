@@ -1,4 +1,5 @@
 import { createCodemodeExtension, type ExtensionAPI, type ExtensionFactory } from "@earendil-works/pi-coding-agent"
+import { isDefaultToolEnabled } from "../../settings-watcher.js"
 
 /** Selection rule shown at the moment of tool choice. Codemode pays off when
  *  intermediate output can be filtered before it reaches the model, or when
@@ -16,6 +17,14 @@ export function createGuidedCodemodeExtension(): ExtensionFactory {
 			if (tool.name !== "codemode") return pi.registerTool(tool)
 			pi.registerTool({
 				...tool,
+				// Kimchi owns codemode's default exposure. Pi registers the tool
+				// inactive, so activation used to ride on ferment's idle-profile
+				// snapshot (its before_agent_start applies it in every
+				// non-worker session); with the ferment resource disabled no
+				// profile was ever applied and codemode — plus the Tool
+				// Selection rule conditioned on it — silently vanished. Activate
+				// at registration instead.
+				defaultActive: true,
 				prepareLoadout(loadout) {
 					// Called on the original definition so pi's receiver is preserved.
 					const changes = tool.prepareLoadout?.(loadout)
@@ -38,5 +47,18 @@ export function createGuidedCodemodeExtension(): ExtensionFactory {
 				},
 			}),
 		)
+		// Pi force-activates extension-registered tools past the defaultTools
+		// filter (see settings-watcher.ts), so `-codemode` is enforced here
+		// instead. This mirrors the filter ferment's idle snapshot already
+		// applies, so a defaultTools list that does not name codemode keeps the
+		// tool off exactly as before — now on every surface, ferment or not.
+		// Runs after settingsTrustSyncExtension (first in the shared list) has
+		// recorded the session's cwd/trust for isDefaultToolEnabled.
+		pi.on("session_start", async () => {
+			if (isDefaultToolEnabled("codemode")) return
+			const active = pi.getActiveTools()
+			if (!active.includes("codemode")) return
+			pi.setActiveTools(active.filter((name) => name !== "codemode"))
+		})
 	}
 }

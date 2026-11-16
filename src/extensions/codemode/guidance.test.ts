@@ -1,4 +1,8 @@
-import { expect, it } from "vitest"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { setToolGateSession } from "../../settings-watcher.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { CODEMODE_SELECTION_GUIDANCE, createGuidedCodemodeExtension } from "./guidance.js"
 
@@ -6,7 +10,10 @@ function codemodeDescription(): string | undefined {
 	const mock = createExtensionApi()
 	createGuidedCodemodeExtension()(mock.api)
 	const codemode = mock.getRegisteredTool("codemode")
-	expect(codemode.defaultActive).toBe(false)
+	// Registered default-active: kimchi owns the default, independent of
+	// ferment's idle-profile snapshot (which a disabled ferment resource
+	// never applies).
+	expect(codemode.defaultActive).toBe(true)
 	return codemode.prepareLoadout?.({
 		declared: [],
 		callable: [],
@@ -31,4 +38,45 @@ it("steers filtering and mechanical chains to codemode, independent full-result 
 	expect(codemodeDescription()).not.toContain("const hits")
 	// A chaining script has to parse grep output; the format is stated instead.
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain("`path:line: text`")
+})
+
+describe("defaultTools exclusion (session_start)", () => {
+	let projectDir: string
+
+	function seedProjectSettings(settings: Record<string, unknown>): void {
+		mkdirSync(join(projectDir, ".pi"), { recursive: true })
+		writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify(settings))
+		setToolGateSession(projectDir, true)
+	}
+
+	beforeEach(() => {
+		projectDir = mkdtempSync(join(tmpdir(), "kimchi-codemode-gate-"))
+	})
+
+	afterEach(() => {
+		rmSync(projectDir, { recursive: true, force: true })
+		// Repoint the gate at a directory with no project layer so later
+		// isDefaultToolEnabled lookups in this worker read global settings only.
+		setToolGateSession(join(tmpdir(), "codemode-gate-reset"), false)
+	})
+
+	it("deactivates the registration-activated tool when defaultTools excludes it", async () => {
+		seedProjectSettings({ defaultTools: ["-codemode"] })
+		const { api, emit } = createExtensionApi()
+		createGuidedCodemodeExtension()(api)
+		// Pi force-activates extension tools past the defaultTools filter, so
+		// the tool is active after registration; the session_start pass must
+		// honor the `-codemode` exclusion.
+		expect(api.getActiveTools()).toContain("codemode")
+		await emit("session_start", {}, {} as never)
+		expect(api.getActiveTools()).not.toContain("codemode")
+	})
+
+	it("keeps the tool active when defaultTools names it", async () => {
+		seedProjectSettings({ defaultTools: ["+codemode"] })
+		const { api, emit } = createExtensionApi()
+		createGuidedCodemodeExtension()(api)
+		await emit("session_start", {}, {} as never)
+		expect(api.getActiveTools()).toContain("codemode")
+	})
 })
