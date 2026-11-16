@@ -22,7 +22,15 @@ exports[`default agents — resolved invocation config snapshot > Explore 1`] = 
 
 exports[`default agents — resolved invocation config snapshot > General-Purpose 1`] = `
 {
-  "builtinToolNames": undefined,
+  "builtinToolNames": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "find",
+    "ls",
+  ],
   "maxTurns": undefined,
   "modelId": undefined,
   "name": "General-Purpose",
