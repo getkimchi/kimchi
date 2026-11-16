@@ -128,6 +128,16 @@ describe("Azure SAS ownership: encoded and structured forms", () => {
 		expect(out).not.toContain(secretTail)
 		expect(out).toContain("[REDACTED-URL_WITH_CREDENTIALS]")
 	})
+	it("an enumerated keyword value is not redacted as a key or SAS", () => {
+		const prose = "// Values only: AccountKey=/SharedAccessKey=/SharedAccessSignature= values"
+		expect(applyCustomPatterns(prose, new Set())).toBe(prose)
+	})
+	it("the keyword-value guard does not reject a genuine base64 body", () => {
+		const secret = "/" + "a1B2c3D4e5F6g7H8i9J0"
+		const out = applyCustomPatterns("SharedAccessKey=" + secret, new Set())
+		expect(out).not.toContain(secret)
+		expect(out).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
+	})
 	it("Service Bus SAS (skn before sig) owned by AZURE_CONNECTION_STRING", async () => {
 		const sig = "A".repeat(43)
 		const inp = ";SharedAccessSignature=" + ["se=2026-01-01", "&skn=RootManageSharedAccessKey", "&sig=" + sig].join("")

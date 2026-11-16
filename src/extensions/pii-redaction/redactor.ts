@@ -659,6 +659,11 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		regex:
 			/((?:SharedAccessKey|SharedAccessSignature)=)([A-Za-z0-9+/=%_-]{8,}(?:&(?:sv|ss|srt|sp|sig|st|se|spr|sip|sr|skn|skv|scid)=[A-Za-z0-9+/=%_-]+)+|[A-Za-z0-9+/=%_-]{20,})/g,
 		secretGroup: 2,
+		// A keyword fragment is not itself a key/signature value: prose and
+		// enums list `SharedAccessKey=/SharedAccessKey=` etc.; without this
+		// guard the first label anchors a bad match and the next label's text
+		// is mistaken for its secret. Genuine base64 bodies still pass.
+		rejectValue: (value: string) => /^\/?SharedAccess(?:Key|Signature)=$/.test(value),
 	},
 	// Azure storage keys inside a connection string. The value floor matches
 	// the fail-open truncation principle the AWS custom documents: a truncated
