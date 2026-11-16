@@ -270,8 +270,7 @@ const ANCHORED_ENTITIES = [
 	// Structured secrets (signature in shape)
 	"JWT_TOKEN", // eyJ… . … . … triplet
 	"BEARER_TOKEN",
-	// Webhook/DSN URLs (secret lives in the URL) — anchored at engine level,
-	// categorized under credentialed_urls, not secrets.
+	// Webhook/DSN URLs (the secret lives inside the URL) — anchored at engine level.
 	"SENTRY_DSN",
 	"SLACK_WEBHOOK",
 	"TEAMS_WEBHOOK",
@@ -404,7 +403,7 @@ const ANCHOR_REQUIRED_WITH_CUSTOMS = [
 ] as const
 
 /** anchor_required entities with an anchored re-addition of their own — the
- * union of ANCHOR_REQUIRED_WITH_CUSTOMS (secrets members) and entities whose
+ * union of ANCHOR_REQUIRED_WITH_CUSTOMS (credentials members) and entities whose
  * custom lives under a different category (DATABASE_CONNECTION_STRING's
  * credentialed-URI custom). Used only for liveState derivation; membership
  * is pinned by test against redactor's CUSTOM_PATTERNS. */

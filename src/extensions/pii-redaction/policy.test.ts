@@ -371,6 +371,15 @@ describe("parseManagedPolicy — tolerant validation (fail-open with one log)", 
 		expect(dropped.join(" ")).toMatch(/FUTURE_ENTITY/)
 	})
 
+	it("drops a retired known category label, rather than remapping its state", () => {
+		const policy = parseManagedPolicy({
+			categories: { secrets: "off" },
+			entities: { EMAIL_ADDRESS: "off" },
+		})
+		expect(policy?.categories).toEqual({})
+		expect(policy?.entities).toEqual({ EMAIL_ADDRESS: "off" })
+	})
+
 	it("drops UNSPECIFIED and invalid custom entities", () => {
 		const policy = parseManagedPolicy({
 			categories: { environment: "KIMCHI_REDACTION_STATE_UNSPECIFIED" },

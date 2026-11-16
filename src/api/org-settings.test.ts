@@ -138,7 +138,7 @@ describe("parseOrgPolicy", () => {
 
 	it("passes the kimchiRedaction wire value through verbatim", () => {
 		const redaction = {
-			categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+			categories: { environment: "KIMCHI_REDACTION_STATE_OFF" },
 			entities: { PHONE_NUMBER: "KIMCHI_REDACTION_STATE_ON" },
 			customEntities: [{ name: "ACME_ID", category: "identity_documents", pattern: "E\\d{6}" }],
 		}
@@ -146,7 +146,7 @@ describe("parseOrgPolicy", () => {
 	})
 
 	it("accepts the snake_case kimchi_redaction field and drops malformed/empty values", () => {
-		const redaction = { categories: { secrets: "KIMCHI_REDACTION_STATE_OFF" } }
+		const redaction = { categories: { credentials: ["KIMCHI_", "REDACTION_", "STATE_", "OFF"].join("") } }
 		expect(parseOrgPolicy({ kimchi_redaction: redaction })).toEqual({ redaction })
 		expect(parseOrgPolicy({ kimchiRedaction: {} })).toBeUndefined()
 		expect(parseOrgPolicy({ kimchiRedaction: "nope" })).toBeUndefined()
