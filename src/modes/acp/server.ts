@@ -157,6 +157,7 @@ import {
 	ACP_LIFETIME_USAGE_META_KEY,
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
+	parseToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
 import {
 	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
@@ -2772,7 +2773,7 @@ export class KimchiAcpAgent implements Agent {
 							displayContent: (sid, content) => this.displayContent(sid, content),
 							displayRecord: (sid, value) => this.displayRecord(sid, value),
 							isCurrent: () => this.sessions.get(sessionId) === entry,
-							persistSettle: (piToolCallId, outcome) => {
+							persistSettle: (piToolCallId, outcome, settleAcpToolCallId) => {
 								// A metadata-only CustomEntry (pi's `type: "custom"`):
 								// written to the session file, ignored by
 								// buildSessionContext — NEVER injected into model
@@ -2780,9 +2781,15 @@ export class KimchiAcpAgent implements Agent {
 								// a recorded FACT for future replays, not a message.
 								// The wire flip already told the live client: a persist
 								// failure degrades to wire-only, never a settle failure.
+								// Use the PASSED id, never the enclosing handoff's: a
+								// superseded-hold settle fires inside a LATER handoff's
+								// scope, and persisting that scope's live id re-binds
+								// the superseded block to it on replay, clobbering the
+								// client's live row.
 								try {
 									const data: BashBackgroundSettleData = {
 										toolCallId: piToolCallId,
+										acpToolCallId: settleAcpToolCallId,
 										isError: outcome.isError,
 										text: outcome.text,
 										details: outcome.details,
@@ -3092,10 +3099,28 @@ export class KimchiAcpAgent implements Agent {
 				// A persisted settle overrides the pre-exit handoff for a call replayed
 				// terminal: without it a FAILED process replays as completed with no
 				// exit outcome, because the handoff records isError false and no exit
-				// code. Consumed FIFO like the results — a recycled id's settle
-				// belongs to the block whose handoff it settled.
-				const settleResult = heldAcpId === undefined ? takeReplayToolResult(settles, upstreamId) : undefined
+				// code. A persisted settle belongs to a HANDOFF result only — a recycled
+				// upstream id can pair a same-id plain result with a later handoff,
+				// and consuming the settle on the plain block would slam the
+				// background outcome (and the rebound live id) onto the wrong call.
+				// Consumed FIFO like the results: the handoff's settle follows its
+				// block in the branch, so pairing holds per occurrence — a recycled
+				// id's settle belongs to the block whose handoff it settled.
+				const settleResult =
+					heldAcpId === undefined && handoffHandle !== undefined ? takeReplayToolResult(settles, upstreamId) : undefined
 				const finalResult = settleResult ?? replayResult
+				// A call settled before this replay carries its live ACP id in the
+				// persisted settle: re-bind that id so the re-announcement updates
+				// the row the client already holds instead of opening a zombie
+				// duplicate under a fresh id. The numeric suffix must also stay
+				// ahead of record.nextToolCallId — a replay allocating counters
+				// from 0 could otherwise mint the same id for a LATER call.
+				if (record && heldAcpId === undefined && settleResult?.acpToolCallId !== undefined) {
+					record.toolCallIdMap.set(upstreamId, settleResult.acpToolCallId)
+					const seqN = parseToolCallId(settleResult.acpToolCallId)?.seq
+					if (seqN !== undefined && Number.isSafeInteger(seqN))
+						record.nextToolCallId = Math.max(record.nextToolCallId, seqN + 1)
+				}
 				const acpToolCallId = heldAcpId
 					? heldAcpId.acpToolCallId
 					: record
@@ -4453,6 +4478,13 @@ type ReplayToolResult = {
 	// thinner payload on replay.
 	details?: unknown
 	toolName?: string
+	/**
+	 * Settle facts only: the ACP id the settled call was announced under in
+	 * the live session. Replay re-binds it so a client that kept its live
+	 * rows across the replay sees ONE id for the call, terminal — not a
+	 * duplicate row under a fresh id (wake-replay zombie).
+	 */
+	acpToolCallId?: string
 }
 
 // First pass over the branch: index tool results by their toolCallId so the
@@ -4557,6 +4589,7 @@ function collectBashBackgroundSettles(entries: BranchEntry[]): Map<string, Repla
 			content: entry.data.text.length > 0 ? [{ type: "text", text: entry.data.text }] : [],
 			isError: entry.data.isError,
 			details: entry.data.details,
+			acpToolCallId: entry.data.acpToolCallId,
 		})
 		out.set(entry.data.toolCallId, queued)
 	}

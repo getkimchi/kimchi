@@ -13,16 +13,16 @@ describe("acp-protocol", () => {
 	})
 
 	it("round-trips plain tool names", () => {
-		expect(parseToolCallId(buildToolCallId("bash", 1))).toEqual({ toolName: "bash" })
+		expect(parseToolCallId(buildToolCallId("bash", 1))).toEqual({ toolName: "bash", seq: 1 })
 	})
 
 	it("round-trips multi-dot tool names", () => {
-		expect(parseToolCallId(buildToolCallId("web_fetch", 2))).toEqual({ toolName: "web_fetch" })
+		expect(parseToolCallId(buildToolCallId("web_fetch", 2))).toEqual({ toolName: "web_fetch", seq: 2 })
 	})
 
 	it("round-trips seq 0 and large seqs", () => {
-		expect(parseToolCallId(buildToolCallId("read", 0))).toEqual({ toolName: "read" })
-		expect(parseToolCallId(buildToolCallId("read", 987654321))).toEqual({ toolName: "read" })
+		expect(parseToolCallId(buildToolCallId("read", 0))).toEqual({ toolName: "read", seq: 0 })
+		expect(parseToolCallId(buildToolCallId("read", 987654321))).toEqual({ toolName: "read", seq: 987654321 })
 	})
 
 	it("returns null for non-matching ids", () => {

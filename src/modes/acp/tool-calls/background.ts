@@ -37,8 +37,14 @@ export type BackgroundToolCallContext = {
 	 * flip alone is ephemeral: without this, a reload replays the call from
 	 * its recorded PRE-EXIT handoff result — a failed process restarting to
 	 * "completed" — because nothing in history knows the exit happened.
+	 *
+	 * `acpToolCallId` is persisted alongside the outcome so a later replay can
+	 * re-bind the settled call to the SAME ACP id the live client already
+	 * holds — without it the re-announced call lands under a fresh id and the
+	 * client keeps a duplicate (zombie) row. It is the SETTLED call's id,
+	 * which for a superseded hold differs from any currently-handoff call's.
 	 */
-	persistSettle: (piToolCallId: string, outcome: BashBackgroundSettleOutcome) => void
+	persistSettle: (piToolCallId: string, outcome: BashBackgroundSettleOutcome, acpToolCallId: string) => void
 }
 
 /**
@@ -182,7 +188,7 @@ function settleHeldBackgroundToolCall(
 	const status = exitCode === 0 && reason === null ? ("completed" as const) : ("failed" as const)
 	// Persist BEFORE the wire flip: if this harness process dies between the
 	// two, the transcript must still carry the outcome for a future replay.
-	ctx.persistSettle(call.piToolCallId, { isError: status === "failed", text, details })
+	ctx.persistSettle(call.piToolCallId, { isError: status === "failed", text, details }, call.acpToolCallId)
 	ctx.send({
 		sessionId,
 		update: buildToolCallUpdate({

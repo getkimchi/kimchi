@@ -50,11 +50,13 @@ export function buildToolCallId(toolName: string, seq: number): string {
 }
 
 /**
- * Parses a `kt.<toolName>.<seq>` id back into its tool name. The tool name
- * itself may contain dots (e.g. `kt.web_fetch.2` → `web_fetch`). Returns
- * null for ids that do not match the format.
+ * Parses a `kt.<toolName>.<seq>` id back into its tool name and sequence
+ * number. The tool name itself may contain dots (e.g. `kt.web_fetch.2` →
+ * `web_fetch`, seq 2). Returns null for ids that do not match the format.
+ * Callers advancing counters off `seq` must keep their own
+ * Number.isSafeInteger guard — the suffix has no length bound.
  */
-export function parseToolCallId(id: string): { toolName: string } | null {
-	const match = id.match(/^kt\.(.+?)\.\d+$/)
-	return match ? { toolName: match[1] } : null
+export function parseToolCallId(id: string): { toolName: string; seq: number } | null {
+	const match = id.match(/^kt\.(.+?)\.(\d+)$/)
+	return match ? { toolName: match[1], seq: Number(match[2]) } : null
 }
