@@ -129,8 +129,10 @@ local.entities[E]    → local.categories[cat(E)]  → registry default
 
 - Unknown categories/entities and invalid custom entries from the platform
   are **dropped** with one log line (a harness predates the vocabulary the
-  platform ships; dropping is fail-open and cannot silently switch
-  redaction off).
+  platform ships; dropping leaves registry defaults intact). Before retiring
+  an old category label, migrate any stored category overrides to per-entity
+  states: dropping an override that explicitly enabled a default-off member
+  would lose that explicit intent even though the defaults stay active.
 - The org policy is fetched at session startup, so managed changes apply to
   **new sessions**; local settings.json edits apply mid-session.
 - Under an org FORCE_* resource lock on `extensions.pii-redaction`, the

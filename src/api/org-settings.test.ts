@@ -146,6 +146,7 @@ describe("parseOrgPolicy", () => {
 	})
 
 	it("accepts the snake_case kimchi_redaction field and drops malformed/empty values", () => {
+		// Assemble the wire literal so agent-side editing does not redact its uppercase identifier shape.
 		const redaction = { categories: { credentials: ["KIMCHI_", "REDACTION_", "STATE_", "OFF"].join("") } }
 		expect(parseOrgPolicy({ kimchi_redaction: redaction })).toEqual({ redaction })
 		expect(parseOrgPolicy({ kimchiRedaction: {} })).toBeUndefined()

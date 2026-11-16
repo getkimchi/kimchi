@@ -1051,6 +1051,21 @@ describe("settings validation failure — degrade, never silently bypass", () =>
 		expect(getRedactionConfigError()).toBeDefined()
 	})
 
+	it("a retired local category key falls back with a visible error", async () => {
+		writeSettings({ categories: { secrets: "off" } })
+		resetRedactorEngine()
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {})
+		const githubToken = ["ghp_", "Ab9c".repeat(12)].join("")
+		const result = await redactText(`mail ${fx.email} token ${githubToken}`)
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result).toContain("[REDACTED-GITHUB_TOKEN]")
+		expect(result).not.toContain(githubToken)
+		expect(String(getRedactionConfigError())).toContain("secrets")
+		expect(errorLog).toHaveBeenCalledTimes(1)
+		expect(String(errorLog.mock.calls[0][0])).toContain("secrets")
+		errorLog.mockRestore()
+	})
+
 	it("a broken local settings file does not knock out the org's own rules", async () => {
 		await setOrgPolicyForTests({ redaction: { categories: { person_data: "KIMCHI_REDACTION_STATE_OFF" } } })
 		writeSettings({ excludedEntities: ["SSN"] }) // unknown: real name is US_SSN

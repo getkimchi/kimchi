@@ -434,6 +434,22 @@ function collectRecords(fixture: { fake: { requests: Array<{ url: string; body: 
 	return out
 }
 
+/** Match redaction telemetry emitted during one of the bounded flush windows. */
+async function waitForRecords(
+	fixture: Parameters<typeof collectRecords>[0],
+	predicate: (record: ReturnType<typeof collectRecords>[number]) => boolean,
+	timeoutMs = 6_000,
+): Promise<ReturnType<typeof collectRecords>> {
+	const deadline = Date.now() + timeoutMs
+	do {
+		const matches = collectRecords(fixture).filter(predicate)
+		if (matches.length > 0) return matches
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	} while (Date.now() < deadline)
+	const eventNames = collectRecords(fixture).map((record) => record.eventName)
+	throw new Error(`Timed out waiting for matching OTLP records; received: ${JSON.stringify(eventNames)}`)
+}
+
 test("emits per-entity pii_redaction.redacted + session_affected OTLP records when redaction fires", async ({
 	terminal,
 }) => {
@@ -622,8 +638,10 @@ test("legacy custom entity labels normalize and respect category OFF", async ({ 
 			const firstText = lastUserMessage(firstChatRequest(fixture) as { body: unknown })
 			expect(firstText).toContain("[REDACTED-K1_DEMO]")
 			expect(firstText).not.toContain(demoIdentifier)
-			await new Promise((resolve) => setTimeout(resolve, 6_000))
-			const normalized = collectRecords(fixture).filter((r) => r.attrs.entity_type === "K1_DEMO")
+			const normalized = await waitForRecords(
+				fixture,
+				(record) => record.eventName === "pii_redaction.redacted" && record.attrs.entity_type === "K1_DEMO",
+			)
 			expect(normalized).toHaveLength(1)
 			expect(normalized[0].attrs.category).toBe("credentials")
 
@@ -640,8 +658,10 @@ test("legacy custom entity labels normalize and respect category OFF", async ({ 
 			const secondText = lastUserMessage(chats[chats.length - 1] as { body: unknown })
 			expect(secondText).toContain(demoIdentifier)
 			expect(secondText).not.toContain("[REDACTED-K1_DEMO]")
-			await new Promise((resolve) => setTimeout(resolve, 6_000))
-			const afterOff = collectRecords(fixture).filter((r) => r.attrs.entity_type === "K1_DEMO")
+			await waitForTurnToSettle(fixture.fake.requests)
+			const afterOff = collectRecords(fixture).filter(
+				(record) => record.eventName === "pii_redaction.redacted" && record.attrs.entity_type === "K1_DEMO",
+			)
 			expect(afterOff).toHaveLength(1)
 		},
 	)

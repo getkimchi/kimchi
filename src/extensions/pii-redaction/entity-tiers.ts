@@ -433,27 +433,12 @@ const CATEGORY_GROUPS: readonly CategoryGroup[] = [
 		"credentials",
 		true,
 		[
-			...ANCHORED_ENTITIES.filter(
-				(name) =>
-					// credentialed-URI members anchored at engine level.
-					name !== "REDIS_URL_WITH_PASSWORD" &&
-					name !== "COCKROACHDB_CONNECTION" &&
-					name !== "SENTRY_DSN" &&
-					name !== "SLACK_WEBHOOK" &&
-					name !== "TEAMS_WEBHOOK" &&
-					name !== "DISCORD_WEBHOOK",
-			),
+			...ANCHORED_ENTITIES,
 			...ANCHOR_REQUIRED_WITH_CUSTOMS,
 			// Credential-bearing URLs and connection strings, grouped with the
 			// other secrets rather than a separate category.
 			"URL_WITH_CREDENTIALS",
-			"REDIS_URL_WITH_PASSWORD",
-			"COCKROACHDB_CONNECTION",
 			"DATABASE_CONNECTION_STRING",
-			"SENTRY_DSN",
-			"SLACK_WEBHOOK",
-			"TEAMS_WEBHOOK",
-			"DISCORD_WEBHOOK",
 			// File names that contain credentials belong here; coordinates
 			// themselves belong to environment.
 			"CREDENTIAL_FILE",
