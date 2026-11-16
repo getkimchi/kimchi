@@ -78,7 +78,7 @@ function writeMark(path: string, event: string, detail: Record<string, unknown>)
 		}
 		appendFileSync(
 			path,
-			`${JSON.stringify({ ...detail, t: Date.now(), perf: performance.now(), seq: seq++, event })}\n`,
+			`${JSON.stringify({ ...detail, t: Date.now(), perf: performance.now(), seq: seq++, pid: process.pid, event })}\n`,
 		)
 	} catch (error) {
 		if (!warnedWrite) {
@@ -126,11 +126,17 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 		console.error(`[loop-trace] heartbeat worker failed: ${String(error)}`)
 	}
 
-	// --- Attribution: creation stacks for non-promise resources, plus which
-	// resource is executing right now. A synchronous block leaves exactly one
-	// resource between before/after — the blocker.
+	// --- Attribution (two-sided): creation stacks for non-promise resources,
+	// plus which resource is executing — and crucially, which resource just
+	// FINISHED and how long it held the loop. The watchdog only ticks after a
+	// blocking callback returns (and after() fires first), so `executing` at
+	// hold-detection time is always undefined for main-thread blocks: the
+	// previous design structurally could not attribute them. lastBusy fixes
+	// that — if busyMs overlaps the hold window, that callback IS the blocker.
 	const stacks = new Map<number, { type: string; where: string }>()
 	let executing: { type: string; where: string } | undefined
+	let enterSince = 0
+	let lastBusy: { type: string; where: string; from: number; to: number; ms: number } | undefined
 	createHook({
 		init(id, type) {
 			if (type === "PROMISE") return
@@ -140,9 +146,14 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 		},
 		before(id) {
 			executing = stacks.get(id)
+			if (executing) enterSince = performance.now()
 		},
 		after() {
-			executing = undefined
+			if (executing) {
+				const to = performance.now()
+				lastBusy = { type: executing.type, where: executing.where, from: enterSince, to, ms: to - enterSince }
+				executing = undefined
+			}
 		},
 		destroy(id) {
 			stacks.delete(id)
@@ -196,6 +207,80 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 		}
 	}
 
+	// --- L2: ring-buffered V8 CPU profile. The sampling profiler runs on its
+	// own thread, so it keeps sampling WHILE the loop is blocked — the only
+	// in-proc way to name the hot JS frames of a synchronous block (including
+	// frames sitting on better-sqlite3 sync calls, JSON.parse, markdown, regex).
+	// Session.postSync is not stable API; the async post path stops, extracts,
+	// and restarts between ticks (a capture in flight simply skips a hold).
+	// Frames land as a `loop.hot` mark referencing the lag's seq.
+	interface InspectorSession {
+		connect(): void
+		post(method: string, callback: (error: Error | null, result: unknown) => void): void
+		post(method: string, params: unknown, callback: (error: Error | null, result: unknown) => void): void
+	}
+	let profiler: InspectorSession | undefined
+	let hotBusy = false
+	try {
+		const inspector = require("node:inspector") as { Session: new () => InspectorSession }
+		const session = new inspector.Session()
+		session.connect()
+		session.post("Profiler.enable", (err) => {
+			if (err) return
+			session.post("Profiler.setSamplingInterval", { interval: 1000 }, () => {
+				session.post("Profiler.start", (err2) => {
+					if (!err2) profiler = session
+				})
+			})
+		})
+	} catch {
+		profiler = undefined
+	}
+	function scheduleHotCapture(lagSeq: number): void {
+		if (!profiler || hotBusy) return
+		hotBusy = true
+		profiler.post("Profiler.stop", (err, result) => {
+			try {
+				const profile = result as {
+					profile?: { nodes?: { callFrame: { functionName: string; url: string; lineNumber: number }; hitCount?: number }[] }
+				}
+				const byFn = new Map<string, { fn: string; at: string; hits: number }>()
+				for (const node of profile.profile?.nodes ?? []) {
+					if (!node.hitCount) continue
+					const fn = node.callFrame.functionName || "(anonymous)"
+					const at = `${node.callFrame.url.split("/").slice(-2).join("/")}:${node.callFrame.lineNumber}`
+					const key = `${fn}@${at}`
+					const cur = byFn.get(key) ?? byFn.set(key, { fn, at, hits: 0 }).get(key)!
+					cur.hits += node.hitCount
+				}
+				const frames = [...byFn.values()].sort((a, b) => b.hits - a.hits).slice(0, 6)
+				if (frames.length) writeMark(path, "loop.hot", { lagSeq, hot: frames })
+			} catch {
+				// profile extraction is diagnostics; never break the watchdog
+			}
+			profiler?.post("Profiler.start", () => {
+				hotBusy = false
+			})
+		})
+	}
+
+	// --- L3: baseline tick for drift curves — every 10s, cheap counters. The
+	// tick answers lane-aging questions (do old heaps freeze more?) without
+	// needing holds at all.
+	const TICK_INTERVAL_MS = 10_000
+	let lastTickCpu = process.cpuUsage()
+	setInterval(() => {
+		const cpu = process.cpuUsage(lastTickCpu)
+		lastTickCpu = process.cpuUsage()
+		const mem = process.memoryUsage()
+		writeMark(path, "loop.tick", {
+			cpuMs: Math.round((cpu.user + cpu.system) / 1000),
+			heapMb: Math.round(mem.heapUsed / 1048576),
+			rssMb: Math.round(mem.rss / 1048576),
+			gcCount: gc.count,
+		})
+	}, TICK_INTERVAL_MS).unref()
+
 	// --- Lag watchdog: the sampler itself runs on the loop it measures; a gap
 	// between its ticks is time the loop spent elsewhere.
 	let last = performance.now()
@@ -230,7 +315,16 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 				externalMb: Math.round(mem.external / 1048576),
 				resType: executing?.type,
 				where: executing?.where,
+				// L1: the resource that just released the loop — if busyMs overlaps
+				// this hold, that callback blocked the main thread and is named here.
+				blockedBy:
+					lastBusy && lastBusy.to >= last - 50 && lastBusy.ms >= LAG_THRESHOLD_MS
+						? { type: lastBusy.type, where: lastBusy.where, busyMs: Math.round(lastBusy.ms) }
+						: undefined,
 			})
+			// L2: stop/extract/restart profiling for the window just ended; the
+			// resulting loop.hot mark references this mark's seq value.
+			if (lag >= 100) scheduleHotCapture(seq - 1)
 			lastGc = {
 				count: gc.count,
 				ms: gc.ms,

@@ -71,6 +71,21 @@ describe("loop trace", () => {
 		// its stack names this test file, not the tracer's own internals.
 		expect(lag?.resType).toBe("Timeout")
 		expect(String(lag?.where)).toContain("loop-trace.test")
+		// L1: the block is visible even though `executing` unsets before the
+		// watchdog ticks — blockedBy names the callback that held the loop.
+		const blocked = (lag?.blockedBy ?? {}) as { type?: string; where?: string; busyMs?: number }
+		expect(blocked.type).toBe("Timeout")
+		expect(String(blocked.where)).toContain("loop-trace.test")
+		expect(blocked.busyMs).toBeGreaterThanOrEqual(100)
+		// L2: the ring-buffered V8 profile lands as a loop.hot mark referencing
+		// the lag mark's seq and names the hot function.
+		await waitForMark(path, (m) => m.event === "loop.hot")
+		const hotMark = (marks(path).filter((m) => m.event === "loop.hot").at(-1) ?? {}) as {
+			lagSeq?: number
+			hot?: { fn: string; at: string; hits: number }[]
+		}
+		expect(hotMark.hot?.length).toBeGreaterThan(0)
+		expect(hotMark.hot?.some((f) => String(f.at).includes("loop-trace.test") || f.fn.includes("blocker"))).toBe(true)
 	})
 
 	it("is a no-op without the env var", () => {
