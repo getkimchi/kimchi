@@ -19,6 +19,10 @@ on:
         description: "Collect raw blocking-episode instructions in sessions; skip the gate and budgets"
         default: "false"
         required: false
+      bench:
+        description: "Benchmark ledger operations with external counters (unmodified source; no gate, no budgets)"
+        default: "false"
+        required: false
 
 permissions:
   contents: read
@@ -76,10 +80,12 @@ jobs:
           bun: "true"
 
       - uses: actions/setup-go@v5
+        if: inputs.bench != 'true'
         with:
           go-version: stable
 
       - name: Build proxy-helper
+        if: inputs.bench != 'true'
         run: make copy-for-dev
         working-directory: tools/proxy-helper
 
@@ -89,10 +95,18 @@ jobs:
           cat /proc/sys/kernel/perf_event_paranoid
 
       - name: Build binary
+        if: inputs.bench != 'true'
         run: pnpm run build:binary
 
+      - name: Benchmark ledger operations
+        if: inputs.bench == 'true'
+        run: |
+          python3 tools/perf/ledger-bench-run.py --tree "$GITHUB_WORKSPACE" \
+            --ref "${{ matrix.entry.label }}" --reps "${{ inputs.reps || 3 }}" \
+            --out "$RUNNER_TEMP/perf-gate-runs/ledger-bench.jsonl"
+
       - name: Sample sessions, without the gate or budgets
-        if: inputs.sample == 'true'
+        if: inputs.sample == 'true' && inputs.bench != 'true'
         env:
           SAMPLE_REF: ${{ matrix.entry.label }}
           SAMPLE_REPS: ${{ inputs.reps }}
@@ -103,14 +117,14 @@ jobs:
             --out "$RUNNER_TEMP/perf-gate-runs/session.jsonl"
 
       - name: Run perf gate
-        if: inputs.sample != 'true'
+        if: inputs.sample != 'true' && inputs.bench != 'true'
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           python3 tools/perf/gate.py --selfcheck
           python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${{ inputs.reps || 2 }}" ${{ (inputs.calibrate == 'true') && '--calibrate' || '' }}
 
       - name: Advisory lanes
-        if: always() && inputs.sample != 'true'
+        if: always() && inputs.sample != 'true' && inputs.bench != 'true'
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           for sc in idle_healthy idle_fresh bigtools bigtools_off; do
@@ -127,7 +141,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload calibrated budgets
-        if: inputs.calibrate == 'true' && inputs.sample != 'true'
+        if: inputs.calibrate == 'true' && inputs.sample != 'true' && inputs.bench != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: budgets-${{ matrix.entry.label }}

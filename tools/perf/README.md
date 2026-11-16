@@ -117,7 +117,30 @@ explicitly; it cannot silently pass. Instructions measure retired CPU work, not
 I/O waits, sleeping or blocking without CPU activity; the pre-existing
 keystroke detectors cover those separate effects.
 
-## Usage
+## Ledger operation bench
+
+`ledger-bench-run.py` measures ledger operations with **no source
+instrumentation at all**. The driver (`ledger-bench.ts`, run under bun)
+imports the checkout's own unmodified ledger modules and prints `BENCH_OP`
+markers around each operation; the harness attaches the same external
+`perf_event_open` counter the sampler uses to the driver process and reads it
+at the markers. The delta is the operation's whole-process instruction cost,
+with waiting excluded by construction and no latency threshold selecting
+what gets counted.
+
+Operations: repository discovery over the gate's ledger scale (a tree with
+the distinct-repository projection runs it; an unfixed tree runs its own
+full-decode path), and claim resolution for every outbox entity (batched
+per-account read vs that tree's per-entity reads). Both are the paths the
+product actually calls. Run it via the `Perf gate backtest` workflow with
+`bench=true`, or locally where a PMU is available:
+
+```sh
+python3 tools/perf/ledger-bench-run.py --tree . --ref local --out runs.jsonl
+```
+
+A counter that cannot attach, a driver crash, or an unclosed marker is an
+explicit measurement failure; there is no fallback and no budget comparison.
 
 ## Usage
 
