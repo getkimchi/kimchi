@@ -21,8 +21,6 @@ import { harnessSettingsPath, runKimchiSession, TUI_TEST_CONFIG } from "./suppor
 
 test.use(TUI_TEST_CONFIG)
 
-export {}
-
 /** Edit the fixture-seeded harness settings.json from seedHome. */
 function patchHarnessSettings(homeDir: string, patch: Record<string, unknown>): void {
 	const path = harnessSettingsPath(homeDir)
