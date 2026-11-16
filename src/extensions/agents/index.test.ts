@@ -211,11 +211,18 @@ vi.mock("../../project-scope-trust.js", async (importOriginal) => ({
 }))
 
 // Keep agent discovery hermetic: execute() reloads custom agents from disk
-// on every call, so tests control the discovered set via this mock.
-const { loadCustomAgentsMock } = vi.hoisted(() => ({
+// on every call, so tests control the discovered set via this mock. The real
+// loader stays reachable through realLoadCustomAgents for tests that need
+// on-disk discovery (e.g. the ctx.cwd regression suite).
+const { loadCustomAgentsMock, realLoadCustomAgents } = vi.hoisted(() => ({
 	loadCustomAgentsMock: vi.fn((): Map<string, unknown> => new Map()),
+	realLoadCustomAgents: { fn: undefined as ((cwd?: string) => Map<string, unknown>) | undefined },
 }))
-vi.mock("./personas/custom-agents.js", () => ({ loadCustomAgents: loadCustomAgentsMock }))
+vi.mock("./personas/custom-agents.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./personas/custom-agents.js")>()
+	realLoadCustomAgents.fn = actual.loadCustomAgents as (cwd?: string) => Map<string, unknown>
+	return { ...actual, loadCustomAgents: loadCustomAgentsMock }
+})
 
 vi.mock("../orchestration/model-roles.js", () => ({
 	getAllowedMultiModelRefs: vi
@@ -2295,6 +2302,9 @@ describe("Agent tool session-cwd agent resolution", () => {
 		vi.clearAllMocks()
 		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
 		vi.mocked(sessionHasImages).mockReturnValue(false)
+		// These tests exercise on-disk discovery from ctx.cwd, so delegate the
+		// mocked loader to the real implementation.
+		loadCustomAgentsMock.mockImplementation((cwd?: string) => realLoadCustomAgents.fn?.(cwd) ?? new Map())
 	})
 
 	it("resolves project agents against ctx.cwd, not process.cwd() (issue #1677)", async () => {
