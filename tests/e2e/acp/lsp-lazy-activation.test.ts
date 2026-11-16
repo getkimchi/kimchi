@@ -40,11 +40,18 @@ describe("ACP integration — LSP lazy activation", () => {
 		fixture = await startAcpFixture({
 			artifactName: "lsp-lazy-activation",
 			responses: [
-				// Turn 1 — the scaffold: marker write first, source second. The
-				// main.ts write is the materializing edit (file-anchored
-				// detection runs on server-supported extensions only). Distinct
-				// tool-call ids/indices — the fake server defaults every id to
-				// "call_fake", and same-id calls get merged into one.
+				// Turn 1 — the scaffold, split across two model requests: marker
+				// write first, source second. The split is load-bearing: pi executes
+				// the tool calls of one assistant message concurrently, so their
+				// completion order is arbitrary — when the main.ts write completed
+				// before package.json (seen in CI), the marker walk on its
+				// tool_result found no project marker, and .json results never
+				// re-trigger detection, so lsp_* never activated. Requests are
+				// strictly ordered (request N+1 happens only after request N's tool
+				// results are in context), so the marker is guaranteed on disk
+				// before the materializing main.ts write runs. Distinct tool-call ids
+				// — the fake server defaults every id to "call_fake", and same-id
+				// calls get merged into one.
 				{
 					stream: ["Scaffolding the TypeScript project."],
 					toolCalls: [
@@ -59,9 +66,14 @@ describe("ACP integration — LSP lazy activation", () => {
 								}),
 							},
 						},
+					],
+				},
+				{
+					stream: [],
+					toolCalls: [
 						{
 							id: "call_scaffold_source",
-							index: 1,
+							index: 0,
 							function: {
 								name: "write",
 								arguments: JSON.stringify({
@@ -148,13 +160,17 @@ describe("ACP integration — LSP lazy activation", () => {
 		expect((await prompt(fixture, sessionId, "scaffold a TypeScript project")).stopReason).toBe("end_turn")
 
 		const chat = chatRequests()
-		expect(chat.length).toBeGreaterThanOrEqual(2)
+		expect(chat.length).toBeGreaterThanOrEqual(3)
 		// The pre-scaffold request advertised no lsp_* tools…
 		expect(requestToolNames(chat[0])).not.toContain("lsp_diagnostics")
-		// …and every request after the materializing edit does — including the
-		// mid-turn continuation, the single-prompt benchmark semantics (no
-		// prompt rebuild required).
-		for (const request of chat.slice(1)) {
+		// …nor does the request after the marker-only write: detection is
+		// anchored to server-supported source extensions, so package.json alone
+		// cannot activate anything…
+		expect(requestToolNames(chat[1])).not.toContain("lsp_diagnostics")
+		// …and every request after the materializing main.ts edit does —
+		// including the mid-turn continuation, the single-prompt benchmark
+		// semantics (no prompt rebuild required).
+		for (const request of chat.slice(2)) {
 			expect(requestToolNames(request)).toContain("lsp_diagnostics")
 			expect(requestToolNames(request)).toContain("lsp_hover")
 		}
