@@ -158,6 +158,11 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
+	isBashBackgroundSettleData,
+} from "../../shared/bash-background-settle.js"
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
@@ -209,8 +214,6 @@ import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
-	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
-	type BashBackgroundSettleData,
 	backgroundHandoffHandle,
 	type HeldBackgroundToolCall,
 	holdAndWatchBackgroundToolCall,
@@ -4544,18 +4547,6 @@ function takeReplayToolResult(toolResults: Map<string, ReplayToolResult[]>, id: 
  * a recycled id's settle belongs to the block whose handoff it settled, so
  * replay consumes them FIFO off the block walk too.
  */
-/**
- * Guard for the persisted settle payload — the write site pins the shape at
- * BashBackgroundSettleData, but transcripts are untrusted IO, so replay
- * validates before consuming (details is forwarded as-is, mirroring the
- * BashBackgroundSettleOutcome contract).
- */
-function isBashBackgroundSettleData(data: unknown): data is BashBackgroundSettleData {
-	if (!data || typeof data !== "object") return false
-	const d = data as { toolCallId?: unknown; isError?: unknown; text?: unknown }
-	return typeof d.toolCallId === "string" && typeof d.isError === "boolean" && typeof d.text === "string"
-}
-
 function collectBashBackgroundSettles(entries: BranchEntry[]): Map<string, ReplayToolResult[]> {
 	const out = new Map<string, ReplayToolResult[]>()
 	for (const entry of entries) {
