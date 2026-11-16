@@ -26,14 +26,7 @@ function createPi() {
 	// Mirror upstream: every registered default-active tool is active at load —
 	// including ferment's workflow tools — and codemode/tool_search register
 	// defaultActive: false upstream, so they stay out unless opted in.
-	let activeTools = [
-		"read",
-		"bash",
-		"list_ferments",
-		"scope_ferment",
-		"activate_ferment_phase",
-		"start_ferment_step",
-	]
+	let activeTools = ["read", "bash", "list_ferments", "scope_ferment", "activate_ferment_phase", "start_ferment_step"]
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			handlers.set(event, handler)
