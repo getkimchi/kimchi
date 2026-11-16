@@ -28,6 +28,7 @@ function isPermanentLaunchError(err: unknown): boolean {
 export class BrowserPool {
 	private readonly idleTimeoutMs: number
 	private browser: Browser | null = null
+	private launchPromise: Promise<Browser | null> | null = null
 	private idleTimer: ReturnType<typeof setTimeout> | null = null
 	private playwrightAvailable: boolean | null = null
 
@@ -55,20 +56,35 @@ export class BrowserPool {
 		// Previous browser crashed or was closed — clean up.
 		this.browser = null
 
-		try {
-			this.browser = await pw.chromium.launch({ headless: true })
-			this.resetIdleTimer()
+		// Concurrent callers share one launch: awaiting launch() twice would
+		// start two Chromium processes, and the second assignment would orphan
+		// the first for the process lifetime.
+		const launching = (this.launchPromise ??= this.launch(pw).finally(() => {
+			this.launchPromise = null
+		}))
+		this.browser = await launching
+		return this.browser
+	}
 
-			// Auto-cleanup if the browser crashes or disconnects unexpectedly.
-			this.browser.on("disconnected", () => {
-				this.browser = null
-				if (this.idleTimer) {
-					clearTimeout(this.idleTimer)
-					this.idleTimer = null
+	private async launch(pw: typeof import("playwright")): Promise<Browser | null> {
+		try {
+			const b = await pw.chromium.launch({ headless: true })
+
+			// Auto-cleanup if the browser crashes or disconnects unexpectedly —
+			// but only when this very instance is still the pooled one: an
+			// orphaned browser disconnecting must not null its replacement.
+			b.on("disconnected", () => {
+				if (this.browser === b) {
+					this.browser = null
+					if (this.idleTimer) {
+						clearTimeout(this.idleTimer)
+						this.idleTimer = null
+					}
 				}
 			})
 
-			return this.browser
+			this.resetIdleTimer()
+			return b
 		} catch (err) {
 			// Only permanently disable Playwright when Chromium is genuinely
 			// not installed. Transient errors (resource exhaustion, file locks)
@@ -80,8 +96,18 @@ export class BrowserPool {
 		}
 	}
 
-	/** Shut down the browser pool. */
+	/** Shut down the browser pool. Closes any live browser, and waits for
+	 *  (then closes) any browser still being launched. */
 	async shutdown(): Promise<void> {
+		const launching = this.launchPromise
+		if (launching) {
+			const b = await launching
+			try {
+				await b?.close()
+			} catch {
+				// Already closed or crashed — ignore.
+			}
+		}
 		await this.closeBrowser()
 	}
 

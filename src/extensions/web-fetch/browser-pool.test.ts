@@ -148,6 +148,54 @@ describe("BrowserPool", () => {
 		expect(mockBrowser.on).toHaveBeenCalledWith("disconnected", expect.any(Function))
 	})
 
+	it("concurrent cold callers share a single Chromium launch (reviewer race repro)", async () => {
+		// Two+ callers both passing the isConnected check used to each start
+		// Chromium; the last assignment orphaned the earlier process for the
+		// process lifetime.
+		let resolveLaunch!: (b: typeof mockBrowser) => void
+		launchMock.mockImplementation(
+			() =>
+				new Promise<typeof mockBrowser>((resolve) => {
+					resolveLaunch = resolve
+				}),
+		)
+		const calls = [pool.getBrowser(), pool.getBrowser(), pool.getBrowser(), pool.getBrowser()]
+		await vi.waitFor(() => expect(launchMock).toHaveBeenCalledOnce(), { timeout: 1000 })
+		resolveLaunch(mockBrowser)
+		const results = await Promise.all(calls)
+		expect(launchMock).toHaveBeenCalledOnce()
+		expect(results).toEqual([mockBrowser, mockBrowser, mockBrowser, mockBrowser])
+	})
+
+	it("a stale browser's disconnect does not null its replacement", async () => {
+		const handlersByBrowser = new Map<object, () => void>()
+		const makeBrowser = () => {
+			let connected = true
+			const b = {
+				isConnected: () => connected,
+				close: vi.fn().mockImplementation(async () => {
+					connected = false
+				}),
+				on: vi.fn().mockImplementation((_event: string, handler: () => void) => {
+					handlersByBrowser.set(b, handler)
+				}),
+			}
+			return b
+		}
+		const b1 = makeBrowser()
+		launchMock.mockResolvedValueOnce(b1)
+		expect(await pool.getBrowser()).toBe(b1)
+		handlersByBrowser.get(b1)!() // b1 crashes → pool nulls it (identity matches)
+
+		const b2 = makeBrowser()
+		launchMock.mockResolvedValueOnce(b2)
+		expect(await pool.getBrowser()).toBe(b2)
+		handlersByBrowser.get(b1)!() // the stale callback fires late
+
+		expect(await pool.getBrowser()).toBe(b2)
+		expect(launchMock).toHaveBeenCalledTimes(2)
+	})
+
 	describe("idle timeout", () => {
 		beforeEach(() => {
 			vi.useFakeTimers()
