@@ -89,21 +89,39 @@ function writeMark(path: string, event: string, detail: Record<string, unknown>)
 	}
 }
 
+// Process inspection (ps/pgrep) is denied inside sandboxed lanes (e.g. nono
+// profiles) — probe once at arm time and disable silently on denial rather
+// than erroring per hold.
+let childrenSnapshotDisabled = false
+
 function snapshotChildren(me: number): { pid: number; cpu: number; cmd: string }[] {
+	if (childrenSnapshotDisabled) return []
 	try {
-		const { execSync } = require("node:child_process")
-		const out = execSync(`ps -eo pid,ppid,cpu,command -p $(pgrep -P ${me} | tr '\n' ',' | sed 's/,$//')`, {
+		const { execFileSync } = require("node:child_process")
+		const childPids = execFileSync("pgrep", ["-P", String(me)], {
 			encoding: "utf-8",
 			timeout: 500,
 			windowsHide: true,
+			stdio: ["ignore", "pipe", "ignore"],
+		})
+			.split("\n")
+			.map((l: string) => Number(l.trim()))
+			.filter((n: number) => Number.isInteger(n) && n > 0)
+		if (childPids.length === 0) return []
+		const out = execFileSync("ps", ["-eo", "pid=,ppid=,pcpu=,command=", "-p", childPids.join(",")], {
+			encoding: "utf-8",
+			timeout: 500,
+			windowsHide: true,
+			stdio: ["ignore", "pipe", "ignore"],
 		})
 		const rows: { pid: number; cpu: number; cmd: string }[] = []
-		for (const line of out.split("\n").slice(1)) {
+		for (const line of out.split("\n")) {
 			const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)/)
 			if (m) rows.push({ pid: Number(m[1]), cpu: Number(m[3]), cmd: m[4].slice(0, 60) })
 		}
 		return rows.sort((a, b) => b.cpu - a.cpu).slice(0, 8)
 	} catch {
+		childrenSnapshotDisabled = true
 		return []
 	}
 }
