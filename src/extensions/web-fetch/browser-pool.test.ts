@@ -184,13 +184,17 @@ describe("BrowserPool", () => {
 		}
 		const b1 = makeBrowser()
 		launchMock.mockResolvedValueOnce(b1)
-		expect(await pool.getBrowser()).toBe(b1)
-		handlersByBrowser.get(b1)!() // b1 crashes → pool nulls it (identity matches)
+		await pool.getBrowser()
+		// Fire b1's disconnect: the pool should null it (identity matches).
+		const b1Handler = handlersByBrowser.get(b1)
+		if (!b1Handler) throw new Error("expected a disconnect handler for b1")
+		b1Handler()
 
 		const b2 = makeBrowser()
 		launchMock.mockResolvedValueOnce(b2)
+		await pool.getBrowser()
 		expect(await pool.getBrowser()).toBe(b2)
-		handlersByBrowser.get(b1)!() // the stale callback fires late
+		b1Handler() // the stale callback fires late
 
 		expect(await pool.getBrowser()).toBe(b2)
 		expect(launchMock).toHaveBeenCalledTimes(2)

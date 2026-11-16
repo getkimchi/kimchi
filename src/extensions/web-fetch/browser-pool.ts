@@ -59,9 +59,13 @@ export class BrowserPool {
 		// Concurrent callers share one launch: awaiting launch() twice would
 		// start two Chromium processes, and the second assignment would orphan
 		// the first for the process lifetime.
-		const launching = (this.launchPromise ??= this.launch(pw).finally(() => {
-			this.launchPromise = null
-		}))
+		let launching = this.launchPromise
+		if (!launching) {
+			launching = this.launch(pw).finally(() => {
+				this.launchPromise = null
+			})
+			this.launchPromise = launching
+		}
 		this.browser = await launching
 		return this.browser
 	}
