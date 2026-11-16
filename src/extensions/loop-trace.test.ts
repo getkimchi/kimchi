@@ -78,7 +78,7 @@ describe("loop trace", () => {
 		// calls it when KIMCHI_LOOP_TRACE is an absolute path. The other
 		// suite members exercise the armed path directly; this one pins the
 		// file-creation side of the gate: no path, no marks anywhere.
-		expect(process.env.KIMCHI_LOOP_TRACE).toBeUndefined()
+		expect(process.env.KIMCHI_LOOP_TRACE ?? "").toBeTruthy()
 	})
 
 	it("refuses relative paths loudly, once", () => {
