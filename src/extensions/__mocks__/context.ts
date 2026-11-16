@@ -108,6 +108,9 @@ export function createContext(
 		hasUI: true,
 		mode: "tui",
 		cwd: "/tmp",
+		// Trust-gated paths (MCP config consent, settings trust sync) ask this;
+		// default to trusted so suites that don't care skip the consent path.
+		isProjectTrusted: vi.fn(() => true),
 		scopedModels: [],
 		isIdle: vi.fn(),
 		hasPendingMessages: vi.fn(() => false),
