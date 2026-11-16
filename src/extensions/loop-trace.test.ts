@@ -64,7 +64,23 @@ describe("loop trace", () => {
 		const tagged = (mark: Record<string, unknown>): boolean =>
 			mark.event === "loop.lag" &&
 			Boolean((mark.blockedBy as { where?: string } | undefined)?.where?.includes("loop-trace.test"))
-		expect(await waitForMark(path, tagged)).toBe(true)
+		const attributed = await waitForMark(path, tagged)
+		if (!attributed) {
+			// Diagnostics for the loaded-runner case: what the lag marks actually
+			// recorded, so a missing attribution is observable in CI output.
+			console.error(
+				"loop-trace attribution diagnostics:",
+				JSON.stringify(
+					marks(path)
+						.filter((mark) => mark.event === "loop.lag")
+						.slice(0, 5)
+						.map((mark) => ({ lagMs: mark.lagMs, blockedBy: mark.blockedBy, where: mark.where })),
+				),
+				"node:",
+				process.version,
+			)
+		}
+		expect(attributed).toBe(true)
 		const lag = marks(path).find(tagged)
 		// This is CPU-bound and event-loop-only (the worker thread kept ticking).
 		// Exact CPU-time varies between containers; it is not the performance gate.

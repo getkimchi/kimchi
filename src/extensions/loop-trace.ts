@@ -140,6 +140,9 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 	let executing: { type: string; where: string } | undefined
 	let enterSince = 0
 	let lastBusy: { type: string; where: string; from: number; to: number; ms: number } | undefined
+	// The watchdog's previous fire: lets after() tell a still-current busy
+	// record (this period's blocker) from a stale one (a previous period's).
+	let lastFireAt = performance.now()
 	createHook({
 		init(id, type) {
 			if (type === "PROMISE") return
@@ -154,7 +157,13 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 		after() {
 			if (executing) {
 				const to = performance.now()
-				lastBusy = { type: executing.type, where: executing.where, from: enterSince, to, ms: to - enterSince }
+				const ms = to - enterSince
+				// Keep the LONGEST busy span within one watchdog period: a short timer
+				// that slips in after the real blocker (reporter ticks on a loaded CI
+				// runner) must not erase the blocker's attribution. The record is
+				// replaced once it predates the current period, or by a longer hold.
+				if (!lastBusy || lastBusy.to < lastFireAt - 50 || ms > lastBusy.ms)
+					lastBusy = { type: executing.type, where: executing.where, from: enterSince, to, ms }
 				executing = undefined
 			}
 		},
@@ -306,7 +315,7 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 
 	// --- Lag watchdog: the sampler itself runs on the loop it measures; a gap
 	// between its ticks is time the loop spent elsewhere.
-	let last = performance.now()
+	let last = lastFireAt
 	let lastCpu = process.cpuUsage()
 	let lastElu: EventLoopUtilization | undefined
 	let lastBeat = Atomics.load(heartbeat, 0)
@@ -315,6 +324,8 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 	const timer = setInterval(() => {
 		const now = performance.now()
 		const lag = now - last - WATCHDOG_INTERVAL_MS
+		lastFireAt = last
+		last = now
 		if (lag > LAG_THRESHOLD_MS) {
 			const cpu = process.cpuUsage(lastCpu)
 			const elu = eluFn ? eluFn(lastElu) : { utilization: 0 }
@@ -341,7 +352,7 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 				// L1: the resource that just released the loop — if busyMs overlaps
 				// this hold, that callback blocked the main thread and is named here.
 				blockedBy:
-					lastBusy && lastBusy.to >= last - 50 && lastBusy.ms >= LAG_THRESHOLD_MS
+					lastBusy && lastBusy.to >= lastFireAt - 50 && lastBusy.ms >= LAG_THRESHOLD_MS
 						? { type: lastBusy.type, where: lastBusy.where, busyMs: Math.round(lastBusy.ms) }
 						: undefined,
 			})
