@@ -311,6 +311,22 @@ describe("records conformance (SQLite via Bun driver)", { skip: isBun, timeout: 
 			rmSync(dir, { recursive: true, force: true })
 		}
 	})
+	it("backfills the materialized repository set for a ledger written before it existed", () => {
+		const dir = agentDir()
+		try {
+			for (const repository of ["/b", "/a", "/b"])
+				driver(
+					"capture",
+					dir,
+					JSON.stringify({ ...records[3], type: "file_transition", repository, transitionId: repository }),
+				)
+			// The command removes the materialized set after adding a damaged-body row and a
+			// non-text repository: the reopen's backfill must restore exactly the text repositories.
+			expect(driver("repository-backfill", dir)).toEqual(["/a", "/b"])
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
 	it("capture folds identically to the memory backend and writes no legacy files", () => {
 		const dir = agentDir()
 		try {

@@ -177,6 +177,7 @@ describe("open via Bun driver", () => {
 			"outbox_batches",
 			"outbox_events",
 			"pending_translation",
+			"transition_repositories",
 			"work_dirty",
 			"work_projection_head",
 			"work_projection_rows",

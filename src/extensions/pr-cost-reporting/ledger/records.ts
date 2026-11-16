@@ -644,7 +644,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	)
 	const deleteBatch = db.query("DELETE FROM outbox_batches WHERE account_key = ? AND id = ?")
 	const transitionRepositories = db.query<{ repository: string }, []>(
-		"SELECT DISTINCT json_extract(body, '$.repository') AS repository FROM work_records WHERE type = 'file_transition' AND json_valid(body) AND json_type(body, '$.repository') = 'text' ORDER BY repository",
+		"SELECT repository FROM transition_repositories ORDER BY repository",
 	)
 	const outboxStatus = db.query<OutboxAccountStatus, []>(`
 		SELECT a.account_key AS accountKey, COALESCE(e.pending, 0) AS pending,

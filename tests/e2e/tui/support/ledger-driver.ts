@@ -2098,6 +2098,27 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		}
 		out(readTransitionRepositories(agent))
 	},
+	"repository-backfill": async (agent) => {
+		// Odd rows first: the insert-time trigger must skip a damaged body and a non-text
+		// repository without failing the insert.
+		const odd = openStore(agent)
+		const insert = odd.db.query(
+			"INSERT INTO work_records (record_hash,type,work_id,session_id,body,source_path,source_generation,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+		)
+		insert.run("bf-damaged", "file_transition", "work", "session", "{invalid", "bench", 0, 0)
+		insert.run("bf-numeric", "file_transition", "work", "session", '{"repository": 123}', "bench", 0, 0)
+		odd.close()
+		// Remove the materialized set entirely: the ledger now "predates" it, so the next
+		// open's additive pass must backfill from the authority rows under the same tolerance.
+		const pre = openStore(agent)
+		pre.db.exec("DROP TRIGGER IF EXISTS work_records_repository_probe")
+		pre.db.exec("DROP TABLE IF EXISTS transition_repositories")
+		pre.close()
+		const post = openStore(agent)
+		const repositories = readTransitionRepositories(agent)
+		post.close()
+		out(repositories)
+	},
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"native-usage": (agent) => nativeUsage(agent),
 	"native-usage-anthropic": (agent) => nativeUsage(agent, true),

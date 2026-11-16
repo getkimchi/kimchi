@@ -24,6 +24,7 @@ import { reportingDirectory } from "../queue.js"
 import {
 	LEDGER_ADDITIVE_SCHEMA,
 	LEDGER_SCHEMA,
+	LEDGER_TRANSITION_BACKFILL,
 	META_PROJECTION_VERSION,
 	PROJECTION_VERSION,
 	SCHEMA_VERSION,
@@ -164,7 +165,17 @@ export function openStore(agentDir: string): LedgerStore {
 			try {
 				ledger
 					.transaction(() => {
+						// A ledger that predates the materialized repository set backfills its
+						// existing rows the first time the table appears; every later open is
+						// the plain no-op apply. Detection and population share the apply's
+						// immediate transaction, so a crash leaves the table absent for a retry.
+						const materialized = ledger
+							.query<{ count: number }, []>(
+								"SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'transition_repositories'",
+							)
+							.get()
 						ledger.exec(LEDGER_ADDITIVE_SCHEMA)
+						if ((materialized?.count ?? 0) === 0) ledger.exec(LEDGER_TRANSITION_BACKFILL)
 					})
 					.immediate()
 			} catch (error) {
