@@ -9,11 +9,11 @@
  * kimchi routes to direct parallel calls; kimchi's codemode rule lives in the
  * Tool Selection line.
  *
- * This builds the prompt from pi's REAL tool definitions (read/bash/edit/
- * write/grep/find/ls + the codemode extension registration), so it fails if:
+ * This builds the prompt from pi's REAL tool definitions (read/bash/powershell/
+ * edit/write/grep/find/ls + the codemode extension registration), so it fails if:
  *   - the exclusion set stops filtering and a pi bullet leaks into the prompt,
  *   - pi renames the property so the flow this test exercises changes shape,
- *   - a new pi factory needs adding here (review its guidelines then).
+ *   - pi adds, removes, or changes a guideline (the reviewed set is snapshotted).
  */
 import {
 	createBashToolDefinition,
@@ -22,6 +22,7 @@ import {
 	createFindToolDefinition,
 	createGrepToolDefinition,
 	createLsToolDefinition,
+	createPowerShellToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent"
@@ -43,16 +44,6 @@ const testEnv: EnvironmentInfo = {
 	isGitRepo: false,
 }
 
-/** Every guideline pi registers for the default tool set, verbatim. */
-const PI_GUIDELINE_BULLETS = [
-	"Use read to examine files instead of cat or sed.",
-	"You can inspect PI_* environment variables for current model and session details.",
-	"Use edit for precise changes (edits[].oldText must match exactly)",
-	"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-	"Use write only for new files or complete rewrites.",
-	"Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.",
-]
-
 describe("tool guidelines contract (pi guidelines stay curated out)", () => {
 	it("renders no pi-authored guideline; codemode steering comes from Tool Selection", () => {
 		// Real pi definitions, not mocks: the assertions must hold against
@@ -62,22 +53,36 @@ describe("tool guidelines contract (pi guidelines stay curated out)", () => {
 		const codemode = mock.getRegisteredTools().find((tool) => tool.name === "codemode")
 		if (!codemode) throw new Error("createCodemodeExtension did not register the codemode tool")
 
-		const prompt = buildSystemPrompt({
-			tools: [
-				createReadToolDefinition(testEnv.cwd),
-				createBashToolDefinition(testEnv.cwd),
-				createEditToolDefinition(testEnv.cwd),
-				createWriteToolDefinition(testEnv.cwd),
-				createGrepToolDefinition(testEnv.cwd),
-				createFindToolDefinition(testEnv.cwd),
-				createLsToolDefinition(testEnv.cwd),
-				codemode,
-			],
-			env: testEnv,
-			mode: "single",
-		})
+		const tools = [
+			createReadToolDefinition(testEnv.cwd),
+			createBashToolDefinition(testEnv.cwd),
+			createPowerShellToolDefinition(testEnv.cwd),
+			createEditToolDefinition(testEnv.cwd),
+			createWriteToolDefinition(testEnv.cwd),
+			createGrepToolDefinition(testEnv.cwd),
+			createFindToolDefinition(testEnv.cwd),
+			createLsToolDefinition(testEnv.cwd),
+			codemode,
+		]
+		const piGuidelineBullets = [...new Set(tools.flatMap((tool) => tool.promptGuidelines ?? []))]
+		// Any upstream change to this set must be reviewed and curated, not
+		// silently swallowed by the name filter. PowerShell already shares
+		// bash's PI_* bullet, hence one set entry for both shell factories.
+		expect(piGuidelineBullets).toMatchInlineSnapshot(`
+			[
+			  "Use read to examine files instead of cat or sed.",
+			  "You can inspect PI_* environment variables for current model and session details.",
+			  "Use edit for precise changes (edits[].oldText must match exactly)",
+			  "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+			  "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
+			  "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+			  "Use write only for new files or complete rewrites.",
+			  "Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.",
+			]
+		`)
 
-		for (const bullet of PI_GUIDELINE_BULLETS) {
+		const prompt = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
+		for (const bullet of piGuidelineBullets) {
 			expect(prompt).not.toContain(bullet)
 		}
 		// The default pi tool set carries no kimchi-authored guidelines, so the

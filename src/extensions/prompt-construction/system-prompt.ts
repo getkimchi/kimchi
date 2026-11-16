@@ -603,8 +603,9 @@ function buildPrompt(parts: PromptParts): string {
  *  - codemode's recommends codemode for batching independent calls, which
  *    kimchi deliberately routes to direct parallel calls (one round either
  *    way); the Tool Selection line carries kimchi's codemode rule instead;
- *  - grep/find/ls/powershell/tool_search register none today — listed so a
- *    future pi addition surfaces as a review decision here, not silently.
+ *  - powershell repeats bash's PI_* bullet and follows the same curation;
+ *    grep/find/ls/tool_search register none today. A snapshot of the real pi
+ *    definitions makes any future addition a review decision, not silent.
  *  The filter is by tool name, not by who registered the guideline: one added
  *  to a tool with any of these names (including kimchi's re-registrations of
  *  pi's builtins) is dropped too. Guidelines on every other tool — today only

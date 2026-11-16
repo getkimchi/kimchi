@@ -8,7 +8,9 @@ it.each([true, false])(
 		const fixture = await startAcpFixture({
 			artifactName: `codemode-guidelines-${enabled}`,
 			responses: [{ stream: ["Acknowledged."] }],
-			settings: enabled ? {} : { defaultTools: ["-codemode"] },
+			// Exercise the nested-tool catalog in only mode, where direct tools'
+			// promptGuidelines become part of codemode's own description.
+			settings: enabled ? { codemode: { mode: "only" } } : { defaultTools: ["-codemode"] },
 		})
 		try {
 			const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
@@ -27,6 +29,9 @@ it.each([true, false])(
 				expect(codemodeDescription?.split("Use to filter large output before it reaches the model")).toHaveLength(2)
 				expect(codemodeDescription).not.toContain("const hits")
 				expect(codemodeDescription).toContain("Run JavaScript that calls other tools")
+				// Background bash does not expose Pi's session environment, so its
+				// upstream PI_* guideline must not leak into the nested-tool catalog.
+				expect(codemodeDescription).not.toContain("PI_*")
 			} else {
 				expect(codemodeDescription).toBeUndefined()
 			}

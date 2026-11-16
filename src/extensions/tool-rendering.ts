@@ -4521,7 +4521,8 @@ export default function (pi: ExtensionAPI) {
 			label: "bash",
 			description: bashTool.description,
 			parameters: bashTool.parameters,
-			promptGuidelines: bashTool.promptGuidelines,
+			// Keep the PI_* env guideline out of codemode too: background bash
+			// wins this slot and does not inject those variables.
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				return bashTool.execute(toolCallId, params, signal, onUpdate, ctx)
 			},

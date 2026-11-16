@@ -43,6 +43,7 @@ import { resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
+	ensureBuiltinCodemodeDisabled,
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
@@ -740,6 +741,7 @@ async function cliMain(): Promise<void> {
 				let changed = ensureHideThinkingBlockDefault(existing)
 				if (ensureQuietStartupDefault(existing)) changed = true
 				if (ensureBuiltinMcpDisabled(existing)) changed = true
+				if (ensureBuiltinCodemodeDisabled(existing)) changed = true
 				const upgraded = upgradeLegacyRetrySettings(existing.retry)
 				if (upgraded) {
 					existing.retry = upgraded
@@ -911,9 +913,9 @@ async function cliMain(): Promise<void> {
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
-				// Registers `codemode` with kimchi's selection rule. In TUI/print it
-				// replaces pi's built-in codemode extension (marked replaceable);
-				// ACP sessions load no pi built-ins, so this is their only codemode.
+				// Registers `codemode` with kimchi's selection rule. The settings
+				// bootstrap disables pi's replaceable built-in so TUI/print do not
+				// emit a conflict warning; ACP loads no pi built-ins at all.
 				createGuidedCodemodeExtension(),
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,

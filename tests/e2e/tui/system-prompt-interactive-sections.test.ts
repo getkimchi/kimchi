@@ -1,5 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
-import { STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
+import { fullText, STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { chatRequests, systemPromptOf, toolDescriptionOf } from "./support/wire-requests.js"
 
@@ -17,6 +17,10 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			await waitForText(terminal, "Acknowledged.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("first turn settled")
+
+			// The intentionally replaced built-in must not emit Pi's generic
+			// extension-conflict warning on every startup.
+			expect(fullText(terminal).replace(/\s+/g, " ")).not.toContain("built-in extension `codemode` was not loaded")
 
 			const chat = chatRequests(fixture)
 			expect(chat.length).toBeGreaterThan(0)
