@@ -3095,7 +3095,14 @@ export class KimchiAcpAgent implements Agent {
 				// exit outcome, because the handoff records isError false and no exit
 				// code. Consumed FIFO like the results — a recycled id's settle
 				// belongs to the block whose handoff it settled.
-				const settleResult = heldAcpId === undefined ? takeReplayToolResult(settles, upstreamId) : undefined
+				// A persisted settle belongs to a HANDOFF result only — a recycled
+				// upstream id can pair a same-id plain result with a later handoff,
+				// and consuming the settle on the plain block would slam the
+				// background outcome (and the rebound live id) onto the wrong call.
+				// Consumed FIFO like the results: the handoff's settle follows its
+				// block in the branch, so pairing holds per occurrence.
+				const settleResult =
+					heldAcpId === undefined && handoffHandle !== undefined ? takeReplayToolResult(settles, upstreamId) : undefined
 				const finalResult = settleResult ?? replayResult
 				// A call settled before this replay carries its live ACP id in the
 				// persisted settle: re-bind that id so the re-announcement updates
@@ -3106,7 +3113,8 @@ export class KimchiAcpAgent implements Agent {
 				if (record && heldAcpId === undefined && settleResult?.acpToolCallId !== undefined) {
 					record.toolCallIdMap.set(upstreamId, settleResult.acpToolCallId)
 					const seq = /\d+$/.exec(settleResult.acpToolCallId)
-					if (seq) record.nextToolCallId = Math.max(record.nextToolCallId, Number(seq[0]) + 1)
+					const seqN = seq ? Number(seq[0]) : Number.NaN
+					if (Number.isSafeInteger(seqN)) record.nextToolCallId = Math.max(record.nextToolCallId, seqN + 1)
 				}
 				const acpToolCallId = heldAcpId
 					? heldAcpId.acpToolCallId

@@ -14656,4 +14656,87 @@ describe("KimchiAcpAgent background bash handoff", () => {
 		expect(JSON.stringify(updatesFor(readId).map((u) => u.rawOutput))).toContain("file body")
 		expect(JSON.stringify(updatesFor(readId).map((u) => u.rawOutput))).not.toContain("boom")
 	})
+
+	it("does not consume a background settle for a same-id plain call that precedes the handed-off call", async () => {
+		// Reverse recycling order: a completed plain call used the upstream id
+		// FIRST; the handed-off (later settled) call reused it SECOND. A settle
+		// only ever settles a HANDOFF — the plain call's block must not consume
+		// it, or its identity/status get clobbered by the background outcome
+		// while the real settled call re-announces under a fresh id (the
+		// zombie-class bug, reintroduced by mis-pairing).
+		fake.branch = [
+			userTextEntry("two steps", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "read", arguments: { path: "/tmp/unrelated.txt" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-a",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "read",
+					content: [{ type: "text", text: "file body" }],
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a2",
+				"tr-a",
+			),
+			{
+				type: "message",
+				id: "tr-b",
+				parentId: "a2",
+				timestamp: "2026-05-09T00:00:03Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle: "h-dead", exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			{
+				type: "custom",
+				id: "st-b",
+				parentId: "tr-b",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-background-settle",
+				data: {
+					toolCallId: "tc-1",
+					acpToolCallId: "kt.bash.7",
+					isError: false,
+					text: "exit payload",
+					details: { handle: "h-dead", exited: true, exitCode: 0, reason: null },
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		const replayCalls = toolCalls()
+		expect(replayCalls).toHaveLength(2)
+		// The plain read replays with ITS OWN result and a fresh id — never the
+		// settle's identity or exit payload.
+		expect(replayCalls[0]?.status).toBe("completed")
+		expect(replayCalls[0]?.toolCallId).not.toBe("kt.bash.7")
+		expect(JSON.stringify(updatesFor(replayCalls[0]?.toolCallId ?? "").map((u) => u.rawOutput))).toContain("file body")
+		expect(JSON.stringify(updatesFor(replayCalls[0]?.toolCallId ?? "").map((u) => u.rawOutput))).not.toContain(
+			"exit payload",
+		)
+		// The handed-off call re-binds the persisted live id with the settle's outcome.
+		expect(replayCalls[1]?.toolCallId).toBe("kt.bash.7")
+		expect(replayCalls[1]?.status).toBe("completed")
+		expect(JSON.stringify(updatesFor("kt.bash.7").map((u) => u.rawOutput))).toContain("exit payload")
+	})
 })
