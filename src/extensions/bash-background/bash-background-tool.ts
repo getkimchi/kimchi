@@ -490,6 +490,8 @@ export function createBackgroundBashToolDefinition(
 		label: wrapped.label,
 		description,
 		promptSnippet: wrapped.promptSnippet,
+		// Background execution bypasses upstream's PI_* env injection. Do not
+		// advertise those variables in codemode's nested-tool declaration.
 		parameters: backgroundBashSchema,
 		renderShell: wrapped.renderShell,
 		prepareArguments: wrapped.prepareArguments as

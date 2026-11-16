@@ -184,7 +184,22 @@ export function ensureQuietStartupDefault(settings: Record<string, unknown>): bo
 	return true
 }
 
-const DISABLE_BUILTIN_MCP_OVERRIDE = "-builtin:mcp"
+/** Keep a Kimchi-owned replacement out of Pi's built-in load set, avoiding
+ * its generic replacement warning. Any existing entry (bare or `+`,`!`,`-`
+ * prefixed) is an explicit user choice and is left alone. */
+function ensureBuiltinExtensionDisabled(settings: Record<string, unknown>, builtinPath: string): boolean {
+	if (settings.extensions === undefined) {
+		settings.extensions = [`-${builtinPath}`]
+		return true
+	}
+	if (!Array.isArray(settings.extensions)) return false
+	const touched = settings.extensions.some(
+		(entry) => typeof entry === "string" && entry.replace(/^[+!-]/, "") === builtinPath,
+	)
+	if (touched) return false
+	settings.extensions.push(`-${builtinPath}`)
+	return true
+}
 
 /**
  * Disable pi ≥1.3's built-in `mcp` extension. It registers its own `/mcp`
@@ -192,23 +207,17 @@ const DISABLE_BUILTIN_MCP_OVERRIDE = "-builtin:mcp"
  * adapter (src/extensions/mcp/) registers `/mcp` and manages servers on
  * session_start. Upstream's replaceable-extension dedup only sees load-time
  * registrations, so both load and the slash palette shows two `/mcp`
- * commands. Seed `-builtin:mcp` so the built-in stays out of the load set;
- * any existing `builtin:mcp` entry (bare or `+`,`!`,`-` prefixed) counts as an
- * explicit user choice and is left alone — per-project `+builtin:mcp` still
- * re-enables it.
+ * commands. Per-project `+builtin:mcp` can still re-enable it explicitly.
  */
 export function ensureBuiltinMcpDisabled(settings: Record<string, unknown>): boolean {
-	if (settings.extensions === undefined) {
-		settings.extensions = [DISABLE_BUILTIN_MCP_OVERRIDE]
-		return true
-	}
-	if (!Array.isArray(settings.extensions)) return false
-	const touched = settings.extensions.some(
-		(entry) => typeof entry === "string" && entry.replace(/^[+!-]/, "") === "builtin:mcp",
-	)
-	if (touched) return false
-	settings.extensions.push(DISABLE_BUILTIN_MCP_OVERRIDE)
-	return true
+	return ensureBuiltinExtensionDisabled(settings, "builtin:mcp")
+}
+
+/** Kimchi always loads its guided codemode extension, so Pi's replaceable
+ * built-in would otherwise emit a conflict warning on every TUI/print start.
+ * Per-project `+builtin:codemode` remains an explicit opt-in. */
+export function ensureBuiltinCodemodeDisabled(settings: Record<string, unknown>): boolean {
+	return ensureBuiltinExtensionDisabled(settings, "builtin:codemode")
 }
 
 export const THIRD_PARTY_MAX_RETRIES = 4

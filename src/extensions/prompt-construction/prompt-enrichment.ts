@@ -80,13 +80,7 @@ import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } fro
 import { applyLanguageHint } from "./language-hint.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import { backgroundNotificationsReachUser, hasUserLoop } from "./session-user-loop.js"
-import {
-	buildSystemPrompt,
-	DELEGATION_TOOL_NAMES,
-	type EnvironmentInfo,
-	type PromptMode,
-	type ToolInfo,
-} from "./system-prompt.js"
+import { buildSystemPrompt, DELEGATION_TOOL_NAMES, type EnvironmentInfo, type PromptMode } from "./system-prompt.js"
 
 /** watchSteerOutcome classifier for the two continuation-nudge fire sites.
  *  Complied = the model calls a tool following the nudge; repeated = another
@@ -914,7 +908,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			pinnedLanguage = loadConfig({ cwd: ctx.cwd }).language
 
 			let systemPrompt = buildSystemPrompt({
-				tools: tools as readonly ToolInfo[],
+				tools,
 				env,
 				contextFiles: cachedContextFiles,
 				skills: skills,
