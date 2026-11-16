@@ -57,6 +57,11 @@ function e2eHandoffSeconds(): number | undefined {
  */
 export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	let panel: CommandsPanel | undefined
+	// Handles seen in any cohort of a session during this process's life.
+	// Every session_start installs a fresh registry, so without the set a
+	// repeated start could misread an earlier cohort's still-running
+	// process as an unsettled handoff; cleared on session_shutdown.
+	const liveHandlesBySession = new Map<string, Set<string>>()
 	pi.registerCommand("processes", {
 		description: "Inspect this session's managed Bash commands and live output",
 		async handler(_args, ctx) {
@@ -89,13 +94,19 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		// Reconcile unsettled handoffs BEFORE installing fresh state: a
 		// harness that died mid-run left handoffs with no recorded exit, so
 		// settle each as failed through the same transcript record the live
-		// settle uses. Handles the PREVIOUS live state still tracks are
-		// skipped: a session_start on an already-active session must not
-		// settle processes that are actually fine.
+		// settle uses. Handles still running under this session are skipped
+		// (they are tracked across restarts below): a repeated session_start
+		// of an already-active session must not false-settle a live process
+		// the registry installed by an earlier restart never saw spawn.
 		const sessionId = sessionCtx.sessionManager.getSessionId()
 		const priorState = getSessionState(sessionId)
+		const liveHandles = liveHandlesBySession.get(sessionId) ?? new Set<string>()
+		if (priorState) {
+			for (const handle of priorState.registry.handles()) liveHandles.add(handle)
+			liveHandlesBySession.set(sessionId, liveHandles)
+		}
 		for (const call of findUnsettledHandoffs(sessionCtx.sessionManager.getEntries())) {
-			if (priorState?.registry.getEntry(call.handle) !== undefined) continue
+			if (liveHandles.has(call.handle)) continue
 			const settle: BashBackgroundSettleData = {
 				toolCallId: call.toolCallId,
 				isError: true,
@@ -166,6 +177,7 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 			// registry would let bashControlExtension's exit watcher emit an
 			// "exited on its own" notice into the closing session.
 			setSessionState(sessionId, undefined)
+			liveHandlesBySession.delete(sessionId)
 			state.coordinator.dispose()
 			await state.registry.shutdown()
 		}

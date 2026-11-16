@@ -393,6 +393,12 @@ describe("bashBackgroundExtension — unsettled-handoff reconcile on session_sta
 		await rig.emit("session_start", {}, ctx)
 		expect(rig.getAppendedEntries(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE)).toHaveLength(0)
 
+		// A SECOND reload while the process still runs: the registry installed
+		// by the first reload never saw the spawn, so reconcile must not
+		// mistake the live process for a harness-restart orphan either.
+		await rig.emit("session_start", {}, ctx)
+		expect(rig.getAppendedEntries(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE)).toHaveLength(0)
+
 		await rig.emit("session_shutdown", {}, ctx)
 	})
 })

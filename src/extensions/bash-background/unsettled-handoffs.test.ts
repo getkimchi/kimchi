@@ -109,4 +109,24 @@ describe("findUnsettledHandoffs", () => {
 			{ toolCallId: "call-1", handle: "h-1" },
 		])
 	})
+
+	it("a surplus settle cannot close a handoff recorded after it", () => {
+		// Duplicate settles under a recycled id (corrupt transcript): only
+		// the handoff recorded BEFORE the surplus closes; the later handoff
+		// stays open for reconcile.
+		const entries = [
+			toolResult("call-1", { handoff: true, handle: "h-old" }),
+			settle("call-1"),
+			settle("call-1"),
+			toolResult("call-1", { handoff: true, handle: "h-new" }),
+		]
+		expect(findUnsettledHandoffs(entries)).toEqual([{ toolCallId: "call-1", handle: "h-new" }])
+	})
+
+	it("skips handoffs with an empty toolCallId", () => {
+		// No valid settle can carry an empty id, so such a handoff could
+		// never close; counting it would append an identical settle on every
+		// reconcile.
+		expect(findUnsettledHandoffs([toolResult("", handoff)])).toEqual([])
+	})
 })

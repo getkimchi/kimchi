@@ -578,6 +578,8 @@ export interface ProcessRegistry {
 	whenExited(handle: string): Promise<{ exitCode: number | null }>
 	/** Read-only entry state, or undefined if unknown. */
 	getEntry(handle: string): Readonly<ProcessEntry> | undefined
+	/** Every tracked handle (running or terminal-not-yet-removed). */
+	handles(): readonly string[]
 	/**
 	 * Atomically claim the right to collect `handle`'s terminal result
 	 * (first collector wins). Returns false when the entry is gone or
@@ -1058,6 +1060,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		claimTerminal,
 		releaseTerminal,
 		getEntry,
+		handles: () => [...entries.keys()],
 		remove,
 		runningCount,
 		onRunningCountChange,

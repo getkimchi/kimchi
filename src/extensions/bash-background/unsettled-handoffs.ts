@@ -40,25 +40,32 @@ function settledToolCallId(entry: SessionEntry): string | undefined {
 /**
  * Handoffs in {@link entries} with no matching settle, in transcript order.
  * Settles consume open handoffs FIFO per toolCallId (recycled-id rule
- * above); an id whose settle count meets its handoff count is fully closed.
+ * above), POSITIONALLY: a settle only closes the earliest open handoff
+ * recorded BEFORE it, so a surplus settle under an id cannot close a
+ * handoff that appears later in the transcript.
+ * Handoffs carrying an empty toolCallId are ignored: no valid settle can
+ * ever match one ({@link settledToolCallId} requires a non-empty id), so
+ * counting them would append unresolvable settles on every reconcile.
  */
 export function findUnsettledHandoffs(entries: readonly SessionEntry[]): UnsettledHandoff[] {
-	const openSettles = new Map<string, number>()
+	const candidates: UnsettledHandoff[] = []
+	const openById = new Map<string, UnsettledHandoff[]>()
 	for (const entry of entries) {
 		const id = settledToolCallId(entry)
-		if (id !== undefined) openSettles.set(id, (openSettles.get(id) ?? 0) + 1)
-	}
-	const unsettled: UnsettledHandoff[] = []
-	for (const entry of entries) {
-		if (entry.type !== "message" || entry.message.role !== "toolResult") continue
-		const handle = backgroundHandoffHandleFromDetails(entry.message.details)
-		if (handle === undefined) continue
-		const remaining = openSettles.get(entry.message.toolCallId) ?? 0
-		if (remaining > 0) {
-			openSettles.set(entry.message.toolCallId, remaining - 1)
+		if (id !== undefined) {
+			openById.get(id)?.shift()
 			continue
 		}
-		unsettled.push({ toolCallId: entry.message.toolCallId, handle })
+		if (entry.type !== "message" || entry.message.role !== "toolResult") continue
+		if (entry.message.toolCallId.length === 0) continue
+		const handle = backgroundHandoffHandleFromDetails(entry.message.details)
+		if (handle === undefined) continue
+		const candidate: UnsettledHandoff = { toolCallId: entry.message.toolCallId, handle }
+		candidates.push(candidate)
+		const queue = openById.get(candidate.toolCallId) ?? []
+		queue.push(candidate)
+		openById.set(candidate.toolCallId, queue)
 	}
-	return unsettled
+	const open = new Set([...openById.values()].flat())
+	return candidates.filter((candidate) => open.has(candidate))
 }
