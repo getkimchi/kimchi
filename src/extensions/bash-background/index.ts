@@ -100,7 +100,11 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 				toolCallId: call.toolCallId,
 				isError: true,
 				text: "",
-				details: { handle: call.handle, exited: false, exitCode: null, reason: "harness restarted" },
+				// Terminal isError over exited: false is the contradiction
+				// normalizeUnheldHandoffResult strips on replay, so record the
+				// process as exited; the LOSS signal lives in exitCode: null +
+				// "harness restarted", not in liveness markers.
+				details: { handle: call.handle, exited: true, exitCode: null, reason: "harness restarted" },
 			}
 			pi.appendEntry(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE, settle)
 		}

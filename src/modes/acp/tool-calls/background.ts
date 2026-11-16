@@ -14,8 +14,8 @@ import type { SessionNotification, ToolCallContent } from "@agentclientprotocol/
 import type { BackgroundBashToolDetails } from "../../../extensions/bash-background/bash-background-tool.js"
 import { getSessionState } from "../../../extensions/bash-background/session-registry.js"
 import {
-	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
 	type BashBackgroundSettleOutcome,
+	backgroundHandoffHandleFromDetails,
 } from "../../../shared/bash-background-settle.js"
 import { buildToolCallUpdate } from "./utils.js"
 
@@ -49,11 +49,7 @@ export type BackgroundToolCallContext = {
  * adopting the same handoff contract composes.
  */
 export function backgroundHandoffHandle(result: unknown): string | undefined {
-	const details = (result as { details?: unknown } | null | undefined)?.details
-	if (!details || typeof details !== "object") return undefined
-	const d = details as { handoff?: unknown; handle?: unknown }
-	if (d.handoff !== true || typeof d.handle !== "string" || d.handle.length === 0) return undefined
-	return d.handle
+	return backgroundHandoffHandleFromDetails((result as { details?: unknown } | null | undefined)?.details)
 }
 
 /**

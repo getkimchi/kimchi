@@ -83,4 +83,30 @@ describe("findUnsettledHandoffs", () => {
 			{ toolCallId: "call-1", handle: "h-1" },
 		])
 	})
+
+	it("ignores a partial settle missing the outcome fields (strict replay guard)", () => {
+		// A settle-shaped entry whose data carries only a string toolCallId
+		// closes nothing: replay's strict guard (isBashBackgroundSettleData)
+		// ignores it, so the reconcile must too — otherwise a corrupt settle
+		// would close a handoff here that replay still replays as unsettled.
+		const partial = {
+			type: "custom",
+			id: "e-p",
+			parentId: null,
+			timestamp: "",
+			customType: BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+			data: { toolCallId: "call-1" },
+		} as unknown as SessionEntry
+		const wrongTypes = {
+			type: "custom",
+			id: "e-w",
+			parentId: null,
+			timestamp: "",
+			customType: BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+			data: { toolCallId: "call-1", isError: "yes", text: 42 },
+		} as unknown as SessionEntry
+		expect(findUnsettledHandoffs([toolResult("call-1", handoff), partial, wrongTypes])).toEqual([
+			{ toolCallId: "call-1", handle: "h-1" },
+		])
+	})
 })

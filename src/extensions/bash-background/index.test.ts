@@ -352,7 +352,7 @@ describe("bashBackgroundExtension — unsettled-handoff reconcile on session_sta
 			toolCallId: "call-1",
 			isError: true,
 			text: "",
-			details: { handle: "h-1", exited: false, exitCode: null, reason: "harness restarted" },
+			details: { handle: "h-1", exited: true, exitCode: null, reason: "harness restarted" },
 		})
 
 		// Second session_start: the reload must see its own settle and not

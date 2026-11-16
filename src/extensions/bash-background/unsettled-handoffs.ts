@@ -12,11 +12,11 @@
  * handoff under its id, not just any handoff with that id.
  */
 
-import type { JsonValue } from "@earendil-works/pi-ai"
 import type { SessionEntry } from "@earendil-works/pi-coding-agent"
 import {
 	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
-	type BashBackgroundSettleData,
+	backgroundHandoffHandleFromDetails,
+	isBashBackgroundSettleData,
 } from "../../shared/bash-background-settle.js"
 
 /** One handoff whose process exit was never recorded: its pi toolCallId and
@@ -26,26 +26,15 @@ export interface UnsettledHandoff {
 	handle: string
 }
 
-/**
- * Handoff detection on a typed tool-result `details` payload: `handoff ===
- * true` plus a live registry handle. The shape is the extension's own
- * contract (BackgroundBashToolDetails) and details is JsonValue at the type
- * level, so the predicate — not a cast — is what recognizes the shape.
- */
-function handoffHandle(details: JsonValue | undefined): string | undefined {
-	if (typeof details !== "object" || details === null || Array.isArray(details)) return undefined
-	const { handoff, handle } = details as { handoff?: JsonValue; handle?: JsonValue }
-	if (handoff !== true || typeof handle !== "string" || handle.length === 0) return undefined
-	return handle
-}
-
-/** toolCallId of the call a settle CustomEntry closes. Session entries are
- *  typed (CustomEntry.data is unknown), so this checks the one payload
- *  field it consumes. */
+/** toolCallId of the call a settle CustomEntry closes — under the same
+ *  strict payload guard the ACP replay consumes with (shared module): a
+ *  partial/corrupt settle must not close a handoff here while replay
+ *  ignores it, or the reconcile would re-settle a call the transcript
+ *  already settles. */
 function settledToolCallId(entry: SessionEntry): string | undefined {
 	if (entry.type !== "custom" || entry.customType !== BASH_BACKGROUND_SETTLE_MESSAGE_TYPE) return undefined
-	const data = entry.data as BashBackgroundSettleData | undefined
-	return typeof data?.toolCallId === "string" && data.toolCallId.length > 0 ? data.toolCallId : undefined
+	if (!isBashBackgroundSettleData(entry.data) || entry.data.toolCallId.length === 0) return undefined
+	return entry.data.toolCallId
 }
 
 /**
@@ -62,7 +51,7 @@ export function findUnsettledHandoffs(entries: readonly SessionEntry[]): Unsettl
 	const unsettled: UnsettledHandoff[] = []
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message.role !== "toolResult") continue
-		const handle = handoffHandle(entry.message.details)
+		const handle = backgroundHandoffHandleFromDetails(entry.message.details)
 		if (handle === undefined) continue
 		const remaining = openSettles.get(entry.message.toolCallId) ?? 0
 		if (remaining > 0) {
