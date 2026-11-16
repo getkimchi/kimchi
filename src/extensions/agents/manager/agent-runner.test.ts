@@ -2763,6 +2763,7 @@ describe("buildInlineExtensionFactories", () => {
 			toolNames: ["read", "bash"],
 			workerReport: undefined,
 			costPerPrEnabled: false,
+			mcpAppsEnabled: true,
 			inheritedWorkId: undefined,
 			inheritedSegment: undefined,
 			effectiveExtensions: true,
@@ -2902,6 +2903,15 @@ describe("buildInlineExtensionFactories", () => {
 		const explicitList = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["mcp"] }))
 		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
 		expect(explicitList).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
+	})
+
+	it("omits the MCP adapter factory when the mcp-apps resource toggle is off", () => {
+		// The parent gates the same factory through plugins.mcp-apps in cli.ts;
+		// off must mean off for subagent sessions too, matching the DAP toggle.
+		const factories = buildInlineExtensionFactories(makeDeps({ mcpAppsEnabled: false }))
+
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+		expect(factories).toHaveLength(5)
 	})
 
 	it("omits the MCP adapter factory for allowlists that exclude MCP", () => {

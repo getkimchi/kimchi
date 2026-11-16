@@ -512,6 +512,7 @@ ${skillLines}`
 		toolNames,
 		workerReport: options.workerReport,
 		costPerPrEnabled: isResourceEnabled(COST_PER_PR_RESOURCE_ID),
+		mcpAppsEnabled: isResourceEnabled("plugins.mcp-apps"),
 		inheritedWorkId,
 		inheritedSegment,
 		effectiveExtensions,
@@ -882,6 +883,12 @@ export interface InlineExtensionFactoryDeps {
 	workerReport?: WorkerReportCapability
 	/** Whether the cost-per-PR resource is enabled; false drops the work-attribution extension. */
 	costPerPrEnabled: boolean
+	/**
+	 * Whether the mcp-apps resource toggle is on (plugins.mcp-apps, same id as
+	 * the parent's gate in cli.ts). Off means off for subagents too, matching
+	 * the DAP sibling gate.
+	 */
+	mcpAppsEnabled: boolean
 	/** Work attribution inherited from the parent session; null marks attribution as unavailable. */
 	inheritedWorkId?: string | null
 	/** Work segment inherited from the parent session. */
@@ -971,8 +978,9 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 	// last on purpose; the DAP × MCP ordering was verified safe for LLM-4472
 	// (per-session profile state, no ordering interaction).
 	if (
-		deps.effectiveExtensions === true ||
-		(deps.effectiveExtensions !== false && deps.effectiveExtensions.includes("mcp"))
+		deps.mcpAppsEnabled &&
+		(deps.effectiveExtensions === true ||
+			(deps.effectiveExtensions !== false && deps.effectiveExtensions.includes("mcp")))
 	) {
 		// Headless children: drop config warnings (no UI; console output is noise
 		// in the parent process) and connect the built-in gateway lazily so a
