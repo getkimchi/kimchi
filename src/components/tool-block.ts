@@ -1,16 +1,17 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { Container, visibleWidth } from "@earendil-works/pi-tui"
 import { formatDuration } from "../extensions/format.js"
+import { truncateLineToWidth } from "../truncate-lines.js"
 
 const MIN_GAP = 2
 
 export function buildAlignedLine(left: string, right: string, width: number): string {
 	if (width <= 0) return ""
 	const leftW = visibleWidth(left)
-	if (!right) return leftW > width ? truncateToWidth(left, width) : left
+	if (!right) return leftW > width ? truncateLineToWidth(left, width) : left
 
 	const rightW = visibleWidth(right)
-	if (rightW >= width) return truncateToWidth(right, width)
+	if (rightW >= width) return truncateLineToWidth(right, width)
 
 	const available = width - rightW - MIN_GAP
 	if (leftW > available) {
@@ -18,7 +19,7 @@ export function buildAlignedLine(left: string, right: string, width: number): st
 			const pad = width - rightW
 			return " ".repeat(Math.max(0, pad)) + right
 		}
-		const truncLeft = truncateToWidth(left, available)
+		const truncLeft = truncateLineToWidth(left, available)
 		const gap = width - visibleWidth(truncLeft) - rightW
 		return truncLeft + " ".repeat(Math.max(0, gap)) + right
 	}
@@ -28,7 +29,7 @@ export function buildAlignedLine(left: string, right: string, width: number): st
 
 function truncateLine(line: string, width: number): string {
 	if (visibleWidth(line) <= width) return line
-	return truncateToWidth(line, width)
+	return truncateLineToWidth(line, width)
 }
 
 export class ToolBlockView extends Container {
