@@ -25,21 +25,6 @@ redaction mechanics are unchanged; `local_paths` was the only split
 bucket: its path entity joins `environment` while credential-file entities
 join `credentials`.
 
-Category membership and labels are **not a stable wire contract**. Stored
-policies keyed per **entity** keep their exact meaning across upgrades.
-Older category-keyed policy rows are not remapped: a current label's
-members follow the new grouping, while a dropped label is rejected strictly
-locally / dropped tolerantly on the managed path. Prefer entity keys, or
-migrate category keys deliberately before upgrading to this label set. For
-example, moving `network` to the new name `environment` keeps its members,
-but `secrets → credentials` would now also include credentialed URLs.
-Stored **custom entity** definitions' category labels are normalized at
-parse time through the legacy-label map (e.g. `secrets` and
-`credentialed_urls` → `credentials`, `emails`/`phones`/`personal_details` →
-`person_data`, `local_paths`/`network` → `environment`). That mapping
-applies only to custom-definition metadata — never to category-keyed policy
-states.
-
 ### Removed names
 
 Twelve engine names were removed from the registry entirely — not
@@ -132,7 +117,7 @@ local.entities[E]    → local.categories[cat(E)]  → registry default
   platform ships; dropping leaves registry defaults intact). Before retiring
   an old category label, migrate any stored category overrides to per-entity
   states: dropping an override that explicitly enabled a default-off member
-  would lose that explicit intent even though the defaults stay active.
+  would lose that explicit intent; the remaining defaults stay in force.
 - The org policy is fetched at session startup, so managed changes apply to
   **new sessions**; local settings.json edits apply mid-session.
 - Under an org FORCE_* resource lock on `extensions.pii-redaction`, the
