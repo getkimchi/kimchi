@@ -1,8 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { isHomebrewInstall, stableExecutablePath } from "./paths.js"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { isHomebrewInstall, resetHomebrewKegCacheForTests, stableExecutablePath } from "./paths.js"
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return {
+		...actual,
+		realpathSync: Object.assign(vi.fn(actual.realpathSync), { native: actual.realpathSync.native }),
+	}
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,6 +33,8 @@ describe("isHomebrewInstall", () => {
 	let origEnv: string | undefined
 
 	beforeEach(() => {
+		resetHomebrewKegCacheForTests()
+		vi.mocked(realpathSync).mockClear()
 		tmp = mkdtempSync(join(tmpdir(), "kimchi-paths-test-"))
 		origExecPath = Object.getOwnPropertyDescriptor(process, "execPath")
 		origPlatform = Object.getOwnPropertyDescriptor(process, "platform")
@@ -37,6 +47,7 @@ describe("isHomebrewInstall", () => {
 		if (origEnv === undefined) process.env.HOMEBREW_PREFIX = undefined
 		else process.env.HOMEBREW_PREFIX = origEnv
 		rmSync(tmp, { recursive: true, force: true })
+		resetHomebrewKegCacheForTests()
 	})
 
 	function setExecPath(p: string) {
@@ -103,6 +114,34 @@ describe("isHomebrewInstall", () => {
 		process.env.HOMEBREW_PREFIX = tmp
 		setExecPath(binPath)
 		expect(stableExecutablePath()).toBe(binPath)
+	})
+
+	it("reuses the first realpath result across install and stable-path queries", () => {
+		const keg = join(tmp, "Cellar", "kimchi", "1.2.3")
+		const binary = join(keg, "bin", "kimchi")
+		touch(binary)
+		mkdirSync(join(tmp, "opt"), { recursive: true })
+		symlinkSync(keg, join(tmp, "opt", "kimchi"))
+		process.env.HOMEBREW_PREFIX = tmp
+		setExecPath(binary)
+
+		expect(isHomebrewInstall()).toBe(true)
+		expect(realpathSync).toHaveBeenCalledTimes(2)
+
+		expect(isHomebrewInstall()).toBe(true)
+		expect(stableExecutablePath()).toBe(join(tmp, "opt", "kimchi", "bin", "kimchi"))
+		expect(realpathSync).toHaveBeenCalledTimes(2)
+	})
+
+	it("caches a failed realpath probe as a non-Homebrew install", () => {
+		process.env.HOMEBREW_PREFIX = tmp
+		setExecPath(join(tmp, "missing", "kimchi"))
+
+		expect(isHomebrewInstall()).toBe(false)
+		expect(realpathSync).toHaveBeenCalledOnce()
+		expect(isHomebrewInstall()).toBe(false)
+		expect(stableExecutablePath()).toBe(process.execPath)
+		expect(realpathSync).toHaveBeenCalledOnce()
 	})
 
 	it("returns false when Cellar directory does not exist under prefix", () => {

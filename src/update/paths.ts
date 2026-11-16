@@ -112,7 +112,28 @@ export function stableExecutablePath(): string {
 	return existsSync(opt) ? opt : process.execPath
 }
 
-function homebrewKeg(): { prefix: string; cellar: string; realExec: string } | undefined {
+type HomebrewKeg = { prefix: string; cellar: string; realExec: string }
+
+let cachedHomebrewKeg: HomebrewKeg | undefined
+let homebrewKegCachePopulated = false
+
+/** The executable and Homebrew layout are process-lifetime facts. Cache both
+ *  outcomes, including probe failures, rather than repeatedly blocking on
+ *  realpath; only tests replace these facts and use the reset hook below. */
+function homebrewKeg(): HomebrewKeg | undefined {
+	if (homebrewKegCachePopulated) return cachedHomebrewKeg
+	homebrewKegCachePopulated = true
+	cachedHomebrewKeg = probeHomebrewKeg()
+	return cachedHomebrewKeg
+}
+
+/** Reset the process-lifetime probe result after replacing the test process layout. */
+export function resetHomebrewKegCacheForTests(): void {
+	cachedHomebrewKeg = undefined
+	homebrewKegCachePopulated = false
+}
+
+function probeHomebrewKeg(): HomebrewKeg | undefined {
 	if (process.platform === "win32") return undefined
 
 	let realExec: string
