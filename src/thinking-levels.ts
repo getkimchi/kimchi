@@ -24,7 +24,7 @@ export const THINKING_LEVEL_DESCRIPTIONS: Record<(typeof CANONICAL_THINKING_LEVE
 	medium: "Everyday coding: features, fixes, tests",
 	high: "Complex features, tricky bugs",
 	xhigh: "System design, hard debugging",
-	max: "Hardest problems; slowest, most costly",
+	max: "Hardest problems; the slowest, most costly",
 }
 
 const LEVEL_RANK = new Map<string, number>(CANONICAL_THINKING_LEVELS.map((level, rank) => [level, rank]))
