@@ -615,9 +615,11 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		for (let offset = 0; offset < entityIds.length; offset += 500) {
 			const page = entityIds.slice(offset, offset + 500)
 			rows.push(
-				...db.query<OutboxEvent, [string, ...string[]]>(
-					`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${page.map(() => "?").join(",")}) ORDER BY rowid`,
-				).all(accountKey, ...page),
+				...db
+					.query<OutboxEvent, [string, ...string[]]>(
+						`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${page.map(() => "?").join(",")}) ORDER BY rowid`,
+					)
+					.all(accountKey, ...page),
 			)
 		}
 		return rows

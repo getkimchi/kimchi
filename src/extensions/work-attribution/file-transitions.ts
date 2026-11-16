@@ -504,7 +504,7 @@ export interface SharedTypeReads {
 
 export async function knownTransitionRepositories(
 	checkBudget: () => void = () => {},
-	shared?: SharedTypeReads,
+	_shared?: SharedTypeReads,
 ): Promise<string[]> {
 	const repositories = new Set<string>()
 	// Hydrate, then let the backend return only distinct repositories: decoding

@@ -280,11 +280,7 @@ it("projects distinct transition repositories, without including other record ty
 	useBackendFactory(() => backend)
 	for (const record of records) capture(dir, record, "/ignored/source")
 	for (const repository of ["/b", "/a", "/b"])
-		capture(
-			dir,
-			{ ...records[3], type: "file_transition", repository, transitionId: repository },
-			"/ignored/source",
-		)
+		capture(dir, { ...records[3], type: "file_transition", repository, transitionId: repository }, "/ignored/source")
 	backend.insertRecord({
 		recordHash: "damaged",
 		type: "file_transition",
@@ -305,7 +301,11 @@ describe("records conformance (SQLite via Bun driver)", { skip: isBun, timeout: 
 		try {
 			for (const record of records) driver("capture", dir, JSON.stringify(record))
 			for (const repository of ["/b", "/a", "/b"])
-				driver("capture", dir, JSON.stringify({ ...records[3], type: "file_transition", repository, transitionId: repository }))
+				driver(
+					"capture",
+					dir,
+					JSON.stringify({ ...records[3], type: "file_transition", repository, transitionId: repository }),
+				)
 			expect(driver("transition-repositories", dir, "damaged")).toEqual(["/a", "/b"])
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
