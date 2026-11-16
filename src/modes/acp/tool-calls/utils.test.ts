@@ -812,6 +812,26 @@ describe("bashControlWaitMeta", () => {
 		expect(args).toEqual({ wait: true, handles: ["h1"] })
 	})
 
+	it("returns commands in full length, never truncated", () => {
+		const long = `git checkout HEAD -- src/utils/clipboard-read.ts && pnpm run check 2>&1 | tail -3 && git status --short && echo ${"x".repeat(200)}`
+		const longSnapshots: ProcessDisplaySnapshot[] = [
+			{
+				handle: "hl",
+				state: "running",
+				startedAt: Date.parse("2026-11-11T12:00:00Z"),
+				command: long,
+			} as ProcessDisplaySnapshot,
+		]
+		const longRegistry = {
+			displaySnapshot: (handle: string) => longSnapshots.find((s) => s.handle === handle),
+			listDisplaySnapshots: () => longSnapshots,
+		} as unknown as ProcessRegistry
+		const meta = bashControlWaitMeta("bash_control", { wait: true, handles: ["hl"] }, longRegistry) as {
+			bashControlWait: { commands: Array<{ command: string }> }
+		}
+		expect(meta.bashControlWait.commands[0]?.command).toBe(long)
+	})
+
 	it("returns undefined for a stale handle", () => {
 		const args = { handle: "gone", action: "stop" }
 		expect(bashControlWaitMeta("bash_control", args, registry)).toBeUndefined()
