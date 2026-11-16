@@ -19,6 +19,9 @@ const FERMENT_V2_TOOL_NAMES = ["get_ferment_v2", "update_ferment_v2"]
 const makeMockPi = (
 	overrides: {
 		allTools?: Array<{ name: string }>
+		/** Initial active set, mirroring what upstream maintains: defaults,
+		 *  user `defaultTools`, and tools upstream auto-activated at registration. */
+		activeTools?: string[]
 		events?: { on: (c: string, h: (d: unknown) => void) => () => void; emit: (c: string, d: unknown) => void }
 	} = {},
 ): ExtensionAPI => {
@@ -28,7 +31,7 @@ const makeMockPi = (
 	// pi.setActiveTools() when applying a disable vote. Provide a real list
 	// backed by the same mock so disabling a tool before apply() records the
 	// vote correctly.
-	let activeTools: string[] = []
+	let activeTools: string[] = overrides.activeTools ?? []
 	const getActiveTools = vi.fn(() => activeTools)
 	const wrappedSetActiveTools = vi.fn((names: string[]) => {
 		activeTools = [...names]
@@ -158,10 +161,57 @@ describe("apply", () => {
 		expect(isProviderReadOnlyTool(permissionsPi, "atlassian_getJiraIssue")).toBe(false)
 	})
 
-	it("idle profile restores all registered tools minus ferment-only tools", () => {
+	it("idle preserves the active surface without unioning the whole registry", () => {
+		// Upstream registers codemode/tool_search inactive (defaultActive: false).
+		// The idle profile restores normal chat from the ACTIVE set upstream
+		// maintains — it must not read the registry as its base, or registered
+		// default-off extension tools become active just because Ferment applied
+		// an idle snapshot. User-activated tools survive; ferment-only tools and
+		// never-activated registry entries do not.
+		const pi = makeMockPi({
+			allTools: [
+				{ name: "read" },
+				{ name: "bash" },
+				{ name: "codemode" },
+				{ name: "tool_search" },
+				{ name: "propose_ferment_scoping" },
+			],
+			activeTools: ["read", "bash", "codemode", "propose_ferment_scoping"],
+		})
+
+		apply("idle", "ferment", pi)
+
+		const calledWith = vi.mocked(pi.setActiveTools).mock.calls[0][0]
+		expect(calledWith).toContain("read")
+		expect(calledWith).toContain("bash")
+		expect(calledWith).toContain("codemode")
+		expect(calledWith).not.toContain("tool_search")
+		expect(calledWith).not.toContain("propose_ferment_scoping")
+	})
+
+	it("idle leaves upstream-inactive registry tools out of the active set", () => {
+		// Pre-fix regression: with an active surface of only the default builtins,
+		// an idle snapshot based on getAllTools() activated codemode/tool_search
+		// even though the user never opted in and Ferment had no work to restore.
+		const pi = makeMockPi({
+			allTools: [{ name: "read" }, { name: "bash" }, { name: "write" }, { name: "codemode" }, { name: "tool_search" }],
+			activeTools: ["read", "bash", "write"],
+		})
+
+		apply("idle", "ferment", pi)
+
+		const calledWith = vi.mocked(pi.setActiveTools).mock.calls[0][0]
+		expect(calledWith).toContain("read")
+		expect(calledWith).toContain("bash")
+		expect(calledWith).toContain("write")
+		expect(calledWith).not.toContain("codemode")
+		expect(calledWith).not.toContain("tool_search")
+	})
+
+	it("idle profile restores the previously active surface minus ferment-only tools", () => {
 		// Simulate a real-world toolset: shared core tools + bash + write + a
-		// ferment-only tool. The idle profile should keep everything except the
-		// ferment-only tool — mirroring the pre-unification behaviour where
+		// ferment-only tool. The idle profile keeps the active surface except
+		// the ferment-only tools — mirroring the pre-unification behaviour where
 		// exiting a ferment returned the user to their normal chat toolset.
 		const pi = makeMockPi({
 			allTools: [
@@ -172,6 +222,7 @@ describe("apply", () => {
 				{ name: "propose_ferment_scoping" }, // ferment-only — filtered out
 				{ name: "start_ferment_step" }, // ferment-only — filtered out
 			],
+			activeTools: ["read", "bash", "write", "edit", "propose_ferment_scoping", "start_ferment_step"],
 		})
 
 		apply("idle", "ferment", pi)
@@ -196,6 +247,7 @@ describe("apply", () => {
 		// session_start on non-Windows), the idle snapshot must exclude it.
 		const pi = makeMockPi({
 			allTools: [{ name: "read" }, { name: "bash" }, { name: "powershell" }],
+			activeTools: ["read", "bash", "powershell"],
 		})
 		createToolVisibility(pi).disable(["powershell"])
 		// Clear the disable's own setActiveTools call so the assertion observes
@@ -303,7 +355,11 @@ describe("apply", () => {
 			},
 		}
 		const dapPi = makeMockPi({ allTools: [{ name: "bash" }, { name: "edit" }], events })
-		const fermentPi = makeMockPi({ allTools: [{ name: "bash" }, { name: "edit" }], events })
+		const fermentPi = makeMockPi({
+			allTools: [{ name: "bash" }, { name: "edit" }],
+			activeTools: ["bash", "edit"],
+			events,
+		})
 
 		// DAP votes to defer a tool under its own pi at session_start.
 		createToolVisibility(dapPi).disable(["bash"])
@@ -439,20 +495,30 @@ describe("reapplyCurrentProfile", () => {
 		expect(pi.setActiveTools).not.toHaveBeenCalled()
 	})
 
-	it("re-applies the idle profile, picking up newly-registered tools", () => {
-		// idle uses pi.getAllTools() as its base. If a tool is registered after
-		// the initial apply(), reapplyCurrentProfile must pick it up.
-		const pi = makeMockPi({ allTools: [{ name: "read" }] })
+	it("re-applies the idle profile, preserving active tools registered since the initial apply", () => {
+		// idle bases off the upstream-maintained active set: upstream activates
+		// default-active tools at registration, so a resnapshot must keep a
+		// newly-activated tool — while registered-but-inactive tools
+		// (defaultActive: false, e.g. tool_search) stay out.
+		const pi = makeMockPi({ allTools: [{ name: "read" }], activeTools: ["read"] })
 		apply("idle", "ferment", pi)
 
-		// A new tool appears (simulated by updating getAllTools)
-		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([{ name: "read" }, { name: "server_get_record" }])
+		// A new tool registers and upstream auto-activates it, while an
+		// upstream-inactive extension tool registers without activating.
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
+			{ name: "read" },
+			{ name: "server_get_record" },
+			{ name: "tool_search" },
+		])
+		pi.setActiveTools(["read", "server_get_record"])
 		vi.clearAllMocks()
 
 		reapplyCurrentProfile(pi)
 
 		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("server_get_record")
+		expect(calledWith).not.toContain("tool_search")
 	})
 })
 
@@ -504,7 +570,7 @@ describe("registry churn resnapshot", () => {
 	const lastActiveCall = (pi: ExtensionAPI): string[] => vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] ?? []
 
 	it("a reapply against a mid-rebuild registry preserves the previously active tools", () => {
-		const pi = makeMockPi({ allTools: asTools(FULL_TOOLS) })
+		const pi = makeMockPi({ allTools: asTools(FULL_TOOLS), activeTools: [...FULL_TOOLS] })
 		apply("idle", "adhoc", pi)
 		expect(pi.getActiveTools()).toHaveLength(31)
 
@@ -565,18 +631,21 @@ describe("tool-surface debug logging", () => {
 			apply("idle", "adhoc", makeMockPi({ allTools: [{ name: "read" }, { name: "bash" }] }))
 			expect(debugSpy).not.toHaveBeenCalled()
 
-			// Flag on: first apply logs the addition.
+			// Flag on: first apply logs the addition. implementation-ferment
+			// unions the registry, so read/bash show up as added.
 			process.env.KIMCHI_DEBUG_TOOL_SURFACE = "1"
-			const pi = makeMockPi({ allTools: [{ name: "read" }, { name: "bash" }] })
-			apply("idle", "adhoc", pi)
+			const pi = makeMockPi({ allTools: [{ name: "read" }, { name: "bash" }], activeTools: [] })
+			apply("implementation-ferment", "adhoc", pi)
 			expect(debugSpy).toHaveBeenCalledTimes(1)
 			const line = debugSpy.mock.calls[0]?.[0] as string
-			expect(line).toContain("[tool-surface] apply profile=idle")
+			expect(line).toContain("[tool-surface] apply profile=implementation-ferment")
 			expect(line).toContain("trigger=apply")
-			expect(line).toContain("added=[read,bash]")
+			expect(line).toContain("added=[")
+			expect(line).toContain("read")
+			expect(line).toContain("bash")
 
 			// Same-profile re-apply: nothing new added.
-			apply("idle", "adhoc", pi)
+			apply("implementation-ferment", "adhoc", pi)
 			const second = debugSpy.mock.calls[1]?.[0] as string
 			expect(second).not.toContain("added=[")
 		} finally {

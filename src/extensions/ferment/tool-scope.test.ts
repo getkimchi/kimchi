@@ -247,10 +247,12 @@ describe("worker profile", () => {
 describe("idle profile", () => {
 	it("restores the user's full base toolset minus ferment-only tools", () => {
 		// The idle profile is a special case: rather than returning the catalog's
-		// fixed SHARED_CORE_TOOLS list, it derives from the registered toolset so
-		// users keep access to bash, edit, write, third-party tools, etc. when
-		// they exit a ferment back to normal chat. Only ferment-only tools are
-		// filtered out. See PR #683 review feedback for the rationale.
+		// fixed SHARED_CORE_TOOLS list, it restores the user's previously active
+		// surface (what upstream kept active — defaults, `defaultTools`, tools
+		// activated at registration) so users keep access to bash, edit, write,
+		// third-party tools, etc. when they exit a ferment back to normal chat.
+		// Only ferment-only tools are filtered out. See PR #683 review feedback
+		// for the rationale.
 		const allTools = [
 			"read",
 			"bash",
@@ -261,7 +263,9 @@ describe("idle profile", () => {
 			"start_ferment_step", // ferment-only: filtered out
 			"activate_ferment_phase", // ferment-only: filtered out
 		]
-		const pi = createPi([], allTools)
+		// active = registered: upstream activates default-active tools at
+		// registration, mirroring a real session before any profile ran.
+		const pi = createPi([...allTools], allTools)
 
 		applyFermentToolProfile(pi, "idle")
 

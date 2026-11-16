@@ -23,7 +23,17 @@ type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 
 function createPi() {
 	const handlers = new Map<string, EventHandler>()
-	let activeTools = ["read", "bash", "start_ferment_step"]
+	// Mirror upstream: every registered default-active tool is active at load —
+	// including ferment's workflow tools — and codemode/tool_search register
+	// defaultActive: false upstream, so they stay out unless opted in.
+	let activeTools = [
+		"read",
+		"bash",
+		"list_ferments",
+		"scope_ferment",
+		"activate_ferment_phase",
+		"start_ferment_step",
+	]
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			handlers.set(event, handler)
@@ -39,6 +49,8 @@ function createPi() {
 			{ name: "scope_ferment" },
 			{ name: "activate_ferment_phase" },
 			{ name: "start_ferment_step" },
+			{ name: "codemode" },
+			{ name: "tool_search" },
 		]),
 		setActiveTools: vi.fn((toolNames: string[]) => {
 			activeTools = toolNames
@@ -206,7 +218,10 @@ describe("registerFermentEvents", () => {
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
 		// With no active ferment, before_agent_start applies the idle profile:
-		// normal tools remain available, but ferment workflow tools stay hidden.
+		// normal tools remain available and ferment workflow tools stay hidden.
+		// Registered default-off extension tools (codemode, tool_search) are NOT
+		// activated — ferment switching on/off must never widen the chat surface
+		// with tools the user never opted into.
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		expect(lastCall).toContain("bash")
 		expect(lastCall).toContain("read")
@@ -214,6 +229,8 @@ describe("registerFermentEvents", () => {
 		expect(lastCall).not.toContain("scope_ferment")
 		expect(lastCall).not.toContain("activate_ferment_phase")
 		expect(lastCall).not.toContain("start_ferment_step")
+		expect(lastCall).not.toContain("codemode")
+		expect(lastCall).not.toContain("tool_search")
 	})
 
 	it("exposes ferment planning tools for a one-shot run after bootstrap creates the draft", async () => {
