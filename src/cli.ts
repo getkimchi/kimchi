@@ -82,6 +82,7 @@ import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
+import blockingInstructionsExtension from "./extensions/blocking-instructions.js"
 import branchCommandExtension from "./extensions/branch-command.js"
 import bugReportDestinationExtension from "./extensions/bug-report.js"
 import buildInfoExtension from "./extensions/build-info.js"
@@ -123,6 +124,7 @@ import { installKimchiOAuth } from "./extensions/login/flow.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
+import loopTraceExtension from "./extensions/loop-trace.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./extensions/mcp/index.js"
 import { UpstreamMcpProbe } from "./extensions/mcp/probe.js"
@@ -174,7 +176,6 @@ import statusExtension from "./extensions/status/index.js"
 import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
 import { steerOutcomeWatcherExtension } from "./extensions/steer-outcome-watcher.js"
 import stripImagesExtension from "./extensions/strip-images.js"
-import loopTraceExtension from "./extensions/loop-trace.js"
 import submitTimingExtension from "./extensions/submit-timing.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -1104,6 +1105,7 @@ async function cliMain(): Promise<void> {
 				requestTimingExtension,
 				submitTimingExtension,
 				loopTraceExtension,
+				blockingInstructionsExtension,
 				llmResponseLogExtension,
 				activityExtension,
 				infrastructureErrorTracker.extension,

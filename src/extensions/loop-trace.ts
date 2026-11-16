@@ -194,7 +194,9 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 								: `kind${(entry as { detail?: { kind?: number } }).detail?.kind ?? "?"}`
 				gc.count++
 				gc.ms += entry.duration
-				const k = gc.byKind[kind] ?? (gc.byKind[kind] = { count: 0, ms: 0 })
+				const stored = gc.byKind[kind]
+				const k = stored ?? { count: 0, ms: 0 }
+				if (!stored) gc.byKind[kind] = k
 				k.count++
 				k.ms += entry.duration
 			}
@@ -239,7 +241,7 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 	function scheduleHotCapture(lagSeq: number): void {
 		if (!profiler || hotBusy) return
 		hotBusy = true
-		profiler.post("Profiler.stop", (err, result) => {
+		profiler.post("Profiler.stop", (_err, result) => {
 			try {
 				// V8 profiles are parent→children[] trees (no child.parent pointers);
 				// caller chains come from inverting the children lists.
@@ -267,8 +269,9 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 					const fn = node.callFrame.functionName || "(anonymous)"
 					const at = `${node.callFrame.url.split("/").slice(-2).join("/")}:${node.callFrame.lineNumber}`
 					const key = `${fn}@${at}`
-					const cur = byFn.get(key) ?? byFn.set(key, { fn, at, hits: 0, caller: ancestor(node, 1), grandparent: ancestor(node, 2) }).get(key)!
-					cur.hits += node.hitCount
+					const cur = byFn.get(key)
+					if (cur) cur.hits += node.hitCount
+					else byFn.set(key, { fn, at, hits: node.hitCount, caller: ancestor(node, 1), grandparent: ancestor(node, 2) })
 				}
 				const frames = [...byFn.values()].sort((a, b) => b.hits - a.hits).slice(0, 6)
 				if (frames.length) writeMark(path, "loop.hot", { lagSeq, hot: frames })

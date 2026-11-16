@@ -92,6 +92,31 @@ step summary.
 The current limits live in [budgets.json](budgets.json); its `_meta`
 records the arch/commit/runner/counter tier they were calibrated on.
 
+## Instructions per blocking pass
+
+The ledger scenario reports `blocking_instr_p95`, a median across reps of the
+95th percentile **main-thread CPU-instruction delta between synchronous
+execution boundaries**, plus advisory maximum, total and sample counts. Unlike
+the whole-tree `instr` budget, this excludes descendants' work and is not
+derived from wall clock. It applies uniformly to rendering, encoding, discovery
+and unknown future passes; it does not try to diagnose them.
+
+Collection is opt-in through `KIMCHI_BLOCKING_INSTRUMENT`
+(`KIMCHI_BLOCKING_INSTRUMENT=<absolute path>` on the built BUN/Linux binary).
+The registered extension uses `async_hooks` boundaries and reads a per-thread
+`perf_event_open` counter for that thread. Promise continuations are included,
+without per-promise stacks. Samples live in a bounded in-memory series and one
+summary is emitted after shutdown; there is no per-pass file write. Relative
+paths are refused without arming the counter. FFI is never loaded in normal
+sessions and there is no CPU-time fallback.
+
+Lack of Linux/PMU support, a read error, or a truncated measurement is marked
+explicitly; it cannot silently pass. Instructions measure retired CPU work, not
+I/O waits, sleeping or blocking without CPU activity; the pre-existing
+keystroke detectors cover those separate effects.
+
+## Usage
+
 ## Usage
 
 ```sh

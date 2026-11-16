@@ -173,6 +173,8 @@ EXTRACTORS = {
         # 650k-record scale of the same hold is the multi-second stall).
         "keylat_max_ms": (lambda r: r.get("keylat_max_ms"), "ms max",
                           "steady-state worst keystroke echo (post-settle); per-pass event-loop hold detector", (ABS, 150.0)),
+        "blocking_instr_p95": (lambda r: r.get("blocking_instr_p95"), "instructions",
+                                "p95 main-thread instructions per generic synchronous execution pass", (RATIO, WORK)),
         # The additive index set (work_records_imported, outbox_pending_cover,
         # outbox_batches_by_account) is applied per-open by the ledger fix and
         # by nothing else: a binary that opens the scaled fixture and leaves
@@ -230,7 +232,8 @@ def run_selfcheck():
                                 "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 1},
                                {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
                                 "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 1}],
-                   "keylat_p95_ms": 5.0, "keylat_max_ms": 6.0, "ledger_indexes": ["work_records_imported", "outbox_pending_cover", "outbox_batches_by_account"]},
+                   "keylat_p95_ms": 5.0, "keylat_max_ms": 6.0, "blocking_instr_p95": 100,
+                   "ledger_indexes": ["work_records_imported", "outbox_pending_cover", "outbox_batches_by_account"]},
     }
 
     def budgets_for(over=None):
@@ -312,6 +315,11 @@ def run_selfcheck():
         problems.append("tier guard: cpu_ms vs cgroup-instructions not flagged")
     if tier_mismatch([{}], "cgroup-instructions") is None:
         problems.append("tier guard: missing counter tier not flagged")
+    missing = dict(rec_tpl["ledger"])
+    missing.pop("blocking_instr_p95")
+    _, fails = classify("ledger", missing, good)
+    if not any(f[1] == "blocking_instr_p95" for f in fails):
+        problems.append("ledger: missing per-pass measurements did not fail closed")
     if problems:
         print("GATE SELFCHECK FAILED:\n- " + "\n- ".join(problems), file=sys.stderr)
         return 1
@@ -336,6 +344,9 @@ ADVISORY = {  # reported, never gated: wall-clock is contention noise
               "keylat_over_100ms": lambda r: r.get("keylat_over_100ms"),
               "home_mb": lambda r: ((r.get("home_bytes") or {}).get("total") or 0) / 1e6,
               "state_json_mb": lambda r: (r.get("state_json_bytes") or 0) / 1e6},
+    "ledger": {"blocking_instr_max": lambda r: r.get("blocking_instr_max"),
+               "blocking_instr_total": lambda r: r.get("blocking_instr_total"),
+               "blocking_instr_samples": lambda r: r.get("blocking_instr_samples")},
 }
 
 

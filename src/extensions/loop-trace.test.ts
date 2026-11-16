@@ -63,7 +63,9 @@ describe("loop trace", () => {
 			(m) => m.event === "loop.lag" && typeof m.lagMs === "number" && m.lagMs >= 40,
 		)
 		expect(attributed).toBe(true)
-		const lag = marks(path).filter((m) => m.event === "loop.lag" && (m.lagMs as number) >= 40).at(-1)
+		const lag = marks(path)
+			.filter((m) => m.event === "loop.lag" && (m.lagMs as number) >= 40)
+			.at(-1)
 		// The hold is CPU-bound and event-loop-only (the worker thread kept ticking).
 		expect(lag?.cpuMs).toBeGreaterThanOrEqual(40)
 		expect(lag?.beat).toBeGreaterThanOrEqual(5)
@@ -80,7 +82,9 @@ describe("loop trace", () => {
 		// L2: the ring-buffered V8 profile lands as a loop.hot mark referencing
 		// the lag mark's seq and names the hot function.
 		await waitForMark(path, (m) => m.event === "loop.hot")
-		const hotMark = (marks(path).filter((m) => m.event === "loop.hot").at(-1) ?? {}) as {
+		const hotMark = (marks(path)
+			.filter((m) => m.event === "loop.hot")
+			.at(-1) ?? {}) as {
 			lagSeq?: number
 			hot?: { fn: string; at: string; hits: number }[]
 		}

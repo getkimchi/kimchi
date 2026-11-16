@@ -719,6 +719,10 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
     itself left behind, so additive-index application is observable.
     """
     argv = [binary, "--provider", "fake", "--model", "basic"]
+    # Opt-in main-thread perf instruction accounting. A closing summary, not
+    # per-pass file writes; there is no wall-clock/instrument-specific counter.
+    instr_path = os.path.join(env["HOME"], "blocking-instructions.jsonl")
+    env["KIMCHI_BLOCKING_INSTRUMENT"] = instr_path
     t0 = time.time()
     tp, sampler, cg = launch(env, cwd, argv, "ledger")
     pid = tp.proc.pid
@@ -802,6 +806,26 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
     finally:
         stop_append.set()
         cleanup(tp, pid, sampler, cg)
+    # The instrument closes on session_shutdown. Parse the single complete
+    # summary only afterwards; unsupported/failed/truncated measurements must
+    # remain visible, never masquerade as a zero or a clean measurement.
+    try:
+        with open(instr_path, encoding="utf-8") as fh:
+            records = [json.loads(line) for line in fh if line.strip()]
+        for mark in records:
+            if mark.get("event") == "blocking.instr.summary":
+                res["blocking_instr_p95"] = mark.get("p95")
+                res["blocking_instr_max"] = mark.get("max")
+                res["blocking_instr_total"] = mark.get("total")
+                res["blocking_instr_samples"] = mark.get("samples")
+                if mark.get("truncated"):
+                    res["error"] = "blocking instruction samples exceeded the bounded trace"
+                    res["ok"] = False
+            elif mark.get("event") in ("blocking.instr.unsupported", "blocking.instr.error", "blocking.instr.truncated"):
+                res["blocking_instr_error"] = mark.get("reason") or mark.get("event")
+                res["ok"] = False
+    except OSError:
+        pass  # an older binary has no such instrument; the gate fails closed
     res["home_bytes"] = home_footprint(env["HOME"])
     return res
 
