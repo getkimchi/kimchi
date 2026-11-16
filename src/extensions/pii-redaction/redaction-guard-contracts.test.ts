@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest"
 import { parseLocalPolicy, resolveRedactionPolicy } from "./policy.js"
-import { applyCustomPatterns, isBase64ShadowDrop, isGenericNonSecretValue, redactObjectStrings, redactText } from "./redactor.js"
+import {
+	applyCustomPatterns,
+	isBase64ShadowDrop,
+	isGenericNonSecretValue,
+	redactObjectStrings,
+	redactText,
+} from "./redactor.js"
 
 describe("long-run base64 witness", () => {
 	// Double-'=' evidence sweeps ~0 on the measured corpus; the FP spans sit
@@ -151,7 +157,11 @@ describe("Supabase anon/service JWT realism", () => {
 	// claiming it, which would make the skip/relabel unproven.
 	const b64 = (s: string) => Buffer.from(s).toString("base64url")
 	const jwt = () =>
-		[b64(JSON.stringify({ alg: "HS256", typ: "JWT" })), b64(JSON.stringify({ iss: "supabase", role: "anon" })), "s".repeat(43)].join(".")
+		[
+			b64(JSON.stringify({ alg: "HS256", typ: "JWT" })),
+			b64(JSON.stringify({ iss: "supabase", role: "anon" })),
+			"s".repeat(43),
+		].join(".")
 	it("public anon JWT behind the anon label stays untouched", async () => {
 		const inp = "NEXT_PUBLIC_SUPABASE_ANON_KEY=" + jwt()
 		expect(await redactText(inp)).toBe(inp)
@@ -174,7 +184,6 @@ describe("Supabase anon/service JWT realism", () => {
 		expect(o.SUPABASE_SERVICE_KEY).toBe("[REDACTED-SUPABASE_KEY]")
 	})
 })
-
 
 describe("vault tokens survive keyword proximity (token render mode)", () => {
 	it("a vault token right after a keyword is never re-consumed", async () => {
