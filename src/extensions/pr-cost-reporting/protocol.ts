@@ -373,8 +373,20 @@ const schemas: Record<string, readonly Field[]> = {
 const canonicalMemo = new Map<string, string>()
 const nanosMemo = new Map<string, bigint>()
 const MEMO_LIMIT = 2_048
-const ZERO_TIME_NS = /* one parse, ever */ Temporal.Instant.from(ZeroTime).epochNanoseconds
-const FAR_FUTURE_NS = /* one parse, ever */ Temporal.Instant.from("2200-01-01T00:00:00Z").epochNanoseconds
+const ZERO_TIME_BOUND = "0001-01-01T00:00:00Z"
+const FAR_FUTURE_BOUND = "2200-01-01T00:00:00Z"
+let zeroTimeNanos: bigint | undefined
+let farFutureNanos: bigint | undefined
+/** Parsed on first use, never at module load: runtimes without Temporal must still be able to
+ * import this module for its pure parts; the parse cost is paid once per process. */
+function zeroTimeBound(): bigint {
+	zeroTimeNanos ??= Temporal.Instant.from(ZeroTime).epochNanoseconds
+	return zeroTimeNanos
+}
+function farFutureBound(): bigint {
+	farFutureNanos ??= Temporal.Instant.from(FAR_FUTURE_BOUND).epochNanoseconds
+	return farFutureNanos
+}
 /** Timestamps repeat across the many encodes and validations of one pass; both directions are pure. */
 function memoized<T>(map: Map<string, T>, key: string, compute: (key: string) => T): T {
 	const hit = map.get(key)
@@ -566,7 +578,7 @@ function validateClaimEvidence(event: Event, invalid: () => never): void {
 			correction.revision < 1 ||
 			!["work-command", "producer-confirmation"].includes(correction.source) ||
 			at < 0n ||
-			at >= FAR_FUTURE_NS
+			at >= farFutureBound()
 		)
 			invalid()
 	}
@@ -708,7 +720,7 @@ export function validateEvent(e: Event, encoded?: string): void {
 		!bounded(e.source, 64)
 	)
 		throw new Error("missing event identity")
-	if (timeNanos(e.observeTime) === ZERO_TIME_NS) throw new Error("missing event identity")
+	if (timeNanos(e.observeTime) === zeroTimeBound()) throw new Error("missing event identity")
 	if (payloads.filter((k) => e[k] != null).length !== 1) throw new Error("exactly one typed event is required")
 	if (base !== rev - 1n || (rev > 1n && !e.baseEventId)) throw new Error("invalid revision chain")
 	for (const id of [e.id, e.entityId, e.deviceId, e.workId, e.sessionId, e.turnId, e.agentId])
