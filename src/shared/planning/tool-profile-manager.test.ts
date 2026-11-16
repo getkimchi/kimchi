@@ -272,6 +272,54 @@ describe("apply", () => {
 		expect(vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] as string[]).not.toContain("tool_search")
 	})
 
+	it("an emptied active surface (plan-review suppression) does not wipe the baseline", () => {
+		// propose_ferment_scoping's review gate suppresses ALL tools via
+		// setActiveTools([]) while the review is pending. Abandoning the
+		// ferment in that window must not treat the wipe as a mass user
+		// deactivation — the baseline is chat's own surface, not the empty
+		// observed set, and remains intact for the rest of the session.
+		const pi = makeMockPi({
+			allTools: [{ name: "read" }, { name: "bash" }, { name: "list_ferments" }, { name: "grep" }],
+			activeTools: ["read", "bash", "list_ferments"],
+		})
+
+		apply("planning-ferment", "ferment", pi)
+		pi.setActiveTools([]) // pending review suppression
+
+		apply("idle", "ferment", pi) // abandon while suppressed
+
+		const restored = vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] as string[]
+		expect(restored).toEqual(expect.arrayContaining(["read", "bash", "list_ferments"]))
+		expect(restored).not.toContain("grep")
+	})
+
+	it("tools registered and activated mid-restrictive-profile survive its exit", () => {
+		// An MCP server connecting (or any late upstream activation) while
+		// plan mode or an implementation ferment runs is part of the session's
+		// surface: it folds into the baseline even though the profile's own
+		// apply shadowed it at the time, and chat keeps it after the exit.
+		const pi = makeMockPi({
+			allTools: [{ name: "read" }, { name: "bash" }],
+			activeTools: ["read", "bash"],
+		})
+
+		apply("implementation-ferment", "ferment", pi)
+		// Upstream registers + auto-activates a new MCP tool mid-implementation.
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "mcp__server_get_record" },
+		])
+		pi.setActiveTools([...pi.getActiveTools(), "mcp__server_get_record"])
+		expect(reapplyCurrentProfile(pi)).toBe(true)
+
+		apply("idle", "ferment", pi)
+
+		const restored = vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] as string[]
+		expect(restored).toContain("mcp__server_get_record")
+		expect(restored).toContain("read")
+	})
+
 	it("idle profile restores the previously active surface minus ferment-only tools", () => {
 		// Simulate a real-world toolset: shared core tools + bash + write + a
 		// ferment-only tool. The idle profile keeps the active surface except
