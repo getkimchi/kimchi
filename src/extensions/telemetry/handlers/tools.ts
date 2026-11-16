@@ -14,6 +14,7 @@ import {
 } from "../helpers.js"
 import type { TelemetryAttributes, TelemetryContext } from "../session-context.js"
 import {
+	CODEMODE_FAILED_HEADER,
 	classifyToolError,
 	type ToolErrorClassification,
 	type ToolOutcomeClassification,
@@ -122,15 +123,14 @@ const CODEMODE_NESTED_STATUSES = new Set(["running", "ok", "error", "cancelled"]
 /** Pi's truncated output (upstream codemode truncateOutput) is one text block
  *  that starts with this warning and carries the spill-file note — either the
  *  saved path or the save error — followed by the end of the block or by the
- *  labels of saved images, which upstream joins onto the same block. Requiring
- *  both keeps a script whose own output merely starts with the warning text
- *  from counting as truncated.
- *  `details.fullOutputPath` alone is insufficient: truncation also happens
- *  when writing the spill file fails. telemetry/index.test.ts pins both
- *  strings against the installed pi. */
+ *  labels of saved images, which upstream joins onto the same block. Saved-spill
+ *  notes must match the current result's details.fullOutputPath, so replaying an
+ *  earlier result through store()/load() is not mistaken for fresh truncation.
+ *  Save-error notes have no structured counterpart and remain a text heuristic.
+ *  telemetry/index.test.ts pins both strings against the installed pi. */
 export const CODEMODE_TRUNCATION_WARNING = "Warning: truncated output (original token count: "
-const CODEMODE_TRUNCATION_SPILL_NOTE =
-	/\n\n\[(?:Full output: .* \(read with offset\/limit\)|Could not save the full output: [\s\S]*)\](?=\n|$)/
+const CODEMODE_TRUNCATION_SPILL_PATH_NOTE = /\n\n\[Full output: (.*) \(read with offset\/limit\)\](?=\n|$)/
+const CODEMODE_TRUNCATION_SPILL_ERROR_NOTE = /\n\n\[Could not save the full output: [\s\S]*\](?=\n|$)/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -153,6 +153,11 @@ function isTruncatedCodemodeOutput(result: unknown): boolean {
 		return false
 	}
 	const blocks = (result as { content: unknown[] }).content
+	const details = (result as { details?: unknown }).details
+	const fullOutputPath =
+		isRecord(details) && typeof details.fullOutputPath === "string" && details.fullOutputPath.length > 0
+			? details.fullOutputPath
+			: undefined
 	let sawHeader = false
 	for (const block of blocks) {
 		if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") continue
@@ -160,7 +165,10 @@ function isTruncatedCodemodeOutput(result: unknown): boolean {
 			sawHeader = true
 			continue
 		}
-		return block.text.startsWith(CODEMODE_TRUNCATION_WARNING) && CODEMODE_TRUNCATION_SPILL_NOTE.test(block.text)
+		if (!block.text.startsWith(CODEMODE_TRUNCATION_WARNING)) return false
+		const spillPath = block.text.match(CODEMODE_TRUNCATION_SPILL_PATH_NOTE)
+		if (spillPath) return spillPath[1] === fullOutputPath
+		return fullOutputPath === undefined && CODEMODE_TRUNCATION_SPILL_ERROR_NOTE.test(block.text)
 	}
 	return false
 }
@@ -276,6 +284,11 @@ export function handleToolExecutionEnd(
 		fullMsg = extractToolResultText(event.result)
 		classification = classifyToolError(toolName, fullMsg)
 	}
+	// A bare abort comes from runToolCall's signal check before codemode executes.
+	// An aborted script instead has the Script failed header and still counts as a
+	// completed (failed) execution. Do not skew script failure rates with the former.
+	const isCodemodePreExecutionAbort =
+		toolName === "codemode" && classification?.kind === "aborted" && !fullMsg.startsWith(CODEMODE_FAILED_HEADER)
 	// Under backend routing the concrete pick lives in lastRoutedModel; carry
 	// it so command/outcome records stay sliceable by backend. currentModel
 	// (the user-facing selection) is already part of the common attributes.
@@ -447,7 +460,7 @@ export function handleToolExecutionEnd(
 			tm.emit("command_executed", { ...commandAttrs, command_outcome: "execution_error" }, ctx, modelOverrides)
 		}
 		// blocked / declined / model_mistake: pre-execution — no record.
-	} else if (toolName === "codemode" && !isPreExecutionOutcome(classification)) {
+	} else if (toolName === "codemode" && !isPreExecutionOutcome(classification) && !isCodemodePreExecutionAbort) {
 		emitCodemodeCompleted(tm, ctx, event, toolDurationMs, nestedAttrs, modelOverrides)
 	}
 

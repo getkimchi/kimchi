@@ -416,17 +416,22 @@ function classifyEngineValidationError(fullMsg: string): ToolErrorClassification
  */
 /** First block of every failed codemode result (upstream codemode execute.js).
  *  It is its own content block, so output truncation never touches it. */
-const CODEMODE_FAILED_HEADER = "Script failed\n"
+export const CODEMODE_FAILED_HEADER = "Script failed\n"
+
+const CODEMODE_SCRIPT_ERROR_HEADER = "\nScript error:\n"
 
 /** A failed codemode script. The `Script error:` block names the cause (script
  *  error, timeout, abort, sandbox failure) but sits after the script output and
  *  can be cut by output truncation, so the message never depends on finding it:
- *  without it the result is the generic script error. Aborts match direct-tool
- *  aborts (no error record; `agent.interrupted` owns the signal). */
+ *  without it the result is the generic script error. Read only the trailing
+ *  error section: the script can print error-shaped text before its real error.
+ *  Aborts match direct-tool aborts (no error record; `agent.interrupted` owns
+ *  the signal). */
 function classifyCodemodeScriptFailure(msg: string): ToolErrorClassification {
-	if (msg.includes("\nScript error:\nScript aborted: ")) return { kind: "aborted", message: "Codemode script aborted" }
-	if (msg.includes("\nScript error:\nScript timed out: "))
-		return { kind: "failure", message: "Codemode script timeout" }
+	const errorHeaderIndex = msg.lastIndexOf(CODEMODE_SCRIPT_ERROR_HEADER)
+	const errorText = errorHeaderIndex === -1 ? "" : msg.slice(errorHeaderIndex + CODEMODE_SCRIPT_ERROR_HEADER.length)
+	if (errorText.startsWith("Script aborted: ")) return { kind: "aborted", message: "Codemode script aborted" }
+	if (errorText.startsWith("Script timed out: ")) return { kind: "failure", message: "Codemode script timeout" }
 	return { kind: "failure", message: "Codemode script error" }
 }
 
@@ -584,10 +589,21 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 	const engine = classifyEngineValidationError(msg)
 	if (engine) return engine
 
-	// Codemode options-line validation (pi-mono codemode chunk): the
-	// // @options: directive must lead the script; a misplaced one is rejected.
-	// Harness-owned string, tool-agnostic match (same exception class as
-	// engine validation).
+	// Codemode source validation happens before pi creates the Script failed
+	// header. Its errors can embed script-authored JSON excerpts or option keys,
+	// so never let them reach the raw fallback. The producer is parseCodemodeSource
+	// in pi-codemode; the tests generate these messages through the real parser.
+	if (
+		toolName === "codemode" &&
+		(msg.startsWith("@options ") ||
+			msg.startsWith("Expected JavaScript source text") ||
+			msg.startsWith("The @options line "))
+	) {
+		return { kind: "model_mistake", message: "Codemode source validation failed" }
+	}
+
+	// The misplaced options directive has stable, content-free wording already.
+	// Keep its more specific canonical message.
 	if (/^The \/\/ @options: line must be the first line of the input; found one on line \d+$/.test(msg)) {
 		return { kind: "model_mistake", message: "Codemode options line misplaced" }
 	}

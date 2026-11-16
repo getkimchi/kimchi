@@ -1166,6 +1166,52 @@ describe("handlers/tools", () => {
 			expect(outcome?.attrs.tool_name).toBe("codemode")
 		})
 
+		it("emits no summary or raw error for codemode source-validation failures", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "cm-invalid-source"
+			const rawMessage =
+				'@options must be valid JSON with supported fields `max_output_tokens` and `timeout_ms`: Unexpected token \'e\', ..."_ms": exfil_MARK"... is not valid JSON'
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: rawMessage }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			expect(events.find((e) => e.eventName === "codemode.completed")).toBeUndefined()
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome?.attrs.outcome_kind).toBe("model_mistake")
+			expect(outcome?.attrs.message).toBe("Codemode source validation failed")
+			expect(JSON.stringify(events)).not.toContain("exfil_MARK")
+		})
+
+		it("emits no summary when codemode is aborted before the script runs", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "cm-pre-execution-abort"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "codemode", args: {} })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "Operation aborted" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			expect(events.find((e) => e.eventName === "codemode.completed")).toBeUndefined()
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+		})
+
 		it("emits success=false on a failed script; the canonical error record still fires", async () => {
 			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
 			const ctx = new TelemetryContext(makeConfig())
@@ -1289,7 +1335,7 @@ describe("handlers/tools", () => {
 						{ type: "text", text: `${truncatedOutput}\n[Image saved to /tmp/img-1.png (image/png, 45.2 kB)]` },
 						{ type: "image", data: "aGk=", mimeType: "image/png" },
 					],
-					details: { calls: [] },
+					details: { calls: [], fullOutputPath: "/tmp/spill.txt" },
 				},
 			})
 
@@ -1299,7 +1345,7 @@ describe("handlers/tools", () => {
 			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId: "cm-8",
 				isError: false,
-				result: codemodeResult({ calls: [] }, `${truncatedBody}\nmore of my own output`),
+				result: codemodeResult({ calls: [] }, `${truncatedOutput}\nmore of my own output`),
 			})
 
 			// Not truncated.

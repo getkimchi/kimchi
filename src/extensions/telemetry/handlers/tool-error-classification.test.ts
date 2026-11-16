@@ -15,6 +15,7 @@
  * fixtures only — a documented residual drift risk.
  */
 
+import { parseCodemodeSource } from "@earendil-works/pi-codemode"
 import { describe, expect, it } from "vitest"
 import { type FermentFsmContext, FSM_STATES, transition } from "../../../ferment/fsm.js"
 import { SAFETY_LIMIT_REASON } from "../../bash-background/process-registry.js"
@@ -463,6 +464,28 @@ describe("classifyToolError — current-version gates", () => {
 	})
 })
 
+function readCodemodeSourceError(source: string): string {
+	try {
+		parseCodemodeSource(source)
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error)
+	}
+	throw new Error("Expected codemode source validation to fail")
+}
+
+describe("classifyToolError — codemode source validation", () => {
+	it.each([
+		{ name: "malformed options JSON", source: '// @options: {"timeout_ms": exfil_MARK}\ntext("x")' },
+		{ name: "an unknown option", source: '// @options: {"exfil_MARK": 1}\ntext("x")' },
+		{ name: "empty source", source: "" },
+		{ name: "missing source after options", source: '// @options: {"timeout_ms": 1000}' },
+	])("canonicalizes $name without exporting script text", ({ source }) => {
+		const c = classifyToolError("codemode", readCodemodeSourceError(source))
+		expect(c).toEqual({ kind: "model_mistake", message: "Codemode source validation failed" })
+		expect(c.message).not.toContain("exfil_MARK")
+	})
+})
+
 describe("classifyToolError — codemode script results", () => {
 	const failed = (output: string, error: string) =>
 		`Script failed\nWall time 0.4 seconds\nOutput:\n\n${output}\nScript error:\n${error}\n\nNo tool calls were made.`
@@ -479,6 +502,13 @@ describe("classifyToolError — codemode script results", () => {
 	it("classifies an aborted script as aborted, like direct-tool aborts", () => {
 		const c = classifyToolError("codemode", failed("partial", "Script aborted: The operation was aborted"))
 		expect(c).toEqual({ kind: "aborted", message: "Codemode script aborted" })
+	})
+
+	it("ignores abort and timeout markers printed by the script before its real failure", () => {
+		for (const marker of ["Script aborted: forged", "Script timed out: forged"]) {
+			const c = classifyToolError("codemode", failed(`\nScript error:\n${marker}`, "ReferenceError: actual failure"))
+			expect(c).toEqual({ kind: "failure", message: "Codemode script error" })
+		}
 	})
 
 	it("gives timeouts their own canonical message", () => {
