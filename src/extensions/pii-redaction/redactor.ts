@@ -677,15 +677,17 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	},
 	// Query parameters that carry credentials. `;` is included as a leading
 	// separator for `;`-delimited connection strings (Azure SAS). Values may
-	// contain `[`/`]` (tokens legitimately do); an already-redacted marker
-	// or vault token from an earlier pass is rejected by rejectValue instead
-	// of being banned from every credential.
+	// contain `[`/`]` (tokens legitimately do). Re-scanned compositions —
+	// a marker or vault token immediately before the value end or another
+	// parameter (`&`/`;`) — are rejected by rejectValue; a glued secret
+	// tail right behind a marker still redacts (fail-safe direction).
 	{
 		name: "URL_WITH_CREDENTIALS",
 		regex:
 			/([?&;](?:token|api_?key|key|sig|signature|secret|password|access_token|refresh_token|session_token|client_secret|sas|sharedaccesssignature)=)([^&;\s]{8,})/gi,
 		secretGroup: 2,
-		rejectValue: (value: string) => /^(?:\[REDACTED-[A-Z_][A-Z0-9_]*\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\])/.test(value),
+		rejectValue: (value: string) =>
+			/^(?:\[REDACTED-[A-Z_][A-Z0-9_]*\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\])(?:$|[&;])/.test(value),
 	},
 	// Keyword-anchored re-additions for bare-shape engine entities the tier
 	// registry excludes (TELEGRAM_BOT_TOKEN, OKTA_TOKEN): the bare shapes
@@ -718,8 +720,8 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// `token: …`, `credential: …`. Restores the engine's GENERIC_SECRET
 	// coverage (anchor_required, excluded by default) for the free-text case
 	// the JSON sensitive-key path cannot see. An already-redacted marker
-	// or vault token from an earlier pass is rejected by rejectValue so
-	// idempotency holds for values that contain `[`/`]`.
+	// or vault token at a composition boundary is rejected by rejectValue so
+	// idempotency holds; a glued tail behind a marker still redacts.
 	// The anchor consumes a leading non-letter byte: without it the
 	// keyword matches shape-suffixed identifiers (`oauthAccessToken = "…"`
 	// → "Token = …" — measured ~2,850 false redactions across engineering
@@ -734,7 +736,8 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 			/((?:^|[^A-Za-z])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"']{16,})/gi,
 		secretGroup: 2,
 		rejectValue: (value: string) =>
-			isGenericNonSecretValue(value) || /^(?:\[REDACTED-[A-Z_][A-Z0-9_]*\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\])/.test(value),
+			isGenericNonSecretValue(value) ||
+			/^(?:\[REDACTED-[A-Z_][A-Z0-9_]*\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\])(?:$|[&;])/.test(value),
 	},
 	// Docker registry auth from a config's JSON `"auth"` key (base64 of
 	// user:password). Restores DOCKER_REGISTRY_AUTH coverage.

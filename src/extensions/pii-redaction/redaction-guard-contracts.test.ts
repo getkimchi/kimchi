@@ -137,10 +137,18 @@ describe("Azure SAS ownership: encoded and structured forms", () => {
 })
 
 describe("Supabase anon/service JWT realism", () => {
-	const jwt = () => ["eyJ" + "a".repeat(70), "B".repeat(70), "C".repeat(70)].join(".")
+	// Realistic base64url segments joined at the dots so the engine's JWT_TOKEN
+	// detector fires — the skip/relabel must discriminate on those claims, and a
+	// dot-less blob would pass the tests without exercising them.
+	const seg = (c: string, n: number) => c.repeat(n)
+	const jwt = () => ["eyJ" + seg("a", 53), seg("h", 80), seg("s", 60)].join(".")
 	it("public anon JWT behind the anon label stays untouched", async () => {
 		const inp = "NEXT_PUBLIC_SUPABASE_ANON_KEY=" + jwt()
 		expect(await redactText(inp)).toBe(inp)
+	})
+	it("the same JWT behind an unrelated label IS claimed by JWT_TOKEN", async () => {
+		const out = await redactText("bearer " + jwt())
+		expect(out).not.toContain(jwt())
 	})
 	it("service-role JWT behind the secret label redacts as SUPABASE_KEY", async () => {
 		const out = await redactText("SUPABASE_SERVICE_KEY=" + jwt())
@@ -172,5 +180,19 @@ describe("bracket-bearing credentials: value-floor boundaries", () => {
 		expect(token).toHaveLength(7)
 		const out = await redactText("?token=" + token + "&next=1")
 		expect(out).toContain(token)
+	})
+})
+
+describe("marker-glued secrets never pass through whole", () => {
+	it("a secret glued to a trailing redaction marker redacts", async () => {
+		const tail = "hunterSecret" + "q".repeat(10)
+		const out = await redactText("?token=" + "[REDACTED-URL_WITH_CREDENTIALS]" + tail + "&next=1")
+		expect(out).not.toContain(tail)
+		expect(out).toContain("[REDACTED-URL_WITH_CREDENTIALS]")
+	})
+	it("a secret glued after a marker in free text redacts", async () => {
+		const tail = "hunterSecret" + "m".repeat(10)
+		const out = await redactText("password=[REDACTED-GENERIC_SECRET]" + tail)
+		expect(out).not.toContain(tail)
 	})
 })
