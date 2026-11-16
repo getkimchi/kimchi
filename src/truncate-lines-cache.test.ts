@@ -70,6 +70,22 @@ describe("truncateToWidth paint cache", () => {
 		expect(upstream.calls).toBe(inputs.length)
 	})
 
+	it("bypasses the cache for oversized inputs and rendered results", () => {
+		const oversized = "x".repeat(4097)
+		const inputs = [
+			[oversized, 20, "...", false],
+			["abc", 20, oversized, false],
+			["abc", oversized.length, "...", true],
+		] as const
+
+		for (const [text, width, ellipsis, pad] of inputs) {
+			const expected = actualTui.truncateToWidth(text, width, ellipsis, pad)
+			expect(truncateLineToWidth(text, width, ellipsis, pad)).toBe(expected)
+			expect(truncateLineToWidth(text, width, ellipsis, pad)).toBe(expected)
+		}
+		expect(upstream.calls).toBe(inputs.length * 2)
+	})
+
 	it("keeps 128 recently used entries and evicts the least recently used", () => {
 		const row = (index: number) => `row ${index} 漢字漢字漢字`
 		for (let index = 0; index < 128; index++) truncateLineToWidth(row(index), 12)
