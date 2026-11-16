@@ -89,6 +89,25 @@ function writeMark(path: string, event: string, detail: Record<string, unknown>)
 	}
 }
 
+function snapshotChildren(me: number): { pid: number; cpu: number; cmd: string }[] {
+	try {
+		const { execSync } = require("node:child_process")
+		const out = execSync(`ps -eo pid,ppid,cpu,command -p $(pgrep -P ${me} | tr '\n' ',' | sed 's/,$//')`, {
+			encoding: "utf-8",
+			timeout: 500,
+			windowsHide: true,
+		})
+		const rows: { pid: number; cpu: number; cmd: string }[] = []
+		for (const line of out.split("\n").slice(1)) {
+			const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)/)
+			if (m) rows.push({ pid: Number(m[1]), cpu: Number(m[3]), cmd: m[4].slice(0, 60) })
+		}
+		return rows.sort((a, b) => b.cpu - a.cpu).slice(0, 8)
+	} catch {
+		return []
+	}
+}
+
 function truncateStack(stack: string): string {
 	// Drop the async-hooks plumbing frames so the stack leads with the
 	// scheduling site; the init hook itself and node's internals come first.
@@ -164,10 +183,10 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 		heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
 	})
 
-	// --- Event-driven channels: hook child_process.spawn to record cpuUsage at
-	// exit. Event-driven (fires at the subprocess's exit, not when the loop wakes);
-	// the mark identifies the CPU drawer for ANY hold, including ones where the
-	// loop was sleeping and could not attribute. ChildProcess.cpuUsage is v17+.
+	// --- On-hold children CPU snapshot: for each hold, run a synchronous
+	// `ps -o pid,ppid,cpu` bounded to children of this process — the only
+	// sampling that works across ALL spawn paths without requiring in-process
+	// interposition. Cost: spawn per ~lag, bounded.
 	// Node >=20 seals node:child_process.exports.spawn (writable:false but
 	// configurable:true) — plain assignment fails silently in a lib that cannot
 	// tell. Object.defineProperty lands the shim and stays functionally equivalent.
@@ -218,6 +237,7 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 			const cpu = process.cpuUsage(lastCpu)
 			const elu = eluFn ? eluFn(lastElu) : { utilization: 0 }
 			const beat = Atomics.load(heartbeat, 0)
+			const children = snapshotChildren(process.pid)
 			writeMark(path, "loop.lag", {
 				lagMs: Math.round(lag),
 				cpuMs: Math.round(((cpu.user + cpu.system) / 1000) * 1000) / 1000,
@@ -225,6 +245,7 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 				beat: beat - lastBeat,
 				resType: executing?.type,
 				where: executing?.where,
+				children: children.length ? children.slice(0, 4).map((c) => ({ pid: c.pid, cpu: c.cpu, cmd: c.cmd.slice(0, 60) })) : undefined,
 			})
 			if (++marks >= maxLagMarks) {
 				writeMark(path, "loop.trace.disarm", { marks })
