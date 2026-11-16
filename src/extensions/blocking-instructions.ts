@@ -1,29 +1,31 @@
 /**
- * Per-block CPU instruction tracing, independent of subsystem identity.
+ * Per-blocking-episode CPU instruction tracing, independent of subsystem.
  *
  * Enabled only when KIMCHI_BLOCKING_INSTRUMENT is an absolute file path.
- * One bounded in-memory series and one `blocking.instr.summary` mark contain
- * async execution spans' main-thread instruction deltas (async_hooks
- * before/after, promise continuations included). There are deliberately no
- * function names or per-subsystem counters: attribution is a separate concern.
+ * A watchdog samples every 10ms. When its tick is more than 40ms late, the
+ * event loop was held: a `blocking.instr` episode accounts the main thread's
+ * instruction delta since the previous tick. These are measured blocking
+ * episodes, not claimed per-function attribution. Bun's async_hooks before/
+ * after API does not provide general per-callback events, so it is not used.
  *
  * Production uses Linux's per-thread perf counter through Bun FFI. Diagnostics
  * never infer instructions from CPU time. Library/platform failures are marked
  * unsupported/error; scenario parsing treats them as missing measurements.
  */
-import { createHook } from "node:async_hooks"
 import { appendFileSync, chmodSync, mkdirSync, statSync } from "node:fs"
 import { dirname, isAbsolute } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
+const TICK_MS = 10
+const BLOCKING_EPSILON_MS = 40
+const MAX_BLOCKING_SAMPLES = 100_000
+
 // Matches tools/perf/sampler.py: attr through bp_len, instruction event,
-// exclude_hv. x86-64 and arm64 have different syscall numbers; the CI class's
-// per-process source is the latter, the container smoke test the former.
+// exclude_hv. Unlike its comment, the syscall is arch-specific.
 const PERF_ATTR_SIZE = 80
 const PERF_TYPE_HARDWARE = 0
 const PERF_COUNT_HW_INSTRUCTIONS = 1
 const PERF_FLAG_EXCLUDE_HV = 1 << 6
-const MAX_BELOW_CAP_SAMPLES = 100_000
 
 interface InstructionCounter {
 	read(): number
@@ -95,11 +97,18 @@ export function openInstructionCounter(): { counter?: InstructionCounter; reason
 interface Handle {
 	close(): void
 }
-interface Trace extends Handle {
-	counter: InstructionCounter
-	hook: { disable(): void }
-	values: number[]
-	done: boolean
+
+interface SamplingDriver {
+	now(): number
+	schedule(callback: () => void): { cancel(): void }
+}
+const realtimeSampling: SamplingDriver = {
+	now: () => performance.now(),
+	schedule(callback) {
+		const timer = setInterval(callback, TICK_MS)
+		timer.unref()
+		return { cancel: () => clearInterval(timer) }
+	},
 }
 
 export function summarizeBlockingInstructions(values: readonly number[], truncated = false): Record<string, unknown> {
@@ -108,84 +117,71 @@ export function summarizeBlockingInstructions(values: readonly number[], truncat
 		samples: values.length,
 		total: values.reduce((sum, value) => sum + value, 0),
 		max: sorted.at(-1) ?? 0,
-		p95: sorted.length ? sorted[maxIndex(sorted.length, 0.95)] : 0,
+		p95: sorted.length ? sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] : 0,
 		truncated,
 	}
 }
-function maxIndex(length: number, fraction: number): number {
-	return Math.max(0, Math.ceil(length * fraction) - 1)
-}
 
 /** Instrument one process using the given backend factory; test-injectable without Bun. */
-export function instrumentBlockingInstructions(path: string, factory: CounterFactory = openInstructionCounter): Handle {
+export function instrumentBlockingInstructions(
+	path: string,
+	factory: CounterFactory = openInstructionCounter,
+	sampler: SamplingDriver = realtimeSampling,
+): Handle {
 	const { counter, reason } = factory()
 	if (!counter) {
 		writeMark(path, "blocking.instr.unsupported", { reason: reason ?? "counter unavailable" })
 		return { close: noop }
 	}
-	const entered = new Map<number, number>()
 	const values: number[] = []
-	let insideTrace = false
-	let failed = false
 	let truncated = false
-	const failedOnce = (error: unknown) => {
+	let failed = false
+	let lastTime = sampler.now()
+	let lastInstructions = 0
+	const failOnce = (error: unknown) => {
 		if (failed) return
 		failed = true
 		writeMark(path, "blocking.instr.error", { reason: String(error) })
 	}
-	const enter = (id: number) => {
-		if (insideTrace || failed || truncated) return
-		insideTrace = true
-		try {
-			entered.set(id, counter.read())
-		} catch (error) {
-			failedOnce(error)
-		} finally {
-			insideTrace = false
-		}
+	try {
+		lastInstructions = counter.read()
+	} catch (error) {
+		failOnce(error)
 	}
-	const leave = (id: number) => {
-		if (insideTrace || failed || truncated) return
-		const begin = entered.get(id)
-		if (begin === undefined) return
-		insideTrace = true
+	const timer = sampler.schedule(() => {
+		if (failed || truncated) return
+		const now = sampler.now()
+		const lagMs = now - lastTime - TICK_MS
+		lastTime = now
 		try {
-			const instructions = counter.read() - begin
+			const current = counter.read()
+			const instructions = current - lastInstructions
+			lastInstructions = current
 			if (instructions < 0) throw new Error("CPU instruction counter moved backwards")
-			if (values.length >= MAX_BELOW_CAP_SAMPLES) {
-				truncated = true
-				writeMark(path, "blocking.instr.truncated", { samples: values.length })
-			} else values.push(instructions)
+			if (lagMs > BLOCKING_EPSILON_MS) {
+				if (values.length >= MAX_BLOCKING_SAMPLES) {
+					truncated = true
+					writeMark(path, "blocking.instr.truncated", { samples: values.length })
+				} else {
+					values.push(instructions)
+					writeMark(path, "blocking.instr", { lagMs: Math.round(lagMs), instructions })
+				}
+			}
 		} catch (error) {
-			failedOnce(error)
-		} finally {
-			insideTrace = false
-			entered.delete(id)
+			failOnce(error)
 		}
-	}
-	const hook = createHook({
-		before: enter,
-		after: leave,
-		promiseResolve: leave,
-		destroy(id) {
-			entered.delete(id)
-		},
-	}).enable()
+	})
 	writeMark(path, "blocking.instr.arm", { backend: "linux-thread-perf", pid: process.pid })
-	const trace: Trace = {
-		counter,
-		hook,
-		values,
-		done: false,
+	let done = false
+	return {
 		close() {
-			if (this.done) return
-			this.done = true
-			hook.disable()
+			if (done) return
+			done = true
+			timer.cancel()
 			writeMark(path, "blocking.instr.summary", summarizeBlockingInstructions(values, truncated))
 			counter.close()
 		},
 	}
-	return trace
 }
 
 function noop(): void {}

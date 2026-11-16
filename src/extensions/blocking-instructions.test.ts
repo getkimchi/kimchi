@@ -28,17 +28,34 @@ afterEach(() => {
 })
 
 describe("blocking instruction trace", () => {
-	it("records the fake counter's deltas and closes once with a complete summary", async () => {
+	it("records the fake counter's deltas and closes once with a complete summary", () => {
 		const path = join(dir, "passes.jsonl")
 		let readings = 0
 		let closes = 0
-		const handle = instrumentBlockingInstructions(path, () => ({
-			counter: {
-				read: () => readings++ * 17 + 10,
-				close: () => closes++,
+		let now = 0
+		let tick: (() => void) | undefined
+		const handle = instrumentBlockingInstructions(
+			path,
+			() => ({
+				counter: {
+					read: () => readings++ * 17 + 10,
+					close: () => closes++,
+				},
+			}),
+			{
+				now: () => now,
+				schedule(callback) {
+					tick = callback
+					return { cancel: () => {} }
+				},
 			},
-		}))
-		for (const delay of [2, 4, 6]) await new Promise((resolve) => setTimeout(resolve, delay))
+		)
+		// 51, 69 and 100 ms imply watchdog lags of 41, 59 and 90 ms.
+		// Supplying the clock avoids machine-speed-dependent timer coalescing.
+		for (const time of [51, 120, 220]) {
+			now = time
+			tick?.()
+		}
 		handle.close()
 		handle.close()
 		expect(readFileSync(path, { encoding: "utf8" }).length).toBeGreaterThan(0)
@@ -105,5 +122,19 @@ describe("blocking instruction trace", () => {
 		} finally {
 			console.error = original
 		}
+	})
+
+	it("fails visibly without crashing when the first counter read fails", () => {
+		const path = join(dir, "counter-error.jsonl")
+		const handle = instrumentBlockingInstructions(path, () => ({
+			counter: {
+				read: () => {
+					throw new Error("perf read denied")
+				},
+				close: () => {},
+			},
+		}))
+		handle.close()
+		expect(marks(path).some((mark) => mark.event === "blocking.instr.error")).toBe(true)
 	})
 })

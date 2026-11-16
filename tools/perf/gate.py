@@ -174,7 +174,7 @@ EXTRACTORS = {
         "keylat_max_ms": (lambda r: r.get("keylat_max_ms"), "ms max",
                           "steady-state worst keystroke echo (post-settle); per-pass event-loop hold detector", (ABS, 150.0)),
         "blocking_instr_p95": (lambda r: r.get("blocking_instr_p95"), "instructions",
-                                "p95 main-thread instructions per generic synchronous execution pass", (RATIO, WORK)),
+                                "p95 main-thread instructions per watchdog-observed blocking episode", (RATIO, WORK)),
         # The additive index set (work_records_imported, outbox_pending_cover,
         # outbox_batches_by_account) is applied per-open by the ledger fix and
         # by nothing else: a binary that opens the scaled fixture and leaves
@@ -320,6 +320,11 @@ def run_selfcheck():
     _, fails = classify("ledger", missing, good)
     if not any(f[1] == "blocking_instr_p95" for f in fails):
         problems.append("ledger: missing per-pass measurements did not fail closed")
+    zero_episodes = dict(rec_tpl["ledger"])
+    zero_episodes["blocking_instr_p95"] = 0
+    rows, fails = classify("ledger", zero_episodes, good)
+    if not any(f[1] == "blocking_instr_p95" and "counter reads zero" in row[-1] for f in fails for row in rows):
+        problems.append("ledger: zero per-episode instruction reading was not flagged")
     if problems:
         print("GATE SELFCHECK FAILED:\n- " + "\n- ".join(problems), file=sys.stderr)
         return 1

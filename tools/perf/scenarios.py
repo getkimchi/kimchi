@@ -719,8 +719,8 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
     itself left behind, so additive-index application is observable.
     """
     argv = [binary, "--provider", "fake", "--model", "basic"]
-    # Opt-in main-thread perf instruction accounting. A closing summary, not
-    # per-pass file writes; there is no wall-clock/instrument-specific counter.
+    # Opt-in main-thread instruction accounting for watchdog-observed blocking
+    # episodes: a closing summary plus per-episode diagnostic records.
     instr_path = os.path.join(env["HOME"], "blocking-instructions.jsonl")
     env["KIMCHI_BLOCKING_INSTRUMENT"] = instr_path
     t0 = time.time()
@@ -809,11 +809,13 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
     # The instrument closes on session_shutdown. Parse the single complete
     # summary only afterwards; unsupported/failed/truncated measurements must
     # remain visible, never masquerade as a zero or a clean measurement.
+    summary_count = 0
     try:
         with open(instr_path, encoding="utf-8") as fh:
             records = [json.loads(line) for line in fh if line.strip()]
         for mark in records:
             if mark.get("event") == "blocking.instr.summary":
+                summary_count += 1
                 res["blocking_instr_p95"] = mark.get("p95")
                 res["blocking_instr_max"] = mark.get("max")
                 res["blocking_instr_total"] = mark.get("total")
@@ -825,7 +827,13 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
                 res["blocking_instr_error"] = mark.get("reason") or mark.get("event")
                 res["ok"] = False
     except OSError:
-        pass  # an older binary has no such instrument; the gate fails closed
+        pass  # an older binary has no such instrument; fail below, explicitly
+    if summary_count != 1:
+        res["blocking_instr_error"] = f"expected one complete instruction summary, found {summary_count}"
+        res["ok"] = False
+    elif not res.get("blocking_instr_samples"):
+        res["blocking_instr_error"] = "instruction counter reported no blocking episodes"
+        res["ok"] = False
     res["home_bytes"] = home_footprint(env["HOME"])
     return res
 

@@ -102,13 +102,15 @@ derived from wall clock. It applies uniformly to rendering, encoding, discovery
 and unknown future passes; it does not try to diagnose them.
 
 Collection is opt-in through `KIMCHI_BLOCKING_INSTRUMENT`
-(`KIMCHI_BLOCKING_INSTRUMENT=<absolute path>` on the built BUN/Linux binary).
-The registered extension uses `async_hooks` boundaries and reads a per-thread
-`perf_event_open` counter for that thread. Promise continuations are included,
-without per-promise stacks. Samples live in a bounded in-memory series and one
-summary is emitted after shutdown; there is no per-pass file write. Relative
-paths are refused without arming the counter. FFI is never loaded in normal
-sessions and there is no CPU-time fallback.
+(`KIMCHI_BLOCKING_INSTRUMENT=<absolute path>` on the built Bun/Linux binary).
+The registered extension reads a per-thread `perf_event_open` counter whenever
+its watchdog tick is more than 40 ms late, accounting the main thread's CPU
+instruction delta since its previous tick. It does not claim unsupported
+async-callback attribution: these are watchdog-defined blocking episodes, not
+per-function measurements. Samples live in a bounded in-memory series and one
+summary is emitted after shutdown; ordinary episodes are recorded for
+diagnosis. Relative paths are refused without arming the counter. FFI is never
+loaded in normal sessions and there is no CPU-time fallback.
 
 Lack of Linux/PMU support, a read error, or a truncated measurement is marked
 explicitly; it cannot silently pass. Instructions measure retired CPU work, not
