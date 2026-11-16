@@ -669,8 +669,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(7)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(6)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(8)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(7)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -2818,6 +2818,7 @@ describe("buildInlineExtensionFactories", () => {
 			expect.any(Function), // auto-model prompt rebuild
 			clampFactory,
 			infrastructureBreakerExtension,
+			codexCorrelationExtension,
 			dapExtension,
 			workerReportFactory,
 			// MCP adapter — appended last for non-isolated children (LLM-4465).
@@ -2835,11 +2836,11 @@ describe("buildInlineExtensionFactories", () => {
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledTimes(1)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith(null, undefined)
 		const attributionFactory = mockCreateWorkAttributionExtension.mock.results[0].value
-		expect(enabled).toHaveLength(6)
+		expect(enabled).toHaveLength(7)
 		expect(enabled).toContain(attributionFactory)
 
 		const disabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: false }))
-		expect(disabled).toHaveLength(5)
+		expect(disabled).toHaveLength(6)
 		expect(disabled).not.toContain(attributionFactory)
 	})
 
@@ -2861,13 +2862,13 @@ describe("buildInlineExtensionFactories", () => {
 		const routed = buildInlineExtensionFactories(makeDeps({ model: AUTO_MODEL }))
 		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
 		expect(routed).toContain(autoRoutingFactory)
-		expect(routed).toHaveLength(7)
+		expect(routed).toHaveLength(8)
 
 		mockCreateAutoModelRoutingExtension.mockClear()
 		const concrete = buildInlineExtensionFactories(makeDeps({ model: CONCRETE_MODEL }))
 		expect(mockCreateAutoModelRoutingExtension).not.toHaveBeenCalled()
 		expect(concrete).not.toContain(autoRoutingFactory)
-		expect(concrete).toHaveLength(5)
+		expect(concrete).toHaveLength(6)
 	})
 
 	it("registers the dap extension exactly when shouldRegisterDapForTools admits the tool names", () => {
@@ -2908,21 +2909,21 @@ describe("buildInlineExtensionFactories", () => {
 		// servers) only to filter its tool out afterwards.
 		const unrelated = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["unrelated"] }))
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(unrelated).toHaveLength(4) // telemetry, request-timing, bash default timeout, infrastructure breaker
+		expect(unrelated).toHaveLength(5) // telemetry, request-timing, bash default timeout, infrastructure breaker, codex correlation
 
 		// The worker-report edge: workerReport + extensions:false resolves to
 		// [], which no longer registers the adapter either.
 		mockCreateKimchiMcpAdapterExtension.mockClear()
 		const emptyArray = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: [] }))
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(emptyArray).toHaveLength(4)
+		expect(emptyArray).toHaveLength(5)
 	})
 
 	it("omits the MCP adapter factory for isolated children (effectiveExtensions false)", () => {
 		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: false }))
 
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(factories).toHaveLength(4) // telemetry, request-timing, bash default timeout, infrastructure breaker
+		expect(factories).toHaveLength(5) // telemetry, request-timing, bash default timeout, infrastructure breaker, codex correlation
 	})
 
 	it("passes the effective cwd to the MCP adapter factory", () => {
