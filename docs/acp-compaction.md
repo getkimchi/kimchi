@@ -52,15 +52,28 @@ followed by free-text instructions for the summary, mapping onto the same
 whitespace or the end of the block, so `/compactfoo` is an ordinary prompt.
 
 The prompt is handled locally: it never reaches the model and creates no
-turn. The server surfaces the invocation as a live-only `user_message_chunk`
-(the runtime records only the summary, so the command text itself would
-otherwise never appear), runs the same handler as `_kimchi.dev/compact` —
-so progress streams through the `agent_activity` notifications and the usage
-gauge refreshes via the same `compaction_end` event — and reports the
-terminal outcome as an `agent_message_chunk` ("Context compacted." plus the
-summary, or the cancelled/failed outcome). The PromptResponse carries
-`stopReason: "end_turn"` for `completed`/`failed`, or `cancelled` when the
-compaction was aborted.
+turn. There is no live `user_message_chunk` echo — commands arrive as
+regular user messages, which clients render when the prompt is sent. To keep
+the invocation from vanishing on session reload (the runtime records only
+the summary, not the command text), the raw prompt text is persisted as a
+metadata-only custom session entry (`type: "custom"`, customType
+`compact-command`) BEFORE the compaction runs — so even an aborted or failed
+compaction leaves its mark — and session/load replay re-emits it as a
+`user_message_chunk`, positioned where the command was issued. The entry
+never enters model context (same pattern as the bash-background settle
+rows).
+
+The command runs the same handler as `_kimchi.dev/compact` — so progress
+streams through the `agent_activity` notifications and the usage gauge
+refreshes via the same `compaction_end` event — and the terminal outcome is
+reported as an `agent_message_chunk` (live-only, not persisted): a one-line
+status on success ("Context compacted from N tokens.") or the
+cancelled/failed outcome. The full summary is deliberately NOT printed —
+mirroring the TUI's collapsed-by-default `[compaction]` row; ACP chat
+surfaces have no expand affordance — but stays available programmatically
+in the `_kimchi.dev/compact` ext-method response (and in the runtime's
+compaction entry). The PromptResponse carries `stopReason: "end_turn"` for
+`completed`/`failed`, or `cancelled` when the compaction was aborted.
 
 ## Lifecycle: `_kimchi.dev/agent_activity`
 
@@ -126,7 +139,8 @@ Semantics:
 
 - Ext methods: `src/modes/acp/ext-methods/compact.ts`, `compact-abort.ts`
 - Command advertisement + dispatch: `src/modes/acp/commands.ts`
-  (`tryParseCompactCommand`), `src/modes/acp/server.ts` (`runCompactCommand`)
+  (`tryParseCompactCommand`, `COMPACT_COMMAND_ENTRY_TYPE`),
+  `src/modes/acp/server.ts` (`runCompactCommand`, `replayTranscript`)
 - Activity forwarding: `src/modes/acp/activity-updates.ts`
 - Lifecycle + value refresh: `src/modes/acp/server.ts`
   (`onSessionEvent`, `emitPostCompactionUsage`)

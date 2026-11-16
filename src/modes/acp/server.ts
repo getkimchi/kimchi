@@ -183,9 +183,11 @@ import {
 	kimchiDevMetaOf,
 } from "./capabilities.js"
 import {
+	COMPACT_COMMAND_ENTRY_TYPE,
 	composeAvailableCommands,
 	createCommandsRefresher,
 	discoverSkillCommandsMap,
+	isCompactCommandEntryData,
 	tryParseCompactCommand,
 } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
@@ -1596,7 +1598,7 @@ export class KimchiAcpAgent implements Agent {
 		const singleTextBlock = params.prompt.length === 1 && params.prompt[0]?.type === "text"
 		const compactCommand = singleTextBlock ? tryParseCompactCommand(text) : undefined
 		if (compactCommand) {
-			return await this.runCompactCommand(params.sessionId, compactCommand, pending)
+			return await this.runCompactCommand(params.sessionId, text, compactCommand, pending)
 		}
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
@@ -1666,18 +1668,29 @@ export class KimchiAcpAgent implements Agent {
 		return result
 	}
 
-	/** Run the locally-handled /compact command: drive the same handler as the
-	 *  _kimchi.dev/compact ext method (progress streams through agent_activity,
-	 *  the usage gauge refreshes via compaction_end) and report the outcome as
-	 *  an assistant message — the same locally-decided-outcome pattern as the
-	 *  vision gate. No user_message_chunk echo: commands arrive as regular
-	 *  user messages, which clients render when the prompt is sent. */
+	/** Run the locally-handled /compact command: persist the raw command text
+	 *  as a metadata-only custom entry so a session/load replay can re-surface
+	 *  it (the prompt is intercepted locally, so no session message records
+	 *  it — same pattern as the bash-background settle rows), drive the same
+	 *  handler as the _kimchi.dev/compact ext method (progress streams through
+	 *  agent_activity, the usage gauge refreshes via compaction_end) and report
+	 *  the outcome as an assistant message — the same locally-decided-outcome
+	 *  pattern as the vision gate. No live user_message_chunk echo: commands
+	 *  arrive as regular user messages, which clients render when the prompt
+	 *  is sent. */
 	private async runCompactCommand(
 		sessionId: string,
+		rawText: string,
 		args: { instructions?: string },
 		pending: PendingPrompt,
 	): Promise<PromptResponse> {
 		if (pending.cancelled) return { stopReason: "cancelled" }
+		// Written BEFORE the compaction runs so the record survives even if the
+		// session dies mid-compaction. Any outcome still belongs in the log: the
+		// user issued the command whether it compacted, failed, or was aborted.
+		this.sessions.get(sessionId)?.session.sessionManager.appendCustomEntry(COMPACT_COMMAND_ENTRY_TYPE, {
+			text: rawText,
+		})
 		const outcome = await handleCompact((id) => this.getSessionTurnTarget(id), {
 			sessionId,
 			instructions: args.instructions,
@@ -2934,8 +2947,10 @@ export class KimchiAcpAgent implements Agent {
 	// instead of buildSessionContext() avoids surfacing compaction summaries
 	// as synthetic user messages. Custom entries: the artifact-recorder
 	// extension's rows are adopted as the turn's exact artifacts (recorded
-	// live, stat-gated), replacing replay-side re-derivation; other custom
-	// entries still emit nothing.
+	// live, stat-gated), replacing replay-side re-derivation; compact-command
+	// rows re-emit their persisted text as a user message (the locally-handled
+	// command never became a session message); other custom entries still emit
+	// nothing.
 	//
 	// Notifications go straight from this method to conn.sessionUpdate; we do
 	// NOT replay through the AgentSession event emitter, so extensions like
@@ -2964,11 +2979,27 @@ export class KimchiAcpAgent implements Agent {
 
 		for (const entry of entries) {
 			if (entry && entry.type === "custom") {
+				const custom = entry as { customType?: unknown; data?: unknown }
+				if (custom.customType === COMPACT_COMMAND_ENTRY_TYPE && isCompactCommandEntryData(custom.data)) {
+					// A locally-handled /compact command never became a session
+					// message, so re-surface it here as the user message the client
+					// rendered when it sent the prompt (no live echo — see
+					// runCompactCommand). Positioned like any user turn boundary:
+					// the previous turn's artifacts flush before it.
+					flushTurnArtifacts()
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "user_message_chunk",
+							content: { type: "text", text: this.displayText(sessionId, custom.data.text) },
+						},
+					})
+					continue
+				}
 				// Recorded artifact row (extension): adopt it for this turn — the
 				// row is written once per prompt (at agent_settled), after the
 				// prompt's last assistant message (live parity), and replaces what re-derivation sniffed
 				// (exact: live detection was stat-gated).
-				const custom = entry as { customType?: unknown; data?: unknown }
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
 				if (data?.v === 1 && Array.isArray(data.artifacts)) artifactBuffer.adoptRecorded(data.artifacts)
@@ -4006,10 +4037,22 @@ function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode):
 
 /** The assistant-facing text for a /compact command outcome. Trailing blank
  *  line keeps the message visually separate when a client concatenates
- *  chunks — same convention as the vision-gate warning. */
+ *  chunks — same convention as the vision-gate warning.
+ *
+ *  Deliberately omits the compaction summary: a completed compaction reports
+ *  a one-line status ("Context compacted from N tokens.") mirroring the
+ *  TUI's collapsed-by-default `[compaction]` row (Compacted from N tokens —
+ *  expand to read the summary). ACP chat surfaces have no expand affordance,
+ *  so printing the full summary inline would dump a long document into the
+ *  transcript on every manual compaction; neither Claude Code nor Studio do
+ *  that. The summary still reaches interested clients programmatically via
+ *  the _kimchi.dev/compact ext-method response, and the runtime keeps it in
+ *  the compaction entry itself. */
 function compactOutcomeText(outcome: CompactResponse): string {
 	if (outcome.status === "completed") {
-		return `Context compacted.${outcome.summary ? ` Summary:\n\n${outcome.summary}` : ""}\n\n`
+		const counts =
+			typeof outcome.tokensBefore === "number" ? ` from ${outcome.tokensBefore.toLocaleString("en-US")} tokens` : ""
+		return `Context compacted${counts}.\n\n`
 	}
 	return `Compaction ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""}\n\n`
 }

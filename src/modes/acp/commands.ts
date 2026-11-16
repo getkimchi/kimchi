@@ -40,6 +40,32 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 ]
 
 /**
+ * Custom session-log entry recording a /compact command invocation.
+ *
+ * The command prompt is intercepted locally (it never reaches the model and
+ * creates no turn), so nothing lands in the session's message history — and
+ * a session/load replay would have no trace the command ever ran. The raw
+ * prompt text is persisted as a metadata-only `type: "custom"` entry (same
+ * pattern as the bash-background settle rows): it never enters model
+ * context, but replay re-emits it as the user_message_chunk the client
+ * rendered when the prompt was sent.
+ */
+export const COMPACT_COMMAND_ENTRY_TYPE = "compact-command"
+
+/** Persisted payload of a compact-command entry: the raw prompt text exactly
+ *  as the client sent it ("/compact" or "/compact <instructions>"), replayed
+ *  verbatim. */
+export interface CompactCommandEntryData {
+	text: string
+}
+
+/** Recognition guard for a persisted compact-command payload — transcript
+ *  entries are untrusted IO, so replay validates before consuming. */
+export function isCompactCommandEntryData(data: unknown): data is CompactCommandEntryData {
+	return typeof data === "object" && data !== null && typeof (data as { text?: unknown }).text === "string"
+}
+
+/**
  * Parse a prompt invoking the compaction command: "/compact" alone or
  * "/compact <free-text instructions>" (the text after the command maps onto
  * compact()'s customInstructions). Follows the ACP command contract — the

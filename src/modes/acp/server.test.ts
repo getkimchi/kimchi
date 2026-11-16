@@ -205,6 +205,7 @@ import {
 } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { COMPACT_COMMAND_ENTRY_TYPE } from "./commands.js"
 import type { SsoFlowManager } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -9744,7 +9745,33 @@ describe("setSessionConfigOption", () => {
 			// client already rendered when it sent the prompt.
 			expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
 			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
-			expect((outcome?.update as { content: { text: string } }).content.text).toContain("Context compacted")
+			// A completed compaction prints a one-line status (token count), never
+			// the summary — mirroring the TUI's collapsed-by-default [compaction]
+			// row. The full summary stays available programmatically in the
+			// _kimchi.dev/compact response.
+			expect((outcome?.update as { content: { text: string } }).content.text).toBe(
+				"Context compacted from 12,345 tokens.\n\n",
+			)
+			expect((outcome?.update as { content: { text: string } }).content.text).not.toContain("fake compaction summary")
+		})
+
+		it("omits the token count when the compaction result has none", async () => {
+			const fake = new FakeAgentSession("test-session-compact-notokens")
+			fake.compactImpl = async () => ({
+				summary: "fake compaction summary",
+				firstKeptEntryId: "entry-1",
+				tokensBefore: undefined as unknown as number,
+			})
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-notokens",
+				prompt: [{ type: "text", text: "/compact" }],
+			})
+
+			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+			expect((outcome?.update as { content: { text: string } }).content.text).toBe("Context compacted.\n\n")
 		})
 
 		it("passes free text after /compact as the compaction instructions", async () => {
@@ -9836,6 +9863,85 @@ describe("setSessionConfigOption", () => {
 			expect(res.stopReason).toBe("end_turn")
 			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
 			expect((outcome?.update as { content: { text: string } }).content.text).toContain("Nothing to compact")
+		})
+
+		it("persists the raw command text as a metadata-only custom entry", async () => {
+			// The command prompt is intercepted locally, so no session message
+			// records that it ever ran: without this row a session/load replay
+			// loses the invocation entirely. Recorded before the compaction
+			// runs, so even a failed or aborted one leaves its mark.
+			const fake = new FakeAgentSession("test-session-compact-persist")
+			const { agent } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-persist",
+				prompt: [{ type: "text", text: "/compact keep the API notes" }],
+			})
+
+			const persisted = fake.branch.filter(
+				(e) => (e as { type?: string; customType?: string }).customType === COMPACT_COMMAND_ENTRY_TYPE,
+			)
+			expect(persisted).toEqual([
+				{
+					type: "custom",
+					customType: COMPACT_COMMAND_ENTRY_TYPE,
+					data: { text: "/compact keep the API notes" },
+				},
+			])
+		})
+
+		function makeReplayAgent(fake: FakeAgentSession): { agent: KimchiAcpAgent; updates: SessionNotification[] } {
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+				sessionLoader: async () => asSession(fake),
+			})
+			return { agent, updates }
+		}
+
+		it("replays a persisted compact-command entry as a user message on session load", async () => {
+			const fake = new FakeAgentSession("test-session-compact-replay")
+			fake.branch = [
+				userTextEntry("how does this work?", "u1", null),
+				assistantTextEntry("Like this.", "a1", "u1"),
+				{
+					type: "custom",
+					customType: COMPACT_COMMAND_ENTRY_TYPE,
+					data: { text: "/compact keep the API notes" },
+				} as never,
+				userTextEntry("now change it", "u2", "a1"),
+			]
+			const { agent, updates } = makeReplayAgent(fake)
+			await agent.loadSession({ sessionId: "test-session-compact-replay", cwd: "/tmp", mcpServers: [] })
+
+			const userChunks = updates
+				.filter((u) => u.update.sessionUpdate === "user_message_chunk")
+				.map((u) => (u.update as { content: { text: string } }).content.text)
+			expect(userChunks).toEqual(["how does this work?", "/compact keep the API notes", "now change it"])
+		})
+
+		it("ignores a malformed compact-command entry on replay", async () => {
+			// Transcript entries are untrusted IO: a partial/corrupt payload is
+			// dropped, never crashed on nor rendered as an empty message.
+			const fake = new FakeAgentSession("test-session-compact-replay-bad")
+			fake.branch = [
+				userTextEntry("hello", "u1", null),
+				{
+					type: "custom",
+					customType: COMPACT_COMMAND_ENTRY_TYPE,
+					data: { text: 42 },
+				} as never,
+			]
+			const { agent, updates } = makeReplayAgent(fake)
+			await agent.loadSession({ sessionId: "test-session-compact-replay-bad", cwd: "/tmp", mcpServers: [] })
+
+			const userChunks = updates
+				.filter((u) => u.update.sessionUpdate === "user_message_chunk")
+				.map((u) => (u.update as { content: { text: string } }).content.text)
+			expect(userChunks).toEqual(["hello"])
 		})
 	})
 
