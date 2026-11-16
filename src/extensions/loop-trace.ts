@@ -96,7 +96,10 @@ function truncateStack(stack: string): string {
 		.slice(1)
 		.map((l) => l.trim().replace(/^at /, ""))
 		.filter((l) => l && !l.includes("node:internal/async_hooks") && !l.includes("node:internal/process_task_queues"))
-	return lines.slice(1, 7).join(" | ").slice(0, STACK_MAX_CHARS)
+	// A positional window, not the full stack: keep enough frames that the
+	// scheduling site survives wrapper-heavy stacks (vitest workers, CI
+	// runners) — the 400-char cap bounds the cost either way.
+	return lines.slice(1, 11).join(" | ").slice(0, STACK_MAX_CHARS)
 }
 
 /**
