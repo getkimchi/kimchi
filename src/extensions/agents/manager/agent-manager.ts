@@ -1129,7 +1129,7 @@ export class AgentManager {
 					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 				}
 				record.abortReason = abortReason
-				const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
+				const finalText = formatRunResultText(responseText, planPath, undefined)
 				record.result = finalText
 				record.session = session
 				record.lastTurnCount = turnsUsed
