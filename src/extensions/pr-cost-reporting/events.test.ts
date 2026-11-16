@@ -33,7 +33,7 @@ it("breathes the stretcher while parsing and attributing masses of requests", as
 		new Map(),
 		producer,
 		() => {},
-		() => undefined,
+		() => new Map(),
 		undefined,
 		stretch,
 	)
@@ -66,7 +66,7 @@ it("breathes the stretcher while parsing and attributing masses of requests", as
 		new Map(),
 		producer,
 		() => {},
-		() => undefined,
+		() => new Map(),
 		undefined,
 		stretch,
 	)
@@ -205,7 +205,7 @@ import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.ur
 const input = await Bun.stdin.json();
 let claims = 0;
 const touched = input.touched && { requests: new Set(input.touched.requests), records: new Set(input.touched.records) };
-const built = await buildEvents(input.stored, input.report, new Map(input.repositories), input.producer, () => {}, () => { claims++ }, touched);
+const built = await buildEvents(input.stored, input.report, new Map(input.repositories), input.producer, () => {}, () => { claims++; return new Map() }, touched);
 console.log(JSON.stringify({ ...built, claims }));
 `,
 			],
@@ -650,6 +650,7 @@ it("feeds both physical requests from an actual SDK retry into the durable commo
 			execFileSync("bun", [driver, "native-common-events", agent], { encoding: "utf8", timeout: 30_000 }),
 		)
 		expect(result.reopened).toBe(true)
+		expect(result.claimReads).toBe(1)
 		expect(result.calls).toHaveLength(2)
 		const events = result.body.batch.events as {
 			usage?: {
@@ -710,14 +711,14 @@ it.each([
 					`
 import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.url).href)};
 import {capture,readStoredRecordsAsync,closeBackends,backendFor} from ${JSON.stringify(new URL("./ledger/records.ts", import.meta.url).href)};
-import {observeEvents,pendingBatch,effectiveClaim} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
+import {observeEvents,pendingBatch,effectiveClaim,effectiveClaims} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
 import {accountKey} from ${JSON.stringify(new URL("./snapshot.ts", import.meta.url).href)};
 const input=await Bun.stdin.json();
 for(const row of input.records)capture(input.agent,row,input.agent+"/native-observations.jsonl");
 const stored=await readStoredRecordsAsync(input.agent,()=>{});
 const repositories=new Map(input.repositories);
 if(input.mode==="unsupported")repositories.set(input.repositories[0][0],"unsupported");
-const prior=(key,id)=>effectiveClaim(backendFor(input.agent),key,id);
+const prior=(key,ids)=>effectiveClaims(backendFor(input.agent),key,ids);
 const built=await buildEvents(stored,input.report,repositories,input.producer,()=>{},prior);
 for(const group of built.accounts)observeEvents(input.agent,accountKey(group.account),group.facts,group.recordHashes,()=>{});
 const key=accountKey(input.report.requests[0].account);
@@ -764,7 +765,7 @@ function withLedger(rows: unknown[], steps: string, extra: object = {}) {
 					`
 import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.url).href)};
 import {capture,readStoredRecordsAsync,closeBackends,backendFor} from ${JSON.stringify(new URL("./ledger/records.ts", import.meta.url).href)};
-import {observeEvents,effectiveClaim} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
+import {observeEvents,effectiveClaim,effectiveClaims} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
 import {accountKey} from ${JSON.stringify(new URL("./snapshot.ts", import.meta.url).href)};
 import {calculatePullRequestCosts} from ${JSON.stringify(new URL("../work-attribution/costs.ts", import.meta.url).href)};
 const input=await Bun.stdin.json();
@@ -773,10 +774,10 @@ const stored=await readStoredRecordsAsync(input.agent,()=>{});
 const report=calculatePullRequestCosts(stored.map(row=>JSON.parse(row.body)),[]);
 const repositories=new Map(input.repositories);
 const key=accountKey(input.account);
-const prior=(account,entity)=>effectiveClaim(backendFor(input.agent),account,entity);
+const prior=(account,entities)=>effectiveClaims(backendFor(input.agent),account,entities);
 const build=async(source,existing=prior)=>await buildEvents(stored,source,repositories,input.producer,()=>{},existing);
 const observe=(built)=>{for(const group of built.accounts)observeEvents(input.agent,key,group.facts,[],()=>{})};
-const claimOf=async(id)=>(await build(report,()=>undefined)).accounts[0].facts.find(fact=>fact.usage?.requestId===id);
+const claimOf=async(id)=>(await build(report,()=>new Map())).accounts[0].facts.find(fact=>fact.usage?.requestId===id);
 const result={error:null};
 try{${steps}}catch(caught){result.error=caught.message}
 closeBackends();
@@ -852,7 +853,7 @@ it("keeps a corrected claim's reported allocation when a newer version re-transl
 		`
 observe(await build(calculatePullRequestCosts(stored.map(row=>JSON.parse(row.body)).filter(row=>row.prLookup?.checkedAt!==input.firstListed),[])));
 observe(await build(report));
-const current=prior(key,(await claimOf(input.requestId)).entityId);
+const current=effectiveClaim(backendFor(input.agent),key,(await claimOf(input.requestId)).entityId);
 result.allocation=current.allocation;
 result.correction=current.correction.id;
 `,
@@ -876,7 +877,7 @@ observeEvents(input.agent,key,[{...(await claimOf(input.other)),startedAt:"2026-
 const built=await build(report);
 observe(built);
 result.unresolved=built.unresolved.map(row=>[row.requestId,row.reason]);
-result.captured=!!prior(key,(await claimOf(input.requestId)).entityId);
+result.captured=!!effectiveClaim(backendFor(input.agent),key,(await claimOf(input.requestId)).entityId);
 `,
 		{ requestId, other },
 	)

@@ -63,7 +63,7 @@ export async function buildEvents(
 	repositories: Map<string, RepositoryIdentity>,
 	producerId: string,
 	check: () => void,
-	existingClaim: (account: string, entity: string) => Event | undefined,
+	existingClaims: (account: string, entityIds: readonly string[]) => ReadonlyMap<string, Event | undefined>,
 	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
 	stretch: () => Promise<void> = preludeStretch(),
 ): Promise<CommonEvents> {
@@ -92,8 +92,29 @@ export async function buildEvents(
 	const owners = new Map<string, RequestOwner>()
 	// The claims the outbox holds for the requests this pass translates, by account and entity.
 	const claims = new Map<string, Event | undefined>()
+	const claimAccounts = new Set<string>()
 	const unresolved: CommonEvents["unresolved"] = []
 	const units: EventUnit[] = []
+	// Resolve exactly the entity IDs this group's eligible requests can claim,
+	// then read each account's claim history once instead of per entity.
+	const requestEntities = new Map<string, string[]>()
+	for (const [requestId, evidence] of attribution) {
+		const owner = requests.get(requestId)?.find(({ row }) => row.type === "request")?.row
+		if (
+			isWorkId(requestId) &&
+			owner?.version === 1 &&
+			typeof owner.workId === "string" &&
+			typeof owner.sessionId === "string" &&
+			isWorkScope(owner.scope) &&
+			evidence.request.account &&
+			sameWorkAccount(owner.scope.account, evidence.request.account)
+		) {
+			const key = accountKey(owner.scope.account)
+			const ids = requestEntities.get(key) ?? []
+			ids.push(stableID("kimchi", "request", key, producerId, requestId.toLowerCase()))
+			requestEntities.set(key, ids)
+		}
+	}
 	for (const [requestId, evidence] of attribution) {
 		await stretch()
 		check()
@@ -147,7 +168,12 @@ export async function buildEvents(
 			if (!identity) throw new Error("repository_unresolved")
 			const key = accountKey(scope.account)
 			const entityId = stableID("kimchi", "request", key, producerId, requestId.toLowerCase())
-			const previous = included ? existingClaim(key, entityId) : undefined
+			if (included && !claimAccounts.has(key)) {
+				const fetched = existingClaims(key, requestEntities.get(key) ?? [entityId])
+				for (const [id, event] of fetched) claims.set(`${key}\u0000${id}`, event)
+				claimAccounts.add(key)
+			}
+			const previous = included ? claims.get(`${key}\u0000${entityId}`) : undefined
 			if (included) claims.set(`${key}\u0000${entityId}`, previous)
 			const entities = [entityId]
 			const repository = previous ? previous.repository : identity === "unsupported" ? undefined : identity

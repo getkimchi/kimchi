@@ -375,11 +375,18 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		const { backendFor, readStoredRecordsAsync } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 		)
-		const { effectiveClaim, observeEvents, pendingBatch } = await import(
+		const { effectiveClaims, observeEvents, pendingBatch } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
 		)
 		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
 		const { readWorkCostReport } = await import("../../../../src/extensions/work-attribution/cost-sync.js")
+		const backend = backendFor(agent)
+		let claimReads = 0
+		const claimRows = backend.outboxClaims
+		backend.outboxClaims = (accountKey, entityIds) => {
+			claimReads++
+			return claimRows(accountKey, entityIds)
+		}
 		const stored = await readStoredRecordsAsync(agent, () => {})
 		const { report } = readWorkCostReport(
 			agent,
@@ -392,7 +399,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 			new Map([[agent, { provider: "github", host: "github.com", id: "999", name: "fork/repo" }]]),
 			producer,
 			() => {},
-			(key, id) => effectiveClaim(backendFor(agent), key, id),
+			(key, ids) => effectiveClaims(backend, key, ids),
 		)
 		for (const group of built.accounts)
 			observeEvents(agent, accountKey(group.account), group.facts, group.recordHashes, () => {})
@@ -410,6 +417,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 			body: JSON.parse(Buffer.from(first.body).toString()),
 			reopened: Buffer.from(first.body).equals(Buffer.from(reopened.body)),
 			unresolved: built.unresolved,
+			claimReads,
 		})
 		closeBackends()
 		return

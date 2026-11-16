@@ -168,6 +168,18 @@ function neutral(event: Event): Event {
 	return { ...event, id: "", revision: "0", baseRevision: "0", baseEventId: "", observeTime: "0001-01-01T00:00:00Z" }
 }
 
+/** Effective claims for a translated request batch. History and duplicates retain insertion order. */
+export function effectiveClaims(
+	backend: RecordBackend,
+	accountKey: string,
+	entityIds: readonly string[],
+): Map<string, Event | undefined> {
+	const claims = new Map<string, Event | undefined>(entityIds.map((entityId) => [entityId, undefined]))
+	for (const row of backend.outboxClaims(accountKey, entityIds))
+		if (!row.blocked) claims.set(row.entityId, projectClaim(unpack(row), claims.get(row.entityId)))
+	return claims
+}
+
 /** Event CAS and its fulfilled capture intents commit together; unknown or failed translations do not call this. */
 export function observeEvents(
 	agentDir: string,

@@ -472,9 +472,14 @@ function convert(type: string, value: unknown): unknown {
 	return shape(type, value)
 }
 
+// JSON.stringify serializes valid JS strings already. Buffer.from is only
+// needed for lone UTF-16 surrogates: historically it normalized those to
+// U+FFFD, and changing that now would change event IDs and golden bytes.
+const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|[\uDC00-\uDFFF](?<![\uD800-\uDBFF])/
+
 function encode(value: unknown): string {
 	return JSON.stringify(value, (_key, entry) =>
-		typeof entry === "string" ? Buffer.from(entry).toString("utf8") : entry,
+		typeof entry === "string" && loneSurrogate.test(entry) ? Buffer.from(entry).toString("utf8") : entry,
 	)
 		.replaceAll("<", "\\u003c")
 		.replaceAll(">", "\\u003e")

@@ -98,6 +98,8 @@ export interface RecordBackend {
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
 	outboxEntityEvents(accountKey: string, entityId: string): OutboxEvent[]
+	/** Every history row for these entities, each entity decoded at most once per claim pass. */
+	outboxClaims(accountKey: string, entityIds: readonly string[]): OutboxEvent[]
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
 	outboxStatus(): OutboxAccountStatus[]
@@ -600,6 +602,20 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const entityEvents = db.query<OutboxEvent, [string, string]>(
 		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? ORDER BY rowid`,
 	)
+	const claimRows = (accountKey: string, entityIds: readonly string[]): OutboxEvent[] => {
+		const rows: OutboxEvent[] = []
+		// SQLite's bind cap is 999; one bounded page avoids one full scan/statement
+		// preparation per request in a big production ledger.
+		for (let offset = 0; offset < entityIds.length; offset += 500) {
+			const page = entityIds.slice(offset, offset + 500)
+			rows.push(
+				...db.query<OutboxEvent, [string, ...string[]]>(
+					`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${page.map(() => "?").join(",")}) ORDER BY rowid`,
+				).all(accountKey, ...page),
+			)
+		}
+		return rows
+	}
 	const insertEvent = db.query(
 		"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	)
@@ -734,6 +750,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
 		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
 		outboxEntityEvents: (accountKey, entityId) => entityEvents.all(accountKey, entityId),
+		outboxClaims: claimRows,
 		insertOutboxEvent: (event) =>
 			insertEvent.run(
 				event.id,

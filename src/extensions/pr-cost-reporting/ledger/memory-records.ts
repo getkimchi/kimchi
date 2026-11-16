@@ -149,6 +149,12 @@ export function createMemoryRecords(): RecordBackend {
 			structuredClone(
 				[...events.values()].filter((event) => event.accountKey === accountKey && event.entityId === entityId),
 			),
+		outboxClaims: (accountKey, entityIds) => {
+			const requested = new Set(entityIds)
+			return structuredClone(
+				[...events.values()].filter((event) => event.accountKey === accountKey && requested.has(event.entityId)),
+			)
+		},
 		insertOutboxEvent: (event) => {
 			if (events.has(event.id)) throw new Error("Duplicate outbox event")
 			touch()

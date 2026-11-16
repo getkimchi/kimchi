@@ -27,7 +27,7 @@ import { legacyInputSignature } from "./ledger/import.js"
 import {
 	acknowledgeBatch,
 	deliveryRetry,
-	effectiveClaim,
+	effectiveClaims,
 	type Fact,
 	observeEvents,
 	pendingBatch,
@@ -1356,7 +1356,7 @@ async function translateGroup(
 			repositories,
 			producer,
 			check,
-			(account, entity) => effectiveClaim(backend, account, entity),
+			(account, entities) => effectiveClaims(backend, account, entities),
 			touched,
 			stretch,
 		)
