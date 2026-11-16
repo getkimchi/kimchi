@@ -241,18 +241,22 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 		hotBusy = true
 		profiler.post("Profiler.stop", (err, result) => {
 			try {
+				// V8 profiles are parent→children[] trees (no child.parent pointers);
+				// caller chains come from inverting the children lists.
 				interface ProfileNode {
 					id: number
-					parent?: number
+					children?: number[]
 					callFrame: { functionName: string; url: string; lineNumber: number }
 					hitCount?: number
 				}
 				const profile = result as { profile?: { nodes?: ProfileNode[] } }
 				const nodes = profile.profile?.nodes ?? []
 				const byId = new Map(nodes.map((n) => [n.id, n]))
+				const parentOf = new Map<number, number>()
+				for (const n of nodes) for (const c of n.children ?? []) parentOf.set(c, n.id)
 				function ancestor(node: ProfileNode, depth: number): string {
-					let cur: number | undefined = node.parent
-					for (let hop = 0; hop < depth && cur !== undefined; hop++) cur = byId.get(cur)?.parent
+					let cur: number | undefined = parentOf.get(node.id)
+					for (let hop = 1; hop < depth && cur !== undefined; hop++) cur = parentOf.get(cur)
 					if (cur === undefined) return "?"
 					const p = byId.get(cur)?.callFrame
 					return p ? p.functionName || "(anonymous)" : "?"
