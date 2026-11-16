@@ -55,8 +55,8 @@ def main():
     for line in proc.stdout:
         line = line.rstrip("\n")
         parts = line.split(" ")
-        if parts[0] == "BENCH_OP" and len(parts) == 5:
-            _, op, rep, phase = parts[1], parts[2], parts[3], parts[4]
+        if parts[0] == "BENCH_OP" and len(parts) == 4:
+            _, op, rep, phase = parts
             if phase == "begin":
                 begun[(op, rep)] = perf_read(fd)
             elif phase == "end":
