@@ -1657,15 +1657,17 @@ export default function (pi: ExtensionAPI) {
 			return ` [models: ${labels.join(" | ")}]`
 		}
 
-		const defaultDescs = defaultNames.map((name) => {
+		// Advertise only spawnable types: a disabled agent now hard-fails in
+		// execute() (issue #1678), so listing it here would send the model into a
+		// guaranteed error round-trip.
+		const describe = (name: string): string | undefined => {
 			const cfg = getAgentConfig(name)
+			if (cfg?.enabled === false) return undefined
 			return `- ${name}: ${cfg?.description ?? name}${formatModels(cfg)}`
-		})
+		}
 
-		const customDescs = userNames.map((name) => {
-			const cfg = getAgentConfig(name)
-			return `- ${name}: ${cfg?.description ?? name}${formatModels(cfg)}`
-		})
+		const defaultDescs = defaultNames.map(describe).filter((d) => d !== undefined)
+		const customDescs = userNames.map(describe).filter((d) => d !== undefined)
 
 		return [
 			"Agent types:",
@@ -1881,7 +1883,10 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const parentSessionId = ctx.sessionManager.getSessionId()
 				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
-				const rawType = params.subagent_type as SubagentType
+				// subagent_type is required by the schema, but tolerate a missing or
+				// non-string value: route it through the same fail-closed error below
+				// instead of crashing on undefined.toLowerCase() inside resolveKey.
+				const rawType = (typeof params.subagent_type === "string" ? params.subagent_type : "") as SubagentType
 				const resolved = resolveType(rawType)
 				// Fail closed: an unknown type must never silently widen to a more
 				// privileged persona (previously fell back to General-Purpose with all

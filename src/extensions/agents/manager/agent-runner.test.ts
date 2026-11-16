@@ -807,6 +807,46 @@ describe("runAgent — telemetry extension", () => {
 	})
 })
 
+describe("runAgent — fail-closed persona guard (issue #1678)", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockClear()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("rejects an unknown type before any session work instead of running tool-less", async () => {
+		mockGetAgentConfig.mockReturnValue(undefined)
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Nope", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow('Refusing to run unknown or disabled agent type "Nope".')
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("rejects a disabled type before any session work", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ enabled: false }))
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow('Refusing to run unknown or disabled agent type "General-Purpose".')
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+})
+
 describe("runAgent — Plan agent plan persistence", () => {
 	let ctx: ReturnType<typeof makeFakeCtx>
 	let pi: ReturnType<typeof makeFakePi>

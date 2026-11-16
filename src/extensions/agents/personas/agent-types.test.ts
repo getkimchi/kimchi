@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { BUILTIN_TOOL_NAMES, getConfig, getToolNamesForType, registerAgents } from "./agent-types.js"
+import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType, registerAgents } from "./agent-types.js"
 import type { AgentConfig } from "./types.js"
 
 function agent(overrides: Partial<AgentConfig>): AgentConfig {
@@ -56,5 +56,12 @@ describe("agent type tool resolution", () => {
 		expect(cfg.builtinToolNames).toEqual([])
 		expect(cfg.extensions).toBe(false)
 		expect(cfg.skills).toBe(false)
+	})
+
+	it("General-Purpose declares its full builtin tool set explicitly — no implicit widening for personas that omit builtinToolNames", () => {
+		registerAgents(new Map())
+
+		expect(getAgentConfig("General-Purpose")?.builtinToolNames).toEqual(BUILTIN_TOOL_NAMES)
+		expect(getToolNamesForType("General-Purpose")).toEqual(BUILTIN_TOOL_NAMES)
 	})
 })
