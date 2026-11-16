@@ -137,7 +137,7 @@ describe("buildBuiltinGatewayServer", () => {
 		expect(buildBuiltinGatewayServer()?.entry.url).toBe("https://api.cast.ai/mcp")
 	})
 
-	it("builds from an SSO login (auth.json OAuth credential + org header) when no key is configured", () => {
+	it("resolves SSO bearer tokens through the provider on every request instead of freezing them in the entry", () => {
 		resourceState.enabled = true
 		writeFileSync(
 			join(agentDir, "auth.json"),
@@ -147,7 +147,8 @@ describe("buildBuiltinGatewayServer", () => {
 			name: GATEWAY_SERVER_NAME,
 			entry: {
 				url: "https://api.cast.ai/mcp",
-				headers: { Authorization: "Bearer oauth-access", "X-CastAi-Organization-Id": "org-3" },
+				auth: { provider: "kimchi-dev" },
+				headers: { "X-CastAi-Organization-Id": "org-3" },
 				lifecycle: "keep-alive",
 			},
 		})
