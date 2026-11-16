@@ -502,6 +502,14 @@ async function runAgentInner(
 	const config = getConfig(type)
 	const agentConfig = getAgentConfig(type)
 
+	// Fail closed at the runner boundary too: a caller that bypasses the Agent
+	// tool's execute() validation (internal spawn points, get_subagent_result
+	// resume flows) must never run a persona with no permission profile — that
+	// would silently burn tokens on a tool-less dead run (issue #1678).
+	if (type !== "Remote-Runner" && (!agentConfig || agentConfig.enabled === false)) {
+		throw new Error(`Refusing to run unknown or disabled agent type "${type}".`)
+	}
+
 	const effectiveCwd = options.cwd ?? ctx.cwd
 
 	const env = await detectEnv(options.pi, effectiveCwd)

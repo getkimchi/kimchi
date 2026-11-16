@@ -596,6 +596,51 @@ describe("Agent tool fail-closed type validation (issue #1678)", () => {
 		expect(text).toContain('Agent type "Reader" is disabled')
 		expect(manager.spawn).not.toHaveBeenCalled()
 	})
+
+	it("rejects a missing subagent_type with the same fail-closed error instead of crashing", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain("Unknown agent type")
+		expect(manager.spawn).not.toHaveBeenCalled()
+	})
+
+	it("advertises only spawnable types in the tool description — disabled agents now hard-fail", () => {
+		loadCustomAgentsMock.mockReturnValue(
+			new Map([
+				[
+					"Reader",
+					{
+						name: "Reader",
+						description: "read-only agent",
+						enabled: false,
+						extensions: false,
+						skills: false,
+						systemPrompt: "",
+						promptMode: "replace",
+					},
+				],
+			]),
+		)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const tool = getRegisteredAgentTool(pi) as unknown as { description: string }
+
+		expect(tool.description).not.toContain("Reader")
+		expect(tool.description).toContain("General-Purpose")
+	})
 })
 describe("spawnGraderAgent", () => {
 	const JUDGE_MODEL = { provider: "kimchi-dev", id: "judge-model", name: "judge-model" }
