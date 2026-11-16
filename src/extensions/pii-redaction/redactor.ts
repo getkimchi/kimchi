@@ -39,7 +39,8 @@ interface EngineSnapshot {
 	engine: GuardrailsEngine
 	exclusions: ReadonlySet<string>
 	renderMode: RedactionRenderMode
-	/** Entities whose non-engine coverage is suspended (custom patterns, SECRET_FIELD). */
+	/** Explicit OFF/legacy-disabled entities; used for customs, SECRET_FIELD,
+	 * and to distinguish those choices from tier-default engine exclusions. */
 	disabled: ReadonlySet<string>
 	/** Built-in customs plus any user-defined patterns, joined once at build time. */
 	patterns: readonly RedactionPattern[]
@@ -457,6 +458,7 @@ export async function collectDetections(
 	engine: GuardrailsEngine,
 	excluded: ReadonlySet<string>,
 	labelHint?: string,
+	explicitlyDisabled: ReadonlySet<string> = new Set(),
 ): Promise<EngineDetection[]> {
 	const results = await engine.analyze(text)
 	const active: EngineDetection[] = []
@@ -492,12 +494,17 @@ export async function collectDetections(
 					: d.entityType === "JWT_TOKEN" && (isSupabaseSecretValue(d.start) || hintSecret)
 						? "SUPABASE_KEY"
 						: d.entityType
-			// Exclusion check uses the corrected label — except the
-			// hint-relabel path: SUPABASE_KEY sits in the default engine
-			// exclusions because its bare shape is anchor_required; in object
-			// values there is no keyword anchor for the custom pattern to
-			// re-claim it, so the relabeled engine claim IS the coverage.
-			if (!(entityType === "SUPABASE_KEY" && hintSecret) && excluded.has(entityType)) continue
+			// Exclusion check uses the corrected label. SUPABASE_KEY's
+			// tier-default exclusion means its bare shape needs a keyword;
+			// an object-key hint can safely relabel the generic JWT claim.
+			// That is not permission to override an explicit OFF: the engine
+			// exclusion bundles both reasons, so consult the resolved
+			// explicit-disabled set before bypassing it.
+			const hintRenamesSupabase = entityType === "SUPABASE_KEY" && hintSecret
+			const explicitlyOff =
+				explicitlyDisabled.has("SUPABASE_KEY") ||
+				(labelHint !== undefined && explicitlyDisabled.has(labelHint))
+			if (!(hintRenamesSupabase && !explicitlyOff) && excluded.has(entityType)) continue
 			if (isNonIdentifyingDetection(entityType, d.text)) continue
 			if (isBase64ShadowDrop(entityType, text, d.start, d.end)) continue
 			active.push({ entityType, start: d.start, end: d.end, text: d.text })
@@ -554,8 +561,9 @@ export async function detectAndCompose(
 	engine: GuardrailsEngine,
 	excluded: ReadonlySet<string>,
 	labelHint?: string,
+	explicitlyDisabled?: ReadonlySet<string>,
 ): Promise<string> {
-	return composeRedactedText(text, await collectDetections(text, engine, excluded, labelHint))
+	return composeRedactedText(text, await collectDetections(text, engine, excluded, labelHint, explicitlyDisabled))
 }
 
 /** Token-mode variant of {@link detectAndCompose} — used by the session hooks. */
@@ -565,8 +573,9 @@ export async function detectAndComposeTokenized(
 	excluded: ReadonlySet<string>,
 	vault: TokenVault,
 	labelHint?: string,
+	explicitlyDisabled?: ReadonlySet<string>,
 ): Promise<string> {
-	return composeTokenizedText(text, await collectDetections(text, engine, excluded, labelHint), vault)
+	return composeTokenizedText(text, await collectDetections(text, engine, excluded, labelHint, explicitlyDisabled), vault)
 }
 
 // ---------------------------------------------------------------------------
@@ -973,8 +982,8 @@ async function redactTextWithSnapshot(
 	// renders as dead text.
 	const afterEngine =
 		snapshot.renderMode === "tokens" && vault
-			? await detectAndComposeTokenized(text, snapshot.engine, snapshot.exclusions, vault, labelHint)
-			: await detectAndCompose(text, snapshot.engine, snapshot.exclusions, labelHint)
+			? await detectAndComposeTokenized(text, snapshot.engine, snapshot.exclusions, vault, labelHint, snapshot.disabled)
+			: await detectAndCompose(text, snapshot.engine, snapshot.exclusions, labelHint, snapshot.disabled)
 	return applyCustomPatterns(afterEngine, snapshot.disabled, undefined, snapshot.patterns)
 }
 

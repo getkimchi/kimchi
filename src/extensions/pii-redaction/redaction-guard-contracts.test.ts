@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 import { parseLocalPolicy, resolveRedactionPolicy } from "./policy.js"
 import {
 	applyCustomPatterns,
+	createRedactionEngine,
+	detectAndCompose,
 	isBase64ShadowDrop,
 	isGenericNonSecretValue,
 	redactObjectStrings,
@@ -192,6 +194,23 @@ describe("Supabase anon/service JWT realism", () => {
 	it("structured objects: service key values become SUPABASE_KEY by key hint", async () => {
 		const o = await redactObjectStrings({ SUPABASE_SERVICE_KEY: jwt() })
 		expect(o.SUPABASE_SERVICE_KEY).toBe("[REDACTED-SUPABASE_KEY]")
+	})
+	it("hinted service values honor the tier-default exclusion, but never an explicit OFF", async () => {
+		const composeWithPolicy = (entities: Record<string, "on" | "off">) => {
+			const policy = resolveRedactionPolicy(parseLocalPolicy({ entities }))
+			return detectAndCompose(
+				jwt(),
+				createRedactionEngine(policy.engineExclusions),
+				new Set(policy.engineExclusions),
+				"SUPABASE_SERVICE_KEY",
+				policy.disabledEntities,
+			)
+		}
+		// No explicit policy: anchor-required explains the engine exclusion;
+		// the object-key hint supplies that anchor, so coverage is retained.
+		expect(await composeWithPolicy({})).toBe("[REDACTED-SUPABASE_KEY]")
+		// Every relevant detector off: no shape/hint can re-enable coverage.
+		expect(await composeWithPolicy({ JWT_TOKEN: "off", SUPABASE_KEY: "off" })).toBe(jwt())
 	})
 })
 
