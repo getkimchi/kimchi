@@ -59,6 +59,10 @@ import {
 	resetProjectScopeTrustForTests,
 	setProjectScopeTrusted,
 } from "../../project-scope-trust.js"
+import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
+} from "../../shared/bash-background-settle.js"
 
 // Palette tests can inject file-change notifications without OS startup races.
 // Other tests keep native watching; skill-watcher.test.ts covers disk events.
@@ -185,7 +189,11 @@ import {
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
 import { discoveredSelfHostedRegion, regionEndpoints } from "../../regions.js"
-import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
+import {
+	ACP_LIFETIME_USAGE_META_KEY,
+	ACP_REATTACH_MID_TURN_META_KEY,
+	parseToolCallId,
+} from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import type { SsoFlowManager } from "./ext-methods/sso.js"
@@ -14342,6 +14350,53 @@ describe("KimchiAcpAgent background bash handoff", () => {
 		await waitFor(() => updatesFor(secondAcpId).some((u) => u.status === "completed"))
 	})
 
+	// Regression for the superseded-hold replay clobber: persistSettle must use
+	// the acpToolCallId argument handed to it (the SETTLED call's id), never the
+	// enclosing handoff's. Persisting the NEW hold's live id would re-bind the
+	// superseded block to that id on replay, clobbering the client's live row.
+	it("persists a superseded hold's settle with the FIRST handoff's ACP id, not the new hold's", async () => {
+		const handle = spawnBackgroundSleep()
+
+		await promptWithHandoff(handle)
+		const firstAcpId = toolCalls()[0]?.toolCallId ?? ""
+		expect(firstAcpId).not.toBe("")
+
+		// A second tool result hands off the SAME registry handle (e.g. a
+		// foreground/re-background cycle re-tracking one process) under a
+		// different upstream id, so the two handoffs hold different ACP ids.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-2",
+				toolName: "bash",
+				args: { command: "sleep 900" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-2",
+				toolName: "bash",
+				result: handoffResult(handle),
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "track it again" }] })).stopReason).toBe(
+			"end_turn",
+		)
+		const secondAcpId = toolCalls()[1]?.toolCallId ?? ""
+		expect(secondAcpId).not.toBe(firstAcpId)
+
+		// The superseded hold's settle is the only one persisted (the process
+		// has not exited), and it must settle the FIRST call's identity.
+		const settles = fake.branch
+			.filter((e) => (e as { type?: string; customType?: string }).customType === BASH_BACKGROUND_SETTLE_MESSAGE_TYPE)
+			.map((e) => (e as { data: BashBackgroundSettleData }).data)
+		expect(settles).toHaveLength(1)
+		expect(settles[0]?.toolCallId).toBe("tc-1")
+		expect(settles[0]?.acpToolCallId).toBe(firstAcpId)
+	})
+
 	it("replays a still-running background call as in_progress under the SAME ACP id on reload in the same harness process, and the exit still settles it afterwards", async () => {
 		const handle = spawnBackgroundSleep()
 
@@ -14738,5 +14793,80 @@ describe("KimchiAcpAgent background bash handoff", () => {
 		expect(replayCalls[1]?.toolCallId).toBe("kt.bash.7")
 		expect(replayCalls[1]?.status).toBe("completed")
 		expect(JSON.stringify(updatesFor("kt.bash.7").map((u) => u.rawOutput))).toContain("exit payload")
+	})
+
+	// Counter-advance regression: a replayed rebind to kt.bash.7 must push
+	// nextToolCallId PAST 7 — a freshly loaded record allocates from 0, so
+	// without the advance a later live call would mint kt.<tool>.7's suffix
+	// again and collide with the rebound row.
+	it("allocates the next ACP tool-call id past a rebound id's numeric suffix after a replay", async () => {
+		fake.branch = [
+			userTextEntry("run it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-tc-1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle: "h-dead", exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			{
+				type: "custom",
+				id: "st-tc-1",
+				parentId: "tr-tc-1",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-background-settle",
+				data: {
+					toolCallId: "tc-1",
+					acpToolCallId: "kt.bash.7",
+					isError: false,
+					text: "exit payload",
+					details: { handle: "h-dead", exited: true, exitCode: 0, reason: null },
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+		expect(toolCalls()).toHaveLength(1)
+		expect(toolCalls()[0]?.toolCallId).toBe("kt.bash.7")
+
+		// A live turn after the reload allocates a fresh ACP id from the counter.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-9",
+				toolName: "bash",
+				args: { command: "echo hi" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-9",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "hi" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "again" }] })).stopReason).toBe("end_turn")
+
+		const laterCalls = toolCalls().filter((c) => c.toolCallId !== "kt.bash.7")
+		expect(laterCalls).toHaveLength(1)
+		const parsed = parseToolCallId(laterCalls[0]?.toolCallId ?? "")
+		expect(parsed).not.toBeNull()
+		expect(parsed?.seq).toBeGreaterThan(7)
 	})
 })
