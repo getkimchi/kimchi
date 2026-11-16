@@ -9740,8 +9740,9 @@ describe("setSessionConfigOption", () => {
 			expect(fake.compactCalls).toEqual([{ instructions: undefined, force: false }])
 			expect(fake.promptCalls).toEqual([])
 			expect(res.stopReason).toBe("end_turn")
-			const userEcho = updates.find((u) => u.update.sessionUpdate === "user_message_chunk")
-			expect((userEcho?.update as { content: { text: string } }).content.text).toBe("/compact")
+			// No user echo: commands arrive as regular user messages, which the
+			// client already rendered when it sent the prompt.
+			expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
 			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
 			expect((outcome?.update as { content: { text: string } }).content.text).toContain("Context compacted")
 		})

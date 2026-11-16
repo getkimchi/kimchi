@@ -1596,7 +1596,7 @@ export class KimchiAcpAgent implements Agent {
 		const singleTextBlock = params.prompt.length === 1 && params.prompt[0]?.type === "text"
 		const compactCommand = singleTextBlock ? tryParseCompactCommand(text) : undefined
 		if (compactCommand) {
-			return await this.runCompactCommand(params.sessionId, text, compactCommand, pending)
+			return await this.runCompactCommand(params.sessionId, compactCommand, pending)
 		}
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
@@ -1666,34 +1666,18 @@ export class KimchiAcpAgent implements Agent {
 		return result
 	}
 
-	/**
-	 * Run the locally-handled /compact command. The prompt is a single text
-	 * block holding "/compact" (optionally followed by free-text
-	 * instructions) per the ACP command contract — prompts carrying extra
-	 * blocks fall through to a model turn — so the turn never reaches the
-	 * model: surface the invocation as a live-only user message (the runtime
-	 * records only the summary, so the command text itself would otherwise
-	 * never appear), run
-	 * the same handler as the _kimchi.dev/compact ext method (progress streams
-	 * through the agent_activity notifications, the usage gauge refreshes via
-	 * the compaction_end event), and report the terminal outcome as an
-	 * assistant message — the same locally-decided-outcome pattern as the
-	 * vision gate.
-	 */
+	/** Run the locally-handled /compact command: drive the same handler as the
+	 *  _kimchi.dev/compact ext method (progress streams through agent_activity,
+	 *  the usage gauge refreshes via compaction_end) and report the outcome as
+	 *  an assistant message — the same locally-decided-outcome pattern as the
+	 *  vision gate. No user_message_chunk echo: commands arrive as regular
+	 *  user messages, which clients render when the prompt is sent. */
 	private async runCompactCommand(
 		sessionId: string,
-		text: string,
 		args: { instructions?: string },
 		pending: PendingPrompt,
 	): Promise<PromptResponse> {
 		if (pending.cancelled) return { stopReason: "cancelled" }
-		this.send({
-			sessionId,
-			update: {
-				sessionUpdate: "user_message_chunk",
-				content: { type: "text", text },
-			},
-		})
 		const outcome = await handleCompact((id) => this.getSessionTurnTarget(id), {
 			sessionId,
 			instructions: args.instructions,
