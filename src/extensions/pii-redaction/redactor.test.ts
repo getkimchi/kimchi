@@ -672,7 +672,7 @@ describe("anchored splice and re-additions — review regressions", () => {
 	beforeEach(() => resetRedactorEngine())
 	afterEach(() => resetRedactorEngine())
 
-	describe("connection-string promotion (chunk 5)", () => {
+	describe("connection-string promotion", () => {
 		// A DSN without credentials is not a secret — must pass through intact.
 		it("leaves credentialless database URIs untouched", async () => {
 			for (const dsn of [
@@ -885,7 +885,6 @@ describe("base64-witness boundary classes", () => {
 
 	it.each([
 		["+", "raw base64"],
-		["/", "raw base64 path"],
 		["-", "base64url/JWT"],
 		["_", "anchored-name suffix"],
 	])("still skips a keyword embedded mid-payload behind %s (%s)", async (boundary) => {
@@ -894,6 +893,14 @@ describe("base64-witness boundary classes", () => {
 		const interior = "+"
 		const out = await redactText(`data:${"a".repeat(8)}${interior}${"a".repeat(7)}${boundary}password=${V}`)
 		expect(out).toContain(V)
+	})
+
+	it("redacts a keyword after a URL path delimiter, no matter the base64-like run before it", async () => {
+		// `/` is a path separator, not a payload byte: a run ending in `/`
+		// reads as a URL path segment, never as blob interior.
+		const out = await redactText(`https://example.com/${"a".repeat(8)}+${"a".repeat(7)}/password=${V}`)
+		expect(out).not.toContain(V)
+		expect(out).toContain("[REDACTED-GENERIC_SECRET]")
 	})
 
 	it("redacts a keyword after a pure-alnum run glued to a payload byte (no interior non-alnum)", async () => {

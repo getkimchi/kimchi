@@ -388,9 +388,11 @@ function isBase64TailChar(c: string): boolean {
  * the alphabet here: the assignment byte and the URL separator are real-secret
  * delimiters, so they terminate the run (the doc previously said padding counts
  * — it does not, by design).
- * The engine-shadow predicate keys on immediate neighbors; keyword-anchored
- * custom patterns (GENERIC_SECRET) need a longer witness because their value
- * charset swallows base64 chars, so an end-neighbor never proves embedding.
+ * The engine-shadow predicate keys on immediate neighbors and the 16-char
+ * witness, with no interior-evidence requirement; keyword-anchored custom
+ * patterns (GENERIC_SECRET) additionally demand an interior `+` because a
+ * glued keyword may hide inside the blob — the divergence is intentional:
+ * engine spans are substring claims, custom anchors are framings.
  */
 export function base64RunBefore(text: string, start: number): number {
 	let n = 0
@@ -406,9 +408,8 @@ export function isBase64ShadowDrop(entityType: string, text: string, start: numb
 	// Long-run witness: −16 base64 chars before the span can only be payload — drop
 	// regardless of the end neighbor. Genuine framings (api_key=AIza…, URL-path
 	// segments, 'token: pat…') all expose a non-base64 delimiter on the left
-	// ('=', '/', ':', quote, space), so the run there is 0 (rule-2 assessment:
-	// double-'=' evidence was measured rule-less on corpus — the FP spans sit
-	// mid-run with alnum neighbors on both sides).
+	// ('=', '/', ':', quote, space), so the walk there returns 0; the
+	// measured engine FP spans sit mid-run with alnum neighbors on both sides.
 	if (base64RunBefore(text, start) >= 16) return true
 	return isBase64RunChar(text.charAt(start - 1)) && isBase64TailChar(text.charAt(end))
 }
@@ -458,8 +459,19 @@ export async function collectDetections(
 ): Promise<EngineDetection[]> {
 	const results = await engine.analyze(text)
 	const active: EngineDetection[] = []
+	const isSupabaseAnonValue = (start: number) =>
+		/(?:next_public_)?supabase_anon_key\s*[:=]\s*["']?$/i.test(text.slice(Math.max(0, start - 64), start))
+	const isSupabaseSecretValue = (start: number) =>
+		/supabase(?:_service)?_key\s*[:=]\s*["']?$/i.test(text.slice(Math.max(0, start - 64), start))
 	for (const r of results) {
 		for (const d of r.detections) {
+			// Public-by-design anon keys are not secrets: the engine's generic
+			// JWT_TOKEN fires on them too (they are JWTs), so keyword framing
+			// must win — skip JWT detections immediately behind the anon label.
+			// The secret spellings also skip the generic engine claim so the
+			// keyword-anchored SUPABASE_KEY custom (policy-toggleable, own
+			// marker) owns the coverage.
+			if (d.entityType === "JWT_TOKEN" && (isSupabaseAnonValue(d.start) || isSupabaseSecretValue(d.start))) continue
 			// Attribution correction: the engine claims
 			// realistic-length sk-ant- keys as OPENAI_KEY long before the
 			// custom-anchored ANTHROPIC_KEY pattern gets a turn. Real Anthropic
@@ -614,12 +626,18 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// only the value is redacted — mirrored after the engine's keyword-anchored
 	// patterns, kept value-only for span-minimal consistency with the URL
 	// customs. AccountKey is deliberately NOT anchored here: AZURE_STORAGE_KEY
-	// below owns it, so the pre-existing excludedEntities key for AccountKey
-	// redaction keeps working (narrowed per correctness-002 — this pattern used
-	// to claim AccountKey too, shadowing the storage-key pattern entirely).
+	// below owns it (this pattern used to claim AccountKey too, shadowing the
+	// storage-key pattern entirely).
 	{
 		name: "AZURE_CONNECTION_STRING",
-		regex: /((?:SharedAccessKey|SharedAccessSignature)=)([A-Za-z0-9+/=]{20,})/g,
+		// Real SAS strings are URL-encoded (`%3D` for `=`) in some encodings
+		// and `&`-parameter-structured inside semicolon-framed connection
+		// strings (`sv=…&ss=…&sig=…`) — the value class covers the encoded
+		// form; parameters may continue with ONLY true SAS parameter names so
+		// a neighboring credential parameter (`&refresh_token=…`) is never
+		// eaten into the match.
+		regex:
+			/((?:SharedAccessKey|SharedAccessSignature)=)([A-Za-z0-9+/=%_-]{8,}(?:&(?:sv|ss|srt|sp|sig|st|se|spr|sip|sr)=[A-Za-z0-9+/=%_-]+)+|[A-Za-z0-9+/=%_-]{20,})/g,
 		secretGroup: 2,
 	},
 	// Azure storage keys inside a connection string. The value floor matches
@@ -658,12 +676,16 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		secretGroup: 2,
 	},
 	// Query parameters that carry credentials. `;` is included as a leading
-	// separator for `;`-delimited connection strings (Azure SAS).
+	// separator for `;`-delimited connection strings (Azure SAS). Values may
+	// contain `[`/`]` (tokens legitimately do); an already-redacted marker
+	// from an earlier pass is rejected by rejectValue instead of being
+	// banned from every credential.
 	{
 		name: "URL_WITH_CREDENTIALS",
 		regex:
-			/([?&;](?:token|api_?key|key|sig|signature|secret|password|access_token|refresh_token|session_token|client_secret|sas|sharedaccesssignature)=)([^&;\s[]{8,})/gi,
+			/([?&;](?:token|api_?key|key|sig|signature|secret|password|access_token|refresh_token|session_token|client_secret|sas|sharedaccesssignature)=)([^&;\s]{8,})/gi,
 		secretGroup: 2,
+		rejectValue: (value: string) => /^\[REDACTED-[A-Z_][A-Z0-9_]*\]/.test(value),
 	},
 	// Keyword-anchored re-additions for bare-shape engine entities the tier
 	// registry excludes (TELEGRAM_BOT_TOKEN, OKTA_TOKEN): the bare shapes
@@ -684,17 +706,20 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// SUPABASE_ANON_KEY too — public-by-design browser keys — so it stays
 	// excluded and this keyword-anchored custom carries the coverage:
 	// SUPABASE_KEY / SUPABASE_SERVICE_KEY assignments (eyJ… 100+ JWT), never
-	// the anon key.
+	// the anon key. Dots are in the class so dot-separated realistic JWTs
+	// match here (the generic JWT_TOKEN claim on them is relabeled in the
+	// engine filter).
 	{
 		name: "SUPABASE_KEY",
-		regex: /((?:supabase(?:_service)?_key)\s*[:=]\s*["']?)(eyJ[A-Za-z0-9_-]{100,})/gi,
+		regex: /((?:supabase(?:_service)?_key)\s*[:=]\s*["']?)(eyJ[A-Za-z0-9_.-]{100,})/gi,
 		secretGroup: 2,
 	},
 	// Keyword-anchored free-text secrets: `password: …`, `secret = …`,
 	// `token: …`, `credential: …`. Restores the engine's GENERIC_SECRET
 	// coverage (anchor_required, excluded by default) for the free-text case
-	// the JSON sensitive-key path cannot see. Value charset excludes `[` so
-	// an earlier pattern's `[REDACTED-…]` marker is never re-consumed.
+	// the JSON sensitive-key path cannot see. An already-redacted marker
+	// from an earlier pass is rejected by rejectValue so idempotency holds
+	// for values that contain `[`/`]`.
 	// The anchor consumes a leading non-letter byte: without it the
 	// keyword matches shape-suffixed identifiers (`oauthAccessToken = "…"`
 	// → "Token = …" — measured ~2,850 false redactions across engineering
@@ -704,11 +729,11 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// --token=… CLI flags are real secret habitats, not identifiers.
 	{
 		skipIfEmbeddedInBase64: true,
-		rejectValue: isGenericNonSecretValue,
 		name: "GENERIC_SECRET",
 		regex:
-			/((?:^|[^A-Za-z])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
+			/((?:^|[^A-Za-z])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"']{16,})/gi,
 		secretGroup: 2,
+		rejectValue: (value: string) => isGenericNonSecretValue(value) || /^\[REDACTED-[A-Z_][A-Z0-9_]*\]/.test(value),
 	},
 	// Docker registry auth from a config's JSON `"auth"` key (base64 of
 	// user:password). Restores DOCKER_REGISTRY_AUTH coverage.
@@ -732,10 +757,13 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
  * stay redacted.
  */
 export function isGenericNonSecretValue(value: string): boolean {
-	// `$`-leading shell expansions and command substitutions only:
-	// ${VAR}, $[idx], $(cmd), $VAR — a broader any-word-char clause would
-	// reject bcrypt/argon2 hashes ($2b$12$…) and $-prefixed secrets.
-	if (/^\$(?:[{([]|[A-Za-z_])/.test(value) || /^<[A-Za-z0-9_\s-]*>$/.test(value)) return true
+	// `$`-leading shell expansions and command substitutions only, as
+	// complete shapes: ${VAR}, $[idx], $(cmd), or a whole-value $VAR — the
+	// whole-value clause matters because modular-crypt hashes (argon2:
+	// `$argon2id$v=19$…`, scrypt: `$s2$…`, bcrypt `$2b$12$…`) also start
+	// with `$`+letter and must keep redacting. `$VAR/…` is handled by the
+	// path branch below.
+	if (/^\$(?:[{([]|[A-Za-z_]\w*$)/.test(value) || /^<[A-Za-z0-9_\s-]*>$/.test(value)) return true
 	// Paths: anchored start (/, ~/, ./, ../, $VAR/) with path-ish body.
 	if (/^(?:~?\/|\.\.?\/|\$[A-Za-z_][\w]*\/)[\w.+=/@-]+\/?$/.test(value)) return true
 	// Identifier-shaped, digit-free, lowercase-initial (camelCase single words
@@ -832,12 +860,14 @@ export function applyCustomPatterns(
 				const offset = args[args.length - 2]
 				const input = args[args.length - 1]
 				// The anchored match starts AT its consumed boundary byte, so the
-				// byte class decides what can keep a base64 run alive: `+`/`/`
-				// (raw base64), `-`/`_` (base64url/JWT and the keyword suffixes of
+				// byte class decides what can keep a base64 run alive: `+` (raw
+				// base64), `-`/`_` (base64url/JWT and the keyword suffixes of
 				// anchored names like FACEBOOK_TOKEN), and digits — digits are
 				// payload bytes in both base64 alphabets, so a digit-glued anchor
 				// inside a blob (…b64AAAAB5token=…) stays suppressible while
-				// `1password:` at a space boundary still redacts. Every other
+				// `1password:` at a space boundary still redacts. `/` never
+				// counts: it is a URL path separator, so a run ending at
+				// `/password=…` is real framing, not blob interior. Every other
 				// delimiter (space, quote, `=`, `:`) is real secret framing and
 				// must redact. Suppression additionally requires interior base64
 				// evidence — a `+` inside the run window (the walk alphabet
@@ -848,8 +878,7 @@ export function applyCustomPatterns(
 				// narrowing of the skip.
 				if (typeof offset === "number" && typeof input === "string") {
 					const boundary = input.charAt(offset)
-					const payloadInternal =
-						boundary === "+" || boundary === "/" || boundary === "-" || boundary === "_" || /\d/.test(boundary)
+					const payloadInternal = boundary === "+" || boundary === "-" || boundary === "_" || /\d/.test(boundary)
 					const walk = base64RunBefore(input, offset)
 					const run = walk + (isBase64RunChar(boundary) ? 1 : 0)
 					let hasInteriorPlus = false
