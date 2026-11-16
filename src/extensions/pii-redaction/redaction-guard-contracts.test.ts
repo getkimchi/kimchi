@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { parseLocalPolicy, resolveRedactionPolicy } from "./policy.js"
-import { applyCustomPatterns, isBase64ShadowDrop, isGenericNonSecretValue, redactText } from "./redactor.js"
+import { applyCustomPatterns, isBase64ShadowDrop, isGenericNonSecretValue, redactObjectStrings, redactText } from "./redactor.js"
 
 describe("long-run base64 witness", () => {
-	// Adjudicated: double-'=' evidence sweeps ~0 on the corpus; the FP spans sit
+	// Double-'=' evidence sweeps ~0 on the measured corpus; the FP spans sit
 	// mid-run with alnum neighbors both sides. A ≥16-char run before the span can
 	// only be blob payload — assignment/URL/prose framings expose a delimiter.
 	// GCP_API_KEY stands in for any shadow-suppressed entity — the predicate
@@ -122,6 +122,15 @@ describe("Azure SAS ownership: encoded and structured forms", () => {
 		expect(out).not.toContain(secretTail)
 		expect(out).toContain("[REDACTED-URL_WITH_CREDENTIALS]")
 	})
+	it("Service Bus SAS (skn before sig) owned by AZURE_CONNECTION_STRING", async () => {
+		const sig = "A".repeat(43)
+		const inp = ";SharedAccessSignature=" + ["se=2026-01-01", "&skn=RootManageSharedAccessKey", "&sig=" + sig].join("")
+		// Prove ownership: the generic URL custom stays disabled for the scan.
+		const urlOff = resolveRedactionPolicy(parseLocalPolicy({ entities: { URL_WITH_CREDENTIALS: "off" } }))
+		const out = applyCustomPatterns(inp, urlOff.disabledEntities)
+		expect(out).not.toContain(sig)
+		expect(out).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
+	})
 	it("policy toggle: AZURE_CONNECTION_STRING owns SAS without the URL custom rescuing it", () => {
 		const sasInput = ";SharedAccessSignature=" + "x".repeat(24)
 		// URL custom off, Azure on: Azure still claims the SAS value.
@@ -137,25 +146,35 @@ describe("Azure SAS ownership: encoded and structured forms", () => {
 })
 
 describe("Supabase anon/service JWT realism", () => {
-	// Realistic base64url segments joined at the dots so the engine's JWT_TOKEN
-	// detector fires — the skip/relabel must discriminate on those claims, and a
-	// dot-less blob would pass the tests without exercising them.
-	const seg = (c: string, n: number) => c.repeat(n)
-	const jwt = () => ["eyJ" + seg("a", 53), seg("h", 80), seg("s", 60)].join(".")
+	// Engine-detectable JWT: base64url of JSON header/payload + signature —
+	// a synthetic repeat-char blob passes the tests without the engine ever
+	// claiming it, which would make the skip/relabel unproven.
+	const b64 = (s: string) => Buffer.from(s).toString("base64url")
+	const jwt = () =>
+		[b64(JSON.stringify({ alg: "HS256", typ: "JWT" })), b64(JSON.stringify({ iss: "supabase", role: "anon" })), "s".repeat(43)].join(".")
 	it("public anon JWT behind the anon label stays untouched", async () => {
 		const inp = "NEXT_PUBLIC_SUPABASE_ANON_KEY=" + jwt()
 		expect(await redactText(inp)).toBe(inp)
 	})
-	it("the same JWT behind an unrelated label IS claimed by JWT_TOKEN", async () => {
-		const out = await redactText("bearer " + jwt())
-		expect(out).not.toContain(jwt())
+	it("the standalone fixture IS claimed by JWT_TOKEN (engine detection proof)", async () => {
+		const out = await redactText("sentinel " + jwt())
+		expect(out).toContain("[REDACTED-JWT_TOKEN]")
 	})
 	it("service-role JWT behind the secret label redacts as SUPABASE_KEY", async () => {
 		const out = await redactText("SUPABASE_SERVICE_KEY=" + jwt())
 		expect(out).toContain("[REDACTED-SUPABASE_KEY]")
 		expect(out).not.toContain(jwt())
 	})
+	it("structured objects: anon key values stay untouched by key hint", async () => {
+		const o = await redactObjectStrings({ NEXT_PUBLIC_SUPABASE_ANON_KEY: jwt() })
+		expect(o.NEXT_PUBLIC_SUPABASE_ANON_KEY).toBe(jwt())
+	})
+	it("structured objects: service key values become SUPABASE_KEY by key hint", async () => {
+		const o = await redactObjectStrings({ SUPABASE_SERVICE_KEY: jwt() })
+		expect(o.SUPABASE_SERVICE_KEY).toBe("[REDACTED-SUPABASE_KEY]")
+	})
 })
+
 
 describe("vault tokens survive keyword proximity (token render mode)", () => {
 	it("a vault token right after a keyword is never re-consumed", async () => {

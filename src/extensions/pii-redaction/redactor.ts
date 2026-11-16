@@ -456,6 +456,7 @@ export async function collectDetections(
 	text: string,
 	engine: GuardrailsEngine,
 	excluded: ReadonlySet<string>,
+	labelHint?: string,
 ): Promise<EngineDetection[]> {
 	const results = await engine.analyze(text)
 	const active: EngineDetection[] = []
@@ -463,6 +464,11 @@ export async function collectDetections(
 		/(?:next_public_)?supabase_anon_key\s*[:=]\s*["']?$/i.test(text.slice(Math.max(0, start - 64), start))
 	const isSupabaseSecretValue = (start: number) =>
 		/supabase(?:_service)?_key\s*[:=]\s*["']?$/i.test(text.slice(Math.max(0, start - 64), start))
+	// Object-walk callers pass the property key as an exact label: the value
+	// string on its own carries no keyword context, so the hint stands in
+	// for the lookback checks above (anon skip, service relabel).
+	const hintAnon = labelHint !== undefined && /^(?:next_public_)?supabase_anon_key$/i.test(labelHint)
+	const hintSecret = labelHint !== undefined && /^supabase(?:_service)?_key$/i.test(labelHint)
 	for (const r of results) {
 		for (const d of r.detections) {
 			// Public-by-design anon keys are not secrets: the engine's generic
@@ -471,16 +477,27 @@ export async function collectDetections(
 			// The secret spellings also skip the generic engine claim so the
 			// keyword-anchored SUPABASE_KEY custom (policy-toggleable, own
 			// marker) owns the coverage.
-			if (d.entityType === "JWT_TOKEN" && (isSupabaseAnonValue(d.start) || isSupabaseSecretValue(d.start))) continue
+			if (d.entityType === "JWT_TOKEN" && (isSupabaseAnonValue(d.start) || hintAnon)) continue
 			// Attribution correction: the engine claims
 			// realistic-length sk-ant- keys as OPENAI_KEY long before the
 			// custom-anchored ANTHROPIC_KEY pattern gets a turn. Real Anthropic
 			// keys are ~100+ chars, well over the engine's OPENAI threshold,
 			// so without this relabel the label fix below is a no-op for real
 			// keys. Fire only on the distinct prefix — never on content alone.
-			const entityType = d.entityType === "OPENAI_KEY" && d.text.startsWith("sk-ant-") ? "ANTHROPIC_KEY" : d.entityType
-			// Exclusion check uses the corrected label.
-			if (excluded.has(entityType)) continue
+			// The same rule attributes keyword-framed Supabase secret JWTs to
+			// SUPABASE_KEY rather than the generic JWT label.
+			const entityType =
+				d.entityType === "OPENAI_KEY" && d.text.startsWith("sk-ant-")
+					? "ANTHROPIC_KEY"
+					: d.entityType === "JWT_TOKEN" && (isSupabaseSecretValue(d.start) || hintSecret)
+						? "SUPABASE_KEY"
+						: d.entityType
+			// Exclusion check uses the corrected label — except the
+			// hint-relabel path: SUPABASE_KEY sits in the default engine
+			// exclusions because its bare shape is anchor_required; in object
+			// values there is no keyword anchor for the custom pattern to
+			// re-claim it, so the relabeled engine claim IS the coverage.
+			if (!(entityType === "SUPABASE_KEY" && hintSecret) && excluded.has(entityType)) continue
 			if (isNonIdentifyingDetection(entityType, d.text)) continue
 			if (isBase64ShadowDrop(entityType, text, d.start, d.end)) continue
 			active.push({ entityType, start: d.start, end: d.end, text: d.text })
@@ -536,8 +553,9 @@ export async function detectAndCompose(
 	text: string,
 	engine: GuardrailsEngine,
 	excluded: ReadonlySet<string>,
+	labelHint?: string,
 ): Promise<string> {
-	return composeRedactedText(text, await collectDetections(text, engine, excluded))
+	return composeRedactedText(text, await collectDetections(text, engine, excluded, labelHint))
 }
 
 /** Token-mode variant of {@link detectAndCompose} — used by the session hooks. */
@@ -546,8 +564,9 @@ export async function detectAndComposeTokenized(
 	engine: GuardrailsEngine,
 	excluded: ReadonlySet<string>,
 	vault: TokenVault,
+	labelHint?: string,
 ): Promise<string> {
-	return composeTokenizedText(text, await collectDetections(text, engine, excluded), vault)
+	return composeTokenizedText(text, await collectDetections(text, engine, excluded, labelHint), vault)
 }
 
 // ---------------------------------------------------------------------------
@@ -633,11 +652,12 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		// Real SAS strings are URL-encoded (`%3D` for `=`) in some encodings
 		// and `&`-parameter-structured inside semicolon-framed connection
 		// strings (`sv=…&ss=…&sig=…`) — the value class covers the encoded
-		// form; parameters may continue with ONLY true SAS parameter names so
-		// a neighboring credential parameter (`&refresh_token=…`) is never
-		// eaten into the match.
+		// form; parameters may continue with ONLY documented SAS parameter
+		// names (sv/ss/srt/sp/sig/st/se/spr/sip/sr + Service Bus/Event Hubs
+		// skn, skv, account/shared-key scid) so a neighboring credential
+		// parameter (`&refresh_token=…`) is never eaten into the match.
 		regex:
-			/((?:SharedAccessKey|SharedAccessSignature)=)([A-Za-z0-9+/=%_-]{8,}(?:&(?:sv|ss|srt|sp|sig|st|se|spr|sip|sr)=[A-Za-z0-9+/=%_-]+)+|[A-Za-z0-9+/=%_-]{20,})/g,
+			/((?:SharedAccessKey|SharedAccessSignature)=)([A-Za-z0-9+/=%_-]{8,}(?:&(?:sv|ss|srt|sp|sig|st|se|spr|sip|sr|skn|skv|scid)=[A-Za-z0-9+/=%_-]+)+|[A-Za-z0-9+/=%_-]{20,})/g,
 		secretGroup: 2,
 	},
 	// Azure storage keys inside a connection string. The value floor matches
@@ -935,7 +955,12 @@ export function applyCustomPatterns(
  * Bearer tokens, OAuth tokens) as a second pass. Fail-open behavior lives in
  * `redactTextCounted`; this function propagates scan failures.
  */
-async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot, vault?: TokenVault): Promise<string> {
+async function redactTextWithSnapshot(
+	text: string,
+	snapshot: EngineSnapshot,
+	vault?: TokenVault,
+	labelHint?: string,
+): Promise<string> {
 	// Token composition only engages when BOTH the snapshot says token mode
 	// and a session vault exists. A missing vault (unknown/restarted
 	// session, non-hook callers) falls back to markers — markers decay
@@ -943,8 +968,8 @@ async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot, va
 	// renders as dead text.
 	const afterEngine =
 		snapshot.renderMode === "tokens" && vault
-			? await detectAndComposeTokenized(text, snapshot.engine, snapshot.exclusions, vault)
-			: await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
+			? await detectAndComposeTokenized(text, snapshot.engine, snapshot.exclusions, vault, labelHint)
+			: await detectAndCompose(text, snapshot.engine, snapshot.exclusions, labelHint)
 	return applyCustomPatterns(afterEngine, snapshot.disabled, undefined, snapshot.patterns)
 }
 
@@ -988,11 +1013,12 @@ async function redactTextCounted(
 	onFailure?: (err: unknown) => void,
 	snapshot?: EngineSnapshot,
 	vault?: TokenVault,
+	labelHint?: string,
 ): Promise<string> {
 	try {
 		// A caller-supplied snapshot carries the pass's atomic policy view;
 		// otherwise resolve the current one.
-		return await settleBoundScan(() => redactTextWithSnapshot(text, snapshot ?? resolveSnapshot(), vault))
+		return await settleBoundScan(() => redactTextWithSnapshot(text, snapshot ?? resolveSnapshot(), vault, labelHint))
 	} catch (err) {
 		onFailure?.(err)
 		return text
@@ -1099,13 +1125,13 @@ function isImageBlockData(key: PropertyKey, value: string, block: Record<Propert
  */
 async function redactObjectStringsWith<T>(
 	obj: T,
-	redactString: (text: string) => Promise<string>,
+	redactString: (text: string, labelHint?: string) => Promise<string>,
 	snapshot: EngineSnapshot,
 	onScannedPair?: (input: string, output: string) => void,
 	parentKey?: PropertyKey,
 ): Promise<T> {
 	if (typeof obj === "string") {
-		const out = await redactString(obj)
+		const out = await redactString(obj, typeof parentKey === "string" ? parentKey : undefined)
 		onScannedPair?.(obj, out)
 		return out as T
 	}
@@ -1184,8 +1210,8 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 	const snapshot = resolveSnapshot()
 	return redactObjectStringsWith(
 		obj,
-		(text) =>
-			redactTextWithSnapshot(text, snapshot).catch((err) => {
+		(text, labelHint) =>
+			redactTextWithSnapshot(text, snapshot, undefined, labelHint).catch((err) => {
 				console.error("PII redaction scan failed, returning original text:", err)
 				return text
 			}),
@@ -1287,7 +1313,7 @@ export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault)
 	// One snapshot per measured pass — the SECRET_FIELD gate in the walker and
 	// every settle-bounded string scan see the same atomic policy view.
 	const snapshot = resolveSnapshot()
-	const redactStringMeasured = async (text: string): Promise<string> => {
+	const redactStringMeasured = async (text: string, labelHint?: string): Promise<string> => {
 		if (text.length === 0) return text
 		report.stringsScanned += 1
 		return redactTextCounted(
@@ -1305,6 +1331,7 @@ export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault)
 			},
 			snapshot,
 			vault,
+			labelHint,
 		)
 	}
 	const redacted = await redactObjectStringsWith(obj, redactStringMeasured, snapshot, (input, output) =>
@@ -1369,7 +1396,7 @@ export async function redactObjectStringsStrict<T>(obj: T): Promise<T> {
 	}
 	return redactObjectStringsWith(
 		obj,
-		async (text) => tokensToMarkers(await redactTextWithSnapshot(text, snapshot)),
+		async (text, labelHint) => tokensToMarkers(await redactTextWithSnapshot(text, snapshot, undefined, labelHint)),
 		snapshot,
 	)
 }
