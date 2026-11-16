@@ -8496,6 +8496,34 @@ describe("initializeHeadlessTheme", () => {
 })
 
 describe("newSession model state", () => {
+	it("distinguishes same-name models from different gateway providers", async () => {
+		const fake = new FakeAgentSession("session-provider-labels")
+		fake.model = { provider: "kimchi-dev/upstream", id: "shared", name: "Shared Model" }
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "shared", name: "Shared Model" },
+				{ provider: "kimchi-dev/upstream", id: "shared", name: "Shared Model" },
+				{ provider: "kimchi-dev/upstream", id: "unique", name: "Unique Model" },
+			],
+		}
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const option = res.configOptions?.find((opt) => opt.id === "model")
+		expect(option).toMatchObject({
+			currentValue: "kimchi-dev/upstream/shared",
+			options: expect.arrayContaining([
+				{ value: "kimchi-dev/shared", name: "Shared Model (kimchi-dev)" },
+				{ value: "kimchi-dev/upstream/shared", name: "Shared Model (kimchi-dev/upstream)" },
+				{ value: "kimchi-dev/upstream/unique", name: "Unique Model" },
+			]),
+		})
+	})
+
 	it("returns model state in the response when a model is available", async () => {
 		const sessionId = "session-model"
 		setProcessOrchestratorRef(sessionId, "kimchi-dev/kimi-k2.7")

@@ -3782,6 +3782,9 @@ function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSel
 export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
 	const multiModelEnabled = getMultiModelEnabled(session.sessionManager)
 	const modelRegistry = getSessionModelRegistry(session)
+	const availableModels = modelRegistry.getAvailable()
+	const nameCounts = new Map<string, number>()
+	for (const model of availableModels) nameCounts.set(model.name, (nameCounts.get(model.name) ?? 0) + 1)
 	const {
 		model: orchestrator,
 		modelRef: orchRef,
@@ -3798,12 +3801,11 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	// see the deprecation before selecting, mirroring the TUI's /model column.
 	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
 	const options: Array<{ value: string; name: string; description?: string | null; deprecated?: boolean }> = [
-		...modelRegistry.getAvailable().map((m) => {
+		...availableModels.map((m) => {
 			if (isAutoRoutedModel(m)) return autoModelOption(m, session.sessionId)
 			const marker = deprecationMarkers.get(m.id)
-			return marker
-				? { value: refFromModel(m), name: m.name, description: marker }
-				: { value: refFromModel(m), name: m.name }
+			const name = (nameCounts.get(m.name) ?? 0) > 1 ? `${m.name} (${m.provider})` : m.name
+			return marker ? { value: refFromModel(m), name, description: marker } : { value: refFromModel(m), name }
 		}),
 		{
 			value: "multi-model",

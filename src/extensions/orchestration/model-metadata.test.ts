@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
+import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import {
 	deleteModelMetadata,
 	getModelMetadata,
@@ -416,6 +417,31 @@ describe("resolveModelMetadata", () => {
 	it("returns builtin for known model without provider prefix", () => {
 		const result = resolveModelMetadata("kimi-k2.6", testPath)
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "heavy" }))
+	})
+
+	it("uses the registered model ID for a nested provider", () => {
+		const model = createModel("kimi-k2.6", "kimchi-dev/upstream")
+		const registry = createModelRegistry([model])
+		expect(resolveModelMetadata("kimchi-dev/upstream/kimi-k2.6", testPath, registry)).toEqual(
+			resolveModelMetadata("kimchi-dev/kimi-k2.6", testPath),
+		)
+		expect(isModelMetadataMissing("kimchi-dev/upstream/kimi-k2.6", testPath, registry)).toBe(false)
+	})
+
+	it("preserves slashes inside a registered model ID", () => {
+		const registry = createModelRegistry([createModel("team/kimi-k2.6", "upstream")])
+		expect(resolveModelMetadata("upstream/team/kimi-k2.6", testPath, registry)).toBeUndefined()
+	})
+
+	it("keeps exact-ref custom metadata ahead of nested-provider builtins", () => {
+		const ref = "kimchi-dev/upstream/kimi-k2.6"
+		const registry = createModelRegistry([createModel("kimi-k2.6", "kimchi-dev/upstream")])
+		saveModelMetadata(new Map([[ref, { tier: "light", description: "Custom override" }]]), testPath)
+		expect(resolveModelMetadata(ref, testPath, registry)).toMatchObject({
+			source: "custom",
+			tier: "light",
+			description: "Custom override",
+		})
 	})
 
 	it("returns custom for model in settings", () => {
