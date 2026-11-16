@@ -19,7 +19,7 @@
 import type { Api, Model, ModelThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { getModelThinkingLevels } from "./models.js"
-import { CANONICAL_THINKING_LEVELS } from "./thinking-levels.js"
+import { CANONICAL_THINKING_LEVELS, THINKING_LEVEL_DESCRIPTIONS } from "./thinking-levels.js"
 
 /** Why nothing is selectable for a model. */
 export type ThinkingNoneReason = "no-reasoning" | "curated-none" | "empty-intersection"
@@ -88,8 +88,9 @@ export function clampToSelection(level: ModelThinkingLevel, selection: ThinkingS
 /** Info the patched dist consumes via the process-global advisor hook. */
 export interface KimchiThinkingLevelInfo {
 	/** All canonical levels in rank order, flagged by selectability — the
-	 *  selector renders them all, greying the non-selectable ones. */
-	levels: ReadonlyArray<{ level: string; selectable: boolean }>
+	 *  selector renders them all, greying the non-selectable ones. The
+	 *  description replaces pi's built-in text. */
+	levels: ReadonlyArray<{ level: string; selectable: boolean; description: string }>
 	/** Selectable levels in rank order. */
 	selectable: string[]
 	/** Why nothing is selectable; null when at least one level is. */
@@ -127,7 +128,11 @@ export function installThinkingLevelAdvisor(): void {
 			const selectable = selection.mode === "levels" ? selection.selectable : []
 			const selectableSet = new Set(selectable)
 			return {
-				levels: CANONICAL_THINKING_LEVELS.map((level) => ({ level, selectable: selectableSet.has(level) })),
+				levels: CANONICAL_THINKING_LEVELS.map((level) => ({
+					level,
+					selectable: selectableSet.has(level),
+					description: THINKING_LEVEL_DESCRIPTIONS[level],
+				})),
 				selectable,
 				noneReason: selection.mode === "none" ? selection.noneReason : null,
 				clamp: (level) => clampToSelection(level, selection),

@@ -120,7 +120,9 @@
 #     every canonical level, greying out (dim label) the ones not selectable
 #     for the current model; arrow navigation jumps over greyed-out levels
 #     so they are never selectable, confirm / save-as-default on them is
-#     ignored. Models with nothing selectable still open the selector — every
+#     ignored. Typing a selectable level's exact name selects it, even when
+#     descriptions match other levels. Models with nothing selectable still
+#     open the selector — every
 #     level greyed out, an actionable warning info line ("...press ESC to
 #     return"; the help line keeps the keybinding-accurate binding), the
 #     cycle hint hidden; /thinking <level> errors with the fuller
@@ -142,7 +144,9 @@
 #     typed path validates against the same set. Session creation
 #     (dist/core/sdk.js createAgentSession) applies the curated clamp too, so
 #     every mode — TUI, ACP, SDK — starts aligned instead of only the
-#     interactive CLI path. Curated-none ("on" at the provider default) is
+#     interactive CLI path. Level descriptions in /thinking and the /settings
+#     per-model thinking submenu come from the advisor, falling back to pi's
+#     text. Curated-none ("on" at the provider default) is
 #     also wire-aligned in src/models.ts: compat stamps keep reasoning_effort
 #     (openai-completions) and thinking parameters (anthropic / responses)
 #     off the request entirely, while the session clamps to "off" so no
@@ -1693,7 +1697,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
      }
      getSearchInput() {
 diff --git a/dist/modes/interactive/components/settings-selector.js b/dist/modes/interactive/components/settings-selector.js
-index f7929f1dfb9dcdd1e80e71e1c4e6fc05578d8a49..c50ff3182b48b8d76578961591e82876f39f28ee 100644
+index f7929f1dfb9dcdd1e80e71e1c4e6fc05578d8a49..1220678a5b098eb7b6b806a92d3253d9f2a48136 100644
 --- a/dist/modes/interactive/components/settings-selector.js
 +++ b/dist/modes/interactive/components/settings-selector.js
 @@ -350,13 +350,6 @@ export class SettingsSelectorComponent extends Container {
@@ -1710,7 +1714,22 @@ index f7929f1dfb9dcdd1e80e71e1c4e6fc05578d8a49..c50ff3182b48b8d76578961591e82876
              {
                  id: "default-project-trust",
                  label: "Default project trust",
-@@ -689,9 +682,6 @@ export class SettingsSelectorComponent extends Container {
+@@ -448,10 +441,13 @@ export class SettingsSelectorComponent extends Container {
+                                     return [];
+                                 const levels = (model.reasoning ? getSupportedThinkingLevels(model) : ["off"]);
+                                 const activeLevel = currentModelThinkingLevels[ctx.model];
++                                // kimchi: level descriptions come from the advisor when installed.
++                                const advisor = process.__kimchiThinkingLevelAdvisor;
++                                const kimchiLevels = typeof advisor === "function" ? advisor(model)?.levels : undefined;
+                                 const items = levels.map((level) => ({
+                                     value: level,
+                                     label: `${level === activeLevel ? "✓ " : "  "}${level}`,
+-                                    description: THINKING_DESCRIPTIONS[level],
++                                    description: kimchiLevels?.find((entry) => entry.level === level)?.description ?? THINKING_DESCRIPTIONS[level],
+                                 }));
+                                 if (currentModelThinkingLevels[ctx.model] !== undefined) {
+                                     items.push({
+@@ -689,9 +685,6 @@ export class SettingsSelectorComponent extends Container {
                  case "quiet-startup":
                      callbacks.onQuietStartupChange(newValue === "header" ? "header" : newValue === "true");
                      break;
@@ -1734,10 +1753,10 @@ index 39514bbcb15ce424b389374980a33e07bcacabe3..15c123c7f01eab190e2929f6ff743179
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/thinking-selector.d.ts b/dist/modes/interactive/components/thinking-selector.d.ts
-index b4a337007b2258a1652e5a53ad7617da703e96bc..f4cf7288761bbca9100227c5095688cd3f0ce074 100644
+index b4a337007b2258a1652e5a53ad7617da703e96bc..df4862f6b8a54caa3087017e685ff344d4a5843a 100644
 --- a/dist/modes/interactive/components/thinking-selector.d.ts
 +++ b/dist/modes/interactive/components/thinking-selector.d.ts
-@@ -1,5 +1,11 @@
+@@ -1,5 +1,13 @@
  import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
  import { Container, type Focusable, SelectList } from "@earendil-works/pi-tui";
 +/** kimchi: a selectable level row — disabled entries render greyed out and
@@ -1745,11 +1764,13 @@ index b4a337007b2258a1652e5a53ad7617da703e96bc..f4cf7288761bbca9100227c5095688cd
 +export declare interface ThinkingSelectorItem {
 +    value: ThinkingLevel;
 +    disabled?: boolean;
++    /** kimchi: replaces the built-in level description. */
++    description?: string;
 +}
  /**
   * Component that renders a thinking level selector with borders
   */
-@@ -8,13 +14,14 @@ export declare class ThinkingSelectorComponent extends Container implements Focu
+@@ -8,13 +16,14 @@ export declare class ThinkingSelectorComponent extends Container implements Focu
      private selectList;
      private selectListChildIndex;
      private allItems;
@@ -1766,7 +1787,7 @@ index b4a337007b2258a1652e5a53ad7617da703e96bc..f4cf7288761bbca9100227c5095688cd
      private applyFilter;
      handleInput(keyData: string): void;
 diff --git a/dist/modes/interactive/components/thinking-selector.js b/dist/modes/interactive/components/thinking-selector.js
-index d0b11ac65857fce038d0bdff43dccf623df5897d..7f26d7601a24fd34f6ecd40a955940eb75c21aa0 100644
+index d0b11ac65857fce038d0bdff43dccf623df5897d..ce75e790debb7eb70c079b765fc40273cd37891e 100644
 --- a/dist/modes/interactive/components/thinking-selector.js
 +++ b/dist/modes/interactive/components/thinking-selector.js
 @@ -16,13 +16,14 @@ const LEVEL_DESCRIPTIONS = {
@@ -1811,7 +1832,7 @@ index d0b11ac65857fce038d0bdff43dccf623df5897d..7f26d7601a24fd34f6ecd40a955940eb
 +            // With an infoText nothing is selectable, so no level is "current".
 +            const isCurrent = !infoText && item.value === currentLevel;
 +            const label = `${isCurrent ? "✓ " : "  "}${item.value}`;
-+            const description = LEVEL_DESCRIPTIONS[item.value] ?? "";
++            const description = item.description ?? LEVEL_DESCRIPTIONS[item.value] ?? "";
 +            return {
 +                value: item.value,
 +                // kimchi: the dimmed label is the only signal — no extra
@@ -1855,7 +1876,16 @@ index d0b11ac65857fce038d0bdff43dccf623df5897d..7f26d7601a24fd34f6ecd40a955940eb
          // Add bottom border
          this.addChild(new DynamicBorder());
      }
-@@ -82,12 +112,32 @@ export class ThinkingSelectorComponent extends Container {
+@@ -78,16 +108,40 @@ export class ThinkingSelectorComponent extends Container {
+         const filtered = query
+             ? fuzzyFilter(this.allItems, query, (item) => `${item.value} ${item.description ?? ""}`)
+             : this.allItems;
+-        const selectedValue = this.selectList.getSelectedItem()?.value;
++        // kimchi: typing a selectable level's exact name selects it, even when
++        // other levels also match the query.
++        const normalized = query.trim().toLowerCase();
++        const exact = filtered.find((item) => item.value === normalized && !this.disabledValues.has(item.value));
++        const selectedValue = exact?.value ?? this.selectList.getSelectedItem()?.value;
          const newList = this.buildSelectList(filtered, selectedValue);
          this.children[this.selectListChildIndex] = newList;
          this.selectList = newList;
@@ -1889,7 +1919,7 @@ index d0b11ac65857fce038d0bdff43dccf623df5897d..7f26d7601a24fd34f6ecd40a955940eb
                  this.onSelectAsDefault(item.value);
              return;
          }
-@@ -96,7 +146,19 @@ export class ThinkingSelectorComponent extends Container {
+@@ -96,7 +150,19 @@ export class ThinkingSelectorComponent extends Container {
              kb.matches(keyData, "tui.select.confirm") ||
              kb.matches(keyData, "tui.select.cancel");
          if (isNav) {
@@ -1939,7 +1969,7 @@ index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..073e7d7204e1b74d116188ae5f7f5d076a23f8f4 100644
+index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..5b2f4a997704520331dcaa44960265e41b30c303 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -494,7 +494,11 @@ export class InteractiveMode {
@@ -2312,7 +2342,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..073e7d7204e1b74d116188ae5f7f5d07
 +            // advisor the pi-available list stays all-selectable.
 +            const info = this.__kimchiThinkingInfo();
 +            const items = info
-+                ? info.levels.map((entry) => ({ value: entry.level, disabled: !entry.selectable }))
++                ? info.levels.map((entry) => ({ value: entry.level, disabled: !entry.selectable, description: entry.description }))
 +                : this.session.getAvailableThinkingLevels().map((level) => ({ value: level }));
 +            const selector = new ThinkingSelectorComponent(this.session.thinkingLevel ?? DEFAULT_THINKING_LEVEL, items, (level) => selectLevel(level, false), () => {
                  done();

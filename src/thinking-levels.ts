@@ -16,6 +16,17 @@ import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-sch
 
 export const CANONICAL_THINKING_LEVELS = MODEL_THINKING_LEVELS
 
+/** One-line use-case per level, shown in level pickers. */
+export const THINKING_LEVEL_DESCRIPTIONS: Record<(typeof CANONICAL_THINKING_LEVELS)[number], string> = {
+	off: "Quick questions, trivial edits",
+	minimal: "Mechanical, fully specified edits",
+	low: "Routine changes, small fixes",
+	medium: "Everyday coding: features, fixes, tests",
+	high: "Complex features, tricky bugs",
+	xhigh: "System design, hard debugging",
+	max: "Hardest problems; slowest, most costly",
+}
+
 const LEVEL_RANK = new Map<string, number>(CANONICAL_THINKING_LEVELS.map((level, rank) => [level, rank]))
 
 /**

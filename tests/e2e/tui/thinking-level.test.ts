@@ -42,7 +42,7 @@ test("/thinking changes the in-session thinking level without persisting it", as
 
 			// Available order: off, minimal, low, medium, high, xhigh, max (current=medium).
 			terminal.write("high")
-			await waitForText(terminal, "Deep reasoning", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "Complex features, tricky bugs", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.submit("")
 			await waitForText(terminal, "Thinking level: high", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("session level switched to high")
@@ -101,6 +101,7 @@ test("/settings 'Default thinking level per model' persists a per-model override
 			// unfiltered, so an immediate typed filter would race the focus; walk
 			// the deterministic off→minimal→low→medium→high order with arrows.)
 			await waitForText(terminal, "Thinking Level for", { timeoutMs: INPUT_TIMEOUT_MS })
+			expect(viewText(terminal)).toContain("Everyday coding: features, fixes, tests")
 			for (let i = 0; i < 4; i += 1) terminal.keyDown()
 			terminal.submit("")
 			trace.step("override set for reasoner")
