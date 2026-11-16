@@ -502,8 +502,7 @@ export async function collectDetections(
 			// explicit-disabled set before bypassing it.
 			const hintRenamesSupabase = entityType === "SUPABASE_KEY" && hintSecret
 			const explicitlyOff =
-				explicitlyDisabled.has("SUPABASE_KEY") ||
-				(labelHint !== undefined && explicitlyDisabled.has(labelHint))
+				explicitlyDisabled.has("SUPABASE_KEY") || (labelHint !== undefined && explicitlyDisabled.has(labelHint))
 			if (!(hintRenamesSupabase && !explicitlyOff) && excluded.has(entityType)) continue
 			if (isNonIdentifyingDetection(entityType, d.text)) continue
 			if (isBase64ShadowDrop(entityType, text, d.start, d.end)) continue
@@ -575,7 +574,11 @@ export async function detectAndComposeTokenized(
 	labelHint?: string,
 	explicitlyDisabled?: ReadonlySet<string>,
 ): Promise<string> {
-	return composeTokenizedText(text, await collectDetections(text, engine, excluded, labelHint, explicitlyDisabled), vault)
+	return composeTokenizedText(
+		text,
+		await collectDetections(text, engine, excluded, labelHint, explicitlyDisabled),
+		vault,
+	)
 }
 
 // ---------------------------------------------------------------------------
