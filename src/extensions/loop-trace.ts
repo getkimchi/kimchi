@@ -39,7 +39,7 @@
 
 import { createHook } from "node:async_hooks"
 import { appendFileSync, chmodSync, mkdirSync, statSync } from "node:fs"
-import { isAbsolute, dirname } from "node:path"
+import { dirname, isAbsolute } from "node:path"
 import { Worker } from "node:worker_threads"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
@@ -51,7 +51,6 @@ const STACK_MAX_CHARS = 400
 
 let seq = 0
 let warnedPath = false
-
 
 let warnedWrite = false
 const ensuredPrivate = new Set<string>()
@@ -86,43 +85,6 @@ function writeMark(path: string, event: string, detail: Record<string, unknown>)
 			warnedWrite = true
 			console.error(`[loop-trace] cannot write marks: ${String(error)}`)
 		}
-	}
-}
-
-// Process inspection (ps/pgrep) is denied inside sandboxed lanes (e.g. nono
-// profiles) — probe once at arm time and disable silently on denial rather
-// than erroring per hold.
-let childrenSnapshotDisabled = false
-
-function snapshotChildren(me: number): { pid: number; cpu: number; cmd: string }[] {
-	if (childrenSnapshotDisabled) return []
-	try {
-		const { execFileSync } = require("node:child_process")
-		const childPids = execFileSync("pgrep", ["-P", String(me)], {
-			encoding: "utf-8",
-			timeout: 500,
-			windowsHide: true,
-			stdio: ["ignore", "pipe", "ignore"],
-		})
-			.split("\n")
-			.map((l: string) => Number(l.trim()))
-			.filter((n: number) => Number.isInteger(n) && n > 0)
-		if (childPids.length === 0) return []
-		const out = execFileSync("ps", ["-eo", "pid=,ppid=,pcpu=,command=", "-p", childPids.join(",")], {
-			encoding: "utf-8",
-			timeout: 500,
-			windowsHide: true,
-			stdio: ["ignore", "pipe", "ignore"],
-		})
-		const rows: { pid: number; cpu: number; cmd: string }[] = []
-		for (const line of out.split("\n")) {
-			const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)/)
-			if (m) rows.push({ pid: Number(m[1]), cpu: Number(m[3]), cmd: m[4].slice(0, 60) })
-		}
-		return rows.sort((a, b) => b.cpu - a.cpu).slice(0, 8)
-	} catch {
-		childrenSnapshotDisabled = true
-		return []
 	}
 }
 
@@ -201,45 +163,38 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 		heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
 	})
 
-	// --- On-hold children CPU snapshot: for each hold, run a synchronous
-	// `ps -o pid,ppid,cpu` bounded to children of this process — the only
-	// sampling that works across ALL spawn paths without requiring in-process
-	// interposition. Cost: spawn per ~lag, bounded.
-	// Node >=20 seals node:child_process.exports.spawn (writable:false but
-	// configurable:true) — plain assignment fails silently in a lib that cannot
-	// tell. Object.defineProperty lands the shim and stays functionally equivalent.
+	// --- In-process cause classification: GC pauses and heap shape at hold
+	// time. Sandbox-immune (no process inspection, no interposition of sealed
+	// module exports). A HOLD whose gcMs explains most of lagMs is a GC pause;
+	// one with zero GC and cpuMs≈lagMs is genuine multi-threaded compute in
+	// the process (sqlite, render, markdown) — the fork Tier-2 needs.
+	const gc = { count: 0, ms: 0, byKind: {} as Record<string, { count: number; ms: number }> }
+	let gcWarned = false
 	try {
-		const cp = require("node:child_process") as { spawn: (...a: unknown[]) => unknown }
-		const spawn = cp.spawn
-		Object.defineProperty(cp, "spawn", {
-			configurable: true,
-			enumerable: true,
-			get() {
-				return function spawnTraced(command: unknown, args?: unknown, options?: unknown) {
-					const child = spawn.call(cp, command as never, args as never, options as never) as {
-						pid?: number
-						on(event: "exit", cb: () => void): unknown
-						cpuUsage: { user: number; system: number }
-					}
-					child.on("exit", () => {
-						try {
-							writeMark(path, "loop.channel.cpu", {
-								pid: child.pid,
-								cmd: String(command).split("/").pop()?.slice(0, 80),
-								cpuMs: Math.round(((child.cpuUsage.user + child.cpuUsage.system) / 1000) * 1000) / 1000,
-							})
-						} catch {
-							// tangential diagnostics must never break the spawn path
-						}
-					})
-					return child
-				}
-			},
+		const obs = new PerformanceObserver((list) => {
+			for (const entry of list.getEntries()) {
+				const kind =
+					(entry as { detail?: { kind?: number } }).detail?.kind === 1
+						? "scavenge"
+						: (entry as { detail?: { kind?: number } }).detail?.kind === 2
+							? "marksweep"
+							: (entry as { detail?: { kind?: number } }).detail?.kind === 4
+								? "incremental"
+								: `kind${(entry as { detail?: { kind?: number } }).detail?.kind ?? "?"}`
+				gc.count++
+				gc.ms += entry.duration
+				const k = gc.byKind[kind] ?? (gc.byKind[kind] = { count: 0, ms: 0 })
+				k.count++
+				k.ms += entry.duration
+			}
 		})
-	} catch {
-		// spawn hook is best-effort diagnostics
+		obs.observe({ entryTypes: ["gc"] })
+	} catch (error) {
+		if (!gcWarned) {
+			gcWarned = true
+			console.error(`[loop-trace] gc observer unavailable: ${String(error)}`)
+		}
 	}
-
 
 	// --- Lag watchdog: the sampler itself runs on the loop it measures; a gap
 	// between its ticks is time the loop spent elsewhere.
@@ -247,6 +202,7 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 	let lastCpu = process.cpuUsage()
 	let lastElu: EventLoopUtilization | undefined
 	let lastBeat = Atomics.load(heartbeat, 0)
+	let lastGc = { count: 0, ms: 0, byKind: {} as Record<string, { count: number; ms: number }> }
 	let marks = 0
 	const timer = setInterval(() => {
 		const now = performance.now()
@@ -255,16 +211,31 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 			const cpu = process.cpuUsage(lastCpu)
 			const elu = eluFn ? eluFn(lastElu) : { utilization: 0 }
 			const beat = Atomics.load(heartbeat, 0)
-			const children = snapshotChildren(process.pid)
+			const mem = process.memoryUsage()
 			writeMark(path, "loop.lag", {
 				lagMs: Math.round(lag),
 				cpuMs: Math.round(((cpu.user + cpu.system) / 1000) * 1000) / 1000,
 				eluUtil: Math.round(elu.utilization * 1000) / 1000,
 				beat: beat - lastBeat,
+				gcCount: gc.count - lastGc.count,
+				gcMs: Math.round((gc.ms - lastGc.ms) * 10) / 10,
+				gcByKind: Object.fromEntries(
+					Object.entries(gc.byKind).map(([kind, now]) => {
+						const prev = lastGc.byKind[kind] ?? { count: 0, ms: 0 }
+						return [kind, { count: now.count - prev.count, ms: Math.round((now.ms - prev.ms) * 10) / 10 }]
+					}),
+				),
+				heapMb: Math.round(mem.heapUsed / 1048576),
+				rssMb: Math.round(mem.rss / 1048576),
+				externalMb: Math.round(mem.external / 1048576),
 				resType: executing?.type,
 				where: executing?.where,
-				children: children.length ? children.slice(0, 4).map((c) => ({ pid: c.pid, cpu: c.cpu, cmd: c.cmd.slice(0, 60) })) : undefined,
 			})
+			lastGc = {
+				count: gc.count,
+				ms: gc.ms,
+				byKind: Object.fromEntries(Object.entries(gc.byKind).map(([k, v]) => [k, { ...v }])),
+			}
 			if (++marks >= maxLagMarks) {
 				writeMark(path, "loop.trace.disarm", { marks })
 				clearInterval(timer)
