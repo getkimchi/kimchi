@@ -94,6 +94,7 @@ export interface RecordBackend {
 	/** Every record not yet translated into events, by work. */
 	markedRecords(): { recordHash: string; workId: string; type: string }[]
 	clearTranslation(recordHash: string): void
+	readTransitionRepositories(): string[]
 	/** The entity's newest event that was not set aside. */
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
@@ -290,6 +291,11 @@ export function readRecords(
 		}
 	}
 	return records
+}
+
+/** Repositories in the stored native file-transition history, without decoding complete records. */
+export function readTransitionRepositories(agentDir: string): string[] {
+	return backendFor(agentDir).readTransitionRepositories()
 }
 
 /** No transaction or live iterator crosses a yield; appends beyond the watermark belong to the next read. */
@@ -635,6 +641,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		"UPDATE outbox_events SET blocked = ? WHERE account_key = ? AND id = ? AND hash = ? AND acked_at IS NULL AND blocked = ''",
 	)
 	const deleteBatch = db.query("DELETE FROM outbox_batches WHERE account_key = ? AND id = ?")
+	const transitionRepositories = db.query<{ repository: string }, []>(
+		"SELECT DISTINCT json_extract(body, '$.repository') AS repository FROM work_records WHERE type = 'file_transition' AND json_valid(body) AND json_type(body, '$.repository') = 'text' ORDER BY repository",
+	)
 	const outboxStatus = db.query<OutboxAccountStatus, []>(`
 		SELECT a.account_key AS accountKey, COALESCE(e.pending, 0) AS pending,
 			COALESCE(e.sendable, 0) AS sendable, COALESCE(e.blocked, 0) AS blocked,
@@ -749,6 +758,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		clearTranslation: (recordHash) => clearTranslation.run(recordHash),
 		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
 		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
+		readTransitionRepositories: () => transitionRepositories.all().map((row) => row.repository),
 		outboxEntityEvents: (accountKey, entityId) => entityEvents.all(accountKey, entityId),
 		outboxClaims: claimRows,
 		insertOutboxEvent: (event) =>

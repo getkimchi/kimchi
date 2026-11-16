@@ -25,7 +25,7 @@ import {
 	type WorkContext,
 } from "../work-attribution.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
-import { readWorkRecordsOfType, SHA256_HEX, type WorkRecord } from "./summary.js"
+import { readFileTransitionRepositories, readWorkRecordsOfType, SHA256_HEX, type WorkRecord } from "./summary.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -507,15 +507,11 @@ export async function knownTransitionRepositories(
 	shared?: SharedTypeReads,
 ): Promise<string[]> {
 	const repositories = new Set<string>()
-	// Native captures live in the store; include their repositories alongside legacy journal files.
+	// Hydrate, then let the backend return only distinct repositories: decoding
+	// every historical transition body here dominated discovery passes. Legacy
+	// JSONL files are still covered below for processes that predate the store.
 	try {
-		if (shared === undefined) shared = {}
-		let rows = shared.fileTransitions
-		if (rows === undefined) {
-			rows = readWorkRecordsOfType(getAgentDir(), "file_transition")
-			shared.fileTransitions = rows
-		}
-		for (const row of rows) if (typeof row.repository === "string") repositories.add(row.repository)
+		for (const repository of readFileTransitionRepositories(getAgentDir())) repositories.add(repository)
 	} catch {
 		// No store; the JSONL scan below still works.
 	}

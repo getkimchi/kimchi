@@ -29,6 +29,7 @@ import {
 	getNote,
 	readRecords,
 	readRecordsSinceSql,
+	readTransitionRepositories,
 	readWorkHead,
 	readWorkSummary,
 	workRecordsImportedPresent,
@@ -2085,6 +2086,18 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		}
 	},
 	records: (agent, workId) => printRecords(agent, workId || undefined),
+	"transition-repositories": async (agent, damaged) => {
+		if (damaged) {
+			const store = openStore(agent)
+			store.db
+				.query(
+					"INSERT INTO work_records (record_hash,type,work_id,session_id,body,source_path,source_generation,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+				)
+				.run("damaged-body", "file_transition", "work", "session", "{invalid", "bench", 0, 0)
+			store.close()
+		}
+		out(readTransitionRepositories(agent))
+	},
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"native-usage": (agent) => nativeUsage(agent),
 	"native-usage-anthropic": (agent) => nativeUsage(agent, true),

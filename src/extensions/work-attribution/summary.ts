@@ -13,6 +13,7 @@ import {
 import {
 	readRecords as ledgerReadRecords,
 	readRecordsAsync as ledgerReadRecordsAsync,
+	readTransitionRepositories as ledgerTransitionRepositories,
 	fingerprint as recordsFingerprint,
 	recoverDirty,
 } from "../pr-cost-reporting/ledger/records.js"
@@ -223,6 +224,12 @@ export function readWorkRecordsOfType(agentDir: string, type: WorkRecord["type"]
 	hydrateQuietly(agentDir)
 	return ledgerReadRecords(agentDir, { type })
 }
+/** Stored native-capture repository discovery; legacy journals import first. */
+export function readFileTransitionRepositories(agentDir: string): string[] {
+	hydrateQuietly(agentDir)
+	return ledgerTransitionRepositories(agentDir)
+}
+
 function hydrateQuietly(agentDir: string): void {
 	try {
 		hydrate(agentDir)

@@ -145,6 +145,20 @@ export function createMemoryRecords(): RecordBackend {
 			const event = events.get(id)
 			return event?.accountKey === accountKey ? structuredClone(event) : undefined
 		},
+		readTransitionRepositories: () =>
+			[
+				...new Set(
+					order.flatMap((row) => {
+						if (row.type !== "file_transition") return []
+						try {
+							const repository: unknown = JSON.parse(row.body).repository
+							return typeof repository === "string" ? [repository] : []
+						} catch {
+							return []
+						}
+					}),
+				),
+			].sort(),
 		outboxEntityEvents: (accountKey, entityId) =>
 			structuredClone(
 				[...events.values()].filter((event) => event.accountKey === accountKey && event.entityId === entityId),
