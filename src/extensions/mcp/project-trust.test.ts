@@ -103,6 +103,27 @@ describe("MCP project trust", () => {
 		expect(new ProjectTrustStore(agentDir).get(cwd)).toBeNull()
 	})
 
+	it("shares a session-only decision with headless callers in the same process", async () => {
+		const parent = context({ ui: { select: async () => "Trust (this session only)" } })
+		await expect(
+			resolveMcpProjectTrust(parent, { projectConfig: PROJECT_CONFIG, userConfig: USER_CONFIG, agentDir }),
+		).resolves.toBe(true)
+
+		// A subagent child session re-runs the resolver with no UI. It must keep
+		// the project config the parent trusted for the session instead of
+		// failing closed and silently dropping those servers.
+		const child = context({ hasUI: false, mode: "print", ui: { select: async () => "Do not trust" } })
+		await expect(
+			resolveMcpProjectTrust(child, {
+				projectConfig: PROJECT_CONFIG,
+				userConfig: USER_CONFIG,
+				agentDir,
+				defaultProjectTrust: "ask",
+			}),
+		).resolves.toBe(true)
+		expect(new ProjectTrustStore(agentDir).get(cwd)).toBeNull()
+	})
+
 	it("fails closed without a terminal UI", async () => {
 		const ctx = context({ hasUI: false, mode: "print" })
 
