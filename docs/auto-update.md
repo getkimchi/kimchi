@@ -126,11 +126,14 @@ every 30-minute tick.
 
 The check is advisory: `access()` can race with the swap, so an `EROFS` or
 `EACCES` that still comes out of the swap on a path inside the install
-directory gets the same guidance. `EPERM` does not (it also means a locked
-executable or an immutable flag), and neither does a failure elsewhere, such
-as the backup cache or the share directory. On Windows the check cannot see
-ACL-denied directories (libuv reports every directory writable), so there the
-swap's own error path applies.
+directory gets the same guidance. `EPERM` does not on POSIX (it also means an
+immutable flag or a sandbox policy), and neither does a failure elsewhere,
+such as the backup cache or the share directory. Errors are matched through
+any wrapper's `cause` chain, so a step wrapping the fs failure still maps. On
+Windows the check cannot see ACL-denied directories (libuv reports every
+directory writable), so there the swap's own error path applies — and `EPERM`
+from the swap is mapped to the guidance on Windows, where an ACL-denied
+install is the common case and a locked executable the rarer one.
 
 ## Why background updates
 

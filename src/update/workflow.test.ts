@@ -509,6 +509,26 @@ describe("applyUpdate share destination", () => {
 		)
 	})
 
+	it("propagates a swap EROFS unwrapped, with its errno properties intact", async () => {
+		// The CLI's errno→guidance mapping inspects code/path/dest on the error
+		// applyUpdate rejects with. applyUpdate currently propagates the swap's
+		// error as-is (no wrapping) — this pins that, so a future "wrapped in
+		// context" change cannot silently break the mapping.
+		const erofs = Object.assign(
+			new Error(`EROFS: read-only file system, copyfile '/tmp/x' -> '${join(fakePrefix, "bin", "kimchi.new.1")}'`),
+			{ code: "EROFS", path: "/tmp/x", dest: join(fakePrefix, "bin", "kimchi.new.1") },
+		)
+		mocks.atomicInstall.mockImplementation(() => {
+			throw erofs
+		})
+		const client = {
+			fetchChecksum: mocks.fetchChecksum,
+			downloadArchive: mocks.downloadArchive,
+		} as unknown as GitHubClient
+
+		await expect(applyUpdate({ tag: "v0.0.24", executablePath: fakeBinPath, client })).rejects.toBe(erofs)
+	})
+
 	it("uses kimchi.exe from Windows archives", async () => {
 		const origPlatform = process.platform
 		const origArch = process.arch

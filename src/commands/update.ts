@@ -287,11 +287,15 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 	}
 }
 
-/** Errnos that unambiguously mean the install location refused a write: a
- *  read-only filesystem or missing permission. EPERM is left out on purpose — it
- *  also covers a locked executable (Windows), an immutable flag, or a sandbox
- *  policy, none of which "reinstall somewhere writable" reliably fixes. */
-const UNWRITABLE_INSTALL_CODES = new Set(["EROFS", "EACCES"])
+/** Errnos that mean the install location refused a write. EPERM is Windows-only:
+ *  there libuv's access() reports every directory as writable, so the pre-flight
+ *  cannot see ACL denials and the swap's EPERM is the first signal — the common
+ *  ACL-denied install outweighs the rarer locked executable. On POSIX EPERM means
+ *  an immutable flag or a sandbox policy, which "reinstall somewhere writable"
+ *  does not fix. Read at call time so platform-stubbed tests see the change. */
+function unwritableInstallCodes(): string[] {
+	return process.platform === "win32" ? ["EROFS", "EACCES", "EPERM"] : ["EROFS", "EACCES"]
+}
 
 /** Node attaches the target path to copy/rename failures as `dest` (the source
  *  is `path`), but @types/node does not declare it. */
@@ -310,14 +314,26 @@ function isInside(path: string, dir: string): boolean {
  *  The path test keeps the guidance honest: an EACCES on the backup cache or the
  *  share directory is a different problem, and blaming the binary's directory
  *  would send the user to the wrong place. `path` is the copy source and `dest`
- *  the target, so either may be the one inside the directory. */
+ *  the target, so either may be the one inside the directory.
+ *
+ *  The errno may sit on a wrapper's `cause` rather than the top-level error:
+ *  applyUpdate's contract says step failures are thrown "wrapped in context".
+ *  It propagates swap errnos unwrapped today (pinned by a test in
+ *  workflow.test.ts); the walk keeps the mapping working if that changes. The
+ *  depth cap guards against a cause cycle. */
 function isUnwritableInstallFailure(err: unknown, targetPath: string): boolean {
 	if (err instanceof InstallTargetNotWritableError) return true
-	if (!(err instanceof Error)) return false
-	const { code, path, dest } = err as FsFailure
-	if (!UNWRITABLE_INSTALL_CODES.has(code ?? "")) return false
 	const dir = dirname(targetPath)
-	return [path, dest].some((p) => p !== undefined && isInside(p, dir))
+	const codes = unwritableInstallCodes()
+	let e: unknown = err
+	for (let depth = 0; e instanceof Error && depth < 10; depth++) {
+		const { code, path, dest } = e as FsFailure
+		if (code !== undefined && codes.includes(code) && [path, dest].some((p) => p !== undefined && isInside(p, dir))) {
+			return true
+		}
+		e = (e as Error & { cause?: unknown }).cause
+	}
+	return false
 }
 
 /** The documented one-liner that reinstalls into a user-writable location:

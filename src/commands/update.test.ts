@@ -599,7 +599,7 @@ describe("runUpdate unwritable install target", () => {
 		expect(out).toContain("bug report")
 	})
 
-	it("leaves EPERM alone: it also means a locked executable or an immutable flag", async () => {
+	it("leaves EPERM alone on POSIX: it also means an immutable flag or a sandbox policy", async () => {
 		const err = Object.assign(new Error("EPERM: operation not permitted, rename"), {
 			code: "EPERM",
 			dest: "/usr/local/bin/kimchi",
@@ -625,6 +625,43 @@ describe("runUpdate unwritable install target", () => {
 		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
 		expect(out).toContain("install.ps1")
 		expect(out).not.toContain("install.sh")
+	})
+
+	it("maps EPERM to the guidance on Windows, where the pre-flight cannot see ACL denials", async () => {
+		// libuv's access() reports every directory as writable on Windows, so the
+		// swap's EPERM is the first signal for an ACL-denied install.
+		const platform = Object.getOwnPropertyDescriptor(process, "platform")
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true })
+		try {
+			const err = Object.assign(new Error("EPERM: operation not permitted, rename"), {
+				code: "EPERM",
+				dest: "/usr/local/bin/kimchi.new.1",
+			})
+			applyUpdateMock.mockRejectedValue(err)
+			const code = await runUpdate(["self", "--force"])
+			expect(code).toBe(1)
+		} finally {
+			if (platform) Object.defineProperty(process, "platform", platform)
+		}
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("install.ps1")
+		expect(out).not.toContain("bug report")
+	})
+
+	it("follows a wrapped error's cause to the errno inside the install directory", async () => {
+		// applyUpdate's contract says step failures are thrown "wrapped in
+		// context"; the mapping must survive the wrap.
+		const raw = Object.assign(
+			new Error("EROFS: read-only file system, copyfile '/tmp/x' -> '/usr/local/bin/kimchi.new.1'"),
+			{ code: "EROFS", path: "/tmp/x", dest: "/usr/local/bin/kimchi.new.1" },
+		)
+		applyUpdateMock.mockRejectedValue(new Error("update step failed", { cause: raw }))
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("update step failed")
+		expect(out).toContain("install.sh")
+		expect(out).not.toContain("bug report")
 	})
 
 	it("maps the pre-flight error from applyUpdate to the guidance", async () => {
