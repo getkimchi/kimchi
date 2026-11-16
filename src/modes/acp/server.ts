@@ -1139,17 +1139,6 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
 		}
 		await this.doSetModel(record, params.modelId)
-		// The legacy wire shape returns only {} — the refreshed config options
-		// (model picker's currentValue, the model-dependent reasoning_effort
-		// set) can't ride the response the way session/set_config_option's
-		// does, so push them as a config_option_update notification.
-		this.send({
-			sessionId: params.sessionId,
-			update: {
-				sessionUpdate: "config_option_update",
-				configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
-			},
-		})
 		return {}
 	}
 
@@ -1198,22 +1187,11 @@ export class KimchiAcpAgent implements Agent {
 		return permissionMode
 	}
 
-	/**
-	 * Set the session's thinking level from a session/set_config_option
-	 * request. The value must be one of the advertised options — the
-	 * curated-aware selection for the current model, the same set the TUI's
-	 * /thinking picker offers — anything else is -32602 naming the valid
-	 * levels, per the spec contract for select options. Assignment is
-	 * session-scoped like the TUI picker: pi persists the change to the
-	 * session transcript and emits thinking_level_changed, but the global
-	 * default is not rewritten.
-	 */
+	/** Apply a reasoning_effort set request; the value must be one of the
+	 *  advertised (model-curated) levels. */
 	private doSetThinkingLevel(record: SessionRecord, value: string): void {
 		const { session } = record
-		// Mirror buildThinkingConfigOption's guard: the option is not
-		// advertised without a model, so a set request in that state is
-		// invalid params, not a level applied against a stale selection
-		// (thinkingSelection(undefined) falls back to the full canonical set).
+		// The option is not advertised without a model, so a set in that state is invalid.
 		if (!session.model) {
 			throw RequestError.invalidParams(undefined, "no model is selected for this session")
 		}
@@ -1266,34 +1244,43 @@ export class KimchiAcpAgent implements Agent {
 				// Pi's setModel only throws "if no auth is configured for the model"
 				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
 			}
-			return value
-		}
+		} else {
+			const parsed = splitModelRef(value)
+			if (!parsed) {
+				throw RequestError.invalidParams(
+					undefined,
+					`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
+				)
+			}
+			const target = findModelByRef(modelRegistry, value)
+			if (!target) {
+				throw RequestError.invalidParams(
+					undefined,
+					`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
+				)
+			}
 
-		const parsed = splitModelRef(value)
-		if (!parsed) {
-			throw RequestError.invalidParams(
-				undefined,
-				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
-			)
+			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
+			setMultiModelEnabled(sessionId, false)
+			try {
+				// An explicit client request to change the model, so save it as the default.
+				await session.setModel(target, { persist: true })
+			} catch {
+				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+				// Pi's setModel only throws "if no auth is configured for the model"
+				throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
+			}
 		}
-		const target = findModelByRef(modelRegistry, value)
-		if (!target) {
-			throw RequestError.invalidParams(
-				undefined,
-				`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
-			)
-		}
-
-		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
-		setMultiModelEnabled(sessionId, false)
-		try {
-			// An explicit client request to change the model, so save it as the default.
-			await session.setModel(target, { persist: true })
-		} catch {
-			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
-			// Pi's setModel only throws "if no auth is configured for the model"
-			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
-		}
+		// Both entry points advertise refreshed options here: the model-dependent
+		// reasoning_effort set changes with the model, and unstable_setSessionModel's
+		// legacy wire shape returns {}, so those clients can only learn it via push.
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "config_option_update",
+				configOptions: buildConfigOptions(session, this.getInitialPermissionMode(session).mode),
+			},
+		})
 		return value
 	}
 
@@ -3983,16 +3970,10 @@ function isCanonicalThinkingLevel(value: string): value is AgentSession["thinkin
  * Builds the SessionConfigOption for the session's thinking level — the
  * control ACP clients render as their reasoning-effort picker (JetBrains Air
  * binds its native effort control to the `reasoning_effort` configId).
- *
- * The selectable values are exactly what the TUI's /thinking selector offers
- * (thinking-selection.ts): curated levels ∩ pi's wire-supported set for the
- * current model. Models with nothing selectable (no model yet, non-reasoning,
- * curated-none, empty intersection) get NO option rather than a dead
- * one-value selector — clients hide what they are not given. currentValue is
- * the rank-nearest selectable level so the "currentValue must be one of
- * options" invariant holds even when the session's stored level predates a
- * curation change; pi re-clamps on assignment, so what we advertise is what
- * the wire sends.
+ * Selectable values match the TUI's /thinking selector (thinking-selection.ts);
+ * a model with nothing selectable gets NO option rather than a dead one-value
+ * selector — clients hide what they are not given. currentValue is rank-clamped
+ * into the selection so the advertised value is always one of options.
  */
 export type AgentSessionThinkingConfig = Pick<AgentSession, "model" | "thinkingLevel">
 

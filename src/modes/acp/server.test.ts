@@ -9664,6 +9664,38 @@ describe("setSessionConfigOption", () => {
 			expect(res.configOptions?.find((o) => o.id === "reasoning_effort")).toBeUndefined()
 			expect(res.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("test/plain")
 		})
+
+		it("pushes config_option_update on a model switch via set_config_option", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			const fake = new FakeAgentSession("test-session-effort-switch-push")
+			fake.model = REASONING_MODEL
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "test", id: "reasoner", name: "Reasoner" },
+					{ provider: "test", id: "plain", name: "Plain" },
+				],
+			}
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const updatesBeforeSwitch = updates.length
+
+			await agent.setSessionConfigOption({
+				sessionId: "test-session-effort-switch-push",
+				configId: "model",
+				value: "test/plain",
+			})
+
+			const pushed = updates.slice(updatesBeforeSwitch).find((u) => u.update.sessionUpdate === "config_option_update")
+			const options = (pushed?.update as { configOptions?: Array<{ id: string; currentValue?: string }> })
+				?.configOptions
+			expect(options?.find((o) => o.id === "model")?.currentValue).toBe("test/plain")
+		})
 	})
 
 	describe("compact command", () => {
