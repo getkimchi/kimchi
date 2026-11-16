@@ -81,12 +81,25 @@ export function mockPiMcpAdapterModule() {
 		// client on session start, mirroring the real adapter's startup shape.
 		createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
 			upstream.options = options
+			// Track the tools this adapter instance serves so shutdown/start can
+			// mirror upstream's real lifecycle: session_shutdown closes every
+			// connection and pulls the tools off the active surface; session_start
+			// reconnects and re-activates them. Without this a test cannot tell a
+			// working resume from a broken one — both suites would pass either way.
+			const servedToolNames = new Set<string>()
+			const serve = (definition: ToolDefinition): ReturnType<ExtensionAPI["registerTool"]> => {
+				servedToolNames.add(definition.name)
+				return api.registerTool(definition)
+			}
 			api.on("session_start", async () => {
 				await new mcpClient.Client().listTools()
 				await upstream.sessionStart()
+				if (servedToolNames.size > 0) api.setActiveTools([...new Set([...api.getActiveTools(), ...servedToolNames])])
 			})
 			api.on("session_shutdown", async () => {
 				await upstream.sessionShutdown()
+				if (servedToolNames.size > 0)
+					api.setActiveTools(api.getActiveTools().filter((name) => !servedToolNames.has(name)))
 			})
 			api.registerCommand("mcp", {
 				description: "MCP",
@@ -98,7 +111,7 @@ export function mockPiMcpAdapterModule() {
 					handler: async (args, ctx) => upstream.mcpAuth(args, ctx),
 				})
 			}
-			api.registerTool({
+			serve({
 				name: "mcp",
 				label: "MCP",
 				description: "MCP gateway",

@@ -233,6 +233,36 @@ describe("subagent MCP tool inheritance — real extension", () => {
 		expect(definition).not.toHaveProperty("lifecycle")
 	})
 
+	it("serves MCP tools again after a run-end shutdown and a resume restart", async () => {
+		mcpClient.state.tools = [
+			{
+				name: "lookup",
+				description: "Look up a record",
+				inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+			},
+		]
+		writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: { fixture: { command: "node", args: ["server.js"] } } }))
+		cliState.mcpConfig = mcpConfigPath
+
+		const { harness, ctx } = createChildSessionHarness(childCwd)
+		const extension = createKimchiMcpAdapterExtension({ cwd: childCwd })
+		extension(harness.api)
+		await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
+		expect(harness.getActiveToolNames()).toContain("mcp")
+
+		// Run end (each subagent run emits session_shutdown): the fake adapter
+		// mirrors upstream's permanent close — the tools leave the surface.
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "branch" }, ctx)
+		expect(harness.getActiveToolNames()).not.toContain("mcp")
+
+		// Steering resume (the runner re-emits session_start): the adapter's
+		// servers reconnect and the tools come back. If a future adapter version
+		// stopped resetting on start, this test fails instead of the bug
+		// silently returning.
+		await harness.emit("session_start", { type: "session_start", reason: "resume" }, ctx)
+		expect(harness.getActiveToolNames()).toContain("mcp")
+	})
+
 	// Isolation is deliberately not exercised here: the runAgent mechanism tests
 	// in agent-runner.test.ts ("keeps extension-registered tools off an isolated
 	// child session", "omits the MCP adapter factory for isolated children") pin
