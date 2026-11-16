@@ -186,6 +186,7 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 	const scope = getToolSessionScope(pi)
 	const previousActive = [...new Set(pi.getActiveTools())]
 	const disabled = getDisabledToolNames(pi)
+	const lastApplied = lastAppliedByScope.get(scope) ?? []
 
 	// Capture the pre-profile chat surface exactly once per scope, at the
 	// session's first restrictive profile apply. Later idle restores re-derive
@@ -193,6 +194,24 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 	// can never reshape what chat returns to.
 	if (trigger === "apply" && profile !== "idle" && !surfaceBaselineByScope.has(scope)) {
 		surfaceBaselineByScope.set(scope, previousActive)
+	}
+
+	// Fold external activations into the baseline regardless of the profile
+	// in force: a tool registered and auto-activated mid-restrictive-profile
+	// (MCP server connecting during plan mode or a running ferment) is part
+	// of the session's surface, not of the profile's widening, and must
+	// survive the profile's exit. Only REGISTERED names fold — profile
+	// utilities the manager itself applied are already in lastApplied, and
+	// ephemeral admissions (planning read-only providers) are unregistered.
+	const baseline = surfaceBaselineByScope.get(scope)
+	if (baseline) {
+		const registeredNames = new Set(pi.getAllTools().map((t) => t.name))
+		const externallyActivated = previousActive.filter(
+			(name) => registeredNames.has(name) && !lastApplied.includes(name) && !baseline.includes(name),
+		)
+		if (externallyActivated.length > 0) {
+			surfaceBaselineByScope.set(scope, [...baseline, ...externallyActivated])
+		}
 	}
 
 	// Registry-derived profiles rebuild additively on resnapshot, mirroring
@@ -220,11 +239,17 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 			// names (planning read-only providers) are not registry entries and
 			// leave with the profile that admitted them. Names the session lost
 			// since the last snapshot stay lost — a user/adapter deactivation
-			// outlives every idle apply.
-			const registered = new Set(pi.getAllTools().map((t) => t.name))
-			const lastApplied = lastAppliedByScope.get(scope) ?? []
+			// outlives every idle apply. Two carve-outs: an empty previousActive
+			// (pending-plan-review suppression wipes the surface on purpose)
+			// carries no loss signal, and a restrictive profile whose apply
+			// overwrote a deactivation during its lifetime is the profile's
+			// documented widening, not a user toggle.
 			const gained = previousActive.filter((n) => !lastApplied.includes(n))
-			const lost = new Set(lastApplied.filter((n) => !previousActive.includes(n)))
+			const lost =
+				previousActive.length === 0
+					? new Set<string>()
+					: new Set(lastApplied.filter((n) => !previousActive.includes(n)))
+			const registered = new Set(pi.getAllTools().map((t) => t.name))
 			const restorable = [...new Set([...(surfaceBaselineByScope.get(scope) ?? previousActive), ...gained])]
 			allowedNames = restorable.filter(
 				(name) => !lost.has(name) && registered.has(name) && !isFermentOnlyToolName(name) && !disabled.has(name),
