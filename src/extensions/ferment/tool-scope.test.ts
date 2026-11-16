@@ -253,7 +253,7 @@ describe("idle profile", () => {
 		// third-party tools, etc. when they exit a ferment back to normal chat.
 		// Only ferment-only tools are filtered out. See PR #683 review feedback
 		// for the rationale.
-		const allTools = [
+		const activeTools = [
 			"read",
 			"bash",
 			"edit",
@@ -263,9 +263,11 @@ describe("idle profile", () => {
 			"start_ferment_step", // ferment-only: filtered out
 			"activate_ferment_phase", // ferment-only: filtered out
 		]
-		// active = registered: upstream activates default-active tools at
-		// registration, mirroring a real session before any profile ran.
-		const pi = createPi([...allTools], allTools)
+		// active ⊂ registered: codemode registers defaultActive: false upstream,
+		// so it is registered but never active — exactly the class of tool the
+		// idle profile must not surface merely because ferment applied.
+		const allTools = [...activeTools, "codemode"]
+		const pi = createPi([...activeTools], allTools)
 
 		applyFermentToolProfile(pi, "idle")
 
@@ -280,6 +282,8 @@ describe("idle profile", () => {
 		expect(lastCall).not.toContain("propose_ferment_scoping")
 		expect(lastCall).not.toContain("start_ferment_step")
 		expect(lastCall).not.toContain("activate_ferment_phase")
+		// Registered-but-never-active tools are not activated by idling.
+		expect(lastCall).not.toContain("codemode")
 	})
 })
 
