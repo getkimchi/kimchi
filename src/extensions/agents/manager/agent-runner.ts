@@ -977,10 +977,13 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 	// or spawns servers merely to filter its tool out afterwards. Appended
 	// last on purpose; the DAP × MCP ordering was verified safe for LLM-4472
 	// (per-session profile state, no ordering interaction).
+	// An allowlist entry is allowed to name the MCP namespace (the plain `mcp`
+	// proxy, or an mcp-prefixed tool/server name) — any such entry installs the
+	// adapter; the tool filter then decides which MCP tools actually surface.
 	if (
 		deps.mcpAppsEnabled &&
 		(deps.effectiveExtensions === true ||
-			(deps.effectiveExtensions !== false && deps.effectiveExtensions.includes("mcp")))
+			(deps.effectiveExtensions !== false && deps.effectiveExtensions.some((ext) => ext.startsWith("mcp"))))
 	) {
 		// Headless children: drop config warnings (no UI; console output is noise
 		// in the parent process) and connect the built-in gateway lazily so a

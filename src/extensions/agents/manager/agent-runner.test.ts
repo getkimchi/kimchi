@@ -2903,6 +2903,13 @@ describe("buildInlineExtensionFactories", () => {
 		const explicitList = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["mcp"] }))
 		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
 		expect(explicitList).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
+
+		// An entry in the MCP namespace (a server/tool name, not the plain proxy)
+		// still installs the adapter — the tool filter later narrows the surface.
+		mockCreateKimchiMcpAdapterExtension.mockClear()
+		const namespaced = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["mcp__github_lookup"] }))
+		expect(mockCreateKimchiMcpAdapterExtension).toHaveBeenCalledTimes(1)
+		expect(namespaced).toContain(mockCreateKimchiMcpAdapterExtension.mock.results[0].value)
 	})
 
 	it("omits the MCP adapter factory when the mcp-apps resource toggle is off", () => {

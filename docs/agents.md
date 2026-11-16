@@ -100,7 +100,9 @@ You are a senior X engineer who...
 - **`tools`** — Omit or set `none` to inherit/disable. Comma-separated lists
   restrict the agent to a subset.
 - **`extensions`** — `true` (default) inherits the parent's MCP and extension
-  tools. `false` disables them. A comma-list whitelists specific names.
+  tools. `false` disables them. A comma-list whitelists specific names. Any
+  entry in the MCP namespace (`mcp`, or an `mcp…`-named server/tool) enables
+  the MCP adapter; only matching MCP tools then surface.
 - **`skills`** — `true` (default) inherits all parent skills. A comma-list
   preloads named skills from the project's skill paths into the system prompt
   (useful when the agent needs reference material). Project skills in the nearest
