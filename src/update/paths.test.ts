@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -8,6 +8,7 @@ vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>()
 	return {
 		...actual,
+		existsSync: vi.fn(actual.existsSync),
 		realpathSync: Object.assign(vi.fn(actual.realpathSync), { native: actual.realpathSync.native }),
 	}
 })
@@ -142,6 +143,21 @@ describe("isHomebrewInstall", () => {
 		expect(isHomebrewInstall()).toBe(false)
 		expect(stableExecutablePath()).toBe(process.execPath)
 		expect(realpathSync).toHaveBeenCalledOnce()
+	})
+
+	it("retries after an unexpected probe error leaves the cache cold", () => {
+		const binPath = join(tmp, "bin", "kimchi")
+		touch(binPath)
+		setExecPath(binPath)
+		process.env.HOMEBREW_PREFIX = tmp
+		vi.mocked(existsSync).mockImplementationOnce(() => {
+			throw new Error("unexpected probe failure")
+		})
+
+		expect(isHomebrewInstall).toThrow("unexpected probe failure")
+		const callsAfterFailure = vi.mocked(realpathSync).mock.calls.length
+		expect(isHomebrewInstall()).toBe(false)
+		expect(vi.mocked(realpathSync).mock.calls.length).toBeGreaterThan(callsAfterFailure)
 	})
 
 	it("returns false when Cellar directory does not exist under prefix", () => {

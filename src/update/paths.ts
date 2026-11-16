@@ -122,9 +122,10 @@ let homebrewKegCachePopulated = false
  *  realpath; only tests replace these facts and use the reset hook below. */
 function homebrewKeg(): HomebrewKeg | undefined {
 	if (homebrewKegCachePopulated) return cachedHomebrewKeg
+	const keg = probeHomebrewKeg()
+	cachedHomebrewKeg = keg
 	homebrewKegCachePopulated = true
-	cachedHomebrewKeg = probeHomebrewKeg()
-	return cachedHomebrewKeg
+	return keg
 }
 
 /** Reset the process-lifetime probe result after replacing the test process layout. */
