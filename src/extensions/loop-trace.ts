@@ -241,16 +241,29 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 		hotBusy = true
 		profiler.post("Profiler.stop", (err, result) => {
 			try {
-				const profile = result as {
-					profile?: { nodes?: { callFrame: { functionName: string; url: string; lineNumber: number }; hitCount?: number }[] }
+				interface ProfileNode {
+					id: number
+					parent?: number
+					callFrame: { functionName: string; url: string; lineNumber: number }
+					hitCount?: number
 				}
-				const byFn = new Map<string, { fn: string; at: string; hits: number }>()
-				for (const node of profile.profile?.nodes ?? []) {
+				const profile = result as { profile?: { nodes?: ProfileNode[] } }
+				const nodes = profile.profile?.nodes ?? []
+				const byId = new Map(nodes.map((n) => [n.id, n]))
+				function ancestor(node: ProfileNode, depth: number): string {
+					let cur: number | undefined = node.parent
+					for (let hop = 0; hop < depth && cur !== undefined; hop++) cur = byId.get(cur)?.parent
+					if (cur === undefined) return "?"
+					const p = byId.get(cur)?.callFrame
+					return p ? p.functionName || "(anonymous)" : "?"
+				}
+				const byFn = new Map<string, { fn: string; at: string; hits: number; caller: string; grandparent: string }>()
+				for (const node of nodes) {
 					if (!node.hitCount) continue
 					const fn = node.callFrame.functionName || "(anonymous)"
 					const at = `${node.callFrame.url.split("/").slice(-2).join("/")}:${node.callFrame.lineNumber}`
 					const key = `${fn}@${at}`
-					const cur = byFn.get(key) ?? byFn.set(key, { fn, at, hits: 0 }).get(key)!
+					const cur = byFn.get(key) ?? byFn.set(key, { fn, at, hits: 0, caller: ancestor(node, 1), grandparent: ancestor(node, 2) }).get(key)!
 					cur.hits += node.hitCount
 				}
 				const frames = [...byFn.values()].sort((a, b) => b.hits - a.hits).slice(0, 6)
