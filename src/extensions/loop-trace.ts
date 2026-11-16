@@ -168,33 +168,37 @@ export function armLoopTrace(path: string, maxLagMarks = MAX_LAG_MARKS): void {
 	// exit. Event-driven (fires at the subprocess's exit, not when the loop wakes);
 	// the mark identifies the CPU drawer for ANY hold, including ones where the
 	// loop was sleeping and could not attribute. ChildProcess.cpuUsage is v17+.
-	let cp: { spawn: (...a: unknown[]) => { pid?: number; on(event: string, cb: () => void): unknown; cpuUsage?: { user: number; system: number } } }
+	// Node >=20 seals node:child_process.exports.spawn (writable:false but
+	// configurable:true) — plain assignment fails silently in a lib that cannot
+	// tell. Object.defineProperty lands the shim and stays functionally equivalent.
 	try {
-		cp = require("node:child_process") as typeof cp
-		// biome-ignore lint/suspicious/noExplicitAny: interop with callback overloads is intentionally loose
-		const spawn = cp.spawn as (...a: unknown[]) => unknown
-		cp.spawn = function spawnTraced(this: never, command: unknown, args?: unknown, options?: unknown): unknown {
-			const child = spawn.call(this as never, command as never, args as never, options as never) as never as {
-				pid?: number
-				on(event: string, cb: () => void): unknown
-				cpuUsage?: { user: number; system: number }
-				cmd?: unknown
-			}
-			child.on("exit", () => {
-				try {
-					if (child.cpuUsage) {
-						writeMark(path, "loop.channel.cpu", {
-							pid: child.pid,
-							cmd: String(command).split("/").pop()?.slice(0, 80),
-							cpuMs: Math.round(((child.cpuUsage.user + child.cpuUsage.system) / 1000) * 1000) / 1000,
-						})
+		const cp = require("node:child_process") as { spawn: (...a: unknown[]) => unknown }
+		const spawn = cp.spawn
+		Object.defineProperty(cp, "spawn", {
+			configurable: true,
+			enumerable: true,
+			get() {
+				return function spawnTraced(command: unknown, args?: unknown, options?: unknown) {
+					const child = spawn.call(cp, command as never, args as never, options as never) as {
+						pid?: number
+						on(event: "exit", cb: () => void): unknown
+						cpuUsage: { user: number; system: number }
 					}
-				} catch {
-					// tangential diagnostics must never break the spawn path
+					child.on("exit", () => {
+						try {
+							writeMark(path, "loop.channel.cpu", {
+								pid: child.pid,
+								cmd: String(command).split("/").pop()?.slice(0, 80),
+								cpuMs: Math.round(((child.cpuUsage.user + child.cpuUsage.system) / 1000) * 1000) / 1000,
+							})
+						} catch {
+							// tangential diagnostics must never break the spawn path
+						}
+					})
+					return child
 				}
-			})
-			return child
-		} as never
+			},
+		})
 	} catch {
 		// spawn hook is best-effort diagnostics
 	}
