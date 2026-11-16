@@ -69,6 +69,10 @@
   "additive_missing": {
    "limit": 0.0,
    "budget_note": "additive ledger indexes ABSENT after a run over the scaled fixture; the fix applies work_records_imported, outbox_pending_cover and outbox_batches_by_account on open — 0 missing on fixed binaries, 3 on unfixed"
+  },
+  "blocking_instr_p95": {
+   "limit": 100000000.0,
+   "budget_note": "p95 main-thread CPU instructions per watchdog-observed blocking episode over the scaled ledger. Calibrated from the first CI run with real samples on the fully fixed stack: p95 76.9M (max 76.9M, 15 samples); 100M clears the baseline by ~30% for slow creep. Zero samples fails closed as a broken measurement, never a pass"
   }
  },
  "idle": {
