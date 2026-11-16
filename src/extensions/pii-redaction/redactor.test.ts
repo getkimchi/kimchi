@@ -1717,8 +1717,9 @@ describe("token mode — composition and tally parity", () => {
 		writeSettings({ renderMode: "tokens" })
 		resetRedactorEngine()
 		const vault = createTokenVault()
-		// GENERIC_SECRET's value charset excludes `[`/`]`, so the composed
-		// token must survive the second pass verbatim.
+		// GENERIC_SECRET rejects marker/vault-token-shaped values via
+		// rejectValue, so the composed token must survive the second pass
+		// verbatim.
 		const result = await redactObjectStringsMeasured(
 			{ a: `password: somelongsecretvalue123 and mail ${fx.email}` },
 			vault,

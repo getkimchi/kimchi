@@ -678,14 +678,14 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// Query parameters that carry credentials. `;` is included as a leading
 	// separator for `;`-delimited connection strings (Azure SAS). Values may
 	// contain `[`/`]` (tokens legitimately do); an already-redacted marker
-	// from an earlier pass is rejected by rejectValue instead of being
-	// banned from every credential.
+	// or vault token from an earlier pass is rejected by rejectValue instead
+	// of being banned from every credential.
 	{
 		name: "URL_WITH_CREDENTIALS",
 		regex:
 			/([?&;](?:token|api_?key|key|sig|signature|secret|password|access_token|refresh_token|session_token|client_secret|sas|sharedaccesssignature)=)([^&;\s]{8,})/gi,
 		secretGroup: 2,
-		rejectValue: (value: string) => /^\[REDACTED-[A-Z_][A-Z0-9_]*\]/.test(value),
+		rejectValue: (value: string) => /^(?:\[REDACTED-[A-Z_][A-Z0-9_]*\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\])/.test(value),
 	},
 	// Keyword-anchored re-additions for bare-shape engine entities the tier
 	// registry excludes (TELEGRAM_BOT_TOKEN, OKTA_TOKEN): the bare shapes
@@ -718,8 +718,8 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// `token: …`, `credential: …`. Restores the engine's GENERIC_SECRET
 	// coverage (anchor_required, excluded by default) for the free-text case
 	// the JSON sensitive-key path cannot see. An already-redacted marker
-	// from an earlier pass is rejected by rejectValue so idempotency holds
-	// for values that contain `[`/`]`.
+	// or vault token from an earlier pass is rejected by rejectValue so
+	// idempotency holds for values that contain `[`/`]`.
 	// The anchor consumes a leading non-letter byte: without it the
 	// keyword matches shape-suffixed identifiers (`oauthAccessToken = "…"`
 	// → "Token = …" — measured ~2,850 false redactions across engineering
@@ -733,7 +733,8 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		regex:
 			/((?:^|[^A-Za-z])(?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"']{16,})/gi,
 		secretGroup: 2,
-		rejectValue: (value: string) => isGenericNonSecretValue(value) || /^\[REDACTED-[A-Z_][A-Z0-9_]*\]/.test(value),
+		rejectValue: (value: string) =>
+			isGenericNonSecretValue(value) || /^(?:\[REDACTED-[A-Z_][A-Z0-9_]*\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\])/.test(value),
 	},
 	// Docker registry auth from a config's JSON `"auth"` key (base64 of
 	// user:password). Restores DOCKER_REGISTRY_AUTH coverage.
@@ -757,12 +758,11 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
  * stay redacted.
  */
 export function isGenericNonSecretValue(value: string): boolean {
-	// `$`-leading shell expansions and command substitutions only, as
-	// complete shapes: ${VAR}, $[idx], $(cmd), or a whole-value $VAR — the
-	// whole-value clause matters because modular-crypt hashes (argon2:
-	// `$argon2id$v=19$…`, scrypt: `$s2$…`, bcrypt `$2b$12$…`) also start
-	// with `$`+letter and must keep redacting. `$VAR/…` is handled by the
-	// path branch below.
+	// `$`-leading shell expansions and command substitutions: a complete
+	// `$VAR`, or the opener of ${VAR}, $(cmd), $[…] — the whole-value clause
+	// matters because modular-crypt hashes (argon2: `$argon2id$v=19$…`,
+	// scrypt: `$s2$…`, bcrypt `$2b$12$…`) also start with `$`+letter and
+	// must keep redacting. `$VAR/…` is handled by the path branch below.
 	if (/^\$(?:[{([]|[A-Za-z_]\w*$)/.test(value) || /^<[A-Za-z0-9_\s-]*>$/.test(value)) return true
 	// Paths: anchored start (/, ~/, ./, ../, $VAR/) with path-ish body.
 	if (/^(?:~?\/|\.\.?\/|\$[A-Za-z_][\w]*\/)[\w.+=/@-]+\/?$/.test(value)) return true

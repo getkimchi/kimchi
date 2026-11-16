@@ -148,3 +148,29 @@ describe("Supabase anon/service JWT realism", () => {
 		expect(out).not.toContain(jwt())
 	})
 })
+
+describe("vault tokens survive keyword proximity (token render mode)", () => {
+	it("a vault token right after a keyword is never re-consumed", async () => {
+		const out = await redactText("session token: [EMAIL_ADDRESS_1]")
+		expect(out).toContain("[EMAIL_ADDRESS_1]")
+	})
+	it("a vault token as a complete query value survives", async () => {
+		const out = await redactText(["?token=", "[EMAIL_ADDRESS_1]", "&next=1"].join(""))
+		expect(out).toContain("[EMAIL_ADDRESS_1]")
+	})
+})
+
+describe("bracket-bearing credentials: value-floor boundaries", () => {
+	it("redacts at exactly 8 chars", async () => {
+		const token = "ab[cd]ef"
+		expect(token).toHaveLength(8)
+		const out = await redactText("?token=" + token + "&next=1")
+		expect(out).not.toContain(token)
+	})
+	it("skips below the 8-char floor", async () => {
+		const token = "ab[cd]e"
+		expect(token).toHaveLength(7)
+		const out = await redactText("?token=" + token + "&next=1")
+		expect(out).toContain(token)
+	})
+})
