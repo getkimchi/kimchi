@@ -8,27 +8,37 @@ redacts once the gate is on.
 ## Categories and entities
 
 Every registered entity (engine detectors plus the kimchi-owned custom
-marker types) belongs to exactly one of nine categories and carries an
+marker types) belongs to exactly one of five categories and carries an
 effective default — whether it redacts today or not:
 
 | Category | Members (abridged) | Default |
 |---|---|---|
-| `secrets` | vendor tokens (GitHub, AWS, LLM keys …), keyword-anchored secrets (`aws_secret_access_key = …`, `password: …`), `SECRET_FIELD` (JSON-key force-redaction) | on (every member) |
-| `local_paths` | `LOCAL_PATH`, `CREDENTIAL_FILE` | on |
-| `emails` | `EMAIL_ADDRESS` | on |
-| `phones` | `PHONE_NUMBER` | off (bare shapes false-positive) |
-| `network` | `IP_ADDRESS`, `MAC_ADDRESS` | on |
-| `credentialed_urls` | `URL_WITH_CREDENTIALS`, DSNs and webhook URLs with embedded credentials (`SENTRY_DSN`, `SLACK_WEBHOOK`, `TEAMS_WEBHOOK`, `DISCORD_WEBHOOK`), `AZURE_CONNECTION_STRING` | on |
+| `credentials` | 152 entities: vendor tokens, keyword-anchored secrets (`aws_secret_access_key = …`, `password: …`), `SECRET_FIELD` (JSON-key force-redaction), `CREDENTIAL_FILE`, credentialed URLs and connection strings (`URL_WITH_CREDENTIALS`, `AZURE_CONNECTION_STRING`, webhooks …) | on (every member) |
+| `identity_documents` | 38 national-ID and healthcare-ID entities (SSN, passports, Medicare …) | off (every member) |
+| `person_data` | `EMAIL_ADDRESS` on; `PHONE_NUMBER`, `PERSON`, `LOCATION`, `ORGANIZATION` off | mixed |
 | `financial` | `CREDIT_CARD`, `IBAN_CODE` on; routing numbers, `CRYPTO` off | mixed |
-| `identity_documents` | national IDs, healthcare IDs (SSN, passports, Medicare …) | off |
-| `personal_details` | `PERSON`, `LOCATION`, `ORGANIZATION` | off |
+| `environment` | `LOCAL_PATH`, `IP_ADDRESS`, `MAC_ADDRESS` | on (every member) |
 
-Category membership is **not a stable wire contract**: members can move
-between categories (e.g. the webhook/DSN detectors moved `secrets` →
-`credentialed_urls` in this release) when a grouping better matches the
-threat class. Stored policies keyed per **entity** keep their exact
-meaning across upgrades; policies keyed per **category** follow the new
-grouping silently — if you need stability, key entities.
+The five labels are grouping and display metadata. The relabel preserves
+entity names, tier meanings and every per-entity default. Detectors and
+redaction mechanics are unchanged; `local_paths` was the only split
+bucket: its path entity joins `environment` while credential-file entities
+join `credentials`.
+
+Category membership and labels are **not a stable wire contract**. Stored
+policies keyed per **entity** keep their exact meaning across upgrades.
+Older category-keyed policy rows are not remapped: a current label's
+members follow the new grouping, while a dropped label is rejected strictly
+locally / dropped tolerantly on the managed path. Prefer entity keys, or
+migrate category keys deliberately before upgrading to this label set. For
+example, moving `network` to the new name `environment` keeps its members,
+but `secrets → credentials` would now also include credentialed URLs.
+Stored **custom entity** definitions' category labels are normalized at
+parse time through the legacy-label map (e.g. `secrets` and
+`credentialed_urls` → `credentials`, `emails`/`phones`/`personal_details` →
+`person_data`, `local_paths`/`network` → `environment`). That mapping
+applies only to custom-definition metadata — never to category-keyed policy
+states.
 
 ### Removed names
 
@@ -62,7 +72,7 @@ policy-UI console fetches the tagged raw file from this repo.
 ```jsonc
 {
   "redaction": {
-    "categories": { "network": "off" },            // whole category on/off
+    "categories": { "environment": "off" },        // whole category on/off
     "entities": { "FLY_IO_TOKEN": "off",           // per-entity override
                   "PHONE_NUMBER": "on" },
     "customEntities": [                            // user-defined regex entity
@@ -140,6 +150,8 @@ the bare engine detector. It cannot be combined with
 ## Telemetry
 
 `pii_redaction.redacted` records carry a `category` attribute derived from
-the pass's policy view (`emails`, `secrets`, …; `custom` when the marker
-has no catalog attribution), so dashboards can group redactions by the same
-unit admins toggle. See `docs/event-bus.md` §9.
+the pass's policy view (`credentials`, `person_data`, …; `custom` when the
+marker has no catalog attribution), so dashboards can group redactions by
+the same unit admins toggle. The five-label relabel starts a new series at
+the release boundary; existing `secrets`, `emails` and other previous
+attributes are not renamed retroactively. See `docs/event-bus.md` §9.

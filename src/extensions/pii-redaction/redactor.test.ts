@@ -1052,7 +1052,7 @@ describe("settings validation failure — degrade, never silently bypass", () =>
 	})
 
 	it("a broken local settings file does not knock out the org's own rules", async () => {
-		await setOrgPolicyForTests({ redaction: { categories: { emails: "KIMCHI_REDACTION_STATE_OFF" } } })
+		await setOrgPolicyForTests({ redaction: { categories: { person_data: "KIMCHI_REDACTION_STATE_OFF" } } })
 		writeSettings({ excludedEntities: ["SSN"] }) // unknown: real name is US_SSN
 		resetRedactorEngine()
 		const result = await redactText(`mail ${fx.email}`)
@@ -1880,7 +1880,7 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 
 	it("category OFF secrets passes tokens, anchored secrets, and SECRET_FIELD through", async () => {
 		const secret = ["opaque-prox", "y-token-99"].join("")
-		writeSettings({ categories: { secrets: "off" } })
+		writeSettings({ categories: { credentials: "off" } })
 		resetRedactorEngine()
 
 		for (const input of [
@@ -1944,7 +1944,7 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 	})
 
 	it("mixing legacy excludedEntities with the policy keys throws (fail-visible)", () => {
-		writeSettings({ excludedEntities: ["GUID"], categories: { secrets: "off" } })
+		writeSettings({ excludedEntities: ["GUID"], categories: { credentials: "off" } })
 		expect(() => getRedactionConfig()).toThrow(/cannot be combined/)
 	})
 
@@ -1966,7 +1966,7 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
 		await setOrgPolicyForTests({
 			redaction: {
-				categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+				categories: { environment: "KIMCHI_REDACTION_STATE_OFF" },
 				entities: { EMAIL_ADDRESS: "KIMCHI_REDACTION_STATE_ON" },
 			},
 		})

@@ -28,8 +28,8 @@ describe("resolveRedactionPolicy — entity and category states", () => {
 		expect(resolved.disabledEntities.has("EMAIL_ADDRESS")).toBe(true)
 	})
 
-	it("category OFF applies to every member (secrets: engine markers and anchored customs)", () => {
-		const resolved = resolveRedactionPolicy(undefined, { categories: { secrets: "off" } })
+	it("category OFF applies to every member (credentials: engine markers and anchored customs)", () => {
+		const resolved = resolveRedactionPolicy(undefined, { categories: { credentials: "off" } })
 		for (const name of ["GITHUB_TOKEN", "CASTAI_API_KEY", "GENERIC_SECRET", "SECRET_FIELD", "OPENAI_API_KEY"]) {
 			expect(resolved.engineExclusions, name).toContain(name)
 			expect(resolved.disabledEntities.has(name), name).toBe(true)
@@ -51,7 +51,7 @@ describe("resolveRedactionPolicy — entity and category states", () => {
 
 	it("entity ON against a category OFF re-enables just that entity", () => {
 		const resolved = resolveRedactionPolicy(undefined, {
-			categories: { secrets: "off" },
+			categories: { credentials: "off" },
 			entities: { CASTAI_API_KEY: "on" },
 		})
 		expect(resolved.disabledEntities.has("CASTAI_API_KEY")).toBe(false)
@@ -60,21 +60,50 @@ describe("resolveRedactionPolicy — entity and category states", () => {
 })
 
 describe("resolveRedactionPolicy — precedence (managed > local; entity > category)", () => {
-	const managed: RedactionPolicy = { categories: { network: "off" }, entities: { IP_ADDRESS: "on" } }
-	const local: RedactionPolicy = { categories: { network: "on" }, entities: { IP_ADDRESS: "off", MAC_ADDRESS: "on" } }
+	const managed: RedactionPolicy = { categories: { environment: "off" }, entities: { IP_ADDRESS: "on" } }
+	const local: RedactionPolicy = {
+		categories: { environment: "on" },
+		entities: { IP_ADDRESS: "off", MAC_ADDRESS: "on" },
+	}
 
 	it("managed entity beats managed category; managed category beats local entity/category", () => {
 		const resolved = resolveRedactionPolicy(managed, local)
 		// managed.entities.IP_ADDRESS=on wins over everything local.
 		expect(resolved.engineExclusions).not.toContain("IP_ADDRESS")
-		// managed.categories.network=off wins over local.entities.MAC_ADDRESS=on.
+		// managed.categories.environment=off wins over local.entities.MAC_ADDRESS=on.
 		expect(resolved.engineExclusions).toContain("MAC_ADDRESS")
 	})
 
 	it("local policy fills keys the managed policy left unset", () => {
-		const resolved = resolveRedactionPolicy({ categories: { network: "off" } }, { entities: { EMAIL_ADDRESS: "off" } })
+		const resolved = resolveRedactionPolicy(
+			{ categories: { environment: "off" } },
+			{ entities: { EMAIL_ADDRESS: "off" } },
+		)
 		expect(resolved.engineExclusions).toContain("IP_ADDRESS")
 		expect(resolved.engineExclusions).toContain("EMAIL_ADDRESS")
+	})
+})
+
+describe("parseLocalPolicy — legacy custom-definition labels", () => {
+	it.each([
+		["secrets", "credentials"],
+		["credentialed_urls", "credentials"],
+		["emails", "person_data"],
+		["phones", "person_data"],
+		["personal_details", "person_data"],
+		["local_paths", "environment"],
+		["network", "environment"],
+		["identity_documents", "identity_documents"],
+		["financial", "financial"],
+	])('%s normalizes to "%s" only on custom definitions', (legacy, current) => {
+		const policy = parseLocalPolicy({
+			customEntities: [{ name: "ACME_X", category: legacy, pattern: "E\\d{6}" }],
+		})
+		expect(policy.customEntities?.[0].category).toBe(current)
+	})
+
+	it("the label map does not reinterpret category policy keys as another category", () => {
+		expect(() => parseLocalPolicy({ categories: { secrets: "off" } })).toThrow(/unknown category/)
 	})
 })
 
@@ -125,7 +154,7 @@ describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 		// no collision rejection: a user re-defining it gets their own custom
 		// pass only — the engine detector stays excluded on every path.
 		const resolved = resolveRedactionPolicy(undefined, {
-			customEntities: [{ name: "UK_POSTCODE", category: "personal_details", pattern: "\\bGIR\\s?0AA\\b" }],
+			customEntities: [{ name: "UK_POSTCODE", category: "person_data", pattern: "\\bGIR\\s?0AA\\b" }],
 		})
 		expect(resolved.customPatterns.map((c) => c.name)).toEqual(["UK_POSTCODE"])
 		expect(resolved.engineExclusions).toContain("UK_POSTCODE")
@@ -318,10 +347,10 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 describe("parseManagedPolicy — tolerant validation (fail-open with one log)", () => {
 	it("accepts enum-style wire values", () => {
 		const policy = parseManagedPolicy({
-			categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+			categories: { environment: "KIMCHI_REDACTION_STATE_OFF" },
 			entities: { PHONE_NUMBER: "KIMCHI_REDACTION_STATE_ON" },
 		})
-		expect(policy?.categories).toEqual({ network: "off" })
+		expect(policy?.categories).toEqual({ environment: "off" })
 		expect(policy?.entities).toEqual({ PHONE_NUMBER: "on" })
 	})
 
@@ -329,14 +358,14 @@ describe("parseManagedPolicy — tolerant validation (fail-open with one log)", 
 		let dropped: string[] = []
 		const policy = parseManagedPolicy(
 			{
-				categories: { network: "off", future_category: "off" },
+				categories: { environment: "off", future_category: "off" },
 				entities: { EMAIL_ADDRESS: "off", FUTURE_ENTITY: "off" },
 			},
 			(reasons) => {
 				dropped = reasons
 			},
 		)
-		expect(policy?.categories).toEqual({ network: "off" })
+		expect(policy?.categories).toEqual({ environment: "off" })
 		expect(policy?.entities).toEqual({ EMAIL_ADDRESS: "off" })
 		expect(dropped.join(" ")).toMatch(/future_category/)
 		expect(dropped.join(" ")).toMatch(/FUTURE_ENTITY/)
@@ -344,7 +373,7 @@ describe("parseManagedPolicy — tolerant validation (fail-open with one log)", 
 
 	it("drops UNSPECIFIED and invalid custom entities", () => {
 		const policy = parseManagedPolicy({
-			categories: { network: "KIMCHI_REDACTION_STATE_UNSPECIFIED" },
+			categories: { environment: "KIMCHI_REDACTION_STATE_UNSPECIFIED" },
 			customEntities: [{ name: "EMAIL_ADDRESS", category: "emails", pattern: "x" }],
 		})
 		expect(policy).toBeUndefined()
