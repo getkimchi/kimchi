@@ -23,6 +23,7 @@ import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { getEffectiveModel } from "../../auto-model/state.js"
+import { DAP_ENTRY_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "../../dap/tools.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
@@ -61,6 +62,7 @@ import { preloadSkills } from "../prompt/skill-loader.js"
 import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
+import { sanitizeToolName } from "./result-text.js"
 import { SubagentResourceLoader } from "./subagent-resource-loader.js"
 import { subagentWebToolFactories } from "./subagent-web-tools.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
@@ -122,6 +124,29 @@ export function getActiveSubagentToolNames(
 		if (Array.isArray(extensions)) return extensions.some((ext) => name.startsWith(ext) || name.includes(ext))
 		return true
 	})
+}
+
+/**
+ * Requested names that did not make it into the child session's final active
+ * set, for any reason: unregistered, allowlist-filtered, resource-gated, or
+ * runner-excluded. `disallowed_tools` — the author's express opt-out — and
+ * runner-internal appends (SKILL_TOOL_NAME: appended for prompt
+ * documentation; no child session has ever registered a tool by that name,
+ * skills load via the brief preload blocks) are the only legitimate silences.
+ */
+export function computeDroppedToolNames(
+	requestedToolNames: string[],
+	activeToolNames: string[],
+	disallowedSet?: Set<string>,
+): string[] {
+	const activeSet = new Set(activeToolNames)
+	return [
+		...new Set(
+			requestedToolNames.filter(
+				(name) => name !== SKILL_TOOL_NAME && !disallowedSet?.has(name) && !activeSet.has(name),
+			),
+		),
+	]
 }
 
 import { markOrchestratorSteer } from "../../steer-marker.js"
@@ -604,14 +629,30 @@ ${skillLines}`
 				return true
 			})
 			if (unregistrableTools.length > 0) {
-				// DAP-only failures have a different remedy than extension tools:
-				// the debugger registers inline but its resource is disabled.
-				const remedy = unregistrableTools.every(isDapToolName)
-					? `enable the "extensions.dap" resource in settings, enable extensions for this agent, or`
-					: "enable extensions for this agent, or"
-				throw new Error(
-					`Agent "${type}" declares non-builtin tool(s) ${unregistrableTools.map((n) => `"${n}"`).join(", ")} but disables extensions — ${remedy} remove these names from its 'tools:' list.`,
-				)
+				// Two distinct classes with different honest remedies:
+				//   1. provisionable names — enabling extensions would fix them
+				//      (DAP-only failures have yet another remedy: the debugger
+				//      registers inline but its resource is disabled);
+				//   2. always-excluded names (Agent, resume_subagent, ferment tools)
+				//      — subagents NEVER receive these, regardless of the extensions
+				//      flag, so "enable extensions" would be a dead-end remedy.
+				const provisionable = unregistrableTools.filter((name) => !isExcludedSubagentToolName(name))
+				const neverReceived = unregistrableTools.filter((name) => isExcludedSubagentToolName(name))
+				const clauses: string[] = []
+				if (provisionable.length > 0) {
+					const remedy = provisionable.every(isDapToolName)
+						? `enable the "extensions.dap" resource in settings, enable extensions for this agent, or`
+						: "enable extensions for this agent, or"
+					clauses.push(
+						`${provisionable.map((n) => `"${sanitizeToolName(n)}"`).join(", ")} — ${remedy} remove these names from its 'tools:' list`,
+					)
+				}
+				if (neverReceived.length > 0) {
+					clauses.push(
+						`${neverReceived.map((n) => `"${sanitizeToolName(n)}"`).join(", ")} — subagents never receive these tools, remove them from its 'tools:' list`,
+					)
+				}
+				throw new Error(`Agent "${type}" declares non-builtin tool(s) but disables extensions — ${clauses.join("; ")}.`)
 			}
 		}
 		sessionOpts.tools = toolNames
@@ -643,18 +684,9 @@ ${skillLines}`
 			effectiveExtensions,
 			(name) => session.getToolDefinition(name) !== undefined,
 			disallowedSet,
-			(names) => {
-				// SKILL_TOOL_NAME is runner-appended for prompt documentation, not a
-				// user/persona request: no child session has ever registered it (the
-				// skills-manager extension registers skill_view/skill_manage; children
-				// load skills via the brief preload blocks). Reporting it fires on
-				// every skill-enabled run — exclude it. The underlying gap (prompt
-				// advertises a tool no child has) predates the drop-report and is
-				// tracked separately.
-				const reported = names.filter((n) => n !== SKILL_TOOL_NAME)
-				if (reported.length > 0) droppedToolNames = reported
-			},
 		)
+		const dropped = computeDroppedToolNames(toolNames, activeTools, disallowedSet)
+		if (dropped.length > 0) droppedToolNames = dropped
 		// upstream pi: only ACTIVE tools are callable (registered-but-inactive now
 		// fails tool lookup at execution time). The report tool registers for a
 		// ferment-linked worker but the extension-prefix filter above drops it
@@ -1308,7 +1340,13 @@ export function getAgentConversation(session: AgentSession): string {
 // activates them because their names are in the session's tool allowlist.
 // Honors the extensions.dap /resources toggle: off means off for subagents too.
 function isDapToolName(name: string): boolean {
-	return name.startsWith("debug_") || name.startsWith("step_")
+	// Exact membership, not a debug_*/step_* prefix: a non-DAP tool (e.g. an
+	// MCP-provided "debug_metrics") must not be treated as a debugger name —
+	// it would escape the fail-fast check and then silently drop.
+	return (
+		(DAP_ENTRY_TOOL_NAMES as readonly string[]).includes(name) ||
+		(DAP_SESSION_TOOL_NAMES as readonly string[]).includes(name)
+	)
 }
 
 export function shouldRegisterDapForTools(toolNames: readonly string[]): boolean {

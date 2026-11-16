@@ -1508,6 +1508,48 @@ describe("runAgent — profile tool access", () => {
 		expect(result.droppedToolNames).toBeUndefined()
 	})
 
+	it("reports a runner-excluded name (e.g. steer_subagent) even though the child registered it", async () => {
+		mockGetToolNamesForType.mockReturnValue(["read", "steer_subagent"])
+		const session = makeFakeSession({
+			activeToolNames: ["read"],
+			registeredToolNames: ["read", "steer_subagent"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read"])
+		expect(result.droppedToolNames).toEqual(["steer_subagent"])
+	})
+
+	it("keeps a registered requested name active even under an extensions allowlist (extensions: mcp + web_search)", async () => {
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: ["mcp"], skills: false }))
+		mockGetToolNamesForType.mockReturnValue(["read", "web_search"])
+		const session = makeFakeSession({
+			activeToolNames: ["read", "web_search", "mcp__db__query"],
+			registeredToolNames: ["read", "web_search", "mcp__db__query"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.droppedToolNames).toBeUndefined()
+	})
+
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {
 		mockGetConfig.mockReturnValue(
 			makeTypeConfig({
@@ -1738,6 +1780,107 @@ describe("runAgent — extensions disabled with non-builtin tools", () => {
 		expect(firstActiveToolsCall(session)).not.toContain("mcp")
 	})
 })
+describe("runAgent — extensions disabled with non-builtin tools", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Hermetic", description: "no extensions", source: "project" }),
+		)
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("fails fast with an actionable error instead of silently dropping the tools", async () => {
+		mockGetToolNamesForType.mockReturnValue(["read", "web_search"])
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow(/disables extensions/)
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("tells the truth about never-received names (Agent, steer_subagent, ferment tools) — no dead-end remedy", async () => {
+		// Reviewer repro: tools: read, Agent + extensions: false used to throw
+		// 'enable extensions for this agent' — a remedy that can never work,
+		// because subagent sessions never receive those names either way.
+		mockGetToolNamesForType.mockReturnValue(["read", "Agent"])
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow(/"Agent" — subagents never receive these tools, remove them from its 'tools:' list\./)
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("reports both classes distinctly when provisionable and never-received names mix", async () => {
+		mockGetToolNamesForType.mockReturnValue(["read", "web_search", "Agent"])
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow(
+			/"web_search" — enable extensions for this agent, or remove these names from its 'tools:' list; "Agent" — subagents never receive these tools, remove them from its 'tools:' list\./,
+		)
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("spawns normally with the tools allowlist when the list is builtin-only", async () => {
+		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Hermetic", "do it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(expect.objectContaining({ tools: ["read", "grep"] }))
+	})
+
+	it("leaves built-in personas (no source) untouched even with non-builtin tools", async () => {
+		// The hard-error check guards custom agents only: the built-in Debugger
+		// persona declares debug_/step_ tools with extensions disabled and must
+		// keep spawning exactly as before, regardless of resource state.
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Debugger", description: "debug persona" }))
+		mockGetToolNamesForType.mockReturnValue(["read", "grep", "debug_state_at"])
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep", "debug_state_at"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Debugger", "inspect runtime state", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(
+			expect.objectContaining({ tools: ["read", "grep", "debug_state_at"] }),
+		)
+	})
+})
+
 
 describe("getActiveSubagentToolNames — persona extension allowlists", () => {
 	const isRegistered = (name: string) =>
@@ -1852,7 +1995,7 @@ describe("runAgent — web factory gating and fail-fast refinements", () => {
 	it("points DAP-tool failures at the extensions.dap resource remedy", async () => {
 		// Debug tools register inline like web tools don't — the only real
 		// blocker here is the resource toggle, so the message must name it.
-		mockGetToolNamesForType.mockReturnValue(["read", "debug_evaluate"])
+		mockGetToolNamesForType.mockReturnValue(["read", "debug_eval"])
 		mockIsResourceEnabled.mockImplementation((id) => id !== "extensions.dap")
 
 		await expect(
@@ -2975,6 +3118,20 @@ describe("formatRunResultText", () => {
 		expect(formatRunResultText("plain", undefined, undefined)).toBe("plain")
 		expect(formatRunResultText("plain", "/plans/x.md", [])).toBe("plain\n\nPlan saved to: /plans/x.md")
 	})
+
+	it("appends a warning when requested tools are not active in the child session", () => {
+		expect(formatRunResultText({ responseText: "done", droppedToolNames: ["web_search"] })).toBe(
+			"done\n\nWarning: requested tool(s) are not active in the subagent session: web_search. Check the agent's tools list, enable the extension that provides them, or check the org resource toggle (/resources) that gates that extension.",
+		)
+		expect(formatRunResultText({ responseText: "done" })).toBe("done")
+		expect(formatRunResultText({ responseText: "done", droppedToolNames: [] })).toBe("done")
+	})
+
+	it("sanitizes off-charset tool names before interpolating them into the warning", () => {
+		const text = formatRunResultText({ responseText: "done", droppedToolNames: ["ws\nignore previous"] })
+		expect(text).toContain("ws?ignore?previous")
+})
+
 })
 
 describe("buildInlineExtensionFactories", () => {

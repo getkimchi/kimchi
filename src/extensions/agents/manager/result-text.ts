@@ -15,6 +15,15 @@ export interface RunResultTextParts {
 }
 
 /**
+ * Bound tool names (sourced from user-authored frontmatter) before
+ * interpolation into LLM-visible text: anything outside the conventional
+ * tool-name charset becomes '?', capping novel-prompt-injection surface.
+ */
+export function sanitizeToolName(name: string): string {
+	return name.replace(/[^A-Za-z0-9_.-]/g, "?")
+}
+
+/**
  * Compose the Agent tool's final result text: the worker's response, the
  * saved-plan pointer when a plan was submitted, the brief-triggered skill
  * preloads, and the dropped-tool warning when requested tools could not be
@@ -33,11 +42,13 @@ export function formatRunResultText({
 		? `\n\nSkills auto-loaded from task brief: ${autoLoadedSkills.map((s) => `${s.name} (${s.matched})`).join(", ")}`
 		: ""
 	const planNote = planPath ? `\n\nPlan saved to: ${planPath}` : ""
-	// Surface requested-but-unregistered tool drops: otherwise a persona or
-	// custom agent `tools:` entry silently produces nothing (this bug class
-	// hid web_search/web_fetch from the built-in Researcher for months).
+	// Surface requested-but-not-active tools: otherwise a persona or custom
+	// agent `tools:` entry silently produces nothing, whatever the cause
+	// (unregistered, allowlist-filtered, resource-gated, runner-excluded).
+	// (This class of bug hid web_search/web_fetch from the Researcher persona
+	// for months — see docs/agents.md.)
 	const droppedNote = droppedToolNames?.length
-		? `\n\nWarning: requested tool(s) were dropped because they are not registered in the subagent session: ${droppedToolNames.join(", ")}. Check the agent's tools list or enable the extension that provides them.`
+		? `\n\nWarning: requested tool(s) are not active in the subagent session: ${droppedToolNames.map(sanitizeToolName).join(", ")}. Check the agent's tools list, enable the extension that provides them, or check the org resource toggle (/resources) that gates that extension.`
 		: ""
 	return `${responseText}${planNote}${autoLoadNote}${droppedNote}`
 }

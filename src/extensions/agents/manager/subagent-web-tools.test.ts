@@ -19,7 +19,7 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cacheClear, cacheGet, cacheSet } from "../../web-fetch/cache.js"
-import { WEB_TOOL_MANAGED_FACTORIES, subagentWebToolFactories } from "./subagent-web-tools.js"
+import { subagentWebToolFactories, WEB_TOOL_MANAGED_FACTORIES } from "./subagent-web-tools.js"
 
 const AGENT_DIR_SETTINGS = { resources: { "tools.web_search": true, "tools.web_fetch": true } }
 
