@@ -411,7 +411,7 @@ describe("entity tier registry", () => {
 			expect(isKnownEntity(name), name).toBe(false)
 			expect(PERMANENT_ENGINE_EXCLUSIONS, name).toContain(name)
 		}
-		// Chunk-5 promotions: these now have their own anchored customs.
+		// Both connection-string entities have their own anchored custom coverage.
 		expect(byName.get("AZURE_CONNECTION_STRING")?.liveState).toBe("active")
 		expect(byName.get("DATABASE_CONNECTION_STRING")?.liveState).toBe("active")
 		// Re-tiered from bare_shape: their keyword-anchored customs carry
