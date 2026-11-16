@@ -353,6 +353,32 @@ describe("suggestSessionName", () => {
 		const result = await suggestSessionName(ctx as never, "provided hint", true)
 		expect(result).toBe("provided hint")
 	})
+
+	it("preserves the headless prefix and unchanged UI text for API errors", async () => {
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		mockGetRetrySettings.mockReturnValue({ enabled: true, maxRetries: 0, baseDelayMs: 0 })
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("synthetic failure", { status: 500, statusText: "Server Error" })))
+		const errorMock = vi.fn()
+		vi.stubGlobal("console", { ...console, error: errorMock })
+		const headlessCtx = createContext({ cwd: attributionDir, hasUI: false })
+		await suggestSessionName(headlessCtx, "Name this task")
+		expect(errorMock).toHaveBeenCalledWith("[kimchi] Auto-naming: API error 500 Server Error - synthetic failure")
+
+		const uiCtx = createContext({ cwd: attributionDir })
+		await suggestSessionName(uiCtx, "Name this task")
+		expect(uiCtx.ui.notify).toHaveBeenCalledWith("Auto-naming: API error 500 Server Error - synthetic failure", "error")
+	})
+
+	it("preserves the headless prefix when the naming request throws", async () => {
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		mockGetRetrySettings.mockReturnValue({ enabled: true, maxRetries: 0, baseDelayMs: 0 })
+		vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new Error("synthetic network failure"))))
+		const errorMock = vi.fn()
+		vi.stubGlobal("console", { ...console, error: errorMock })
+		const ctx = createContext({ cwd: attributionDir, hasUI: false })
+		await suggestSessionName(ctx, "Name this task")
+		expect(errorMock).toHaveBeenCalledWith("[kimchi] Auto-naming: synthetic network failure")
+	})
 })
 
 describe("sessionNameExtension turn_end handler", () => {

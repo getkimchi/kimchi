@@ -196,7 +196,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 			if (!quiet) {
 				const errorBody = await response.text().catch(() => "")
 				const message = `Auto-naming: API error ${response.status} ${response.statusText}${errorBody ? ` - ${errorBody.slice(0, 200)}` : ""}`
-				notifyUser(ctx, message, "error")
+				notifyUser(ctx, ctx.hasUI ? message : `[kimchi] ${message}`, "error")
 			}
 			return fallback
 		}
@@ -209,7 +209,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 	} catch (err) {
 		if (!quiet) {
 			const message = `Auto-naming: ${err instanceof Error ? err.message : String(err)}`
-			notifyUser(ctx, message, "error")
+			notifyUser(ctx, ctx.hasUI ? message : `[kimchi] ${message}`, "error")
 		}
 		return fallback
 	} finally {
