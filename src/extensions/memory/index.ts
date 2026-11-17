@@ -103,6 +103,15 @@ interface DigestState {
 	query: string
 }
 
+/**
+ * computeDigest's failure marker: the search itself threw (transient gateway
+ * error, store failure) as distinct from a computed null (nothing cleared the
+ * value bar). Callers retry the marker — caching it as an empty digest would
+ * silently lose the epoch's prefix memory to a transient failure, the exact
+ * regression the pre-branch timeout path existed to avoid.
+ */
+const DIGEST_SEARCH_FAILED: unique symbol = Symbol("digest-search-failed")
+
 export interface MemorySearcher {
 	search(query: string): Promise<Array<{ memory?: string; score?: number }>>
 }
@@ -276,6 +285,16 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					clearSavedStatus(ctx)
 					if (ctx.hasUI) ctx.ui.setStatus(MEMORY_STATUS_KEY, undefined)
 				}
+				// A successful delete changed the store the digest was computed
+				// against: invalidate the epoch (an in-flight attempt must not adopt
+				// facts the delete removed) and reset the delivery ledger so the
+				// status count cannot keep listing just-deleted facts. The next agent
+				// start recomputes against the smaller store; re-delivery of
+				// still-present facts is allowed for a turn — the same trade the
+				// compaction path makes when it resets the ledger.
+				if ((parsed.op === "delete" || parsed.op === "consolidate") && result.code === 0) {
+					onStoreShrunk(ctx)
+				}
 				// /memory disable drops the recall count at once — flip detection
 				// at the next agent start would clear it too, but a stale count
 				// shouldn't linger between management commands.
@@ -333,6 +352,19 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			digestEpoch++
 			digestAttempt = undefined
 			digestWaited = false
+		}
+		// A management command shrank or rewrote the store (delete, consolidate,
+		// a panel deletion): the digest and any in-flight attempt were computed
+		// against facts that may no longer exist — invalidate the epoch so the
+		// next agent start recomputes, and reset the delivery ledger so the
+		// status count cannot keep listing just-deleted facts. Re-delivery of
+		// still-present facts is allowed for a turn, the same trade the
+		// compaction path makes when it resets the ledger.
+		const onStoreShrunk = (ctx: ExtensionCommandContext): void => {
+			resetDigest()
+			deliveredKeys.clear()
+			deliveredFacts.length = 0
+			if (ctx.hasUI) ctx.ui.setStatus(MEMORY_STATUS_KEY, undefined)
 		}
 		let searcher: MemorySearcher | undefined
 		let searcherFailed = false
@@ -525,7 +557,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			}
 		}
 
-		const computeDigest = async (query: string): Promise<DigestState | null> => {
+		const computeDigest = async (query: string): Promise<DigestState | null | typeof DIGEST_SEARCH_FAILED> => {
 			try {
 				const s = await getSearcher()
 				mark("memory.digest.searcher", s ? undefined : { skipped: "no searcher" })
@@ -591,7 +623,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				return { text: result.text, facts: result.facts, composition: result.composition, query }
 			} catch (err) {
 				logDegrade("memory search failed, continuing without digest", err)
-				return null
+				return DIGEST_SEARCH_FAILED
 			}
 		}
 
@@ -631,6 +663,17 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						return
 					}
 					digestAttempt = undefined
+					if (d === DIGEST_SEARCH_FAILED) {
+						// The search itself failed — a transient error must not be adopted
+						// as this epoch's empty digest (the prefix would silently lose
+						// memory until the next epoch bump). Leave digest uncomputed and
+						// clear the attempt so the next turn retries — detached, because
+						// the epoch's blocking-wait credit stays consumed: a persistently
+						// failing gateway never re-blocks the submit path, and a transient
+						// one recovers via adoption when its retry lands.
+						mark("memory.digest.discarded", { reason: "failed" })
+						return
+					}
 					digest = d
 					if (d) {
 						// Seed the ledger: the digest's facts are already in context.

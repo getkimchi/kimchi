@@ -400,6 +400,56 @@ describe("memory extension", () => {
 		}
 	})
 
+	it("a late-failing digest search is discarded, not cached as an empty epoch — the next turn retries", async () => {
+		// The reviewer's window: turn 1's search fails AFTER the 2 s wait.
+		// Pre-fix, the settle adopted the failure's null as the epoch's empty
+		// digest and the session silently lost prefix memory until compaction;
+		// now it must be discarded and the next turn must retry (detached — the
+		// epoch's blocking-wait credit stays consumed).
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const marks = useMarksSink()
+		try {
+			let failFirst: ((err: Error) => void) | undefined
+			const search = vi.fn(() => {
+				if (search.mock.calls.length === 1) {
+					return new Promise<Array<{ memory?: string; score?: number }>>((_resolve, reject) => {
+						failFirst = reject
+					})
+				}
+				return Promise.resolve([{ memory: "recovered after failure", score: 0.7 }])
+			})
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			const first = await pending
+			// The bounded wait was spent on a search that had not settled.
+			expect(first?.systemPrompt).toContain("captured automatically")
+			// The failure lands late — inside the reviewer's window.
+			failFirst?.(new Error("gateway 5xx"))
+			await vi.advanceTimersByTimeAsync(0)
+			// Discarded as a failure: the epoch does NOT adopt an empty digest.
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.discarded")).toBe(true)
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(false)
+			// Turn 2 retries (detached — bare this turn; a drift recall fires too,
+			// nothing is delivered yet), the retry succeeds, and turn 3 — whose
+			// prompt word is covered by then — carries the recovered digest.
+			const second = await start(startEvent("turn 2"), fakeCtx)
+			expect(second?.systemPrompt).toContain("captured automatically")
+			await vi.advanceTimersByTimeAsync(0)
+			const third = await start(startEvent("recovered"), fakeCtx)
+			expect(third?.systemPrompt).toContain("recovered after failure")
+			expect(search.mock.calls.length).toBeGreaterThanOrEqual(2)
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(true)
+		} finally {
+			marks.cleanup()
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
 	it("a throwing settle handler is contained — no unhandled rejection, adoption still recorded", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
@@ -1746,5 +1796,40 @@ describe("memory saved feedback (completion record)", () => {
 		writeRecord(3)
 		await start(startEvent("turn 2"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
+	})
+
+	it("a successful /memory delete invalidates the digest — the count drops at once and the next start recomputes", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }), captureId: CAPTURE_ID })(
+			api,
+		)
+		const command = getRegisteredCommand("memory")
+		const ctx = createContext()
+		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+		// Turn 1 delivers the digest; the segment counts it.
+		await start(startEvent("set up the repo"), ctx)
+		expect(search).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+
+		// A successful delete shrinks the store the digest was computed against.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "Deleted live-fred.",
+			json: "{}",
+			code: 0,
+			useJson: false,
+		})
+		const cmdCtx = createCommandContext()
+		await command.handler("delete live-fred", cmdCtx)
+		// The count drops at once — the ledger no longer lists deleted facts.
+		expect(vi.mocked(cmdCtx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, undefined])
+
+		// The epoch was bumped: the next start recomputes (second search) and
+		// re-delivers against the still-mocked store.
+		const turn2 = await start(startEvent("set up the repo"), ctx)
+		expect(search).toHaveBeenCalledTimes(2)
+		expect(turn2?.systemPrompt).toContain("pnpm")
 	})
 })
