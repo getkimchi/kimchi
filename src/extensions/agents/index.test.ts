@@ -2232,3 +2232,77 @@ describe("Agent tool session-cwd agent resolution", () => {
 		expect(vi.mocked(applyAndEmitLoaded).mock.calls.some((c) => c[2] === sessionCwd)).toBe(true)
 	})
 })
+
+describe("unparseable agent files", () => {
+	let projectDir: string
+
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+		projectDir = mkdtempSync(join(tmpdir(), "kimchi-agent-frontmatter-"))
+		mkdirSync(join(projectDir, ".kimchi", "agents"), { recursive: true })
+		writeFileSync(
+			join(projectDir, ".kimchi", "agents", "broken-agent.md"),
+			"---\ndescription: broken\ntools: [read, bash\n---\n\nPrompt.\n",
+		)
+		writeFileSync(
+			join(projectDir, ".kimchi", "agents", "valid-agent.md"),
+			"---\ndescription: valid\ntools: read\n---\n\nPrompt.\n",
+		)
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	const fireSessionStart = async (pi: ReturnType<typeof makeMockPi>, ctx: unknown) => {
+		const event = { type: "session_start", reason: "startup" }
+		for (const handler of pi._handlers.get("session_start") ?? []) await handler(event, ctx)
+	}
+
+	it("does not fail extension load when the launch directory has one", () => {
+		// Regression: the factory loads agents from process.cwd(), and a throw
+		// there is a failed extension load — which exits the harness at startup.
+		vi.spyOn(process, "cwd").mockReturnValue(projectDir)
+
+		expect(() => agentsExtension(makeMockPi())).not.toThrow()
+	})
+
+	it("warns once per session start and keeps the other agents", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const ctx = createContext({ cwd: projectDir })
+
+		await fireSessionStart(pi, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining(join(".kimchi", "agents", "broken-agent.md")),
+			"warning",
+		)
+
+		// The Agent tool reloads agents on every call: no repeat warning, and
+		// the valid neighbour of the broken file is still spawnable.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		await getRegisteredAgentTool(pi).execute(
+			"call-frontmatter",
+			{ prompt: "go", description: "frontmatter test", subagent_type: "valid-agent", run_in_background: true },
+			undefined,
+			undefined,
+			{ ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), cwd: projectDir },
+		)
+
+		expect(managerInstance.spawn.mock.calls[0][2]).toBe("valid-agent")
+		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("broken-agent.md"))
+
+		await fireSessionStart(pi, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(2)
+	})
+})
