@@ -686,6 +686,43 @@ describe("custom entity capture-group normalization", () => {
 		expect(onMatch).toHaveBeenCalledWith({ name: "ACME_EMPLOYEE_ID", secret: "E123456" })
 	})
 
+	it("redacts the whole match for a secretGroup of zero even when the pattern has groups", () => {
+		const managed = parseManagedPolicy({
+			customEntities: [
+				{
+					name: "ACME_EMPLOYEE_ID",
+					category: "identity_documents",
+					pattern: "(E\\d{6})(-tail)",
+					secretGroup: 0,
+				},
+			],
+		})
+		const resolved = resolveRedactionPolicy(managed)
+		const onMatch = vi.fn()
+		const result = applyCustomPatterns("E123456-tail", new Set(), onMatch, resolved.customPatterns)
+		expect(result).toBe("[REDACTED-ACME_EMPLOYEE_ID]")
+		expect(onMatch).toHaveBeenCalledWith({ name: "ACME_EMPLOYEE_ID", secret: "E123456-tail" })
+	})
+
+	it("normalizes a zero secretGroup alongside flags to whole-match replacement", () => {
+		const managed = parseManagedPolicy({
+			customEntities: [
+				{
+					name: "ACME_EMPLOYEE_ID",
+					category: "identity_documents",
+					pattern: "e\\d{6}",
+					flags: "i",
+					secretGroup: 0,
+				},
+			],
+		})
+		const resolved = resolveRedactionPolicy(managed)
+		const onMatch = vi.fn()
+		const result = applyCustomPatterns("employee E123456", new Set(), onMatch, resolved.customPatterns)
+		expect(result).toBe("employee [REDACTED-ACME_EMPLOYEE_ID]")
+		expect(onMatch).toHaveBeenCalledWith({ name: "ACME_EMPLOYEE_ID", secret: "E123456" })
+	})
+
 	it("keeps capture group 1 as a value-only replacement", () => {
 		const managed = parseManagedPolicy({
 			customEntities: [
