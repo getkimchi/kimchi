@@ -107,7 +107,7 @@ export function buildBuiltinGatewayServer(): BuiltInGatewayServer | undefined {
 				? {
 						url,
 						auth: { provider: KIMCHI_PROVIDER_ID },
-						headers: gatewayAuthHeaders({ token: "", organizationId: credentials.organizationId }),
+						headers: credentials.organizationId ? { "X-CastAi-Organization-Id": credentials.organizationId } : {},
 						lifecycle: "keep-alive",
 					}
 				: { url, headers: gatewayAuthHeaders(credentials), lifecycle: "keep-alive" },
