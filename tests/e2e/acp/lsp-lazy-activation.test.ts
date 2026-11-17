@@ -116,8 +116,10 @@ describe("ACP integration — LSP lazy activation", () => {
 			process.env.KIMCHI_LSP_BINARIES = priorBinaries
 		}
 		if (typescriptLink !== undefined) {
-			// Unlink only — never follow into the repo's own install.
-			rmSync(typescriptLink, { force: true })
+			// Unlink only — never follow into the repo's own install. recursive is
+			// still link-only for symlinks, and Node ≥24 throws ERR_FS_EISDIR for a
+			// non-recursive rm of a symlink-to-directory.
+			rmSync(typescriptLink, { force: true, recursive: true })
 		}
 		// beforeEach can bail before fixture assignment (fixture start failure);
 		// don't mask the real error with a teardown crash.
