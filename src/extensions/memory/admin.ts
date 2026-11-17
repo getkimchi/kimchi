@@ -66,6 +66,10 @@ export interface AdminResult {
 	code: number
 	/** The surface shows .json instead of .text when the --json flag was passed. */
 	useJson: boolean
+	/** The command's structured payload (e.g. consolidate's `applied` flag) —
+	 * callers that need to branch on outcome read this instead of parsing
+	 * display JSON. Absent for commands without a payload. */
+	data?: unknown
 }
 
 export type ScopeFilter =
@@ -572,6 +576,7 @@ function result(payload: { text: string; code?: number; data: unknown }): Omit<A
 		text: payload.text,
 		json: JSON.stringify(payload.data, null, 2),
 		code: payload.code ?? 0,
+		data: payload.data,
 	}
 }
 

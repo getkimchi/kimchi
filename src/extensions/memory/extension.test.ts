@@ -1944,4 +1944,46 @@ describe("memory saved feedback (completion record)", () => {
 		expect(search).toHaveBeenCalledTimes(2)
 		expect(turn2?.systemPrompt).toContain("pnpm")
 	})
+
+	it("a consolidate that applied nothing leaves the digest alone — only applied deletions invalidate", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+		const command = getRegisteredCommand("memory")
+		const ctx = createContext()
+		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+		// Turn 1 delivers and adopts the digest.
+		await start(startEvent("set up the repo"), ctx)
+		expect(search).toHaveBeenCalledTimes(1)
+
+		// A clean-store consolidate (or a declined confirmation) returns code 0
+		// with applied: false — no store change, so nothing is invalidated.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "Store is already clean — no redundant copies.",
+			json: '{\n  "scans": [],\n  "deletions": [],\n  "applied": false\n}',
+			code: 0,
+			useJson: false,
+			data: { scans: [], deletions: [], applied: false },
+		})
+		await command.handler("consolidate", createCommandContext())
+		await start(startEvent("still set up"), ctx)
+		expect(search).toHaveBeenCalledTimes(1) // the adopted digest survives
+
+		// An applied consolidation rewrote the store — now it invalidates.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "Deleted 2 redundant fact(s).",
+			json: '{\n  "scans": [],\n  "deletions": [],\n  "applied": true\n}',
+			code: 0,
+			useJson: false,
+			data: { scans: [], deletions: [], applied: true },
+		})
+		await command.handler("consolidate --yes", createCommandContext())
+		const turn3 = await start(startEvent("set up the repo again"), ctx)
+		// The recompute ran (a drift recall may add its own search on the same
+		// turn — the ledger was cleared, so the prompt is uncovered again).
+		expect(search.mock.calls.length).toBeGreaterThanOrEqual(2)
+		expect(turn3?.systemPrompt).toContain("pnpm")
+	})
 })

@@ -299,8 +299,17 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// status count cannot keep listing just-deleted facts. The next agent
 				// start recomputes against the smaller store; re-delivery of
 				// still-present facts is allowed for a turn — the same trade the
-				// compaction path makes when it resets the ledger.
-				if ((parsed.op === "delete" || parsed.op === "consolidate") && result.code === 0) {
+				// compaction path makes when it resets the ledger. Consolidation joins
+				// only when its result records applied deletions: a clean store, a
+				// declined confirmation, or an unapplied report all return code 0
+				// without changing the store.
+				if (parsed.op === "delete" && result.code === 0) {
+					onStoreShrunk(ctx)
+				} else if (
+					parsed.op === "consolidate" &&
+					result.code === 0 &&
+					(result.data as { applied?: boolean } | undefined)?.applied === true
+				) {
 					onStoreShrunk(ctx)
 				}
 				// /memory disable drops the recall count at once — flip detection
