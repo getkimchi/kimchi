@@ -90,6 +90,19 @@ You are a senior X engineer who...
 (persona body — markdown, becomes the subagent's system prompt)
 ```
 
+### Invalid frontmatter
+
+The frontmatter must be valid YAML, with one exception: a single-line
+`description` or `display_name` may be written unquoted even when it contains
+`: ` or other YAML-special text. The whole line after the key is taken as the
+value, so agent files written for other tools usually load as they are.
+
+A file whose frontmatter still cannot be parsed is skipped. The other agents
+load, and kimchi shows a warning that names the file and the YAML error — once
+per session, when the session starts, when the `Agent` tool runs, and when
+`/agents` opens. A skipped file overrides nothing: a user, extension, or
+built-in agent with the same name stays active.
+
 ### Built-in tool names
 
 `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`
