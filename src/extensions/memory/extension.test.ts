@@ -1426,6 +1426,46 @@ describe("memory extension — digest selection gate", () => {
 		}
 	})
 
+	it("a hung selection gate falls back to the threshold rule within the pre-request budget", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const hang = async () => await new Promise<Response>(() => {})
+			const { start } = await setup(
+				createMemoryExtension({
+					isEnabled: () => true,
+					createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
+					decision: () => ({
+						gate: {
+							endpoint: "https://gw.test/typesafe/v1/systemone",
+							apiKey: "k",
+							fetchImpl: hang,
+							maxRetries: 0,
+						},
+						enabled: new Set(["digest"]),
+					}),
+				}),
+			)
+			const turn = start(startEvent("memory check"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS)
+			const turn1 = await turn
+			// The turn itself cannot wait past its budget, so it runs bare; the hung gate's
+			// timeout falls the selection back to the threshold rule, and the digest that
+			// lands is adopted by the next turn instead of stalling to the abandon bound.
+			expect(turn1?.systemPrompt).not.toContain("greplier")
+			expect(consoleError.mock.calls.some((call) => String(call[0]).includes("digest selection gate timed out"))).toBe(
+				true,
+			)
+			await vi.advanceTimersByTimeAsync(10)
+			const turn2 = await start(startEvent("memory check"), fakeCtx)
+			expect(turn2?.systemPrompt).toContain("greplier")
+			expect(turn2?.systemPrompt).toContain("Freya")
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
 	it("the digest gate off (subset env): no selector call, threshold rule applies", async () => {
 		const decisionFetch = vi.fn(async () => {
 			throw new Error("must not be called")

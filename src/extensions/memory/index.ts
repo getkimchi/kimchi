@@ -543,13 +543,22 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					const candidates = digestCandidateTexts(hits)
 					if (candidates.length > 0) {
 						try {
-							const answers = await batchChoice(decision.gate, digestState(query), candidates, digestQuestion)
-							mark("memory.digest.gate", { candidates: candidates.length })
+							// The gate shares the pre-request budget: a hung decision falls back to
+							// the threshold rule here instead of stalling the attempt to the abandon
+							// bound (the doc comment always promised this timeout).
+							const answers = await withTimeout(
+								batchChoice(decision.gate, digestState(query), candidates, digestQuestion),
+								MEMORY_PRE_REQUEST_TIMEOUT_MS,
+								"digest selection gate",
+							)
+							mark("memory.digest.gate", { candidates: candidates.length, timedOut: answers === null })
 							const kept = new Set<string>()
-							for (let i = 0; i < candidates.length; i++) {
-								if (answers[i]?.choice === "inject") kept.add(candidates[i] as string)
+							if (answers) {
+								for (let i = 0; i < candidates.length; i++) {
+									if (answers[i]?.choice === "inject") kept.add(candidates[i] as string)
+								}
+								selected = kept
 							}
-							selected = kept
 						} catch (err) {
 							mark("memory.digest.gate", { errored: true })
 							console.error(
