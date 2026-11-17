@@ -1945,6 +1945,51 @@ describe("memory saved feedback (completion record)", () => {
 		expect(turn2?.systemPrompt).toContain("pnpm")
 	})
 
+	it("a panel deletion runs the same invalidation as the CLI path", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+		const command = getRegisteredCommand("memory")
+		const ctx = createContext()
+		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+		// Turn 1 delivers; the segment counts it.
+		await start(startEvent("set up the repo"), ctx)
+		expect(search).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+
+		// The list panel mounts (TUI mode) with the invalidation wired in.
+		vi.mocked(admin.adminListFacts).mockResolvedValue([
+			{ id: "live-fred", memory: "the user's dog is named Fred", scopeId: "personal" },
+		])
+		vi.mocked(admin.adminDeleteFacts).mockResolvedValue({
+			deleted: [{ id: "live-fred", scope: "personal" }],
+			notFound: [],
+		})
+		const cmdCtx = createCommandContext()
+		await command.handler("list", cmdCtx)
+		const factory = vi.mocked(cmdCtx.ui.custom).mock.calls[0]?.[0]
+		const mounted = factory(
+			{ requestRender: () => {}, terminal: { rows: 24 } } as never,
+			{} as never,
+			{} as never,
+			vi.fn(),
+		)
+		if (!(mounted instanceof MemoryPanel)) throw new Error("expected a MemoryPanel")
+
+		// Deleting through the panel: the count drops at once (the shared
+		// onStoreShrunk ran — on the command context's UI bridge)…
+		mounted.handleInput("d")
+		await vi.waitFor(() =>
+			expect(vi.mocked(cmdCtx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, undefined]),
+		)
+		// …and the next start recomputes (second search) — the epoch was bumped.
+		const turn2 = await start(startEvent("set up the repo again"), ctx)
+		expect(search.mock.calls.length).toBeGreaterThanOrEqual(2)
+		expect(turn2?.systemPrompt).toContain("pnpm")
+	})
+
 	it("a consolidate that applied nothing leaves the digest alone — only applied deletions invalidate", async () => {
 		const admin = await import("./admin.js")
 		const { api, getRegisteredCommand, getHandler } = createExtensionApi()

@@ -287,6 +287,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// re-derives against the now-empty store on the next agent start.
 				if (parsed.op === "reset" && result.code === 0) {
 					resetDigest()
+					storeRevision++
 					deliveredKeys.clear()
 					deliveredFacts.length = 0
 					incrementalState = createIncrementalCaptureState()
