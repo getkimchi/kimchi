@@ -2740,15 +2740,13 @@ describe("formatRunResultText", () => {
 				{ name: "docx", matched: "kw:word doc" },
 			]),
 		).toBe(
-			"done\n\nPlan saved to: /plans/x.md\nOnce approved, apply small plan updates with the edit tool at /plans/x.md as work reveals changes.\n\nSkills auto-loaded from task brief: pdf (ext:.pdf), docx (kw:word doc)",
+			"done\n\nPlan saved to: /plans/x.md\n\nSkills auto-loaded from task brief: pdf (ext:.pdf), docx (kw:word doc)",
 		)
 	})
 
 	it("leaves plain responses untouched when nothing was auto-loaded", () => {
 		expect(formatRunResultText("plain", undefined, undefined)).toBe("plain")
-		expect(formatRunResultText("plain", "/plans/x.md", [])).toBe(
-			"plain\n\nPlan saved to: /plans/x.md\nOnce approved, apply small plan updates with the edit tool at /plans/x.md as work reveals changes.",
-		)
+		expect(formatRunResultText("plain", "/plans/x.md", [])).toBe("plain\n\nPlan saved to: /plans/x.md")
 	})
 })
 

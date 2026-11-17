@@ -944,7 +944,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					return {
 						content: [{ type: "text", text: "Error: plan text is empty." }],
 						details: { submitted: false },
-						isError: true,
 					}
 				}
 
@@ -959,15 +958,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const snapshotPath = saved?.snapshotPath
 				const retainedPlanNote = snapshotPath ? `\nContinue from another worktree using: ${snapshotPath}` : ""
 
-				// Post-approval amendment note. The plan file is a working record once
-				// execution starts; small updates go through the ordinary edit tool —
-				// no re-submission needed. This result persists in the session
-				// transcript, so the guidance (and the path) reach the model during
-				// the execution phase, where the edit tool is available in every mode.
-				const amendmentNote = planPath
-					? `\nOnce approved, apply small plan updates with the edit tool at ${planPath} as work reveals changes.`
-					: ""
-
 				// Agent worker: silent submit. Saves the plan and terminates the turn
 				// with no review emit — workers have no review surface, the parent
 				// orchestrator evaluates the plan, and the plannotator adapter skips
@@ -978,10 +968,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text:
-									(planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.") +
-									retainedPlanNote +
-									amendmentNote,
+								text: (planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.") + retainedPlanNote,
 							},
 						],
 						details: {
@@ -1025,7 +1012,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// (logging, CI reviewers, alternative UIs) can hook in without changes.
 				if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
 					return {
-						content: [{ type: "text", text: `Plan submitted.${retainedPlanNote}${amendmentNote}` }],
+						content: [{ type: "text", text: `Plan submitted.${retainedPlanNote}` }],
 						details: {
 							submitted: true,
 							planPath,
@@ -1122,12 +1109,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					})
 
 				return {
-					content: [
-						{
-							type: "text",
-							text: `Plan submitted for review. Waiting for user decision.${retainedPlanNote}${amendmentNote}`,
-						},
-					],
+					content: [{ type: "text", text: `Plan submitted for review. Waiting for user decision.${retainedPlanNote}` }],
 					details: {
 						submitted: true,
 						planPath,
