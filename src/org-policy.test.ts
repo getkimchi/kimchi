@@ -209,7 +209,7 @@ describe("initOrgPolicy", () => {
 		const cachePath = cachePathFor({})
 		const policy: OrgPolicy = {
 			redaction: {
-				categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+				categories: { environment: "KIMCHI_REDACTION_STATE_OFF" },
 				entities: { PHONE_NUMBER: "KIMCHI_REDACTION_STATE_ON" },
 			},
 		}

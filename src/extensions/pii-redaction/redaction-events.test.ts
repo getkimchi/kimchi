@@ -31,7 +31,7 @@ describe("emitRedactionFacts", () => {
 			"tool_result",
 			report({
 				entities: { EMAIL_ADDRESS: 2, OPENAI_API_KEY: 1 },
-				categories: { EMAIL_ADDRESS: "emails", OPENAI_API_KEY: "secrets" },
+				categories: { EMAIL_ADDRESS: "person_data", OPENAI_API_KEY: "credentials" },
 				stringsScanned: 7,
 			}),
 		)
@@ -41,7 +41,7 @@ describe("emitRedactionFacts", () => {
 				payload: {
 					surface: "tool_result",
 					entity_type: "EMAIL_ADDRESS",
-					category: "emails",
+					category: "person_data",
 					count: 2,
 					strings_scanned: 7,
 					is_subagent: false,
@@ -52,7 +52,7 @@ describe("emitRedactionFacts", () => {
 				payload: {
 					surface: "tool_result",
 					entity_type: "OPENAI_API_KEY",
-					category: "secrets",
+					category: "credentials",
 					count: 1,
 					strings_scanned: 7,
 					is_subagent: false,

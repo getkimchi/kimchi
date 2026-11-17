@@ -8,27 +8,22 @@ redacts once the gate is on.
 ## Categories and entities
 
 Every registered entity (engine detectors plus the kimchi-owned custom
-marker types) belongs to exactly one of nine categories and carries an
+marker types) belongs to exactly one of five categories and carries an
 effective default — whether it redacts today or not:
 
 | Category | Members (abridged) | Default |
 |---|---|---|
-| `secrets` | vendor tokens (GitHub, AWS, LLM keys …), keyword-anchored secrets (`aws_secret_access_key = …`, `password: …`), `SECRET_FIELD` (JSON-key force-redaction) | on (every member) |
-| `local_paths` | `LOCAL_PATH`, `CREDENTIAL_FILE` | on |
-| `emails` | `EMAIL_ADDRESS` | on |
-| `phones` | `PHONE_NUMBER` | off (bare shapes false-positive) |
-| `network` | `IP_ADDRESS`, `MAC_ADDRESS` | on |
-| `credentialed_urls` | `URL_WITH_CREDENTIALS`, DSNs and webhook URLs with embedded credentials (`SENTRY_DSN`, `SLACK_WEBHOOK`, `TEAMS_WEBHOOK`, `DISCORD_WEBHOOK`), `AZURE_CONNECTION_STRING` | on |
+| `credentials` | 152 entities: vendor tokens, keyword-anchored secrets (`aws_secret_access_key = …`, `password: …`), `SECRET_FIELD` (JSON-key force-redaction), `CREDENTIAL_FILE`, credentialed URLs and connection strings (`URL_WITH_CREDENTIALS`, `AZURE_CONNECTION_STRING`, webhooks …) | on (every member) |
+| `identity_documents` | 38 national-ID and healthcare-ID entities (SSN, passports, Medicare …) | off (every member) |
+| `person_data` | `EMAIL_ADDRESS` on; `PHONE_NUMBER`, `PERSON`, `LOCATION`, `ORGANIZATION` off | mixed |
 | `financial` | `CREDIT_CARD`, `IBAN_CODE` on; routing numbers, `CRYPTO` off | mixed |
-| `identity_documents` | national IDs, healthcare IDs (SSN, passports, Medicare …) | off |
-| `personal_details` | `PERSON`, `LOCATION`, `ORGANIZATION` | off |
+| `environment` | `LOCAL_PATH`, `IP_ADDRESS`, `MAC_ADDRESS` | on (every member) |
 
-Category membership is **not a stable wire contract**: members can move
-between categories (e.g. the webhook/DSN detectors moved `secrets` →
-`credentialed_urls` in this release) when a grouping better matches the
-threat class. Stored policies keyed per **entity** keep their exact
-meaning across upgrades; policies keyed per **category** follow the new
-grouping silently — if you need stability, key entities.
+The five labels are grouping and display metadata. The relabel preserves
+entity names, tier meanings and every per-entity default. Detectors and
+redaction mechanics are unchanged; `local_paths` was the only split
+bucket: its path entity joins `environment` while credential-file entities
+join `credentials`.
 
 ### Removed names
 
@@ -62,7 +57,7 @@ policy-UI console fetches the tagged raw file from this repo.
 ```jsonc
 {
   "redaction": {
-    "categories": { "network": "off" },            // whole category on/off
+    "categories": { "environment": "off" },        // whole category on/off
     "entities": { "FLY_IO_TOKEN": "off",           // per-entity override
                   "PHONE_NUMBER": "on" },
     "customEntities": [                            // user-defined regex entity
@@ -98,8 +93,10 @@ Rules (violations throw locally, drop-in-managed — see below): name
 removed entities above are free for reuse — the engine detectors behind
 them stay permanently excluded); category from the list above; pattern ≤
 512 chars compiling as a JS RegExp; flags ⊆ `imsu`; at most 50 entries.
-`secretGroup` ≥ 1 replaces only that capture group (the rest of the match
-is anchoring context), mirroring the built-in anchored patterns.
+A positive `secretGroup` replaces only that capture group (the rest of the
+match is anchoring context), mirroring the built-in anchored patterns. An
+absent or zero `secretGroup` replaces the whole match; both normalize to the
+same unset value before pattern execution.
 Quantified groups containing alternation or a nested quantifier —
 `(a|a)*`, `(a+)+`, `(\d{2,})*` — are rejected: these backtrack
 exponentially, the scan cannot time them out (regex runs synchronously),
@@ -119,8 +116,10 @@ local.entities[E]    → local.categories[cat(E)]  → registry default
 
 - Unknown categories/entities and invalid custom entries from the platform
   are **dropped** with one log line (a harness predates the vocabulary the
-  platform ships; dropping is fail-open and cannot silently switch
-  redaction off).
+  platform ships; dropping leaves registry defaults intact). Before retiring
+  an old category label, migrate any stored category overrides to per-entity
+  states: dropping an override that explicitly enabled a default-off member
+  would lose that explicit intent; the remaining defaults stay in force.
 - The org policy is fetched at session startup, so managed changes apply to
   **new sessions**; local settings.json edits apply mid-session.
 - Under an org FORCE_* resource lock on `extensions.pii-redaction`, the
@@ -140,6 +139,8 @@ the bare engine detector. It cannot be combined with
 ## Telemetry
 
 `pii_redaction.redacted` records carry a `category` attribute derived from
-the pass's policy view (`emails`, `secrets`, …; `custom` when the marker
-has no catalog attribution), so dashboards can group redactions by the same
-unit admins toggle. See `docs/event-bus.md` §9.
+the pass's policy view (`credentials`, `person_data`, …; `custom` when the
+marker has no catalog attribution), so dashboards can group redactions by
+the same unit admins toggle. The five-label relabel starts a new series at
+the release boundary; existing `secrets`, `emails` and other previous
+attributes are not renamed retroactively. See `docs/event-bus.md` §9.

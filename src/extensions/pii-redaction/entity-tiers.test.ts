@@ -51,6 +51,56 @@ function markerTypesOf(text: string): Set<string> {
 	return new Set([...text.matchAll(MARKER)].map((m) => m[1] as string))
 }
 
+// The pre-relabel defaults: exact per-entity OFF set, deliberately not
+// computed from the registry being tested.
+const EXPECTED_DEFAULT_OFF_ENTITIES = new Set([
+	"ABA_ROUTING_NUMBER",
+	"AU_ABN",
+	"AU_ACN",
+	"AU_MEDICARE",
+	"AU_TFN",
+	"CRYPTO",
+	"DE_PASSPORT",
+	"DE_TAX_ID",
+	"ES_NIE",
+	"ES_NIF",
+	"FI_PERSONAL_IDENTITY_CODE",
+	"IN_AADHAAR",
+	"IN_PAN",
+	"IN_PASSPORT",
+	"IN_VEHICLE_REGISTRATION",
+	"IN_VOTER",
+	"IT_DRIVER_LICENSE",
+	"IT_FISCAL_CODE",
+	"IT_IDENTITY_CARD",
+	"IT_PASSPORT",
+	"IT_VAT_CODE",
+	"KR_PASSPORT",
+	"KR_RRN",
+	"LOCATION",
+	"MEDICAL_LICENSE",
+	"NG_NIN",
+	"ORGANIZATION",
+	"PERSON",
+	"PHONE_NUMBER",
+	"PL_PESEL",
+	"SE_PERSONNUMMER",
+	"SG_NRIC_FIN",
+	"SG_UEN",
+	"TH_TNIN",
+	"UK_NHS",
+	"UK_NINO",
+	"UK_PASSPORT",
+	"UK_VEHICLE_REGISTRATION",
+	"US_BANK_NUMBER",
+	"US_DRIVER_LICENSE",
+	"US_ITIN",
+	"US_MBI",
+	"US_NPI",
+	"US_PASSPORT",
+	"US_SSN",
+])
+
 describe("entity tier registry", () => {
 	it("default exclusions cover bare shapes (minus keep-list) and anchor-required, not checksum/anchored", () => {
 		const excluded = new Set(getDefaultExcludedEntities())
@@ -217,10 +267,21 @@ describe("entity tier registry", () => {
 			expect(listRegisteredEntities(), removed).not.toContain(removed)
 			expect(PERMANENT_ENGINE_EXCLUSIONS, removed).toContain(removed)
 		}
-		// Nine categories, all populated.
-		expect(REDACTION_CATEGORIES).toHaveLength(9)
-		for (const category of REDACTION_CATEGORIES) {
-			expect(catalog.filter((e) => e.category === category).length, category).toBeGreaterThan(0)
+		// Five categories, with the exact 203-entity distribution.
+		expect(REDACTION_CATEGORIES).toHaveLength(5)
+		expect(
+			Object.fromEntries(
+				REDACTION_CATEGORIES.map((category) => [category, catalog.filter((e) => e.category === category).length]),
+			),
+		).toEqual({
+			credentials: 152,
+			identity_documents: 38,
+			person_data: 5,
+			financial: 5,
+			environment: 3,
+		})
+		for (const entry of catalog) {
+			expect(entry.defaultOn, entry.entity).toBe(!EXPECTED_DEFAULT_OFF_ENTITIES.has(entry.entity))
 		}
 	})
 
@@ -256,20 +317,21 @@ describe("entity tier registry", () => {
 		]) {
 			expect(getEntityDefaultOn(name), name).toBe(false)
 		}
-		// Category spot checks across the nine buckets.
-		expect(getEntityCategory("EMAIL_ADDRESS")).toBe("emails")
-		expect(getEntityCategory("PHONE_NUMBER")).toBe("phones")
-		expect(getEntityCategory("IP_ADDRESS")).toBe("network")
-		expect(getEntityCategory("LOCAL_PATH")).toBe("local_paths")
+		// Category spot checks across the five buckets.
+		expect(getEntityCategory("EMAIL_ADDRESS")).toBe("person_data")
+		expect(getEntityCategory("PHONE_NUMBER")).toBe("person_data")
+		expect(getEntityCategory("IP_ADDRESS")).toBe("environment")
+		expect(getEntityCategory("MAC_ADDRESS")).toBe("environment")
+		expect(getEntityCategory("LOCAL_PATH")).toBe("environment")
+		expect(getEntityCategory("CREDENTIAL_FILE")).toBe("credentials")
 		expect(getEntityCategory("CREDIT_CARD")).toBe("financial")
 		expect(getEntityCategory("US_SSN")).toBe("identity_documents")
-		expect(getEntityCategory("US_NPI")).toBe("identity_documents")
-		expect(getEntityCategory("PERSON")).toBe("personal_details")
-		expect(getEntityCategory("URL_WITH_CREDENTIALS")).toBe("credentialed_urls")
-		expect(getEntityCategory("GITHUB_TOKEN")).toBe("secrets")
-		expect(getEntityCategory("AZURE_CONNECTION_STRING")).toBe("credentialed_urls")
-		expect(getEntityCategory("SLACK_WEBHOOK")).toBe("credentialed_urls")
-		expect(getEntityCategory("SENTRY_DSN")).toBe("credentialed_urls")
+		expect(getEntityCategory("PERSON")).toBe("person_data")
+		expect(getEntityCategory("URL_WITH_CREDENTIALS")).toBe("credentials")
+		expect(getEntityCategory("GITHUB_TOKEN")).toBe("credentials")
+		expect(getEntityCategory("AZURE_CONNECTION_STRING")).toBe("credentials")
+		expect(getEntityCategory("SLACK_WEBHOOK")).toBe("credentials")
+		expect(getEntityCategory("SENTRY_DSN")).toBe("credentials")
 		// Removed from the registry entirely — see the removed-names block.
 		for (const removed of [
 			"GUID",
@@ -349,7 +411,7 @@ describe("entity tier registry", () => {
 			expect(isKnownEntity(name), name).toBe(false)
 			expect(PERMANENT_ENGINE_EXCLUSIONS, name).toContain(name)
 		}
-		// Chunk-5 promotions: these now have their own anchored customs.
+		// Both connection-string entities have their own anchored custom coverage.
 		expect(byName.get("AZURE_CONNECTION_STRING")?.liveState).toBe("active")
 		expect(byName.get("DATABASE_CONNECTION_STRING")?.liveState).toBe("active")
 		// Re-tiered from bare_shape: their keyword-anchored customs carry

@@ -1291,7 +1291,7 @@ export interface RedactionReport {
 	entities: Record<string, number>
 	/**
 	 * Category attribution for the tallied entities (entity → category key,
-	 * e.g. EMAIL_ADDRESS → "emails"), resolved from the pass's policy view.
+	 * e.g. EMAIL_ADDRESS → "person_data"), resolved from the pass's policy view.
 	 *
 	 */
 	categories: Record<string, string>

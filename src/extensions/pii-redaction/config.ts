@@ -20,7 +20,7 @@
  *
  *   Policy (LLM-4416):
  *     { "redaction": {
- *         "categories": { "network": "off" },
+ *         "categories": { "environment": "off" },
  *         "entities": { "PHONE_NUMBER": "on" },
  *         "customEntities": [{ "name": "ACME_ID", "category": "identity_documents",
  *                              "pattern": "…", "flags"?, "secretGroup"? }] } }

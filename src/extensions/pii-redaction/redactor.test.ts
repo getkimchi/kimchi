@@ -8,6 +8,7 @@ import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { getResourceSettingsPath, setResourceOverride } from "../../resources/store.js"
 import { getRedactionConfig } from "./config.js"
 import { getDefaultExcludedEntities, PERMANENT_ENGINE_EXCLUSIONS } from "./entity-tiers.js"
+import { parseManagedPolicy, resolveRedactionPolicy } from "./policy.js"
 import {
 	applyCustomPatterns,
 	collectDetections,
@@ -668,6 +669,77 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 	})
 })
 
+describe("custom entity capture-group normalization", () => {
+	it("redacts the whole match for a managed secretGroup of zero", () => {
+		const managed = parseManagedPolicy({
+			customEntities: [
+				{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}", secretGroup: 0 },
+			],
+		})
+		expect(managed?.customEntities?.[0].secretGroup).toBeUndefined()
+		const resolved = resolveRedactionPolicy(managed)
+		expect(resolved.customPatterns[0].secretGroup).toBeUndefined()
+
+		const onMatch = vi.fn()
+		const result = applyCustomPatterns("employee E123456", new Set(), onMatch, resolved.customPatterns)
+		expect(result).toBe("employee [REDACTED-ACME_EMPLOYEE_ID]")
+		expect(onMatch).toHaveBeenCalledWith({ name: "ACME_EMPLOYEE_ID", secret: "E123456" })
+	})
+
+	it("redacts the whole match for a secretGroup of zero even when the pattern has groups", () => {
+		const managed = parseManagedPolicy({
+			customEntities: [
+				{
+					name: "ACME_EMPLOYEE_ID",
+					category: "identity_documents",
+					pattern: "(E\\d{6})(-tail)",
+					secretGroup: 0,
+				},
+			],
+		})
+		const resolved = resolveRedactionPolicy(managed)
+		const onMatch = vi.fn()
+		const result = applyCustomPatterns("E123456-tail", new Set(), onMatch, resolved.customPatterns)
+		expect(result).toBe("[REDACTED-ACME_EMPLOYEE_ID]")
+		expect(onMatch).toHaveBeenCalledWith({ name: "ACME_EMPLOYEE_ID", secret: "E123456-tail" })
+	})
+
+	it("normalizes a zero secretGroup alongside flags to whole-match replacement", () => {
+		const managed = parseManagedPolicy({
+			customEntities: [
+				{
+					name: "ACME_EMPLOYEE_ID",
+					category: "identity_documents",
+					pattern: "e\\d{6}",
+					flags: "i",
+					secretGroup: 0,
+				},
+			],
+		})
+		const resolved = resolveRedactionPolicy(managed)
+		const onMatch = vi.fn()
+		const result = applyCustomPatterns("employee E123456", new Set(), onMatch, resolved.customPatterns)
+		expect(result).toBe("employee [REDACTED-ACME_EMPLOYEE_ID]")
+		expect(onMatch).toHaveBeenCalledWith({ name: "ACME_EMPLOYEE_ID", secret: "E123456" })
+	})
+
+	it("keeps capture group 1 as a value-only replacement", () => {
+		const managed = parseManagedPolicy({
+			customEntities: [
+				{
+					name: "ACME_EMPLOYEE_ID",
+					category: "identity_documents",
+					pattern: "(E\\d{6})(-tail)",
+					secretGroup: 1,
+				},
+			],
+		})
+		const resolved = resolveRedactionPolicy(managed)
+		const result = applyCustomPatterns("E123456-tail", new Set(), undefined, resolved.customPatterns)
+		expect(result).toBe("[REDACTED-ACME_EMPLOYEE_ID]-tail")
+	})
+})
+
 describe("anchored splice and re-additions — review regressions", () => {
 	beforeEach(() => resetRedactorEngine())
 	afterEach(() => resetRedactorEngine())
@@ -1051,8 +1123,23 @@ describe("settings validation failure — degrade, never silently bypass", () =>
 		expect(getRedactionConfigError()).toBeDefined()
 	})
 
+	it("a retired local category key falls back with a visible error", async () => {
+		writeSettings({ categories: { secrets: "off" } })
+		resetRedactorEngine()
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {})
+		const githubToken = ["ghp_", "Ab9c".repeat(12)].join("")
+		const result = await redactText(`mail ${fx.email} token ${githubToken}`)
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result).toContain("[REDACTED-GITHUB_TOKEN]")
+		expect(result).not.toContain(githubToken)
+		expect(String(getRedactionConfigError())).toContain("secrets")
+		expect(errorLog).toHaveBeenCalledTimes(1)
+		expect(String(errorLog.mock.calls[0][0])).toContain("secrets")
+		errorLog.mockRestore()
+	})
+
 	it("a broken local settings file does not knock out the org's own rules", async () => {
-		await setOrgPolicyForTests({ redaction: { categories: { emails: "KIMCHI_REDACTION_STATE_OFF" } } })
+		await setOrgPolicyForTests({ redaction: { categories: { person_data: "KIMCHI_REDACTION_STATE_OFF" } } })
 		writeSettings({ excludedEntities: ["SSN"] }) // unknown: real name is US_SSN
 		resetRedactorEngine()
 		const result = await redactText(`mail ${fx.email}`)
@@ -1880,7 +1967,7 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 
 	it("category OFF secrets passes tokens, anchored secrets, and SECRET_FIELD through", async () => {
 		const secret = ["opaque-prox", "y-token-99"].join("")
-		writeSettings({ categories: { secrets: "off" } })
+		writeSettings({ categories: { credentials: "off" } })
 		resetRedactorEngine()
 
 		for (const input of [
@@ -1944,7 +2031,7 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 	})
 
 	it("mixing legacy excludedEntities with the policy keys throws (fail-visible)", () => {
-		writeSettings({ excludedEntities: ["GUID"], categories: { secrets: "off" } })
+		writeSettings({ excludedEntities: ["GUID"], categories: { credentials: "off" } })
 		expect(() => getRedactionConfig()).toThrow(/cannot be combined/)
 	})
 
@@ -1966,7 +2053,7 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
 		await setOrgPolicyForTests({
 			redaction: {
-				categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+				categories: { environment: "KIMCHI_REDACTION_STATE_OFF" },
 				entities: { EMAIL_ADDRESS: "KIMCHI_REDACTION_STATE_ON" },
 			},
 		})

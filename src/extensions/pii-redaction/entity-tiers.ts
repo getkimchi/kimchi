@@ -270,8 +270,7 @@ const ANCHORED_ENTITIES = [
 	// Structured secrets (signature in shape)
 	"JWT_TOKEN", // eyJ… . … . … triplet
 	"BEARER_TOKEN",
-	// Webhook/DSN URLs (secret lives in the URL) — anchored at engine level,
-	// categorized under credentialed_urls, not secrets.
+	// Webhook/DSN URLs (the secret lives inside the URL) — anchored at engine level.
 	"SENTRY_DSN",
 	"SLACK_WEBHOOK",
 	"TEAMS_WEBHOOK",
@@ -375,15 +374,11 @@ export function getDefaultExcludedEntities(): string[] {
 // explicit; the exhaustiveness test fails if tier and category maps drift.
 
 export const REDACTION_CATEGORIES = [
-	"secrets",
-	"local_paths",
-	"emails",
-	"phones",
-	"network",
-	"credentialed_urls",
-	"financial",
+	"credentials",
 	"identity_documents",
-	"personal_details",
+	"person_data",
+	"financial",
+	"environment",
 ] as const
 
 export type RedactionCategory = (typeof REDACTION_CATEGORIES)[number]
@@ -408,7 +403,7 @@ const ANCHOR_REQUIRED_WITH_CUSTOMS = [
 ] as const
 
 /** anchor_required entities with an anchored re-addition of their own — the
- * union of ANCHOR_REQUIRED_WITH_CUSTOMS (secrets members) and entities whose
+ * union of ANCHOR_REQUIRED_WITH_CUSTOMS (credentials members) and entities whose
  * custom lives under a different category (DATABASE_CONNECTION_STRING's
  * credentialed-URI custom). Used only for liveState derivation; membership
  * is pinned by test against redactor's CUSTOM_PATTERNS. */
@@ -435,20 +430,18 @@ type CategoryGroup = readonly [RedactionCategory, boolean, readonly string[]]
 
 const CATEGORY_GROUPS: readonly CategoryGroup[] = [
 	[
-		"secrets",
+		"credentials",
 		true,
 		[
-			...ANCHORED_ENTITIES.filter(
-				(name) =>
-					// credentialed_urls members anchored at engine level
-					name !== "REDIS_URL_WITH_PASSWORD" &&
-					name !== "COCKROACHDB_CONNECTION" &&
-					name !== "SENTRY_DSN" &&
-					name !== "SLACK_WEBHOOK" &&
-					name !== "TEAMS_WEBHOOK" &&
-					name !== "DISCORD_WEBHOOK",
-			),
-			...ANCHOR_REQUIRED_WITH_CUSTOMS.filter((name) => name !== "AZURE_CONNECTION_STRING"),
+			...ANCHORED_ENTITIES,
+			...ANCHOR_REQUIRED_WITH_CUSTOMS,
+			// Credential-bearing URLs and connection strings, grouped with the
+			// other secrets rather than a separate category.
+			"URL_WITH_CREDENTIALS",
+			"DATABASE_CONNECTION_STRING",
+			// File names that contain credentials belong here; coordinates
+			// themselves belong to environment.
+			"CREDENTIAL_FILE",
 			// kimchi-owned secret markers.
 			"CASTAI_API_KEY",
 			"OPENAI_API_KEY",
@@ -456,37 +449,16 @@ const CATEGORY_GROUPS: readonly CategoryGroup[] = [
 			"SECRET_FIELD",
 		],
 	],
-	["local_paths", true, ["LOCAL_PATH", "CREDENTIAL_FILE"]],
-	["emails", true, ["EMAIL_ADDRESS"]],
-	["phones", false, ["PHONE_NUMBER"]],
-	["network", true, ["IP_ADDRESS", "MAC_ADDRESS"]],
-	// DATABASE_CONNECTION_STRING fires via its credentialed-URI custom (userinfo
-	// redacted); the bare scheme shape stays engine-excluded, so a DSN without
-	// credentials is never marked.
-	[
-		"credentialed_urls",
-		true,
-		[
-			"URL_WITH_CREDENTIALS",
-			"REDIS_URL_WITH_PASSWORD",
-			"COCKROACHDB_CONNECTION",
-			"DATABASE_CONNECTION_STRING",
-			"AZURE_CONNECTION_STRING",
-			// Secrets that live inside a URL — same construction as the connection strings.
-			"SENTRY_DSN",
-			"SLACK_WEBHOOK",
-			"TEAMS_WEBHOOK",
-			"DISCORD_WEBHOOK",
-		],
-	],
-	["financial", true, ["CREDIT_CARD", "IBAN_CODE"]],
-	["financial", false, ["ABA_ROUTING_NUMBER", "US_BANK_NUMBER", "CRYPTO"]],
 	[
 		"identity_documents",
 		false,
 		BARE_SHAPE_NATIONAL_IDS.filter((name) => name !== "ABA_ROUTING_NUMBER" && name !== "US_BANK_NUMBER"),
 	],
-	["personal_details", false, ["PERSON", "LOCATION", "ORGANIZATION"]],
+	["person_data", true, ["EMAIL_ADDRESS"]],
+	["person_data", false, ["PHONE_NUMBER", "PERSON", "LOCATION", "ORGANIZATION"]],
+	["financial", true, ["CREDIT_CARD", "IBAN_CODE"]],
+	["financial", false, ["ABA_ROUTING_NUMBER", "US_BANK_NUMBER", "CRYPTO"]],
+	["environment", true, ["LOCAL_PATH", "IP_ADDRESS", "MAC_ADDRESS"]],
 ]
 
 interface CategoryEntry {
