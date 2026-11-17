@@ -167,6 +167,8 @@ import {
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
+import { CANONICAL_THINKING_LEVELS, thinkingLevelName } from "../../thinking-levels.js"
+import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -180,9 +182,16 @@ import {
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
 } from "./capabilities.js"
-import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
+import {
+	COMPACT_COMMAND_ENTRY_TYPE,
+	composeAvailableCommands,
+	createCommandsRefresher,
+	discoverSkillCommandsMap,
+	isCompactCommandEntryData,
+	tryParseCompactCommand,
+} from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
-import { handleCompact } from "./ext-methods/compact.js"
+import { type CompactResponse, handleCompact } from "./ext-methods/compact.js"
 import { handleCompactAbort } from "./ext-methods/compact-abort.js"
 import { handleFeedback } from "./ext-methods/feedback.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
@@ -1149,6 +1158,10 @@ export class KimchiAcpAgent implements Agent {
 				await this.doSetModel(record, params.value ? `${params.value}` : "")
 				break
 			}
+			case "reasoning_effort": {
+				this.doSetThinkingLevel(record, params.value ? `${params.value}` : "")
+				break
+			}
 			default:
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
@@ -1174,6 +1187,27 @@ export class KimchiAcpAgent implements Agent {
 		persistPermissionModeIfChanged(sessionManager, (...args) => sessionManager.appendCustomEntry(...args), state)
 		setPermissionMode(sessionId, state)
 		return permissionMode
+	}
+
+	/** Apply a reasoning_effort set request; the value must be one of the
+	 *  advertised (model-curated) levels. */
+	private doSetThinkingLevel(record: SessionRecord, value: string): void {
+		const { session } = record
+		// The option is not advertised without a model, so a set in that state is invalid.
+		if (!session.model) {
+			throw RequestError.invalidParams(undefined, "no model is selected for this session")
+		}
+		const selection = thinkingSelection(session.model)
+		if (selection.mode !== "levels" || selection.selectable.length === 0) {
+			throw RequestError.invalidParams(undefined, "the current model offers no selectable thinking levels")
+		}
+		if (!isCanonicalThinkingLevel(value) || !selection.selectable.includes(value)) {
+			throw RequestError.invalidParams(
+				undefined,
+				`invalid thinking level "${value}". available levels: ${selection.selectable.join(", ")}`,
+			)
+		}
+		session.setThinkingLevel(value)
 	}
 
 	private async doSetModel(record: SessionRecord, value: string): Promise<string> {
@@ -1212,34 +1246,43 @@ export class KimchiAcpAgent implements Agent {
 				// Pi's setModel only throws "if no auth is configured for the model"
 				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
 			}
-			return value
-		}
+		} else {
+			const parsed = splitModelRef(value)
+			if (!parsed) {
+				throw RequestError.invalidParams(
+					undefined,
+					`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
+				)
+			}
+			const target = findModelByRef(modelRegistry, value)
+			if (!target) {
+				throw RequestError.invalidParams(
+					undefined,
+					`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
+				)
+			}
 
-		const parsed = splitModelRef(value)
-		if (!parsed) {
-			throw RequestError.invalidParams(
-				undefined,
-				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
-			)
+			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
+			setMultiModelEnabled(sessionId, false)
+			try {
+				// An explicit client request to change the model, so save it as the default.
+				await session.setModel(target, { persist: true })
+			} catch {
+				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+				// Pi's setModel only throws "if no auth is configured for the model"
+				throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
+			}
 		}
-		const target = findModelByRef(modelRegistry, value)
-		if (!target) {
-			throw RequestError.invalidParams(
-				undefined,
-				`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
-			)
-		}
-
-		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
-		setMultiModelEnabled(sessionId, false)
-		try {
-			// An explicit client request to change the model, so save it as the default.
-			await session.setModel(target, { persist: true })
-		} catch {
-			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
-			// Pi's setModel only throws "if no auth is configured for the model"
-			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
-		}
+		// Both entry points advertise refreshed options here: the model-dependent
+		// reasoning_effort set changes with the model, and unstable_setSessionModel's
+		// legacy wire shape returns {}, so those clients can only learn it via push.
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "config_option_update",
+				configOptions: buildConfigOptions(session, this.getInitialPermissionMode(session).mode),
+			},
+		})
 		return value
 	}
 
@@ -1544,6 +1587,19 @@ export class KimchiAcpAgent implements Agent {
 			// state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
 		}
+		// A prompt consisting of exactly one text block that starts with
+		// "/compact" invokes the locally-handled compaction command
+		// (advertised in availableCommands) instead of a model turn: parse per
+		// the ACP command contract (exact name, whitespace or end), then drive
+		// the same handler as the _kimchi.dev/compact ext method. A prompt
+		// carrying anything else — further text blocks, attachments — falls
+		// through to the model: silently dropping the extra content would
+		// leave the user with no signal it was ignored.
+		const singleTextBlock = params.prompt.length === 1 && params.prompt[0]?.type === "text"
+		const compactCommand = singleTextBlock ? tryParseCompactCommand(text) : undefined
+		if (compactCommand) {
+			return await this.runCompactCommand(params.sessionId, text, compactCommand, pending)
+		}
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
@@ -1610,6 +1666,44 @@ export class KimchiAcpAgent implements Agent {
 			},
 		)
 		return result
+	}
+
+	/** Run the locally-handled /compact command: persist the raw command text
+	 *  as a metadata-only custom entry so a session/load replay can re-surface
+	 *  it (the prompt is intercepted locally, so no session message records
+	 *  it — same pattern as the bash-background settle rows), drive the same
+	 *  handler as the _kimchi.dev/compact ext method (progress streams through
+	 *  agent_activity, the usage gauge refreshes via compaction_end) and report
+	 *  the outcome as an assistant message — the same locally-decided-outcome
+	 *  pattern as the vision gate. No live user_message_chunk echo: commands
+	 *  arrive as regular user messages, which clients render when the prompt
+	 *  is sent. */
+	private async runCompactCommand(
+		sessionId: string,
+		rawText: string,
+		args: { instructions?: string },
+		pending: PendingPrompt,
+	): Promise<PromptResponse> {
+		if (pending.cancelled) return { stopReason: "cancelled" }
+		// Written BEFORE the compaction runs so the record survives even if the
+		// session dies mid-compaction. Any outcome still belongs in the log: the
+		// user issued the command whether it compacted, failed, or was aborted.
+		this.sessions.get(sessionId)?.session.sessionManager.appendCustomEntry(COMPACT_COMMAND_ENTRY_TYPE, {
+			text: rawText,
+		})
+		const outcome = await handleCompact((id) => this.getSessionTurnTarget(id), {
+			sessionId,
+			instructions: args.instructions,
+		})
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "agent_message_chunk",
+				messageId: `km.${randomUUID()}`,
+				content: { type: "text", text: compactOutcomeText(outcome) },
+			},
+		})
+		return { stopReason: outcome.status === "cancelled" ? "cancelled" : "end_turn" }
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
@@ -2853,8 +2947,10 @@ export class KimchiAcpAgent implements Agent {
 	// instead of buildSessionContext() avoids surfacing compaction summaries
 	// as synthetic user messages. Custom entries: the artifact-recorder
 	// extension's rows are adopted as the turn's exact artifacts (recorded
-	// live, stat-gated), replacing replay-side re-derivation; other custom
-	// entries still emit nothing.
+	// live, stat-gated), replacing replay-side re-derivation; compact-command
+	// rows re-emit their persisted text as a user message (the locally-handled
+	// command never became a session message); other custom entries still emit
+	// nothing.
 	//
 	// Notifications go straight from this method to conn.sessionUpdate; we do
 	// NOT replay through the AgentSession event emitter, so extensions like
@@ -2883,11 +2979,27 @@ export class KimchiAcpAgent implements Agent {
 
 		for (const entry of entries) {
 			if (entry && entry.type === "custom") {
+				const custom = entry as { customType?: unknown; data?: unknown }
+				if (custom.customType === COMPACT_COMMAND_ENTRY_TYPE && isCompactCommandEntryData(custom.data)) {
+					// A locally-handled /compact command never became a session
+					// message, so re-surface it here as the user message the client
+					// rendered when it sent the prompt (no live echo — see
+					// runCompactCommand). Positioned like any user turn boundary:
+					// the previous turn's artifacts flush before it.
+					flushTurnArtifacts()
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "user_message_chunk",
+							content: { type: "text", text: this.displayText(sessionId, custom.data.text) },
+						},
+					})
+					continue
+				}
 				// Recorded artifact row (extension): adopt it for this turn — the
 				// row is written once per prompt (at agent_settled), after the
 				// prompt's last assistant message (live parity), and replaces what re-derivation sniffed
 				// (exact: live detection was stat-gated).
-				const custom = entry as { customType?: unknown; data?: unknown }
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
 				if (data?.v === 1 && Array.isArray(data.artifacts)) artifactBuffer.adoptRecorded(data.artifacts)
@@ -3859,6 +3971,45 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	}
 }
 
+const CANONICAL_THINKING_LEVEL_SET = new Set<string>(CANONICAL_THINKING_LEVELS)
+
+/** Runtime proof that a requested thinking level is one of pi's canonical
+ *  levels. Selectable sets are built from curated levels and pi's map keys —
+ *  both canonical — but typed as plain strings, so narrowing to the
+ *  setThinkingLevel parameter needs this guard instead of a call-site cast. */
+function isCanonicalThinkingLevel(value: string): value is AgentSession["thinkingLevel"] {
+	return CANONICAL_THINKING_LEVEL_SET.has(value)
+}
+
+/**
+ * Builds the SessionConfigOption for the session's thinking level — the
+ * control ACP clients render as their reasoning-effort picker (JetBrains Air
+ * binds its native effort control to the `reasoning_effort` configId).
+ * Selectable values match the TUI's /thinking selector (thinking-selection.ts);
+ * a model with nothing selectable gets NO option rather than a dead one-value
+ * selector — clients hide what they are not given. currentValue is rank-clamped
+ * into the selection so the advertised value is always one of options.
+ */
+export type AgentSessionThinkingConfig = Pick<AgentSession, "model" | "thinkingLevel">
+
+export function buildThinkingConfigOption(session: AgentSessionThinkingConfig): SessionConfigOption | null {
+	if (!session.model) return null
+	const selection = thinkingSelection(session.model)
+	if (selection.mode !== "levels" || selection.selectable.length === 0) return null
+	return {
+		id: "reasoning_effort",
+		name: "Reasoning Effort",
+		type: "select",
+		category: "thought_level",
+		description: "How much the model reasons before answering. Available levels depend on the selected model.",
+		currentValue: clampToSelection(session.thinkingLevel, selection),
+		options: selection.selectable.map((level) => ({
+			value: level,
+			name: thinkingLevelName(level),
+		})),
+	}
+}
+
 /**
  * The routed virtual rows' composite name within a built option list, or
  * undefined when the catalog has none. The `model` option's `name` is the
@@ -3878,7 +4029,32 @@ function autoOptionName(configOptions: SessionConfigOption[]): string | undefine
 
 function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
 	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
-	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+	const thinking = buildThinkingConfigOption(session)
+	if (thinking) options.push(thinking)
+	return options
+}
+
+/** The assistant-facing text for a /compact command outcome. Trailing blank
+ *  line keeps the message visually separate when a client concatenates
+ *  chunks — same convention as the vision-gate warning.
+ *
+ *  Deliberately omits the compaction summary: a completed compaction reports
+ *  a one-line status ("Context compacted from N tokens.") mirroring the
+ *  TUI's collapsed-by-default `[compaction]` row (Compacted from N tokens —
+ *  expand to read the summary). ACP chat surfaces have no expand affordance,
+ *  so printing the full summary inline would dump a long document into the
+ *  transcript on every manual compaction; neither Claude Code nor Studio do
+ *  that. The summary still reaches interested clients programmatically via
+ *  the _kimchi.dev/compact ext-method response, and the runtime keeps it in
+ *  the compaction entry itself. */
+function compactOutcomeText(outcome: CompactResponse): string {
+	if (outcome.status === "completed") {
+		const counts =
+			typeof outcome.tokensBefore === "number" ? ` from ${outcome.tokensBefore.toLocaleString("en-US")} tokens` : ""
+		return `Context compacted${counts}.\n\n`
+	}
+	return `Compaction ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""}\n\n`
 }
 
 // Checks model PRESENCE only — pi resolves a non-null model object even on

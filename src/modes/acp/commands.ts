@@ -24,6 +24,13 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		},
 	},
 	{
+		name: "compact",
+		description: SLASH_COMMANDS.compact.hint,
+		input: {
+			hint: "Optional guidance for what to keep in the summary.",
+		},
+	},
+	{
 		name: "language",
 		description: SLASH_COMMANDS.language.hint,
 		input: {
@@ -31,6 +38,52 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		},
 	},
 ]
+
+/**
+ * Custom session-log entry recording a /compact command invocation.
+ *
+ * The command prompt is intercepted locally (it never reaches the model and
+ * creates no turn), so nothing lands in the session's message history — and
+ * a session/load replay would have no trace the command ever ran. The raw
+ * prompt text is persisted as a metadata-only `type: "custom"` entry (same
+ * pattern as the bash-background settle rows): it never enters model
+ * context, but replay re-emits it as the user_message_chunk the client
+ * rendered when the prompt was sent.
+ */
+export const COMPACT_COMMAND_ENTRY_TYPE = "compact-command"
+
+/** Persisted payload of a compact-command entry: the raw prompt text exactly
+ *  as the client sent it ("/compact" or "/compact <instructions>"), replayed
+ *  verbatim. */
+export interface CompactCommandEntryData {
+	text: string
+}
+
+/** Recognition guard for a persisted compact-command payload — transcript
+ *  entries are untrusted IO, so replay validates before consuming. */
+export function isCompactCommandEntryData(data: unknown): data is CompactCommandEntryData {
+	return typeof data === "object" && data !== null && typeof (data as { text?: unknown }).text === "string"
+}
+
+/**
+ * Parse a prompt invoking the compaction command: "/compact" alone or
+ * "/compact <free-text instructions>" (the text after the command maps onto
+ * compact()'s customInstructions). Follows the ACP command contract — the
+ * name must be followed by whitespace or the end of the block, so
+ * "/compactfoo" is NOT the command and stays an ordinary prompt. Returns
+ * undefined for anything else.
+ */
+export function tryParseCompactCommand(text: string): { instructions?: string } | undefined {
+	const name = "/compact"
+	if (!text.startsWith(name)) return undefined
+	// Any whitespace (space, tab, newline) separates the name from the
+	// instructions — palette input is space-separated, but a typed prompt
+	// may carry e.g. a trailing newline before free-text instructions.
+	const separator = text.charAt(name.length)
+	if (separator !== "" && !/\s/.test(separator)) return undefined
+	const instructions = text.slice(name.length).trim()
+	return instructions ? { instructions } : {}
+}
 
 /** Full session palette: static commands first, then skill commands. */
 export function composeAvailableCommands(skillCommands: ReadonlyMap<string, AcpSkillInfo>): AvailableCommand[] {

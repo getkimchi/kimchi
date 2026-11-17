@@ -41,7 +41,9 @@ describe("clientCwd", () => {
 			// cwd given as real path, file as alias path → contained.
 			expect(clientCwd(path.join(alias, "foo.ts"), real)).toBe(real)
 		} finally {
-			rmSync(alias, { force: true })
+			// recursive: Node ≥24 throws ERR_FS_EISDIR for a non-recursive rm of a
+			// symlink-to-directory; recursive still removes the link itself only.
+			rmSync(alias, { force: true, recursive: true })
 			rmSync(real, { recursive: true, force: true })
 		}
 	})
