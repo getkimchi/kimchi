@@ -951,8 +951,9 @@ export class KimchiAcpAgent implements Agent {
 	 *    X-CastAi-Organization-Id (covers the cached-fallback path too).
 	 * 4. Fan the org-scoped credential out to every Kimchi-managed provider in
 	 *    models.json (sub-providers resolve auth per provider id).
-	 * 5. Clear stale marks — auth_status flips back — and refresh every OPEN
-	 *    session's ModelRuntime snapshot (same rationale as authenticate()).
+	 * 5. Refresh every OPEN session's ModelRuntime snapshot (same rationale as
+	 *    authenticate()). updateModelsConfig already clears stale marks only
+	 *    after an authenticated fetch; the settle tail must not clear a cached-401 fallback.
 	 */
 	private async settleSsoCredential(credential: OAuthCredentials, org: KimchiOrganization): Promise<void> {
 		clearApiKey()
@@ -973,7 +974,6 @@ export class KimchiAcpAgent implements Agent {
 			orgId: org.id,
 			orgName: org.name,
 		})
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
 		await Promise.all(
 			[...this.sessions.values()].map((record) =>
 				record.session.modelRuntime.refresh({ allowNetwork: false }).catch(() => {}),

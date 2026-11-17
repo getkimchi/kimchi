@@ -1543,6 +1543,38 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(writeApiKey).not.toHaveBeenCalled()
 		})
 
+		it("preserves a rejected SSO bearer when model refresh falls back to cached models", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempAgentDir)
+			resetCredentialStalenessForTests()
+			onTestFinished(() => {
+				resetCredentialStalenessForTests()
+				vi.unstubAllEnvs()
+			})
+			// A cached fallback resolves the refresh with models after recording
+			// its 401; it is not authenticated success and must not clear the mark.
+			vi.mocked(updateModelsConfig).mockImplementationOnce(async () => {
+				markCredentialStale("castai_v1_sso-token", "kimchi-dev")
+				return { models: [] }
+			})
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await testAgent.authenticate({ methodId: "kimchi-sso-us" })
+
+			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(true)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(true)
+		})
+
 		it("authenticates with the plain kimchi-sso method against the configured region", async () => {
 			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
 			vi.stubEnv("KIMCHI_REGION", "eu")
