@@ -70,9 +70,10 @@ test("background agents keep running across /branch and complete in the branch",
 			await waitForText(terminal, "[kimchi-session-branch]", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("branch box rendered")
 
-			// The branch notice ("Branch created — N background agent(s) still running")
-			// is a transient toast — its text is pinned by the branch-command unit
-			// tests; the e2e asserts the durable surface instead.
+			// The adoption toast ("N background agent(s) continue running from the
+			// previous session") is a transient notification — its text is pinned
+			// by the index.test.ts unit tests; the e2e asserts the durable
+			// surfaces instead.
 
 			// The adopted agent's widget row keeps rendering in the branched session.
 			await waitForText(terminal, "Explore", { timeoutMs: STARTUP_TIMEOUT_MS })

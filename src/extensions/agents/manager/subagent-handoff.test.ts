@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { AgentRecord } from "../personas/types.js"
 import type { AgentHandoff } from "./subagent-handoff.js"
-import { abortStagedHandoff, clearHandoff, peekHandoff, stageHandoff, takeHandoffFor } from "./subagent-handoff.js"
+import {
+	abortAllStagedHandoffs,
+	abortStagedHandoff,
+	clearHandoff,
+	peekHandoff,
+	stageHandoff,
+	takeHandoffFor,
+} from "./subagent-handoff.js"
 
 function makeHandoff(fromSessionFile: string | undefined): AgentHandoff {
 	const record = {
@@ -25,6 +32,11 @@ function makeHandoff(fromSessionFile: string | undefined): AgentHandoff {
 	}
 }
 
+function withAbort(handoff: AgentHandoff, abort: () => void): AgentHandoff {
+	handoff.records = [{ ...handoff.records[0]!, abortController: { abort, signal: undefined } as never }]
+	return handoff
+}
+
 afterEach(() => {
 	clearHandoff()
 })
@@ -33,7 +45,7 @@ describe("subagent handoff slot", () => {
 	it("stages and peeks without claiming", () => {
 		const handoff = makeHandoff("/old/session.jsonl")
 		stageHandoff(handoff)
-		expect(peekHandoff()).toBe(handoff)
+		expect(peekHandoff("/old/session.jsonl")).toBe(handoff)
 	})
 
 	it("claims on a matching previousSessionFile and clears the slot", () => {
@@ -41,89 +53,92 @@ describe("subagent handoff slot", () => {
 		stageHandoff(handoff)
 		const claimed = takeHandoffFor("/old/session.jsonl")
 		expect(claimed).toBe(handoff)
-		expect(peekHandoff()).toBeUndefined()
+		expect(peekHandoff("/old/session.jsonl")).toBeUndefined()
 	})
 
 	it("retains the slot when previousSessionFile does not match", () => {
 		const handoff = makeHandoff("/old/session.jsonl")
 		stageHandoff(handoff)
 		expect(takeHandoffFor("/some/other/session.jsonl")).toBeUndefined()
-		expect(peekHandoff()).toBe(handoff)
+		expect(peekHandoff("/old/session.jsonl")).toBe(handoff)
 	})
 
 	it("never claims with an undefined previousSessionFile", () => {
 		stageHandoff(makeHandoff("/old/session.jsonl"))
 		expect(takeHandoffFor(undefined)).toBeUndefined()
-		expect(peekHandoff()).toBeDefined()
-	})
-
-	it("never claims a handoff staged without a lineage key", () => {
-		// A handoff with no fromSessionFile has no verifiable lineage —
-		// it must not be claimed by a boot with no previous file either.
-		stageHandoff(makeHandoff(undefined))
-		expect(takeHandoffFor(undefined)).toBeUndefined()
-		expect(takeHandoffFor("/old/session.jsonl")).toBeUndefined()
-	})
-
-	it("replaces a stale handoff on re-stage", () => {
-		const first = makeHandoff("/old/session.jsonl")
-		stageHandoff(first)
-		const second = makeHandoff("/other/session.jsonl")
-		stageHandoff(second)
-		expect(peekHandoff()).toBe(second)
-		// The stale first handoff is gone — the replacement of /old cannot
-		// claim it anymore.
-		expect(takeHandoffFor("/old/session.jsonl")).toBeUndefined()
-		expect(takeHandoffFor("/other/session.jsonl")).toBe(second)
-	})
-
-	it("clearHandoff drops any staged handoff", () => {
-		stageHandoff(makeHandoff("/old/session.jsonl"))
-		clearHandoff()
-		expect(peekHandoff()).toBeUndefined()
-		expect(takeHandoffFor("/old/session.jsonl")).toBeUndefined()
+		expect(peekHandoff("/old/session.jsonl")).toBeDefined()
 	})
 
 	it("refuses to stage a handoff without a lineage key and aborts its records", () => {
 		const abort = vi.fn()
-		const handoff = makeHandoff(undefined)
-		handoff.records = [{ ...handoff.records[0]!, abortController: { abort, signal: undefined } as never }]
-		stageHandoff(handoff)
+		stageHandoff(withAbort(makeHandoff(undefined), abort))
 
 		// No lineage key → no replacement can ever claim it: abort instead of
 		// staging an unclaimable handoff.
 		expect(abort).toHaveBeenCalledTimes(1)
-		expect(peekHandoff()).toBeUndefined()
+		expect(takeHandoffFor("/old/session.jsonl")).toBeUndefined()
 	})
 
-	it("aborts the evicted handoff's records when staging a new one", () => {
-		const evicted = makeHandoff("/old/session.jsonl")
-		const abortA = vi.fn()
-		const abortB = vi.fn()
-		evicted.records = [
-			{ ...evicted.records[0]!, id: "r1", abortController: { abort: abortA, signal: undefined } as never },
-			{ ...evicted.records[0]!, id: "r2", abortController: { abort: abortB, signal: undefined } as never },
-		]
-		stageHandoff(evicted)
+	it("replaces and aborts a stale handoff only on SAME-key re-stage", () => {
+		const abortOld = vi.fn()
+		stageHandoff(withAbort(makeHandoff("/old/session.jsonl"), abortOld))
 
 		// A slot being replaced can never be claimed — the runtime that would
 		// match its lineage is gone.
+		const newer = makeHandoff("/old/session.jsonl")
+		stageHandoff(newer)
+		expect(abortOld).toHaveBeenCalledTimes(1)
+		expect(peekHandoff("/old/session.jsonl")).toBe(newer)
+	})
+
+	it("keeps sessions' handoffs independent across lineage keys", () => {
+		const abortOld = vi.fn()
+		const handoffB = makeHandoff("/other/session.jsonl")
+		stageHandoff(withAbort(makeHandoff("/old/session.jsonl"), abortOld))
+		stageHandoff(handoffB)
+
+		// Staging session B's handoff must NOT evict or abort session A's —
+		// the ACP server hosts several sessions at once.
+		expect(abortOld).not.toHaveBeenCalled()
+		expect(peekHandoff("/old/session.jsonl")?.fromSessionFile).toBe("/old/session.jsonl")
+		expect(peekHandoff("/other/session.jsonl")).toBe(handoffB)
+		expect(takeHandoffFor("/old/session.jsonl")).toBeDefined()
+		expect(takeHandoffFor("/other/session.jsonl")).toBe(handoffB)
+	})
+
+	it("clearHandoff drops every staged handoff", () => {
+		stageHandoff(makeHandoff("/old/session.jsonl"))
 		stageHandoff(makeHandoff("/other/session.jsonl"))
+		clearHandoff()
+		expect(peekHandoff("/old/session.jsonl")).toBeUndefined()
+		expect(peekHandoff("/other/session.jsonl")).toBeUndefined()
+	})
+
+	it("abortStagedHandoff aborts only the named session's handoff", () => {
+		const abortA = vi.fn()
+		const abortB = vi.fn()
+		stageHandoff(withAbort(makeHandoff("/a/session.jsonl"), abortA))
+		stageHandoff(withAbort(makeHandoff("/b/session.jsonl"), abortB))
+
+		abortStagedHandoff("/a/session.jsonl")
+
+		expect(abortA).toHaveBeenCalledTimes(1)
+		expect(abortB).not.toHaveBeenCalled()
+		expect(peekHandoff("/a/session.jsonl")).toBeUndefined()
+		expect(peekHandoff("/b/session.jsonl")).toBeDefined()
+	})
+
+	it("abortAllStagedHandoffs aborts across all sessions (process quit)", () => {
+		const abortA = vi.fn()
+		const abortB = vi.fn()
+		stageHandoff(withAbort(makeHandoff("/a/session.jsonl"), abortA))
+		stageHandoff(withAbort(makeHandoff("/b/session.jsonl"), abortB))
+
+		abortAllStagedHandoffs()
 
 		expect(abortA).toHaveBeenCalledTimes(1)
 		expect(abortB).toHaveBeenCalledTimes(1)
-		expect(peekHandoff()?.fromSessionFile).toBe("/other/session.jsonl")
-	})
-
-	it("abortStagedHandoff aborts and clears whatever is staged", () => {
-		const handoff = makeHandoff("/old/session.jsonl")
-		const abort = vi.fn()
-		handoff.records = [{ ...handoff.records[0]!, abortController: { abort, signal: undefined } as never }]
-		stageHandoff(handoff)
-
-		abortStagedHandoff()
-
-		expect(abort).toHaveBeenCalledTimes(1)
-		expect(peekHandoff()).toBeUndefined()
+		expect(peekHandoff("/a/session.jsonl")).toBeUndefined()
+		expect(peekHandoff("/b/session.jsonl")).toBeUndefined()
 	})
 })

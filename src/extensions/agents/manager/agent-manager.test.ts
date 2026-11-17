@@ -2332,6 +2332,126 @@ describe("AgentManager session hand-off", () => {
 		b.dispose()
 	})
 
+	it("accepts a Ferment worker report after adoption (review C1: submit closure outlives the manager)", async () => {
+		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => runResult.promise)
+
+		const a = new AgentManager()
+		const id = a.spawn(fakePi(), fakeCtx(), "Builder", "do the step", {
+			description: "ferment step",
+			isBackground: true,
+			taskRef: { kind: "ferment_step", ferment_id: "f", phase_id: "p", step_id: "s" } as never,
+		})
+		// The closure runAgent received at spawn (holds the record directly).
+		const workerReport = (
+			mockRunAgent.mock.calls[0]?.[3] as {
+				workerReport?: { submit: (report: unknown) => { accepted: boolean }; isAccepted: () => boolean }
+			}
+		)?.workerReport
+		expect(workerReport).toBeDefined()
+
+		// Session replacement: the OLD manager no longer holds the record.
+		const { records, queued, midResumeIds } = a.extractRunningLocal()
+		a.dispose()
+		const b = new AgentManager()
+		b.adoptRecords(records, queued, midResumeIds, fakePi(), fakeCtx())
+
+		const res = workerReport!.submit({
+			status: "completed",
+			summary: "step finished",
+			steps_completed: ["one"],
+			remaining_steps: [],
+		})
+		expect(res.accepted).toBe(true) // the pre-fix blocker: false (record gone from old manager)
+		expect(b.getRecord(id)?.agentReport).toMatchObject({ attempt_id: 0, submitted_at: expect.any(Number) })
+		expect(workerReport!.isAccepted()).toBe(true)
+		runResult.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await new Promise((r) => setTimeout(r, 20))
+		b.dispose()
+	})
+
+	it("mid-resume record in the wrap branch: settles without notifying but frees the slot (C2)", async () => {
+		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => runResult.promise)
+
+		const a = new AgentManager()
+		const id = a.spawn(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			isBackground: true,
+		})
+		const { records, queued } = a.extractRunningLocal()
+		// The abort→resume race the reviewer traced: original run promise is
+		// STILL live while resubmission has already flipped status to running.
+		const midResumeIds = new Set([id])
+		a.dispose()
+
+		let completionsInB = 0
+		const b = new AgentManager(() => {
+			completionsInB++
+		}, 1)
+		b.adoptRecords(records, queued, midResumeIds, fakePi(), fakeCtx())
+
+		runResult.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await new Promise((r) => setTimeout(r, 20))
+		expect(b.getRecord(id)?.status).toBe("completed")
+		expect(completionsInB).toBe(0) // resume() semantics survive replacement: no notification
+
+		// The slot was nevertheless freed — cap 1 must admit a new spawn.
+		const run2 = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockImplementationOnce(() => run2.promise)
+		const id2 = b.spawn(fakePi(), fakeCtx(), "Explore", "second", {
+			description: "second",
+			isBackground: true,
+		})
+		expect(b.getRecord(id2)?.status).toBe("running")
+		run2.resolve({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		await new Promise((r) => setTimeout(r, 20))
+		b.dispose()
+	})
+
+	it("countAbortableBackground counts exactly what abortAll would abort (C3)", () => {
+		const m = new AgentManager(() => {}, 1)
+		const stay = () => new Promise<never>(() => {})
+		mockRunAgent.mockImplementation(stay as never)
+
+		// 1 running local background (occupies the only slot)
+		const running = m.spawn(fakePi(), fakeCtx(), "Explore", "one", {
+			description: "one",
+			isBackground: true,
+		})
+		// 1 queued background (cap 1, isBackground not yet set on the record)
+		const queued = m.spawn(fakePi(), fakeCtx(), "Explore", "two", {
+			description: "two",
+			isBackground: true,
+		})
+		expect(m.getRecord(queued)?.status).toBe("queued")
+		expect(m.getRecord(queued)?.isBackground).toBeUndefined()
+
+		// A spared remote background run must not count... ; a foreground run must not either.
+		const remote = m.getRecord(running)
+		expect(m.countAbortableBackground()).toBe(2)
+		remote!.remote = true
+		expect(m.countAbortableBackground()).toBe(1)
+		m.spawn(fakePi(), fakeCtx(), "Explore", "three", { description: "three" })
+		expect(m.countAbortableBackground()).toBe(1)
+		m.dispose()
+	})
+
 	it("ignores adoption into a disposed manager", async () => {
 		const runResult = deferred<Awaited<ReturnType<typeof runAgent>>>()
 		mockRunAgent.mockImplementationOnce(() => runResult.promise)

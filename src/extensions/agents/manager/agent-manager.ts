@@ -347,8 +347,12 @@ export class AgentManager {
 					workerReport: record.taskRef
 						? {
 								isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
+								// Report acceptance goes through the RECORD, not a manager
+								// lookup: after a session replacement the outgoing manager
+								// no longer holds the record, and the report must still
+								// land (see extractRunningLocal/adoptRecords).
 								submit: (report) => {
-									const accepted = this.submitReport(id, report) != null
+									const accepted = this.acceptWorkerReport(record, report)
 									return {
 										accepted,
 										message: accepted
@@ -983,15 +987,25 @@ export class AgentManager {
 		return undefined
 	}
 
-	submitReport(agentId: string, report: WorkerReportSubmission): AgentRecord | undefined {
-		const record = this.agents.get(agentId)
-		if (!record || record.visibility === "system" || record.taskRef?.kind !== "ferment_step") return undefined
+	/** Record a Ferment worker's submitted report on ITS record object.
+	 *  Deliberately record-addressed, not manager-addressed: a record adopted
+	 *  by a replacement session's manager is gone from this manager's map,
+	 *  yet the worker's submit closure (created at spawn) must still be able
+	 *  to deliver. */
+	private acceptWorkerReport(record: AgentRecord, report: WorkerReportSubmission): boolean {
+		if (record.visibility === "system" || record.taskRef?.kind !== "ferment_step") return false
 		record.agentReport = {
 			...report,
 			attempt_id: record.currentAttemptId,
 			submitted_at: Date.now(),
 		}
 		record.latestOutcome = buildAgentOutcome(record)
+		return true
+	}
+
+	submitReport(agentId: string, report: WorkerReportSubmission): AgentRecord | undefined {
+		const record = this.agents.get(agentId)
+		if (!record || !this.acceptWorkerReport(record, report)) return undefined
 		return record
 	}
 
@@ -1411,14 +1425,15 @@ export class AgentManager {
 			this.agents.set(record.id, record)
 			if (record.promise !== undefined && isActiveStatus(record.status)) {
 				if (record.isBackground) this.runningBackground++
+				const skipNotify = midResumeIds.has(record.id)
 				const original = record.promise
 				record.promise = original.then(
 					(text: string) => {
-						this.settleAdopted(record)
+						this.settleAdopted(record, { skipNotify })
 						return text
 					},
 					() => {
-						this.settleAdopted(record)
+						this.settleAdopted(record, { skipNotify })
 						return ""
 					},
 				)
@@ -1449,10 +1464,16 @@ export class AgentManager {
 
 	/** Settle a re-wired adopted run: the local-settle mirror from startAgent,
 	 *  running on the adopting manager instead of the (disposed) original. */
-	private settleAdopted(record: AgentRecord): void {
+	/** Settle bookkeeping for an adopted record. skipNotify covers records
+	 *  that were mid-resume at extract time (see midResumeIds): their loop can
+	 *  still reach this path via the wrap branch when resume() raced an
+	 *  abort (status flipped back to running while the original run's
+	 *  promise was still set), and resumptions must never notify — but the
+	 *  slot accounting is still owed. */
+	private settleAdopted(record: AgentRecord, options?: { skipNotify?: boolean }): void {
 		if (!record.isBackground) return
 		this.decrementRunningBackground()
-		if (!this.disposed) this.onComplete?.(record)
+		if (!options?.skipNotify && !this.disposed) this.onComplete?.(record)
 		this.drainQueue()
 	}
 
@@ -1481,6 +1502,23 @@ export class AgentManager {
 				record.completedAt = Date.now()
 				count++
 			}
+		}
+		return count
+	}
+
+	/** Background agents abortAll({ skipRemote: true }) would actually stop —
+	 *  for the shutdown-abort notice. Mirrors abortAll's kill list exactly:
+	 *  queued entries (always background; record.isBackground is only set at
+	 *  startAgent) plus active LOCAL background runs. Spared remote runs and
+	 *  foreground/transient records are excluded. */
+	countAbortableBackground(): number {
+		let count = 0
+		for (const queued of this.queue) {
+			if (this.agents.has(queued.id)) count++
+		}
+		for (const record of this.agents.values()) {
+			if (record.status === "queued") continue // already counted via this.queue
+			if (record.isBackground === true && !record.remote && isActiveStatus(record.status)) count++
 		}
 		return count
 	}

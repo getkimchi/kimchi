@@ -73,7 +73,7 @@ import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./m
 import { deleteRemoteSession, type RemoteSessionMeta } from "./manager/remote-agent-runner.js"
 import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
-import { abortStagedHandoff, stageHandoff, takeHandoffFor } from "./manager/subagent-handoff.js"
+import { abortAllStagedHandoffs, abortStagedHandoff, stageHandoff, takeHandoffFor } from "./manager/subagent-handoff.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
 import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
@@ -94,7 +94,6 @@ import {
 	type AgentRecord,
 	type AgentTaskRef,
 	type AgentVisibility,
-	isActiveStatus,
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
@@ -1388,9 +1387,7 @@ export default function (pi: ExtensionAPI) {
 		// must happen. Subagent sessions never reach the claim anyway: they
 		// start with reason "startup" and no previousSessionFile, which
 		// takeHandoffFor refuses (undefined never claims).
-		// Tests and some harnesses fire session_start with no event payload —
-		// undefined lineage never claims a handoff (takeHandoffFor refuses).
-		const handoff = takeHandoffFor(event?.previousSessionFile)
+		const handoff = takeHandoffFor(event.previousSessionFile)
 		if (!handoff) return
 		manager.adoptRecords(handoff.records, handoff.queued, handoff.midResumeIds, pi, ctx)
 		for (const [id, entry] of handoff.activity) agentActivity.set(id, entry)
@@ -1549,11 +1546,14 @@ export default function (pi: ExtensionAPI) {
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async (event, ctx) => {
-		// fork/new replace the session but continue the conversation: hand the
-		// running local agents to the replacement instead of aborting them
-		// (subagent-handoff.ts). Everything else — quit, resume to an unrelated
-		// session, reload — keeps the terminal path.
-		const continuing = event.reason === "fork" || event.reason === "new"
+		// fork (/branch, /clone) replaces the session but CONTINUES the
+		// conversation — its history contains the Agent tool calls, so the
+		// branch hands running local agents to the replacement instead of
+		// aborting them (subagent-handoff.ts). Everything else — quit, /new
+		// (a clean slate: orphaned completions would pollute a conversation
+		// that never saw those spawns), resume to an unrelated session,
+		// reload — keeps the terminal path.
+		const continuing = event.reason === "fork"
 		sessionShuttingDown = true
 		manager.detachRemoteRuns()
 		unsubCtrlB?.()
@@ -1576,7 +1576,7 @@ export default function (pi: ExtensionAPI) {
 				stageHandoff({
 					// Lineage key: the replacement's session_start.previousSessionFile
 					// must match this (the outgoing) session file to claim the handoff.
-					fromSessionFile: ctx?.sessionManager.getSessionFile(),
+					fromSessionFile: ctx.sessionManager.getSessionFile(),
 					records,
 					queued,
 					midResumeIds,
@@ -1594,19 +1594,22 @@ export default function (pi: ExtensionAPI) {
 		}
 		// Remote runs survive the process — they are owned by the worker and
 		// resumable via kimchi --session (remote-run-persistence.ts).
-		// Count only background agents for the notice: abortAll's return includes
-		// transient visual records, which would overstate the number.
-		const backgroundAborted = manager.listAgents().filter((a) => a.isBackground && isActiveStatus(a.status)).length
+		// The notice must count exactly what abortAll kills: abortAll's return
+		// also includes transients and the call spares remote runs, so the
+		// manager mirrors its own kill list (queued + active local background).
+		const backgroundAborted = manager.countAbortableBackground()
 		manager.abortAll({ skipRemote: true })
-		// A handoff staged by an earlier runtime that was never claimed can no
-		// longer be claimed by anyone — abort its records instead of letting
-		// them run headless.
-		abortStagedHandoff()
-		if (event.reason === "resume" && backgroundAborted > 0) {
-			// Switching to an unrelated session stops local agents — but say so,
-			// instead of killing them silently.
+		// Terminal shutdown: no replacement of THIS session can appear, so its
+		// unclaimed handoff is aborted instead of running headless (scoped to
+		// this session; quit is process exit — abort every staged handoff).
+		if (event.reason === "quit") abortAllStagedHandoffs()
+		else abortStagedHandoff(ctx.sessionManager.getSessionFile())
+		if (backgroundAborted > 0 && (event.reason === "resume" || event.reason === "new")) {
+			// Switching sessions stops local agents — but say so, instead of
+			// killing them silently.
+			const action = event.reason === "new" ? "starting a new session" : "switching sessions"
 			ui?.notify(
-				`Aborted ${backgroundAborted} background agent${backgroundAborted === 1 ? "" : "s"} — switching sessions`,
+				`Aborted ${backgroundAborted} background agent${backgroundAborted === 1 ? "" : "s"} — ${action}`,
 				"warning",
 			)
 		}
