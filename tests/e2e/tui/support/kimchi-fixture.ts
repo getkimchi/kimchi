@@ -258,7 +258,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 					// but with no pane or pill mounted the interceptor sets are empty),
 					// so this override only suppresses the "Add to side chat" pill.
 					// Side-chat e2e tests that exercise the pill opt in explicitly.
-					resources: { "extensions.side-chat": false },
+					resources: { "extensions.side-chat-pill": false },
 					// Default the hermetic suite to regular mode: pi 1.3's fullscreen
 					// alt-screen keeps the transcript/overlays out of the terminal
 					// scrollback, which most tests read for assertions. Fullscreen

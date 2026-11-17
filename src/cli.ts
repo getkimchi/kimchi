@@ -1055,7 +1055,7 @@ async function cliMain(): Promise<void> {
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
 				] satisfies ManagedExtensionFactory[]),
 				// Always on: /btw and the side-chat pane are core UI. The resource
-				// `extensions.side-chat` gates only the "Add to side chat" pill
+				// `extensions.side-chat-pill` gates only the "Add to side chat" pill
 				// (inside the extension), not the side chat itself.
 				sideChatExtension,
 				modelWindowSnapshotExtension,

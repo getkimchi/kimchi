@@ -2,7 +2,7 @@
  * Side chat (TUI fullscreen only). Always loaded: /btw, its shortcuts and
  * the docked pane are core UI. Only the floating "Add to side chat" button
  * is opt-in — turn it on via /resources → 'Side chat "Add to side chat" button'
- * (`extensions.side-chat`), restart required.
+ * (`extensions.side-chat-pill`), restart required.
  *
  * A Cursor-style side chat docked to the right of the main session:
  * - with the resource on, select text in either transcript and click
@@ -25,7 +25,7 @@
  * ACP has no split view, so this is TUI-only by design.
  *
  * The harness patch is installed with the extension on every TUI run (the
- * `extensions.side-chat` resource gates only the pill's registration);
+ * `extensions.side-chat-pill` resource gates only the pill's registration);
  * every compositor and interceptor registered here is removed again on
  * `session_shutdown`, because the harness re-runs the factory on `/new`, `/resume` and
  * `/reload` and the previous instance's context is stale by then.
@@ -58,7 +58,7 @@ import {
 	titleFrom,
 	UNTITLED_SIDE_CHAT,
 } from "./records.js"
-import { SIDE_CHAT_RESOURCE_ID } from "./resource.js"
+import { SIDE_CHAT_PILL_RESOURCE_ID } from "./resource.js"
 import { SelectionPill } from "./selection-pill.js"
 import {
 	createSideSession,
@@ -109,7 +109,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	if (IS_ACP_MODE) return
 	const harnessReady = installSideChatHarnessPatch()
 	// Read once: the resource is restartRequired, so it cannot flip mid-process.
-	const pillEnabled = isResourceEnabled(SIDE_CHAT_RESOURCE_ID)
+	const pillEnabled = isResourceEnabled(SIDE_CHAT_PILL_RESOURCE_ID)
 	let active: ActiveSideChat | undefined
 	/** Removes the pill compositor/interceptor registered for the current session. */
 	let removePill: (() => void) | undefined

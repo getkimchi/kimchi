@@ -113,7 +113,7 @@ describe("resource definitions", () => {
 	})
 
 	it('registers the side chat "Add to side chat" button as a default-off extension resource', () => {
-		const resource = getResourceDefinitions().find((candidate) => candidate.id === "extensions.side-chat")
+		const resource = getResourceDefinitions().find((candidate) => candidate.id === "extensions.side-chat-pill")
 		expect(resource).toMatchObject({
 			kind: "extensions",
 			label: 'Side chat "Add to side chat" button',
@@ -121,6 +121,13 @@ describe("resource definitions", () => {
 			restartRequired: true,
 		})
 		expect(resource?.experimental).not.toBe(true)
+	})
+
+	it("keeps the retired extensions.side-chat id unregistered so old overrides are inert", () => {
+		// The rename to extensions.side-chat-pill is the migration that makes the
+		// default-off flip effective: previously-persisted `extensions.side-chat`
+		// overrides must not find a definition (or a gate) under that id again.
+		expect(getResourceDefinitions().some((candidate) => candidate.id === "extensions.side-chat")).toBe(false)
 	})
 
 	it("registers PII redaction as a default-off extension resource", () => {

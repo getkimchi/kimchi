@@ -10,7 +10,7 @@ const live = vi.hoisted(() => ({ compositors: 0, mouseInterceptors: 0, harnessIn
 /** Set to make getSideChatHost return a fake host (e.g. a non-fullscreen one). */
 const hostRef = vi.hoisted(() => ({ host: undefined as unknown }))
 const acpMode = vi.hoisted(() => ({ current: false }))
-/** The `extensions.side-chat` resource state the extension's factory reads. */
+/** The `extensions.side-chat-pill` resource state the extension's factory reads. */
 const pillResource = vi.hoisted(() => ({ enabled: true }))
 
 vi.mock("../../resources/store.js", async (importOriginal) => ({

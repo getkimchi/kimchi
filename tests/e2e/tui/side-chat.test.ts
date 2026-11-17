@@ -24,7 +24,7 @@ function enableSideChat(homeDir: string): void {
 	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
 	writeFileSync(
 		path,
-		JSON.stringify({ ...settings, tuiMode: "fullscreen", resources: { "extensions.side-chat": true } }),
+		JSON.stringify({ ...settings, tuiMode: "fullscreen", resources: { "extensions.side-chat-pill": true } }),
 		"utf-8",
 	)
 }
@@ -35,7 +35,7 @@ function sideChatNoOverrides(homeDir: string): void {
 	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
 	const resources = settings.resources as Record<string, unknown> | undefined
 	// JSON.stringify drops undefined-valued keys, so the opt-out is stripped.
-	if (resources) resources["extensions.side-chat"] = undefined
+	if (resources) resources["extensions.side-chat-pill"] = undefined
 	writeFileSync(path, JSON.stringify({ ...settings, tuiMode: "fullscreen" }), "utf-8")
 }
 
