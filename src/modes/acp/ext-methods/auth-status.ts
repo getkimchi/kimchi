@@ -5,9 +5,9 @@
 // _meta["kimchi.dev"].auth_status. Sessionless on purpose: identity is
 // global, not session-scoped, so the request carries no sessionId.
 
-import { ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
-import { isCredentialStale } from "../../../credential-staleness.js"
+import { credentialRejectionsPath, isCredentialStale } from "../../../credential-staleness.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 
 export type AuthStatusResponse = {
@@ -52,9 +52,10 @@ export type AuthStatusPaths = {
  */
 export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
 	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
+	const rejectionsPath = credentialRejectionsPath(paths.authPath)
 	// A 401 mark (key-level or provider-level — credential-staleness.ts)
 	// means logged-out, even though the key exists on disk.
-	if (isCredentialStale(apiKey, KIMCHI_PROVIDER_ID)) {
+	if (isCredentialStale(apiKey, KIMCHI_PROVIDER_ID, rejectionsPath)) {
 		return { authenticated: false }
 	}
 	if (apiKey) {
@@ -66,5 +67,14 @@ export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStat
 		refreshOnCreate: false,
 	})
 	const credentials = await modelRuntime.listCredentials()
-	return { authenticated: credentials.some((credential) => credential.providerId === KIMCHI_PROVIDER_ID) }
+	if (!credentials.some((credential) => credential.providerId === KIMCHI_PROVIDER_ID)) {
+		return { authenticated: false }
+	}
+
+	// listCredentials intentionally exposes presence only. Read the already
+	// stored bearer locally to compare its fingerprint with observed 401s;
+	// unlike getAuth(), this cannot refresh OAuth credentials or hit network.
+	const stored = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
+	const storedApiKey = stored?.type === "oauth" ? stored.access : stored?.type === "api_key" ? stored.key : undefined
+	return { authenticated: !isCredentialStale(storedApiKey, KIMCHI_PROVIDER_ID, rejectionsPath) }
 }

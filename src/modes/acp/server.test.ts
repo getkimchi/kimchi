@@ -174,7 +174,12 @@ import type { Model } from "@earendil-works/pi-ai"
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, loadConfig, resolveEndpoints, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
-import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
+import {
+	credentialRejectionsPath,
+	isCredentialStale,
+	markCredentialStale,
+	resetCredentialStalenessForTests,
+} from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../../extensions/auto-model/state.js"
@@ -7708,28 +7713,52 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 	// logged-out.
 	it("marks the model's provider stale when the turn dies on a 401, so auth_status flips", async () => {
 		resetCredentialStalenessForTests()
-		const fake = new FakeAgentSession("session-401-marks-stale")
-		fake.model = {
-			provider: "kimchi-dev",
-			id: "some-model",
-			name: "Some Model",
-			input: ["text"],
-			contextWindow: 200_000,
-		}
-		const agent = makeAgent(fake)
-		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
-			fake.emit(agentEnd())
-		}
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-stale-"))
+		const authPath = join(agentDir, "auth.json")
+		try {
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": {
+						type: "oauth",
+						access: "rejected-turn-token",
+						refresh: "refresh",
+						expires: Date.now() + 1000,
+					},
+				}),
+			)
+			const fake = new FakeAgentSession("session-401-marks-stale")
+			fake.model = {
+				provider: "kimchi-dev",
+				id: "some-model",
+				name: "Some Model",
+				input: ["text"],
+				contextWindow: 200_000,
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+				fake.emit(agentEnd())
+			}
 
-		const err = await agent
-			.prompt({ sessionId: "session-401-marks-stale", prompt: [{ type: "text", text: "hello" }] })
-			.catch((e) => e)
-		expect(err).toMatchObject({ code: -32000 })
-		// Provider-level mark: the turn's error names no specific key.
-		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+			const err = await agent
+				.prompt({ sessionId: "session-401-marks-stale", prompt: [{ type: "text", text: "hello" }] })
+				.catch((e) => e)
+			expect(err).toMatchObject({ code: -32000 })
+			// Provider-level mark handles this process even if credential attribution fails.
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+			// The exact stored credential also persists, so a restarted ACP process stays signed out.
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("rejected-turn-token", "kimchi-dev", credentialRejectionsPath(authPath))).toBe(true)
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
 	})
 
 	it("does not mark staleness on non-auth terminal errors (500)", async () => {

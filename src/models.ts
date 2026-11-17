@@ -10,7 +10,12 @@ import type {
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
-import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
+import {
+	clearCredentialStale,
+	credentialRejectionsPath,
+	isAuthRejectedMessage,
+	markCredentialStale,
+} from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
 import { CODEX_PROVIDER_ID, isKimchiProvider, KIMCHI_PROVIDER_ID, PI_CODEX_PROVIDER_ID } from "./kimchi-provider.js"
 import {
@@ -930,7 +935,7 @@ export async function discoverModelsConfig(
 		// dead, not absent. Mark before the rethrow decision so the mark
 		// survives the cached-fallback path too.
 		if (isAuthRejectedMessage(message)) {
-			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID)
+			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID, credentialRejectionsPath(modelsJsonPath))
 		}
 		// Environment-account discovery must not populate UI metadata from the
 		// saved account when cached fallback is explicitly disabled.
@@ -945,7 +950,7 @@ export async function discoverModelsConfig(
 		}
 	}
 	// Authenticated success clears marks from earlier 401s.
-	clearCredentialStale(KIMCHI_PROVIDER_ID)
+	clearCredentialStale(KIMCHI_PROVIDER_ID, credentialRejectionsPath(modelsJsonPath))
 
 	// Persist deprecation state (replacement_model, alternatives, notes) before
 	// filtering: entries for models excluded below still inform role remapping

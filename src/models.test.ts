@@ -5,7 +5,12 @@ import { getSupportedThinkingLevels, type ModelThinkingLevel } from "@earendil-w
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
+import {
+	credentialRejectionsPath,
+	isCredentialStale,
+	markCredentialStale,
+	resetCredentialStalenessForTests,
+} from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
 import { modelDeprecationsPath, readModelDeprecations } from "./model-deprecation.js"
 import {
@@ -192,7 +197,8 @@ describe("updateModelsConfig", () => {
 
 		// Re-login success wipes all marks (fresh key + revived OAuth).
 		it("clears all staleness marks for kimchi-dev when a refresh succeeds", async () => {
-			markCredentialStale("dead-key", "kimchi-dev")
+			const rejectionsPath = credentialRejectionsPath(modelsJsonPath)
+			markCredentialStale("dead-key", "kimchi-dev", rejectionsPath)
 			markCredentialStale(undefined, "kimchi-dev")
 			vi.mocked(fetch).mockResolvedValueOnce({
 				ok: true,
@@ -201,7 +207,8 @@ describe("updateModelsConfig", () => {
 
 			await updateModelsConfig(modelsJsonPath, "fresh-key", { sleep: async () => {} })
 
-			expect(isCredentialStale("dead-key", "kimchi-dev")).toBe(false)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("dead-key", "kimchi-dev", rejectionsPath)).toBe(false)
 			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
 		})
 	})
