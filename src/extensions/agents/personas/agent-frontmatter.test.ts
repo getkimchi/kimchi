@@ -72,9 +72,11 @@ describe("parseAgentFrontmatter", () => {
 		expect(() => parseAgentFrontmatter(doc("description: tidy\ntools: [read, bash"))).toThrow(/flow sequence/i)
 	})
 
-	it("throws the original error when a repair is not enough", () => {
+	it("reports the error that remains when a repair is not enough", () => {
 		const content = doc(`description: ${PROSE}\ntools: [read, bash`)
 
-		expect(() => parseAgentFrontmatter(content)).toThrow(/Nested mappings are not allowed/)
+		// The tolerated description line must not be the one the author is told to fix.
+		expect(() => parseAgentFrontmatter(content)).toThrow(/flow sequence.*line 2/is)
+		expect(() => parseAgentFrontmatter(content)).not.toThrow(/Nested mappings/)
 	})
 })

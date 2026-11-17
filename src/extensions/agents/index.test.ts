@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -2255,6 +2255,7 @@ describe("unparseable agent files", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+		rmSync(projectDir, { recursive: true, force: true })
 	})
 
 	const fireSessionStart = async (pi: ReturnType<typeof makeMockPi>, ctx: unknown) => {

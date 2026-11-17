@@ -12,19 +12,18 @@ import { parse as parseYaml } from "yaml"
 
 const FREE_TEXT_FIELD = /^(description|display_name):[ \t]+(\S.*)$/
 
-/** Throws the strict YAML error when the frontmatter cannot be repaired. */
+/**
+ * Throws a YAML error when the frontmatter cannot be parsed. After a repair
+ * that was not enough, it is the error that remains — the one the author has
+ * to fix — not the one on the free-text line that is tolerated.
+ */
 export function parseAgentFrontmatter(content: string): ReturnType<typeof parseFrontmatter> {
 	try {
 		return parseFrontmatter(content)
 	} catch (strictError) {
 		const repaired = quoteFreeTextFields(content)
 		if (repaired === undefined) throw strictError
-		try {
-			return parseFrontmatter(repaired)
-		} catch {
-			// Report the error for the text the author wrote, not for the rewrite.
-			throw strictError
-		}
+		return parseFrontmatter(repaired)
 	}
 }
 
