@@ -1,11 +1,16 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { runCodex } from "../commands/codex.js"
 import type { ModelMetadata } from "../models.js"
+import { setAvailableModels } from "../startup-context.js"
 import { TEST_MODELS } from "./__fixtures__/models.js"
 import { buildCodexToml, buildModelCatalog, mergeCodexToml } from "./codex.js"
 import { byId } from "./registry.js"
+import { runForeground } from "./spawn.js"
+
+vi.mock("./spawn.js", () => ({ runForeground: vi.fn() }))
 
 function testModel(slug: string, provider: string, displayName = slug): ModelMetadata {
 	return {
@@ -622,8 +627,6 @@ multi_agent = true
 
 		const configDir = join(scratchHome, ".codex")
 		const catalogPath = join(configDir, "model_catalog.json")
-		const initialCatalog = readFileSync(catalogPath, "utf-8")
-		expect(readFileSync(catalogPath, "utf-8")).toBe(initialCatalog)
 
 		const changedKimi = {
 			...TEST_MODELS[0],
@@ -645,6 +648,34 @@ multi_agent = true
 			truncation_policy: { mode: "tokens", limit: 300_000 },
 		})
 		expect(changedCatalog.models.some((entry: { slug: string }) => entry.slug === "gpt-old-codex")).toBe(false)
+	})
+
+	it("kimchi codex leaves the catalogue unchanged without an explicit setup rerun", async () => {
+		writeChatGptAuth(scratchHome)
+		const previousApiKey = process.env.KIMCHI_API_KEY
+		try {
+			process.env.KIMCHI_API_KEY = "fresh-key"
+			setAvailableModels(MIXED_MODELS)
+			vi.mocked(runForeground).mockResolvedValue(0)
+			await byId("codex")?.write("global", "fresh-key", MIXED_MODELS)
+
+			const configDir = join(scratchHome, ".codex")
+			const configPath = join(configDir, "config.toml")
+			const catalogPath = join(configDir, "model_catalog.json")
+			const initialConfig = readFileSync(configPath, "utf-8")
+			const initialCatalog = readFileSync(catalogPath, "utf-8")
+
+			await expect(runCodex([])).resolves.toBe(0)
+
+			expect(runForeground).toHaveBeenCalledWith("codex", [])
+			expect(readFileSync(configPath, "utf-8")).toBe(initialConfig)
+			expect(readFileSync(catalogPath, "utf-8")).toBe(initialCatalog)
+		} finally {
+			setAvailableModels([])
+			vi.mocked(runForeground).mockReset()
+			if (previousApiKey === undefined) delete process.env.KIMCHI_API_KEY
+			else process.env.KIMCHI_API_KEY = previousApiKey
+		}
 	})
 
 	it("write() upgrades a legacy API-key config without dropping ordinary models", async () => {
