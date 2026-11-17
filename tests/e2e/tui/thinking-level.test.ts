@@ -6,7 +6,8 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 
 test.use(TUI_TEST_CONFIG)
 
-// Reasoning-capable model so /thinking exposes more than "off".
+// Reasoning-capable model so /thinking exposes more than "off". All levels are
+// curated because pi's map alone greys out xhigh.
 const REASONING_MODELS = [
 	{
 		slug: "reasoner",
@@ -16,6 +17,7 @@ const REASONING_MODELS = [
 		input: ["text"] as const,
 		contextWindow: 128_000,
 		maxTokens: 8_192,
+		metadata: { thinking_levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
 	},
 ]
 
@@ -41,6 +43,10 @@ test("/thinking changes the in-session thinking level without persisting it", as
 			expect(viewText(terminal)).toContain("to set as default")
 
 			// Available order: off, minimal, low, medium, high, xhigh, max (current=medium).
+			// Highlight xhigh first. It also matches "high", so only the exact-name
+			// match selects high.
+			terminal.keyDown(2)
+			await waitForText(terminal, /→\s+xhigh/, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.write("high")
 			await waitForText(terminal, "Complex features, tricky bugs", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.submit("")
