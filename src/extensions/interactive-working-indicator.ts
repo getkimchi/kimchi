@@ -27,6 +27,16 @@ interface WorkingIndicatorHost {
  * covers that window; turn_start's own show is idempotent
  * (it re-shows only when the active indicator is not already "working") and
  * agent_end clears it as before.
+ *
+ * Scope: this covers prompts accepted by the interactive input loop. Turns
+ * entered another way keep upstream's behavior — no spinner until
+ * turn_start: auto-compaction inside the run replaces the armed indicator
+ * with the compaction one (compaction_start → compaction_end) before the
+ * hooks run, and compaction-queued or startup initialMessage prompts never
+ * pass through getUserInput. A re-arm after compaction_end needs a
+ * run-intent signal the TUI does not have (manual /compact fires the same
+ * events with no following turn), so those windows are a documented gap,
+ * not a regression — they had no indicator before this patch either.
  */
 export const showWorkingIndicatorForAcceptedPrompt = (mode: WorkingIndicatorHost, text: string): void => {
 	// Extension commands (kimchi's /memory list and friends) execute without
@@ -61,6 +71,12 @@ export function applyInteractiveWorkingIndicatorPatch(): void {
 	// biome-ignore lint/suspicious/noExplicitAny: private upstream prototype adapter
 	const prototype = InteractiveMode.prototype as any
 	if (prototype.__kimchiWorkingIndicatorPatched) return
+	if (typeof prototype.getUserInput !== "function") {
+		// Surface a renamed/moved upstream method instead of installing a wrapper
+		// over undefined — that would break every prompt submission.
+		console.warn("working-indicator patch: InteractiveMode.getUserInput not found, pre-request spinner inactive")
+		return
+	}
 	prototype.__kimchiWorkingIndicatorPatched = true
 
 	prototype.getUserInput = wrapGetUserInput(

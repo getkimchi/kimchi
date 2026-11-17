@@ -808,7 +808,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						mark("memory.search.begin")
 						searchSpanOpen = true
 						// Bounded: a never-settling searcher factory must not wedge
-						// recallInFlight (and the indicator) for the whole session —
+						// recallInFlight for the whole session —
 						// a timeout here skips this recall; the next turn retries.
 						const s = await withTimeout(getSearcher(), MEMORY_PRE_REQUEST_TIMEOUT_MS, "searcher init")
 						if (!s) {
