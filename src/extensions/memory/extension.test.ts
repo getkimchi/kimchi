@@ -1798,6 +1798,118 @@ describe("memory saved feedback (completion record)", () => {
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
 	})
 
+	it("a delete while a digest attempt is in flight discards the settle — the fact never lands", async () => {
+		// Two actors at the production await point: turn 1's digest search hangs
+		// past its bounded wait; a /memory delete lands while the attempt is
+		// still in flight; the search then settles with the now-deleted fact.
+		// The epoch bump the delete performed must discard the settle — no
+		// adoption, no status resurrection — and the next turn re-searches.
+		const admin = await import("./admin.js")
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const marks = useMarksSink()
+		try {
+			let releaseSearch: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						releaseSearch = resolve
+					}),
+			)
+			const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+			const command = getRegisteredCommand("memory")
+			const ctx = createContext()
+			const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+			const pending = start(startEvent("set up the repo"), ctx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending // bare notice — the attempt is still in flight
+			expect(search).toHaveBeenCalledTimes(1)
+
+			// The delete lands while the attempt is in flight.
+			vi.mocked(admin.runAdminCommand).mockResolvedValue({
+				text: "Deleted live-fred.",
+				json: "{}",
+				code: 0,
+				useJson: false,
+			})
+			await command.handler("delete live-fred", createCommandContext())
+
+			// The stale search settles with the deleted fact — discarded by epoch.
+			releaseSearch?.([{ memory: "user prefers pnpm over npm", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			expect(vi.mocked(ctx.ui.setStatus).mock.calls.every(([, v]) => v !== "1")).toBe(true)
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(false)
+
+			// The next turn re-searches against the smaller store.
+			const turn2 = start(startEvent("set up the repo again"), ctx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await turn2
+			expect(search).toHaveBeenCalledTimes(2)
+		} finally {
+			marks.cleanup()
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a delete while a drift recall is in flight discards its delivery — no ledger resurrection", async () => {
+		// Two actors: turn 1 delivers a digest; turn 2 drifts (a recall fires,
+		// its search hangs); a /memory delete clears the ledger mid-search; the
+		// search settles with the deleted fact. The recall's epoch guard must
+		// drop the delivery instead of re-seeding the cleared ledger.
+		const admin = await import("./admin.js")
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => {})
+		try {
+			let calls = 0
+			let releaseSecond: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
+			const search = vi.fn(() => {
+				calls++
+				if (calls === 1) return Promise.resolve([{ memory: "the user lives in Lisbon", score: 0.7 }])
+				return new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+					releaseSecond = resolve
+				})
+			})
+			const { api, getRegisteredCommand, getHandler, sendMessage } = createExtensionApi()
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+			const command = getRegisteredCommand("memory")
+			const ctx = createContext()
+			const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+			// Turn 1 delivers the digest (call 1).
+			await start(startEvent("where does the user live"), ctx)
+			expect(search).toHaveBeenCalledTimes(1)
+
+			// Turn 2 drifts (call 2 hangs in flight) — content words deliberately
+			// outside the delivered fact's vocabulary.
+			await start(startEvent("what do I bake"), ctx)
+			await vi.advanceTimersByTimeAsync(0)
+			expect(search).toHaveBeenCalledTimes(2)
+
+			// The delete clears the ledger while the recall search hangs.
+			vi.mocked(admin.runAdminCommand).mockResolvedValue({
+				text: "Deleted live-fred.",
+				json: "{}",
+				code: 0,
+				useJson: false,
+			})
+			await command.handler("delete live-fred", createCommandContext())
+
+			// The recall settles with a NEW fact — the delivery must be dropped.
+			releaseSecond?.([{ memory: "the user bakes sourdough", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			expect(sendMessage).not.toHaveBeenCalled()
+			expect(vi.mocked(ctx.ui.setStatus).mock.calls.every(([, v]) => v !== "2")).toBe(true)
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+			consoleInfo.mockRestore()
+		}
+	})
+
 	it("a successful /memory delete invalidates the digest — the count drops at once and the next start recomputes", async () => {
 		const admin = await import("./admin.js")
 		const { api, getRegisteredCommand, getHandler } = createExtensionApi()

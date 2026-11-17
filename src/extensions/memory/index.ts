@@ -109,6 +109,12 @@ interface DigestState {
  * value bar). Callers retry the marker — caching it as an empty digest would
  * silently lose the epoch's prefix memory to a transient failure, the exact
  * regression the pre-branch timeout path existed to avoid.
+ *
+ * Two accepted trades while the epoch keeps failing: the start handler returns
+ * inside its first branch until a digest lands, so progressive (drift) recall
+ * is suspended for the epoch — degrade-to-no-memory during gateway outages; and
+ * a no-searcher outcome stays a computed null, because the searcherFailed latch
+ * makes in-session recovery impossible — retrying it could only spin.
  */
 const DIGEST_SEARCH_FAILED: unique symbol = Symbol("digest-search-failed")
 
@@ -178,6 +184,7 @@ const MEMORY_VIEW_MAX_LINES = 10
 async function openMemoryPanel(
 	parsed: Extract<AdminCommand, { op: "list" | "search" }>,
 	ctx: ExtensionCommandContext,
+	onFactDeleted: () => void,
 ): Promise<void> {
 	try {
 		const facts: MemoryPanelFact[] =
@@ -195,6 +202,7 @@ async function openMemoryPanel(
 						const outcome = await adminDeleteFacts([id])
 						const hit = outcome.deleted[0]
 						if (!hit) throw new Error("not found")
+						onFactDeleted()
 						return hit.scope
 					},
 					tui,
@@ -259,7 +267,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				const tokens = args?.trim().split(/\s+/).filter(Boolean) ?? []
 				const parsed = parseAdminArgs(tokens, { cwd: ctx.cwd })
 				if ((parsed.op === "list" || parsed.op === "search") && !parsed.json && ctx.mode === "tui") {
-					await openMemoryPanel(parsed, ctx)
+					await openMemoryPanel(parsed, ctx, () => onStoreShrunk(ctx))
 					return
 				}
 				const result = await runAdminCommand(tokens, {
@@ -340,6 +348,16 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// while memory is inactive re-arms it, so an unobserved toggle flip still
 		// gets its blocking retry).
 		let digestWaited = false
+		// The store's content revision: bumped only when a management command
+		// shrinks or rewrites the fact store (delete, consolidate, a panel
+		// deletion) — NOT by compaction or toggle flips, which reset bookkeeping
+		// but leave the facts intact. An in-flight recall snapshotting a stale
+		// revision must drop its delivery: the facts it found may be gone.
+		let storeRevision = 0
+		// The epoch that last logged a digest search failure: the sentinel retry
+		// re-enters computeDigest every turn while the gateway is down, and the
+		// degrade log fires once per epoch (the mark still records every discard).
+		let digestFailLoggedEpoch = -1
 		// Bumped at every before_agent_start: a digest settling during a later
 		// turn must not fire that turn's UI notify (the "Recalled N memories"
 		// popup would land mid-generation of an unrelated turn).
@@ -362,6 +380,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// compaction path makes when it resets the ledger.
 		const onStoreShrunk = (ctx: ExtensionCommandContext): void => {
 			resetDigest()
+			storeRevision++
 			deliveredKeys.clear()
 			deliveredFacts.length = 0
 			if (ctx.hasUI) ctx.ui.setStatus(MEMORY_STATUS_KEY, undefined)
@@ -622,7 +641,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				console.info(`[memory] digest injected: ${JSON.stringify(result.composition)}`)
 				return { text: result.text, facts: result.facts, composition: result.composition, query }
 			} catch (err) {
-				logDegrade("memory search failed, continuing without digest", err)
+				if (digestFailLoggedEpoch !== digestEpoch) {
+					digestFailLoggedEpoch = digestEpoch
+					logDegrade("memory search failed, continuing without digest", err)
+				}
 				return DIGEST_SEARCH_FAILED
 			}
 		}
@@ -822,6 +844,13 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// is in flight coalesces (last-wins) into pendingRecallQuery and
 			// refires when the chain settles.
 			const fireDetachedRecall = (recent: string): void => {
+				// The store revision this recall fired under: a delete or
+				// consolidate while the search is in flight invalidates the
+				// delivery — the facts it found may no longer exist, and the ledger
+				// the delivery would re-seed was deliberately cleared. Compaction
+				// and toggle bumps do NOT count: the ledger reset they perform
+				// exists to allow re-delivery.
+				const fireRevision = storeRevision
 				recallInFlight = true
 				// Open while a memory.search.* span may be pending - lets the task's
 				// catch close the span on a throw (balanced marks on every path).
@@ -881,6 +910,14 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							// awaited inside the handler). Skip delivery AND the
 							// ledger mutation so the post-flip state stays clean.
 							if (!memoryActive()) return
+							// Same for the store revision: a delete while the search was in
+							// flight means this delivery would resurrect deleted facts into
+							// the freshly-cleared ledger (and the status count).
+							if (fireRevision !== storeRevision) {
+								console.info("[memory] turn recall discarded: the store changed under the in-flight search")
+								mark("memory.search.end", { discarded: "store-revision" })
+								return
+							}
 							for (const fact of recall.facts) {
 								deliveredKeys.add(factKey(fact))
 								deliveredFacts.push(fact)
