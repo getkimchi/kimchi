@@ -25,7 +25,7 @@
 // `tools` allowlist) and extensions disabled (`noExtensions: true` +
 // `tools` allowlist).
 
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -40,10 +40,14 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createToolContext } from "../../__mocks__/context.js"
+import { getConfig, getToolNamesForType, registerAgents } from "../personas/agent-types.js"
+import { AGENT_RESEARCHER } from "../personas/types.js"
 import { textResult } from "../tool-result.js"
+import { getActiveSubagentToolNames } from "./agent-runner.js"
 import { SubagentResourceLoader } from "./subagent-resource-loader.js"
+import { subagentWebToolFactories } from "./subagent-web-tools.js"
 
 /** Minimal model stub — the session never streams in these tests, so the
  *  model and runtime only need to satisfy construction-time shape checks. */
@@ -303,5 +307,155 @@ describe("SubagentResourceLoader — single-load contract", () => {
 
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		session.dispose()
+	})
+})
+
+describe("subagent web tools — real-session registration", () => {
+	let savedAgentDir: string | undefined
+	let testAgentDir: string
+	const sessions: Array<{ extensionRunner?: { emit(e: unknown): Promise<unknown> }; dispose(): void }> = []
+
+	beforeEach(() => {
+		savedAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		testAgentDir = makeTmpDir()
+		process.env.KIMCHI_CODING_AGENT_DIR = testAgentDir
+	})
+
+	afterEach(async () => {
+		if (savedAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = savedAgentDir
+		for (const session of sessions.splice(0)) {
+			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+			session.dispose()
+		}
+	})
+
+	/** Build a real subagent session with the given inline factories — the same
+	 *  loader + session + binding path agent-runner uses. When `toolNames` is
+	 *  given it becomes the session's tools allowlist (the extensions-disabled
+	 *  path in agent-runner). */
+	async function realSubagentSession(
+		factories: InlineExtension[],
+		opts?: { toolNames?: string[]; noExtensions?: boolean },
+	) {
+		const tmp = makeTmpDir()
+		const loader = new SubagentResourceLoader({
+			cwd: tmp,
+			agentDir: tmp,
+			noExtensions: opts?.noExtensions ?? false,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			readSystemPrompt: () => "probe",
+			appendSystemPromptOverride: () => [],
+			extensionFactories: factories,
+		})
+		await loader.reload()
+		const { session } = await createAgentSession({
+			cwd: tmp,
+			agentDir: tmp,
+			sessionManager: SessionManager.inMemory(tmp),
+			settingsManager: SettingsManager.create(tmp, tmp),
+			model: fakeModel,
+			modelRuntime: {} as ModelRuntime,
+			resourceLoader: loader,
+			...(opts?.toolNames ? { tools: opts.toolNames } : {}),
+		})
+		await session.bindExtensions({
+			onError: (err) => {
+				throw new Error(`extension failed in child session: ${err.error ?? err.extensionPath}`)
+			},
+		})
+		sessions.push(session)
+		return session
+	}
+
+	it("registers web_search and web_fetch in a real subagent session when the resources are enabled", async () => {
+		const session = await realSubagentSession(subagentWebToolFactories())
+
+		expect(session.getToolDefinition("web_search")).toBeDefined()
+		expect(session.getToolDefinition("web_fetch")).toBeDefined()
+
+		// Close the loop a read-only persona depends on: requested read-only
+		// builtins + registered extension tools inherited via extensions: true.
+		const finalTools = getActiveSubagentToolNames(
+			["read", "bash", "grep", "find", "ls"],
+			session.getActiveToolNames(),
+			true,
+			(name) => session.getToolDefinition(name) !== undefined,
+		)
+		expect(finalTools).toContain("web_search")
+		expect(finalTools).toContain("web_fetch")
+	})
+
+	it("yields web tools to a persona whose tools list names them (extensions enabled)", async () => {
+		const session = await realSubagentSession(subagentWebToolFactories())
+
+		const dropped: string[] = []
+		const finalTools = getActiveSubagentToolNames(
+			["read", "web_fetch", "web_search", "grep", "find", "ls"],
+			session.getActiveToolNames(),
+			true,
+			(name) => session.getToolDefinition(name) !== undefined,
+			undefined,
+			(names) => dropped.push(...names),
+		)
+		expect(finalTools).toEqual(["read", "web_fetch", "web_search", "grep", "find", "ls"])
+		expect(dropped).toEqual([])
+	})
+
+	it("keeps web tools registered but inactive on the extensions-disabled allowlist path", async () => {
+		// The runner now never hands web factories to a sealed session; this pins
+		// the allowlist contract itself for defense in depth: whatever IS
+		// registered stays inactive unless allowlisted.
+		const session = await realSubagentSession(subagentWebToolFactories(), {
+			toolNames: ["read", "grep"],
+			noExtensions: true,
+		})
+
+		expect(session.getActiveToolNames()).not.toContain("web_search")
+		expect(session.getActiveToolNames()).not.toContain("web_fetch")
+		expect(session.getActiveToolNames()).toContain("read")
+	})
+
+	it("registers no web tools when the web resources are disabled in settings", async () => {
+		writeFileSync(
+			join(testAgentDir, "settings.json"),
+			JSON.stringify({ resources: { "tools.web_search": false, "tools.web_fetch": false } }),
+		)
+
+		expect(subagentWebToolFactories()).toEqual([])
+
+		const session = await realSubagentSession(subagentWebToolFactories())
+		expect(session.getToolDefinition("web_search")).toBeUndefined()
+		expect(session.getToolDefinition("web_fetch")).toBeUndefined()
+	})
+
+	it("closes the loop on the original bug: the REAL embedded Researcher ends with web tools active", async () => {
+		// Uses the real embedded persona registry — not a test double for the
+		// persona — then assembles the session through the exact path agent-runner
+		// uses (loader factories → real session → the same activation function),
+		// proving the full wiring from "Researcher" to active web tools.
+		registerAgents(new Map())
+		const researcherConfig = getConfig(AGENT_RESEARCHER)
+		expect(researcherConfig.extensions).toBe(true)
+		if (researcherConfig.extensions === false) throw new Error("unreachable — asserted above")
+
+		const session = await realSubagentSession(subagentWebToolFactories())
+		const dropped: string[] = []
+		const finalTools = getActiveSubagentToolNames(
+			getToolNamesForType(AGENT_RESEARCHER),
+			session.getActiveToolNames(),
+			researcherConfig.extensions,
+			(name) => session.getToolDefinition(name) !== undefined,
+			undefined,
+			(names) => dropped.push(...names),
+		)
+		session.setActiveToolsByName(finalTools)
+
+		expect(session.getActiveToolNames()).toContain("web_search")
+		expect(session.getActiveToolNames()).toContain("web_fetch")
+		expect(dropped).toEqual([])
 	})
 })

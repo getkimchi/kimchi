@@ -80,7 +80,7 @@ describe("modular-crypt hashes keep redacting behind keywords", () => {
 		["scrypt", scrypt],
 		["bcrypt", bcrypt],
 	])("password= %s redacts", async (_label, hash) => {
-		const out = await redactText("password=" + hash)
+		const out = await redactText(`password=${hash}`)
 		expect(out).not.toContain(hash)
 		expect(out).toContain("[REDACTED-GENERIC_SECRET]")
 	})
@@ -91,8 +91,8 @@ describe("modular-crypt hashes keep redacting behind keywords", () => {
 
 describe("credential query values may contain brackets", () => {
 	it("redacts a lookup token containing [ ]", async () => {
-		const token = "ab[cd]ef-" + "x".repeat(20)
-		const out = await redactText("?token=" + token + "&next=1")
+		const token = `ab[cd]ef-${"x".repeat(20)}`
+		const out = await redactText(`?token=${token}&next=1`)
 		expect(out).not.toContain(token)
 		expect(out).toContain("&next=1")
 	})
@@ -102,7 +102,7 @@ describe("credential query values may contain brackets", () => {
 	})
 	it("a real secret right after a marker still redacts", async () => {
 		const second = "b1c2d3e4f5a6b7c8".repeat(2)
-		const out = await redactText(("?token=[REDACTED-URL_WITH_CREDENTIALS] &token=" + second).replace(" ", "&"))
+		const out = await redactText(`?token=[REDACTED-URL_WITH_CREDENTIALS] &token=${second}`.replace(" ", "&"))
 		expect(out).not.toContain(second)
 	})
 })
@@ -124,8 +124,8 @@ describe("Azure SAS ownership: encoded and structured forms", () => {
 		expect(out).not.toContain("Pp0")
 	})
 	it("a neighboring credential parameter is not eaten into the SAS span", async () => {
-		const secretTail = "s3cr3tTail" + "z".repeat(14)
-		const inp = ";SharedAccessSignature=" + "sig=" + "x".repeat(20) + "&refresh_token=" + secretTail
+		const secretTail = `s3cr3tTail${"z".repeat(14)}`
+		const inp = `;SharedAccessSignature=sig=${"x".repeat(20)}&refresh_token=${secretTail}`
 		const out = await redactText(inp)
 		expect(out).not.toContain(secretTail)
 		expect(out).toContain("[REDACTED-URL_WITH_CREDENTIALS]")
@@ -136,13 +136,13 @@ describe("Azure SAS ownership: encoded and structured forms", () => {
 	})
 	it("the keyword-value guard does not reject a genuine base64 body", () => {
 		const secret = "/" + "a1B2c3D4e5F6g7H8i9J0"
-		const out = applyCustomPatterns("SharedAccessKey=" + secret, new Set())
+		const out = applyCustomPatterns(`SharedAccessKey=${secret}`, new Set())
 		expect(out).not.toContain(secret)
 		expect(out).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
 	})
 	it("Service Bus SAS (skn before sig) owned by AZURE_CONNECTION_STRING", async () => {
 		const sig = "A".repeat(43)
-		const inp = ";SharedAccessSignature=" + ["se=2026-01-01", "&skn=RootManageSharedAccessKey", "&sig=" + sig].join("")
+		const inp = `;SharedAccessSignature=${["se=2026-01-01", "&skn=RootManageSharedAccessKey", `&sig=${sig}`].join("")}`
 		// Prove ownership: the generic URL custom stays disabled for the scan.
 		const urlOff = resolveRedactionPolicy(parseLocalPolicy({ entities: { URL_WITH_CREDENTIALS: "off" } }))
 		const out = applyCustomPatterns(inp, urlOff.disabledEntities)
@@ -150,7 +150,7 @@ describe("Azure SAS ownership: encoded and structured forms", () => {
 		expect(out).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
 	})
 	it("policy toggle: AZURE_CONNECTION_STRING owns SAS without the URL custom rescuing it", () => {
-		const sasInput = ";SharedAccessSignature=" + "x".repeat(24)
+		const sasInput = `;SharedAccessSignature=${"x".repeat(24)}`
 		// URL custom off, Azure on: Azure still claims the SAS value.
 		const urlOff = resolveRedactionPolicy(parseLocalPolicy({ entities: { URL_WITH_CREDENTIALS: "off" } }))
 		expect(applyCustomPatterns(sasInput, urlOff.disabledEntities)).toContain("[REDACTED-AZURE_CONNECTION_STRING]")
@@ -175,15 +175,15 @@ describe("Supabase anon/service JWT realism", () => {
 			"s".repeat(43),
 		].join(".")
 	it("public anon JWT behind the anon label stays untouched", async () => {
-		const inp = "NEXT_PUBLIC_SUPABASE_ANON_KEY=" + jwt()
+		const inp = `NEXT_PUBLIC_SUPABASE_ANON_KEY=${jwt()}`
 		expect(await redactText(inp)).toBe(inp)
 	})
 	it("the standalone fixture IS claimed by JWT_TOKEN (engine detection proof)", async () => {
-		const out = await redactText("sentinel " + jwt())
+		const out = await redactText(`sentinel ${jwt()}`)
 		expect(out).toContain("[REDACTED-JWT_TOKEN]")
 	})
 	it("service-role JWT behind the secret label redacts as SUPABASE_KEY", async () => {
-		const out = await redactText("SUPABASE_SERVICE_KEY=" + jwt())
+		const out = await redactText(`SUPABASE_SERVICE_KEY=${jwt()}`)
 		expect(out).toContain("[REDACTED-SUPABASE_KEY]")
 		expect(out).not.toContain(jwt())
 	})
@@ -229,27 +229,27 @@ describe("bracket-bearing credentials: value-floor boundaries", () => {
 	it("redacts at exactly 8 chars", async () => {
 		const token = "ab[cd]ef"
 		expect(token).toHaveLength(8)
-		const out = await redactText("?token=" + token + "&next=1")
+		const out = await redactText(`?token=${token}&next=1`)
 		expect(out).not.toContain(token)
 	})
 	it("skips below the 8-char floor", async () => {
 		const token = "ab[cd]e"
 		expect(token).toHaveLength(7)
-		const out = await redactText("?token=" + token + "&next=1")
+		const out = await redactText(`?token=${token}&next=1`)
 		expect(out).toContain(token)
 	})
 })
 
 describe("marker-glued secrets never pass through whole", () => {
 	it("a secret glued to a trailing redaction marker redacts", async () => {
-		const tail = "hunterSecret" + "q".repeat(10)
-		const out = await redactText("?token=" + "[REDACTED-URL_WITH_CREDENTIALS]" + tail + "&next=1")
+		const tail = `hunterSecret${"q".repeat(10)}`
+		const out = await redactText(`?token=[REDACTED-URL_WITH_CREDENTIALS]${tail}&next=1`)
 		expect(out).not.toContain(tail)
 		expect(out).toContain("[REDACTED-URL_WITH_CREDENTIALS]")
 	})
 	it("a secret glued after a marker in free text redacts", async () => {
-		const tail = "hunterSecret" + "m".repeat(10)
-		const out = await redactText("password=[REDACTED-GENERIC_SECRET]" + tail)
+		const tail = `hunterSecret${"m".repeat(10)}`
+		const out = await redactText(`password=[REDACTED-GENERIC_SECRET]${tail}`)
 		expect(out).not.toContain(tail)
 	})
 })

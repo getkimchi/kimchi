@@ -75,6 +75,16 @@ export async function executeWebFetch(params: WebFetchParams, signal?: AbortSign
 		return errorResult(`Error: ${message}`)
 	}
 
+	// The pre-fetch check only covers the REQUESTED URL, but fetchPage
+	// follows redirects — a public URL can 302 to a private or metadata
+	// address. Revalidate the final URL before serving the body.
+	if (result.finalURL !== params.url) {
+		const finalValidation = validateURL(result.finalURL)
+		if (!finalValidation.valid) {
+			return errorResult(`Error: redirect target blocked: ${finalValidation.error}`)
+		}
+	}
+
 	// Convert content based on format.
 	// When Playwright extracted text directly (format: text), the body is already
 	// plain text — skip the content converter. For non-HTML, return as-is.

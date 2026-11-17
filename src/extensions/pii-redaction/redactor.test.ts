@@ -934,16 +934,16 @@ describe("base64-witness boundary classes", () => {
 		// boundary consumes the digit and keeps it in the replacement prefix.
 		// Letter-glued identifiers stay excluded by the anchor.
 		const secret = "J7k2M9p4Q1r8S6t3U0v5W2x7Y9z4A3n6"
-		expect(await redactText("1password: " + secret)).toBe("1password: [REDACTED-GENERIC_SECRET]")
-		expect(await redactText("sha256token=" + secret)).toBe("sha256token=[REDACTED-GENERIC_SECRET]")
-		const letterGlued = "oauthAccessToken: " + secret
+		expect(await redactText(`1password: ${secret}`)).toBe("1password: [REDACTED-GENERIC_SECRET]")
+		expect(await redactText(`sha256token=${secret}`)).toBe("sha256token=[REDACTED-GENERIC_SECRET]")
+		const letterGlued = `oauthAccessToken: ${secret}`
 		expect(await redactText(letterGlued)).toBe(letterGlued)
 	})
 
 	it("requires the interior + within the 16-char witness window", async () => {
 		// The walk caps at 16: a `+` further back supplies no evidence and the
 		// keyword's value redacts — the window edge is load-bearing.
-		const deep = "x" + "+" + "a".repeat(30) + "-password=" + V
+		const deep = `x+${"a".repeat(30)}-password=${V}`
 		expect(await redactText(deep)).not.toContain(V)
 	})
 
@@ -951,7 +951,7 @@ describe("base64-witness boundary classes", () => {
 		// Genuine base64url/JWT interiors contain `-`/`_` but never `+`; the
 		// walk alphabet excludes them, so no interior evidence exists and the
 		// anchored match redacts. Pinning the narrowing makes it visible.
-		const blob = "e" + "-".repeat(1) + "y".repeat(18) + "_password=" + V
+		const blob = `e${"-".repeat(1)}${"y".repeat(18)}_password=${V}`
 		expect(await redactText(blob)).not.toContain(V)
 	})
 

@@ -222,6 +222,20 @@ Use it: *"Run an auditor in the background on this diff while I keep working."*
 The widget shows it running concurrently; the result lands as a notification
 when complete.
 
+### Web tools for all extension-enabled agents
+
+Every agent with `extensions: true` gets `web_search` and `web_fetch` in its
+child session by default — inherited via extension registration, not by name:
+the `tools:` list doesn't need to mention them. This covers read-only personas
+too: **Explore** is documented as read-only and now has network access through
+these first-class tools. (Its `bash` builtin could already `curl`; the change
+is that browsing no longer needs shell plumbing.)
+
+Remove web access for one agent with `disallowed_tools: web_search, web_fetch`,
+or for the whole org via the `web` resource toggle (`/resources`). Both are
+honored identically to any other extension-provided tool, and a tool dropped
+this way never warns — deliberate opt-outs stay silent.
+
 ### Tool restrictions via `extensions: false`
 
 `.kimchi/agents/file-mapper.md`:
@@ -241,6 +255,21 @@ report grouped by relevance. No analysis, no suggestions.
 
 `extensions: false` strips MCP-provided tools so this agent can't accidentally
 call into a heavy database or browser tool.
+
+For **custom agents**, the same flag is a hard contract: the runner registers
+no extension-provided tools (bundled web tools included — off means off), and
+spawning fails fast with an actionable error if the `tools:` list names
+anything the child session can't honor (builtins, the native `Skill` tool,
+and DAP debug tools via the `extensions.dap` resource are the only registerable
+names on this path). Previously such names were silently dropped and the agent
+ran without them; the fail-fast turns that latent misconfiguration into an
+explicit error at spawn. Remedies: enable extensions for the agent, remove the
+names from its `tools:` list, or — if every name is explicitly opted out via
+`disallowed_tools` — nothing, that's respected. Two classes: names the runner
+always excludes from subagent sessions (`Agent`, `resume_subagent`, ferment
+tools) trigger the same spawn failure but with "subagents never receive these"
+as the remedy — enabling extensions cannot register them either. Built-in personas are exempt
+from this check and behave exactly as before.
 
 ### Adaptive model selection with `models`
 

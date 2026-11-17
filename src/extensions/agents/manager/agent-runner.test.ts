@@ -669,8 +669,10 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(8)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(7)
+		// Counts include the two bundled web-tool factories appended after the
+		// builder's list (extensions: true → inherited via registration).
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(10)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(9)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -2728,25 +2730,31 @@ describe("resumeAgent — inactivity steering", () => {
 
 describe("formatRunResultText", () => {
 	it("appends the auto-loaded skills note to the response", () => {
-		expect(formatRunResultText("done", undefined, [{ name: "pdf", matched: "ext:.pdf" }])).toBe(
-			"done\n\nSkills auto-loaded from task brief: pdf (ext:.pdf)",
-		)
+		expect(
+			formatRunResultText({ responseText: "done", autoLoadedSkills: [{ name: "pdf", matched: "ext:.pdf" }] }),
+		).toBe("done\n\nSkills auto-loaded from task brief: pdf (ext:.pdf)")
 	})
 
 	it("keeps the plan pointer first and joins multiple skills", () => {
 		expect(
-			formatRunResultText("done", "/plans/x.md", [
-				{ name: "pdf", matched: "ext:.pdf" },
-				{ name: "docx", matched: "kw:word doc" },
-			]),
+			formatRunResultText({
+				responseText: "done",
+				planPath: "/plans/x.md",
+				autoLoadedSkills: [
+					{ name: "pdf", matched: "ext:.pdf" },
+					{ name: "docx", matched: "kw:word doc" },
+				],
+			}),
 		).toBe(
 			"done\n\nPlan saved to: /plans/x.md\n\nSkills auto-loaded from task brief: pdf (ext:.pdf), docx (kw:word doc)",
 		)
 	})
 
 	it("leaves plain responses untouched when nothing was auto-loaded", () => {
-		expect(formatRunResultText("plain", undefined, undefined)).toBe("plain")
-		expect(formatRunResultText("plain", "/plans/x.md", [])).toBe("plain\n\nPlan saved to: /plans/x.md")
+		expect(formatRunResultText({ responseText: "plain" })).toBe("plain")
+		expect(formatRunResultText({ responseText: "plain", planPath: "/plans/x.md", autoLoadedSkills: [] })).toBe(
+			"plain\n\nPlan saved to: /plans/x.md",
+		)
 	})
 })
 
