@@ -206,30 +206,32 @@ export interface AssistantFoldDecision {
 	fold: boolean
 	/** Nearest later tool — its `expanded` flag controls the group's expand state. */
 	expandController: object | undefined
+	/** Nearest earlier tool, so callers can keep narration visible while work runs. */
+	prevTool: object | undefined
 }
 
 export function decideAssistantTextFold(children: object[], selfIdx: number): AssistantFoldDecision {
-	let hasPrevTool = false
+	let prevTool: object | undefined
 	for (let i = selfIdx - 1; i >= 0; i--) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
 		if (isToolLike(child)) {
-			hasPrevTool = true
+			prevTool = child
 			break
 		}
 		if (breaksRun(child)) break
 	}
-	if (!hasPrevTool) return { fold: false, expandController: undefined }
+	if (!prevTool) return { fold: false, expandController: undefined, prevTool: undefined }
 
 	for (let i = selfIdx + 1; i < children.length; i++) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
 		if (breaksRun(child)) break
 		if (isToolLike(child)) {
-			return { fold: true, expandController: child }
+			return { fold: true, expandController: child, prevTool }
 		}
 	}
-	return { fold: false, expandController: undefined }
+	return { fold: false, expandController: undefined, prevTool }
 }
 
 /** Run members other than `self` whose expanded flag differs from the new value. */
@@ -321,8 +323,10 @@ function countFailedTools(run: object[]): number {
 export function buildGroupView(run: object[], theme: any): ToolBlockView {
 	const view = new ToolBlockView()
 	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
-	const last = run[run.length - 1] as any
-	const isInProgress = last?.isPartial === true
+	const running = run.find((member) => (member as any).isPartial === true) as any
+	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
+	const last = (running ?? run[run.length - 1]) as any
+	const isInProgress = running !== undefined
 	const summaryText = buildGroupSummaryText(run, isInProgress)
 
 	// "Worked for Xs" spans the whole run: first start → last end (now while in progress).
@@ -341,7 +345,8 @@ export function buildGroupView(run: object[], theme: any): ToolBlockView {
 		const counts = summaryText ? ` · ${summaryText}` : ""
 		view.setHeader(`${icon} Working…${duration}${counts}${failedSuffix}`, right)
 		view.setBranchMode((s: string) => theme?.fg?.("borderMuted", s) ?? s)
-		view.setExtra([theme?.fg?.("dim", buildCurrentToolLine(last)) ?? buildCurrentToolLine(last)])
+		// The running tool renders its own live output below the row.
+		view.setExtra([])
 	} else {
 		const icon = theme?.fg?.("success", "✓") ?? "✓"
 		const duration = timer ? `Worked for ${timer}` : "Worked"
@@ -409,10 +414,11 @@ function restoreGroupCosmetics(self: any): void {
 function ensureOriginalChildren(self: any): void {
 	const contentBox = self?.contentBox
 	if (!contentBox || !Array.isArray(contentBox.children)) return
-	if (contentBox.children.length === 1 && contentBox.children[0] instanceof MouseRegion) {
-		restoreGroupCosmetics(self)
-		if (typeof self.updateDisplay === "function") self.updateDisplay()
-	}
+	// Only a group-row swap leaves the single-child shape we own; a normal tool
+	// mid-stream also has one (call) region and must not be rebuilt here.
+	if (!groupSwapOriginals.has(contentBox)) return
+	restoreGroupCosmetics(self)
+	if (typeof self.updateDisplay === "function") self.updateDisplay()
 }
 
 export function patchToolGroupRendering(): void {
@@ -447,7 +453,7 @@ export function patchToolGroupRendering(): void {
 	// temporarily-swapped contentBox lets us reuse that full pipeline.
 	const originalRender = proto.render
 
-	proto.render = function patchedGroupRender(width: number): string[] {
+	const patchedGroupRenderInner = function (this: any, width: number): string[] {
 		const parent = getParent(this)
 		if (!parent) {
 			restoreGroupCosmetics(this)
@@ -495,10 +501,21 @@ export function patchToolGroupRendering(): void {
 			return originalRender.call(this, width)
 		}
 
-		// The folded row renders through the FIRST tool of the run so that, in
-		// "tools" mode, the summary leads and the visible interstitial assistant
-		// commentary follows it in place.
-		if (run[0] !== this) return []
+		// The folded row renders through the first completed tool of the run so
+		// that, in "tools" mode, the summary leads the visible narration. A
+		// still-running tool keeps rendering its own live output below the row
+		// (watching a long command must never require expanding the group).
+		// While EVERY member is still running there is nothing completed to
+		// summarize — show the real rows instead of a folded shell.
+		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
+		const firstNonPartial = run.find((member) => (member as any).isPartial !== true)
+		if (!firstNonPartial) return originalRender.call(this, width)
+		const rowTool = firstNonPartial
+		if (rowTool !== this) {
+			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
+			if ((this as any).isPartial === true) return originalRender.call(this, width)
+			return []
+		}
 
 		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
 		const theme = (this as any).ui?.theme
@@ -516,7 +533,8 @@ export function patchToolGroupRendering(): void {
 			return groupView.render(width)
 		}
 
-		const isInProgress = lastTool.isPartial === true
+		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instances
+		const isInProgress = run.some((member) => (member as any).isPartial === true)
 
 		// Capture the pre-fold cosmetics once. The children swap is intentionally
 		// LEFT IN PLACE after rendering: the alt-screen mouse hit-test re-renders
@@ -552,6 +570,19 @@ export function patchToolGroupRendering(): void {
 		delete (this as any)[TOOL_RENDER_CACHE_KEY]
 
 		return result
+	}
+
+	proto.render = function patchedGroupRender(width: number): string[] {
+		try {
+			return patchedGroupRenderInner.call(this, width)
+		} catch {
+			try {
+				restoreGroupCosmetics(this)
+			} catch {
+				/* ignore */
+			}
+			return originalRender.call(this, width)
+		}
 	}
 
 	proto[GROUP_RENDER_PATCH_FLAG] = true
@@ -595,6 +626,9 @@ const ANSI_FG_RESET_RE = /(\x1b\[0m|\x1b\[39m)/g
  * Falls back to theme "dim"/"muted" until a label has been seen.
  */
 let mutedFgCalibrated: string | null | undefined
+
+/** Latest turn boundary: a completed turn's answer never folds when the next turn starts. */
+let lastTurnStartTimestamp = 0
 
 function resolveMutedFg(lines: string[]): string | null {
 	if (mutedFgCalibrated) return mutedFgCalibrated
@@ -672,11 +706,21 @@ function patchAssistantTextFolding(): void {
 		const selfIdx = children.indexOf(this)
 		if (selfIdx === -1) return lines
 
+		// A completed turn's answer stays on screen when the next prompt starts —
+		// only the current turn's interstitial commentary folds.
+		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on AssistantMessageComponent
+		const messageTimestamp = (this as any)?.lastMessage?.timestamp
+		if (typeof messageTimestamp === "number" && messageTimestamp < lastTurnStartTimestamp) return lines
 		const decision = decideAssistantTextFold(children, selfIdx)
 		if (!decision.fold) return lines
+		// Live narration while work is still running must stay visible — keeping
+		// the user oriented matters more than compressing in-flight steps.
+		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instances
+		if ((decision.prevTool as any)?.isPartial === true) return lines
 		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const controller = decision.expandController as any
 		if (controller?.expanded === true) return lines
+		if (controller?.isPartial === true) return lines
 
 		// "all": fold commentary away entirely. "tools": keep it in the timeline
 		// but mute it to the thinking-label color so it reads as secondary.
@@ -811,5 +855,9 @@ export default function registerToolGrouping(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.hasUI) collapseWorkTheme = ctx.ui.theme
+	})
+
+	pi.on("turn_start", async () => {
+		lastTurnStartTimestamp = Date.now()
 	})
 }
