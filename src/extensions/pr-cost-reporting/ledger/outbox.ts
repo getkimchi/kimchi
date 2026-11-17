@@ -186,6 +186,36 @@ export function effectiveClaims(
 	return claims
 }
 
+/**
+ * The same claim resolution, breathing: rows page through bounded reads and the caller's
+ * stretcher runs between pages, so a big production claim history cannot hold the UI loop
+ * for one multi-second burst. Each entity's history stays ordered because an entity's rows
+ * never cross a page boundary out of order — pages are consumed in rowid order per chunk.
+ */
+export async function effectiveClaimsAsync(
+	backend: RecordBackend,
+	accountKey: string,
+	entityIds: readonly string[],
+	stretch: () => Promise<void>,
+	check: () => void,
+): Promise<Map<string, Event | undefined>> {
+	const claims = new Map<string, Event | undefined>(entityIds.map((entityId) => [entityId, undefined]))
+	for (let offset = 0; offset < entityIds.length; offset += 500) {
+		const chunk = entityIds.slice(offset, offset + 500)
+		let after = 0
+		for (;;) {
+			const { rows, nextAfter } = backend.outboxClaimRows(accountKey, chunk, after, 256)
+			if (!rows.length) break
+			for (const row of rows)
+				if (!row.blocked) claims.set(row.entityId, projectClaim(unpack(row, false), claims.get(row.entityId)))
+			after = nextAfter
+			await stretch()
+			check()
+		}
+	}
+	return claims
+}
+
 /** Event CAS and its fulfilled capture intents commit together; unknown or failed translations do not call this. */
 export function observeEvents(
 	agentDir: string,

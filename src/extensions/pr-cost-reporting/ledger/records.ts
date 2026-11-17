@@ -101,6 +101,17 @@ export interface RecordBackend {
 	outboxEntityEvents(accountKey: string, entityId: string): OutboxEvent[]
 	/** Every history row for these entities, each entity decoded at most once per claim pass. */
 	outboxClaims(accountKey: string, entityIds: readonly string[]): OutboxEvent[]
+	/**
+	 * One bounded claim-history read for at most 500 entity IDs (the bind cap), continuing
+	 * after a returned cursor. Rows come back rowid-ordered within the call; callers page
+	 * and breathe between calls so a big claim read cannot hold the UI loop in one burst.
+	 */
+	outboxClaimRows(
+		accountKey: string,
+		entityIds: readonly string[],
+		after: number,
+		limit: number,
+	): { rows: OutboxEvent[]; nextAfter: number }
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
 	outboxStatus(): OutboxAccountStatus[]
@@ -633,6 +644,22 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 		}
 		return rows
 	}
+	const claimRowsPage = (
+		accountKey: string,
+		entityIds: readonly string[],
+		after: number,
+		limit: number,
+	): { rows: OutboxEvent[]; nextAfter: number } => {
+		// The IN list stays within the bind cap; the rowid cursor keeps each entity's
+		// history ordered across pages because the caller consumes pages in order.
+		const positioned = db
+			.query<OutboxEvent & { position: number }, [string, ...string[], number, number]>(
+				`SELECT rowid AS position, ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${entityIds.map(() => "?").join(",")}) AND rowid > ? ORDER BY rowid LIMIT ?`,
+			)
+			.all(accountKey, ...entityIds, after, limit)
+		const rows = positioned.map(({ position, ...event }) => event)
+		return { rows, nextAfter: positioned.length ? positioned[positioned.length - 1].position : after }
+	}
 	const insertEvent = db.query(
 		"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	)
@@ -772,6 +799,7 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 		readTransitionRepositories: () => transitionRepositories.all().map((row) => row.repository),
 		outboxEntityEvents: (accountKey, entityId) => entityEvents.all(accountKey, entityId),
 		outboxClaims: claimRows,
+		outboxClaimRows: claimRowsPage,
 		insertOutboxEvent: (event) =>
 			insertEvent.run(
 				event.id,

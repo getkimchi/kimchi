@@ -169,6 +169,16 @@ export function createMemoryRecords(): RecordBackend {
 				[...events.values()].filter((event) => event.accountKey === accountKey && requested.has(event.entityId)),
 			)
 		},
+		outboxClaimRows: (accountKey, entityIds, after, limit) => {
+			// Insertion order is the memory twin of rowid order; the cursor is an index
+			// into the filtered sequence, which is stable because Map order is stable.
+			const requested = new Set(entityIds)
+			const matching = [...events.values()].filter(
+				(event) => event.accountKey === accountKey && requested.has(event.entityId),
+			)
+			const rows = structuredClone(matching.slice(after, after + limit))
+			return { rows, nextAfter: after + rows.length }
+		},
 		insertOutboxEvent: (event) => {
 			if (events.has(event.id)) throw new Error("Duplicate outbox event")
 			touch()

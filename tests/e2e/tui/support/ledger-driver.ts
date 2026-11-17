@@ -2112,6 +2112,57 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		db.exec("ROLLBACK")
 		db.close()
 	},
+	"claims-parity": async (agent) => {
+		const { createHash } = await import("node:crypto")
+		const { backendFor } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+		const { effectiveClaims, effectiveClaimsAsync } = await import(
+			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+		)
+		const backend = backendFor(agent)
+		const entities: string[] = []
+		backend.tx(() => {
+			for (let index = 0; index < 600; index++) {
+				const entityId = `entity-${index}`
+				entities.push(entityId)
+				for (let revision = 1; revision <= 3; revision++) {
+					const event = {
+						id: `ev-${index}-${revision}`,
+						source: "kimchi",
+						entityId,
+						revision: String(revision),
+						startedAt: `2026-01-0${revision}T00:00:00.000Z`,
+						work: {},
+					}
+					const body = Buffer.from(JSON.stringify(event))
+					backend.insertOutboxEvent({
+						id: `ev-${index}-${revision}`,
+						accountKey: "account",
+						entityId,
+						kind: "work",
+						body,
+						hash: createHash("sha256").update(body).digest("hex"),
+						createdAt: index * 10 + revision,
+						ackedAt: null,
+						blocked: revision === 2 && index % 7 === 0 ? "conflict" : "",
+					})
+				}
+			}
+		})
+		const sync = effectiveClaims(backend, "account", entities)
+		let stretches = 0
+		const async = await effectiveClaimsAsync(
+			backend,
+			"account",
+			entities,
+			async () => {
+				stretches++
+			},
+			() => {},
+		)
+		let same = sync.size === async.size
+		for (const [id, event] of sync) if (JSON.stringify(event) !== JSON.stringify(async.get(id))) same = false
+		out({ same, entities: sync.size, stretches })
+	},
 	"pre-migrate": async (agent) => {
 		// Strip a ledger to its pre-migration shape: no materialized repository
 		// set and no additive imported_at index, with user_version still 1.

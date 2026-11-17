@@ -28,6 +28,7 @@ import {
 	acknowledgeBatch,
 	deliveryRetry,
 	effectiveClaims,
+	effectiveClaimsAsync,
 	type Fact,
 	observeEvents,
 	pendingBatch,
@@ -1356,7 +1357,7 @@ async function translateGroup(
 			repositories,
 			producer,
 			check,
-			(account, entities) => effectiveClaims(backend, account, entities),
+			(account, entities) => effectiveClaimsAsync(backend, account, entities, stretch, check),
 			touched,
 			stretch,
 		)

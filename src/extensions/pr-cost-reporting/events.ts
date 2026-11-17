@@ -63,7 +63,7 @@ export async function buildEvents(
 	repositories: Map<string, RepositoryIdentity>,
 	producerId: string,
 	check: () => void,
-	existingClaims: (account: string, entityIds: readonly string[]) => ReadonlyMap<string, Event | undefined>,
+	existingClaims: (account: string, entityIds: readonly string[]) => Promise<ReadonlyMap<string, Event | undefined>>,
 	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
 	stretch: () => Promise<void> = preludeStretch(),
 ): Promise<CommonEvents> {
@@ -169,7 +169,7 @@ export async function buildEvents(
 			const key = accountKey(scope.account)
 			const entityId = stableID("kimchi", "request", key, producerId, requestId.toLowerCase())
 			if (included && !claimAccounts.has(key)) {
-				const fetched = existingClaims(key, requestEntities.get(key) ?? [entityId])
+				const fetched = await existingClaims(key, requestEntities.get(key) ?? [entityId])
 				for (const [id, event] of fetched) claims.set(`${key}\u0000${id}`, event)
 				claimAccounts.add(key)
 			}

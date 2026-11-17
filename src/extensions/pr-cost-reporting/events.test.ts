@@ -33,7 +33,7 @@ it("breathes the stretcher while parsing and attributing masses of requests", as
 		new Map(),
 		producer,
 		() => {},
-		() => new Map(),
+		async () => new Map(),
 		undefined,
 		stretch,
 	)
@@ -66,7 +66,7 @@ it("breathes the stretcher while parsing and attributing masses of requests", as
 		new Map(),
 		producer,
 		() => {},
-		() => new Map(),
+		async () => new Map(),
 		undefined,
 		stretch,
 	)
