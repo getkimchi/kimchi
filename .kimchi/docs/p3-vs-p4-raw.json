@@ -1,0 +1,128 @@
+{
+  "p3": {
+    "dir": "/home/sandbox/poke-arms/runs/poke-arm-p3-083121",
+    "frames": 5139,
+    "last_ledger": "pressed: a,a,a,a,a | step 5139 | loc=Route 3 (1,2) money=3186 badges=1 party=2",
+    "mem_root": "/home/sandbox/poke-arms/runs/poke-arm-p3-083121/scratch/.config/kimchi/memory",
+    "rounds": 0,
+    "flat_rounds": 0,
+    "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "total_tokens": 0,
+      "reasoning_output_tokens": 0
+    },
+    "tool_errors": 188,
+    "turns": 7768,
+    "memory_search_calls": 18,
+    "hours_wall": 73.2,
+    "counts": {
+      "embedding": 121362,
+      "extraction": 84566,
+      "triage": 3346,
+      "valuation": 2608,
+      "recall": 559,
+      "digest": 386
+    },
+    "ledgerTokens": {
+      "embedding": 5505876,
+      "extraction": 193917754,
+      "triage": 25656871,
+      "valuation": 17424857,
+      "recall": 180887,
+      "digest": 235303
+    },
+    "trace": {},
+    "vectors": 71618,
+    "captured_hashes": 1480240,
+    "state": "done",
+    "goal": "first-badge",
+    "goal_badges": 1
+  },
+  "p4": {
+    "dir": "/home/sandbox/poke-arms/runs/poke-arm-p4-083121",
+    "frames": 10000,
+    "last_ledger": "pressed: up,up,up | step 9999 | loc=Route 2 (0,1) money=24 badges=0 party=3",
+    "mem_root": null,
+    "rounds": 0,
+    "flat_rounds": 0,
+    "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "total_tokens": 0,
+      "reasoning_output_tokens": 0
+    },
+    "tool_errors": 2069,
+    "turns": 14177,
+    "memory_search_calls": 0,
+    "hours_wall": 61.9,
+    "counts": {
+      "embedding": 0,
+      "extraction": 0,
+      "triage": 0,
+      "valuation": 0,
+      "recall": 0,
+      "digest": 0
+    },
+    "ledgerTokens": {
+      "embedding": 0,
+      "extraction": 0,
+      "triage": 0,
+      "valuation": 0,
+      "recall": 0,
+      "digest": 0
+    },
+    "trace": {},
+    "vectors": null,
+    "captured_hashes": 0,
+    "state": "done",
+    "goal": null,
+    "goal_badges": null
+  },
+  "p2": {
+    "dir": "/home/sandbox/poke-arms/runs/poke-arm-p2-130922",
+    "frames": 7620,
+    "last_ledger": "pressed: right,up,up,up,up | step 7619 | loc=Viridian City (1,1) money=391 badges=0 party=2",
+    "mem_root": "/home/sandbox/poke-arms/runs/poke-arm-p2-130922/scratch/.config/kimchi/memory",
+    "rounds": 0,
+    "flat_rounds": 0,
+    "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "total_tokens": 0,
+      "reasoning_output_tokens": 0
+    },
+    "tool_errors": 160,
+    "turns": 8945,
+    "memory_search_calls": 58,
+    "hours_wall": 47.0,
+    "counts": {
+      "embedding": 46469,
+      "extraction": 27632,
+      "triage": 937,
+      "valuation": 698,
+      "recall": 615,
+      "digest": 116
+    },
+    "ledgerTokens": {
+      "embedding": 2139395,
+      "extraction": 73267020,
+      "triage": 8288443,
+      "valuation": 8044774,
+      "recall": 270715,
+      "digest": 93004
+    },
+    "trace": {},
+    "vectors": 96380,
+    "captured_hashes": 1166730,
+    "state": "round",
+    "goal": null,
+    "goal_badges": null
+  }
+}
