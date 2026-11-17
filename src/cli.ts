@@ -64,6 +64,7 @@ import activityExtension from "./extensions/activity.js"
 import idleGcExtension from "./extensions/adaptive-gc.js"
 import { installAgentEndWillRetryPatch } from "./extensions/agent-end-will-retry.js"
 import agentsExtension from "./extensions/agents/index.js"
+import agentsRulesExtension from "./extensions/agents-rules/index.js"
 import { WEB_TOOL_MANAGED_FACTORIES } from "./extensions/agents/manager/subagent-web-tools.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import { artifactRecorderExtension } from "./extensions/artifacts/recorder.js"
@@ -948,6 +949,7 @@ async function cliMain(): Promise<void> {
 				explorationGuardExtension,
 				reviewWriteGuardExtension,
 				...enabledExtensionFactories([
+					{ id: "extensions.agents-rules", factory: agentsRulesExtension },
 					{ id: "extensions.lsp", factory: lspExtension },
 					{ id: "extensions.dap", factory: dapExtension },
 				] satisfies ManagedExtensionFactory[]),
