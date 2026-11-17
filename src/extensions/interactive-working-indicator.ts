@@ -41,6 +41,9 @@ export interface CompactionEndEvent {
  * slot from the event's own source distinction: auto reasons (threshold /
  * overflow) only fire inside run lifecycle, so a turn follows, while manual
  * /compact fires the same events with no following turn and must not spin.
+ * Mid-turn auto-compaction (upstream fires it from prepareRequest too) is
+ * covered by the same rule: the turn's next request follows immediately, so
+ * restoring the working spinner there is truthful.
  *
  * Scope: prompts accepted by the interactive input loop are covered, and so
  * is any run that auto-compacts first (including startup initialMessage
@@ -99,7 +102,14 @@ export const showWorkingIndicatorAfterAutoCompaction = (
 /**
  * Wrap a handleEvent implementation so a settled auto-compaction re-arms the
  * working spinner after the original handler ran (it clears the compaction
- * indicator; arming after it fills the slot rather than racing it).
+ * indicator; arming after it fills the slot rather than racing it), and a
+ * settled RUN clears it: agent_settled fires in _startRun's finally — after
+ * the post-run compaction and after every turn's agent_end, never while a
+ * turn is live — so the clear is the symmetric transition for runs that
+ * end with no following turn (compaction-queue flushes, failure emissions,
+ * overflow-retry exhaustion). Without it, a re-armed spinner on such a run
+ * spins at an idle prompt: the input loop is parked inside getUserInput,
+ * past the wrapper's re-entry clear.
  */
 export function wrapHandleEvent<E extends { type: string }>(
 	handleEvent: (this: WorkingIndicatorHost, event: E) => Promise<void> | void,
@@ -107,6 +117,7 @@ export function wrapHandleEvent<E extends { type: string }>(
 	return async function patchedHandleEvent(this: WorkingIndicatorHost, event: E): Promise<void> {
 		await handleEvent.call(this, event)
 		if (isCompactionEnd(event)) showWorkingIndicatorAfterAutoCompaction(this, event)
+		else if (event.type === "agent_settled") this.clearStatusIndicator("working")
 	}
 }
 

@@ -129,20 +129,37 @@ describe("wrapHandleEvent", () => {
 		expect(seen).toEqual(["compaction_end", "turn_start"])
 		expect(host.showWorkingStatusIndicator).not.toHaveBeenCalled()
 	})
+
+	it("clears the working indicator when a run settles — the symmetric transition for runs that end with no following turn", async () => {
+		const host = fakeHost()
+		const wrapped = wrapHandleEvent(async () => {})
+		// An auto-compaction re-arms mid-run…
+		await wrapped.call(host, { type: "compaction_end", reason: "threshold" })
+		expect(host.showWorkingStatusIndicator).toHaveBeenCalledTimes(1)
+		// …and the run then settles with no turn queued — the settle clears it.
+		await wrapped.call(host, { type: "agent_settled" })
+		expect(host.clearStatusIndicator).toHaveBeenCalledWith("working")
+	})
 })
 
 describe("applyInteractiveWorkingIndicatorPatch", () => {
-	it("wraps the prototype method exactly once across repeated applications", async () => {
+	it("wraps both prototype methods exactly once across repeated applications", async () => {
 		const imProto = InteractiveMode.prototype as unknown as {
 			getUserInput?: (this: unknown) => Promise<string>
+			handleEvent?: (this: unknown, event: { type: string }) => Promise<void>
 			__kimchiWorkingIndicatorPatched?: boolean
 		}
-		const original = imProto.getUserInput
+		const originalGetUserInput = imProto.getUserInput
+		const originalHandleEvent = imProto.handleEvent
 		let upstreamCalls = 0
-		// Fake upstream original: the patch wraps whatever getUserInput exists.
+		let upstreamEvents = 0
+		// Fake upstream originals: the patch wraps whatever exists.
 		imProto.getUserInput = function fakeUpstream(this: unknown) {
 			upstreamCalls++
 			return Promise.resolve("from upstream")
+		}
+		imProto.handleEvent = async function fakeUpstreamEvent(this: unknown) {
+			upstreamEvents++
 		}
 		imProto.__kimchiWorkingIndicatorPatched = undefined
 		try {
@@ -154,6 +171,7 @@ describe("applyInteractiveWorkingIndicatorPatch", () => {
 				showWorkingStatusIndicator: vi.fn(),
 				clearStatusIndicator: vi.fn(),
 				getUserInput: imProto.getUserInput as (this: unknown) => Promise<string>,
+				handleEvent: imProto.handleEvent as (this: unknown, event: { type: string }) => Promise<void>,
 			} as unknown as Parameters<typeof showWorkingIndicatorForAcceptedPrompt>[0]
 			const result = await imProto.getUserInput?.call(host)
 			// One wrap: the upstream original ran once per call, not once per patch
@@ -162,8 +180,16 @@ describe("applyInteractiveWorkingIndicatorPatch", () => {
 			expect(result).toBe("from upstream")
 			expect(host.showWorkingStatusIndicator).toHaveBeenCalledTimes(1)
 			expect(host.clearStatusIndicator).toHaveBeenCalledTimes(1)
+			// The handleEvent wrap: the installed method forwards each event to the
+			// upstream original once and re-arms on a settled auto-compaction —
+			// a manual compaction_end does not arm.
+			await imProto.handleEvent?.call(host, { type: "compaction_end", reason: "threshold" })
+			await imProto.handleEvent?.call(host, { type: "compaction_end", reason: "manual" })
+			expect(upstreamEvents).toBe(2)
+			expect(host.showWorkingStatusIndicator).toHaveBeenCalledTimes(2)
 		} finally {
-			imProto.getUserInput = original
+			imProto.getUserInput = originalGetUserInput
+			imProto.handleEvent = originalHandleEvent
 			imProto.__kimchiWorkingIndicatorPatched = undefined
 		}
 	})
