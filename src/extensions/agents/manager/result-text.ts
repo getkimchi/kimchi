@@ -23,8 +23,5 @@ export function formatRunResultText(
 	const autoLoadNote = autoLoadedSkills?.length
 		? `\n\nSkills auto-loaded from task brief: ${autoLoadedSkills.map((s) => `${s.name} (${s.matched})`).join(", ")}`
 		: ""
-	const planNote = planPath
-		? `\n\nPlan saved to: ${planPath}\nOnce approved, apply small plan updates with the edit tool at ${planPath} as work reveals changes.`
-		: ""
-	return `${responseText}${planNote}${autoLoadNote}`
+	return planPath ? `${responseText}\n\nPlan saved to: ${planPath}${autoLoadNote}` : `${responseText}${autoLoadNote}`
 }
