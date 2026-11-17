@@ -1,7 +1,7 @@
 /**
  * Side chat (TUI fullscreen only). Always loaded: /btw, its shortcuts and
  * the docked pane are core UI. Only the floating "Add to side chat" button
- * is opt-in — turn it on via /resources → 'Side chat "Add to chat" button'
+ * is opt-in — turn it on via /resources → 'Side chat "Add to side chat" button'
  * (`extensions.side-chat`), restart required.
  *
  * A Cursor-style side chat docked to the right of the main session:

@@ -62,7 +62,8 @@ async function selectText(terminal: Terminal, text: string): Promise<void> {
 	const col = lines[row].indexOf(text)
 	terminal.mouseDown(col, row)
 	terminal.mouseTo(col + text.length - 1, row)
-	await poll(() => true, 100, 1_000)
+	// Let the app process the press+drag before the release, as a real drag would.
+	await new Promise((resolve) => setTimeout(resolve, 100))
 	terminal.mouseUp(col + text.length - 1, row)
 }
 

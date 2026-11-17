@@ -96,7 +96,7 @@ describe("side chat extension", () => {
 		})
 	})
 
-	it('registers no pill when the "Add to chat" button resource is off, but keeps /btw and the shortcuts', async () => {
+	it('registers no pill when the "Add to side chat" button resource is off, but keeps /btw and the shortcuts', async () => {
 		pillResource.enabled = false
 		try {
 			const pi = setup()
