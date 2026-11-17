@@ -22,14 +22,28 @@ import {
  * host extension's session_start/session_shutdown handlers.
  */
 
+/**
+ * A pending attachment assembled before submission. Clipboard pastes and
+ * editor path drops both render a `[Image #N]` marker inline at the cursor
+ * when they attach, carrying that number in `inlineId`; `null` is kept for
+ * attachments without an inline origin.
+ */
+export interface PendingImage {
+	image: ImageContent
+	/** Inline `[Image #N]` number assigned at paste/drop time. */
+	inlineId: number | null
+	/** Absolute file path for dropped-path images. */
+	sourcePath?: string
+}
+
 /** A submission retained between the gate intercepting it and its outcome. */
 export interface RetainedSubmission {
 	/** Draft text exactly as submitted (the text restored into the editor). */
 	text: string
 	/** Images that arrived on the input event itself (upstream/drag-drop). */
 	incoming: ImageContent[]
-	/** Clipboard-pasted attachments pending at submission time. */
-	pasted: ImageContent[]
+	/** Clipboard-pasted / editor-dropped attachments pending at submission time. */
+	pasted: PendingImage[]
 	/** Typed-path attachments keyed by resolved absolute path. */
 	paths: Map<string, ImageContent>
 	/** Vision-gate session generation captured at assembly time. */
@@ -140,7 +154,7 @@ export function resetVisionGateState(): void {
 export function mergeRetainedSubmission(input: {
 	text: string
 	incoming: ImageContent[]
-	pending: ImageContent[]
+	pending: PendingImage[]
 	pathMatches: PathAttachment[]
 	retained: RetainedSubmission | null
 	generation: number
