@@ -68,12 +68,17 @@ export function createExtensionApi(): {
 	const getCommands = vi.fn<ExtensionAPI["getCommands"]>(() => [])
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
+	const getFlag = vi.fn<ExtensionAPI["getFlag"]>(() => undefined)
 	const registeredTools = new Map<string, ToolDefinition>()
 	const activeToolNames = new Set<string>()
 	const registerTool = vi.fn((tool: ToolDefinition) => {
 		registeredTools.set(tool.name, tool)
 		activeToolNames.add(tool.name)
 	}) as ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
+	const unregisterTool = vi.fn((name: string) => {
+		activeToolNames.delete(name)
+		return registeredTools.delete(name)
+	})
 	const setActiveTools = vi.fn((toolNames: string[]) => {
 		activeToolNames.clear()
 		for (const name of toolNames) activeToolNames.add(name)
@@ -115,7 +120,9 @@ export function createExtensionApi(): {
 			on,
 			registerCommand,
 			registerFlag,
+			getFlag,
 			registerTool,
+			unregisterTool,
 			getAllTools,
 			getSettings: () => ({}),
 			getActiveTools,
@@ -150,9 +157,9 @@ export function createExtensionApi(): {
 			return results
 		},
 		getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0] {
-			const call = registerTool.mock.calls.find(([tool]) => tool.name === name)
-			if (!call) throw new Error(`Tool ${name} was not registered`)
-			return call[0]
+			const tool = registeredTools.get(name)
+			if (!tool) throw new Error(`Tool ${name} was not registered`)
+			return tool
 		},
 		getRegisteredCommand(name: string): Parameters<ExtensionAPI["registerCommand"]>[1] {
 			const call = registerCommand.mock.calls.find(([cmd]) => cmd === name)

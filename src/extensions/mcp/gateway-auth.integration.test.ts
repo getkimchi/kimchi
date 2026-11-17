@@ -3,10 +3,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
-import { createContext } from "../__mocks__/context.js"
+import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
 vi.mock("../../config.js", () => ({
@@ -130,26 +129,13 @@ describe("org-gateway provider authentication", () => {
 			expect(provider).toBe(KIMCHI_PROVIDER_ID)
 			return currentToken
 		})
-		const ctx = createContext({
+		const ctx = createToolContext({
 			cwd,
 			hasUI: false,
 			ui: undefined,
 			modelRegistry: { getApiKeyForProvider: providerToken },
 		})
 		const host = createExtensionApi()
-		const api = {
-			...host.api,
-			getFlag: () => undefined,
-			unregisterTool: (name: string) => {
-				const tool = host.getRegisteredTools().find((candidate) => candidate.name === name)
-				if (tool === undefined) return false
-				host.registerTool.mock.calls.splice(
-					host.registerTool.mock.calls.findIndex(([candidate]) => candidate.name === name),
-					1,
-				)
-				return true
-			},
-		} as unknown as typeof host.api
 		createMcpAdapter({
 			config: {
 				mcpServers: {
@@ -157,7 +143,7 @@ describe("org-gateway provider authentication", () => {
 				},
 				settings: { autoAuth: false, directTools: false, toolPrefix: "none" },
 			},
-		})(api)
+		})(host.api)
 		await host.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
 		const mcp = await vi.waitFor(
 			() => {
@@ -172,7 +158,7 @@ describe("org-gateway provider authentication", () => {
 				{ tool: "echo", server: GATEWAY_SERVER_NAME, args: { text } },
 				undefined,
 				undefined,
-				ctx as ExtensionToolContext,
+				ctx,
 			)) as { content: Array<{ type: string; text?: string }> }
 
 		const first = await call("first")
@@ -186,5 +172,7 @@ describe("org-gateway provider authentication", () => {
 			{ authorization: `Bearer ${ROTATED_TOKEN}`, organizationId: ORG_ID },
 		])
 		expect(providerToken.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+		await host.emit("session_shutdown", { type: "session_shutdown" }, ctx)
 	}, 30_000)
 })
