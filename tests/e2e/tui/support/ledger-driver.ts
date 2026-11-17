@@ -20,6 +20,7 @@
 
 import { Database } from "bun:sqlite"
 import { mkdirSync, readdirSync, readSync, statSync, writeSync } from "node:fs"
+import { createRequire } from "node:module"
 import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline"
 import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
@@ -35,6 +36,7 @@ import {
 	workRecordsImportedPresent,
 } from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
+import { reportingDirectory } from "../../../../src/extensions/pr-cost-reporting/queue.js"
 import {
 	readWorkRecords,
 	readWorkRecordsAsync,
@@ -2097,6 +2099,31 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 			store.close()
 		}
 		out(readTransitionRepositories(agent))
+	},
+	"hold-raw": async (agent, ms) => {
+		// Hold the writer lock WITHOUT opening through openStore: the additive/required
+		// applies must not run in the holder, so the contended reader sees the pre-migration
+		// schema exactly.
+		const { Database } = createRequire(import.meta.url)("bun:sqlite") as typeof import("bun:sqlite")
+		const db = new Database(join(reportingDirectory(agent), "ledger.db"))
+		db.exec("BEGIN IMMEDIATE")
+		out({ held: true })
+		await new Promise((resolve) => setTimeout(resolve, Number(ms ?? "0")))
+		db.exec("ROLLBACK")
+		db.close()
+	},
+	"pre-migrate": async (agent) => {
+		// Strip a ledger to its pre-migration shape: no materialized repository
+		// set and no additive imported_at index, with user_version still 1.
+		const store = openStore(agent)
+		store.db.exec("DROP TRIGGER IF EXISTS work_records_repository_probe")
+		store.db.exec("DROP TABLE IF EXISTS transition_repositories")
+		store.db.exec("DROP INDEX IF EXISTS work_records_imported")
+		store.close()
+		out({ preMigrated: true })
+	},
+	"records-since": (agent, arg) => {
+		out(readRecords(agent, { modifiedSince: Number(arg ?? "0") }))
 	},
 	"repository-backfill": async (agent) => {
 		// Odd rows first: the insert-time trigger must skip a damaged body and a non-text

@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, onTestFinished } from "vitest"
 import type { WorkRecord } from "../../work-attribution/summary.js"
 import { createMemoryRecords } from "./memory-records.js"
 import {
@@ -311,6 +311,51 @@ describe("records conformance (SQLite via Bun driver)", { skip: isBun, timeout: 
 			rmSync(dir, { recursive: true, force: true })
 		}
 	})
+	it("a held writer during a pre-migration open waits for the repository set instead of failing", async () => {
+		const dir = agentDir()
+		let holder: ReturnType<typeof spawn> | undefined
+		try {
+			for (const repository of ["/b", "/a", "/b"])
+				driver(
+					"capture",
+					dir,
+					JSON.stringify({ ...records[3], type: "file_transition", repository, transitionId: repository }),
+				)
+			driver("pre-migrate", dir)
+			holder = spawn("bun", [DRIVER, "hold-raw", dir, "1500"], { cwd: ROOT })
+			onTestFinished(() => {
+				if (holder && holder.exitCode === null) holder.kill("SIGKILL")
+			})
+			await new Promise<void>((resolve) => holder?.stdout?.once("data", () => resolve()))
+			// Unfixed behavior: the busy-skipped additive apply left the backend throwing
+			// `no such table: transition_repositories`; the required apply now waits for the
+			// holder and backfills before the read.
+			expect(driver("transition-repositories", dir)).toEqual(["/a", "/b"])
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("a held writer during an index-absent open reads unhinted instead of erroring", async () => {
+		const dir = agentDir()
+		let holder: ReturnType<typeof spawn> | undefined
+		try {
+			for (const record of records) driver("capture", dir, JSON.stringify(record))
+			driver("pre-migrate", dir)
+			holder = spawn("bun", [DRIVER, "hold-raw", dir, "1500"], { cwd: ROOT })
+			onTestFinished(() => {
+				if (holder && holder.exitCode === null) holder.kill("SIGKILL")
+			})
+			await new Promise<void>((resolve) => holder?.stdout?.once("data", () => resolve()))
+			// Unfixed behavior: the absent index was misdetected as present and the hinted
+			// read threw `no such index: work_records_imported`.
+			const rows = driver("records-since", dir, "0") as WorkRecord[]
+			expect(rows.length).toBeGreaterThanOrEqual(records.length)
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
 	it("backfills the materialized repository set for a ledger written before it existed", () => {
 		const dir = agentDir()
 		try {

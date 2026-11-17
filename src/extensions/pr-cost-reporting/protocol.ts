@@ -373,7 +373,6 @@ const schemas: Record<string, readonly Field[]> = {
 const canonicalMemo = new Map<string, string>()
 const nanosMemo = new Map<string, bigint>()
 const MEMO_LIMIT = 2_048
-const ZERO_TIME_BOUND = "0001-01-01T00:00:00Z"
 const FAR_FUTURE_BOUND = "2200-01-01T00:00:00Z"
 let zeroTimeNanos: bigint | undefined
 let farFutureNanos: bigint | undefined

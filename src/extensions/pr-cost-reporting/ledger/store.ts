@@ -23,6 +23,7 @@ import { dirname, join } from "node:path"
 import { reportingDirectory } from "../queue.js"
 import {
 	LEDGER_ADDITIVE_SCHEMA,
+	LEDGER_REQUIRED_SCHEMA,
 	LEDGER_SCHEMA,
 	LEDGER_TRANSITION_BACKFILL,
 	META_PROJECTION_VERSION,
@@ -159,23 +160,14 @@ export function openStore(agentDir: string): LedgerStore {
 					.immediate()
 			}
 			// Indexes added after SCHEMA_VERSION shipped still land on pre-existing ledgers: every statement is
-			// idempotent, so applying them on each open keeps older databases at size with fresh ones. A held
-			// writer lock skips the pass rather than stalling a reader; the next open reapplies it.
+			// idempotent, so applying them on each open keeps older databases at size with fresh ones. These
+			// are optional — readers probe their presence — so a held writer lock skips the pass rather than
+			// stalling a reader; the next open reapplies it.
 			ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS / 20}`)
 			try {
 				ledger
 					.transaction(() => {
-						// A ledger that predates the materialized repository set backfills its
-						// existing rows the first time the table appears; every later open is
-						// the plain no-op apply. Detection and population share the apply's
-						// immediate transaction, so a crash leaves the table absent for a retry.
-						const materialized = ledger
-							.query<{ count: number }, []>(
-								"SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'transition_repositories'",
-							)
-							.get()
 						ledger.exec(LEDGER_ADDITIVE_SCHEMA)
-						if ((materialized?.count ?? 0) === 0) ledger.exec(LEDGER_TRANSITION_BACKFILL)
 					})
 					.immediate()
 			} catch (error) {
@@ -185,6 +177,33 @@ export function openStore(agentDir: string): LedgerStore {
 			} finally {
 				ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`)
 			}
+			// Required objects: backend construction reads transition_repositories unconditionally, so
+			// this apply is never skipped on a busy writer — the busy error propagates to the open's
+			// retry loop (which re-attempts whole) instead of handing out a backend whose schema it cannot
+			// read. The lock-free probe keeps the steady-state open read-only, so WAL readers stay
+			// concurrent while nobody is migrating; only the one-time migration takes the write lock.
+			// A ledger that predates the materialized repository set backfills its existing rows the first
+			// time the table appears. Detection, creation, and population share one immediate
+			// transaction, so a crash leaves the table absent and the next open retries whole.
+			const requiredPresent = ledger
+				.query<{ count: number }, []>(
+					"SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'transition_repositories'",
+				)
+				.get()
+			if ((requiredPresent?.count ?? 0) === 0)
+				ledger
+					.transaction(() => {
+						// Re-read inside the write lock: another process may have finished the
+						// migration between the outer lock-free probe and this transaction.
+						const again = ledger
+							.query<{ count: number }, []>(
+								"SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'transition_repositories'",
+							)
+							.get()
+						ledger.exec(LEDGER_REQUIRED_SCHEMA)
+						if ((again?.count ?? 0) === 0) ledger.exec(LEDGER_TRANSITION_BACKFILL)
+					})
+					.immediate()
 			return {
 				db: ledger,
 				path,

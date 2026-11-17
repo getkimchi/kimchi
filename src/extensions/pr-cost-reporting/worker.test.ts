@@ -45,6 +45,12 @@ import {
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 vi.mock("../work-attribution/costs.js", async (original) => ({ ...(await original<typeof costs>()) }))
+// The prelude's cost report runs through costs-sync: transparent delegation,
+// recorded, so the stretcher-sharing test can read the calls.
+vi.mock("../work-attribution/cost-sync.js", async (original) => {
+	const actual = await original<typeof import("../work-attribution/cost-sync.js")>()
+	return { ...actual, readWorkCostReportAsync: vi.fn(actual.readWorkCostReportAsync) }
+})
 vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
 vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], units: [], unresolved: [] })) }))
 vi.mock("./ledger/outbox.js", async (original) => ({ ...(await original<typeof outbox>()), observeEvents: vi.fn() }))
@@ -1932,6 +1938,46 @@ describe("prelude stretching of a big group", () => {
 		expect(pagesForBigWork.length).toBeGreaterThanOrEqual(3)
 		pagedRead.mockRestore()
 		wholeRead.mockRestore()
+	})
+
+	it("the cost report shares the prelude's stretcher with the event translation", async () => {
+		await seedLinked()
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [],
+			units: [],
+			unresolved: [{ requestId, reason: "billing", recordHashes: [] }],
+		})
+		// A second work with records only: its pending translation drives the reporting
+		// prelude through the paged read and the cost report call.
+		const source = join(directory, "work-attribution", "source.jsonl")
+		const work = "75757575-7575-4575-8575-757575757575"
+		let lines = ""
+		for (let index = 0; index < 3; index++) {
+			const hex = String(index).padStart(12, "0")
+			lines += `${JSON.stringify({
+				version: 1,
+				type: "request",
+				workId: work,
+				sessionId: "records-only",
+				requestId: `${hex.slice(0, 8)}-${hex.slice(8)}-4777-8777-${hex}`,
+				startedAt: "2026-10-04T12:00:00.000Z",
+				recordedAt: "2026-10-04T12:00:00.000Z",
+				scope: { account: "10101010-1010-4101-8101-101010101010", repository: "/other/.git" },
+			})}\n`
+		}
+		await appendFile(source, lines)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const costSync = (await import("../work-attribution/cost-sync.js")) as unknown as {
+			readWorkCostReportAsync: { mock: { calls: unknown[][] } }
+		}
+		const reportStretch = costSync.readWorkCostReportAsync.mock.calls.at(-1)?.[2] as (() => Promise<void>) | undefined
+		// The translation's stretcher is buildEvents' last parameter.
+		const eventsStretch = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.at(-1) as
+			| (() => Promise<void>)
+			| undefined
+		expect(typeof reportStretch).toBe("function")
+		expect(reportStretch).toBe(eventsStretch)
 	})
 
 	it("crossing the row budget yields in the prelude's read and parse loops", async () => {

@@ -1329,7 +1329,7 @@ async function translateGroup(
 		}
 		// The report shares the prelude's stretch cadence: a big group breathes between the calculation's
 		// 2,000-step or ~50ms stretches instead of owning the loop end-to-end.
-		const { report } = await readWorkCostReportAsync(agentDir, records, preludeStretch())
+		const { report } = await readWorkCostReportAsync(agentDir, records, stretch)
 		const { repositories, settled: identitiesSettled } = await repositoryIdentities(
 			agentDir,
 			records,

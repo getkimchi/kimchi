@@ -356,7 +356,7 @@ export function workRecordsImportedPresent(db: {
 	return (
 		db
 			.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='index' AND name = 'work_records_imported'")
-			.get() !== undefined
+			.get() != null
 	)
 }
 
@@ -576,9 +576,18 @@ export function ledgerHasWorkOutput(agentDir: string, workId: string): boolean {
 	return backendFor(agentDir).hasProjectionOutput(workId)
 }
 
-/** The production backend over the C1 store. */
+/** The production backend over the C1 store; a failed construction never leaks the connection. */
 function sqliteBackend(agentDir: string): RecordBackend {
 	const store: LedgerStore = openStore(agentDir)
+	try {
+		return sqliteBackendFor(store)
+	} catch (error) {
+		store.close()
+		throw error
+	}
+}
+
+function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const db = store.db
 	if (ensureProjectionVersion(store)) {
 		db.query("INSERT OR IGNORE INTO work_dirty (work_id) SELECT DISTINCT work_id FROM work_records").run()
