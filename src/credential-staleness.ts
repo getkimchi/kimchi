@@ -26,6 +26,10 @@ type PersistentRejections = {
 	providers: Record<string, string[]>
 }
 
+// Production has exactly one authoritative sidecar location. The optional
+// overrides on public functions below are storage-test injection, not alternate
+// credential layouts; this prevents writers and readers from deriving separate
+// state files from models.json, auth.json, and the environment.
 function defaultRejectionsPath(): string | undefined {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	return agentDir ? join(agentDir, CREDENTIAL_REJECTIONS_FILENAME) : undefined
@@ -33,11 +37,6 @@ function defaultRejectionsPath(): string | undefined {
 
 function rejectionsPath(statePath?: string): string | undefined {
 	return statePath ?? defaultRejectionsPath()
-}
-
-/** The rejection sidecar belonging to an auth.json / models.json directory. */
-export function credentialRejectionsPath(credentialStorePath: string): string {
-	return join(dirname(credentialStorePath), CREDENTIAL_REJECTIONS_FILENAME)
 }
 
 function fingerprint(apiKey: string): string {
@@ -48,7 +47,9 @@ function readPersistentRejections(path: string): PersistentRejections {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
 		if (!parsed || typeof parsed !== "object") return { version: 1, providers: {} }
-		const providers = (parsed as { providers?: unknown }).providers
+		const document = parsed as { version?: unknown; providers?: unknown }
+		if (document.version !== 1) return { version: 1, providers: {} }
+		const providers = document.providers
 		if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
 			return { version: 1, providers: {} }
 		}
@@ -65,23 +66,29 @@ function readPersistentRejections(path: string): PersistentRejections {
 	}
 }
 
-function waitForLockRetry(): void {
-	// proper-lockfile's sync API has no retry option. The critical section is a
-	// tiny JSON read/modify/write, so short bounded waits avoid lost updates
-	// without changing the existing synchronous auth-error call sites.
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+function waitForLockRetry(delayMs: number): void {
+	// proper-lockfile's sync API has no retry option. Keep the existing
+	// synchronous call sites and back off between lock attempts.
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs)
 }
 
 function updatePersistentRejections(path: string, update: (state: PersistentRejections) => PersistentRejections): void {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
 	closeSync(openSync(path, "a", 0o600))
 	let release: (() => void) | undefined
-	for (let attempt = 0; attempt < 50 && !release; attempt++) {
+	const retryStartedAt = Date.now()
+	let retryDelayMs = 10
+	while (!release) {
 		try {
 			release = lockSync(path, { realpath: false, stale: 30_000 })
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || attempt === 49) throw error
-			waitForLockRetry()
+			const remainingMs = 35_000 - (Date.now() - retryStartedAt)
+			if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || remainingMs <= 0) throw error
+			// Outlast proper-lockfile's 30s stale threshold before giving up; a
+			// bounded retry cannot mask the original 401 forever, but ordinary
+			// contention must not silently lose the restart-protection mark.
+			waitForLockRetry(Math.min(retryDelayMs, remainingMs))
+			retryDelayMs = Math.min(retryDelayMs * 2, 250)
 		}
 	}
 	try {

@@ -24,7 +24,7 @@ import {
 	writeApiKey,
 	writeRegion,
 } from "../../config.js"
-import { credentialRejectionsPath, markCredentialStale } from "../../credential-staleness.js"
+import { markCredentialStale } from "../../credential-staleness.js"
 import { CODEX_PROVIDER_ID, isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
 	applyOrganizationHeader,
@@ -111,9 +111,8 @@ export function createKimchiProviderOAuth(): ExtensionOAuthConfig {
 			// The refresh token is dead — requests will start 401ing. Mark the
 			// provider (and the concrete key) stale so auth_status and warnings
 			// surface "sign in again" instead of silently failing turns.
-			const rejectionsPath = credentialRejectionsPath(getKimchiAuthPath())
 			markCredentialStale(undefined, KIMCHI_PROVIDER_ID)
-			if (credential.access) markCredentialStale(credential.access, KIMCHI_PROVIDER_ID, rejectionsPath)
+			if (credential.access) markCredentialStale(credential.access, KIMCHI_PROVIDER_ID)
 		},
 	})
 	return {

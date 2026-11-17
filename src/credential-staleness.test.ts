@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
+import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	clearCredentialStale,
@@ -87,6 +90,59 @@ describe("persistent credential rejections", () => {
 
 		expect(isCredentialStale("dead-key", "kimchi-dev", statePath)).toBe(false)
 		expect(isCredentialStale("other-key", "other-provider", statePath)).toBe(true)
+	})
+
+	it("ignores unknown sidecar versions instead of reinterpreting them as v1", () => {
+		const rejectedToken = "token-from-a-future-format"
+		writeFileSync(
+			statePath,
+			JSON.stringify({
+				version: 2,
+				providers: { "kimchi-dev": [createHash("sha256").update(rejectedToken).digest("hex")] },
+			}),
+		)
+
+		expect(isCredentialStale(rejectedToken, "kimchi-dev", statePath)).toBe(false)
+	})
+
+	it("keeps the sidecar owner-only across atomic rewrites", () => {
+		if (process.platform === "win32") return
+		markCredentialStale("first-key", "kimchi-dev", statePath)
+		markCredentialStale("second-key", "kimchi-dev", statePath)
+
+		expect(statSync(statePath).mode & 0o777).toBe(0o600)
+	})
+
+	it("retains a rejection when lock contention lasts longer than 500ms", async () => {
+		const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url))
+		const moduleUrl = new URL("./credential-staleness.ts", import.meta.url).href
+		const source = `import { markCredentialStale } from ${JSON.stringify(moduleUrl)};
+process.stdout.write("ready");
+markCredentialStale("contended-key", "kimchi-dev", process.argv[1]);`
+		markCredentialStale("seed-key", "kimchi-dev", statePath)
+		const release = lockSync(statePath, { realpath: false })
+		const child = spawn(process.execPath, [tsxCli, "-e", source, statePath], { stdio: ["ignore", "pipe", "pipe"] })
+		const ready = new Promise<void>((resolve) => child.stdout.once("data", () => resolve()))
+		let stderr = ""
+		child.stderr.setEncoding("utf8")
+		child.stderr.on("data", (chunk: string) => {
+			stderr += chunk
+		})
+		const completed = new Promise<void>((resolve, reject) => {
+			child.once("error", reject)
+			child.once("close", (code) => {
+				if (code === 0) resolve()
+				else reject(new Error(`contended writer exited ${code}: ${stderr}`))
+			})
+		})
+
+		await ready
+		await delay(750)
+		release()
+		await completed
+
+		resetCredentialStalenessForTests()
+		expect(isCredentialStale("contended-key", "kimchi-dev", statePath)).toBe(true)
 	})
 
 	it("serializes concurrent process updates without losing rejected fingerprints", async () => {

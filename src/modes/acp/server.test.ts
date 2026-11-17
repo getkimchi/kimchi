@@ -174,12 +174,7 @@ import type { Model } from "@earendil-works/pi-ai"
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, loadConfig, resolveEndpoints, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
-import {
-	credentialRejectionsPath,
-	isCredentialStale,
-	markCredentialStale,
-	resetCredentialStalenessForTests,
-} from "../../credential-staleness.js"
+import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../../extensions/auto-model/state.js"
@@ -7715,6 +7710,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		resetCredentialStalenessForTests()
 		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-stale-"))
 		const authPath = join(agentDir, "auth.json")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
 		try {
 			writeFileSync(
 				authPath,
@@ -7755,8 +7751,102 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
 			// The exact stored credential also persists, so a restarted ACP process stays signed out.
 			resetCredentialStalenessForTests()
-			expect(isCredentialStale("rejected-turn-token", "kimchi-dev", credentialRejectionsPath(authPath))).toBe(true)
+			expect(isCredentialStale("rejected-turn-token", "kimchi-dev")).toBe(true)
 		} finally {
+			vi.unstubAllEnvs()
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("settles the original 401 when credential attribution cannot read config", async () => {
+		resetCredentialStalenessForTests()
+		const previousLoadConfig = vi.mocked(loadConfig).getMockImplementation()
+		if (!previousLoadConfig) throw new Error("expected the default loadConfig implementation")
+		const baseConfig = loadConfig()
+		const malformedConfig = { ...baseConfig }
+		Object.defineProperty(malformedConfig, "apiKey", {
+			get: () => {
+				throw new Error("malformed config.json")
+			},
+		})
+		const fake = new FakeAgentSession("session-401-config-read-failure")
+		fake.model = {
+			provider: "kimchi-dev",
+			id: "some-model",
+			name: "Some Model",
+			input: ["text"],
+			contextWindow: 200_000,
+		}
+		const agent = makeAgent(fake)
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+			fake.emit(agentEnd())
+		}
+
+		try {
+			vi.mocked(loadConfig).mockReturnValue(malformedConfig)
+			const err = await agent
+				.prompt({ sessionId: "session-401-config-read-failure", prompt: [{ type: "text", text: "hello" }] })
+				.catch((e) => e)
+
+			expect(err).toMatchObject({ code: -32000, data: { kind: "auth" } })
+			expect((err as Error).message).toMatch(/401/)
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+		} finally {
+			vi.mocked(loadConfig).mockImplementation(previousLoadConfig)
+		}
+	})
+
+	it("does not persist a rejection when config and stored credentials make attribution ambiguous", async () => {
+		resetCredentialStalenessForTests()
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-ambiguous-"))
+		const authPath = join(agentDir, "auth.json")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		const previousLoadConfig = vi.mocked(loadConfig).getMockImplementation()
+		if (!previousLoadConfig) throw new Error("expected the default loadConfig implementation")
+		const baseConfig = loadConfig()
+		try {
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": { type: "oauth", access: "oauth-token", refresh: "refresh", expires: Date.now() + 1000 },
+				}),
+			)
+			const fake = new FakeAgentSession("session-401-ambiguous-credential")
+			fake.model = {
+				provider: "kimchi-dev",
+				id: "some-model",
+				name: "Some Model",
+				input: ["text"],
+				contextWindow: 200_000,
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+				fake.emit(agentEnd())
+			}
+			vi.mocked(loadConfig).mockReturnValue({ ...baseConfig, apiKey: "different-config-key" })
+
+			const err = await agent
+				.prompt({ sessionId: "session-401-ambiguous-credential", prompt: [{ type: "text", text: "hello" }] })
+				.catch((e) => e)
+
+			expect(err).toMatchObject({ code: -32000 })
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("different-config-key", "kimchi-dev")).toBe(false)
+			expect(isCredentialStale("oauth-token", "kimchi-dev")).toBe(false)
+		} finally {
+			vi.mocked(loadConfig).mockImplementation(previousLoadConfig)
+			vi.unstubAllEnvs()
 			rmSync(agentDir, { recursive: true, force: true })
 		}
 	})

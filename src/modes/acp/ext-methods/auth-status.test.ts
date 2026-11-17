@@ -3,10 +3,16 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { clearApiKey, writeApiKey } from "../../../config.js"
 import { markCredentialStale, resetCredentialStalenessForTests } from "../../../credential-staleness.js"
 import { type AuthStatusPaths, type AuthStatusResponse, handleAuthStatus } from "./auth-status.js"
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
+	return { ...actual, readStoredCredential: vi.fn(actual.readStoredCredential) }
+})
 
 // Integration-style handler tests against the real credential store:
 // config.json (API key) and auth.json (OAuth credentials) on real temp
@@ -71,6 +77,15 @@ describe("handleAuthStatus", () => {
 	// dropped by the credential reader.
 	it("reports authenticated when only auth.json holds OAuth credentials", async () => {
 		writeOAuthCredential("token")
+		await expect(handleAuthStatus(paths)).resolves.toEqual({ authenticated: true })
+	})
+
+	it("falls back to credential presence if the final stored-credential read fails", async () => {
+		writeOAuthCredential("token")
+		vi.mocked(readStoredCredential).mockImplementationOnce(() => {
+			throw new Error("unexpected credential-store read failure")
+		})
+
 		await expect(handleAuthStatus(paths)).resolves.toEqual({ authenticated: true })
 	})
 

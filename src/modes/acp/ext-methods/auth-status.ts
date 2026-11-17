@@ -7,7 +7,7 @@
 
 import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
-import { credentialRejectionsPath, isCredentialStale } from "../../../credential-staleness.js"
+import { isCredentialStale } from "../../../credential-staleness.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 
 export type AuthStatusResponse = {
@@ -52,10 +52,9 @@ export type AuthStatusPaths = {
  */
 export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
 	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
-	const rejectionsPath = credentialRejectionsPath(paths.authPath)
 	// A 401 mark (key-level or provider-level — credential-staleness.ts)
 	// means logged-out, even though the key exists on disk.
-	if (isCredentialStale(apiKey, KIMCHI_PROVIDER_ID, rejectionsPath)) {
+	if (isCredentialStale(apiKey, KIMCHI_PROVIDER_ID)) {
 		return { authenticated: false }
 	}
 	if (apiKey) {
@@ -74,7 +73,13 @@ export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStat
 	// listCredentials intentionally exposes presence only. Read the already
 	// stored bearer locally to compare its fingerprint with observed 401s;
 	// unlike getAuth(), this cannot refresh OAuth credentials or hit network.
-	const stored = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
-	const storedApiKey = stored?.type === "oauth" ? stored.access : stored?.type === "api_key" ? stored.key : undefined
-	return { authenticated: !isCredentialStale(storedApiKey, KIMCHI_PROVIDER_ID, rejectionsPath) }
+	try {
+		const stored = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
+		const storedApiKey = stored?.type === "oauth" ? stored.access : stored?.type === "api_key" ? stored.key : undefined
+		return { authenticated: !isCredentialStale(storedApiKey, KIMCHI_PROVIDER_ID) }
+	} catch {
+		// Presence was already confirmed above. If the second local read fails,
+		// degrade to the previous presence-only result rather than an ACP error.
+		return { authenticated: true }
+	}
 }
