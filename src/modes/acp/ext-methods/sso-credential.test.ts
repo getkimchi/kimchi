@@ -62,7 +62,9 @@ describe("handleSsoCredential", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
-		rmSync(dir, { recursive: true, force: true })
+		// Retries absorb transient ENOTEMPTY/EBUSY from a background write racing
+		// the removal (seen as a CI-only flake on Windows/Linux runners).
+		rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 	})
 
 	function writeSsoEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
