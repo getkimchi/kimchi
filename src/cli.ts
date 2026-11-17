@@ -47,9 +47,9 @@ import {
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	firstRunSettingsDefaults,
 	getApiKeyMismatchWarning,
 	loadConfig,
-	RETRY_DEFAULTS,
 	readTelemetryConfig,
 	resolveEffectiveApiKey,
 	syncWheelScrollToPiSettings,
@@ -727,10 +727,7 @@ async function cliMain(): Promise<void> {
 				readFileSync(settingsPath, "utf-8")
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-					writeFileSync(
-						settingsPath,
-						`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
-					)
+					writeFileSync(settingsPath, `${JSON.stringify(firstRunSettingsDefaults(), null, 2)}\n`)
 				} else {
 					console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
 				}
