@@ -314,9 +314,12 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			invalid(ctx, `${label}.flags must be a subset of "imsu"`)
 			continue
 		}
-		const secretGroup = e.secretGroup
-		if (secretGroup !== undefined && (!Number.isInteger(secretGroup) || (secretGroup as number) < 1)) {
-			invalid(ctx, `${label}.secretGroup must be a positive integer`)
+		const normalizedSecretGroup = e.secretGroup === 0 ? undefined : e.secretGroup
+		if (
+			normalizedSecretGroup !== undefined &&
+			(!Number.isInteger(normalizedSecretGroup) || (normalizedSecretGroup as number) < 1)
+		) {
+			invalid(ctx, `${label}.secretGroup must be a positive integer or 0 for whole-match replacement`)
 			continue
 		}
 		if (hasReDoSRisk(pattern)) {
@@ -331,8 +334,9 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			continue
 		}
 		if (
-			secretGroup !== undefined &&
-			(secretGroup as number) > countPatternCaptureGroups(compiled, typeof flags === "string" ? flags : undefined)
+			normalizedSecretGroup !== undefined &&
+			(normalizedSecretGroup as number) >
+				countPatternCaptureGroups(compiled, typeof flags === "string" ? flags : undefined)
 		) {
 			invalid(ctx, `${label}.secretGroup exceeds the pattern's capture-group count`)
 			continue
@@ -343,7 +347,7 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			category,
 			pattern,
 			flags: typeof flags === "string" ? flags : undefined,
-			secretGroup: typeof secretGroup === "number" ? secretGroup : undefined,
+			secretGroup: typeof normalizedSecretGroup === "number" ? normalizedSecretGroup : undefined,
 		})
 	}
 	return out

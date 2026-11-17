@@ -93,8 +93,10 @@ Rules (violations throw locally, drop-in-managed — see below): name
 removed entities above are free for reuse — the engine detectors behind
 them stay permanently excluded); category from the list above; pattern ≤
 512 chars compiling as a JS RegExp; flags ⊆ `imsu`; at most 50 entries.
-`secretGroup` ≥ 1 replaces only that capture group (the rest of the match
-is anchoring context), mirroring the built-in anchored patterns.
+A positive `secretGroup` replaces only that capture group (the rest of the
+match is anchoring context), mirroring the built-in anchored patterns. An
+absent or zero `secretGroup` replaces the whole match; both normalize to the
+same unset value before pattern execution.
 Quantified groups containing alternation or a nested quantifier —
 `(a|a)*`, `(a+)+`, `(\d{2,})*` — are rejected: these backtrack
 exponentially, the scan cannot time them out (regex runs synchronously),

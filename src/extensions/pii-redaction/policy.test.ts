@@ -279,7 +279,14 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 		expect(policy.customEntities?.[0].name).toBe("ACME_X")
 	})
 
-	it("secretGroup beyond the actual group count throws", () => {
+	it("normalizes a local secretGroup of zero to whole-match replacement", () => {
+		const policy = parseLocalPolicy({
+			customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E\\d{6}", secretGroup: 0 }],
+		})
+		expect(policy.customEntities?.[0].secretGroup).toBeUndefined()
+	})
+
+	it("secretGroup beyond the actual group count fails", () => {
 		expect(() =>
 			parseLocalPolicy({
 				customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup: 2 }],
@@ -289,6 +296,28 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 			customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup: 1 }],
 		})
 		expect(ok.customEntities?.[0].secretGroup).toBe(1)
+
+		let dropped: string[] = []
+		const managed = parseManagedPolicy(
+			{ customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup: 2 }] },
+			(reasons) => {
+				dropped = reasons
+			},
+		)
+		expect(managed).toBeUndefined()
+		expect(dropped.join(" ")).toMatch(/capture-group/)
+	})
+
+	it.each([-1, 1.5])("rejects invalid secretGroup %s in local and managed policies", (secretGroup) => {
+		const customEntities = [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup }]
+		expect(() => parseLocalPolicy({ customEntities })).toThrow(/positive integer/)
+
+		let dropped: string[] = []
+		const managed = parseManagedPolicy({ customEntities }, (reasons) => {
+			dropped = reasons
+		})
+		expect(managed).toBeUndefined()
+		expect(dropped.join(" ")).toMatch(/positive integer/)
 	})
 
 	it("safe alternation in an unquantified group passes", () => {

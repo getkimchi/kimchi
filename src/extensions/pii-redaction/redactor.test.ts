@@ -8,6 +8,7 @@ import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { getResourceSettingsPath, setResourceOverride } from "../../resources/store.js"
 import { getRedactionConfig } from "./config.js"
 import { getDefaultExcludedEntities, PERMANENT_ENGINE_EXCLUSIONS } from "./entity-tiers.js"
+import { parseManagedPolicy, resolveRedactionPolicy } from "./policy.js"
 import {
 	applyCustomPatterns,
 	collectDetections,
@@ -665,6 +666,40 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 		resetRedactorEngine()
 		const result = await redactTextOrThrow(`aws_secret_access_key=${fx.awsSecret}`)
 		expectRedacted(result, fx.awsSecret, "AWS_SECRET_KEY")
+	})
+})
+
+describe("custom entity capture-group normalization", () => {
+	it("redacts the whole match for a managed secretGroup of zero", () => {
+		const managed = parseManagedPolicy({
+			customEntities: [
+				{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}", secretGroup: 0 },
+			],
+		})
+		expect(managed?.customEntities?.[0].secretGroup).toBeUndefined()
+		const resolved = resolveRedactionPolicy(managed)
+		expect(resolved.customPatterns[0].secretGroup).toBeUndefined()
+
+		const onMatch = vi.fn()
+		const result = applyCustomPatterns("employee E123456", new Set(), onMatch, resolved.customPatterns)
+		expect(result).toBe("employee [REDACTED-ACME_EMPLOYEE_ID]")
+		expect(onMatch).toHaveBeenCalledWith({ name: "ACME_EMPLOYEE_ID", secret: "E123456" })
+	})
+
+	it("keeps capture group 1 as a value-only replacement", () => {
+		const managed = parseManagedPolicy({
+			customEntities: [
+				{
+					name: "ACME_EMPLOYEE_ID",
+					category: "identity_documents",
+					pattern: "(E\\d{6})(-tail)",
+					secretGroup: 1,
+				},
+			],
+		})
+		const resolved = resolveRedactionPolicy(managed)
+		const result = applyCustomPatterns("E123456-tail", new Set(), undefined, resolved.customPatterns)
+		expect(result).toBe("[REDACTED-ACME_EMPLOYEE_ID]-tail")
 	})
 })
 
