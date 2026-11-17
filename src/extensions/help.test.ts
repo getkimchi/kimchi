@@ -139,6 +139,9 @@ describe("help — slash command list", () => {
 		// matched by the constant scan but not slash commands
 		"mcp-keyring-helper",
 		"plannotator-review",
+		// transcript entry type (persisted /compact invocation), not a command;
+		// swept up by the `const *_COMMAND*` constant scan
+		"compact-command",
 	])
 
 	/** Every command name registered anywhere in src/ (non-test `.ts` files).
