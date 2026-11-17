@@ -2,9 +2,43 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import type { ModelMetadata } from "../models.js"
 import { TEST_MODELS } from "./__fixtures__/models.js"
 import { buildCodexToml, buildModelCatalog, mergeCodexToml } from "./codex.js"
 import { byId } from "./registry.js"
+
+function testModel(slug: string, provider: string, displayName = slug): ModelMetadata {
+	return {
+		slug,
+		display_name: displayName,
+		provider,
+		reasoning: true,
+		input_modalities: ["text"],
+		is_serverless: true,
+		limits: { context_window: 200_000, max_output_tokens: 32_768 },
+	}
+}
+
+function writeChatGptAuth(home: string): void {
+	const configDir = join(home, ".codex")
+	mkdirSync(configDir, { recursive: true })
+	writeFileSync(
+		join(configDir, "auth.json"),
+		JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "chatgpt-access-token" } }),
+		"utf-8",
+	)
+}
+
+const CHATGPT_MODEL = testModel("gpt-5.5-codex", "chatgpt", "GPT 5.5 Codex")
+const UNSUPPORTED_CHATGPT_MODEL = testModel("gpt-5.3-codex", "chatgpt")
+const API_KEY_GPT53_MODEL = testModel("gpt-5.3-codex", "openai", "GPT 5.3 Codex API")
+const MIXED_MODELS: readonly ModelMetadata[] = [
+	TEST_MODELS[0],
+	CHATGPT_MODEL,
+	UNSUPPORTED_CHATGPT_MODEL,
+	API_KEY_GPT53_MODEL,
+	{ ...TEST_MODELS[0], display_name: "Duplicate Kimi row" },
+]
 
 describe("buildCodexToml", () => {
 	it("emits the three top-level keys Codex needs", () => {
@@ -21,6 +55,19 @@ describe("buildCodexToml", () => {
 		expect(out).toMatch(/base_url = "https:\/\/llm\.kimchi\.dev\/openai\/v1"/)
 		expect(out).toMatch(/http_headers = \{ Authorization = "Bearer test-key" \}/)
 		expect(out).toMatch(/wire_api = "responses"/)
+	})
+
+	it("emits a dual-credential default when ChatGPT login is available", () => {
+		const out = buildCodexToml("test-key", "kimi-k2.6", "/catalog.json", true)
+		expect(out).toMatch(/^model_provider = "kimchi_chatgpt"$/m)
+		expect(out.match(/\[model_providers\.kimchi\]/g)).toHaveLength(1)
+		expect(out.match(/\[model_providers\.kimchi_chatgpt\]/g)).toHaveLength(1)
+		expect(out).toContain("requires_openai_auth = true")
+		expect(out).toContain('http_headers = { "X-API-Key" = "test-key" }')
+		expect(out).toContain('http_headers = { Authorization = "Bearer test-key" }')
+		expect(out).not.toContain("KIMCHI_API_KEY")
+		expect(out).not.toContain("env_key")
+		expect(out).not.toContain("env_http_headers")
 	})
 
 	it("preserves slashes and dots in the catalog path without quoting them as TOML escapes", () => {
@@ -46,6 +93,59 @@ wire_api = "responses"
 `
 		const merged = mergeCodexToml(existing, fresh)
 		expect(merged).toBe(fresh)
+	})
+
+	it("replaces both generated providers while preserving user and unrelated provider sections", () => {
+		const fresh = buildCodexToml("new-key", "kimi-k2.6", "/catalog.json", true)
+		const existing = `model_provider = "kimchi_chatgpt"
+model = "old-model"
+model_catalog_json = "/old-catalog.json"
+keep_top_level = "yes"
+
+[model_providers.kimchi]
+name = "Old Kimchi"
+http_headers = { Authorization = "Bearer old-key" }
+
+[model_providers.kimchi_chatgpt]
+name = "Old ChatGPT"
+http_headers = { "X-API-Key" = "old-key" }
+
+[model_providers.other]
+name = "User Provider"
+model = "nested-user-model"
+
+[[projects]]
+name = "my-project"
+path = "/Users/me/code"
+
+[plugins]
+enabled = true
+
+[plugins."foo"]
+model_provider = "nested-user-provider"
+
+[features]
+multi_agent = true
+
+[marketplaces]
+enabled = true
+`
+
+		const merged = mergeCodexToml(existing, fresh)
+		expect(merged.match(/\[model_providers\.kimchi\]/g)).toHaveLength(1)
+		expect(merged.match(/\[model_providers\.kimchi_chatgpt\]/g)).toHaveLength(1)
+		expect(merged).not.toContain("Old Kimchi")
+		expect(merged).not.toContain("Old ChatGPT")
+		expect(merged).not.toContain("old-key")
+		expect(merged).toContain("keep_top_level")
+		expect(merged).toContain("[[projects]]")
+		expect(merged).toContain("[plugins]")
+		expect(merged).toContain('[plugins."foo"]')
+		expect(merged).toContain("[features]")
+		expect(merged).toContain("[marketplaces]")
+		expect(merged).toContain("[model_providers.other]")
+		expect(merged).toContain('model = "nested-user-model"')
+		expect(merged).toContain('model_provider = "nested-user-provider"')
 	})
 
 	it('preserves user-owned sections like [features] and [plugins."foo"]', () => {
@@ -209,11 +309,25 @@ describe("buildModelCatalog", () => {
 		expect(kimi?.model).toBe("kimi-k2.6")
 	})
 
-	it("uses 'kimchi' as the provider for every entry", () => {
+	it("uses 'kimchi' as the provider for every non-subscription entry", () => {
 		const catalog = buildModelCatalog(TEST_MODELS)
 		for (const entry of catalog.models) {
 			expect(entry.provider).toBe("kimchi")
 		}
+	})
+
+	it("maps mixed feed rows to credential groups with unique, servable slugs", () => {
+		const catalog = buildModelCatalog(MIXED_MODELS, true)
+		expect(catalog.models.map((entry) => entry.slug)).toEqual(["kimi-k2.6", "gpt-5.5-codex", "gpt-5.3-codex"])
+		expect(catalog.models.map((entry) => entry.provider)).toEqual(["kimchi", "kimchi_chatgpt", "kimchi"])
+		expect(catalog.models.find((entry) => entry.slug === "gpt-5.3-codex")?.display_name).toBe("GPT 5.3 Codex API")
+		expect(new Set(catalog.models.map((entry) => entry.slug)).size).toBe(catalog.models.length)
+	})
+
+	it("omits every subscription-only row when ChatGPT login is absent", () => {
+		const catalog = buildModelCatalog(MIXED_MODELS)
+		expect(catalog.models.map((entry) => entry.slug)).toEqual(["kimi-k2.6", "gpt-5.3-codex"])
+		expect(catalog.models.every((entry) => entry.provider === "kimchi")).toBe(true)
 	})
 
 	it("sets truncation_policy to { mode: 'tokens', limit: context_window }", () => {
@@ -450,5 +564,159 @@ multi_agent = true
 		const catalog = JSON.parse(readFileSync(join(configDir, "model_catalog.json"), "utf-8"))
 		expect(Array.isArray(catalog.models)).toBe(true)
 		expect(catalog.models.length).toBe(TEST_MODELS.length)
+	})
+
+	it("write() keeps the API-key default and filters subscription rows without a login", async () => {
+		const tool = byId("codex")
+		await tool?.write("global", "fresh-key", MIXED_MODELS)
+
+		const configDir = join(scratchHome, ".codex")
+		const written = readFileSync(join(configDir, "config.toml"), "utf-8")
+		const catalog = JSON.parse(readFileSync(join(configDir, "model_catalog.json"), "utf-8"))
+		expect(written).toMatch(/^model_provider = "kimchi"$/m)
+		expect(written).not.toContain("[model_providers.kimchi_chatgpt]")
+		expect(catalog.models.map((entry: { slug: string }) => entry.slug)).toEqual(["kimi-k2.6", "gpt-5.3-codex"])
+	})
+
+	it.each([
+		{ name: "malformed JSON", contents: "{" },
+		{ name: "API-key auth", contents: JSON.stringify({ OPENAI_API_KEY: "codex-api-key" }) },
+		{ name: "ChatGPT auth without a token", contents: JSON.stringify({ auth_mode: "chatgpt", tokens: {} }) },
+	])("write() treats $name as no ChatGPT login", async ({ contents }) => {
+		const configDir = join(scratchHome, ".codex")
+		mkdirSync(configDir, { recursive: true })
+		writeFileSync(join(configDir, "auth.json"), contents, "utf-8")
+
+		await byId("codex")?.write("global", "fresh-key", MIXED_MODELS)
+
+		const written = readFileSync(join(configDir, "config.toml"), "utf-8")
+		expect(written).toMatch(/^model_provider = "kimchi"$/m)
+		expect(written).not.toContain("[model_providers.kimchi_chatgpt]")
+	})
+
+	it("write() detects ChatGPT login and generates the dual-credential full catalogue", async () => {
+		writeChatGptAuth(scratchHome)
+
+		await byId("codex")?.write("global", "fresh-key", MIXED_MODELS)
+
+		const configDir = join(scratchHome, ".codex")
+		const written = readFileSync(join(configDir, "config.toml"), "utf-8")
+		const catalog = JSON.parse(readFileSync(join(configDir, "model_catalog.json"), "utf-8"))
+		expect(written).toMatch(/^model_provider = "kimchi_chatgpt"$/m)
+		expect(written.match(/\[model_providers\.kimchi\]/g)).toHaveLength(1)
+		expect(written.match(/\[model_providers\.kimchi_chatgpt\]/g)).toHaveLength(1)
+		expect(written).toContain('http_headers = { "X-API-Key" = "fresh-key" }')
+		expect(written).not.toContain("chatgpt-access-token")
+		expect(catalog.models.map((entry: { slug: string }) => entry.slug)).toEqual([
+			"kimi-k2.6",
+			"gpt-5.5-codex",
+			"gpt-5.3-codex",
+		])
+	})
+
+	it("write() replaces the catalogue from a changed feed snapshot", async () => {
+		writeChatGptAuth(scratchHome)
+		const oldChatGptModel = testModel("gpt-old-codex", "chatgpt", "Old Codex")
+		const tool = byId("codex")
+		await tool?.write("global", "fresh-key", [TEST_MODELS[0], oldChatGptModel])
+
+		const configDir = join(scratchHome, ".codex")
+		const catalogPath = join(configDir, "model_catalog.json")
+		const initialCatalog = readFileSync(catalogPath, "utf-8")
+		expect(readFileSync(catalogPath, "utf-8")).toBe(initialCatalog)
+
+		const changedKimi = {
+			...TEST_MODELS[0],
+			display_name: "Kimi Changed",
+			limits: { context_window: 300_000, max_output_tokens: 65_536 },
+		}
+		const newChatGptModel = testModel("gpt-new-codex", "chatgpt", "New Codex")
+		await tool?.write("global", "fresh-key", [changedKimi, TEST_MODELS[1], newChatGptModel])
+
+		const changedCatalog = JSON.parse(readFileSync(catalogPath, "utf-8"))
+		expect(changedCatalog.models.map((entry: { slug: string }) => entry.slug)).toEqual([
+			"kimi-k2.6",
+			"kimi-k2.5",
+			"gpt-new-codex",
+		])
+		expect(changedCatalog.models[0]).toMatchObject({
+			display_name: "Kimi Changed",
+			context_window: 300_000,
+			truncation_policy: { mode: "tokens", limit: 300_000 },
+		})
+		expect(changedCatalog.models.some((entry: { slug: string }) => entry.slug === "gpt-old-codex")).toBe(false)
+	})
+
+	it("write() upgrades a legacy API-key config without dropping ordinary models", async () => {
+		const tool = byId("codex")
+		await tool?.write("global", "fresh-key", TEST_MODELS)
+
+		writeChatGptAuth(scratchHome)
+		await tool?.write("global", "fresh-key", [...TEST_MODELS, ...MIXED_MODELS.slice(1)])
+
+		const configDir = join(scratchHome, ".codex")
+		const written = readFileSync(join(configDir, "config.toml"), "utf-8")
+		const catalog = JSON.parse(readFileSync(join(configDir, "model_catalog.json"), "utf-8"))
+		expect(written).toMatch(/^model_provider = "kimchi_chatgpt"$/m)
+		expect(written).toContain('http_headers = { Authorization = "Bearer fresh-key" }')
+		expect(written).toContain('http_headers = { "X-API-Key" = "fresh-key" }')
+		expect(catalog.models.map((entry: { slug: string }) => entry.slug)).toEqual([
+			...TEST_MODELS.map((model) => model.slug),
+			"gpt-5.5-codex",
+			"gpt-5.3-codex",
+		])
+	})
+
+	it("write() is idempotent and preserves all user-owned TOML sections", async () => {
+		writeChatGptAuth(scratchHome)
+		const configDir = join(scratchHome, ".codex")
+		const configPath = join(configDir, "config.toml")
+		writeFileSync(
+			configPath,
+			`keep_top_level = "yes"
+
+[[projects]]
+name = "my-project"
+path = "/Users/me/code"
+
+[plugins]
+enabled = true
+
+[plugins."foo"]
+model = "nested-plugin-model"
+
+[features]
+multi_agent = true
+
+[marketplaces]
+enabled = true
+
+[model_providers.other]
+name = "User Provider"
+model_provider = "nested-provider-setting"
+`,
+			"utf-8",
+		)
+
+		const tool = byId("codex")
+		await tool?.write("global", "fresh-key", MIXED_MODELS)
+		const catalogPath = join(configDir, "model_catalog.json")
+		const firstConfig = readFileSync(configPath, "utf-8")
+		const firstCatalog = readFileSync(catalogPath, "utf-8")
+		await tool?.write("global", "fresh-key", MIXED_MODELS)
+
+		expect(readFileSync(configPath, "utf-8")).toBe(firstConfig)
+		expect(readFileSync(catalogPath, "utf-8")).toBe(firstCatalog)
+		expect(firstConfig.match(/\[model_providers\.kimchi\]/g)).toHaveLength(1)
+		expect(firstConfig.match(/\[model_providers\.kimchi_chatgpt\]/g)).toHaveLength(1)
+		expect(firstConfig).toContain("keep_top_level")
+		expect(firstConfig).toContain("[[projects]]")
+		expect(firstConfig).toContain("[plugins]")
+		expect(firstConfig).toContain('[plugins."foo"]')
+		expect(firstConfig).toContain("[features]")
+		expect(firstConfig).toContain("[marketplaces]")
+		expect(firstConfig).toContain("[model_providers.other]")
+		expect(firstConfig).toContain('model = "nested-plugin-model"')
+		expect(firstConfig).toContain('model_provider = "nested-provider-setting"')
 	})
 })

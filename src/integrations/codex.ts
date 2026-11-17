@@ -4,7 +4,7 @@ import { writeFileAtomic, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import { resolveEndpoints } from "../config.js"
-import type { ModelMetadata } from "../models.js"
+import { CHATGPT_FEED_PROVIDER, type ModelMetadata } from "../models.js"
 import { PROVIDER_NAME } from "./constants.js"
 import { detectBinaryFactory } from "./detect.js"
 import { resolveModelRole } from "./models.js"
@@ -12,6 +12,9 @@ import { register } from "./registry.js"
 
 const CODEX_CONFIG_PATH = "~/.codex/config.toml"
 const CODEX_CATALOG_PATH = "~/.codex/model_catalog.json"
+const CODEX_AUTH_PATH = "~/.codex/auth.json"
+const CHATGPT_PROVIDER_NAME = "kimchi_chatgpt"
+const UNSUPPORTED_CHATGPT_SLUGS = new Set(["gpt-5.3-codex"])
 
 /** Escape a string for inclusion inside a TOML basic double-quoted string. */
 function tomlEscape(value: string): string {
@@ -32,20 +35,32 @@ function tomlEscape(value: string): string {
  * @param modelSlug  - Slug of the resolved "main" model, written to the top-level `model` key.
  * @param catalogPath - Resolved absolute path to the model catalog JSON file.
  */
-export function buildCodexToml(apiKey: string, modelSlug: string, catalogPath: string): string {
+export function buildCodexToml(apiKey: string, modelSlug: string, catalogPath: string, chatGptLogin = false): string {
 	const escapedSlug = tomlEscape(modelSlug)
 	const escapedCatalogPath = tomlEscape(catalogPath)
 	const escapedKey = tomlEscape(apiKey)
-	return `model_provider = "${PROVIDER_NAME}"
+	const defaultProvider = chatGptLogin ? CHATGPT_PROVIDER_NAME : PROVIDER_NAME
+	const baseUrl = tomlEscape(resolveEndpoints().openAiBaseUrl)
+	const chatGptProvider = chatGptLogin
+		? `
+[model_providers.${CHATGPT_PROVIDER_NAME}]
+name = "Kimchi Gateway (ChatGPT)"
+base_url = "${baseUrl}"
+requires_openai_auth = true
+http_headers = { "X-API-Key" = "${escapedKey}" }
+wire_api = "responses"
+`
+		: ""
+	return `model_provider = "${defaultProvider}"
 model = "${escapedSlug}"
 model_catalog_json = "${escapedCatalogPath}"
 
 [model_providers.${PROVIDER_NAME}]
 name = "Kimchi Gateway"
-base_url = "${tomlEscape(resolveEndpoints().openAiBaseUrl)}"
+base_url = "${baseUrl}"
 http_headers = { Authorization = "Bearer ${escapedKey}" }
 wire_api = "responses"
-`
+${chatGptProvider}`
 }
 
 interface CodexReasoningLevel {
@@ -78,6 +93,17 @@ export interface CodexModelCatalog {
 	models: CodexModelEntry[]
 }
 
+function selectCodexModels(models: readonly ModelMetadata[], chatGptLogin: boolean): ModelMetadata[] {
+	const seenSlugs = new Set<string>()
+	return models.filter((model) => {
+		const isChatGpt = model.provider === CHATGPT_FEED_PROVIDER
+		if (isChatGpt && (!chatGptLogin || UNSUPPORTED_CHATGPT_SLUGS.has(model.slug))) return false
+		if (seenSlugs.has(model.slug)) return false
+		seenSlugs.add(model.slug)
+		return true
+	})
+}
+
 /**
  * Build the Codex model catalog (`~/.codex/model_catalog.json`). Mirrors
  * the structure Codex expects from a user-provided catalog: per-model
@@ -86,19 +112,19 @@ export interface CodexModelCatalog {
  *
  * Pure so the snapshot is testable without touching the filesystem.
  */
-export function buildModelCatalog(models: readonly ModelMetadata[]): CodexModelCatalog {
+export function buildModelCatalog(models: readonly ModelMetadata[], chatGptLogin = false): CodexModelCatalog {
 	const REASONING_LEVELS: CodexReasoningLevel[] = [
 		{ effort: "low", description: "Low reasoning effort" },
 		{ effort: "medium", description: "Medium reasoning effort" },
 		{ effort: "high", description: "High reasoning effort" },
 	]
 
-	const entries: CodexModelEntry[] = models.map((m, index) => ({
+	const entries: CodexModelEntry[] = selectCodexModels(models, chatGptLogin).map((m, index) => ({
 		slug: m.slug,
 		display_name: m.display_name,
 		name: m.slug,
 		model: m.slug,
-		provider: PROVIDER_NAME,
+		provider: m.provider === CHATGPT_FEED_PROVIDER ? CHATGPT_PROVIDER_NAME : PROVIDER_NAME,
 		context_window: m.limits.context_window,
 		truncation_policy: { mode: "tokens", limit: m.limits.context_window },
 		shell_type: "shell_command",
@@ -118,7 +144,10 @@ export function buildModelCatalog(models: readonly ModelMetadata[]): CodexModelC
 }
 
 const TOP_LEVEL_KIMCHI_KEYS = new Set(["model_provider", "model", "model_catalog_json"])
-const KIMCHI_PROVIDER_SECTION = `model_providers.${PROVIDER_NAME}`
+const KIMCHI_PROVIDER_SECTIONS = new Set([
+	`model_providers.${PROVIDER_NAME}`,
+	`model_providers.${CHATGPT_PROVIDER_NAME}`,
+])
 
 /**
  * Merge freshly-generated kimchi Codex config on top of an existing
@@ -135,7 +164,8 @@ const KIMCHI_PROVIDER_SECTION = `model_providers.${PROVIDER_NAME}`
  */
 export function mergeCodexToml(existingText: string, freshToml: string): string {
 	const lines = existingText.split("\n")
-	const kept: string[] = []
+	const keptTopLevel: string[] = []
+	const keptSections: string[] = []
 	let inKimchiProviderSection = false
 	let inAnySection = false
 
@@ -146,13 +176,13 @@ export function mergeCodexToml(existingText: string, freshToml: string): string 
 		const headerMatch = line.match(/^\s*\[([^[\]]+)\]\s*$/)
 		if (headerMatch) {
 			const sectionName = headerMatch[1].trim()
-			inKimchiProviderSection = sectionName === KIMCHI_PROVIDER_SECTION
+			inKimchiProviderSection = KIMCHI_PROVIDER_SECTIONS.has(sectionName)
 			inAnySection = true
 			if (inKimchiProviderSection) {
 				// Drop the header — freshToml re-emits it.
 				continue
 			}
-			kept.push(line)
+			keptSections.push(line)
 			continue
 		}
 
@@ -162,7 +192,7 @@ export function mergeCodexToml(existingText: string, freshToml: string): string 
 		if (arrayHeaderMatch) {
 			inKimchiProviderSection = false
 			inAnySection = true
-			kept.push(line)
+			keptSections.push(line)
 			continue
 		}
 
@@ -174,20 +204,40 @@ export function mergeCodexToml(existingText: string, freshToml: string): string 
 		if (!inAnySection) {
 			const keyMatch = line.match(/^([A-Za-z0-9_-]+)\s*=/)
 			if (keyMatch && TOP_LEVEL_KIMCHI_KEYS.has(keyMatch[1])) continue
+			keptTopLevel.push(line)
+			continue
 		}
 
-		kept.push(line)
+		keptSections.push(line)
 	}
 
-	// Collapse runs of blank lines, then strip leading/trailing whitespace so
-	// the separator between freshToml and existing stays tidy.
-	const collapsed = kept
-		.join("\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.replace(/^\n+|\n+$/g, "")
+	const collapse = (lines: string[]) =>
+		lines
+			.join("\n")
+			.replace(/\n{3,}/g, "\n\n")
+			.replace(/^\n+|\n+$/g, "")
+	const collapsedTopLevel = collapse(keptTopLevel)
+	const collapsedSections = collapse(keptSections)
+	const freshWithTopLevel = collapsedTopLevel.length > 0 ? `${collapsedTopLevel}\n${freshToml}` : freshToml
 
-	if (collapsed.length === 0) return freshToml
-	return `${freshToml}\n${collapsed}\n`
+	if (collapsedSections.length === 0) return freshWithTopLevel
+	return `${freshWithTopLevel}\n${collapsedSections}\n`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function hasChatGptLogin(authPath: string): boolean {
+	try {
+		const auth: unknown = JSON.parse(readFileSync(authPath, "utf-8"))
+		if (!isRecord(auth)) return false
+		if (auth.auth_mode !== undefined && auth.auth_mode !== "chatgpt") return false
+		if (!isRecord(auth.tokens)) return false
+		return typeof auth.tokens.access_token === "string" && auth.tokens.access_token.trim().length > 0
+	} catch {
+		return false
+	}
 }
 
 async function writeCodex(
@@ -215,14 +265,23 @@ async function writeCodex(
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
 	}
 
-	const main = resolveModelRole(models, "main")
-	const mainSlug = main?.slug ?? models[0].slug
+	const detectedChatGptLogin = hasChatGptLogin(resolveScopePath("global", CODEX_AUTH_PATH))
+	const chatGptLogin =
+		detectedChatGptLogin &&
+		models.some((model) => model.provider === CHATGPT_FEED_PROVIDER && !UNSUPPORTED_CHATGPT_SLUGS.has(model.slug))
+	const codexModels = selectCodexModels(models, chatGptLogin)
+	if (codexModels.length === 0) {
+		throw new Error("No models available for the configured Codex credentials")
+	}
 
-	const freshToml = buildCodexToml(apiKey, mainSlug, catalogPath)
+	const main = resolveModelRole(codexModels, "main")
+	const mainSlug = main?.slug ?? codexModels[0].slug
+
+	const freshToml = buildCodexToml(apiKey, mainSlug, catalogPath, chatGptLogin)
 	const merged = mergeCodexToml(existingText, freshToml)
 
 	writeFileAtomic(configPath, merged)
-	writeJson(catalogPath, buildModelCatalog(models))
+	writeJson(catalogPath, buildModelCatalog(models, chatGptLogin))
 }
 
 register({
