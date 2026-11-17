@@ -78,9 +78,11 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # Per-shard slice of the roughly 20-minute serial suite, plus headroom
-    # for setup and CI variance.
-    timeout-minutes: 15
+    # Per-shard slice of the suite: shards 1/3/4 run ~8 minutes, but the
+    # slowest shard (2) has measured 13–16 minutes on the same tree (heavy
+    # files: ferment, mcp-*, pii-redaction, work-attribution) — 20 minutes
+    # keeps headroom for setup and CI variance without masking a real hang.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
