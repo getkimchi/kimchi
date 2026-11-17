@@ -59,6 +59,13 @@ export function thinkingLevelName(level: string): string {
 	return names[level] ?? level
 }
 
+/** Use-case line for a thinking level, or undefined when the level is unknown. */
+export function thinkingLevelDescription(level: string): string | undefined {
+	// Same deliberate widening as thinkingLevelName: selectable sets are typed string[].
+	const descriptions = THINKING_LEVEL_DESCRIPTIONS as Record<string, string | undefined>
+	return descriptions[level]
+}
+
 /**
  * Filter to known levels and sort by canonical rank. Defensive: the backend
  * guarantees order and completeness, but the flattening layer and models.json

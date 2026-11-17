@@ -204,6 +204,7 @@ import {
 	parseToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
+import { THINKING_LEVEL_DESCRIPTIONS } from "../../thinking-levels.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { COMPACT_COMMAND_ENTRY_TYPE } from "./commands.js"
 import type { SsoFlowManager } from "./ext-methods/sso.js"
@@ -9539,9 +9540,9 @@ describe("setSessionConfigOption", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
 			const select = effort as any
 			expect(select.options).toEqual([
-				{ value: "low", name: "Low" },
-				{ value: "high", name: "High" },
-				{ value: "max", name: "Max" },
+				{ value: "low", name: "Low", description: THINKING_LEVEL_DESCRIPTIONS.low },
+				{ value: "high", name: "High", description: THINKING_LEVEL_DESCRIPTIONS.high },
+				{ value: "max", name: "Max", description: THINKING_LEVEL_DESCRIPTIONS.max },
 			])
 		})
 
