@@ -1,10 +1,13 @@
 /**
- * Side chat (TUI fullscreen only). Enabled by default; turn it off via
- * /resources → "Side chat" (`extensions.side-chat`), restart required.
+ * Side chat (TUI fullscreen only). Always loaded: /btw, its shortcuts and
+ * the docked pane are core UI. Only the floating "Add to side chat" button
+ * is opt-in — turn it on via /resources → 'Side chat "Add to side chat" button'
+ * (`extensions.side-chat-pill`), restart required.
  *
  * A Cursor-style side chat docked to the right of the main session:
- * - select text in either transcript and click "Add to side chat" to quote
- *   it into the side editor; ctrl+alt+left / ctrl+alt+right focus the main
+ * - with the resource on, select text in either transcript and click
+ *   "Add to side chat" to quote it into the side editor;
+ *   ctrl+alt+left / ctrl+alt+right focus the main
  *   session / the side chat (opening one if none is open); clicking an
  *   editor focuses it;
  * - the header's ✕ closes the side chat and ≡ lists this session's side
@@ -21,8 +24,9 @@
  *
  * ACP has no split view, so this is TUI-only by design.
  *
- * The harness patch is installed only when this (resource-gated) extension
- * loads; every compositor and interceptor registered here is removed again on
+ * The harness patch is installed with the extension on every TUI run (the
+ * `extensions.side-chat-pill` resource gates only the pill's registration);
+ * every compositor and interceptor registered here is removed again on
  * `session_shutdown`, because the harness re-runs the factory on `/new`, `/resume` and
  * `/reload` and the previous instance's context is stale by then.
  */
@@ -30,6 +34,7 @@
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import { parseSideChatCommand } from "./autocomplete.js"
 import { btwCompletions, parseBtwArgs } from "./command.js"
 import { PaneDivider } from "./divider.js"
@@ -53,6 +58,7 @@ import {
 	titleFrom,
 	UNTITLED_SIDE_CHAT,
 } from "./records.js"
+import { SIDE_CHAT_PILL_RESOURCE_ID } from "./resource.js"
 import { SelectionPill } from "./selection-pill.js"
 import {
 	createSideSession,
@@ -102,6 +108,8 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	// ever warns. Skip the extension's whole surface in ACP sessions.
 	if (IS_ACP_MODE) return
 	const harnessReady = installSideChatHarnessPatch()
+	// Read once: the resource is restartRequired, so it cannot flip mid-process.
+	const pillEnabled = isResourceEnabled(SIDE_CHAT_PILL_RESOURCE_ID)
 	let active: ActiveSideChat | undefined
 	/** Removes the pill compositor/interceptor registered for the current session. */
 	let removePill: (() => void) | undefined
@@ -593,7 +601,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		removePill?.()
 		removePill = undefined
-		if (!harnessReady || !ctx.hasUI) return
+		if (!pillEnabled || !harnessReady || !ctx.hasUI) return
 		const pill = new SelectionPill({
 			host: getSideChatHost,
 			theme: ctx.ui.theme,

@@ -24,18 +24,18 @@ function enableSideChat(homeDir: string): void {
 	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
 	writeFileSync(
 		path,
-		JSON.stringify({ ...settings, tuiMode: "fullscreen", resources: { "extensions.side-chat": true } }),
+		JSON.stringify({ ...settings, tuiMode: "fullscreen", resources: { "extensions.side-chat-pill": true } }),
 		"utf-8",
 	)
 }
 
-/** Strip only the fixture's hermetic side-chat opt-out so the resource's default (on) applies. */
-function sideChatDefaultOn(homeDir: string): void {
+/** Strip the fixture's hermetic pill opt-out: /btw needs no resource at all, only fullscreen mode. */
+function sideChatNoOverrides(homeDir: string): void {
 	const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
 	const resources = settings.resources as Record<string, unknown> | undefined
 	// JSON.stringify drops undefined-valued keys, so the opt-out is stripped.
-	if (resources) resources["extensions.side-chat"] = undefined
+	if (resources) resources["extensions.side-chat-pill"] = undefined
 	writeFileSync(path, JSON.stringify({ ...settings, tuiMode: "fullscreen" }), "utf-8")
 }
 
@@ -54,20 +54,75 @@ function clickText(terminal: Terminal, text: string, offset = 0): void {
 	terminal.mousePress(lines[row].indexOf(text) + offset, row)
 }
 
+/** Drag-select the first on-screen line containing `text` (character granularity, settled by the release). */
+async function selectText(terminal: Terminal, text: string): Promise<void> {
+	const lines = viewText(terminal).split("\n")
+	const row = lines.findIndex((line) => line.includes(text))
+	expect(row).toBeGreaterThanOrEqual(0)
+	const col = lines[row].indexOf(text)
+	terminal.mouseDown(col, row)
+	terminal.mouseTo(col + text.length - 1, row)
+	// Let the app process the press+drag before the release, as a real drag would.
+	await new Promise((resolve) => setTimeout(resolve, 100))
+	terminal.mouseUp(col + text.length - 1, row)
+}
+
+/** SGR wheel events inside the transcript (`64` up, `65` down); the row is anchored to the streamed report. */
+function wheel(terminal: Terminal, code: 64 | 65, ticks: number): void {
+	const lines = viewText(terminal).split("\n")
+	const row = lines.findIndex((line) => line.includes("Report line"))
+	const y = row >= 0 ? row + 1 : 10 // SGR cells are 1-based
+	for (let i = 0; i < ticks; i++) terminal.write(`\x1b[<${code};20;${y}M`)
+}
+
+test("the add-to-chat pill follows the selection and hides when it scrolls out of view", async ({ terminal }) => {
+	const lines = Array.from({ length: 40 }, (_, i) => `Report line ${i + 1} of the investigation.`)
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "side-chat-pill-scroll",
+			extraArgs: ["--plan=false"],
+			seedHome: enableSideChat,
+			responses: [{ match: isMainRequest, stream: [lines.join("\n")] }],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Write me a long report.")
+			await waitForText(terminal, "Report line 40", { full: false })
+			trace.step("long assistant report streamed, viewport pinned at its end")
+
+			await selectText(terminal, "Report line 38")
+			await waitForText(terminal, "+ Add to side chat", { full: false })
+			trace.step("pill appeared under the settled selection")
+
+			wheel(terminal, 64, 20)
+			await poll(() => !viewText(terminal).includes("+ Add to side chat"), 100, 5_000).then((hidden) => {
+				expect(hidden).toBe(true)
+			})
+			expect(viewText(terminal)).not.toContain("Report line 38")
+			trace.step("selection scrolled out above the viewport — the pill hid instead of floating")
+
+			wheel(terminal, 65, 20)
+			await waitForText(terminal, "Report line 40", { full: false })
+			await waitForText(terminal, "+ Add to side chat", { full: false })
+			trace.step("scrolled back down — the pill returned under the still-settled selection")
+		},
+	)
+})
+
 test("a fresh settings.json gets /btw by default", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "side-chat-default-on",
 			extraArgs: ["--plan=false"],
-			seedHome: sideChatDefaultOn,
+			seedHome: sideChatNoOverrides,
 			responses: [{ match: isSideRequest, stream: ["Use the LRU cache."] }],
 		},
 		async (_fixture, trace) => {
 			terminal.submit("/btw Which cache?")
 			await waitForText(terminal, "Use the LRU cache.", { full: false })
 			expect(viewText(terminal)).toContain("Side chat · Which cache?")
-			trace.step("/btw loads from the resource default — no explicit enable — and opens the docked side chat")
+			trace.step("/btw is always registered — no resource opt-in — and opens the docked side chat")
 		},
 	)
 })

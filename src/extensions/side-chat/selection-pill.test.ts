@@ -20,7 +20,7 @@ function setup(rect = { x: 0, y: 0, width: 60, height: 10 }) {
 			bounds: { start: { row: startRow, col: 0, scrollView }, end: { row: endRow, col: endCol, scrollView } },
 		})
 	const screen = Array.from({ length: rect.height }, () => " ".repeat(rect.width))
-	return { host, pill, frame, screen, select, onAdd }
+	return { host, pill, frame, screen, select, onAdd, scrollView }
 }
 
 const plain = (lines: string[]) => lines.map((line) => stripTerminalSequences(line))
@@ -57,6 +57,47 @@ describe("SelectionPill", () => {
 		expect(pill.paint(screen, frame, 10)).toBe(screen)
 	})
 
+	it("hides when the selection scrolled out above the viewport", () => {
+		const { pill, frame, screen, select, scrollView } = setup()
+		select(1, 2, 40)
+		Object.defineProperty(scrollView, "scrollTop", { get: () => 10 })
+
+		expect(pill.paint(screen, frame, 60)).toBe(screen)
+	})
+
+	it("hides when the selection scrolled out below the viewport instead of clamping into view", () => {
+		const { pill, frame, screen, select } = setup()
+		// Viewport is 10 rows: both candidate anchor rows (below end, above start) fall outside.
+		select(15, 17, 40)
+
+		expect(pill.paint(screen, frame, 60)).toBe(screen)
+	})
+
+	it("pins to the selection end's edge when the selection spans the whole viewport", () => {
+		const { pill, frame, screen, select } = setup()
+		// 21-row selection in a 10-row viewport: no anchor row fits, but the
+		// selected text is all that's on screen, so the pill still follows.
+		select(0, 20, 40)
+
+		const rows = plain(pill.paint(screen, frame, 60))
+
+		expect(rows[9]).toContain(LABEL)
+	})
+
+	it("keeps painting from the selection bounds when its text extraction is temporarily unavailable", () => {
+		// Mid-stream the previous-layout text extraction can come back empty for
+		// a frame; the pill must follow the bounds regardless, otherwise it blips.
+		const { host, pill, frame, screen, scrollView } = setup()
+		const bounds = {
+			start: { row: 1, col: 0, scrollView },
+			end: { row: 2, col: 40, scrollView },
+		}
+		vi.mocked(host.settledSelection).mockReturnValue(undefined)
+		vi.mocked(host.selectionBounds).mockReturnValue(bounds)
+
+		expect(plain(pill.paint(screen, frame, 60))[3]).toContain(LABEL)
+	})
+
 	it("adds the selection on click and swallows the release", () => {
 		const { host, pill, frame, screen, select, onAdd } = setup()
 		select(1, 2, 40)
@@ -77,6 +118,38 @@ describe("SelectionPill", () => {
 		expect(pill.handleMouse(press(30, 4))).toBe(false)
 		expect(pill.handleMouse(press(41, 3))).toBe(false)
 		expect(onAdd).not.toHaveBeenCalled()
+	})
+
+	it("passes a click through untouched when the selected text is unavailable, and quotes on retry", () => {
+		const { host, pill, frame, screen, select, scrollView, onAdd } = setup()
+		select(1, 2, 40)
+		pill.paint(screen, frame, 60)
+
+		// The frames this file's bounds-only paint covers: the pill is visible
+		// but text extraction fails (momentarily mid-stream, or permanently for
+		// a text-less selection) — the click must neither be eaten nor clear.
+		const bounds = { start: { row: 1, col: 0, scrollView }, end: { row: 2, col: 40, scrollView } }
+		vi.mocked(host.settledSelection).mockReturnValue(undefined)
+		expect(pill.handleMouse(press(30, 3))).toBe(false)
+		expect(onAdd).not.toHaveBeenCalled()
+		expect(host.clearSelection).not.toHaveBeenCalled()
+
+		// Extraction recovers next frame: the same click quotes.
+		vi.mocked(host.settledSelection).mockReturnValue({ bounds, text: "selected text" })
+		expect(pill.handleMouse(press(30, 3))).toBe(true)
+		expect(onAdd).toHaveBeenCalledWith("selected text")
+	})
+
+	it("lets a second click on the consumed pill's spot start a new selection before the next paint", () => {
+		const { pill, frame, screen, select } = setup()
+		select(1, 2, 40)
+		pill.paint(screen, frame, 60)
+
+		expect(pill.handleMouse(press(30, 3))).toBe(true)
+		expect(pill.handleMouse(press(30, 3, true))).toBe(true)
+
+		// The rect was disarmed on consume: no press under the dead pixels is eaten.
+		expect(pill.handleMouse(press(30, 3))).toBe(false)
 	})
 
 	describe("with an excluded pane (the open side chat)", () => {

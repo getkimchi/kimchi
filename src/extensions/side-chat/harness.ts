@@ -358,7 +358,14 @@ export interface SideChatHost {
 	/** Restore the original single-pane layout. */
 	clearSidePanel(): void
 	frame(): Frame | undefined
-	/** Active selection, only once the mouse button was released. */
+	/**
+	 * Active selection bounds, only once the mouse button was released. Unlike
+	 * `settledSelection` this never re-extracts the selected text, so it is
+	 * stable across frames while the transcript streams — compositors that only
+	 * need geometry (the selection pill) paint from this to avoid blipping.
+	 */
+	selectionBounds(): SelectionBounds | undefined
+	/** Active selection text, only once the mouse button was released. */
 	settledSelection(): { bounds: SelectionBounds; text: string } | undefined
 	clearSelection(): void
 	requestRender(): void
@@ -444,6 +451,11 @@ export function getSideChatHost(): SideChatHost | undefined {
 		},
 		clearSidePanel: () => mountLayoutRoot(mode, (base) => base),
 		frame: () => altScreen()?.currentLayout,
+		selectionBounds: () => {
+			const screen = altScreen()
+			if (!screen || screen.selectionPressActive) return undefined
+			return screen.getSelectionBounds()
+		},
 		settledSelection: () => {
 			const screen = altScreen()
 			if (!screen || screen.selectionPressActive) return undefined
