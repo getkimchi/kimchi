@@ -7706,7 +7706,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 	// Chain second half: the turn-time 401 is the first proof this key is
 	// dead (it passed session/new); later auth_status calls must read
 	// logged-out.
-	it("marks the model's provider stale when the turn dies on a 401, so auth_status flips", async () => {
+	it("persists a sub-provider turn 401 under the canonical Kimchi credential", async () => {
 		resetCredentialStalenessForTests()
 		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-stale-"))
 		const authPath = join(agentDir, "auth.json")
@@ -7725,7 +7725,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			)
 			const fake = new FakeAgentSession("session-401-marks-stale")
 			fake.model = {
-				provider: "kimchi-dev",
+				provider: "kimchi-dev/eu",
 				id: "some-model",
 				name: "Some Model",
 				input: ["text"],
@@ -7752,6 +7752,61 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			// The exact stored credential also persists, so a restarted ACP process stays signed out.
 			resetCredentialStalenessForTests()
 			expect(isCredentialStale("rejected-turn-token", "kimchi-dev")).toBe(true)
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("clears a persisted rejection after an authenticated retry succeeds", async () => {
+		resetCredentialStalenessForTests()
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-retry-success-"))
+		const authPath = join(agentDir, "auth.json")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		try {
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": { type: "oauth", access: "retry-token", refresh: "refresh", expires: Date.now() + 1000 },
+				}),
+			)
+			const fake = new FakeAgentSession("session-401-then-success")
+			fake.model = {
+				provider: "kimchi-dev",
+				id: "some-model",
+				name: "Some Model",
+				input: ["text"],
+				contextWindow: 200_000,
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+				fake.emit(agentEnd())
+			}
+			const firstError = await agent
+				.prompt({ sessionId: "session-401-then-success", prompt: [{ type: "text", text: "first attempt" }] })
+				.catch((e) => e)
+			expect(firstError).toMatchObject({ code: -32000 })
+			expect(isCredentialStale("retry-token", "kimchi-dev")).toBe(true)
+
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantSuccessEvent())
+				fake.emit(agentEnd())
+			}
+			await expect(
+				agent.prompt({ sessionId: "session-401-then-success", prompt: [{ type: "text", text: "retry" }] }),
+			).resolves.toMatchObject({ stopReason: "end_turn" })
+
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("retry-token", "kimchi-dev")).toBe(false)
 		} finally {
 			vi.unstubAllEnvs()
 			rmSync(agentDir, { recursive: true, force: true })

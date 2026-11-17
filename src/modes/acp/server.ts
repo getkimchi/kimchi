@@ -1644,7 +1644,10 @@ export class KimchiAcpAgent implements Agent {
 					// the anonymous provider mark for this process, and persist the
 					// concrete stored/configured key when it can be attributed.
 					if (isAuthRejectedMessage(terminal.errorMessage)) {
-						const providerId = entry.session.model?.provider ?? KIMCHI_PROVIDER_ID
+						const modelProviderId = entry.session.model?.provider ?? KIMCHI_PROVIDER_ID
+						// Kimchi sub-providers share one credential with the base provider;
+						// auth_status also reads this canonical rejection key.
+						const providerId = isKimchiProvider(modelProviderId) ? KIMCHI_PROVIDER_ID : modelProviderId
 						markCredentialStale(undefined, providerId)
 						try {
 							const configuredApiKey = isKimchiProvider(providerId) ? loadKimchiConfig().apiKey : undefined
@@ -2679,6 +2682,11 @@ export class KimchiAcpAgent implements Agent {
 					turn.lastAssistantError = { stopReason: "error", errorMessage: getRawErrorMessage(msg) }
 				} else if (msg.stopReason !== "aborted") {
 					turn.lastAssistantError = undefined
+					// A completed assistant response proves the credential just
+					// authenticated successfully, including after an earlier 401. Local
+					// no-op turns emit no assistant message and cannot clear rejection state.
+					const providerId = entry.session.model?.provider
+					if (providerId && isKimchiProvider(providerId)) clearCredentialStale(KIMCHI_PROVIDER_ID)
 				}
 				// Emit whatever text a block carries that streaming never sent —
 				// an extension can zero text_delta while streaming and restore the
