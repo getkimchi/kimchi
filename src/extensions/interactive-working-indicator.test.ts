@@ -2,8 +2,10 @@ import { InteractiveMode } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import {
 	applyInteractiveWorkingIndicatorPatch,
+	showWorkingIndicatorAfterAutoCompaction,
 	showWorkingIndicatorForAcceptedPrompt,
 	wrapGetUserInput,
+	wrapHandleEvent,
 } from "./interactive-working-indicator.js"
 
 function fakeHost(overrides: Partial<Parameters<typeof showWorkingIndicatorForAcceptedPrompt>[0]> = {}) {
@@ -69,6 +71,62 @@ describe("wrapGetUserInput", () => {
 		const wrapped = wrapGetUserInput(() => Promise.resolve("hello"))
 		await wrapped.call(host)
 		expect(host.clearStatusIndicator).toHaveBeenCalledWith("working")
+		expect(host.showWorkingStatusIndicator).not.toHaveBeenCalled()
+	})
+})
+
+describe("showWorkingIndicatorAfterAutoCompaction", () => {
+	const compactionEnd = (reason: "manual" | "threshold" | "overflow", aborted = false) =>
+		({ type: "compaction_end" as const, reason, aborted }) as const
+
+	it("re-arms after a settled auto-compaction — a turn follows", () => {
+		for (const reason of ["threshold", "overflow"] as const) {
+			const host = fakeHost()
+			showWorkingIndicatorAfterAutoCompaction(host, compactionEnd(reason))
+			expect(host.showWorkingStatusIndicator).toHaveBeenCalledTimes(1)
+		}
+	})
+
+	it("never re-arms after manual /compact — no turn follows", () => {
+		const host = fakeHost()
+		showWorkingIndicatorAfterAutoCompaction(host, compactionEnd("manual"))
+		expect(host.showWorkingStatusIndicator).not.toHaveBeenCalled()
+	})
+
+	it("never re-arms after an aborted auto-compaction — the run may die with the cancel", () => {
+		const host = fakeHost()
+		showWorkingIndicatorAfterAutoCompaction(host, compactionEnd("threshold", true))
+		expect(host.showWorkingStatusIndicator).not.toHaveBeenCalled()
+	})
+
+	it("respects a hidden working indicator", () => {
+		const host = fakeHost({ workingVisible: false })
+		showWorkingIndicatorAfterAutoCompaction(host, compactionEnd("overflow"))
+		expect(host.showWorkingStatusIndicator).not.toHaveBeenCalled()
+	})
+})
+
+describe("wrapHandleEvent", () => {
+	it("re-arms after the original handler clears the compaction indicator", async () => {
+		const host = fakeHost()
+		const order: string[] = []
+		const wrapped = wrapHandleEvent(async function original(this: unknown, event: { type: string }) {
+			order.push(`original:${event.type}`)
+		})
+		await wrapped.call(host, { type: "compaction_end", reason: "threshold" })
+		expect(order).toEqual(["original:compaction_end"])
+		expect(host.showWorkingStatusIndicator).toHaveBeenCalledTimes(1)
+	})
+
+	it("forwards other events untouched without arming", async () => {
+		const host = fakeHost()
+		const seen: string[] = []
+		const wrapped = wrapHandleEvent(async function original(this: unknown, event: { type: string }) {
+			seen.push(event.type)
+		})
+		await wrapped.call(host, { type: "compaction_end", reason: "manual" })
+		await wrapped.call(host, { type: "turn_start" })
+		expect(seen).toEqual(["compaction_end", "turn_start"])
 		expect(host.showWorkingStatusIndicator).not.toHaveBeenCalled()
 	})
 })
