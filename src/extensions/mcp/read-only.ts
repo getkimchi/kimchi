@@ -14,14 +14,19 @@
  * - When any annotations are present without an explicit `readOnlyHint: true`,
  *   the convention never applies — the explicit annotation wins.
  *
- * Annotations reach Kimchi through the adapter's persistent metadata cache
- * (upstream caches tool annotations natively as of pi-mcp-adapter 5.x; the
- * dependency patch only strips MCP-UI metadata). Wire names are computed
- * exactly as the adapter registers them, from the same config.
+ * Annotations reach Kimchi through the adapter's persistent shared metadata
+ * cache plus its current session's private catalogs. Private entries never
+ * cross sessions or become persistent shared cache entries. Wire names are
+ * computed exactly as the adapter registers them, from the same config.
  */
 
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
-import { isServerCacheValid, loadMetadataCache, reconstructToolMetadata } from "pi-mcp-adapter/metadata-cache"
+import {
+	computeServerHash,
+	isServerCacheValid,
+	loadMetadataCache,
+	reconstructToolMetadata,
+} from "pi-mcp-adapter/metadata-cache"
 import {
 	formatServerNamespace,
 	formatToolName,
@@ -30,6 +35,7 @@ import {
 	isServerDisabled,
 	type McpConfig,
 	resolveToolPrefix,
+	type ServerCacheEntry,
 	type ToolMetadata,
 	type ToolPrefix,
 } from "pi-mcp-adapter/types"
@@ -60,9 +66,12 @@ interface McpToolCandidate {
 	readOnly: boolean
 }
 
-function collectMcpToolCandidates(config: McpConfig): McpToolCandidate[] {
+function collectMcpToolCandidates(
+	config: McpConfig,
+	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+): McpToolCandidate[] {
 	const cache = loadMetadataCache()
-	if (!cache?.servers) return []
+	if (!cache?.servers && !privateCatalogs?.size) return []
 	const candidates: McpToolCandidate[] = []
 	const reserved = new Set([
 		"mcp",
@@ -70,15 +79,35 @@ function collectMcpToolCandidates(config: McpConfig): McpToolCandidate[] {
 		...Object.keys(config.mcpServers).map((name) => `mcp__${formatServerNamespace(name)}`),
 	])
 	for (const [serverName, definition] of Object.entries(config.mcpServers)) {
-		const entry = cache.servers[serverName]
-		if (isServerDisabled(definition) || !entry || !isServerCacheValid(entry, definition)) continue
+		if (isServerDisabled(definition)) continue
+		const sessionEntry = privateCatalogs?.get(serverName)
+		if (
+			sessionEntry &&
+			(sessionEntry.cacheScope !== "private" || sessionEntry.configHash !== computeServerHash(definition))
+		)
+			continue
+		// Match the adapter's own in-memory direct-tool projection: session-only
+		// cache hints are not revalidated against the persistent cache contract.
+		let entry = cache?.servers[serverName]
+		if (sessionEntry !== undefined) {
+			const { ttlMs: _sessionTtl, cacheScope: _sessionScope, ...sessionCatalog } = sessionEntry
+			entry = { ...sessionCatalog, cachedAt: Date.now() }
+		}
+		if (!entry || (!sessionEntry && !isServerCacheValid(entry, definition))) continue
 		const prefix = resolveToolPrefix(definition, config.settings?.toolPrefix)
 		const nameCounts = new Map<string, number>()
 		for (const tool of entry.tools) {
 			const name = formatToolName(tool.name, serverName, prefix)
 			nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1)
 		}
-		for (const tool of reconstructToolMetadata(serverName, entry, prefix, definition, config.mcpServers, cache)) {
+		for (const tool of reconstructToolMetadata(
+			serverName,
+			entry,
+			prefix,
+			definition,
+			config.mcpServers,
+			cache ?? undefined,
+		)) {
 			if (reserved.has(tool.name)) continue
 			const source = entry.tools.find((candidate) => candidate.name === tool.originalName)
 			const sourceResource =
@@ -109,9 +138,13 @@ function collectMcpToolCandidates(config: McpConfig): McpToolCandidate[] {
  * registered tools before exposing them to the planning profile. With
  * `server`, only that server's tools qualify, as for a gateway call naming it.
  */
-export function collectReadOnlyMcpWireNames(config: McpConfig, server?: string): string[] {
+export function collectReadOnlyMcpWireNames(
+	config: McpConfig,
+	server?: string,
+	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+): string[] {
 	const qualified = new Map<string, boolean>()
-	for (const { serverName, tool, readOnly } of collectMcpToolCandidates(config)) {
+	for (const { serverName, tool, readOnly } of collectMcpToolCandidates(config, privateCatalogs)) {
 		qualified.set(tool.name, (server === undefined || serverName === server) && !qualified.has(tool.name) && readOnly)
 	}
 	return [...qualified].filter(([, readOnly]) => readOnly).map(([name]) => name)
@@ -153,8 +186,13 @@ function prefixedServerScope(config: McpConfig, toolName: string): string | unde
  * win over original names, followed by prefixed-server and candidate aliases;
  * every ambiguity, stale metadata entry, and cross-server collision fails closed.
  */
-export function isReadOnlyQualifiedMcpGatewayTool(config: McpConfig, toolName: string, server?: string): boolean {
-	const candidates = collectMcpToolCandidates(config)
+export function isReadOnlyQualifiedMcpGatewayTool(
+	config: McpConfig,
+	toolName: string,
+	server?: string,
+	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+): boolean {
+	const candidates = collectMcpToolCandidates(config, privateCatalogs)
 	if (server !== undefined) return resolveServerGatewayTool(candidates, toolName, server)
 
 	const exact = candidates.filter((candidate) => candidate.tool.name === toolName)

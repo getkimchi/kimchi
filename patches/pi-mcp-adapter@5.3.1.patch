@@ -56,7 +56,14 @@
 #     issue pending at https://github.com/nicobailon/pi-mcp-adapter (remove
 #     when upstream re-reads shared credentials before and on refresh
 #     failure)
+#   - Live session catalog observation: getkimchi/kimchi#1787; propose this
+#     onSessionMetadata observer upstream for review and remove the hunk when
+#     upstream exposes session-bound catalog metadata (including private
+#     authorization scopes) to host authorization policy without persisting it.
 # Changes:
+#   - types/init/state (+dist type mirror): notify an optional host observer of
+#     newly captured in-memory server catalogs for session-bound policy; this
+#     does not bypass private-cache validation or persist private metadata.
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
 #     live outside the user config directory; covers both the adapter config
@@ -155,6 +162,69 @@
 #     default is scoped to connectionless (url-based) servers because era
 #     negotiation on stdio costs a sacrificial process spawn - stdio entries
 #     keep the legacy handshake unless they pin a version explicitly.
+diff --git a/types.ts b/types.ts
+--- a/types.ts
++++ b/types.ts
+@@ -732,6 +732,8 @@
+ export interface McpAdapterOptions {
+   config?: McpConfig;
+   configPath?: string;
++  /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
++  onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
+   /**
+    * MCP protocol era applied to every configured server whose entry does not
+    * set `protocolVersion` itself. `"auto"` offers the SDK's default
+diff --git a/init.ts b/init.ts
+--- a/init.ts
++++ b/init.ts
+@@ -210,6 +210,7 @@
+   const consentManager = new ConsentManager("once-per-server", persistSessionApproval);
+   const state: McpExtensionState = {
+     owner,
++    onSessionMetadata: options.onSessionMetadata,
+     manager,
+     lifecycle,
+     toolMetadata,
+@@ -674,4 +675,10 @@
+   (state.sessionMetadata ??= new Map()).set(serverName, entry);
++  try {
++    state.onSessionMetadata?.(serverName, entry);
++  } catch (error) {
++    const message = error instanceof Error ? error.message : String(error);
++    logger.debug(`MCP: session metadata observer failed for ${serverName}: ${message}`);
++  }
+   seedObservedOutputs(state, serverName, entry);
+   return entry;
+ }
+diff --git a/state.ts b/state.ts
+--- a/state.ts
++++ b/state.ts
+@@ -1,4 +1,5 @@
+ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
++import type { McpAdapterOptions } from "./types.ts";
+ import type { ConsentManager } from "./consent-manager.ts";
+ import type { McpLifecycleManager } from "./lifecycle.ts";
+ import type { McpServerManager } from "./server-manager.ts";
+@@ -78,5 +79,7 @@
+   ui?: ExtensionContext["ui"];
+   sendMessage?: SendMessageFn;
+   onToolMetadataUpdated?: (serverName: string, reason: string) => void | Promise<void>;
++  /** Immediate in-memory catalog observation for a host's session-bound policy. */
++  onSessionMetadata?: McpAdapterOptions["onSessionMetadata"];
+   statusEvents?: McpStatusEventBus;
+ }
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -522,6 +522,8 @@
+ export interface McpAdapterOptions {
+     config?: McpConfig;
+     configPath?: string;
++    /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
++    onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
+     /**
+      * MCP protocol era applied to every configured server whose entry does not
+      * set `protocolVersion` itself. `"auto"` offers the SDK's default
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -1077,11 +1147,12 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
    const programmaticConfig = sessionConfig !== undefined;
    // Before the first config load, so every load in this process agrees.
    if (!programmaticConfig) setPiMcpConfigEnabled(piSupportsMcp(pi));
-@@ -1114,6 +1115,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+@@ -1114,6 +1115,8 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
                ...(sessionConfig !== undefined ? { config: sessionConfig } : {}),
              }
            : {}),
 +        ...(defaultProtocolVersion !== undefined ? { defaultProtocolVersion } : {}),
++        onSessionMetadata: options.onSessionMetadata,
          oauthRuntime,
          excludeProjectServers,
          // Pi awaits session_start handlers in order. Returning before the approval
@@ -1101,13 +1172,14 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
    // Opt-in `mcp.panel.open` keys open the panel without touching the editor draft.
    // Shortcut handlers get no reload(), so dispatch the command: its context has one.
    if (!programmaticConfig) {
-@@ -2370,6 +2377,9 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
+@@ -2370,6 +2377,10 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
      installMcpAdapter(pi, {
        ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
        ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
 +      ...(options.defaultProtocolVersion !== undefined
 +        ? { defaultProtocolVersion: options.defaultProtocolVersion }
 +        : {}),
++      onSessionMetadata: options.onSessionMetadata,
      });
    };
  }

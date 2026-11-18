@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { MCP_RUNTIME_REGISTER_EVENT, type McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
-import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
+import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
@@ -21,6 +21,7 @@ vi.mock("../work-attribution/file-observations.js", { spy: true })
 const upstream = vi.hoisted(() => ({
 	api: undefined as ExtensionAPI | undefined,
 	options: undefined as McpAdapterOptions | undefined,
+	sessionMetadataObserver: undefined as McpAdapterOptions["onSessionMetadata"],
 	input: vi.fn(),
 	sessionStart: vi.fn(),
 }))
@@ -60,6 +61,7 @@ const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const readOnlyState = vi.hoisted(() => ({
 	wireNames: new Set<string>(),
 	authorizationConfigs: [] as McpConfig[],
+	privateCatalogs: [] as Array<ReadonlyMap<string, ServerCacheEntry> | undefined>,
 }))
 const gatewayState = vi.hoisted(() => ({
 	server: undefined as { name: string; entry: ServerEntry } | undefined,
@@ -71,7 +73,9 @@ vi.mock("pi-mcp-adapter", () => ({
 	MCP_RUNTIME_REGISTER_EVENT: "pi-mcp-adapter:runtime-register:v1",
 	MCP_RUNTIME_REGISTER_VERSION: 1,
 	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
-		upstream.options = options
+		const { onSessionMetadata, ...adapterOptions } = options
+		upstream.options = adapterOptions
+		upstream.sessionMetadataObserver = onSessionMetadata
 		upstream.api = api
 		api.on("session_start", upstream.sessionStart)
 		api.on("input", upstream.input)
@@ -128,10 +132,22 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 
 // Wire names carry their server's prefix, as with the adapter's default "server" prefix mode.
 vi.mock("./read-only.js", () => ({
-	collectReadOnlyMcpWireNames: (_config: McpConfig, server?: string) =>
-		[...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`)),
-	isReadOnlyQualifiedMcpGatewayTool: (config: McpConfig, toolName: string, server?: string) => {
+	collectReadOnlyMcpWireNames: (
+		_config: McpConfig,
+		server?: string,
+		privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+	) => {
+		readOnlyState.privateCatalogs.push(privateCatalogs)
+		return [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
+	},
+	isReadOnlyQualifiedMcpGatewayTool: (
+		config: McpConfig,
+		toolName: string,
+		server?: string,
+		privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+	) => {
 		readOnlyState.authorizationConfigs.push(config)
+		readOnlyState.privateCatalogs.push(privateCatalogs)
 		const names = [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
 		return names.includes(toolName) || (server !== undefined && names.includes(`${server}_${toolName}`))
 	},
@@ -186,6 +202,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.options = undefined
 		upstream.input.mockReset()
 		upstream.sessionStart.mockReset()
+		upstream.sessionMetadataObserver = undefined
 		configState.config = { mcpServers: {} }
 		configState.userConfig = { mcpServers: {} }
 		configState.configPath = undefined
@@ -206,6 +223,7 @@ describe("upstream MCP adapter facade", () => {
 		permissionState.mode = undefined
 		readOnlyState.wireNames.clear()
 		readOnlyState.authorizationConfigs.length = 0
+		readOnlyState.privateCatalogs.length = 0
 		planning.applyCooperativeTweak.mockClear()
 		planning.reapplyCurrentProfile.mockReset().mockReturnValue(false)
 	})
@@ -906,6 +924,49 @@ describe("upstream MCP adapter facade", () => {
 			shared: { command: "from-acp" },
 			callerOnly: { command: "caller-only" },
 		})
+	})
+
+	it("isolates observed private catalogs to the adapter session that discovered them", async () => {
+		configState.config = { mcpServers: { jira: { command: "jira" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		planning.currentProfile = "planning-adhoc"
+		readOnlyState.wireNames.add("jira_get_issue")
+		await start(harness)
+
+		const entry: ServerCacheEntry = {
+			configHash: "jira-auth-context",
+			cachedAt: 1,
+			resources: [],
+			tools: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
+			cacheScope: "private",
+		}
+		upstream.sessionMetadataObserver?.("jira", entry)
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+		const gateway = harness.getRegisteredTool("mcp")
+		await gateway.execute(
+			"first",
+			{ tool: "jira_get_issue", server: "jira", args: {} },
+			undefined,
+			undefined,
+			createToolContext(),
+		)
+		expect(readOnlyState.privateCatalogs.at(-1)?.get("jira")).toBe(entry)
+
+		await start(harness)
+		upstream.sessionMetadataObserver?.("jira", entry)
+		await gateway.execute(
+			"second",
+			{ tool: "jira_get_issue", server: "jira", args: {} },
+			undefined,
+			undefined,
+			createToolContext(),
+		)
+		expect(readOnlyState.privateCatalogs.at(-1)?.has("jira")).toBe(false)
+		await harness.getHandler("session_shutdown")({ type: "session_shutdown" }, createContext())
+		upstream.sessionMetadataObserver?.("jira", entry)
+		expect(readOnlyState.privateCatalogs.at(-1)?.has("jira")).toBe(false)
 	})
 
 	it("keeps ACP caller servers while excluding an untrusted project's servers", async () => {

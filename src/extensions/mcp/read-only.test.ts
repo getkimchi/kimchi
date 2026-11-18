@@ -157,9 +157,30 @@ describe("collectReadOnlyMcpWireNames", () => {
 		expect(collectReadOnlyMcpWireNames(config)).toEqual([])
 	})
 
-	it("returns nothing without a cache", () => {
-		cacheState.cache = undefined
-		expect(collectReadOnlyMcpWireNames({ mcpServers: {} })).toEqual([])
+	it("authorizes only the current session's matching private catalog", () => {
+		cacheState.cache = { version: 1, servers: {} }
+		const privateEntry = {
+			configHash: computeServerHash(config.mcpServers.alpha),
+			cachedAt: Date.now(),
+			resources: [],
+			tools: [{ name: "getJiraIssue", annotations: { readOnlyHint: true } }],
+			cacheScope: "private" as const,
+		}
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "getJiraIssue", "alpha")).toBe(false)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "getJiraIssue", "alpha", new Map([["alpha", privateEntry]]))).toBe(
+			true,
+		)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "alpha_getJiraIssue", "alpha", new Map())).toBe(false)
+		const currentCatalog = new Map([["alpha", privateEntry]])
+		expect(collectReadOnlyMcpWireNames(config, "alpha", currentCatalog)).toEqual(["alpha_getJiraIssue"])
+		expect(
+			isReadOnlyQualifiedMcpGatewayTool(
+				config,
+				"getJiraIssue",
+				"alpha",
+				new Map([["alpha", { ...privateEntry, configHash: "another-authorization-context" }]]),
+			),
+		).toBe(false)
 	})
 
 	it("accepts original names when they resolve to one read-only tool", () => {

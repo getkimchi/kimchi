@@ -13,7 +13,7 @@ import {
 	MCP_RUNTIME_REGISTER_VERSION,
 	MCP_STATUS_EVENT,
 } from "pi-mcp-adapter"
-import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
+import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
 import {
@@ -379,6 +379,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		session_start: [],
 	}
 	let warnings: string[] = []
+	let sessionGeneration = 0
+	// Only the adapter's current authenticated session may authorize private reads.
+	let privateCatalogs = new Map<string, ServerCacheEntry>()
 
 	// MCP status events arrive in bursts; one resnapshot after the burst settles
 	// avoids re-deriving the active set (and re-setting the snapshot flag) on
@@ -404,6 +407,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.on("session_start", async (event, ctx) => {
+		const generation = ++sessionGeneration
+		privateCatalogs = new Map()
 		// A replacement path (new/fork/switch/resume) just invalidated the old pi;
 		// its pending resnapshot is obsolete.
 		clearStatusResync()
@@ -471,8 +476,14 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					: config
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
-			const adapterOptions: McpAdapterOptions =
-				options.callerServers || selectedResult.useProgrammaticConfig
+			const onSessionMetadata = (serverName: string, entry: ServerCacheEntry): void => {
+				if (generation !== sessionGeneration) return
+				if (entry.cacheScope === "private") privateCatalogs.set(serverName, entry)
+				else privateCatalogs.delete(serverName)
+			}
+			const adapterOptions: McpAdapterOptions = {
+				onSessionMetadata,
+				...(options.callerServers || selectedResult.useProgrammaticConfig
 					? { config, defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION }
 					: // Default the adapter's global config to the Studio-shared file so
 						// adapter write flows (compat imports, Jev settings, write-backs)
@@ -484,7 +495,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						{
 							configPath: selectedResult.configPath ?? getSharedMcpConfigPath(),
 							defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION,
-						}
+						}),
+			}
 			// Offline-access request parameters for every OAuth authorize URL; stateless, see
 			// oauth-offline-access.ts.
 			installOfflineAccessAuthorizationUrlTransform()
@@ -495,8 +507,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
-					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server),
-					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server),
+					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server, privateCatalogs),
+					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server, privateCatalogs),
 				),
 			)
 			if (gateway !== undefined) registerGatewayRuntimeServer(pi, gateway)
@@ -531,7 +543,11 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			}
 		}, STATUS_RESYNC_DEBOUNCE_MS)
 	})
-	pi.on("session_shutdown", clearStatusResync)
+	pi.on("session_shutdown", () => {
+		clearStatusResync()
+		sessionGeneration++
+		privateCatalogs.clear()
+	})
 }
 
 export default function mcpAdapterExtension(pi: ExtensionAPI): void {
