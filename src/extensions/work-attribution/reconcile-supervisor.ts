@@ -134,7 +134,7 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 			try {
 				// One whole-type read serves every repository of the pass, not one full table scan each.
 				const shared: SharedTypeReads = {}
-				const repositories = await knownTransitionRepositories(checkBudget, shared)
+				const repositories = await knownTransitionRepositories(checkBudget)
 				const start = Math.max(0, repositories.indexOf(owner.nextRepository ?? ""))
 				for (let offset = 0; offset < repositories.length; offset++) {
 					checkBudget()

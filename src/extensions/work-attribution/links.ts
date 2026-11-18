@@ -19,6 +19,7 @@ import {
 	object,
 	readWorkRecords,
 	readWorkRecordsForHistoryAsync,
+	readWorkRecordsSinceAsync,
 	SHA256_HEX,
 	type WorkRecord,
 	type WorkRecordProblem,
@@ -35,6 +36,20 @@ const REPAIR_BUDGET_MS = 3000
 const MAX_CONTINUATIONS_PER_PASS = 25
 // Coarse filesystem timestamps must not hide an append.
 const MTIME_SLACK_MS = 2000
+/** Retained incremental index entries above which the accumulated state is released: while a receipt
+ * stays pending, the index would otherwise grow with the whole history forever. The next pass
+ * rebuilds from the paged full read instead; `done` and `quiet` survive the release. */
+export const HISTORY_RETAINED_MAX_ROWS = 100_000
+/** Distinct keys across the accumulated index maps: an O(1)-cost proxy for the retained row count. */
+export function retainedIndexEntries(index: ContinuationIndex): number {
+	return (
+		index.requests.size +
+		index.workRequests.size +
+		index.segmentRequests.size +
+		index.plans.size +
+		index.transitions.size
+	)
+}
 /** Rows between time-budget checks: a clock read per row is measurable on long histories. */
 const BUDGET_CHECK_ROWS = 1024
 
@@ -487,7 +502,10 @@ export interface ContinuationProgress {
 	historyUnknown?: ContinuationHistory["unknown"]
 	historyReceipts?: Set<string>
 	historyCandidates?: Map<string, { row: WorkRecord; continuation: WorkContinuation }>
-	/** Record identities merged by the immediately-preceding pass, so the slack-window overlap of the next incremental read does not re-append rows. Bounded to one pass's rows: the overlap is always with the preceding watermark, so the set is replaced each pass. */
+	/** Record hashes merged by the immediately-preceding pass within the recent slack tail, so the
+	 * overlap of the next incremental read does not re-append rows. Bounded by construction: only
+	 * rows a future pass's window can still re-read (imported at or after this pass's start minus
+	 * the slack) are retained — fixed-size hashes, never serialized bodies. */
 	historyMerged?: Set<string>
 	historySince?: number
 	/** Per-journal stats of the last pass that built the incremental state, to tell append-only growth from rewrites. */
@@ -544,6 +562,7 @@ export async function reconcileWorkContinuations(
 	assertLease: () => void,
 	progress: ContinuationProgress = {},
 	stretch: () => Promise<void> = preludeStretch(),
+	retainedMax: number = HISTORY_RETAINED_MAX_ROWS,
 ): Promise<void> {
 	const startedAt = Date.now()
 	const deadline = startedAt + REPAIR_BUDGET_MS
@@ -616,29 +635,36 @@ export async function reconcileWorkContinuations(
 		// ("Damage anywhere could hide a revocation"), and unknown record types block the
 		// work they name. Problem notes are persisted, so this replays them cheaply.
 		const invalid: WorkRecordProblem[] = []
-		const fresh = readWorkRecords(agentDir, since - MTIME_SLACK_MS, checkBudget, (problem) => {
-			if (problem.kind === "invalid") invalid.push(problem)
-			else {
-				progress.historyUnknown ??= []
-				const unknown = progress.historyUnknown
-				if (!unknown.some((seen) => JSON.stringify(seen.problem) === JSON.stringify(problem)))
-					unknown.push({ problem, ids: namedIds(problem.record) })
-			}
-		})
+		const fresh = await readWorkRecordsSinceAsync(
+			agentDir,
+			since - MTIME_SLACK_MS,
+			checkBudget,
+			(problem) => {
+				if (problem.kind === "invalid") invalid.push(problem)
+				else {
+					progress.historyUnknown ??= []
+					const unknown = progress.historyUnknown
+					if (!unknown.some((seen) => JSON.stringify(seen.problem) === JSON.stringify(problem)))
+						unknown.push({ problem, ids: namedIds(problem.record) })
+				}
+			},
+			stretch,
+		)
 		if (invalid.length) throw invalidRecordsError(invalid)
-		// The slack window re-reads rows the previous pass already merged; their identity is
-		// remembered so indexRecord cannot append duplicates. Rows share a body only when they
-		// share a record hash — the ledger dedups on it — so the serialized row is a stable key.
+		// The slack window re-reads rows the previous pass already merged; rows share a body only when
+		// they share a record hash — the ledger dedups on it — so the hash is a stable, fixed-size
+		// identity. Only rows a future pass's window can still re-read (imported within the slack tail)
+		// need remembering, which bounds the set to the recent tail instead of the whole merged window.
 		const previous = progress.historyMerged
 		const merged = new Set<string>()
 		// All-or-nothing: a mid-merge throw drops the accumulated state so the next pass
 		// rebuilds from one full read, instead of re-merging this window forever.
 		try {
-			for (const row of fresh) {
+			for (const { record: row, hash, importedAt } of fresh) {
 				checkBudget()
-				const identity = JSON.stringify(row)
-				merged.add(identity)
-				if (previous?.has(identity)) continue
+				await stretch()
+				if (importedAt >= startedAt - MTIME_SLACK_MS) merged.add(hash)
+				if (previous?.has(hash)) continue
 				indexRecord(index, row)
 				const found = receipt(row)
 				if (!found) continue
@@ -674,10 +700,7 @@ export async function reconcileWorkContinuations(
 		index = history.index
 		receipts = new Set()
 		candidates = new Map()
-		// The next incremental pass re-reads this pass's slack tail: remember the rows it merged.
-		const merged = new Set<string>()
 		for (const row of history.records) {
-			merged.add(JSON.stringify(row))
 			await stretch()
 			const found = receipt(row)
 			if (!found) continue
@@ -688,6 +711,18 @@ export async function reconcileWorkContinuations(
 			if (!done.has(found.key) && !unknownRecords(history, row.workId).length)
 				candidates.set(found.key, { row, continuation: found.continuation })
 		}
+		// The next incremental pass re-reads only the slack tail (any future window starts at or after
+		// this pass's start minus the slack), so the remembered identities come from a small windowed
+		// read — not from the whole history the rebuild just indexed. Fixed-size record hashes.
+		const merged = new Set<string>()
+		for (const { hash } of await readWorkRecordsSinceAsync(
+			agentDir,
+			startedAt - MTIME_SLACK_MS,
+			checkBudget,
+			() => {},
+			stretch,
+		))
+			merged.add(hash)
 		progress.historyIndex = index
 		progress.historyUnknown = history.unknown
 		progress.historyReceipts = receipts
@@ -730,6 +765,18 @@ export async function reconcileWorkContinuations(
 		wrote = true
 		done.add(keys[position])
 		indexRecord(index, { ...link, version: 1, workId: row.workId, sessionId: row.sessionId })
+	}
+	// Bound the retained incremental state: while a receipt stays pending (quiet never set), the
+	// accumulated index would otherwise grow with the whole history forever. Over the cap, release
+	// it — the next pass rebuilds from the paged full read, with `done` and `quiet` preserved.
+	if (progress.historyIndex && retainedIndexEntries(progress.historyIndex) > retainedMax) {
+		progress.historyIndex = undefined
+		progress.historyUnknown = undefined
+		progress.historyReceipts = undefined
+		progress.historyCandidates = undefined
+		progress.historyMerged = undefined
+		progress.journalStats = undefined
+		progress.historyRecords = undefined
 	}
 	if (keys.length > MAX_CONTINUATIONS_PER_PASS) return
 	if (!wrote) progress.settledJournals = journals

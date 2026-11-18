@@ -27,7 +27,6 @@ import { legacyInputSignature } from "./ledger/import.js"
 import {
 	acknowledgeBatch,
 	deliveryRetry,
-	effectiveClaims,
 	effectiveClaimsAsync,
 	type Fact,
 	observeEvents,

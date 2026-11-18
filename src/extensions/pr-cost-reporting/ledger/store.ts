@@ -75,6 +75,12 @@ export function classifyUserVersion(version: number): "create" | "open" | "forei
 export interface LedgerStore {
 	readonly db: Sqlite.Database
 	readonly path: string
+	/** True while the optional additive-index apply was skipped on a busy writer. Reads still work (the
+	 * windowed read probes and drops the index hint); readers retry the apply lazily until it lands,
+	 * so a cached backend self-heals without waiting for a fresh open. */
+	additiveDeferred: boolean
+	/** Retry a deferred additive apply on this live connection; true when the indexes are present after it. */
+	tryAdditiveSchema(): boolean
 	/** Run fn in an immediate transaction: all-or-nothing commit for capture/import/ACK points. */
 	tx<T>(fn: () => T): T
 	close(): void
@@ -95,6 +101,32 @@ function sleepSync(ms: number): void {
 
 function isBusy(error: unknown): boolean {
 	return String((error as { code?: unknown } | null)?.code ?? "").startsWith("SQLITE_BUSY")
+}
+
+/** Additive-schema apply errors that mean "another writer holds the lock": retriable, never fatal. */
+function isAdditiveBusy(error: unknown): boolean {
+	if (isBusy(error)) return true
+	const message = error instanceof Error ? error.message : String(error)
+	return /database is (locked|busy)/.test(message)
+}
+
+/** One additive-schema attempt on a live connection: a short busy timeout orders it against other
+ * writers, and a busy result is reported (not thrown) so the caller can retry later. */
+function applyAdditiveSchema(ledger: Sqlite.Database): boolean {
+	ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS / 20}`)
+	try {
+		ledger
+			.transaction(() => {
+				ledger.exec(LEDGER_ADDITIVE_SCHEMA)
+			})
+			.immediate()
+		return true
+	} catch (error) {
+		if (!isAdditiveBusy(error)) throw error
+		return false
+	} finally {
+		ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`)
+	}
 }
 
 /**
@@ -162,21 +194,21 @@ export function openStore(agentDir: string): LedgerStore {
 			// Indexes added after SCHEMA_VERSION shipped still land on pre-existing ledgers: every statement is
 			// idempotent, so applying them on each open keeps older databases at size with fresh ones. These
 			// are optional — readers probe their presence — so a held writer lock skips the pass rather than
-			// stalling a reader; the next open reapplies it.
-			ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS / 20}`)
-			try {
-				ledger
-					.transaction(() => {
-						ledger.exec(LEDGER_ADDITIVE_SCHEMA)
-					})
-					.immediate()
-			} catch (error) {
-				const code = typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : ""
-				const message = error instanceof Error ? error.message : String(error)
-				if (!code.startsWith("SQLITE_BUSY") && !/database is (locked|busy)/.test(message)) throw error
-			} finally {
-				ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`)
+			// stalling a reader. The store marks the skip, and readers retry the apply on this live connection
+			// (a cached backend self-heals; it does not wait for the next open).
+			const store: LedgerStore = {
+				db: ledger,
+				path,
+				additiveDeferred: false,
+				tryAdditiveSchema: () => {
+					if (!store.additiveDeferred) return true
+					store.additiveDeferred = !applyAdditiveSchema(ledger)
+					return !store.additiveDeferred
+				},
+				tx: <T>(fn: () => T): T => ledger.transaction(fn).immediate(),
+				close: () => ledger.close(),
 			}
+			if (!applyAdditiveSchema(ledger)) store.additiveDeferred = true
 			// Required objects: backend construction reads transition_repositories unconditionally, so
 			// this apply is never skipped on a busy writer — the busy error propagates to the open's
 			// retry loop (which re-attempts whole) instead of handing out a backend whose schema it cannot
@@ -204,12 +236,7 @@ export function openStore(agentDir: string): LedgerStore {
 						if ((again?.count ?? 0) === 0) ledger.exec(LEDGER_TRANSITION_BACKFILL)
 					})
 					.immediate()
-			return {
-				db: ledger,
-				path,
-				tx: <T>(fn: () => T): T => ledger.transaction(fn).immediate(),
-				close: () => ledger.close(),
-			}
+			return store
 		} catch (error) {
 			try {
 				db?.close()

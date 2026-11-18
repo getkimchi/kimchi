@@ -15,6 +15,7 @@ import {
 	type BillingLookup,
 	billingDisplay,
 	billingRequests,
+	billingRequestsAsync,
 	isSettled,
 	type OpenBilling,
 	openBilling,
@@ -149,7 +150,11 @@ export async function readWorkCostReportAsync(
 	records = readWorkRecords(agentDir),
 	stretch: () => Promise<void>,
 ) {
-	const inputs = costReportInputs(billingRequests(records))
+	// Discovery and input projection breathe too: at whole-history sizes they out-weigh the calculator's
+	// first phases, so a caller that stretches only around the calculator would still hold the thread.
+	const requests = await billingRequestsAsync(records, stretch)
+	await stretch()
+	const inputs = costReportInputs(requests)
 	const report = await calculatePullRequestCostsAsync(
 		records,
 		inputs.observations,

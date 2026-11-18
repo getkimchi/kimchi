@@ -309,7 +309,7 @@ describe("manual commit reconciliation", () => {
 		transitionReads = 0
 		commitReads = 0
 		const shared: SharedTypeReads = {}
-		const repositories = await knownTransitionRepositories(() => {}, shared)
+		const repositories = await knownTransitionRepositories(() => {})
 		expect(repositories).toHaveLength(2)
 		expect(transitionReads).toBe(0) // Discovery only needs distinct repositories.
 		for (const repository of repositories)

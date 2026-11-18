@@ -140,6 +140,15 @@ export interface RecordBackend {
 	/** Pins an async read to the records committed when it started. */
 	recordWatermark(): number
 	readRecordPage(after: number, through: number, limit: number, checkBudget?: () => void): PositionedRecord[]
+	/** Pages the incremental window (records with imported_at >= modifiedSince) in rowid order within a
+	 * pinned watermark, so a large append backlog is read page by page instead of one uninterruptible scan. */
+	readRecordsSincePage(
+		modifiedSince: number,
+		after: number,
+		through: number,
+		limit: number,
+		checkBudget?: () => void,
+	): PositionedRecord[]
 	/** Pages one work's records in rowid order within a pinned watermark; the
 	 * translation prelude reads big works without materializing them whole. */
 	readWorkRecordPage(
@@ -391,6 +400,47 @@ export function readRecordsAsync(
 	)
 }
 
+/** A ledger row with its fixed-size identity anchors: the parsed record, its content hash (the
+ * dedup identity — the ledger dedups bodies on it) and its import time (bounds which rows any future
+ * window can re-read, so accumulated slack-window sets stay recent-tail-only). */
+export interface WindowedRecord {
+	record: WorkRecord
+	hash: string
+	importedAt: number
+}
+
+/** The incremental window (imported_at >= modifiedSince), paged rowid-cursored for a caller driving
+ * the UI loop; appends beyond the pinned watermark belong to the next read, as with the prefix reader. */
+export async function readRecordsSinceAsync(
+	agentDir: string,
+	modifiedSince: number,
+	checkBudget: () => void,
+	stretch: () => Promise<void> = () => setImmediate(),
+): Promise<WindowedRecord[]> {
+	checkBudget()
+	const backend = backendFor(agentDir)
+	const through = backend.recordWatermark()
+	const records: WindowedRecord[] = []
+	let after = 0
+	for (;;) {
+		await stretch()
+		checkBudget()
+		const page = backend.readRecordsSincePage(modifiedSince, after, through, 128, checkBudget)
+		if (!page.length) break
+		for (const row of page) {
+			checkBudget()
+			try {
+				records.push({ record: JSON.parse(row.body) as WorkRecord, hash: row.recordHash, importedAt: row.importedAt })
+			} catch {
+				// Match the synchronous reader's damaged-body behavior.
+			}
+		}
+		after = page[page.length - 1].position
+	}
+	checkBudget()
+	return records
+}
+
 /** Changes whenever new records exist; capture-skip logic only needs that much honesty. */
 export function fingerprint(agentDir: string): string {
 	return String(backendFor(agentDir).recordCount())
@@ -598,6 +648,26 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	}
 }
 
+/** Drains one statement page to completion. Bun 1.4 leaves an interrupted iterator's cursor positioned
+ * mid-result; get() resets before and after one row, so every page drain funnels through here. */
+function drainStatementPage<T, A extends unknown[]>(
+	page: { iterate: (...args: A) => Iterable<T>; get: (...args: A) => unknown },
+	args: A,
+	checkBudget?: () => void,
+): T[] {
+	const rows: T[] = []
+	try {
+		for (const row of page.iterate(...args)) {
+			checkBudget?.()
+			rows.push(row)
+		}
+	} catch (error) {
+		page.get(...args)
+		throw error
+	}
+	return rows
+}
+
 function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const db = store.db
 	if (ensureProjectionVersion(store)) {
@@ -718,7 +788,15 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const readRecordsWork = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE work_id = ? ORDER BY rowid`,
 	)
-	const readRecordsSince = db.query<StoredRecord, [number]>(readRecordsSinceSql(workRecordsImportedPresent(db)))
+	let readRecordsSince = db.query<StoredRecord, [number]>(readRecordsSinceSql(workRecordsImportedPresent(db)))
+	/** A contended open may have deferred the additive index, leaving this connection unhinted. The
+	 * windowed read retries the deferred apply lazily (contention is usually gone by the next read)
+	 * and re-prepares the hinted statement, so a cached backend self-heals within one process. */
+	const readSinceStatement = (): typeof readRecordsSince => {
+		if (store.additiveDeferred && store.tryAdditiveSchema())
+			readRecordsSince = db.query<StoredRecord, [number]>(readRecordsSinceSql(true))
+		return readRecordsSince
+	}
 	const readRecordsSession = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE session_id = ? ORDER BY rowid`,
 	)
@@ -728,6 +806,9 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const watermark = db.query<{ position: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS position FROM work_records")
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
+	const recordSincePage = db.query<PositionedRecord, [number, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE imported_at >= ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
 	const workRecordPage = db.query<PositionedRecord, [string, number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE work_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
@@ -858,7 +939,7 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 					: opts.type !== undefined
 						? readRecordsType.iterate(opts.type)
 						: opts.modifiedSince !== undefined
-							? readRecordsSince.iterate(opts.modifiedSince)
+							? readSinceStatement().iterate(opts.modifiedSince)
 							: opts.sessionId !== undefined
 								? readRecordsSession.iterate(opts.sessionId)
 								: readRecordsAll.iterate()
@@ -878,7 +959,7 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 				// get() resets before and after one row; it never drains the remaining history.
 				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
 				else if (opts.type !== undefined) readRecordsType.get(opts.type)
-				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
+				else if (opts.modifiedSince !== undefined) readSinceStatement().get(opts.modifiedSince)
 				else if (opts.sessionId !== undefined) readRecordsSession.get(opts.sessionId)
 				else readRecordsAll.get()
 				throw error
@@ -886,36 +967,12 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			return rows
 		},
 		recordWatermark: () => watermark.get()?.position ?? 0,
-		readRecordPage: (after, through, limit, checkBudget) => {
-			checkBudget?.()
-			const rows: PositionedRecord[] = []
-			try {
-				for (const row of recordPage.iterate(after, through, limit)) {
-					checkBudget?.()
-					rows.push(row)
-				}
-			} catch (error) {
-				// The same Bun cursor-reset rule as the synchronous replay above.
-				recordPage.get(after, through, limit)
-				throw error
-			}
-			return rows
-		},
-		readWorkRecordPage: (workId, after, through, limit, checkBudget) => {
-			checkBudget?.()
-			const rows: PositionedRecord[] = []
-			try {
-				for (const row of workRecordPage.iterate(workId, after, through, limit)) {
-					checkBudget?.()
-					rows.push(row)
-				}
-			} catch (error) {
-				// The same Bun cursor-reset rule as the synchronous replay above.
-				workRecordPage.get(workId, after, through, limit)
-				throw error
-			}
-			return rows
-		},
+		readRecordPage: (after, through, limit, checkBudget) =>
+			drainStatementPage(recordPage, [after, through, limit], checkBudget),
+		readRecordsSincePage: (modifiedSince, after, through, limit, checkBudget) =>
+			drainStatementPage(recordSincePage, [modifiedSince, after, through, limit], checkBudget),
+		readWorkRecordPage: (workId, after, through, limit, checkBudget) =>
+			drainStatementPage(workRecordPage, [workId, after, through, limit], checkBudget),
 		hasProjectionOutput: (workId) =>
 			readLog.all(workId, "plans").length > 0 || readLog.all(workId, "commits").length > 0,
 		recordCount: (workId) => (workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)),

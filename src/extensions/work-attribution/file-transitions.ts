@@ -502,10 +502,7 @@ export interface SharedTypeReads {
 	commits?: WorkRecord[]
 }
 
-export async function knownTransitionRepositories(
-	checkBudget: () => void = () => {},
-	_shared?: SharedTypeReads,
-): Promise<string[]> {
+export async function knownTransitionRepositories(checkBudget: () => void = () => {}): Promise<string[]> {
 	const repositories = new Set<string>()
 	// Hydrate, then let the backend return only distinct repositories: decoding
 	// every historical transition body here dominated discovery passes. Legacy

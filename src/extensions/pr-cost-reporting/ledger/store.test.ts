@@ -284,6 +284,17 @@ test("the windowed read is hinted onto the imported index; unhinted SQL stays ro
 	expect(readRecordsSinceSql(false)).not.toContain("INDEXED BY")
 })
 
+test("a busy-deferred additive apply self-heals on the cached backend within one process", { timeout: 60_000 }, () => {
+	// The driver holds the writer lock while a witness store and the cached backend open (both defer
+	// the additive apply), releases, then runs one windowed read through the cached backend. The read
+	// retries the apply on its live connection, so the index appears without any reopen.
+	const result = driver("self-heal", agentDir())
+	expect(result.deferredDuringLock).toBe(true)
+	expect(result.presentDuringLock).toBe(false)
+	expect(result.sameBackend).toBe(true)
+	expect(result.presentAfterRead).toBe(true)
+})
+
 test("the planner answers the windowed read from the index, not a full scan (bun driver)", () => {
 	const dir = agentDir()
 	// At table sizes past ~20k rows, the unhinted ORDER BY rowid read loses to a full scan without

@@ -315,6 +315,15 @@ export function createMemoryRecords(): RecordBackend {
 				checkBudget?.()
 				return { ...row, position: after + index + 1 }
 			}),
+		readRecordsSincePage: (modifiedSince, after, through, limit, checkBudget) => {
+			const rows: PositionedRecord[] = []
+			for (let index = after; index < Math.min(through, order.length) && rows.length < limit; index++) {
+				checkBudget?.()
+				const row = order[index]
+				if (row.importedAt >= modifiedSince) rows.push({ ...row, position: index + 1 })
+			}
+			return rows
+		},
 		readWorkRecordPage: (workId, after, through, limit, checkBudget) => {
 			const end = Math.min(through, order.length)
 			const rows: PositionedRecord[] = []

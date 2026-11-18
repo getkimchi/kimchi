@@ -13,9 +13,11 @@ import {
 import {
 	readRecords as ledgerReadRecords,
 	readRecordsAsync as ledgerReadRecordsAsync,
+	readRecordsSinceAsync as ledgerReadRecordsSinceAsync,
 	readTransitionRepositories as ledgerTransitionRepositories,
 	fingerprint as recordsFingerprint,
 	recoverDirty,
+	type WindowedRecord,
 } from "../pr-cost-reporting/ledger/records.js"
 import { debugWorkAttribution } from "./diagnostics.js"
 
@@ -205,6 +207,20 @@ export function readWorkRecords(
 		if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
 	} else hydrateQuietly(agentDir)
 	return ledgerReadRecords(agentDir, { modifiedSince }, checkBudget)
+}
+
+/** The strict windowed read, breathing between ledger pages for a caller driving the UI loop. */
+export async function readWorkRecordsSinceAsync(
+	agentDir: string,
+	modifiedSince: number,
+	checkBudget: () => void,
+	onRecordProblem: (problem: WorkRecordProblem) => void,
+	stretch: () => Promise<void>,
+): Promise<WindowedRecord[]> {
+	// Same strictness as readWorkRecords: an unfinished import or consumed damage never authorizes silently.
+	if (importJournalSlice(agentDir, checkBudget)) throw new Error("Legacy work history is still importing")
+	reportJournalProblems(agentDir, onRecordProblem, checkBudget)
+	return ledgerReadRecordsSinceAsync(agentDir, modifiedSince, checkBudget, stretch)
 }
 
 /** The strict history read, breathing between ledger pages for a caller driving the UI loop. */

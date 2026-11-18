@@ -1050,6 +1050,95 @@ it("withholds a receipt that was already pending when an unknown record type lat
 	expect(links().every((row) => row.workId !== pending.workId)).toBe(true)
 })
 
+it("an incremental pass over a spanning backlog breathes through the fresh-window merge", async () => {
+	// Pass 1 completes 25 of 30 receipts and the cap leaves 5 pending, so quiet is NOT set, the
+	// incremental state is retained, and pass 2 runs the incremental branch over a 2,500-record
+	// backlog. The merge must breathe through it — the review's repro measured zero stretches.
+	for (let index = 0; index < 30; index++) acceptedContinuation("plan", `planner-${index}`)
+	await flushWorkSummaries()
+	const progress = {}
+	await repair(progress)
+	expect(links()).toHaveLength(25)
+	const lines: string[] = []
+	for (let index = 0; index < 2_500; index++) {
+		const workId = `cccccccc-0000-4000-8000-${String(index).padStart(12, "0")}`
+		lines.push(
+			JSON.stringify({
+				version: 1,
+				type: "request",
+				workId,
+				sessionId: "backlog-session",
+				requestId: `dddddddd-0000-4000-8000-${String(index).padStart(12, "0")}`,
+				recordedAt: "2026-10-05T12:00:00.000Z",
+			}),
+		)
+	}
+	fs.appendFileSync(join(dir, "work-attribution", "00000000-backlog.jsonl"), `${lines.join("\n")}\n`)
+	await flushWorkSummaries()
+	const stretch = vi.fn(async () => {})
+	await reconcileWorkContinuations(dir, new AbortController().signal, () => {}, progress, stretch)
+	// The fresh-window read pages the backlog and the merge breathes once per fresh row, on top
+	// of the slack-tail re-reads: with a window this size the per-row share dominates.
+	expect(stretch.mock.calls.length).toBeGreaterThanOrEqual(2_500)
+})
+
+it("a rebuild retains only the recent slack tail of merged identities, as fixed-size hashes", async () => {
+	// The review's repro: after the first pass the accumulated state held every history row's full
+	// serialized body (2,501 identities for a 2,500-row history) and kept growing with every append.
+	vi.useFakeTimers({ toFake: ["Date"] })
+	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))
+	const flow = acceptedContinuation("plan", "planner-tail", { omitOrigin: true })
+	// Force the journal→ledger import to run at the early time, so the flow's rows carry an
+	// import stamp an hour before the pass (appendWorkRecord writes journals; the ledger
+	// import itself runs lazily on first read).
+	readWorkRecords(dir)
+	await flushWorkSummaries()
+	// The pass runs an hour later: nothing imported within the slack tail can be re-read by a
+	// future window, so the retained identity set is empty — not the whole history.
+	vi.setSystemTime(new Date("2026-10-05T10:00:00Z"))
+	const progress: ContinuationProgress = {}
+	await repair(progress)
+	expect(progress.historyIndex).toBeDefined() // the receipt stays pending, state is retained
+	expect(progress.historyMerged?.size ?? 0).toBe(0)
+	// Identities are ledger record hashes — fixed-size, never serialized bodies.
+	for (const identity of progress.historyMerged ?? []) expect(identity).toMatch(/^[a-f\d]{64}$/)
+	// A fresh append inside the tail lands in the set and the incremental merge still works; an
+	// append older than the pass start minus the slack is already forgettable by construction.
+	vi.setSystemTime(new Date("2026-10-05T10:00:34Z"))
+	appendWorkRecord(flow.ctx, flow.origin, flow.workId)
+	vi.setSystemTime(new Date("2026-10-05T10:00:35Z"))
+	await repair(progress)
+	expect(progress.historyMerged?.size ?? 0).toBeGreaterThanOrEqual(1)
+	for (const identity of progress.historyMerged ?? []) expect(identity).toMatch(/^[a-f\d]{64}$/)
+})
+
+it("releases the accumulated incremental state past the retained-row cap; the next pass rebuilds and still links", async () => {
+	const flow = acceptedContinuation("plan", "planner-cap", { omitOrigin: true })
+	await flushWorkSummaries()
+	const progress: ContinuationProgress = {}
+	// The first pass runs with a zero cap: the rebuild still indexes and sweeps, but the
+	// accumulated state is released at its end — a permanently pending receipt cannot grow
+	// the index forever (the memory bound the review asked for).
+	await reconcileWorkContinuations(
+		dir,
+		new AbortController().signal,
+		() => {},
+		progress,
+		async () => {},
+		0,
+	)
+	expect(links()).toHaveLength(0)
+	expect(progress.historyIndex).toBeUndefined()
+	expect(progress.historyCandidates).toBeUndefined()
+	expect(progress.historyMerged).toBeUndefined()
+	// The next pass rebuilds from the full read, recovers the pending candidate, and the
+	// restored producer evidence confirms through the rebuilt state.
+	appendWorkRecord(flow.ctx, flow.origin, flow.workId)
+	await flushWorkSummaries()
+	await repair(progress)
+	expect(links()).toHaveLength(1)
+})
+
 it("an incremental pass over a spanning backlog fails loudly on fresh damage", async () => {
 	// 30 linkable receipts: pass 1 completes 25 and the cap leaves 5 pending, so quiet is
 	// NOT set, the incremental state is retained, and pass 2 runs the incremental branch.

@@ -12,6 +12,8 @@
  *   read-only      open the store in a second process; count meta rows
  *   schema-check   open, drop the additive indexes, reopen; print the additive apply's effect
  *   write-probe    try BEGIN IMMEDIATE; report acquisition or lock error + elapsed
+ *   self-heal      hold the writer lock while a store and the cached backend open; prove the
+ *                  deferred additive apply heals on the live connection after release
  *   capture        capture one record JSON (<arg>) via the v2 records seam
  *   head           print the saved projection head for work <arg>
  *   rows           print the saved projection view for work <arg>
@@ -25,7 +27,9 @@ import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline"
 import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
 import {
+	backendFor,
 	capture,
+	closeBackends,
 	fingerprint,
 	getNote,
 	readRecords,
@@ -191,6 +195,33 @@ async function writeProbe(agent: string): Promise<void> {
 	} finally {
 		store.close()
 	}
+}
+
+async function selfHeal(agent: string): Promise<void> {
+	// A busy-deferred additive apply must heal on the live connection, not wait for a reopen. Warm the
+	// projection meta first (a first-ever backend construction would write it under the lock), drop the
+	// additive indexes, hold the writer lock while a witness store and the cached backend open (both
+	// defer), release, then run one windowed read through the cached backend.
+	const seed = openStore(agent)
+	backendFor(agent)
+	closeBackends()
+	seed.db.exec(
+		"DROP INDEX IF EXISTS outbox_pending_cover; DROP INDEX IF EXISTS outbox_batches_by_account; DROP INDEX IF EXISTS work_records_imported",
+	)
+	seed.db.exec("BEGIN IMMEDIATE")
+	seed.db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('hold', '1')")
+	const witness = openStore(agent)
+	const backend = backendFor(agent)
+	const sameBackend = backendFor(agent) === backend
+	const deferredDuringLock = witness.additiveDeferred
+	const presentDuringLock = workRecordsImportedPresent(witness.db)
+	seed.db.exec("COMMIT")
+	seed.close()
+	const rows = readRecords(agent, { modifiedSince: 0 })
+	const presentAfterRead = workRecordsImportedPresent(witness.db)
+	witness.close()
+	closeBackends()
+	out({ deferredDuringLock, presentDuringLock, sameBackend, readRows: rows.length, presentAfterRead })
 }
 
 async function captureRecord(agent: string, recordJson: string): Promise<void> {
@@ -2062,6 +2093,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"schema-check": (agent) => schemaCheck(agent),
 	"plan-since": (agent, arg) => planSince(agent, arg),
 	"write-probe": (agent) => writeProbe(agent),
+	"self-heal": (agent) => selfHeal(agent),
 	capture: (agent, json) => captureRecord(agent, json ?? "{}"),
 	head: (agent, workId) => printHead(agent, workId ?? ""),
 	rows: (agent, workId) => printRows(agent, workId ?? ""),
