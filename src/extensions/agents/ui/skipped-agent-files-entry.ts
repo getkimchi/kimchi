@@ -7,15 +7,16 @@
  * layout mirrors the loaded-resources "skill issues" line — a one-line summary
  * that makes way for the per-file details only when expanded.
  *
- * A notice is visible only in the session start that wrote it (§"once per
- * start"): every entry carries the token of the start that appended it, and the
- * renderer hides entries whose token is not the current one. Entries written by
- * earlier starts stay in the session file and cost nothing on load.
+ * Only the current session start is shown: every entry carries the token of the
+ * start that appended it, and the renderer hides entries whose token is not the
+ * current one. Entries written by earlier starts stay in the session file and
+ * cost nothing on load (see docs/agents.md, "Invalid frontmatter").
  */
 
-import type { EntryRenderer } from "@earendil-works/pi-coding-agent"
+import type { EntryRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { keyText } from "@earendil-works/pi-coding-agent"
 import { type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { formatSkippedAgentFileRow, SKIPPED_AGENT_FILES_FIX_LINE } from "../personas/custom-agents.js"
 
 /** Custom entry type holding the skipped-file notice. */
 export const SKIPPED_AGENT_FILES_ENTRY = "agents:skipped-files"
@@ -27,12 +28,13 @@ export interface SkippedAgentFilesEntryData {
 	files: { path: string; reason: string }[]
 }
 
-/** The slice of pi's Theme the line needs; pi passes its full Theme in. */
-interface LineTheme {
-	fg(color: string, text: string): string
-}
+type LineTheme = Pick<Theme, "fg">
 
-const FIX_LINE = "Fix the YAML frontmatter to load them."
+/**
+ * Below this width the details truncate instead of wrapping: a long path would
+ * otherwise turn one row into dozens of lines and bury the rest of the notice.
+ */
+const WRAP_MIN_WIDTH = 20
 
 function headerLine(left: string, expanded: boolean, theme: LineTheme, width: number): string {
 	// Reserve the hint's width first so it stays visible on narrow terminals —
@@ -44,6 +46,26 @@ function headerLine(left: string, expanded: boolean, theme: LineTheme, width: nu
 	const truncated = truncateToWidth(left, maxLeft)
 	const pad = Math.max(0, width - visibleWidth(truncated) - hintWidth)
 	return truncated + " ".repeat(pad) + hint
+}
+
+/**
+ * One file row. Continuation lines are indented further than the row itself so
+ * a wrapped row reads as one entry; wrapping the pre-indented line instead
+ * drops the indent and starts with a blank line.
+ */
+function rowLines(path: string, reason: string, width: number): string[] {
+	const content = formatSkippedAgentFileRow(path, reason)
+	if (width < WRAP_MIN_WIDTH) return [truncateToWidth(`  ${content}`, width)]
+	// Reserve the deepest indent (4) so no wrapped line can exceed the width.
+	const parts = wrapTextWithAnsi(content, Math.max(1, width - 4)).filter((line) => line.length > 0)
+	return parts.map((part, index) => truncateToWidth(`${index === 0 ? "  " : "    "}${part}`, width))
+}
+
+function fixLines(width: number): string[] {
+	if (width < WRAP_MIN_WIDTH) return [truncateToWidth(SKIPPED_AGENT_FILES_FIX_LINE, width)]
+	return wrapTextWithAnsi(SKIPPED_AGENT_FILES_FIX_LINE, width)
+		.filter((line) => line.length > 0)
+		.map((line) => truncateToWidth(line, width))
 }
 
 /**
@@ -68,11 +90,9 @@ class SkippedAgentFilesLine implements Component {
 		const left = this.expanded ? "[Agent issues]" : this.summary
 		const lines = [headerLine(left, this.expanded, this.theme, width)]
 		if (!this.expanded) return lines
-		// YAML errors are long: wrap instead of cutting them, then clamp each
-		// wrapped line as a belt-and-braces guard on the width contract.
-		for (const { path, reason } of this.files) lines.push(`  ${path} — ${reason}`)
-		lines.push(FIX_LINE)
-		return lines.flatMap((line) => wrapTextWithAnsi(line, width).map((wrapped) => truncateToWidth(wrapped, width)))
+		for (const { path, reason } of this.files) lines.push(...rowLines(path, reason, width))
+		lines.push(...fixLines(width))
+		return lines
 	}
 
 	invalidate(): void {}

@@ -2,14 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Shell, test } from "@microsoft/tui-test"
 import { fullText, STARTUP_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import {
-	createKimchiFixture,
-	launchKimchi,
-	PROMPT_READY,
-	runKimchiSession,
-	stopKimchi,
-	TUI_TEST_CONFIG,
-} from "./support/kimchi-fixture.js"
+import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -89,7 +82,13 @@ test.describe("narrow terminal", () => {
 				terminal.keyPress("o", { ctrl: true })
 				await waitForText(terminal, "[Agent issues]", { full: true })
 				expect(fullText(terminal)).not.toContain("exceeds terminal width")
-				trace.step("expanded on a 60-column terminal without overflowing")
+
+				// The row wraps rather than being cut, and the continuation keeps an
+				// indent: the failure this guards left the tail unrendered and started
+				// the row with an empty line at column 0.
+				await waitForText(terminal, "narrow-terminal.md", { full: true })
+				expect(fullText(terminal)).not.toContain("\n.kimchi/agents/")
+				trace.step("expanded on a 60-column terminal, wrapped with an indent")
 
 				terminal.submit("ping")
 				await waitForText(terminal, "SESSION-ALIVE-AFTER-EXPAND", { full: true })
@@ -104,43 +103,44 @@ test.describe("narrow terminal", () => {
 // bottom of the history.
 test("resuming a session shows one notice, not one per start", async ({ terminal }) => {
 	const exitMarker = "__KIMCHI_FRONTMATTER_FIRST_EXIT__"
-	const fixture = await createKimchiFixture({
-		responses: [{ stream: ["Done."] }],
-		seedHome(_homeDir, workDir) {
-			seedAgents(workDir, { "broken-agent.md": BROKEN })
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "agent-invalid-frontmatter-resume",
+			providerId: "kimchi-dev/openai",
+			models: [{ slug: "ci-model", displayName: "CI model", provider: "openai" }],
+			initialModel: "ci-model",
+			responses: [{ stream: ["Done."] }, { stream: ["Still alive."] }],
+			exitMarker,
+			seedHome(_homeDir, workDir) {
+				seedAgents(workDir, { "broken-agent.md": BROKEN })
+			},
 		},
-	})
+		async (fixture, trace) => {
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
+			await waitForText(terminal, "[1 agent issue]", { timeoutMs: STARTUP_TIMEOUT_MS })
 
-	try {
-		launchKimchi(terminal, fixture, [], {}, { exitMarker })
-		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
-		await waitForText(terminal, "[1 agent issue]", { timeoutMs: STARTUP_TIMEOUT_MS })
+			// A turn guarantees the session is on disk for the resume leg.
+			terminal.submit("hello")
+			await waitForText(terminal, "Done.", { timeoutMs: STARTUP_TIMEOUT_MS })
+			trace.step("first session reported the skipped file and completed a turn")
 
-		// A turn guarantees the session is on disk for `-c`.
-		terminal.submit("hello")
-		await waitForText(terminal, "Done.", { timeoutMs: STARTUP_TIMEOUT_MS })
+			terminal.submit("/quit")
+			await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 
-		terminal.submit("/quit")
-		await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+			launchKimchi(terminal, fixture, ["--continue"])
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: true })
+			await waitForText(terminal, "[1 agent issue]", { timeoutMs: STARTUP_TIMEOUT_MS, full: true })
+			trace.step("resumed session shows a notice")
 
-		// The exit marker resets the terminal, so this buffer holds only the
-		// resumed session: a replayed notice from the first start would show up
-		// as a second occurrence.
-		launchKimchi(terminal, fixture, ["-c"])
-		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: true })
-		await waitForText(terminal, "[1 agent issue]", { timeoutMs: STARTUP_TIMEOUT_MS, full: true })
+			// The exit marker reset the terminal, so this buffer holds only the
+			// resumed session: a replayed notice from the first start would show
+			// up as a second occurrence.
+			expect(fullText(terminal).split("[1 agent issue]").length - 1).toBe(1)
 
-		expect(fullText(terminal).split("[1 agent issue]").length - 1).toBe(1)
-	} finally {
-		try {
-			await stopKimchi(terminal)
-		} catch {
-			/* best-effort */
-		}
-		try {
-			await fixture.stop()
-		} catch {
-			/* best-effort */
-		}
-	}
+			terminal.submit("still there?")
+			await waitForText(terminal, "Still alive.", { timeoutMs: STARTUP_TIMEOUT_MS })
+			trace.step("resumed session still answers")
+		},
+	)
 })

@@ -2660,6 +2660,29 @@ describe("unparseable agent files", () => {
 			"warning",
 		)
 		expect(skippedEntries(pi)).toHaveLength(0)
+
+		// The dedupe and per-session reset must hold on this branch too: a
+		// reload from the Agent tool stays quiet, and the next session start
+		// reports the file again.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		await getRegisteredAgentTool(pi).execute(
+			"call-rpc-frontmatter",
+			{ prompt: "go", description: "frontmatter rpc", subagent_type: "valid-agent", run_in_background: true },
+			undefined,
+			undefined,
+			{ ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), cwd: projectDir },
+		)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("broken-agent.md"))
+		expect(skippedEntries(pi)).toHaveLength(0)
+
+		await fireSessionStart(pi, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(2)
 	})
 
 	it("shows one notice per session start and hides the previous one", async () => {

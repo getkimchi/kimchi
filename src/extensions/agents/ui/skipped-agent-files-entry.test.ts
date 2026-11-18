@@ -77,7 +77,7 @@ describe("skipped agent files entry", () => {
 				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
 			})
 
-			it(`keeps every expanded line within ${width} columns and wraps long reasons`, () => {
+			it(`keeps every expanded line within ${width} columns`, () => {
 				const files = [
 					{
 						path: ".kimchi/agents/a-very-long-agent-file-name.md",
@@ -87,11 +87,41 @@ describe("skipped agent files entry", () => {
 				const lines = render({ token: "start-1", files }, { expanded: true }, width) ?? []
 
 				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
-				// The long reason is wrapped, not cut: the tail survives somewhere.
-				expect(lines.join("\n")).toContain("tools")
-				expect(lines.length).toBeGreaterThan(3)
+				expect(lines.length).toBeGreaterThan(1)
 			})
 		}
+
+		it("wraps long rows with an indent that marks the continuation", () => {
+			const files = [
+				{
+					path: ".kimchi/agents/a-very-long-agent-file-name.md",
+					reason: "unexpected end of the stream, expected a closing bracket in the tools list",
+				},
+			]
+			const rows = (render({ token: "start-1", files }, { expanded: true }, 40) ?? []).slice(1, -1)
+
+			// One entry, several lines: the first indented like a row, the rest
+			// deeper so a wrapped row cannot be read as a second file. No blank
+			// line at the start — the failure this replaced produced one.
+			expect(rows.length).toBeGreaterThan(2)
+			expect(rows[0].startsWith("  .kimchi")).toBe(true)
+			for (const row of rows.slice(1)) expect(row.startsWith("    ")).toBe(true)
+			expect(rows.some((row) => row.trim().length === 0)).toBe(false)
+			expect(rows.join("\n")).toContain("tools")
+		})
+
+		it("truncates instead of wrapping when the terminal is unusably narrow", () => {
+			const files = [
+				{
+					path: ".kimchi/agents/a-very-long-agent-file-name.md",
+					reason: "unexpected end of the stream, expected a closing bracket in the tools list",
+				},
+			]
+			const lines = render({ token: "start-1", files }, { expanded: true }, 8) ?? []
+
+			// Header, one row, one fix line — no dozens of wrapped fragments.
+			expect(lines).toHaveLength(3)
+		})
 	})
 
 	it("hides entries it cannot understand", () => {
