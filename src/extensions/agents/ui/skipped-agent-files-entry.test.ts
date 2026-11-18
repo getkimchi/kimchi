@@ -1,0 +1,119 @@
+import type { CustomEntry } from "@earendil-works/pi-coding-agent"
+import { visibleWidth } from "@earendil-works/pi-tui"
+import { describe, expect, it } from "vitest"
+import {
+	createSkippedAgentFilesRenderer,
+	SKIPPED_AGENT_FILES_ENTRY,
+	type SkippedAgentFilesEntryData,
+} from "./skipped-agent-files-entry.js"
+
+const theme = { fg: (_color: string, text: string) => text } as never
+// keyText() needs harness keybindings, which vitest does not initialise; the
+// real "ctrl+o" hint text is pinned by the TUI e2e test.
+const EXPAND = "to expand)"
+const COLLAPSE = "to collapse)"
+
+function entry(data: unknown): CustomEntry<SkippedAgentFilesEntryData> {
+	return {
+		type: "custom",
+		id: "entry-1",
+		parentId: null,
+		timestamp: "2026-11-18T00:00:00.000Z",
+		customType: SKIPPED_AGENT_FILES_ENTRY,
+		data: data as SkippedAgentFilesEntryData,
+	}
+}
+
+function render(
+	data: unknown,
+	{ expanded = false, token = "start-1" }: { expanded?: boolean; token?: string | undefined } = {},
+	width = 80,
+): string[] | undefined {
+	const renderer = createSkippedAgentFilesRenderer(() => token)
+	return renderer(entry(data), { expanded }, theme)?.render(width)
+}
+
+const one = [{ path: ".kimchi/agents/a.md", reason: "unexpected end of the stream" }]
+
+describe("skipped agent files entry", () => {
+	it("collapses to one summary line with the count and the expand hint", () => {
+		const lines = render({ token: "start-1", files: one })
+
+		expect(lines).toHaveLength(1)
+		expect(lines?.[0]).toContain("[1 agent issue] Some agents were not loaded.")
+		expect(lines?.[0]).toContain(EXPAND)
+		// The hint is right-aligned: it ends at the terminal edge.
+		expect(visibleWidth(lines?.[0] ?? "")).toBe(80)
+		expect(lines?.[0]?.endsWith(EXPAND)).toBe(true)
+		expect(lines?.[0]).not.toContain("a.md")
+	})
+
+	it("pluralizes the count", () => {
+		const files = [
+			...one,
+			{ path: ".kimchi/agents/b.md", reason: "bad indent" },
+			{ path: ".kimchi/agents/c.md", reason: "bad indent" },
+		]
+		expect(render({ token: "start-1", files })?.[0]).toContain("[3 agent issues]")
+	})
+
+	it("expands to the header, one line per file and the fix line", () => {
+		const lines = render({ token: "start-1", files: one }, { expanded: true }) ?? []
+
+		expect(lines[0]).toContain("[Agent issues]")
+		expect(lines[0]).toContain(COLLAPSE)
+		expect(lines[0]).not.toContain("Some agents were not loaded.")
+		expect(lines.slice(1)).toEqual([
+			"  .kimchi/agents/a.md — unexpected end of the stream",
+			"Fix the YAML frontmatter to load them.",
+		])
+	})
+
+	describe("narrow terminals", () => {
+		for (const width of [20, 8]) {
+			it(`keeps every collapsed line within ${width} columns`, () => {
+				const lines = render({ token: "start-1", files: one }, {}, width) ?? []
+				expect(lines.length).toBeGreaterThan(0)
+				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			})
+
+			it(`keeps every expanded line within ${width} columns and wraps long reasons`, () => {
+				const files = [
+					{
+						path: ".kimchi/agents/a-very-long-agent-file-name.md",
+						reason: "unexpected end of the stream, expected a closing bracket in the tools list",
+					},
+				]
+				const lines = render({ token: "start-1", files }, { expanded: true }, width) ?? []
+
+				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				// The long reason is wrapped, not cut: the tail survives somewhere.
+				expect(lines.join("\n")).toContain("tools")
+				expect(lines.length).toBeGreaterThan(3)
+			})
+		}
+	})
+
+	it("hides entries it cannot understand", () => {
+		expect(render(undefined)).toBeUndefined()
+		expect(render({})).toBeUndefined()
+		expect(render({ token: "start-1" })).toBeUndefined()
+		expect(render({ token: "start-1", files: [] })).toBeUndefined()
+		expect(render({ token: 7, files: one })).toBeUndefined()
+		expect(render({ token: "start-1", files: [{ path: "a.md" }] })).toBeUndefined()
+		expect(render("legacy string payload")).toBeUndefined()
+	})
+
+	it("hides notices from an earlier session start", () => {
+		const data = { token: "start-1", files: one }
+
+		expect(render(data, { token: "start-2" })).toBeUndefined()
+		expect(render(data, { token: "start-1" })).toHaveLength(1)
+	})
+
+	it("hides the notice when no session start has claimed a token yet", () => {
+		const renderer = createSkippedAgentFilesRenderer(() => undefined)
+
+		expect(renderer(entry({ token: "start-1", files: one }), { expanded: false }, theme)).toBeUndefined()
+	})
+})

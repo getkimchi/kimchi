@@ -58,7 +58,8 @@ export function formatSkippedAgentFiles(skipped: SkippedAgentFile[], cwd: string
 	].join("\n")
 }
 
-function displayPath(path: string, cwd: string): string {
+/** Path as the user should see it: relative to the session cwd when inside it. */
+export function displayPath(path: string, cwd: string): string {
 	const rel = relative(cwd, path)
 	return rel.startsWith("..") || isAbsolute(rel) ? path : rel
 }

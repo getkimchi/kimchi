@@ -11,6 +11,7 @@
  *   /agents                 - Interactive agent management menu
  */
 
+import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
@@ -86,7 +87,12 @@ import {
 	registerAgents,
 	resolveType,
 } from "./personas/agent-types.js"
-import { formatSkippedAgentFiles, loadCustomAgents, type SkippedAgentFile } from "./personas/custom-agents.js"
+import {
+	displayPath,
+	formatSkippedAgentFiles,
+	loadCustomAgents,
+	type SkippedAgentFile,
+} from "./personas/custom-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
@@ -118,6 +124,11 @@ import {
 	type Theme,
 	type UICtx,
 } from "./ui/agent-widget.js"
+import {
+	createSkippedAgentFilesRenderer,
+	SKIPPED_AGENT_FILES_ENTRY,
+	type SkippedAgentFilesEntryData,
+} from "./ui/skipped-agent-files-entry.js"
 
 /** Tools hidden until the session spawns its first subagent (see deferral block below). */
 export const AGENT_CONTINUATION_TOOL_NAMES = ["resume_subagent", "steer_subagent", "get_subagent_result"] as const
@@ -929,6 +940,16 @@ export default function (pi: ExtensionAPI) {
 
 	let skippedAgentFiles: SkippedAgentFile[] = []
 	const reportedSkippedAgentFiles = new Set<string>()
+	// Identifies the current session start for the skipped-files notice. Every
+	// report writes it into its entry, and the renderer hides entries carrying
+	// another one — so a resumed session shows today's notice, not one per
+	// resume. Undefined until the first session_start.
+	let noticeToken: string | undefined
+
+	pi.registerEntryRenderer(
+		SKIPPED_AGENT_FILES_ENTRY,
+		createSkippedAgentFilesRenderer(() => noticeToken),
+	)
 
 	const reloadCustomAgents = (cwd: string) => {
 		const { agents, skipped } = loadCustomAgents(cwd)
@@ -937,12 +958,21 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Each skipped file is reported once per session, and again if its error changes.
-	const warnSkippedAgentFiles = (ctx: Pick<ExtensionContext, "hasUI" | "ui" | "cwd">) => {
+	// TUI sessions get a collapsible transcript entry (the same look as the
+	// skill issues line); ACP and headless keep the plain warning.
+	const reportSkippedAgentFiles = (ctx: Pick<ExtensionContext, "hasUI" | "ui" | "cwd" | "mode">) => {
 		const unreported = skippedAgentFiles.filter(
 			({ path, reason }) => !reportedSkippedAgentFiles.has(`${path}\n${reason}`),
 		)
 		if (unreported.length === 0) return
 		for (const { path, reason } of unreported) reportedSkippedAgentFiles.add(`${path}\n${reason}`)
+		if (ctx.mode === "tui" && noticeToken) {
+			pi.appendEntry<SkippedAgentFilesEntryData>(SKIPPED_AGENT_FILES_ENTRY, {
+				token: noticeToken,
+				files: unreported.map(({ path, reason }) => ({ path: displayPath(path, ctx.cwd), reason })),
+			})
+			return
+		}
 		notifyUser(ctx, formatSkippedAgentFiles(unreported, ctx.cwd), "warning")
 	}
 
@@ -1376,7 +1406,8 @@ export default function (pi: ExtensionAPI) {
 		// worktrees) — pick up that project's agents and settings.
 		reloadProjectAgentState(ctx.cwd)
 		reportedSkippedAgentFiles.clear()
-		warnSkippedAgentFiles(ctx)
+		noticeToken = randomUUID()
+		reportSkippedAgentFiles(ctx)
 	})
 
 	pi.on("session_before_switch", () => {
@@ -1969,7 +2000,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				widget.setUICtx(ctx.ui as UICtx)
 
 				reloadCustomAgents(ctx.cwd)
-				warnSkippedAgentFiles(ctx)
+				reportSkippedAgentFiles(ctx)
 
 				// Capture the session facts every post-run path needs BEFORE the
 				// first await: the race below can run for minutes, and a session
@@ -2791,7 +2822,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 	async function showAgentsMenu(ctx: ExtensionCommandContext) {
 		reloadCustomAgents(ctx.cwd)
-		warnSkippedAgentFiles(ctx)
+		reportSkippedAgentFiles(ctx)
 		const allNames = getAllTypes()
 
 		const options: string[] = []
