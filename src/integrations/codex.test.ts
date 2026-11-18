@@ -153,6 +153,32 @@ enabled = true
 		expect(merged).toContain('model_provider = "nested-user-provider"')
 	})
 
+	it.each([
+		{ delimiter: '"""' },
+		{ delimiter: "'''" },
+	])("keeps top-level $delimiter string contents out of TOML section parsing", ({ delimiter }) => {
+		const fresh = buildCodexToml("new-key", "kimi-k2.6", "/catalog.json", true)
+		const multilineValue = `notes = ${delimiter}
+[preferences]
+model_provider = "text, not a setting"
+${delimiter}`
+		const existing = `model_provider = "kimchi"
+model = "old-model"
+model_catalog_json = "/old-catalog.json"
+${multilineValue}
+keep_top_level = "yes"
+
+[features]
+multi_agent = true
+`
+
+		const merged = mergeCodexToml(existing, fresh)
+		expect(merged).toContain(multilineValue)
+		expect(merged.indexOf('model_provider = "kimchi_chatgpt"')).toBeGreaterThan(merged.indexOf(multilineValue))
+		expect(merged).toContain("[features]")
+		expect(mergeCodexToml(merged, fresh)).toBe(merged)
+	})
+
 	it('preserves user-owned sections like [features] and [plugins."foo"]', () => {
 		const fresh = buildCodexToml("k", "kimi-k2.6", "/catalog.json")
 		const existing = `model_provider = "kimchi"
@@ -597,6 +623,49 @@ multi_agent = true
 		const written = readFileSync(join(configDir, "config.toml"), "utf-8")
 		expect(written).toMatch(/^model_provider = "kimchi"$/m)
 		expect(written).not.toContain("[model_providers.kimchi_chatgpt]")
+	})
+
+	it.each([
+		{
+			name: "chatgptAuthTokens",
+			auth: { auth_mode: "chatgptAuthTokens", tokens: { access_token: "chatgpt-auth-token" } },
+		},
+		{
+			name: "personalAccessToken",
+			auth: { auth_mode: "personalAccessToken", personal_access_token: "personal-access-token" },
+		},
+	])("write() enables the dual-credential default for $name", async ({ auth }) => {
+		const configDir = join(scratchHome, ".codex")
+		mkdirSync(configDir, { recursive: true })
+		writeFileSync(join(configDir, "auth.json"), JSON.stringify(auth), "utf-8")
+
+		await byId("codex")?.write("global", "fresh-key", MIXED_MODELS)
+
+		const written = readFileSync(join(configDir, "config.toml"), "utf-8")
+		expect(written).toMatch(/^model_provider = "kimchi_chatgpt"$/m)
+		expect(written).toContain("requires_openai_auth = true")
+		expect(written).not.toContain("chatgpt-auth-token")
+		expect(written).not.toContain("personal-access-token")
+	})
+
+	it("write() logs an unsupported auth_mode without exposing auth data", async () => {
+		const configDir = join(scratchHome, ".codex")
+		mkdirSync(configDir, { recursive: true })
+		writeFileSync(
+			join(configDir, "auth.json"),
+			JSON.stringify({ auth_mode: "apiKey", OPENAI_API_KEY: "codex-api-key" }),
+			"utf-8",
+		)
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			await byId("codex")?.write("global", "fresh-key", MIXED_MODELS)
+			expect(warning).toHaveBeenCalledWith(expect.stringContaining('auth_mode "apiKey"'))
+			expect(warning).not.toHaveBeenCalledWith(expect.stringContaining("codex-api-key"))
+		} finally {
+			warning.mockRestore()
+		}
+
+		expect(readFileSync(join(configDir, "config.toml"), "utf-8")).toMatch(/^model_provider = "kimchi"$/m)
 	})
 
 	it("write() detects ChatGPT login and generates the dual-credential full catalogue", async () => {

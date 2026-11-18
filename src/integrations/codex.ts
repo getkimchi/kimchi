@@ -14,6 +14,7 @@ const CODEX_CONFIG_PATH = "~/.codex/config.toml"
 const CODEX_CATALOG_PATH = "~/.codex/model_catalog.json"
 const CODEX_AUTH_PATH = "~/.codex/auth.json"
 const CHATGPT_PROVIDER_NAME = "kimchi_chatgpt"
+const CHATGPT_AUTH_MODES = new Set(["chatgpt", "chatgptAuthTokens", "personalAccessToken"])
 const UNSUPPORTED_CHATGPT_SLUGS = new Set(["gpt-5.3-codex"])
 
 /** Escape a string for inclusion inside a TOML basic double-quoted string. */
@@ -149,6 +150,15 @@ const KIMCHI_PROVIDER_SECTIONS = new Set([
 	`model_providers.${CHATGPT_PROVIDER_NAME}`,
 ])
 
+function openingTomlMultilineDelimiter(line: string): '"""' | "'''" | undefined {
+	if (line.trimStart().startsWith("#")) return undefined
+	const basicIndex = line.indexOf('"""')
+	const literalIndex = line.indexOf("'''")
+	const delimiter = literalIndex !== -1 && (basicIndex === -1 || literalIndex < basicIndex) ? "'''" : '"""'
+	if (basicIndex === -1 && literalIndex === -1) return undefined
+	return line.split(delimiter).length % 2 === 0 ? delimiter : undefined
+}
+
 /**
  * Merge freshly-generated kimchi Codex config on top of an existing
  * config.toml. Strips the old `[model_providers.kimchi]` block and the
@@ -168,8 +178,15 @@ export function mergeCodexToml(existingText: string, freshToml: string): string 
 	const keptSections: string[] = []
 	let inKimchiProviderSection = false
 	let inAnySection = false
+	let openTopLevelString: '"""' | "'''" | undefined
 
 	for (const line of lines) {
+		if (openTopLevelString) {
+			keptTopLevel.push(line)
+			if (line.includes(openTopLevelString)) openTopLevelString = undefined
+			continue
+		}
+
 		// Match a [section] header. We deliberately do not match [[array.of.tables]]
 		// here — those keep their content untouched so user-defined project lists
 		// survive a refresh.
@@ -205,6 +222,7 @@ export function mergeCodexToml(existingText: string, freshToml: string): string 
 			const keyMatch = line.match(/^([A-Za-z0-9_-]+)\s*=/)
 			if (keyMatch && TOP_LEVEL_KIMCHI_KEYS.has(keyMatch[1])) continue
 			keptTopLevel.push(line)
+			openTopLevelString = openingTomlMultilineDelimiter(line)
 			continue
 		}
 
@@ -232,9 +250,20 @@ function hasChatGptLogin(authPath: string): boolean {
 	try {
 		const auth: unknown = JSON.parse(readFileSync(authPath, "utf-8"))
 		if (!isRecord(auth)) return false
-		if (auth.auth_mode !== undefined && auth.auth_mode !== "chatgpt") return false
-		if (!isRecord(auth.tokens)) return false
-		return typeof auth.tokens.access_token === "string" && auth.tokens.access_token.trim().length > 0
+		if (
+			auth.auth_mode !== undefined &&
+			(typeof auth.auth_mode !== "string" || !CHATGPT_AUTH_MODES.has(auth.auth_mode))
+		) {
+			console.warn(`Codex: unsupported auth_mode "${String(auth.auth_mode)}"; using Kimchi API-key-only setup.`)
+			return false
+		}
+		const hasAccessToken =
+			isRecord(auth.tokens) &&
+			typeof auth.tokens.access_token === "string" &&
+			auth.tokens.access_token.trim().length > 0
+		const hasPersonalAccessToken =
+			typeof auth.personal_access_token === "string" && auth.personal_access_token.trim().length > 0
+		return hasAccessToken || hasPersonalAccessToken
 	} catch {
 		return false
 	}
