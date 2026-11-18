@@ -4,10 +4,109 @@ import {
 	SettingsSelectorComponent,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent"
-import { Container, MouseRegion, Spacer } from "@earendil-works/pi-tui"
+import { Container, MouseRegion, Spacer, truncateToWidth } from "@earendil-works/pi-tui"
 import { ToolBlockView } from "../components/tool-block.js"
 import { formatToolTimer } from "./tool-rendering.js"
-import { readCollapseWorkMode, writeCollapseWorkMode } from "./work-collapse-settings.js"
+import {
+	type CollapseWorkMode,
+	isCollapseWorkOverriddenByProject,
+	readCollapseWorkMode,
+	resolveCollapseWorkProjectTrust,
+	writeCollapseWorkMode,
+} from "./work-collapse-settings.js"
+
+// ---------------------------------------------------------------------------
+// Session-scoped state
+// ---------------------------------------------------------------------------
+
+// The prototype patches below are installed process-wide, so every global in
+// this module assumes a SINGLE interactive session per process: `session_start`
+// resets all of them (cwd, settings cache, muted-colour calibration, turn
+// boundary) so a new session can never inherit the previous one's state.
+
+/** Session cwd captured at `session_start`; `process.cwd()` only before that. */
+let sessionCwd: string | undefined
+
+/** `ctx.ui.notify`, captured at `session_start` for `/settings` write failures. */
+let sessionNotify: ((message: string, type?: "info" | "warning" | "error") => void) | undefined
+
+/** Live theme captured at `session_start` and refreshed whenever a render sees a different one. */
+let collapseWorkTheme: Theme | undefined
+
+/** Muted colour calibrated against `collapseWorkTheme` (see `resolveMutedFg`). */
+let mutedFgCalibrated: string | null | undefined
+
+/** Latest turn boundary: a completed turn's answer never folds when the next turn starts. */
+let lastTurnStartTimestamp = 0
+
+interface CollapseWorkModeCache {
+	cwd: string
+	projectTrusted: boolean
+	mode: CollapseWorkMode
+	timestamp: number
+}
+
+/** Resolved mode — keeps the render path free of per-component settings reads. */
+let collapseWorkModeCache: CollapseWorkModeCache | undefined
+let collapseWorkTrustCache: { cwd: string; trusted: boolean } | undefined
+
+/**
+ * Mirrors the settings module's own file TTL: after this window we re-resolve
+ * (at worst one synchronous read per window, never per component per frame).
+ */
+const COLLAPSE_WORK_MODE_TTL_MS = 5_000
+
+function currentSessionCwd(): string {
+	return sessionCwd ?? process.cwd()
+}
+
+function projectTrustedFor(cwd: string): boolean {
+	if (collapseWorkTrustCache?.cwd === cwd) return collapseWorkTrustCache.trusted
+	const trusted = resolveCollapseWorkProjectTrust(cwd)
+	collapseWorkTrustCache = { cwd, trusted }
+	return trusted
+}
+
+/**
+ * Effective collapse mode for the current session.
+ *
+ * Memoized per (cwd, project-trust). Every tool/assistant component asks for it
+ * on every frame, but only the first caller in a TTL window — or the first
+ * after a write / `session_start` — reads the settings files.
+ */
+export function getCollapseWorkMode(): CollapseWorkMode {
+	const cwd = currentSessionCwd()
+	const projectTrusted = projectTrustedFor(cwd)
+	const now = Date.now()
+	const cached = collapseWorkModeCache
+	if (
+		cached &&
+		cached.cwd === cwd &&
+		cached.projectTrusted === projectTrusted &&
+		now - cached.timestamp < COLLAPSE_WORK_MODE_TTL_MS
+	) {
+		return cached.mode
+	}
+	const mode = readCollapseWorkMode(cwd, { projectTrusted })
+	collapseWorkModeCache = { cwd, projectTrusted, mode, timestamp: now }
+	return mode
+}
+
+/** Drop every memoized settings value — call after a write or a cwd change. */
+export function invalidateCollapseWorkModeCache(): void {
+	collapseWorkModeCache = undefined
+}
+
+/** Reset every session-scoped global. Called from `session_start` (and tests). */
+export function resetToolGroupingSessionState(cwd?: string): void {
+	sessionCwd = cwd
+	sessionNotify = undefined
+	collapseWorkModeCache = undefined
+	collapseWorkTrustCache = undefined
+	mutedFgCalibrated = undefined
+	mutedLinesCache = new WeakMap()
+	lastTurnStartTimestamp = 0
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,7 +158,7 @@ const PAST: Record<Category, (n: number) => string> = {
 	directory: (n) => `listed ${n} ${n === 1 ? "directory" : "directories"}`,
 	edit: (n) => `made ${n} ${n === 1 ? "edit" : "edits"}`,
 	command: (n) => `ran ${n} ${n === 1 ? "command" : "commands"}`,
-	operation: (n) => `${n} ${n === 1 ? "operation" : "operations"}`,
+	operation: (n) => `ran ${n} ${n === 1 ? "operation" : "operations"}`,
 }
 
 const CONTINUOUS: Record<Category, (n: number) => string> = {
@@ -191,12 +290,18 @@ export function findToolGroup(self: object, children: object[]): object[] {
 	return tools
 }
 
-/** True when any tool component exists after `selfIdx` — interleaved text/spacers don't block. */
+/**
+ * True when a later tool of the SAME run follows `selfIdx` — interleaved text and
+ * spacers don't block, but a run breaker (user message, images, …) does. Matching
+ * `findRunSpan`'s forward walk keeps the two scans consistent: a lone tool from a
+ * previous turn is never "superseded" by the next turn's tools.
+ */
 export function isSupersededByLaterTool(children: object[], selfIdx: number): boolean {
 	for (let i = selfIdx + 1; i < children.length; i++) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
 		if (isToolLike(child)) return true
+		if (breaksRun(child)) return false
 	}
 	return false
 }
@@ -324,32 +429,37 @@ export function buildGroupView(run: object[], theme: any): ToolBlockView {
 	const view = new ToolBlockView()
 	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
 	const running = run.find((member) => (member as any).isPartial === true) as any
-	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
-	const last = (running ?? run[run.length - 1]) as any
 	const isInProgress = running !== undefined
 	const summaryText = buildGroupSummaryText(run, isInProgress)
 
-	// "Worked for Xs" spans the whole run: first start → last end (now while in progress).
+	// "Worked for Xs" spans the whole run: first start → last end. While any member
+	// is still running the run has no end yet, so the timer must advance live —
+	// otherwise a finished member's `_executionEndedAt` would freeze the clock.
 	const { startedAt, endedAt } = runTimeBounds(run)
-	const elapsedMs = startedAt !== undefined ? (endedAt ?? Date.now()) - startedAt : 0
+	const end = isInProgress ? Date.now() : (endedAt ?? Date.now())
+	const elapsedMs = startedAt !== undefined ? end - startedAt : 0
 	const timer = formatToolTimer(elapsedMs)
 	const failedCount = countFailedTools(run)
-	const failedLabel = failedCount > 0 ? `${failedCount} failed` : ""
-	const failedSuffix = failedLabel ? ` · ${failedLabel}` : ""
+	const failedText = failedCount > 0 ? `${failedCount} failed ${failedCount === 1 ? "call" : "calls"}` : ""
+	// Failures must not read as success: the suffix is error-coloured so it never
+	// blends into the muted counts, and the glyph below changes with it.
+	const failedSuffix = failedText ? ` · ${theme?.fg?.("error", failedText) ?? failedText}` : ""
 
 	const right = theme?.fg?.("dim", "(ctrl+o to expand)") ?? "(ctrl+o to expand)"
 
 	if (isInProgress) {
 		const icon = theme?.fg?.("accent", "⟳") ?? "⟳"
-		const duration = timer ? ` ${timer}` : ""
+		const duration = timer ? `Working for ${timer}` : "Working…"
 		const counts = summaryText ? ` · ${summaryText}` : ""
-		view.setHeader(`${icon} Working…${duration}${counts}${failedSuffix}`, right)
+		view.setHeader(`${icon} ${duration}${counts}${failedSuffix}`, right)
 		view.setBranchMode((s: string) => theme?.fg?.("borderMuted", s) ?? s)
 		// The running tool renders its own live output below the row.
 		view.setExtra([])
 	} else {
-		const icon = theme?.fg?.("success", "✓") ?? "✓"
-		const duration = timer ? `Worked for ${timer}` : "Worked"
+		// A failed run gets an error glyph: a green ✓ next to "1 failed call" is
+		// the one signal a user scans for when something went wrong.
+		const icon = failedCount > 0 ? (theme?.fg?.("error", "✗") ?? "✗") : (theme?.fg?.("success", "✓") ?? "✓")
+		const duration = timer ? `Worked for ${timer}` : "Done"
 		const counts = summaryText ? ` · ${summaryText}` : ""
 		view.setHeader(`${icon} ${duration}${counts}${failedSuffix}`, right)
 		view.hideDivider()
@@ -371,8 +481,12 @@ const TOOL_RENDER_CACHE_KEY = Symbol.for("pi-claude-style-tools:tool-render-cach
 
 // Render the tool's call (header) region only — suppress the result region —
 // using the same temporary contentBox swap + cache bust as the group view.
-// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
-function renderHeaderOnly(self: any, originalRender: (width: number) => string[], width: number): string[] {
+export function renderHeaderOnly(
+	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
+	self: any,
+	originalRender: (this: unknown, width: number) => string[],
+	width: number,
+): string[] {
 	const contentBox = self.contentBox
 	const usingSelf = typeof self.getRenderShell === "function" && self.getRenderShell() === "self"
 	if (!contentBox || usingSelf) return originalRender.call(self, width)
@@ -380,19 +494,65 @@ function renderHeaderOnly(self: any, originalRender: (width: number) => string[]
 	const savedChildren = contentBox.children.slice() as object[]
 	if (savedChildren.length === 0) return originalRender.call(self, width)
 
+	// Register the swap so the folded single-tool row is clickable: Box hit-testing
+	// cannot reach a child MouseRegion, so clicks are handled at the tool by
+	// `patchedGroupHandleMouse`, which keys off this WeakMap. The entry doubles as
+	// the ownership marker `ensureOriginalChildren` restores from.
+	if (!groupSwapOriginals.has(contentBox)) {
+		groupSwapOriginals.set(contentBox, { bgFn: contentBox.bgFn, paddingY: contentBox.paddingY as number })
+	}
+
 	contentBox.children = [savedChildren[0]]
+	// One cache bust per frame: the next invocation busts again *before*
+	// rendering, so a folded frame can never be served from this frame's entry.
 	contentBox.invalidate()
 	delete self[TOOL_RENDER_CACHE_KEY]
 	const result = originalRender.call(self, width)
 
+	// Restore the real children WITHOUT a second invalidate()/bust: every path
+	// that renders them again goes through `ensureOriginalChildren()` (mode off,
+	// expanded, no longer superseded), whose `updateDisplay()` invalidates this
+	// subtree and clears the tool render cache (patched in tool-rendering.ts).
 	contentBox.children = savedChildren
-	contentBox.invalidate()
-	delete self[TOOL_RENDER_CACHE_KEY]
-	return result
+
+	return appendExpandHint(result, self.ui?.theme, width)
 }
 
-// Original contentBox cosmetics captured when a group-row swap is applied, so
-// they can be restored when the fold no longer applies to this tool.
+const EXPAND_HINT = " • ctrl+o to expand"
+const SGR_RE = /\x1b\[[0-9;]*m/g
+// Trailing fill (padding / background) and reset sequences of a rendered line.
+const TRAILING_FILL_RE = /(?:[ \t]+|\x1b\[[0-9;]*m)+$/
+
+/**
+ * Append the `ctrl+o to expand` affordance to the last visible line of a
+ * header-only render, ahead of that line's trailing fill/reset so the hint is
+ * not painted over by the region background. Truncated to the render width —
+ * pi-tui crashes on over-wide lines.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: theme comes from untyped external package
+export function appendExpandHint(lines: string[], theme: any, width: number): string[] {
+	if (!Array.isArray(lines) || lines.length === 0) return lines
+	let hint = EXPAND_HINT
+	try {
+		hint = theme?.fg?.("muted", EXPAND_HINT) ?? EXPAND_HINT
+	} catch {
+		/* fall back to plain text */
+	}
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (lines[i].replace(SGR_RE, "").trim() === "") continue
+		const tail = lines[i].match(TRAILING_FILL_RE)?.[0] ?? ""
+		const head = lines[i].slice(0, lines[i].length - tail.length)
+		const out = lines.slice()
+		out[i] = truncateToWidth(`${head}${hint}${tail}`, Math.max(1, width))
+		return out
+	}
+	return lines
+}
+
+// Original contentBox cosmetics captured when a fold swap is applied, so they can
+// be restored when the fold no longer applies to this tool. Also the ownership
+// marker for a contentBox whose children were swapped by a fold (group row or
+// header-only row).
 const groupSwapOriginals = new WeakMap<object, { bgFn: unknown; paddingY: number }>()
 
 function restoreGroupCosmetics(self: any): void {
@@ -406,19 +566,29 @@ function restoreGroupCosmetics(self: any): void {
 }
 
 /**
- * The group-row swap persists between frames (so mouse hit-testing, which
+ * The fold swap persists between frames (so mouse hit-testing, which
  * re-renders the CURRENT contentBox children, can reach its MouseRegion).
  * If the fold no longer applies but no updateDisplay ran (e.g. the mode was
- * switched off), rebuild the real call/result regions once.
+ * switched off, or the group was expanded), rebuild the real call/result
+ * regions once.
+ *
+ * This helper owns the ownership check, so every call site just calls it:
+ * there is no separately-readable "is a swap applied?" state afterwards.
  */
-function ensureOriginalChildren(self: any): void {
+// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
+export function ensureOriginalChildren(self: any): void {
 	const contentBox = self?.contentBox
-	if (!contentBox || !Array.isArray(contentBox.children)) return
-	// Only a group-row swap leaves the single-child shape we own; a normal tool
-	// mid-stream also has one (call) region and must not be rebuilt here.
-	if (!groupSwapOriginals.has(contentBox)) return
-	restoreGroupCosmetics(self)
-	if (typeof self.updateDisplay === "function") self.updateDisplay()
+	if (!contentBox) return
+	const saved = groupSwapOriginals.get(contentBox)
+	if (!saved) return
+	restoreGroupCosmetics(self) // deletes the entry
+	try {
+		if (typeof self.updateDisplay === "function") self.updateDisplay()
+	} catch {
+		// Re-arm the marker so a later frame retries the rebuild instead of
+		// leaving the folded shape latched forever.
+		groupSwapOriginals.set(contentBox, saved)
+	}
 }
 
 export function patchToolGroupRendering(): void {
@@ -431,6 +601,7 @@ export function patchToolGroupRendering(): void {
 	// here: Box hit-testing yields click offsets past the single-row child range,
 	// so region handlers never fire — clicks must be handled at the tool.)
 	const originalHandleMouse = proto.handleMouse
+	if (typeof originalHandleMouse !== "function") return // retried by the next registration
 	proto.handleMouse = function patchedGroupHandleMouse(event: { type?: string; button?: string | number }) {
 		const contentBox = (this as any)?.contentBox
 		const showingGroupRow = contentBox && groupSwapOriginals.has(contentBox)
@@ -456,13 +627,11 @@ export function patchToolGroupRendering(): void {
 	const patchedGroupRenderInner = function (this: any, width: number): string[] {
 		const parent = getParent(this)
 		if (!parent) {
-			restoreGroupCosmetics(this)
 			ensureOriginalChildren(this)
 			return originalRender.call(this, width)
 		}
-		const mode = readCollapseWorkMode(process.cwd())
+		const mode = getCollapseWorkMode()
 		if (mode === "off") {
-			restoreGroupCosmetics(this)
 			ensureOriginalChildren(this)
 			return originalRender.call(this, width)
 		}
@@ -486,7 +655,6 @@ export function patchToolGroupRendering(): void {
 			) {
 				return renderHeaderOnly(self, originalRender, width)
 			}
-			restoreGroupCosmetics(this)
 			ensureOriginalChildren(this)
 			return originalRender.call(this, width)
 		}
@@ -496,7 +664,6 @@ export function patchToolGroupRendering(): void {
 		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const lastTool = run[run.length - 1] as any
 		if (lastTool.expanded === true) {
-			restoreGroupCosmetics(this)
 			ensureOriginalChildren(this)
 			return originalRender.call(this, width)
 		}
@@ -553,23 +720,23 @@ export function patchToolGroupRendering(): void {
 		// Swap in group view with the appropriate accent color and no vertical padding
 		// so the group summary takes a single content line instead of three.
 		contentBox.children = [groupRow]
+		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instances
+		const failedInRun = run.some((member) => isFailedTool(member))
 		contentBox.bgFn = isInProgress
 			? (s: string) => theme?.fg?.("accent", s) ?? s
-			: (s: string) => theme?.fg?.("success", s) ?? s
+			: failedInRun
+				? (s: string) => theme?.fg?.("error", s) ?? s
+				: (s: string) => theme?.fg?.("success", s) ?? s
 		contentBox.paddingY = 0
 
-		// Bypass render caches so the patched Container render actually runs.
+		// The folded row is rebuilt from live state every frame (the timer
+		// advances), so exactly one bust before rendering is enough — the next
+		// frame busts again and can never be served a stale cache entry.
 		// biome-ignore lint/suspicious/noExplicitAny: Symbol-keyed cache busting on untyped prototype
 		delete (this as any)[TOOL_RENDER_CACHE_KEY]
 		contentBox.invalidate()
 
-		const result = originalRender.call(this, width)
-
-		// Bust caches again so the next frame re-renders fresh group content.
-		// biome-ignore lint/suspicious/noExplicitAny: Symbol-keyed cache busting on untyped prototype
-		delete (this as any)[TOOL_RENDER_CACHE_KEY]
-
-		return result
+		return originalRender.call(this, width)
 	}
 
 	proto.render = function patchedGroupRender(width: number): string[] {
@@ -577,7 +744,7 @@ export function patchToolGroupRendering(): void {
 			return patchedGroupRenderInner.call(this, width)
 		} catch {
 			try {
-				restoreGroupCosmetics(this)
+				ensureOriginalChildren(this)
 			} catch {
 				/* ignore */
 			}
@@ -607,30 +774,45 @@ function markersOnlyLines(lines: string[]): string[] {
 	return markers ? [markers] : []
 }
 
-/**
- * Live theme captured at session_start — used to derive the muted color for
- * assistant commentary in "tools" mode.
- */
-let collapseWorkTheme: Theme | undefined
-
-const ANSI_RESET = "\x1b[0m"
 const ANSI_DEFAULT_FG = "\x1b[39m"
 const OSC133_LEADING_RE = /^(?:\x1b\]133;[ABC]\x07)+/
 const OSC133_TRAILING_RE = /(?:\x1b\]133;[ABC]\x07)+$/
 const ANSI_FG_RESET_RE = /(\x1b\[0m|\x1b\[39m)/g
 
+/** Memo for {@link muteAssistantLines} — re-muting the same rendered lines is wasted work. */
+let mutedLinesCache = new WeakMap<string[], { fg: string; lines: string[] }>()
+
+function themeForeground(theme: Theme | undefined): string | null {
+	for (const key of ["dim", "muted"] as const) {
+		try {
+			const ansi = theme?.getFgAnsi?.(key as Parameters<Theme["getFgAnsi"]>[0])
+			if (typeof ansi === "string" && ansi.length > 0) return ansi
+		} catch {
+			/* try the next key */
+		}
+	}
+	return null
+}
+
 /**
- * The "Thought for Xs" label color — calibrated from what the thinking widget
- * actually rendered (sniffed from the label line's SGR sequence), so it matches
- * the visible label exactly regardless of which theme object produced it.
- * Falls back to theme "dim"/"muted" until a label has been seen.
+ * The "Thought for Xs" label colour for assistant commentary in "tools" mode.
+ *
+ * The live theme is authoritative: `getFgAnsi("dim")` follows the current
+ * palette, so a theme switch is picked up on the next render. The rendered-label
+ * sniff below is only a fallback for themes that expose no ANSI colour, and its
+ * value is dropped whenever the theme instance changes (a dark grey calibrated
+ * on a dark theme is invisible on a light one).
  */
-let mutedFgCalibrated: string | null | undefined
-
-/** Latest turn boundary: a completed turn's answer never folds when the next turn starts. */
-let lastTurnStartTimestamp = 0
-
-function resolveMutedFg(lines: string[]): string | null {
+function resolveMutedFg(lines: string[], liveTheme?: Theme): string | null {
+	const theme = liveTheme ?? collapseWorkTheme
+	if (theme !== collapseWorkTheme) {
+		// Theme switched (or first seen) — recalibrate against the new palette.
+		collapseWorkTheme = theme
+		mutedFgCalibrated = undefined
+		mutedLinesCache = new WeakMap()
+	}
+	const themeFg = themeForeground(theme)
+	if (themeFg) return themeFg
 	if (mutedFgCalibrated) return mutedFgCalibrated
 	for (const line of lines) {
 		// Only completed "Thought for Xs" labels — the streaming "Thinking..."
@@ -650,17 +832,6 @@ function resolveMutedFg(lines: string[]): string | null {
 			return last
 		}
 	}
-	// Theme fallback is deliberately NOT cached — once a label line shows up in
-	// any later render, the sniffed exact color takes over.
-	const theme = collapseWorkTheme
-	try {
-		const dim = theme?.getFgAnsi?.("dim" as Parameters<Theme["getFgAnsi"]>[0])
-		if (typeof dim === "string" && dim.length > 0) return dim
-		const muted = theme?.getFgAnsi?.("muted" as Parameters<Theme["getFgAnsi"]>[0])
-		if (typeof muted === "string" && muted.length > 0) return muted
-	} catch {
-		/* fall through */
-	}
 	return null
 }
 
@@ -673,7 +844,9 @@ function resolveMutedFg(lines: string[]): string | null {
  */
 export function muteAssistantLines(lines: string[], fg: string): string[] {
 	if (!fg) return lines
-	return lines.map((line) => {
+	const cached = mutedLinesCache.get(lines)
+	if (cached && cached.fg === fg) return cached.lines
+	const muted = lines.map((line) => {
 		if (line.trim() === "") return line
 		const leading = line.match(OSC133_LEADING_RE)?.[0] ?? ""
 		const trailing = line.match(OSC133_TRAILING_RE)?.[0] ?? ""
@@ -682,6 +855,8 @@ export function muteAssistantLines(lines: string[], fg: string): string[] {
 		core = core.replace(ANSI_FG_RESET_RE, `$1${fg}`)
 		return `${leading}${fg}${core}${ANSI_DEFAULT_FG}${trailing}`
 	})
+	mutedLinesCache.set(lines, { fg, lines: muted })
+	return muted
 }
 
 function patchAssistantTextFolding(): void {
@@ -689,17 +864,17 @@ function patchAssistantTextFolding(): void {
 	const proto = AssistantMessageComponent.prototype as any
 	if (proto[ASSISTANT_FOLD_PATCH_FLAG]) return
 	const originalRender = proto.render
-	proto[ASSISTANT_FOLD_PATCH_FLAG] = true
 	if (typeof originalRender !== "function") return
-
 	proto.render = function patchedAssistantTextFoldRender(width: number): string[] {
 		const lines = originalRender.call(this, width)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		const mode = readCollapseWorkMode(process.cwd())
+		const mode = getCollapseWorkMode()
 		if (mode === "off") return lines
-		// Opportunistic calibration on every assistant render — the label shows up
-		// in any message's thinking widget, fold-eligible or not.
-		resolveMutedFg(lines)
+		// Resolved once per render: this is both the opportunistic calibration
+		// pass (the label shows up in any message's thinking widget, fold-eligible
+		// or not) and the muted colour this frame uses.
+		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
+		const mutedFg = resolveMutedFg(lines, (this as any).ui?.theme)
 		const parent = getParent(this)
 		if (!parent) return lines
 		const children = parent.children as object[]
@@ -724,12 +899,12 @@ function patchAssistantTextFolding(): void {
 
 		// "all": fold commentary away entirely. "tools": keep it in the timeline
 		// but mute it to the thinking-label color so it reads as secondary.
-		const mutedFg = resolveMutedFg(lines)
-		if (readCollapseWorkMode(process.cwd()) === "tools") {
+		if (mode === "tools") {
 			return muteAssistantLines(lines, mutedFg ?? "")
 		}
 		return markersOnlyLines(lines)
 	}
+	proto[ASSISTANT_FOLD_PATCH_FLAG] = true
 }
 
 // ---------------------------------------------------------------------------
@@ -744,13 +919,12 @@ function patchSetExpandedPropagation(): void {
 	const proto = ToolExecutionComponent.prototype as any
 	if (proto[SET_EXPANDED_PATCH_FLAG]) return
 	const original = proto.setExpanded
-	proto[SET_EXPANDED_PATCH_FLAG] = true
 	if (typeof original !== "function") return
 
 	proto.setExpanded = function patchedSetExpanded(expanded: boolean): void {
 		original.call(this, expanded)
 		if (propagationGuard.has(this)) return
-		if (readCollapseWorkMode(process.cwd()) === "off") return
+		if (getCollapseWorkMode() === "off") return
 		const parent = getParent(this)
 		if (!parent) return
 		const run = findToolGroup(this, parent.children as object[])
@@ -769,6 +943,7 @@ function patchSetExpandedPropagation(): void {
 			propagationGuard.delete(this)
 		}
 	}
+	proto[SET_EXPANDED_PATCH_FLAG] = true
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +952,10 @@ function patchSetExpandedPropagation(): void {
 
 const SETTINGS_ENTRY_PATCH_FLAG = Symbol.for("pi-tool-grouping:patched-settings-selector")
 const COLLAPSE_WORK_ITEM_ID = "collapse-work"
+const COLLAPSE_WORK_DESCRIPTION =
+	"Fold finished tool calls into one summary row. 'all': also hide the notes the agent writes between calls. 'tools': fold tool calls but keep those notes. 'off': show every step in full."
+const COLLAPSE_WORK_OVERRIDE_SUFFIX = " (overridden by .kimchi/settings.json)"
+const COLLAPSE_WORK_VALUES = ["all", "tools", "off"] as const
 
 interface SettingsListItem {
 	id: string
@@ -786,41 +965,70 @@ interface SettingsListItem {
 	values: string[]
 }
 
-/**
- * The upstream settings selector builds its item list and change dispatch
- * inside its constructor, then addChild()s the SettingsList. We hook the
- * global addChild (already patched for parent tracking) and, whenever a
- * SettingsList is attached to a SettingsSelectorComponent, append our entry
- * and wrap the change callback to persist the mode.
- */
-function maybeInjectCollapseWorkSetting(parent: object, child: object): void {
-	if (!(parent instanceof SettingsSelectorComponent)) return
-	if (!child || typeof child !== "object") return
-	const list = child as { items?: unknown; onChange?: unknown }
-	if (!Array.isArray(list.items) || typeof list.onChange !== "function") return
+let writeErrorReported = false
 
-	const items = list.items as SettingsListItem[]
-	if (items.some((item) => item?.id === COLLAPSE_WORK_ITEM_ID)) return
+function reportCollapseWorkWriteError(error: string): void {
+	if (sessionNotify) {
+		try {
+			sessionNotify(`Could not save "Collapse work": ${error}`, "error")
+			return
+		} catch {
+			/* fall through to the console */
+		}
+	}
+	if (writeErrorReported) return
+	writeErrorReported = true
+	console.error(`[kimchi] could not save "collapseWork": ${error}`)
+}
+
+/**
+ * Append the "Collapse work" row to an upstream `SettingsList` and wrap its
+ * change callback so the value is persisted. Returns whether the row was added.
+ *
+ * Duck-typed on `{ items, onChange }` (which a real `SettingsList` satisfies) so
+ * the injection can be unit-tested without constructing the whole
+ * `SettingsSelectorComponent`. The `instanceof SettingsSelectorComponent` check
+ * lives in the addChild patch below.
+ */
+export function maybeInjectCollapseWorkSetting(list: unknown): boolean {
+	if (!list || typeof list !== "object") return false
+	const candidate = list as { items?: unknown; onChange?: unknown }
+	if (!Array.isArray(candidate.items) || typeof candidate.onChange !== "function") return false
+
+	const items = candidate.items as SettingsListItem[]
+	if (items.some((item) => item?.id === COLLAPSE_WORK_ITEM_ID)) return false
+
+	const cwd = currentSessionCwd()
+	const projectTrusted = projectTrustedFor(cwd)
+	// A project override wins over the global file: say so, otherwise the row
+	// looks like a control that does nothing.
+	const overridden = isCollapseWorkOverriddenByProject(cwd, { projectTrusted })
 
 	items.push({
 		id: COLLAPSE_WORK_ITEM_ID,
 		label: "Collapse work",
-		description:
-			"Fold completed tool calls into a 'Worked for Xs' row. 'all' also folds interstitial assistant commentary; 'tools' keeps text and thinking visible.",
-		currentValue: readCollapseWorkMode(process.cwd()),
-		values: ["all", "tools", "off"],
+		description: overridden
+			? `${COLLAPSE_WORK_DESCRIPTION}${COLLAPSE_WORK_OVERRIDE_SUFFIX}`
+			: COLLAPSE_WORK_DESCRIPTION,
+		currentValue: getCollapseWorkMode(),
+		values: [...COLLAPSE_WORK_VALUES],
 	})
 
-	const originalOnChange = list.onChange as (id: string, newValue: string) => void
-	list.onChange = (id: string, newValue: string) => {
-		if (id === COLLAPSE_WORK_ITEM_ID) {
-			if (newValue === "all" || newValue === "tools" || newValue === "off") {
-				writeCollapseWorkMode(newValue)
-			}
+	const originalOnChange = candidate.onChange as (id: string, newValue: string) => void
+	candidate.onChange = (id: string, newValue: string) => {
+		if (id !== COLLAPSE_WORK_ITEM_ID) {
+			originalOnChange(id, newValue)
 			return
 		}
-		originalOnChange(id, newValue)
+		if (newValue !== "all" && newValue !== "tools" && newValue !== "off") return
+		// The write path lands in the project file when it already overrides the
+		// mode and the project is trusted, so cycling is never a silent no-op.
+		const result = writeCollapseWorkMode(newValue, { cwd, projectTrusted })
+		invalidateCollapseWorkModeCache()
+		if (!result.ok) reportCollapseWorkWriteError(result.error)
+		else writeErrorReported = false
 	}
+	return true
 }
 
 function patchSettingsSelectorEntry(): void {
@@ -828,18 +1036,18 @@ function patchSettingsSelectorEntry(): void {
 	const proto = Container.prototype as any
 	if (proto[SETTINGS_ENTRY_PATCH_FLAG]) return
 	const original = proto.addChild
-	proto[SETTINGS_ENTRY_PATCH_FLAG] = true
 	if (typeof original !== "function") return
 
 	proto.addChild = function patchedAddChildSettingsEntry(child: object) {
 		const result = original.call(this, child)
 		try {
-			maybeInjectCollapseWorkSetting(this, child)
+			if (this instanceof SettingsSelectorComponent) maybeInjectCollapseWorkSetting(child)
 		} catch {
 			// Settings injection must never break rendering.
 		}
 		return result
 	}
+	proto[SETTINGS_ENTRY_PATCH_FLAG] = true
 }
 
 // ---------------------------------------------------------------------------
@@ -854,7 +1062,12 @@ export default function registerToolGrouping(pi: ExtensionAPI): void {
 	patchSettingsSelectorEntry()
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.hasUI) collapseWorkTheme = ctx.ui.theme
+		// The patches are process-wide, so session-scoped state is reset here (and
+		// documented as single-session) instead of being keyed by session id.
+		resetToolGroupingSessionState(ctx.cwd)
+		collapseWorkTheme = ctx.hasUI ? ctx.ui.theme : undefined
+		sessionNotify = ctx.hasUI ? (message, type) => ctx.ui.notify(message, type) : undefined
+		writeErrorReported = false
 	})
 
 	pi.on("turn_start", async () => {

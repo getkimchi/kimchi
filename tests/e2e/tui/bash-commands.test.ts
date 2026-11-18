@@ -45,16 +45,20 @@ test("Bash uses one descriptive header like Grep and expands the submitted comma
 			// repeated in the collapsed transcript.
 			expect(collapsed).toContain("Worked for")
 			expect(collapsed).toContain("searched for 1 pattern")
-			expect(collapsed).toContain("1 operation")
-			expect(collapsed).not.toContain('● Grep "card-output"')
+			expect(collapsed).toContain("ran 1 operation")
+			// Duplicate-row regressions are the most likely failure of this feature:
+			// each tool row must appear exactly zero times while folded...
+			expect(collapsed.match(/● Grep "card-output"/g) ?? []).toHaveLength(0)
+			expect(collapsed.match(/● Bash Check card output/g) ?? []).toHaveLength(0)
 			expect(collapsed).not.toContain(command)
 			expect(collapsed).not.toMatch(/Command [a-f0-9-]{36}/)
 			trace.step("Grep and Bash fold into one Worked-for row")
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, command, { full: false })
 			const expanded = viewText(terminal)
-			expect(expanded).toContain('● Grep "card-output"')
-			expect(expanded).toContain("● Bash Check card output")
+			// ...and exactly once after expanding.
+			expect(expanded.match(/● Grep "card-output"/g) ?? []).toHaveLength(1)
+			expect(expanded.match(/● Bash Check card output/g) ?? []).toHaveLength(1)
 			expect(expanded.match(/Check card output/g)).toHaveLength(1)
 			expect(expanded).toContain("└─ Exited 0")
 			expect(expanded).toMatch(/Command [a-f0-9-]{36}/)
@@ -287,7 +291,7 @@ test("inspect a running Bash command without interrupting it or asking the model
 			expect(requests()).toHaveLength(2)
 			// The handed-off command's call row folds into the run summary; its live
 			// output and identity stay visible through the Bash Control row.
-			expect(viewText(terminal)).toContain("Working…")
+			expect(viewText(terminal)).toContain("Working")
 			expect(viewText(terminal)).not.toContain("Snapshot at check-in")
 			expect(viewText(terminal)).not.toMatch(/Command [a-f0-9-]{36}/)
 			expect(viewText(terminal)).not.toContain("cat initial.txt")
