@@ -2,7 +2,12 @@ import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { type ExtensionToolContext, getAgentDir, ProjectTrustStore } from "@earendil-works/pi-coding-agent"
+import {
+	type ExtensionContext,
+	type ExtensionToolContext,
+	getAgentDir,
+	ProjectTrustStore,
+} from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
 import { quote } from "shell-quote"
 import { resolvePreMainProjectTrust } from "../../project-trust.js"
@@ -60,7 +65,7 @@ export async function acquirePRLease(
 }
 
 /** Asks before allowing automatic repairs in a checkout outside the session's project. */
-export async function confirmCheckoutTrust(ctx: ExtensionToolContext, cwd: string, signal: AbortSignal): Promise<void> {
+export async function confirmCheckoutTrust(ctx: ExtensionContext, cwd: string, signal: AbortSignal): Promise<void> {
 	if (resolvePreMainProjectTrust(cwd, getAgentDir())) return
 	const allowed =
 		ctx.hasUI &&
@@ -75,9 +80,9 @@ export async function confirmCheckoutTrust(ctx: ExtensionToolContext, cwd: strin
 	new ProjectTrustStore(getAgentDir()).set(cwd, true)
 }
 
-/** Uses the given checkout, or clones the PR's source branch through permission-checked Bash. */
+/** Uses the given checkout, or clones the PR's source branch through permission-checked Bash, which needs a tool call. */
 export async function preparePRCheckout(
-	ctx: ExtensionToolContext,
+	ctx: ExtensionContext & Partial<Pick<ExtensionToolContext, "executeTool">>,
 	url: string,
 	signal: AbortSignal,
 	directory?: string,
@@ -91,6 +96,7 @@ export async function preparePRCheckout(
 	if (!existsSync(join(cwd, ".git"))) {
 		if (directory || existsSync(cwd))
 			throw new Error(`No Git checkout at ${cwd}. Choose a checkout or let Kimchi create an isolated one.`)
+		if (!ctx.executeTool) throw new Error("Ask Kimchi to watch this PR so it can prepare a checkout.")
 		await mkdir(dirname(cwd), { recursive: true, mode: 0o700 })
 		const cli = source.provider === "github" ? "gh" : "glab"
 		const clone = [cli, "repo", "clone", source.cloneURL, cwd, "--", "--single-branch", "--branch", source.branch]

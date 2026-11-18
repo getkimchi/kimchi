@@ -15,7 +15,7 @@ import {
 } from "../work-attribution.js"
 import { currentBranch, lookupBranchPullRequest } from "./branch-status.js"
 import { anchorDirectory, directoryLabel, observedCommandDirectory } from "./command-anchor.js"
-import { BRANCH_PR_OBSERVED_EVENT, type BranchPRObservation } from "./events.js"
+import { BRANCH_PR_OBSERVED_EVENT, type BranchPRObservation, WORK_PR_OBSERVED_EVENT } from "./events.js"
 import { mergePullRequestLinks, pullRequestLabel } from "./links.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { LOOKUP_WINDOW_MS, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
@@ -163,6 +163,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			})
 		}
 		// Commit associations belong in /work; they may refer to another branch sharing the same commit.
+		// PR watch offers to watch the open PRs of a session's own commits, wherever they were made.
+		if (update.pullRequests.some(({ state }) => state === "open")) pi.events.emit(WORK_PR_OBSERVED_EVENT, update)
 	}
 
 	function releaseWork(): void {

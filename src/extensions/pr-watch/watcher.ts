@@ -239,10 +239,7 @@ export class PRWatcher {
 					checkoutPR ??= this.checkoutPR(abort).catch(() => undefined)
 					if ((await checkoutPR) === url) cwd = this.ctx.cwd
 				}
-				if (cwd !== this.ctx.cwd) {
-					if (!toolCtx) throw new Error("Ask Kimchi to watch this PR so it can prepare a checkout.")
-					cwd = await preparePRCheckout(toolCtx, url, abort, cwd, grant.autoFix)
-				}
+				if (cwd !== this.ctx.cwd) cwd = await preparePRCheckout(toolCtx ?? this.ctx, url, abort, cwd, grant.autoFix)
 				abort.throwIfAborted()
 				const target: TargetState = {
 					url,

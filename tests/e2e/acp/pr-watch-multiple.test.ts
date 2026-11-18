@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -7,6 +7,66 @@ import { createPRWatchTargets, git } from "../tui/support/pr-watch-targets.js"
 import { chatRequests } from "../tui/support/wire-requests.js"
 import { startAcpFixture } from "./support/acp-fixture.js"
 import { newSession } from "./support/scenarios.js"
+
+it("offers to watch the PR of a commit the agent pushed from a non-repository session", async () => {
+	const root = mkdtempSync(join(tmpdir(), "prw-work-acp-"))
+	const [target] = createPRWatchTargets(root, [7])
+	const stateFile = join(root, "state.json")
+	writeFileSync(stateFile, JSON.stringify({ targets: [{ ...target, kind: "passed" }] }))
+	vi.stubEnv("GH_TOKEN", "pr-watch-fixture-token")
+	vi.stubEnv("KIMCHI_TEST_PR_WATCH", stateFile)
+	vi.stubEnv("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS", "1000")
+	const fixture = await startAcpFixture({
+		artifactName: "pr-watch-session-work",
+		clientMeta: { "kimchi.dev": { prMonitoring: true, backgroundRuns: true } },
+		extraArgs: ["--yolo"],
+		extensionPath: fileURLToPath(new URL("../fixtures/pr-watch-github-api.js", import.meta.url)),
+		responses: [
+			{
+				toolCalls: [
+					{
+						id: "push",
+						function: {
+							name: "bash",
+							arguments: JSON.stringify({
+								command: `cd '${target.cwd}'\nprintf 'fixed\\n' > answer.txt\ngit commit -qam 'Fix answer'\ngit push -q origin HEAD:${target.branch}`,
+							}),
+						},
+					},
+				],
+			},
+			{ stream: ["Pushed the fix to the PR branch."] },
+		],
+	})
+	try {
+		const sessionId = await newSession(fixture, fixture.workDir)
+		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "Fix the answer and push it" }] })
+		await expect
+			.poll(
+				() =>
+					fixture.client.extNotifications.some(
+						({ params }) =>
+							(params as { message?: string }).message ===
+							"Watching PR #7 with auto-fix. /pr-watch watch pauses fixes. /pr-watch disable turns off automatic watching.",
+					),
+				{ timeout: 30_000 },
+			)
+			.toBe(true)
+		expect(
+			fixture.client.permissionRequests.filter(({ toolCall }) => toolCall.title === "Enable automatic PR watching?"),
+		).toHaveLength(1)
+		const before = fixture.client.agentTextBySession().get(sessionId)?.length ?? 0
+		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch status" }] })
+		const status = fixture.client.agentTextBySession().get(sessionId)?.slice(before) ?? ""
+		expect(status).toContain(`Checkout: ${realpathSync(target.cwd)}`)
+		expect(status).toContain("Watching · Auto-fix on · CI only")
+		expect(() => git(fixture.workDir, "rev-parse", "--show-toplevel")).toThrow()
+	} finally {
+		await fixture.stop()
+		vi.unstubAllEnvs()
+		rmSync(root, { force: true, recursive: true })
+	}
+}, 60_000)
 
 it.each([
 	"github",

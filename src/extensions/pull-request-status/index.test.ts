@@ -14,7 +14,7 @@ import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import * as branches from "./branch-status.js"
 import { anchorDirectory } from "./command-anchor.js"
-import { BRANCH_PR_OBSERVED_EVENT } from "./events.js"
+import { BRANCH_PR_OBSERVED_EVENT, WORK_PR_OBSERVED_EVENT } from "./events.js"
 import pullRequestStatusExtension from "./index.js"
 import { LookupError } from "./provider-records.js"
 import type * as discovery from "./pull-requests.js"
@@ -142,6 +142,23 @@ describe("PR status extension", () => {
 				branch: "main",
 			}),
 		)
+	})
+	it("announces recorded commits that have an open PR, wherever they were made", async () => {
+		const work = createExtensionApi()
+		const status = createExtensionApi()
+		createWorkAttributionExtension()(work.api)
+		pullRequestStatusExtension({ ...status.api, events: work.api.events })
+		await start(work)
+		await start(status)
+		await vi.waitFor(() => expect(supervisor.subscribePullRequestReconciliation).toHaveBeenCalled())
+		const observed = vi.fn()
+		work.api.events.on(WORK_PR_OBSERVED_EVENT, observed)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0].onPullRequest
+		const open = { ...contribution(getWorkId(ctx)), worktree: join(directory, "elsewhere") }
+		update({ ...open, pullRequests: [{ ...pr, state: "merged" }] })
+		update(open)
+		expect(observed).toHaveBeenCalledOnce()
+		expect(observed).toHaveBeenCalledWith(open)
 	})
 	it.each([
 		"master",

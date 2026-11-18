@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
@@ -91,6 +91,63 @@ for (const provider of ["github", "gitlab"] as const) {
 		}
 	})
 }
+
+test("offers to watch the PR of a commit the agent pushed from outside a repository", async ({ terminal }) => {
+	const root = mkdtempSync(join(tmpdir(), "prw-work-tui-"))
+	const [target] = createPRWatchTargets(root, [7])
+	const stateFile = join(root, "state.json")
+	writeFileSync(stateFile, JSON.stringify({ targets: [{ ...target, kind: "passed" }] }))
+	try {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: "pr-watch-session-work",
+				extraArgs: ["--yolo"],
+				env: { KIMCHI_E2E_RECONCILIATION_INTERVAL_MS: "1000" },
+				responses: [
+					{
+						toolCalls: [
+							{
+								id: "push",
+								function: {
+									name: "bash",
+									arguments: JSON.stringify({
+										command: `cd '${target.cwd}'\nprintf 'fixed\\n' > answer.txt\ngit commit -qam 'Fix answer'\ngit push -q origin HEAD:${target.branch}`,
+									}),
+								},
+							},
+						],
+					},
+					{ stream: ["Pushed the fix to the PR branch."] },
+				],
+				seedHome: (homeDir) => {
+					const repo = process.env.KIMCHI_REPO_ROOT
+					if (!repo) throw new Error("Run through scripts/run-tui-e2e.js")
+					const extensions = join(homeDir, ".config/kimchi/harness/extensions")
+					mkdirSync(extensions, { recursive: true })
+					copyFileSync(join(repo, "tests/e2e/fixtures/pr-watch-github-api.js"), join(extensions, "pr-watch-api.js"))
+					return { env: { GH_TOKEN: "pr-watch-fixture-token", KIMCHI_TEST_PR_WATCH: stateFile } }
+				},
+			},
+			async (fixture, trace) => {
+				expect(() => git(fixture.workDir, "rev-parse", "--show-toplevel")).toThrow()
+				terminal.submit("Fix the answer and push it")
+				await waitForText(terminal, "Pushed the fix to the PR branch.")
+				await waitForText(terminal, "Enable automatic PR watching?", { full: false, timeoutMs: 30_000 })
+				trace.step("the open PR of a commit pushed from outside a repository brings the one-time question")
+				terminal.submit("")
+				await waitForText(terminal, "Watching PR #7 with auto-fix.")
+				await waitForText(terminal, "PR #7: Watching", { full: false })
+				terminal.submit("/pr-watch status")
+				await waitForText(terminal, `Checkout: ${realpathSync(target.cwd)}`)
+				expect(git(target.cwd, "rev-list", "--count", `${target.head}..HEAD`)).toBe("1")
+				trace.step("accepting watches the PR in the checkout the agent pushed from")
+			},
+		)
+	} finally {
+		rmSync(root, { force: true, recursive: true })
+	}
+})
 
 for (const mode of ["regular", "fullscreen"] as const) {
 	test(`PR watching and Monitor controls work in Plan mode (${mode})`, async ({ terminal }) => {

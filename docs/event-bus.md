@@ -6,6 +6,13 @@ Extensions communicate through the pi event bus (`pi.events`), available to ever
 from the existing current-branch PR lookup. `cwd` is the observed checkout; a
 branch change clears `pullRequest` before lookup. PR watch uses it to ask the
 one-time question, apply the saved choice or follow the PR with `--pr-watch`.
+
+`kimchi:work-pr-observed` publishes a `WorkPullRequestUpdate` (`pull-requests.ts`)
+for each recorded commit, of any session, that has an open PR, on every PR discovery
+pass. `worktree` is the checkout the commit was made in. PR watch takes this
+session's commits recorded since it started and treats their open PRs like the
+current branch's PR, in that checkout.
+
 Types live in `src/extensions/pull-request-status/events.ts`.
 
 ---

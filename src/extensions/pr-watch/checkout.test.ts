@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { parse } from "shell-quote"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolvePreMainProjectTrust } from "../../project-trust.js"
-import { createToolContext } from "../__mocks__/context.js"
+import { createContext, createToolContext } from "../__mocks__/context.js"
 import { acquirePRLease, checkoutProblem, preparePRCheckout, syncManagedCheckout } from "./checkout.js"
 import { readPRSource } from "./providers.js"
 import type { PRSnapshot } from "./types.js"
@@ -116,6 +116,21 @@ describe("PR checkout preparation", () => {
 		await expect(preparePRCheckout(ctx, url, signal(), root)).rejects.toThrow("Trust")
 		expect(ctx.executeTool).not.toHaveBeenCalled()
 		await expect(preparePRCheckout(ctx, url, signal(), root, false)).resolves.toBe(root)
+	})
+
+	it("prepares an existing checkout outside a tool call, still asking for trust", async () => {
+		mkdirSync(join(root, ".git"))
+		const ctx = createContext({ cwd: root })
+		vi.mocked(resolvePreMainProjectTrust).mockReturnValue(false)
+		vi.mocked(ctx.ui.confirm).mockResolvedValue(true)
+		await expect(preparePRCheckout(ctx, url, signal(), root)).resolves.toBe(root)
+		expect(ctx.ui.confirm).toHaveBeenCalledWith("Trust PR checkout?", expect.stringContaining(root), expect.anything())
+	})
+
+	it("needs a tool call to clone", async () => {
+		await expect(preparePRCheckout(createContext({ cwd: root }), url, signal())).rejects.toThrow(
+			"Ask Kimchi to watch this PR so it can prepare a checkout.",
+		)
 	})
 })
 

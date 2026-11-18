@@ -111,6 +111,15 @@ describe("PR watcher", () => {
 		expect(repairs()).toHaveLength(1)
 	})
 
+	it("prepares an existing checkout elsewhere without a tool call", async () => {
+		const { watcher, ctx } = setup()
+		const state = await watcher.add([{ url: URL8, cwd: "/work/other" }], { autoFix: true })
+		expect(preparePRCheckout).toHaveBeenCalledWith(ctx, URL8, expect.any(AbortSignal), "/work/other", true)
+		expect(state.targets).toEqual([
+			expect.objectContaining({ url: URL8, cwd: "/checkouts/8", enabled: true, autoFix: true }),
+		])
+	})
+
 	it("waits for an idle agent with no queued input", async () => {
 		const { watcher, ctx, watchHere, repairs } = setup()
 		vi.mocked(ctx.isIdle).mockReturnValue(false)

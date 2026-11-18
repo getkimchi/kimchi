@@ -10,6 +10,11 @@ conversation, one PR at a time, so keep the Kimchi process open.
   once whether to watch PRs automatically. The answer is saved in your profile's
   `pr-watch.json` for future PRs, repositories and sessions. Yes starts watching with
   CI fixes. Review-comment fixes always need an explicit request.
+- The same applies when this session's commits in another checkout reach an open PR,
+  for example when Kimchi started in your home directory and the agent pushed from a
+  repository there. Kimchi watches that PR in the checkout where the commit was made,
+  once it is trusted. This uses Cost per PR's commit tracking, so it follows the PR
+  lookup there, usually within a minute of the PR opening.
 - `/pr-watch` watches this branch's PR with CI fixes.
 - Ask `watch this <url> PR`, give several URLs, or ask `watch my active PRs and fix CI`
   (`watch my active GitLab MRs`, with a host for self-hosted GitLab). This works from any

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { BRANCH_PR_OBSERVED_EVENT } from "../pull-request-status/events.js"
+import { BRANCH_PR_OBSERVED_EVENT, WORK_PR_OBSERVED_EVENT } from "../pull-request-status/events.js"
 import { followCheckoutPR } from "./offer.js"
 import { readPRWatchPreference, writePRWatchPreference } from "./settings.js"
 import type { PRWatchState } from "./types.js"
@@ -51,7 +51,16 @@ describe("following the checkout's PR", () => {
 		offers.push(offer)
 		const detect = (pullRequest: unknown = pr, overrides = {}) =>
 			extension.api.events.emit(BRANCH_PR_OBSERVED_EVENT, { sessionId, cwd: ctx.cwd, pullRequest, ...overrides })
-		return { ctx, watcher, offer, detect }
+		/** A commit this session made in another checkout, as PR discovery reports it. */
+		const commit = (pullRequests: unknown[] = [pr], overrides = {}) =>
+			extension.api.events.emit(WORK_PR_OBSERVED_EVENT, {
+				sessionId,
+				worktree: "/work/other",
+				recordedAt: new Date().toISOString(),
+				pullRequests,
+				...overrides,
+			})
+		return { ctx, watcher, offer, detect, commit }
 	}
 
 	it("asks once when an open PR appears and remembers a decline", async () => {
@@ -112,6 +121,47 @@ describe("following the checkout's PR", () => {
 		detect(pr, { sessionId: "other" })
 		detect(pr, { cwd: "/work/other" })
 		expect(ctx.ui.confirm).not.toHaveBeenCalled()
+	})
+
+	it("asks about the open PR of this session's commit in another checkout and watches it there", async () => {
+		const { ctx, watcher, commit } = setup()
+		vi.mocked(ctx.ui.confirm).mockResolvedValue(true)
+		commit([{ ...pr, state: "merged" }])
+		expect(ctx.ui.confirm).not.toHaveBeenCalled()
+		commit()
+		await vi.waitFor(() =>
+			expect(watcher.add).toHaveBeenCalledWith([{ url, cwd: "/work/other" }], {
+				autoFix: true,
+				mode: "ci",
+				instructions: "",
+			}),
+		)
+		commit()
+		expect(ctx.ui.confirm).toHaveBeenCalledOnce()
+	})
+
+	it("ignores other sessions' commits and commits recorded before this session started", () => {
+		const { ctx, commit } = setup()
+		commit([pr], { sessionId: "other" })
+		commit([pr], { recordedAt: new Date(Date.now() - 60_000).toISOString() })
+		commit([pr], { recordedAt: undefined })
+		expect(ctx.ui.confirm).not.toHaveBeenCalled()
+	})
+
+	it("applies a saved yes to another checkout only when the session is free for its trust question", async () => {
+		vi.mocked(readPRWatchPreference).mockReturnValue(true)
+		const { ctx, watcher, offer, commit } = setup()
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		commit()
+		expect(watcher.add).not.toHaveBeenCalled()
+		vi.mocked(ctx.isIdle).mockReturnValue(true)
+		offer.show()
+		await vi.waitFor(() =>
+			expect(watcher.add).toHaveBeenCalledWith(
+				[{ url, cwd: "/work/other" }],
+				expect.objectContaining({ autoFix: true }),
+			),
+		)
 	})
 
 	it("asks only when idle with an empty editor and no queued input", async () => {

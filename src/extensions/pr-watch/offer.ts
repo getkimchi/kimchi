@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { BRANCH_PR_OBSERVED_EVENT } from "../pull-request-status/events.js"
+import { BRANCH_PR_OBSERVED_EVENT, WORK_PR_OBSERVED_EVENT } from "../pull-request-status/events.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { object } from "../work-attribution/summary.js"
 import { targetLabel } from "./presentation.js"
@@ -17,6 +17,8 @@ let asking: Promise<unknown> | undefined
 interface CheckoutPR {
 	url: string
 	label: string
+	/** The checkout to watch it in when that is not the session's own, such as a repository the agent committed in. */
+	cwd?: string
 }
 
 function openPR(value: unknown): CheckoutPR | undefined {
@@ -31,11 +33,15 @@ function openPR(value: unknown): CheckoutPR | undefined {
 }
 
 /**
- * Watches the checkout's PR when it first appears: read-only with --pr-watch, with CI fixes once the user enabled
- * automatic watching, and otherwise after asking once.
+ * Watches the checkout's PR when it first appears, and the open PRs of this session's commits in other checkouts:
+ * read-only with --pr-watch, with CI fixes once the user enabled automatic watching, and otherwise after asking once.
  */
 export function followCheckoutPR(pi: ExtensionAPI, ctx: ExtensionContext, watcher: PRWatcher, readOnly: boolean) {
+	/** Commits recorded before this start belong to a resumed session's past; their PRs are not offered. */
+	const since = Date.now()
 	let detected: CheckoutPR | undefined
+	/** Open PRs of this session's commits, by URL, each with the checkout its commit was made in. */
+	const found = new Map<string, CheckoutPR>()
 	let question: AbortController | undefined
 	let disposed = false
 	/** PRs already started or asked about in this session; a failed start is not retried on every turn. */
@@ -45,8 +51,15 @@ export function followCheckoutPR(pi: ExtensionAPI, ctx: ExtensionContext, watche
 		if (!disposed) ctx.ui.notify(error instanceof Error ? error.message : String(error), "error")
 	}
 
+	const busy = () =>
+		!ctx.isIdle() || ctx.hasPendingMessages() || Boolean(ctx.ui.getEditorText().trim()) || isRawInputCaptureActive()
+
 	async function start(pr: CheckoutPR, autoFix: boolean): Promise<void> {
-		const state = await watcher.add([{ url: pr.url, cwd: ctx.cwd }], { autoFix, mode: "ci", instructions: "" })
+		const state = await watcher.add([{ url: pr.url, cwd: pr.cwd ?? ctx.cwd }], {
+			autoFix,
+			mode: "ci",
+			instructions: "",
+		})
 		const target = state.targets.find((item) => item.url === pr.url && item.enabled)
 		if (!target) report(new Error(state.message ?? `Could not watch ${pr.label}.`))
 		else if (autoFix && target.autoFix && !disposed)
@@ -79,10 +92,12 @@ export function followCheckoutPR(pi: ExtensionAPI, ctx: ExtensionContext, watche
 	}
 
 	function show(): void {
-		const pr = detected
-		if (disposed || question || !pr || handled.has(pr.url) || watcher.has(pr.url)) return
+		const pr = [detected, ...found.values()].find((item) => item && !handled.has(item.url) && !watcher.has(item.url))
+		if (disposed || question || !pr) return
 		const preference = readPRWatchPreference()
 		if (readOnly || preference === true) {
+			// Another checkout may first need the trust question, which waits like the general one.
+			if (pr.cwd && (!ctx.hasUI || busy())) return
 			handled.add(pr.url)
 			start(pr, !readOnly).catch(report)
 			return
@@ -92,8 +107,7 @@ export function followCheckoutPR(pi: ExtensionAPI, ctx: ExtensionContext, watche
 			void asking.finally(show)
 			return
 		}
-		const busy = !ctx.isIdle() || ctx.hasPendingMessages() || ctx.ui.getEditorText().trim() || isRawInputCaptureActive()
-		if (ctx.hasUI && !busy) ask(pr)
+		if (ctx.hasUI && !busy()) ask(pr)
 	}
 
 	const unsubscribe = pi.events.on(BRANCH_PR_OBSERVED_EVENT, (event) => {
@@ -104,12 +118,30 @@ export function followCheckoutPR(pi: ExtensionAPI, ctx: ExtensionContext, watche
 		show()
 	})
 
+	const unsubscribeWork = pi.events.on(WORK_PR_OBSERVED_EVENT, (event) => {
+		if (
+			!object(event) ||
+			event.sessionId !== ctx.sessionManager.getSessionId() ||
+			typeof event.worktree !== "string" ||
+			typeof event.recordedAt !== "string" ||
+			!(Date.parse(event.recordedAt) >= since) ||
+			!Array.isArray(event.pullRequests)
+		)
+			return
+		for (const value of event.pullRequests) {
+			const pr = openPR(value)
+			if (pr && !found.has(pr.url)) found.set(pr.url, { ...pr, cwd: event.worktree })
+		}
+		show()
+	})
+
 	return {
 		show,
 		dispose() {
 			disposed = true
 			question?.abort()
 			unsubscribe()
+			unsubscribeWork()
 		},
 	}
 }
