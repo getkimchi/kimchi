@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, onTestFinished, test } from "vitest"
-import { readRecordsSinceSql } from "./records.js"
+import { readRecordsSincePageSql, readRecordsSinceSql } from "./records.js"
 import { LEDGER_ADDITIVE_SCHEMA } from "./schema.js"
 import { classifyUserVersion, LedgerUnavailableError, ledgerDbPath, openStore, retryOnBusy } from "./store.js"
 
@@ -282,6 +282,16 @@ test("the windowed read is hinted onto the imported index; unhinted SQL stays ro
 	expect(readRecordsSinceSql(true)).toContain("ORDER BY rowid")
 	// An indexless open (a contended first open defers the additive apply) must degrade to the scan, not error.
 	expect(readRecordsSinceSql(false)).not.toContain("INDEXED BY")
+})
+
+test("the paged windowed read hints its first page onto the imported index; later pages ride the rowid range", () => {
+	// The first page's rowid range is the whole table: unhinted, the planner walks it to reach a
+	// tail window (a full scan per pass); the index carries it instead.
+	expect(readRecordsSincePageSql(true)).toContain("INDEXED BY work_records_imported")
+	expect(readRecordsSincePageSql(true)).not.toContain("rowid > ?")
+	// Later pages read exact rowid ranges; the hint would only cost a temp sort there.
+	expect(readRecordsSincePageSql(false)).not.toContain("INDEXED BY")
+	expect(readRecordsSincePageSql(false)).toContain("rowid > ?")
 })
 
 test("a busy-deferred additive apply self-heals on the cached backend within one process", { timeout: 60_000 }, () => {

@@ -2285,7 +2285,7 @@ describe("async cost-report discovery breathing", () => {
 			return { requests: [] } as unknown as Awaited<ReturnType<typeof costs.calculatePullRequestCostsAsync>>
 		})
 		try {
-			await readWorkCostReportAsync(dir, records, async () => {
+			await readWorkCostReportAsync(records, async () => {
 				stretches++
 			})
 		} finally {

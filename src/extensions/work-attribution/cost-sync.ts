@@ -32,7 +32,7 @@ import {
 	totalRequestCosts,
 } from "./costs.js"
 import type { WorkAccount } from "./scope.js"
-import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
+import { object, readWorkRecords, readWorkRecordsAsync, type WorkRecord, workJournalFingerprint } from "./summary.js"
 
 // The background pass: it looks up due bills within a budget, journals new evidence and publishes reports.
 
@@ -145,13 +145,9 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 }
 
 /** The same refresh as readWorkCostReport, breathing between stretches for a caller driving the UI loop. */
-export async function readWorkCostReportAsync(
-	agentDir: string,
-	records = readWorkRecords(agentDir),
-	stretch: () => Promise<void>,
-) {
-	// Discovery and input projection breathe too: at whole-history sizes they out-weigh the calculator's
-	// first phases, so a caller that stretches only around the calculator would still hold the thread.
+export async function readWorkCostReportAsync(records: WorkRecord[], stretch: () => Promise<void>) {
+	// Discovery breathes at a 2,000-row cadence through the whole-history passes; the per-request
+	// input projection (bounded by request count, not record count) runs between breaths.
 	const requests = await billingRequestsAsync(records, stretch)
 	await stretch()
 	const inputs = costReportInputs(requests)

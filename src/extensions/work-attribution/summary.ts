@@ -214,8 +214,8 @@ export async function readWorkRecordsSinceAsync(
 	agentDir: string,
 	modifiedSince: number,
 	checkBudget: () => void,
-	onRecordProblem: (problem: WorkRecordProblem) => void,
 	stretch: () => Promise<void>,
+	onRecordProblem: (problem: WorkRecordProblem) => void,
 ): Promise<WindowedRecord[]> {
 	// Same strictness as readWorkRecords: an unfinished import or consumed damage never authorizes silently.
 	if (importJournalSlice(agentDir, checkBudget)) throw new Error("Legacy work history is still importing")
@@ -223,13 +223,14 @@ export async function readWorkRecordsSinceAsync(
 	return ledgerReadRecordsSinceAsync(agentDir, modifiedSince, checkBudget, stretch)
 }
 
-/** The strict history read, breathing between ledger pages for a caller driving the UI loop. */
+/** The strict anchored history read, breathing between ledger pages for a caller driving the UI loop;
+ * each row carries its record hash and import time so callers dedup and bound on fixed-size anchors. */
 export async function readWorkRecordsForHistoryAsync(
 	agentDir: string,
 	checkBudget: () => void,
 	stretch: () => Promise<void>,
 	onRecordProblem: (problem: WorkRecordProblem) => void,
-): Promise<WorkRecord[]> {
+): Promise<WindowedRecord[]> {
 	// Same strictness as readWorkRecords: an unfinished import or consumed damage never authorizes silently.
 	if (importJournalSlice(agentDir, checkBudget)) throw new Error("Legacy work history is still importing")
 	reportJournalProblems(agentDir, onRecordProblem, checkBudget)
@@ -261,7 +262,7 @@ export async function readWorkRecordsAsync(
 ): Promise<WorkRecord[]> {
 	const checkBudget = () => signal.throwIfAborted()
 	await importWorkRecordsAsync(agentDir, checkBudget, onRecordProblem)
-	return ledgerReadRecordsAsync(agentDir, checkBudget)
+	return (await ledgerReadRecordsAsync(agentDir, checkBudget)).map((row) => row.record)
 }
 
 /** Import once before reading an authority prefix with its original hashes or parsed work records. */

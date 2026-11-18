@@ -23,6 +23,7 @@ import {
 	requestWorkLinks,
 } from "./links.js"
 import * as scope from "./scope.js"
+import * as summary from "./summary.js"
 import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
@@ -1102,14 +1103,14 @@ it("a rebuild retains only the recent slack tail of merged identities, as fixed-
 	expect(progress.historyMerged?.size ?? 0).toBe(0)
 	// Identities are ledger record hashes — fixed-size, never serialized bodies.
 	for (const identity of progress.historyMerged ?? []) expect(identity).toMatch(/^[a-f\d]{64}$/)
-	// A fresh append inside the tail lands in the set and the incremental merge still works; an
-	// append older than the pass start minus the slack is already forgettable by construction.
+	// A fresh append inside the tail is indexed by the incremental merge and confirms the receipt:
+	// with every key settled the pass takes its quiet exit and releases the accumulated state —
+	// merged included — so the durable outcome is the written link, not a retained set.
 	vi.setSystemTime(new Date("2026-10-05T10:00:34Z"))
 	appendWorkRecord(flow.ctx, flow.origin, flow.workId)
 	vi.setSystemTime(new Date("2026-10-05T10:00:35Z"))
 	await repair(progress)
-	expect(progress.historyMerged?.size ?? 0).toBeGreaterThanOrEqual(1)
-	for (const identity of progress.historyMerged ?? []) expect(identity).toMatch(/^[a-f\d]{64}$/)
+	expect(links()).toHaveLength(1)
 })
 
 it("releases the accumulated incremental state past the retained-row cap; the next pass rebuilds and still links", async () => {
@@ -1137,6 +1138,77 @@ it("releases the accumulated incremental state past the retained-row cap; the ne
 	await flushWorkSummaries()
 	await repair(progress)
 	expect(links()).toHaveLength(1)
+})
+
+it("a record captured during a rebuild pass is indexed by the next incremental pass", async () => {
+	// The review's live-repro'd race: the rebuild used to fill its merged set from a second windowed
+	// read pinning a later watermark, so a record captured mid-pass was marked already-merged without
+	// ever being indexed — and skipped by every later incremental pass, silently losing its link.
+	const flow = acceptedContinuation("plan", "planner-race", { omitOrigin: true })
+	await flushWorkSummaries()
+	const progress: ContinuationProgress = {}
+	const read = summary.readWorkRecordsForHistoryAsync
+	const spy = vi.spyOn(summary, "readWorkRecordsForHistoryAsync").mockImplementation(async (...args) => {
+		const anchored = await read(...args)
+		// Captured after the snapshot the index builds from, mid-pass: the race window.
+		appendWorkRecord(flow.ctx, flow.origin, flow.workId)
+		return anchored
+	})
+	try {
+		await repair(progress)
+	} finally {
+		spy.mockRestore()
+	}
+	expect(links()).toHaveLength(0) // the rebuild's snapshot predates the capture
+	// The next pass runs the incremental branch over the captured record: it must index it —
+	// not skip it as already merged — and confirm the link.
+	await repair(progress)
+	expect(links()).toHaveLength(1)
+})
+
+it("an over-cap history retains its rebuilt state instead of re-reading the whole history every pass", async () => {
+	const flow = acceptedContinuation("plan", "planner-rearm", { omitOrigin: true })
+	await flushWorkSummaries()
+	const progress: ContinuationProgress = {}
+	// A zero cap releases the accumulated state at the first rebuild's end and remembers the
+	// release point.
+	await reconcileWorkContinuations(
+		dir,
+		new AbortController().signal,
+		() => {},
+		progress,
+		async () => {},
+		0,
+	)
+	expect(progress.historyIndex).toBeUndefined()
+	expect(progress.historyEvictedRows).toBeGreaterThan(0)
+	// A journal change forces another rebuild — but the cap re-arms at the release point, so the
+	// freshly rebuilt state is retained: incremental work resumes instead of a full read per pass.
+	appendWorkRecord(flow.ctx, { type: "request", requestId: randomUUID() }, flow.workId)
+	await flushWorkSummaries()
+	const cap = progress.historyEvictedRows ?? 0
+	await reconcileWorkContinuations(
+		dir,
+		new AbortController().signal,
+		() => {},
+		progress,
+		async () => {},
+		cap,
+	)
+	expect(progress.historyIndex).toBeDefined()
+	// Growth past the release point plus the cap evicts again.
+	for (let index = 0; index <= cap; index++)
+		appendWorkRecord(flow.ctx, { type: "request", requestId: randomUUID() }, flow.workId)
+	await flushWorkSummaries()
+	await reconcileWorkContinuations(
+		dir,
+		new AbortController().signal,
+		() => {},
+		progress,
+		async () => {},
+		cap,
+	)
+	expect(progress.historyIndex).toBeUndefined()
 })
 
 it("an incremental pass over a spanning backlog fails loudly on fresh damage", async () => {

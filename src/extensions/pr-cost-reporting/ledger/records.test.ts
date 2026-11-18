@@ -139,7 +139,11 @@ describe("records conformance (memory backend)", () => {
 		const rows = await readStoredRecordsAsync(dir, () => {})
 		expect(rows).toMatchObject([stored, damaged])
 		expect(rows[0].recordHash).not.toBe(createHash("sha256").update(rows[0].body).digest("hex"))
-		expect(await readRecordsAsync(dir, () => {})).toEqual([records[0]])
+		// Parsed reads return the record with its original-hash and import-time anchors; the damaged
+		// body is skipped, and the retained hash stays the original line hash, never re-derived.
+		const anchored = await readRecordsAsync(dir, () => {})
+		expect(anchored).toEqual([{ record: records[0], hash: recordHash, importedAt: 123 }])
+		expect(anchored[0].hash).not.toBe(createHash("sha256").update(JSON.stringify(records[0])).digest("hex"))
 	})
 
 	it("capture folds records into the projection exactly like the legacy summary did", () => {

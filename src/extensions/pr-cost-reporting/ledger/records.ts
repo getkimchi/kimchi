@@ -380,24 +380,22 @@ export function workRecordsImportedPresent(db: {
 	)
 }
 
+/** Parse one stored row for an anchored read; damaged bodies skip, matching the sync reader. */
+function windowedRow(row: StoredRecord): WindowedRecord | undefined {
+	try {
+		return { record: JSON.parse(row.body) as WorkRecord, hash: row.recordHash, importedAt: row.importedAt }
+	} catch {
+		return undefined
+	}
+}
+
+/** The anchored full history, breathing between ledger pages for a caller driving the UI loop. */
 export function readRecordsAsync(
 	agentDir: string,
 	checkBudget: () => void,
 	stretch?: () => Promise<void>,
-): Promise<WorkRecord[]> {
-	return readRecordPrefixAsync(
-		agentDir,
-		checkBudget,
-		(row) => {
-			try {
-				return JSON.parse(row.body) as WorkRecord
-			} catch {
-				// Match the synchronous reader's damaged-body behavior.
-				return undefined
-			}
-		},
-		stretch,
-	)
+): Promise<WindowedRecord[]> {
+	return readRecordPrefixAsync(agentDir, checkBudget, windowedRow, stretch)
 }
 
 /** A ledger row with its fixed-size identity anchors: the parsed record, its content hash (the
@@ -407,6 +405,13 @@ export interface WindowedRecord {
 	record: WorkRecord
 	hash: string
 	importedAt: number
+}
+
+/** The paged windowed read's SQL. The first page's rowid range is the whole table, so it rides the
+ * imported index (the same hint discipline as the sync windowed statement); later pages read exact
+ * rowid ranges and stay unhinted. */
+export function readRecordsSincePageSql(first: boolean): string {
+	return `SELECT rowid AS position, ${recordColumnsSql()} FROM work_records ${first ? "INDEXED BY work_records_imported " : ""}WHERE imported_at >= ?${first ? "" : " AND rowid > ?"} AND rowid <= ? ORDER BY rowid LIMIT ?`
 }
 
 /** The incremental window (imported_at >= modifiedSince), paged rowid-cursored for a caller driving
@@ -429,11 +434,8 @@ export async function readRecordsSinceAsync(
 		if (!page.length) break
 		for (const row of page) {
 			checkBudget()
-			try {
-				records.push({ record: JSON.parse(row.body) as WorkRecord, hash: row.recordHash, importedAt: row.importedAt })
-			} catch {
-				// Match the synchronous reader's damaged-body behavior.
-			}
+			const anchored = windowedRow(row)
+			if (anchored !== undefined) records.push(anchored)
 		}
 		after = page[page.length - 1].position
 	}
@@ -807,9 +809,15 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
-	const recordSincePage = db.query<PositionedRecord, [number, number, number, number]>(
-		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE imported_at >= ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
-	)
+	const recordSincePage = db.query<PositionedRecord, [number, number, number, number]>(readRecordsSincePageSql(false))
+	// The first page of a windowed read starts at the history's beginning, so the unhinted rowid range
+	// would walk the whole table to reach a tail window — the same planner trap the sync windowed
+	// statement avoids with INDEXED BY. Later pages read exact rowid ranges and never need the hint.
+	// Prepared lazily: an indexless open (a contended first open defers the additive apply) must not
+	// prepare the hint, or backend construction itself would fail on the missing index.
+	const prepareSinceFirstPage = () =>
+		db.query<PositionedRecord, [number, number, number]>(readRecordsSincePageSql(true))
+	let recordSinceFirstPage: ReturnType<typeof prepareSinceFirstPage> | undefined
 	const workRecordPage = db.query<PositionedRecord, [string, number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE work_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
@@ -969,8 +977,16 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 		recordWatermark: () => watermark.get()?.position ?? 0,
 		readRecordPage: (after, through, limit, checkBudget) =>
 			drainStatementPage(recordPage, [after, through, limit], checkBudget),
-		readRecordsSincePage: (modifiedSince, after, through, limit, checkBudget) =>
-			drainStatementPage(recordSincePage, [modifiedSince, after, through, limit], checkBudget),
+		readRecordsSincePage: (modifiedSince, after, through, limit, checkBudget) => {
+			if (after !== 0) return drainStatementPage(recordSincePage, [modifiedSince, after, through, limit], checkBudget)
+			// The first page heals a deferred additive index (the windowed read is the hint's only
+			// consumer), then rides it; a still-contended database falls back to the unhinted range.
+			if (store.additiveDeferred) store.tryAdditiveSchema()
+			if (store.additiveDeferred)
+				return drainStatementPage(recordSincePage, [modifiedSince, 0, through, limit], checkBudget)
+			recordSinceFirstPage ??= prepareSinceFirstPage()
+			return drainStatementPage(recordSinceFirstPage, [modifiedSince, through, limit], checkBudget)
+		},
 		readWorkRecordPage: (workId, after, through, limit, checkBudget) =>
 			drainStatementPage(workRecordPage, [workId, after, through, limit], checkBudget),
 		hasProjectionOutput: (workId) =>
