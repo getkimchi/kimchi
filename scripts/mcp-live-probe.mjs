@@ -45,6 +45,13 @@ import {
 
 const PROVIDERS_ENV = "MCP_LIVE_PROVIDERS"
 
+// Gong's sign-in page presents an interactive Cloudflare challenge on hosted CI.
+const DISABLED_PROVIDERS = new Set(["gong"])
+
+function isProviderDisabled(entry) {
+	return DISABLED_PROVIDERS.has(entry.name.toLowerCase())
+}
+
 /** Strip http(s) URLs from text — they carry client ids and provider hosts from the inventory. */
 function redactText(text) {
 	return text.replace(/https?:\/\/[^\s"'>\]]+/g, "<redacted-url>")
@@ -525,6 +532,13 @@ function selfTest() {
 		],
 	)
 	expect(
+		"Gong is excluded while other providers remain",
+		[{ name: "gong" }, { name: "Gong" }, { name: "gmail" }]
+			.filter((entry) => !isProviderDisabled(entry))
+			.map((entry) => entry.name),
+		["gmail"],
+	)
+	expect(
 		"provider list rejects non-arrays",
 		throwsMessage(() => parseProviders("42")),
 		"provider list is not a JSON array",
@@ -583,8 +597,11 @@ async function main() {
 		console.error(`${PROVIDERS_ENV} is invalid: ${error instanceof Error ? error.message : String(error)}`)
 		return 1
 	}
+	for (const entry of providers.filter(isProviderDisabled))
+		console.log(`SKIP ${entry.name}: disabled for live provider checks`)
+	providers = providers.filter((entry) => !isProviderDisabled(entry))
 	if (providers.length === 0) {
-		console.log(`${PROVIDERS_ENV} is empty — no live provider inventory to check. Nothing to do.`)
+		console.log(`${PROVIDERS_ENV} has no enabled providers. Nothing to do.`)
 		return 0
 	}
 
