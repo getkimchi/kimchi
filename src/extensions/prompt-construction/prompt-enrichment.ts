@@ -402,6 +402,9 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				const requested = headers.get("x-model-requested")
 				const actual = headers.get("x-model-actual")
 				if (!requested || !actual || requested === actual) return
+				// Under the virtual auto id these headers describe the backend's own
+				// pick, which the user never selected: there is nothing for them to act on.
+				if (isAutoRoutedModel(ctx.model)) return
 				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
 				const key = `${sessionId} ${requested}::substituted`
 				if (deprecatedNotificationFired.has(key)) return

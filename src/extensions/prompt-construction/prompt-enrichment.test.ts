@@ -1757,10 +1757,13 @@ describe("retired model substitution notification", () => {
 		}
 	}
 
-	async function fireSubstitutedResponse(headers: Record<string, string> | Headers) {
+	async function fireSubstitutedResponse(
+		headers: Record<string, string> | Headers,
+		model: { provider: string; id: string } = { provider: "kimchi-dev", id: retiredModelId },
+	) {
 		const { afterProviderResponse } = buildExtensionWithHandlers()
 		if (!afterProviderResponse) throw new Error("after_provider_response handler not registered")
-		const ctx = createContext({ model: { provider: "kimchi-dev", id: retiredModelId } })
+		const ctx = createContext({ model })
 		await afterProviderResponse({ type: "after_provider_response", status: 200, headers }, ctx)
 		return ctx.ui.notify as Mock
 	}
@@ -1796,6 +1799,11 @@ describe("retired model substitution notification", () => {
 			"X-Model-Requested": retiredModelId,
 			"X-Model-Actual": retiredModelId,
 		})
+		expect(notifyMock).not.toHaveBeenCalled()
+	})
+
+	it("stays silent when the request was served by the auto virtual model", async () => {
+		const notifyMock = await fireSubstitutedResponse(substitutionHeaders(), { provider: "kimchi-dev", id: "auto" })
 		expect(notifyMock).not.toHaveBeenCalled()
 	})
 
