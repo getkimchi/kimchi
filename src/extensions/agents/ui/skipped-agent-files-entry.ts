@@ -16,7 +16,11 @@
 import type { EntryRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { keyText } from "@earendil-works/pi-coding-agent"
 import { type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import { formatSkippedAgentFileRow, SKIPPED_AGENT_FILES_FIX_LINE } from "../personas/custom-agents.js"
+import {
+	formatSkippedAgentFileRow,
+	formatSkippedAgentFilesSummary,
+	SKIPPED_AGENT_FILES_FIX_LINE,
+} from "../personas/custom-agents.js"
 
 /** Custom entry type holding the skipped-file notice. */
 export const SKIPPED_AGENT_FILES_ENTRY = "agents:skipped-files"
@@ -49,8 +53,12 @@ function headerLine(left: string, expanded: boolean, theme: LineTheme, width: nu
 	const hint = theme.fg("dim", `(${keyText("app.tools.expand")} to ${expanded ? "collapse" : "expand"})`)
 	const hintWidth = visibleWidth(hint)
 	const maxLeft = width - hintWidth - 2
-	if (maxLeft < 4) return truncateToWidth(left, width)
-	const truncated = truncateToWidth(left, maxLeft)
+	// Warning colour on the header only: the detail rows below stay plain so a
+	// notice can be long and still readable. truncateToWidth is ANSI-aware, so
+	// truncating the painted text keeps the reset.
+	const painted = theme.fg("warning", left)
+	if (maxLeft < 4) return truncateToWidth(painted, width)
+	const truncated = truncateToWidth(painted, maxLeft)
 	const pad = Math.max(0, width - visibleWidth(truncated) - hintWidth)
 	return truncated + " ".repeat(pad) + hint
 }
@@ -88,15 +96,15 @@ class SkippedAgentFilesLine implements Component {
 	) {}
 
 	private get summary(): string {
-		const count = this.files.length
-		return `[${count} agent issue${count === 1 ? "" : "s"}] Some agents were not loaded.`
+		// Same sentence as the plain warning, so the surfaces cannot drift.
+		return `Warning: ${formatSkippedAgentFilesSummary(this.files.length)}`
 	}
 
 	render(width: number): string[] {
 		const contentWidth = width - LEFT_PAD.length
 		if (contentWidth < 1) return []
-		const left = this.expanded ? "[Agent issues]" : this.summary
-		const lines = [headerLine(left, this.expanded, this.theme, contentWidth)]
+		// The header text does not change when expanded — only the hint does.
+		const lines = [headerLine(this.summary, this.expanded, this.theme, contentWidth)]
 		if (this.expanded) {
 			for (const { path, reason } of this.files) lines.push(...rowLines(path, reason, contentWidth))
 			lines.push(...fixLines(contentWidth))

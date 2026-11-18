@@ -11,6 +11,9 @@ const LOADS =
 	"---\ndescription: Tidies imports. <example>Context: a file was edited.</example>\n---\n\nYou tidy imports.\n"
 // An unclosed list cannot be repaired: skipped, then reported to the user.
 const BROKEN = "---\ndescription: broken\ntools: [read, bash\n---\n\nPrompt.\n"
+// The collapsed and expanded header share this sentence, so the hint is what
+// signals the state change in the e2e assertions below.
+const NOTICE = "Warning: Skipped 1 agent file with invalid frontmatter (not loaded)"
 
 function seedAgents(workDir: string, files: Record<string, string>): void {
 	const agentsDir = join(workDir, ".kimchi", "agents")
@@ -36,17 +39,16 @@ test("an unparseable agent file collapses to one line that expands via ctrl+o", 
 
 			// Collapsed: one summary line and the shared ctrl+o hint. The file
 			// name and the YAML error must not be on screen yet.
-			await waitForText(terminal, "[1 agent issue] Some agents were not loaded.", { full: true })
+			await waitForText(terminal, NOTICE, { full: true })
 			await waitForText(terminal, "(ctrl+o to expand)", { full: true })
 			expect(fullText(terminal)).not.toContain("broken-agent.md")
 			// Column 1, flush with pi's own "Warning:" notices.
-			expect(fullText(terminal)).toMatch(/^ \[1 agent issue\]/m)
+			expect(fullText(terminal)).toMatch(/^ Warning: Skipped 1 agent file/m)
 			trace.step("startup collapsed the skipped agent file into one line")
 
 			terminal.keyPress("o", { ctrl: true })
-			await waitForText(terminal, "[Agent issues]", { full: true })
-			await waitForText(terminal, "broken-agent.md", { full: true })
 			await waitForText(terminal, "(ctrl+o to collapse)", { full: true })
+			await waitForText(terminal, "broken-agent.md", { full: true })
 			await waitForText(terminal, "Fix the YAML frontmatter to load them.", { full: true })
 			trace.step("ctrl+o expanded the per-file detail")
 
@@ -79,10 +81,13 @@ test.describe("narrow terminal", () => {
 			},
 			async (_fixture, trace) => {
 				await waitForText(terminal, PROMPT_READY, { full: true })
-				await waitForText(terminal, "[1 agent issue]", { full: true })
+				// At 60 columns the sentence truncates by design — the hint keeps its
+				// width — so only the stable prefix is asserted here.
+				await waitForText(terminal, "Warning: Skipped 1 agent file", { full: true })
+				await waitForText(terminal, "(ctrl+o to expand)", { full: true })
 
 				terminal.keyPress("o", { ctrl: true })
-				await waitForText(terminal, "[Agent issues]", { full: true })
+				await waitForText(terminal, "(ctrl+o to collapse)", { full: true })
 				expect(fullText(terminal)).not.toContain("exceeds terminal width")
 
 				// The row wraps rather than being cut, and the continuation keeps an
@@ -120,7 +125,7 @@ test("resuming a session shows one notice, not one per start", async ({ terminal
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
-			await waitForText(terminal, "[1 agent issue]", { timeoutMs: STARTUP_TIMEOUT_MS })
+			await waitForText(terminal, NOTICE, { timeoutMs: STARTUP_TIMEOUT_MS })
 
 			// A turn guarantees the session is on disk for the resume leg.
 			terminal.submit("hello")
@@ -132,13 +137,13 @@ test("resuming a session shows one notice, not one per start", async ({ terminal
 
 			launchKimchi(terminal, fixture, ["--continue"])
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: true })
-			await waitForText(terminal, "[1 agent issue]", { timeoutMs: STARTUP_TIMEOUT_MS, full: true })
+			await waitForText(terminal, NOTICE, { timeoutMs: STARTUP_TIMEOUT_MS, full: true })
 			trace.step("resumed session shows a notice")
 
 			// The exit marker reset the terminal, so this buffer holds only the
 			// resumed session: a replayed notice from the first start would show
 			// up as a second occurrence.
-			expect(fullText(terminal).split("[1 agent issue]").length - 1).toBe(1)
+			expect(fullText(terminal).split("Skipped 1 agent file with invalid frontmatter").length - 1).toBe(1)
 
 			terminal.submit("still there?")
 			await waitForText(terminal, "Still alive.", { timeoutMs: STARTUP_TIMEOUT_MS })

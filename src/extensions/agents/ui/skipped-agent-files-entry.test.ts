@@ -1,6 +1,6 @@
 import type { CustomEntry } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
 	createSkippedAgentFilesRenderer,
 	SKIPPED_AGENT_FILES_ENTRY,
@@ -37,18 +37,27 @@ const one = [{ path: ".kimchi/agents/a.md", reason: "unexpected end of the strea
 
 describe("skipped agent files entry", () => {
 	it("collapses to one summary line with the count and the expand hint", () => {
-		const lines = render({ token: "start-1", files: one })
+		const lines = render({ token: "start-1", files: one }, {}, 120)
 
 		expect(lines).toHaveLength(1)
-		expect(lines?.[0]).toContain("[1 agent issue] Some agents were not loaded.")
+		expect(lines?.[0]).toContain("Warning: Skipped 1 agent file with invalid frontmatter (not loaded)")
 		expect(lines?.[0]).toContain(EXPAND)
 		// Column 1, like pi's own "Warning:" notices — a custom entry is
 		// otherwise drawn at column 0 and reads one cell left of them.
-		expect(lines?.[0]?.startsWith(" [1 agent issue]")).toBe(true)
+		expect(lines?.[0]?.startsWith(" Warning: Skipped 1 agent file")).toBe(true)
 		// The hint is right-aligned: it ends at the terminal edge.
-		expect(visibleWidth(lines?.[0] ?? "")).toBe(80)
+		expect(visibleWidth(lines?.[0] ?? "")).toBe(120)
 		expect(lines?.[0]?.endsWith(EXPAND)).toBe(true)
 		expect(lines?.[0]).not.toContain("a.md")
+	})
+
+	it("truncates the summary but keeps the hint when the line does not fit", () => {
+		// 80 columns minus the hint leaves less than the full sentence.
+		const lines = render({ token: "start-1", files: one }) ?? []
+
+		expect(visibleWidth(lines[0])).toBe(80)
+		expect(lines[0]).toContain(EXPAND)
+		expect(lines[0]).not.toContain("(not loaded)")
 	})
 
 	it("pluralizes the count", () => {
@@ -57,19 +66,32 @@ describe("skipped agent files entry", () => {
 			{ path: ".kimchi/agents/b.md", reason: "bad indent" },
 			{ path: ".kimchi/agents/c.md", reason: "bad indent" },
 		]
-		expect(render({ token: "start-1", files })?.[0]).toContain("[3 agent issues]")
+		expect(render({ token: "start-1", files })?.[0]).toContain("Warning: Skipped 3 agent files")
 	})
 
 	it("expands to the header, one line per file and the fix line", () => {
 		const lines = render({ token: "start-1", files: one }, { expanded: true }) ?? []
 
-		expect(lines[0].startsWith(" [Agent issues]")).toBe(true)
+		// The header text is the same collapsed or expanded — only the hint
+		// changes, so the count stays visible while reading the details.
+		expect(lines[0].startsWith(" Warning: Skipped 1 agent file")).toBe(true)
 		expect(lines[0]).toContain(COLLAPSE)
-		expect(lines[0]).not.toContain("Some agents were not loaded.")
 		expect(lines.slice(1)).toEqual([
 			"   .kimchi/agents/a.md — unexpected end of the stream",
 			" Fix the YAML frontmatter to load them.",
 		])
+	})
+
+	it("paints only the header, leaving the details plain", () => {
+		const fg = vi.fn((_colour: string, text: string) => text)
+		const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+		renderer(entry({ token: "start-1", files: one }), { expanded: true }, { fg } as never)?.render(80)
+
+		const colours = fg.mock.calls.map(([colour]) => colour)
+		expect(colours.filter((colour) => colour === "warning")).toHaveLength(1)
+		expect(colours.filter((colour) => colour === "dim")).toHaveLength(1)
+		// Nothing else is painted: the rows and the fix line stay default colour.
+		expect(colours).toHaveLength(2)
 	})
 
 	describe("narrow terminals", () => {

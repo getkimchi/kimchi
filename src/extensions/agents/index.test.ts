@@ -2601,7 +2601,7 @@ describe("unparseable agent files", () => {
 			},
 			{ expanded },
 			theme,
-		)?.render(80)
+		)?.render(120)
 	}
 
 	it("does not fail extension load when the launch directory has one", () => {
@@ -2625,7 +2625,8 @@ describe("unparseable agent files", () => {
 		expect(entries[0].files).toEqual([
 			{ path: join(".kimchi", "agents", "broken-agent.md"), reason: expect.any(String) },
 		])
-		expect(renderNotice(pi, entries[0])?.[0]).toContain("[1 agent issue] Some agents were not loaded.")
+		expect(renderNotice(pi, entries[0])?.[0]).toContain("Warning: Skipped 1 agent file")
+		expect(renderNotice(pi, entries[0])?.[0]).toContain("with invalid frontmatter (not loaded)")
 
 		// The Agent tool reloads agents on every call: no repeat notice, and
 		// the valid neighbour of the broken file is still spawnable.
@@ -2698,7 +2699,7 @@ describe("unparseable agent files", () => {
 		expect(entries[0].token).not.toBe(entries[1].token)
 		// Resuming must not stack notices: only today's start is visible.
 		expect(renderNotice(pi, entries[0])).toBeUndefined()
-		expect(renderNotice(pi, entries[1])?.[0]).toContain("[1 agent issue]")
+		expect(renderNotice(pi, entries[1])?.[0]).toContain("Warning: Skipped 1 agent file")
 	})
 
 	it("reports a file that breaks mid-session under the same token", async () => {

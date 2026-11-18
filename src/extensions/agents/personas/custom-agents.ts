@@ -56,11 +56,16 @@ export function formatSkippedAgentFileRow(path: string, reason: string): string 
 	return `${path} — ${reason}`
 }
 
+/** Summary sentence for the skipped files, shared by the warning and the TUI notice. */
+export function formatSkippedAgentFilesSummary(count: number): string {
+	const noun = count === 1 ? "agent file" : "agent files"
+	return `Skipped ${count} ${noun} with invalid frontmatter (not loaded)`
+}
+
 /** User-facing warning for the files `loadCustomAgents` skipped. */
 export function formatSkippedAgentFiles(skipped: SkippedAgentFile[], cwd: string): string {
-	const noun = skipped.length === 1 ? "agent file" : "agent files"
 	return [
-		`Skipped ${skipped.length} ${noun} with invalid frontmatter (not loaded):`,
+		`${formatSkippedAgentFilesSummary(skipped.length)}:`,
 		...skipped.map(({ path, reason }) => `  ${formatSkippedAgentFileRow(displayPath(path, cwd), reason)}`),
 		SKIPPED_AGENT_FILES_FIX_LINE,
 	].join("\n")
