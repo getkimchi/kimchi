@@ -162,18 +162,6 @@
 #     default is scoped to connectionless (url-based) servers because era
 #     negotiation on stdio costs a sacrificial process spawn - stdio entries
 #     keep the legacy handshake unless they pin a version explicitly.
-diff --git a/types.ts b/types.ts
---- a/types.ts
-+++ b/types.ts
-@@ -732,6 +732,8 @@
- export interface McpAdapterOptions {
-   config?: McpConfig;
-   configPath?: string;
-+  /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
-+  onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
-   /**
-    * MCP protocol era applied to every configured server whose entry does not
-    * set `protocolVersion` itself. `"auto"` offers the SDK's default
 diff --git a/init.ts b/init.ts
 --- a/init.ts
 +++ b/init.ts
@@ -213,18 +201,6 @@ diff --git a/state.ts b/state.ts
 +  onSessionMetadata?: McpAdapterOptions["onSessionMetadata"];
    statusEvents?: McpStatusEventBus;
  }
-diff --git a/dist/types.d.ts b/dist/types.d.ts
---- a/dist/types.d.ts
-+++ b/dist/types.d.ts
-@@ -522,6 +522,8 @@
- export interface McpAdapterOptions {
-     config?: McpConfig;
-     configPath?: string;
-+    /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
-+    onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
-     /**
-      * MCP protocol era applied to every configured server whose entry does not
-      * set `protocolVersion` itself. `"auto"` offers the SDK's default
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -990,10 +966,12 @@ diff --git a/dist/types.d.ts b/dist/types.d.ts
 index cd540e229b893f6c9cec107b736dcea22ce4111c..c81f47a123b4f2851022f132e24de554531c5fd2 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -522,6 +522,15 @@ export interface McpConfig {
+@@ -522,6 +522,17 @@ export interface McpConfig {
  export interface McpAdapterOptions {
      config?: McpConfig;
      configPath?: string;
++    /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
++    onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
 +    /**
 +     * MCP protocol era applied to every configured server whose entry does not
 +     * set `protocolVersion` itself. `"auto"` offers the SDK's default
@@ -2342,10 +2320,12 @@ diff --git a/types.ts b/types.ts
 index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..12089e9a604b522e7e03f0ee1ecd15324ab48207 100644
 --- a/types.ts
 +++ b/types.ts
-@@ -732,6 +732,15 @@ export interface McpConfig {
+@@ -732,6 +732,17 @@ export interface McpConfig {
  export interface McpAdapterOptions {
    config?: McpConfig;
    configPath?: string;
++  /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
++  onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
 +  /**
 +   * MCP protocol era applied to every configured server whose entry does not
 +   * set `protocolVersion` itself. `"auto"` offers the SDK's default
