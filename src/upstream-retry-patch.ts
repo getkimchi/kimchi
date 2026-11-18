@@ -271,8 +271,17 @@ export function installCompactionRecoveryPatch(
 		// passed through so nothing downstream observes the swap.
 		if (typeof message.errorMessage === "string") {
 			const raw = rawErrorForCompactionRecovery(message, this)
-			if (raw && raw !== message.errorMessage) {
-				return original.call(this, { ...message, errorMessage: raw }, skipAbortedCheck)
+			if (raw) {
+				const classification = classifyLLMGatewayError(raw)
+				// pi-ai recognizes structured request_too_large responses, but not
+				// nginx's HTML rendering of the same HTTP 413 body-overflow verdict.
+				const error =
+					classification?.reason === "context_window_exceeded" && /\b413\b/.test(raw)
+						? `${raw}\nrequest_too_large`
+						: raw
+				if (error !== message.errorMessage) {
+					return original.call(this, { ...message, errorMessage: error }, skipAbortedCheck)
+				}
 			}
 		}
 		return original.call(this, message, skipAbortedCheck)

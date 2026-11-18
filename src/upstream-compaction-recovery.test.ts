@@ -10,6 +10,9 @@ import { installCompactionRecoveryPatch } from "./upstream-retry-patch.js"
 const RAW_OVERFLOW =
 	'{"error":{"type":"invalid_request_error","message":"The input (313972 tokens) is longer than the model\'s context length (262144 tokens).","retryable":false,"code":"400"}}'
 
+const RAW_HTML_413 =
+	"Internal error: 413 <html><head><title>413 Request Entity Too Large</title></head><body><center><h1>413 Request Entity Too Large</h1></center><hr><center>nginx</center></body></html>"
+
 /** Sanitized display text the interactive-error-surface writes over the raw error. */
 const SANITIZED_OVERFLOW = "The request could not be completed (context window exceeded). Please retry your request."
 
@@ -232,6 +235,41 @@ describe("end-to-end overflow recovery through the real upstream method", () => 
 		const current = (session as { agent: { state: { messages: unknown[] } } }).agent.state.messages
 		expect(current).toHaveLength(1)
 		expect((current[0] as { role?: string }).role).toBe("user")
+	})
+
+	it("fires overflow compact-and-retry for an nginx HTML 413 body-size error", async () => {
+		const compactionCalls: Array<{ reason: string; willRetry: boolean }> = []
+		const failingMessage: Record<string, unknown> = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: RAW_HTML_413,
+			provider: "kimchi-dev",
+			model: "kimi-k2.7",
+			content: [],
+			timestamp: Date.now(),
+		}
+		preserveRawErrorMessage(failingMessage)
+		failingMessage.errorMessage = SANITIZED_OVERFLOW
+
+		const agentMessages = [{ role: "user", content: [{ type: "text", text: "hi" }] }, failingMessage]
+		const session = buildRealishSession({ compactionCalls, agentMessages })
+		const proto = AgentSession.prototype as unknown as Record<string, CheckCompaction | boolean | undefined>
+		const originalBeforeInstall = proto._checkCompaction
+		const markerBeforeInstall = proto._kimchiCompactionRecoveryPatch
+		proto._kimchiCompactionRecoveryPatch = undefined
+		installCompactionRecoveryPatch()
+		let ran = false
+		try {
+			const patched = proto._checkCompaction
+			if (typeof patched !== "function") throw new Error("expected _checkCompaction to be installed")
+			ran = await patched.call(session, failingMessage)
+		} finally {
+			proto._checkCompaction = originalBeforeInstall
+			proto._kimchiCompactionRecoveryPatch = markerBeforeInstall
+		}
+
+		expect(ran).toBe(true)
+		expect(compactionCalls).toEqual([{ reason: "overflow", willRetry: true }])
 	})
 })
 
