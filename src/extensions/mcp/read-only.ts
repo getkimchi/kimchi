@@ -1,9 +1,11 @@
 /**
  * Read-only qualification for MCP tools.
  *
- * Planning mode admits read-only MCP direct tools and blocks everything else
- * (gateway, script, namespace proxies, and non-read-only direct tools). The
- * classification follows the MCP spec first and a name convention second:
+ * Planning mode admits read-only MCP direct tools and uses this same
+ * qualification for nested gateway calls. The gateway itself receives separate
+ * argument-aware authorization in index.ts; script and namespace proxies stay
+ * blocked. Direct-tool classification follows the MCP spec first and a name
+ * convention second:
  *
  * - `annotations.readOnlyHint === true` qualifies the tool, always.
  * - When the server publishes NO annotations at all, a name-prefix convention

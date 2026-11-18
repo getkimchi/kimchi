@@ -157,12 +157,11 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((tool) => tool.name))
 
 /**
- * Appended to the system prompt on each plan-mode agent run when MCP tools
- * are hidden. Without it the model reports "no MCP tools are accessible",
- * which users read as a connector/auth failure and start re-authorizing.
+ * Explains the live MCP surface on each plan-mode agent run. Without this the
+ * model can mistake deliberately restricted writes for connector/auth failure.
  */
 const PLAN_MODE_MCP_NOTE =
-	"\n\nPlan mode is active: the `mcp` gateway and all non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Hidden tools work again after the user leaves plan mode. If the user's request needs an MCP tool, prefer a read-only one if it does the job; otherwise say it is unavailable in plan mode instead of reporting a connection or login problem."
+	"\n\nPlan mode is active: the `mcp` gateway is restricted to read-only operations (status, search, describe, server instructions, and read-only-qualified tool calls). All non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Install/auth actions, explicit reconnects, and write-capable gateway calls are blocked. Hidden tools and mutating operations work again after the user leaves plan mode. If the user's request needs a mutating MCP operation, say it is unavailable in plan mode instead of reporting a connection or login problem."
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
@@ -860,16 +859,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// the snapshot immediately before every model request so late
 		// registration cannot widen the restricted tool surface.
 		ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
-		// Every MCP tool plan mode hides (the gateway and direct server tools).
-		// Read-only MCP tools stay usable, so they must not fire the note.
-		// Computed fresh per request because late-registered direct tools are
-		// absent from the enter-time planModeHiddenTools snapshot. The gateway
+		// Computed fresh per request because the gateway and direct tools can
+		// register after the enter-time planModeHiddenTools snapshot. The gateway
 		// only registers when at least one server is configured (mcp/index.ts),
-		// so "mcp" alone guarantees a real MCP setup.
-		const hidesMcpTools = pi
+		// so "mcp" alone guarantees a real MCP setup. A read-only direct tool by
+		// itself needs no special gateway guidance.
+		const needsMcpNote = pi
 			.getAllTools()
-			.some((tool) => (tool.name === "mcp" || tool.name.startsWith("mcp__")) && !isPlanModeTool(tool.name))
-		if (!hidesMcpTools) return undefined
+			.some((tool) => tool.name === "mcp" || (tool.name.startsWith("mcp__") && !isPlanModeTool(tool.name)))
+		if (!needsMcpNote) return undefined
 		return { systemPrompt: `${event.systemPrompt}${PLAN_MODE_MCP_NOTE}` }
 	})
 

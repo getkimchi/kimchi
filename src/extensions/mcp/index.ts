@@ -83,7 +83,10 @@ function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
 }
 
 function blockedPlanningResult(toolName: string) {
-	const reason = `MCP tool "${toolName}" is unavailable in plan mode.`
+	const reason =
+		toolName === MCP_PROXY_TOOL
+			? "This MCP gateway call is unavailable in plan mode. Use status, search, describe, instructions, or a read-only-qualified tool call."
+			: `MCP tool "${toolName}" is unavailable in plan mode.`
 	return {
 		content: [{ type: "text" as const, text: reason }],
 		details: { error: "plan_mode_mcp_blocked", tool: toolName, message: reason },
@@ -91,13 +94,24 @@ function blockedPlanningResult(toolName: string) {
 	}
 }
 
+/** The gateway stays visible for discovery and argument-checked reads; script and write-capable tools do not. */
+function isHiddenFromPlanning(toolName: string, isReadOnlyTool: (wireName: string) => boolean): boolean {
+	return toolName === MCP_SCRIPT_TOOL || (toolName !== MCP_PROXY_TOOL && !isReadOnlyTool(toolName))
+}
+
 /**
- * Plan-mode gate: the gateway, script, namespace proxies, and write-capable
- * direct tools stay blocked; read-only-qualified direct tools (spec
- * annotations with a name-convention fallback — see ./read-only.ts) run.
+ * Execution remains fail-closed even when a hidden or stale tool reaches the facade.
+ * Explicit actions and reconnects are not reads: they can install servers, update
+ * metadata, or start/authenticate OAuth flows, so planning rejects all of them.
  */
-function isBlockedInPlanning(toolName: string, isReadOnlyTool: (wireName: string) => boolean): boolean {
-	return toolName === MCP_PROXY_TOOL || toolName === MCP_SCRIPT_TOOL || !isReadOnlyTool(toolName)
+function isBlockedInPlanning(
+	toolName: string,
+	params: unknown,
+	getReadOnlyToolNames: (server?: string) => readonly string[],
+): boolean {
+	if (toolName === MCP_SCRIPT_TOOL) return true
+	if (toolName === MCP_PROXY_TOOL && typeof params === "object" && params !== null && "connect" in params) return true
+	return canChangeFiles(toolName, params, getReadOnlyToolNames)
 }
 
 /**
@@ -159,7 +173,7 @@ function createUpstreamApi(
 			.map(({ name }) => name)
 			.filter(
 				(name) =>
-					registeredToolNames.has(name) && !isBlockedInPlanning(name, (candidate) => readOnlyNames.has(candidate)),
+					registeredToolNames.has(name) && !isHiddenFromPlanning(name, (candidate) => readOnlyNames.has(candidate)),
 			)
 	})
 	return new Proxy(pi, {
@@ -198,7 +212,7 @@ function createUpstreamApi(
 						execute: async (...args: Parameters<typeof execute>) => {
 							if (
 								isPlanningMode(target, args[4]) &&
-								isBlockedInPlanning(brandedTool.name, (name) => getReadOnlyToolNames().includes(name))
+								isBlockedInPlanning(brandedTool.name, args[1], getReadOnlyToolNames)
 							) {
 								return blockedPlanningResult(brandedTool.name)
 							}

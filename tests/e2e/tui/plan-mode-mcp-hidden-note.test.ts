@@ -19,13 +19,10 @@ function firstChatSystemPrompt(fixture: { fake: { requests: Array<{ url: string;
 	return typeof system?.content === "string" ? system.content : JSON.stringify(system?.content ?? "")
 }
 
-// The permissions planning profile hides the `mcp` gateway and non-read-only
-// MCP tools but told nobody — the next model request just lacked them, so the
-// model answered "no MCP tools are accessible", which users read as a
-// connector/auth failure (and some started re-authorizing). The harness now
-// appends a note to the system prompt of every plan-mode request when MCP
-// tools were hidden, so the model can name the actual state.
-test("plan mode with a hidden MCP surface adds a system-prompt note naming plan mode", async ({ terminal }) => {
+// The permissions planning profile restricts the `mcp` gateway to read-only
+// operations and hides non-read-only direct tools. The prompt note makes that
+// distinction explicit so the model does not report a connector/auth failure.
+test("plan mode with a restricted MCP surface adds a system-prompt note naming plan mode", async ({ terminal }) => {
 	await runMcpKimchiSession(
 		terminal,
 		{

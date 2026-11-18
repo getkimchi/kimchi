@@ -729,18 +729,21 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.pi.setActiveTools).toHaveBeenCalledTimes(initialApplications + 1)
 	})
 
-	it("appends the plan-mode MCP note when the gateway is hidden by plan mode", async () => {
+	it("keeps the gateway visible and appends its plan-mode read-only restriction", async () => {
 		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		expect(harness.activeTools()).not.toContain("mcp")
+		const unregister = registerReadOnlyToolProvider(harness.pi, () => ["mcp"])
+		try {
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(harness.activeTools()).toContain("mcp")
 
-		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+			const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
 
-		expect(result).toEqual({
-			systemPrompt: expect.stringMatching(
-				/^BASE\n\nPlan mode is active: the `mcp` gateway.*are hidden while plan mode is on.*$/,
-			),
-		})
+			expect(result).toEqual({
+				systemPrompt: expect.stringMatching(/^BASE\n\nPlan mode is active: the `mcp` gateway.*read-only operations.*$/),
+			})
+		} finally {
+			unregister()
+		}
 	})
 
 	it("appends — never replaces — so earlier handlers' sections (e.g. the memory digest) survive", async () => {

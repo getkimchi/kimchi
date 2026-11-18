@@ -311,13 +311,17 @@ Relevant code:
 
 ### Planning-mode safety and tool-profile integration
 
-In plan mode Kimchi exposes only read-only-qualified MCP direct tools. A tool
-qualifies when the server publishes `annotations.readOnlyHint: true`; when the
-server publishes NO annotations at all, a name-prefix convention (`get_`,
-`search_`, `list_`, `read_`, `fetch_`) applies as a best-effort signal with a
-one-time warning per promoted tool. Any published annotations veto the
-convention. The gateway (`mcp`), `mcpScript`, and namespace proxies always
-stay blocked: each offers arbitrary server-side execution.
+In plan mode Kimchi exposes read-only-qualified MCP direct tools and the
+gateway (`mcp`) for status, search, describe, server instructions, and
+read-only-qualified nested tool calls. A tool qualifies when the server
+publishes `annotations.readOnlyHint: true`; when the server publishes NO
+annotations at all, a name-prefix convention (`get_`, `search_`, `list_`,
+`read_`, `fetch_`) applies as a best-effort signal with a one-time warning per
+promoted tool. Any published annotations veto the convention. `mcpScript` and
+namespace proxies always stay blocked. Gateway install/auth actions, explicit
+reconnects, and calls to non-read-only tools also stay blocked: the gateway
+remains capable of arbitrary server-side execution, so its arguments are
+checked on every call.
 
 Annotations reach the facade through the adapter's persistent metadata cache,
 which a third patch hunk keeps by serializing `annotations` alongside name and
@@ -334,9 +338,9 @@ use distinct server prefixes and tool names to avoid collisions. The facade
 also preserves upstream exclusions and app-only tool visibility.
 
 The facade also checks the active planning state when any adapter-owned tool is
-executed. A stale or forced call that is not read-only-qualified returns
-`plan_mode_mcp_blocked` before it can reach the MCP server. Outside plan mode,
-the gateway and direct tools retain their normal behavior. This restores the
+executed. A stale or forced call that fails these direct/gateway read-only rules
+returns `plan_mode_mcp_blocked` before it can reach the MCP server. Outside plan
+mode, the gateway and direct tools retain their normal behavior. This restores the
 vendor fork's read-only classification (`tool-metadata.ts` semantics in
 [#1168](https://github.com/getkimchi/kimchi/pull/1168)) as facade behavior on
 published-package data.

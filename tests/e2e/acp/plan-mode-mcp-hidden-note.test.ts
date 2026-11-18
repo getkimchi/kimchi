@@ -1,9 +1,14 @@
-// ACP integration: plan mode hides the MCP gateway/tools — the next model
-// request must SAY SO on its system prompt instead of letting the model
-// report "no MCP tools are accessible" (read by users as an auth failure).
+// ACP integration: plan mode advertises the MCP gateway for read-only
+// operations and tells the model why write-capable direct tools are absent.
 
 import { afterEach, describe, expect, it } from "vitest"
 import { mcpToolResult } from "../tui/support/mcp-fixture.js"
+import {
+	gatewayMcpCall,
+	modelReply,
+	requireRequestAdvertisingTool,
+	toolResultText,
+} from "../tui/support/mcp-model-script.js"
 import { type AcpMcpFixture, STARTUP_TIMEOUT_MS, startAcpMcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
@@ -48,9 +53,51 @@ describe(
 			const system = body.messages?.find((message) => message.role === "system")
 			const systemText = typeof system?.content === "string" ? system.content : JSON.stringify(system?.content ?? "")
 			expect(systemText).toContain(NOTE_FRAGMENT)
-			// The note and the loadout agree: hidden tools really are absent from
-			// the request, so the note is the only way the model learns why.
-			expect((body.tools ?? []).map((tool) => tool.function?.name)).not.toContain("mcp")
+			// The gateway remains available, but its prompt note restricts it to
+			// read-only operations while write-capable direct tools stay hidden.
+			expect((body.tools ?? []).map((tool) => tool.function?.name)).toContain("mcp")
+			expect(systemText).toContain("read-only operations")
+		})
+
+		it("executes an annotated Jira read through the gateway without leaving plan mode", async () => {
+			const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
+			fixture = await startAcpMcpFixture({
+				artifactName: "acp-plan-mode-mcp-gateway-read",
+				extraArgs: ["--plan"],
+				mcp: {
+					behavior: {
+						catalogTools: [
+							{
+								name: "getJiraIssue",
+								description: "Read a Jira issue",
+								inputSchema: {
+									type: "object",
+									properties: { issueIdOrKey: { type: "string" } },
+									additionalProperties: false,
+								},
+								annotations: { readOnlyHint: true },
+							},
+						],
+						tools: [
+							mcpToolResult("getJiraIssue", {
+								content: [{ type: "text", text: "LLM-4358: Enable MCP access in plan mode" }],
+							}),
+						],
+					},
+				},
+				responses: [read.response, modelReply("I read LLM-4358 while staying in plan mode.")],
+			})
+			const sessionId = await newSession(fixture, fixture.workDir)
+			expect((await prompt(fixture, sessionId, "Read LLM-4358 to inform the plan")).stopReason).toBe("end_turn")
+
+			requireRequestAdvertisingTool(fixture.fake.requests, "mcp")
+			expect(
+				fixture.mcp.hasEvent("tool_called", {
+					name: "getJiraIssue",
+					arguments: { issueIdOrKey: "LLM-4358" },
+				}),
+			).toBe(true)
+			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Enable MCP access in plan mode")
 		})
 	},
 	STARTUP_TIMEOUT_MS,

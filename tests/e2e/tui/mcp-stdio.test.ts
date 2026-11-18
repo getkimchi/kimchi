@@ -95,7 +95,7 @@ test("registers and calls a direct MCP tool on the first session", async ({ term
 	)
 })
 
-test("reads through an annotated MCP tool in plan mode while hiding writes and the gateway", async ({ terminal }) => {
+test("reads through an annotated direct MCP tool in plan mode while hiding writes", async ({ terminal }) => {
 	const read = directMcpCall("getJiraIssue", {})
 	await runMcpKimchiSession(
 		terminal,
@@ -138,11 +138,60 @@ test("reads through an annotated MCP tool in plan mode while hiding writes and t
 			const mcpTools = tools
 				.map((tool) => tool.function?.name)
 				.filter((name) => name === "mcp" || name?.startsWith("fixture_"))
-			expect(mcpTools).toEqual([read.modelToolName])
+			expect(mcpTools.sort()).toEqual(["mcp", read.modelToolName].sort())
 			expect(fixture.mcp.hasEvent("tool_called", { name: "getJiraIssue" })).toBe(true)
 			expect(fixture.mcp.hasEvent("tool_called", { name: "get_write_access" })).toBe(false)
 			expect(toolResultText(fixture.fake.requests, read)).toContain("Fixture issue: planning read succeeded")
-			trace.step("annotated MCP read executed; writable direct tool and gateway stayed hidden")
+			trace.step("annotated MCP read executed; gateway stayed available and writable direct tool stayed hidden")
+		},
+	)
+})
+
+test("reads Jira through the MCP gateway without leaving plan mode", async ({ terminal }) => {
+	const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-gateway-read",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				behavior: {
+					catalogTools: [
+						{
+							name: "getJiraIssue",
+							description: "Read a Jira issue",
+							inputSchema: {
+								type: "object",
+								properties: { issueIdOrKey: { type: "string" } },
+								additionalProperties: false,
+							},
+							annotations: { readOnlyHint: true },
+						},
+					],
+					tools: [
+						mcpToolResult("getJiraIssue", {
+							content: [{ type: "text", text: "LLM-4358: Enable MCP access in plan mode" }],
+						}),
+					],
+				},
+			},
+			responses: [read.response, modelReply("I read LLM-4358 through the gateway while planning.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Read LLM-4358 through the gateway to inform the plan")
+			await waitForText(terminal, "I read LLM-4358 through the gateway while planning.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			requireRequestAdvertisingTool(fixture.fake.requests, "mcp")
+			expect(
+				fixture.mcp.hasEvent("tool_called", {
+					name: "getJiraIssue",
+					arguments: { issueIdOrKey: "LLM-4358" },
+				}),
+			).toBe(true)
+			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Enable MCP access in plan mode")
+			trace.step("read-only Jira gateway call executed without leaving plan mode")
 		},
 	)
 })
