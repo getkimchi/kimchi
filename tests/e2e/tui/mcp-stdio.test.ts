@@ -1,8 +1,9 @@
 import { expect, Key, test } from "@microsoft/tui-test"
-import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { mcpResourceResult, mcpToolResult } from "./support/mcp-fixture.js"
 import {
+	describeMcpTool,
 	directMcpCall,
 	emptyMcpCall,
 	gatewayMcpCall,
@@ -95,7 +96,7 @@ test("registers and calls a direct MCP tool on the first session", async ({ term
 	)
 })
 
-test("reads through an annotated MCP tool in plan mode while hiding writes and the gateway", async ({ terminal }) => {
+test("reads through an annotated direct MCP tool in plan mode while hiding writes", async ({ terminal }) => {
 	const read = directMcpCall("getJiraIssue", {})
 	await runMcpKimchiSession(
 		terminal,
@@ -138,11 +139,124 @@ test("reads through an annotated MCP tool in plan mode while hiding writes and t
 			const mcpTools = tools
 				.map((tool) => tool.function?.name)
 				.filter((name) => name === "mcp" || name?.startsWith("fixture_"))
-			expect(mcpTools).toEqual([read.modelToolName])
+			expect(mcpTools.sort()).toEqual(["mcp", read.modelToolName].sort())
 			expect(fixture.mcp.hasEvent("tool_called", { name: "getJiraIssue" })).toBe(true)
 			expect(fixture.mcp.hasEvent("tool_called", { name: "get_write_access" })).toBe(false)
 			expect(toolResultText(fixture.fake.requests, read)).toContain("Fixture issue: planning read succeeded")
-			trace.step("annotated MCP read executed; writable direct tool and gateway stayed hidden")
+			trace.step("annotated MCP read executed; gateway stayed available and writable direct tool stayed hidden")
+		},
+	)
+})
+
+test("reads Jira through the MCP gateway without leaving a resumed plan-mode session", async ({ terminal }) => {
+	const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
+	const resumedRead = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-gateway-read",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				behavior: {
+					catalogTools: [
+						{
+							name: "getJiraIssue",
+							description: "Read a Jira issue",
+							inputSchema: {
+								type: "object",
+								properties: { issueIdOrKey: { type: "string" } },
+								additionalProperties: false,
+							},
+							annotations: { readOnlyHint: true },
+						},
+					],
+					tools: [
+						mcpToolResult("getJiraIssue", {
+							content: [{ type: "text", text: "LLM-4358: Enable MCP access in plan mode" }],
+						}),
+					],
+				},
+			},
+			responses: [
+				read.response,
+				modelReply("I read LLM-4358 through the gateway while planning."),
+				resumedRead.response,
+				modelReply("The resumed plan-mode gateway read also succeeded."),
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Read LLM-4358 through the gateway to inform the plan")
+			await waitForText(terminal, "I read LLM-4358 through the gateway while planning.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			requireRequestAdvertisingTool(fixture.fake.requests, "mcp")
+			expect(
+				fixture.mcp.hasEvent("tool_called", {
+					name: "getJiraIssue",
+					arguments: { issueIdOrKey: "LLM-4358" },
+				}),
+			).toBe(true)
+			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Enable MCP access in plan mode")
+			trace.step("read-only Jira gateway call executed without leaving plan mode")
+
+			terminal.submit("/resume")
+			await waitForText(terminal, "Resume session", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, "Resumed session", { timeoutMs: STARTUP_TIMEOUT_MS })
+			terminal.submit("Read the issue again after resuming")
+			await waitForText(terminal, "The resumed plan-mode gateway read also succeeded.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			requireRequestAdvertisingTool(fixture.fake.requests.slice(-1), "mcp")
+			expect(toolResultText(fixture.fake.requests, resumedRead)).toContain("LLM-4358: Enable MCP access in plan mode")
+			expect(fixture.mcp.eventsOfType("tool_called").filter((event) => event.name === "getJiraIssue")).toHaveLength(2)
+			trace.step("late registration leaves the gateway visible and callable after TUI resume")
+		},
+	)
+})
+
+test("refuses a mutating gateway tool call in plan mode without downstream effects", async ({ terminal }) => {
+	const write = gatewayMcpCall("get_write_access", { level: "admin" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-gateway-write-blocked",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				behavior: {
+					catalogTools: [
+						{
+							name: "get_write_access",
+							description: "Change fixture permissions",
+							inputSchema: {
+								type: "object",
+								properties: { level: { type: "string" } },
+								additionalProperties: false,
+							},
+							annotations: { readOnlyHint: false },
+						},
+					],
+					tools: [
+						mcpToolResult("get_write_access", {
+							content: [{ type: "text", text: "MUTATION EXECUTED" }],
+						}),
+					],
+				},
+			},
+			responses: [write.response, modelReply("The mutation was blocked in plan mode.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Attempt the write even though plan mode is active")
+			await waitForText(terminal, "The mutation was blocked in plan mode.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			const result = toolResultText(fixture.fake.requests, write)
+			expect(result).toContain("This MCP gateway call is unavailable in plan mode.")
+			expect(result).not.toContain("MUTATION EXECUTED")
+			expect(fixture.mcp.hasEvent("tool_called", { name: "get_write_access" })).toBe(false)
+			trace.step("plan refusal reached the model and the mutating MCP tool was never called")
 		},
 	)
 })
@@ -273,6 +387,46 @@ test("reads an MCP resource through the gateway", async ({ terminal }) => {
 	)
 })
 
+test("reads an MCP resource through the gateway in plan mode", async ({ terminal }) => {
+	const resource = gatewayMcpCall("read_fixture_note")
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-resource",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				behavior: {
+					resources: [
+						mcpResourceResult("fixture://note", {
+							contents: [
+								{
+									uri: "fixture://note",
+									mimeType: "text/plain",
+									text: "fixture resource: kimchi-mcp-resource",
+								},
+							],
+						}),
+					],
+				},
+			},
+			responses: [resource.response, modelReply("The MCP resource was read without leaving plan mode.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Read the MCP fixture resource before planning")
+			await waitForText(terminal, "The MCP resource was read without leaving plan mode.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			const resourceEvent = await fixture.mcp.waitForEvent("resource_read", {
+				where: { uri: "fixture://note" },
+			})
+			expect(resourceEvent.uri).toBe("fixture://note")
+			expect(toolResultText(fixture.fake.requests, resource)).toContain("fixture resource: kimchi-mcp-resource")
+			trace.step("nested resource read crossed MCP and model boundaries in plan mode")
+		},
+	)
+})
+
 test("preserves MCP text and safely represents image content for a text-only model", async ({ terminal }) => {
 	const mixedContent = gatewayMcpCall("mixed_content")
 	await runMcpKimchiSession(
@@ -366,6 +520,52 @@ test("returns MCP server status for an empty gateway call", async ({ terminal })
 			})
 			expect(toolResultText(fixture.fake.requests, status)).toMatch(/MCP: 1\/1 servers/)
 			trace.step("empty gateway call preserved the MCP status contract")
+		},
+	)
+})
+
+test("does not expose configured secrets through status or describe in plan mode", async ({ terminal }) => {
+	const secret = "plan-mode-config-secret-sentinel"
+	const status = emptyMcpCall()
+	const describe = describeMcpTool("getJiraIssue")
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-metadata-secret-redaction",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				serverEnv: { MCP_TEST_API_KEY: secret },
+				behavior: {
+					catalogTools: [
+						{
+							name: "getJiraIssue",
+							description: "Read a Jira issue",
+							inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							annotations: { readOnlyHint: true },
+						},
+					],
+				},
+			},
+			responses: [
+				status.response,
+				describe.response,
+				modelReply("Metadata was returned without configuration secrets."),
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Inspect server status and the Jira tool schema before planning")
+			await waitForText(terminal, "Metadata was returned without configuration secrets.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			const statusText = toolResultText(fixture.fake.requests, status)
+			const describeText = toolResultText(fixture.fake.requests, describe)
+			expect(statusText).toContain("MCP:")
+			expect(describeText).toContain("fixture_getJiraIssue")
+			expect(statusText).not.toContain(secret)
+			expect(describeText).not.toContain(secret)
+			expect(JSON.stringify(fixture.fake.requests)).not.toContain(secret)
+			trace.step("status and describe reached the model without the config secret")
 		},
 	)
 })

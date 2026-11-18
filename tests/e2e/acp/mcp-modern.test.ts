@@ -171,4 +171,53 @@ describe("ACP integration — MCP 2026-07-28 (modern era)", () => {
 		},
 		STARTUP_TIMEOUT_MS,
 	)
+
+	it(
+		"reads an annotated tool from a private modern catalog in plan mode",
+		async () => {
+			const read = gatewayMcpCall(
+				"getJiraIssue",
+				{ issueIdOrKey: "LLM-4358" },
+				{ serverName: "acp-modern-private-plan" },
+			)
+			fixture = await startAcpMcpFixture({
+				artifactName: "acp-mcp-modern-private-plan",
+				extraArgs: ["--plan"],
+				mcp: {
+					serverName: "acp-modern-private-plan",
+					transport: "modern-http",
+					behavior: {
+						catalogTools: [
+							{
+								name: "getJiraIssue",
+								description: "Read a Jira issue from the private session catalog",
+								inputSchema: {
+									type: "object",
+									properties: { issueIdOrKey: { type: "string" } },
+									additionalProperties: false,
+								},
+								annotations: { readOnlyHint: true },
+							},
+						],
+						tools: [
+							mcpToolResult("getJiraIssue", {
+								content: [{ type: "text", text: "LLM-4358 from the private modern catalog" }],
+							}),
+						],
+					},
+				},
+				responses: [read.response, modelReply("The private catalog Jira read was executed in plan mode.")],
+			})
+
+			const sessionId = await newSession(fixture, fixture.workDir)
+			expect((await prompt(fixture, sessionId, "Read LLM-4358 from the private modern catalog")).stopReason).toBe(
+				"end_turn",
+			)
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "getJiraIssue", arguments: { issueIdOrKey: "LLM-4358" } },
+			})
+			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358 from the private modern catalog")
+		},
+		STARTUP_TIMEOUT_MS,
+	)
 })
