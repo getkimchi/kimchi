@@ -150,12 +150,14 @@ describe("updateModelsConfig", () => {
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-models-test-"))
 		modelsJsonPath = join(tempDir, "models.json")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempDir)
 		vi.stubGlobal("fetch", vi.fn())
 		resetCredentialStalenessForTests()
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
+		vi.unstubAllEnvs()
 		vi.restoreAllMocks()
 	})
 
@@ -201,6 +203,7 @@ describe("updateModelsConfig", () => {
 
 			await updateModelsConfig(modelsJsonPath, "fresh-key", { sleep: async () => {} })
 
+			resetCredentialStalenessForTests()
 			expect(isCredentialStale("dead-key", "kimchi-dev")).toBe(false)
 			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
 		})

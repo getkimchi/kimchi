@@ -59,6 +59,7 @@ import {
 	ModelRuntime,
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
+	readStoredCredential,
 	type SessionHeader,
 	SessionManager,
 	SettingsManager,
@@ -84,7 +85,12 @@ import {
 	writeApiKey,
 	writeRegion,
 } from "../../config.js"
-import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
+import {
+	clearCredentialStale,
+	isAuthRejectedMessage,
+	markCredentialStale,
+	prepareCredentialForLogin,
+} from "../../credential-staleness.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import {
@@ -144,7 +150,7 @@ import {
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
-import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "../../llm-gateway-error.js"
 import { collectDeprecationMarkers } from "../../model-deprecation.js"
 import { applyOrganizationHeader, updateModelsConfig } from "../../models.js"
@@ -847,8 +853,9 @@ export class KimchiAcpAgent implements Agent {
 		const persist: WriteApiKeyOptions = { region }
 		if (selfHostedEndpoints) persist.selfHostedEndpoints = selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
-		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		// A replacement invalidates earlier marks, but a repeated key retains its
+		// observed rejection through a cached refresh until authentication succeeds.
+		prepareCredentialForLogin(token, KIMCHI_PROVIDER_ID)
 
 		// Eagerly refresh the model cache so the subsequent newSession() call
 		// finds available models without another round-trip.
@@ -944,14 +951,17 @@ export class KimchiAcpAgent implements Agent {
 	 *    auth.json and would overwrite the OAuth entries at the next launch.
 	 * 2. Persist the signed-in region so endpoint derivation matches the
 	 *    tenant the user authenticated against.
-	 * 3. Refresh models metadata with the fresh bearer (cached fallback
+	 * 3. Store the org-scoped credential durably before clearing rejection
+	 *    state for the credential it replaces.
+	 * 4. Refresh models metadata with the fresh bearer (cached fallback
 	 *    allowed, like the browser-key flow) and stamp the org header on every
 	 *    Kimchi provider — the gateway routes SSO requests by
 	 *    X-CastAi-Organization-Id (covers the cached-fallback path too).
-	 * 4. Fan the org-scoped credential out to every Kimchi-managed provider in
+	 * 5. Fan the org-scoped credential out to every Kimchi-managed provider in
 	 *    models.json (sub-providers resolve auth per provider id).
-	 * 5. Clear stale marks — auth_status flips back — and refresh every OPEN
-	 *    session's ModelRuntime snapshot (same rationale as authenticate()).
+	 * 6. Refresh every OPEN session's ModelRuntime snapshot (same rationale as
+	 *    authenticate()). updateModelsConfig already clears stale marks only
+	 *    after an authenticated fetch; the settle tail must not clear a cached-401 fallback.
 	 */
 	private async settleSsoCredential(credential: OAuthCredentials, org: KimchiOrganization): Promise<void> {
 		clearApiKey()
@@ -962,17 +972,20 @@ export class KimchiAcpAgent implements Agent {
 			writeRegion(credentialRegion)
 		}
 		const modelsPath = join(this.agentDir, "models.json")
+		const authPath = join(this.agentDir, "auth.json")
+		const orgScopedCredential = { ...credential, orgId: org.id, orgName: org.name }
+		// A failed refresh with no cached models must not leave old stored
+		// credentials with their rejection removed. Store the replacement first.
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
+		// Retire anonymous/replaced-credential state before refreshing. Preserve
+		// this bearer's known rejection through a transient cached fallback.
+		prepareCredentialForLogin(credential.access, KIMCHI_PROVIDER_ID)
 		await updateModelsConfig(modelsPath, credential.access, {
 			allowCachedFallback: true,
 			organizationId: org.id,
 		})
 		applyOrganizationHeader(modelsPath, org.id)
-		await syncOAuthCredentialToKimchiProviders(join(this.agentDir, "auth.json"), modelsPath, {
-			...credential,
-			orgId: org.id,
-			orgName: org.name,
-		})
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
 		await Promise.all(
 			[...this.sessions.values()].map((record) =>
 				record.session.modelRuntime.refresh({ allowNetwork: false }).catch(() => {}),
@@ -1639,11 +1652,32 @@ export class KimchiAcpAgent implements Agent {
 				// end_turn — the client would show a silent empty reply.
 				if (entry.turn.lastAssistantError && !entry.turn.cancelled) {
 					const terminal = entry.turn.lastAssistantError
-					// Turn-time 401 = first proof this key is dead. Blame the
-					// provider, not a key: the failing call may use config apiKey
-					// or auth.json OAuth.
+					// Turn-time 401 = first proof this credential is dead. Keep
+					// the anonymous provider mark for this process, and persist the
+					// concrete stored/configured key when it can be attributed.
 					if (isAuthRejectedMessage(terminal.errorMessage)) {
-						markCredentialStale(undefined, entry.session.model?.provider ?? KIMCHI_PROVIDER_ID)
+						const modelProviderId = entry.session.model?.provider ?? KIMCHI_PROVIDER_ID
+						// Kimchi sub-providers share one credential with the base provider;
+						// auth_status also reads this canonical rejection key.
+						const providerId = isKimchiProvider(modelProviderId) ? KIMCHI_PROVIDER_ID : modelProviderId
+						markCredentialStale(undefined, providerId)
+						try {
+							const configuredApiKey = isKimchiProvider(providerId) ? loadKimchiConfig().apiKey : undefined
+							const stored = readStoredCredential(providerId, join(this.agentDir, "auth.json"))
+							const storedApiKey =
+								stored?.type === "oauth" ? stored.access : stored?.type === "api_key" ? stored.key : undefined
+							const ambiguous =
+								configuredApiKey !== undefined &&
+								storedApiKey !== undefined &&
+								configuredApiKey !== "" &&
+								storedApiKey !== "" &&
+								configuredApiKey !== storedApiKey
+							const rejectedApiKey = ambiguous ? undefined : configuredApiKey || storedApiKey
+							if (rejectedApiKey) markCredentialStale(rejectedApiKey, providerId)
+						} catch {
+							// Attribution is best-effort. The provider mark must remain
+							// non-throwing so failTurn always delivers the original error.
+						}
 					}
 					this.failTurn(entry, toTurnError(terminal))
 				} else {
@@ -2627,6 +2661,13 @@ export class KimchiAcpAgent implements Agent {
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
 				turn.refused = isRefusal(msg)
+				const authenticatedResponse = turn.refused || (msg.stopReason !== "error" && msg.stopReason !== "aborted")
+				// Any completed provider response, including a refusal, proves the
+				// credential authenticated. Local no-op turns emit no assistant message.
+				const providerId = entry.session.model?.provider
+				if (authenticatedResponse && providerId && isKimchiProvider(providerId)) {
+					clearCredentialStale(KIMCHI_PROVIDER_ID)
+				}
 				if (turn.refused) {
 					// A refusal is a turn outcome, not a failure: report it as
 					// stopReason "refusal" with the reason the user can act on. The
