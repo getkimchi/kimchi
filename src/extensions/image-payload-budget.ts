@@ -18,6 +18,7 @@ type ImageLocation = {
 	key: string | number
 	block: Record<string, unknown>
 	replacementKind: ImageReplacementKind
+	functionResponse?: Record<string, unknown>
 }
 
 function imageReplacementKind(block: Record<string, unknown>): ImageReplacementKind | null {
@@ -39,19 +40,28 @@ function collectImageLocations(
 	parent: Record<string, unknown> | unknown[],
 	key: string | number,
 	out: ImageLocation[],
+	functionResponse?: Record<string, unknown>,
 ): void {
 	if (!value || typeof value !== "object") return
 	if (Array.isArray(value)) {
-		for (let index = 0; index < value.length; index++) collectImageLocations(value[index], value, index, out)
+		for (let index = 0; index < value.length; index++) {
+			collectImageLocations(value[index], value, index, out, functionResponse)
+		}
 		return
 	}
 	const block = value as Record<string, unknown>
+	const containingFunctionResponse =
+		block.functionResponse && typeof block.functionResponse === "object"
+			? (block.functionResponse as Record<string, unknown>)
+			: functionResponse
 	const replacementKind = imageReplacementKind(block)
 	if (replacementKind) {
-		out.push({ parent, key, block, replacementKind })
+		out.push({ parent, key, block, replacementKind, functionResponse: containingFunctionResponse })
 		return
 	}
-	for (const [childKey, child] of Object.entries(block)) collectImageLocations(child, block, childKey, out)
+	for (const [childKey, child] of Object.entries(block)) {
+		collectImageLocations(child, block, childKey, out, containingFunctionResponse)
+	}
 }
 
 function replacementFor(image: ImageLocation): Record<string, string> {
@@ -62,6 +72,23 @@ function replacementFor(image: ImageLocation): Record<string, string> {
 function replace(location: ImageLocation, replacement: Record<string, string>): void {
 	if (Array.isArray(location.parent)) location.parent[Number(location.key)] = replacement
 	else location.parent[String(location.key)] = replacement
+}
+
+function omitFunctionResponseImage(image: ImageLocation): void {
+	const functionResponse = image.functionResponse
+	if (!functionResponse || !Array.isArray(image.parent)) return
+	// Gemini FunctionResponsePart has no text variant. Preserve the omission in
+	// the surrounding tool result and remove the now-unrepresentable media part.
+	const response =
+		functionResponse.response && typeof functionResponse.response === "object"
+			? (functionResponse.response as Record<string, unknown>)
+			: {}
+	const key = typeof response.error === "string" ? "error" : "output"
+	const previousText = typeof response[key] === "string" ? response[key] : ""
+	response[key] = previousText ? `${previousText}\n${IMAGE_PAYLOAD_REMOVED_NOTE}` : IMAGE_PAYLOAD_REMOVED_NOTE
+	functionResponse.response = response
+	const index = image.parent.indexOf(image.block)
+	if (index !== -1) image.parent.splice(index, 1)
 }
 
 /** Returns the number of oldest-first image blocks replaced to fit maxBytes. */
@@ -75,9 +102,15 @@ export function trimImagePayloadToBudget(payload: unknown, maxBytes = DEFAULT_MA
 	if (bytes <= maxBytes) return 0
 	let removed = 0
 	for (const image of images) {
-		const replacement = replacementFor(image)
-		bytes -= Buffer.byteLength(JSON.stringify(image.block)) - Buffer.byteLength(JSON.stringify(replacement))
-		replace(image, replacement)
+		if (image.functionResponse) {
+			omitFunctionResponseImage(image)
+			// Deleting a part also removes its separator and changes response text.
+			bytes = Buffer.byteLength(JSON.stringify(payload))
+		} else {
+			const replacement = replacementFor(image)
+			bytes -= Buffer.byteLength(JSON.stringify(image.block)) - Buffer.byteLength(JSON.stringify(replacement))
+			replace(image, replacement)
+		}
 		removed++
 		if (bytes <= maxBytes) break
 	}

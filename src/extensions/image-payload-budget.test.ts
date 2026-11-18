@@ -1,4 +1,5 @@
 import type { Message, Model } from "@earendil-works/pi-ai"
+import { convertMessages } from "@earendil-works/pi-ai/api/google-shared"
 import { stream } from "@earendil-works/pi-ai/api/openai-responses"
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript"
 import { describe, expect, it } from "vitest"
@@ -109,6 +110,42 @@ describe("trimImagePayloadToBudget", () => {
 		expect(trimImagePayloadToBudget(payload, 1000)).toBe(1)
 		expect(payload.content).toEqual([replacement])
 		expect(bodyBytes(payload)).toBeLessThanOrEqual(1000)
+	})
+})
+
+describe("Google request integration", () => {
+	it("removes Gemini 3 function-response media without creating invalid text parts", () => {
+		const messages: Message[] = [
+			{
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "render_diagram",
+				isError: false,
+				content: [{ type: "image", data: Buffer.alloc(4096, 1).toString("base64"), mimeType: "image/png" }],
+				timestamp: 1,
+			},
+		]
+		const model = {
+			id: "gemini-3-pro-preview",
+			name: "Gemini 3 Pro",
+			api: "google-generative-ai",
+			provider: "google",
+			baseUrl: "https://generativelanguage.googleapis.com",
+			maxTokens: 65536,
+			input: ["text", "image"],
+			output: ["text"],
+			reasoning: true,
+		} as unknown as Model<"google-generative-ai">
+		const contents = convertMessages(model, normalizeContext({ messages }))
+		const functionResponse = contents[0]?.parts?.[0]?.functionResponse
+		const payload = { contents }
+
+		expect(functionResponse?.parts).toHaveLength(1)
+		expect(bodyBytes(payload)).toBeGreaterThan(1000)
+		expect(trimImagePayloadToBudget(payload, 1000)).toBe(1)
+		expect(bodyBytes(payload)).toBeLessThanOrEqual(1000)
+		expect(functionResponse?.parts).toEqual([])
+		expect(functionResponse?.response).toEqual({ output: `(see attached image)\n${IMAGE_PAYLOAD_REMOVED_NOTE}` })
 	})
 })
 
