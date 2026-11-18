@@ -11,21 +11,51 @@
  * otherwise (canonical rank order).
  */
 
-import type { ThinkingLevelMap } from "@earendil-works/pi-ai"
+import type { ModelThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai"
+import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema"
 
-/** Canonical level order: `off < minimal < low < medium < high < xhigh < max`. */
-export const CANONICAL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const
+export const CANONICAL_THINKING_LEVELS = MODEL_THINKING_LEVELS
 
 const LEVEL_RANK = new Map<string, number>(CANONICAL_THINKING_LEVELS.map((level, rank) => [level, rank]))
+
+/**
+ * Display names for the canonical thinking levels, as sent in the ACP
+ * reasoning_effort option's options[].name — clients render agent-supplied
+ * names, so these are kimchi's labels to choose (only the configId and the
+ * value ids are load-bearing on the wire). "Extra high" for xhigh follows
+ * the ecosystem convention (Qwen Code's ACP adapter, term2); codex-acp
+ * capitalizes raw effort ids instead.
+ *
+ * Keyed by ModelThinkingLevel — the model-level union that includes "off",
+ * matching MODEL_THINKING_LEVELS — so a level added upstream fails to
+ * compile here until it gets a name, instead of silently rendering the id.
+ */
+const THINKING_LEVEL_NAMES: Record<ModelThinkingLevel, string> = {
+	off: "Off",
+	minimal: "Minimal",
+	low: "Low",
+	medium: "Medium",
+	high: "High",
+	xhigh: "Extra high",
+	max: "Max",
+}
+
+/** Display name for a thinking level, falling back to the level id when unknown. */
+export function thinkingLevelName(level: string): string {
+	// Widening is deliberate: selectable sets are typed string[] even though
+	// their members are canonical by construction.
+	const names = THINKING_LEVEL_NAMES as Record<string, string | undefined>
+	return names[level] ?? level
+}
 
 /**
  * Filter to known levels and sort by canonical rank. Defensive: the backend
  * guarantees order and completeness, but the flattening layer and models.json
  * cache round-trips shouldn't be trusted blindly.
  */
-export function normalizeThinkingLevels(levels: readonly string[]): string[] {
+export function normalizeThinkingLevels(levels: readonly string[]): ModelThinkingLevel[] {
 	return [...new Set(levels)]
-		.filter((level): level is string => LEVEL_RANK.has(level))
+		.filter((level): level is ModelThinkingLevel => LEVEL_RANK.has(level))
 		.sort((a, b) => {
 			const rankA = LEVEL_RANK.get(a) ?? -1
 			const rankB = LEVEL_RANK.get(b) ?? -1
@@ -33,7 +63,7 @@ export function normalizeThinkingLevels(levels: readonly string[]): string[] {
 		})
 }
 
-const EXPLICIT_ONLY_LEVELS = new Set<string>(["xhigh", "max"])
+const EXPLICIT_ONLY_LEVELS = new Set<ModelThinkingLevel>(["xhigh", "max"])
 
 export function deriveThinkingLevelMap(curatedLevels: readonly string[], base: ThinkingLevelMap): ThinkingLevelMap {
 	const curated = normalizeThinkingLevels(curatedLevels)

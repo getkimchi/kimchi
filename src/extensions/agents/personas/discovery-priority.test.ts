@@ -37,7 +37,7 @@ describe("discovery-priority: project agents override global", () => {
 		writeAgentMd(projectAgentsDir, "my-agent", "project version")
 
 		setProjectScopeTrusted(cwd, true)
-		const agents = loadCustomAgents(cwd)
+		const { agents } = loadCustomAgents(cwd)
 		expect(agents.has("my-agent")).toBe(true)
 		expect(agents.get("my-agent")?.description).toBe("project version")
 		expect(agents.get("my-agent")?.source).toBe("project")
@@ -50,7 +50,7 @@ describe("discovery-priority: project agents override global", () => {
 		const globalAgentsDir = join(FAKE_AGENT_DIR, "agents")
 		writeAgentMd(globalAgentsDir, "global-only-agent", "from global")
 
-		const agents = loadCustomAgents(cwd)
+		const { agents } = loadCustomAgents(cwd)
 		expect(agents.has("global-only-agent")).toBe(true)
 		expect(agents.get("global-only-agent")?.source).toBe("global")
 	})
@@ -61,7 +61,7 @@ describe("discovery-priority: project agents override global", () => {
 		writeAgentMd(projectAgentsDir, "path-check-agent", "kimchi path agent")
 
 		setProjectScopeTrusted(cwd, true)
-		const agents = loadCustomAgents(cwd)
+		const { agents } = loadCustomAgents(cwd)
 		const agent = agents.get("path-check-agent")
 		expect(agent).toBeDefined()
 		expect(agent?.source).toBe("project")

@@ -28,6 +28,7 @@ import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
+import { notifyUser } from "../../utils/notify-user.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
@@ -84,7 +85,7 @@ import {
 	registerAgents,
 	resolveType,
 } from "./personas/agent-types.js"
-import { loadCustomAgents } from "./personas/custom-agents.js"
+import { formatSkippedAgentFiles, loadCustomAgents, type SkippedAgentFile } from "./personas/custom-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
@@ -925,9 +926,23 @@ export default function (pi: ExtensionAPI) {
 		return new Text(`${theme.fg("error", "✗")} ${theme.bold(entry.data.message)}`, 0, 0)
 	})
 
+	let skippedAgentFiles: SkippedAgentFile[] = []
+	const reportedSkippedAgentFiles = new Set<string>()
+
 	const reloadCustomAgents = (cwd: string) => {
-		const userAgents = loadCustomAgents(cwd)
-		registerAgents(userAgents)
+		const { agents, skipped } = loadCustomAgents(cwd)
+		registerAgents(agents)
+		skippedAgentFiles = skipped
+	}
+
+	// Each skipped file is reported once per session, and again if its error changes.
+	const warnSkippedAgentFiles = (ctx: Pick<ExtensionContext, "hasUI" | "ui" | "cwd">) => {
+		const unreported = skippedAgentFiles.filter(
+			({ path, reason }) => !reportedSkippedAgentFiles.has(`${path}\n${reason}`),
+		)
+		if (unreported.length === 0) return
+		for (const { path, reason } of unreported) reportedSkippedAgentFiles.add(`${path}\n${reason}`)
+		notifyUser(ctx, formatSkippedAgentFiles(unreported, ctx.cwd), "warning")
 	}
 
 	const agentActivity = new Map<string, AgentActivity>()
@@ -1359,6 +1374,8 @@ export default function (pi: ExtensionAPI) {
 		// Sessions can live in a different project than the process cwd (ACP,
 		// worktrees) — pick up that project's agents and settings.
 		reloadProjectAgentState(ctx.cwd)
+		reportedSkippedAgentFiles.clear()
+		warnSkippedAgentFiles(ctx)
 	})
 
 	pi.on("session_before_switch", () => {
@@ -1866,6 +1883,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				widget.setUICtx(ctx.ui as UICtx)
 
 				reloadCustomAgents(ctx.cwd)
+				warnSkippedAgentFiles(ctx)
 
 				// Capture the session facts every post-run path needs BEFORE the
 				// first await: the race below can run for minutes, and a session
@@ -2687,6 +2705,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 	async function showAgentsMenu(ctx: ExtensionCommandContext) {
 		reloadCustomAgents(ctx.cwd)
+		warnSkippedAgentFiles(ctx)
 		const allNames = getAllTypes()
 
 		const options: string[] = []

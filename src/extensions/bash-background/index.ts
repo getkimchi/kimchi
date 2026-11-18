@@ -23,6 +23,10 @@
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { resolveBashProcessLimitSeconds } from "../../cli-args.js"
 import { SHELLS_STATUS_KEY } from "../../components/status-line.js"
+import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
+} from "../../shared/bash-background-settle.js"
 import { bashToolDescription } from "../bash-tool-guard.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
@@ -33,6 +37,7 @@ import { createReviewCoordinator } from "./review-coordinator.js"
 import { bashSessionKindFromContext } from "./session-policy.js"
 import { getSessionState, setSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
+import { findUnsettledHandoffs } from "./unsettled-handoffs.js"
 
 /**
  * Handoff override for e2e rigs (KIMCHI_E2E_BASH_HANDOFF_SECONDS), honored
@@ -52,6 +57,11 @@ function e2eHandoffSeconds(): number | undefined {
  */
 export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	let panel: CommandsPanel | undefined
+	// Handles seen in any cohort of a session during this process's life.
+	// Every session_start installs a fresh registry, so without the set a
+	// repeated start could misread an earlier cohort's still-running
+	// process as an unsettled handoff; cleared on session_shutdown.
+	const liveHandlesBySession = new Map<string, Set<string>>()
 	pi.registerCommand("processes", {
 		description: "Inspect this session's managed Bash commands and live output",
 		async handler(_args, ctx) {
@@ -81,6 +91,34 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event: SessionStartEvent, sessionCtx) => {
 		panel?.close()
 		panel = undefined
+		// Reconcile unsettled handoffs BEFORE installing fresh state: a
+		// harness that died mid-run left handoffs with no recorded exit, so
+		// settle each as failed through the same transcript record the live
+		// settle uses. Handles still running under this session are skipped
+		// (they are tracked across restarts below): a repeated session_start
+		// of an already-active session must not false-settle a live process
+		// the registry installed by an earlier restart never saw spawn.
+		const sessionId = sessionCtx.sessionManager.getSessionId()
+		const priorState = getSessionState(sessionId)
+		const liveHandles = liveHandlesBySession.get(sessionId) ?? new Set<string>()
+		if (priorState) {
+			for (const handle of priorState.registry.handles()) liveHandles.add(handle)
+			liveHandlesBySession.set(sessionId, liveHandles)
+		}
+		for (const call of findUnsettledHandoffs(sessionCtx.sessionManager.getEntries())) {
+			if (liveHandles.has(call.handle)) continue
+			const settle: BashBackgroundSettleData = {
+				toolCallId: call.toolCallId,
+				isError: true,
+				text: "",
+				// Terminal isError over exited: false is the contradiction
+				// normalizeUnheldHandoffResult strips on replay, so record the
+				// process as exited; the LOSS signal lives in exitCode: null +
+				// "harness restarted", not in liveness markers.
+				details: { handle: call.handle, exited: true, exitCode: null, reason: "harness restarted" },
+			}
+			pi.appendEntry(BASH_BACKGROUND_SETTLE_MESSAGE_TYPE, settle)
+		}
 		// Fresh state per session so handles from a previous session can't
 		// be reused, and so a resumed/forked session gets a clean process
 		// table and lifecycle coordination (per-command handoffs + bounded
@@ -93,7 +131,7 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		// control tool (wait release) and the completion guard share it.
 		const sessionKind = bashSessionKindFromContext(sessionCtx)
 		const state = { registry, coordinator, delivery, limitSeconds, sessionKind, cwd: sessionCtx.cwd }
-		setSessionState(sessionCtx.sessionManager.getSessionId(), state)
+		setSessionState(sessionId, state)
 
 		// Footer indicator: publish the running-command count while any run,
 		// cleared at zero (the footer hides the segment then). Reset first so a
@@ -139,6 +177,7 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 			// registry would let bashControlExtension's exit watcher emit an
 			// "exited on its own" notice into the closing session.
 			setSessionState(sessionId, undefined)
+			liveHandlesBySession.delete(sessionId)
 			state.coordinator.dispose()
 			await state.registry.shutdown()
 		}

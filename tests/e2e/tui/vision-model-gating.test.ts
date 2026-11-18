@@ -174,6 +174,8 @@ test("pasted image on a text-only model opens the switch dialog and submits on t
 		async (fixture, trace) => {
 			terminal.keyPress("v", { ctrl: true })
 			await waitForText(terminal, "📎 1 image", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			// The paste renders inline at the cursor, same as an image-file drop.
+			await waitForText(terminal, "[Image #1]", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			// The text-only hint rides the indicator (self-clearing on model switch),
 			// not a permanent chat warning.
 			await waitForText(terminal, "· ⚠ text-only", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
@@ -324,45 +326,52 @@ test("sending an edited draft without the image discards the cancelled attachmen
 	)
 })
 
-test("/model renders MODEL, PROVIDER, CONTEXT, VISION, and DESCRIPTION columns", async ({ terminal }) => {
-	await runKimchiSession(
-		terminal,
-		{
-			artifactName: "vision-gate-model-table",
-			models: MODELS,
-			initialModel: "text-basic",
-			responses: [],
-			seedHome: seedScenario(),
-		},
-		async (_fixture, trace) => {
-			terminal.submit("/model")
-			const view = () => viewText(terminal)
-			await waitForText(terminal, "MODEL", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "PROVIDER", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "CONTEXT", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "VISION", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "DESCRIPTION", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			trace.step("table header visible")
+// The fixture offers every model from both the `fake` and `kimchi-dev/openai` blocks, so the
+// picker labels each entry with its provider. The wider MODEL column needs a wider terminal to
+// show the full description.
+test.describe("model table", () => {
+	test.use({ ...TUI_TEST_CONFIG, columns: 160 })
 
-			// Humanized context + capability markers + endpoint descriptions.
-			const text = view()
-			expect(text).toContain("200k")
-			expect(text).toContain("64k")
-			expect(text).toContain("✓")
-			expect(text).toContain("✗")
-			expect(text).toContain("Comfortable vision model for everyday work.")
-			// The backend-owned auto row gets the registry's fallback description
-			// (the endpoint itself sends none).
-			expect(text).toContain("Picks the best model for your tasks automatically.")
-			trace.step("context, VISION, and DESCRIPTION values rendered")
+	test("/model renders MODEL, PROVIDER, CONTEXT, VISION, and DESCRIPTION columns", async ({ terminal }) => {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: "vision-gate-model-table",
+				models: MODELS,
+				initialModel: "text-basic",
+				responses: [],
+				seedHome: seedScenario(),
+			},
+			async (_fixture, trace) => {
+				terminal.submit("/model")
+				const view = () => viewText(terminal)
+				await waitForText(terminal, "MODEL", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				await waitForText(terminal, "PROVIDER", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				await waitForText(terminal, "CONTEXT", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				await waitForText(terminal, "VISION", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				await waitForText(terminal, "DESCRIPTION", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				trace.step("table header visible")
 
-			terminal.keyEscape()
-			await waitForText(terminal, "ask anything or type / for commands", {
-				timeoutMs: STARTUP_TIMEOUT_MS,
-				full: false,
-			})
-		},
-	)
+				// Humanized context + capability markers + endpoint descriptions.
+				const text = view()
+				expect(text).toContain("200k")
+				expect(text).toContain("64k")
+				expect(text).toContain("✓")
+				expect(text).toContain("✗")
+				expect(text).toContain("Comfortable vision model for everyday work.")
+				// The backend-owned auto row gets the registry's fallback description
+				// (the endpoint itself sends none).
+				expect(text).toContain("Picks the best model for your tasks automatically.")
+				trace.step("context, VISION, and DESCRIPTION values rendered")
+
+				terminal.keyEscape()
+				await waitForText(terminal, "ask anything or type / for commands", {
+					timeoutMs: STARTUP_TIMEOUT_MS,
+					full: false,
+				})
+			},
+		)
+	})
 })
 
 test("switching to a smaller vision model confirms compaction, compacts, then submits the image", async ({

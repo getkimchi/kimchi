@@ -20,6 +20,9 @@
  * 7. Cancellation is not an error — pressing Esc mid-stream writes NO
  *    kimchi_error_classification audit entry: an intentional stop must never
  *    be recorded (or restored) as a provider failure.
+ * 8. Rate-limit notice under the default config — a gateway 429 naming a
+ *    deadline past the wait bound is restated in local time, and the message
+ *    replacement pi applies in place afterwards must not throw.
  *
  * The vLLM error body contains all the sensitive tokens that must never
  * surface: 'vllm', '.svc.cluster.local', 'SSLContext', '0x' hex pointers,
@@ -58,6 +61,14 @@ const VLLM_ERROR_BODY = {
 const BAD_REQUEST_BODY = {
 	error: {
 		message: "BadRequestError: Hosted_vllmException - BadRequest, code 400",
+	},
+}
+
+const RATE_LIMIT_BODY = {
+	error: {
+		message: `kimi-k2.5 is rate limited until ${new Date(Date.now() + 30 * 60_000).toISOString()}`,
+		type: "rate_limit_error",
+		code: "429",
 	},
 }
 
@@ -111,6 +122,16 @@ test("retried vLLM error is suppressed, recovery response renders, no internals 
 
 			assertNoForbiddenLeaks(viewText(terminal))
 			trace.step("no forbidden vLLM internals in terminal")
+
+			// Regression gate: the exhaustion message must NOT appear while the
+			// retry loop is still recovering — the extension only renders it when
+			// retries are truly over. Before the agent-end-will-retry fix the
+			// extension rendered it on the FIRST agent_end, turning every
+			// transient provider hiccup into a terminal-looking failure.
+			const afterRecovery = fullText(terminal)
+			expect(afterRecovery).not.toContain("The model provider is temporarily unavailable")
+			expect(afterRecovery).not.toContain("retries were exhausted")
+			trace.step("no premature exhaustion message in scrollback after recovery")
 		},
 	)
 })
@@ -480,6 +501,44 @@ test("pressing Esc mid-stream aborts the request and writes no error classificat
 			// retries running out, not for cancellations.
 			expect(fullText(terminal)).not.toContain("The model provider is temporarily unavailable")
 			trace.step("no provider-error message rendered for the cancelled turn")
+		},
+	)
+})
+
+// ---------------------------------------------------------------------------
+// Test 8: Rate-limit notice under the default config
+// ---------------------------------------------------------------------------
+
+test("gateway 429 with a deadline past the wait bound renders the notice without throwing", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "suppress-retried-errors-rate-limit-default",
+			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
+			// Default config on purpose: retries on, no extension added to the run. The
+			// notice returns a replacement message, and pi applies it in place onto the
+			// object that carries the preserved raw error.
+			responses: [{ status: 429, body: RATE_LIMIT_BODY }],
+		},
+		async (_fixture, trace) => {
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+			trace.step("ready prompt visible")
+
+			terminal.submit("Say hello")
+			trace.step("submitted prompt")
+
+			await waitForText(terminal, /rate limited until/, { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("rate-limit notice rendered in place of the raw 429")
+
+			const text = fullText(terminal)
+			expect(text).toMatch(/not\s+retrying/)
+			expect(text).toMatch(/\/model/)
+			// The in-place replacement must not surface as an exception, and a
+			// refused deadline is not an exhausted retry loop.
+			expect(text).not.toMatch(/read only|readonly|Attempted to assign|TypeError/i)
+			expect(text).not.toContain("retries were exhausted")
+			trace.step("no in-place replacement error, no exhaustion message")
 		},
 	)
 })

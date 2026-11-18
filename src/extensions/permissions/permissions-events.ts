@@ -149,6 +149,9 @@ export interface PermissionToolDecisionPayload {
 	sourceDetail: PermissionDecisionSourceDetail
 	/** Permission mode the decision was made under (for prompts: when the prompt opened). */
 	permissionMode: PermissionMode
+	/** Present when the gated call was issued by another tool (e.g. a codemode
+	 *  script); the call id is `<parent>/<n>`. */
+	parentToolCallId?: string
 	/** Present only on `mode_flap` rejections: which mode changes dismissed the
 	 *  prompts of THIS tool call before the re-evaluation loop exhausted. Sources
 	 *  are recorded per dismissal (repeats included); telemetry serializes them

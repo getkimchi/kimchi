@@ -1,0 +1,95 @@
+/**
+ * Contract test keeping pi's per-tool guidelines OUT of kimchi's system
+ * prompt. Kimchi curates the `## Tool Guidelines` section by excluding the
+ * pi-shipped tool names (see PI_GUIDELINE_TOOL_NAMES in system-prompt.ts): every
+ * pi-authored bullet was reviewed and rejected — duplicated by kimchi's own
+ * prompt or the tool descriptions, or contradicting the implementation
+ * (bash's PI_* env claim: kimchi's background bash never injects them). Pi's
+ * codemode bullet recommends codemode for batching independent calls, which
+ * kimchi routes to direct parallel calls; kimchi's codemode rule lives in the
+ * Tool Selection line.
+ *
+ * This builds the prompt from pi's REAL tool definitions (read/bash/powershell/
+ * edit/write/grep/find/ls + the codemode extension registration), so it fails if:
+ *   - the exclusion set stops filtering and a pi bullet leaks into the prompt,
+ *   - pi renames the property so the flow this test exercises changes shape,
+ *   - pi adds, removes, or changes a guideline (the reviewed set is snapshotted).
+ */
+import {
+	createBashToolDefinition,
+	createCodemodeExtension,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createPowerShellToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
+} from "@earendil-works/pi-coding-agent"
+import { describe, expect, it } from "vitest"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
+
+const testEnv: EnvironmentInfo = {
+	os: "Linux",
+	rawPlatform: "linux",
+	cpuArchitecture: "x64",
+	shell: "/bin/bash",
+	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
+	username: "testuser",
+	homeDir: "/home/testuser",
+	cwd: "/home/testuser/projects/myapp",
+	documentsDir: "/home/testuser/projects/myapp/.kimchi/docs",
+	localDate: "2026-01-01",
+	isGitRepo: false,
+}
+
+describe("tool guidelines contract (pi guidelines stay curated out)", () => {
+	it("renders no pi-authored guideline; codemode steering comes from Tool Selection", () => {
+		// Real pi definitions, not mocks: the assertions must hold against
+		// whatever the pinned pi actually registers today.
+		const mock = createExtensionApi()
+		createCodemodeExtension()(mock.api)
+		const codemode = mock.getRegisteredTools().find((tool) => tool.name === "codemode")
+		if (!codemode) throw new Error("createCodemodeExtension did not register the codemode tool")
+
+		const tools = [
+			createReadToolDefinition(testEnv.cwd),
+			createBashToolDefinition(testEnv.cwd),
+			createPowerShellToolDefinition(testEnv.cwd),
+			createEditToolDefinition(testEnv.cwd),
+			createWriteToolDefinition(testEnv.cwd),
+			createGrepToolDefinition(testEnv.cwd),
+			createFindToolDefinition(testEnv.cwd),
+			createLsToolDefinition(testEnv.cwd),
+			codemode,
+		]
+		const piGuidelineBullets = [...new Set(tools.flatMap((tool) => tool.promptGuidelines ?? []))]
+		// Any upstream change to this set must be reviewed and curated, not
+		// silently swallowed by the name filter. PowerShell already shares
+		// bash's PI_* bullet, hence one set entry for both shell factories.
+		expect(piGuidelineBullets).toMatchInlineSnapshot(`
+			[
+			  "Use read to examine files instead of cat or sed.",
+			  "You can inspect PI_* environment variables for current model and session details.",
+			  "Use edit for precise changes (edits[].oldText must match exactly)",
+			  "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+			  "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
+			  "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+			  "Use write only for new files or complete rewrites.",
+			  "Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.",
+			]
+		`)
+
+		const prompt = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
+		for (const bullet of piGuidelineBullets) {
+			expect(prompt).not.toContain(bullet)
+		}
+		// The default pi tool set carries no kimchi-authored guidelines, so the
+		// section must be absent entirely.
+		expect(prompt).not.toContain("## Tool Guidelines")
+		// Kimchi's codemode rule lives in Tool Selection instead:
+		expect(prompt).toContain("Use `codemode` when intermediate output can be filtered before it reaches you")
+		expect(prompt).toContain("- Independent calls whose full results you need → issue them together in one turn.")
+	})
+})

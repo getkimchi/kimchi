@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { getDefaultExcludedEntities, REDACTION_CATEGORIES } from "./entity-tiers.js"
+import { getDefaultExcludedEntities, PERMANENT_ENGINE_EXCLUSIONS, REDACTION_CATEGORIES } from "./entity-tiers.js"
 import { parseLocalPolicy, parseManagedPolicy, type RedactionPolicy, resolveRedactionPolicy } from "./policy.js"
 
 const ACME_PATTERN = "(emp[-_ ]?id\\s*[:=]\\s*)(E\\d{6})"
@@ -10,7 +10,7 @@ describe("resolveRedactionPolicy — defaults", () => {
 		expect(resolved.engineExclusions).toEqual(getDefaultExcludedEntities())
 		expect(resolved.disabledEntities.size).toBe(0)
 		expect(resolved.customPatterns).toEqual([])
-		// GUID is not part of the configurable universe.
+		// GUID sits outside the configurable universe.
 		expect(resolved.categories.has("GUID")).toBe(false)
 	})
 
@@ -28,8 +28,8 @@ describe("resolveRedactionPolicy — entity and category states", () => {
 		expect(resolved.disabledEntities.has("EMAIL_ADDRESS")).toBe(true)
 	})
 
-	it("category OFF applies to every member (secrets: engine markers and anchored customs)", () => {
-		const resolved = resolveRedactionPolicy(undefined, { categories: { secrets: "off" } })
+	it("category OFF applies to every member (credentials: engine markers and anchored customs)", () => {
+		const resolved = resolveRedactionPolicy(undefined, { categories: { credentials: "off" } })
 		for (const name of ["GITHUB_TOKEN", "CASTAI_API_KEY", "GENERIC_SECRET", "SECRET_FIELD", "OPENAI_API_KEY"]) {
 			expect(resolved.engineExclusions, name).toContain(name)
 			expect(resolved.disabledEntities.has(name), name).toBe(true)
@@ -51,7 +51,7 @@ describe("resolveRedactionPolicy — entity and category states", () => {
 
 	it("entity ON against a category OFF re-enables just that entity", () => {
 		const resolved = resolveRedactionPolicy(undefined, {
-			categories: { secrets: "off" },
+			categories: { credentials: "off" },
 			entities: { CASTAI_API_KEY: "on" },
 		})
 		expect(resolved.disabledEntities.has("CASTAI_API_KEY")).toBe(false)
@@ -60,29 +60,68 @@ describe("resolveRedactionPolicy — entity and category states", () => {
 })
 
 describe("resolveRedactionPolicy — precedence (managed > local; entity > category)", () => {
-	const managed: RedactionPolicy = { categories: { network: "off" }, entities: { IP_ADDRESS: "on" } }
-	const local: RedactionPolicy = { categories: { network: "on" }, entities: { IP_ADDRESS: "off", MAC_ADDRESS: "on" } }
+	const managed: RedactionPolicy = { categories: { environment: "off" }, entities: { IP_ADDRESS: "on" } }
+	const local: RedactionPolicy = {
+		categories: { environment: "on" },
+		entities: { IP_ADDRESS: "off", MAC_ADDRESS: "on" },
+	}
 
 	it("managed entity beats managed category; managed category beats local entity/category", () => {
 		const resolved = resolveRedactionPolicy(managed, local)
 		// managed.entities.IP_ADDRESS=on wins over everything local.
 		expect(resolved.engineExclusions).not.toContain("IP_ADDRESS")
-		// managed.categories.network=off wins over local.entities.MAC_ADDRESS=on.
+		// managed.categories.environment=off wins over local.entities.MAC_ADDRESS=on.
 		expect(resolved.engineExclusions).toContain("MAC_ADDRESS")
 	})
 
 	it("local policy fills keys the managed policy left unset", () => {
-		const resolved = resolveRedactionPolicy({ categories: { network: "off" } }, { entities: { EMAIL_ADDRESS: "off" } })
+		const resolved = resolveRedactionPolicy(
+			{ categories: { environment: "off" } },
+			{ entities: { EMAIL_ADDRESS: "off" } },
+		)
 		expect(resolved.engineExclusions).toContain("IP_ADDRESS")
 		expect(resolved.engineExclusions).toContain("EMAIL_ADDRESS")
+	})
+})
+
+describe("parseLocalPolicy — legacy custom-definition labels", () => {
+	it.each([
+		["secrets", "credentials"],
+		["credentialed_urls", "credentials"],
+		["emails", "person_data"],
+		["phones", "person_data"],
+		["personal_details", "person_data"],
+		["local_paths", "environment"],
+		["network", "environment"],
+		["identity_documents", "identity_documents"],
+		["financial", "financial"],
+	])('%s normalizes to "%s" only on custom definitions', (legacy, current) => {
+		const policy = parseLocalPolicy({
+			customEntities: [{ name: "ACME_X", category: legacy, pattern: "E\\d{6}" }],
+		})
+		expect(policy.customEntities?.[0].category).toBe(current)
+	})
+
+	it("the label map does not reinterpret category policy keys as another category", () => {
+		expect(() => parseLocalPolicy({ categories: { secrets: "off" } })).toThrow(/unknown category/)
 	})
 })
 
 describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 	it("replaces the engine exclusions wholesale (pre-policy meaning)", () => {
 		const resolved = resolveRedactionPolicy(undefined, { legacyExcluded: ["GUID"] })
-		expect(resolved.engineExclusions).toEqual(["GUID"])
+		// The permanently-excluded names survive the replace.
+		expect(resolved.engineExclusions).toEqual([...PERMANENT_ENGINE_EXCLUSIONS].sort())
 		expect(resolved.disabledEntities).toEqual(new Set(["GUID"]))
+	})
+
+	it("permanently-excluded names survive the wholesale replace", () => {
+		const resolved = resolveRedactionPolicy(undefined, { legacyExcluded: ["DATE_TIME"] })
+		// The permanent set never becomes detectable — the legacy list may
+		// drop every other engine exclusion, but not these; a legacy entry
+		// naming a permanent member collapses into the union.
+		expect([...resolved.engineExclusions].sort()).toEqual([...PERMANENT_ENGINE_EXCLUSIONS].sort())
+		expect(resolved.disabledEntities).toEqual(new Set(["DATE_TIME"]))
 	})
 
 	it("managed states still apply per key on top of the legacy result", () => {
@@ -110,16 +149,32 @@ describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 		expect(Object.isFrozen(resolved.engineExclusions)).toBe(true)
 	})
 
+	it("UK_POSTCODE is free for a user-defined custom entity — the engine bare shape never fires", () => {
+		// A name in PERMANENT_ENGINE_EXCLUSIONS has no built-in coverage and
+		// no collision rejection: a user re-defining it gets their own custom
+		// pass only — the engine detector stays excluded on every path.
+		const resolved = resolveRedactionPolicy(undefined, {
+			customEntities: [{ name: "UK_POSTCODE", category: "person_data", pattern: "\\bGIR\\s?0AA\\b" }],
+		})
+		expect(resolved.customPatterns.map((c) => c.name)).toEqual(["UK_POSTCODE"])
+		expect(resolved.engineExclusions).toContain("UK_POSTCODE")
+		expect(resolved.disabledEntities.has("UK_POSTCODE")).toBe(false)
+	})
+
 	it("an anchor-required entity ON cannot un-exclude its bare detector even against a legacy list", () => {
-		// The legacy list excluded URL at the engine. A managed entities.URL=on
-		// must keep it excluded — anchor_required ON means "anchored patterns
-		// run", never the bare shape; only the legacy list itself re-enables it.
+		// The legacy list excluded TELEGRAM_BOT_TOKEN at the engine. A managed
+		// entities.TELEGRAM_BOT_TOKEN=on must keep it excluded — anchor_required
+		// ON means "anchored patterns run", never the bare shape; only the
+		// legacy list itself re-enables it. Same for OKTA_TOKEN, re-tiered from
+		// bare_shape: explicit ON must not un-exclude its 42-char base62 blob.
 		const anchoredOn = resolveRedactionPolicy(
-			{ entities: { URL: "on", GENERIC_SECRET: "off" } },
-			{ legacyExcluded: ["GUID", "URL", "GENERIC_SECRET"] },
+			{ entities: { TELEGRAM_BOT_TOKEN: "on", OKTA_TOKEN: "on", GENERIC_SECRET: "off" } },
+			{ legacyExcluded: ["GUID", "TELEGRAM_BOT_TOKEN", "OKTA_TOKEN", "GENERIC_SECRET"] },
 		)
-		expect(anchoredOn.engineExclusions).toContain("URL")
-		expect(anchoredOn.disabledEntities.has("URL")).toBe(false)
+		expect(anchoredOn.engineExclusions).toContain("TELEGRAM_BOT_TOKEN")
+		expect(anchoredOn.engineExclusions).toContain("OKTA_TOKEN")
+		expect(anchoredOn.disabledEntities.has("TELEGRAM_BOT_TOKEN")).toBe(false)
+		expect(anchoredOn.disabledEntities.has("OKTA_TOKEN")).toBe(false)
 		// OFF removes GENERIC_SECRET's anchored coverage on top of the legacy list.
 		expect(anchoredOn.disabledEntities.has("GENERIC_SECRET")).toBe(true)
 	})
@@ -182,8 +237,11 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 		expect(() => parseLocalPolicy({ entities: { NOPE: "off" } })).toThrow(/unknown entity/)
 	})
 
-	it("GUID is not configurable", () => {
-		expect(() => parseLocalPolicy({ entities: { GUID: "on" } })).toThrow(/not configurable/)
+	it("removed names are not configurable", () => {
+		// A PERMANENT_ENGINE_EXCLUSIONS name is free for user-defined custom
+		// entities, and a bare toggle referencing it fails as an unknown
+		// entity.
+		expect(() => parseLocalPolicy({ entities: { GUID: "on" } })).toThrow(/unknown entity/)
 	})
 
 	it("entity states must be on/off", () => {
@@ -221,7 +279,14 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 		expect(policy.customEntities?.[0].name).toBe("ACME_X")
 	})
 
-	it("secretGroup beyond the actual group count throws", () => {
+	it("normalizes a local secretGroup of zero to whole-match replacement", () => {
+		const policy = parseLocalPolicy({
+			customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E\\d{6}", secretGroup: 0 }],
+		})
+		expect(policy.customEntities?.[0].secretGroup).toBeUndefined()
+	})
+
+	it("secretGroup beyond the actual group count fails", () => {
 		expect(() =>
 			parseLocalPolicy({
 				customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup: 2 }],
@@ -231,6 +296,28 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 			customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup: 1 }],
 		})
 		expect(ok.customEntities?.[0].secretGroup).toBe(1)
+
+		let dropped: string[] = []
+		const managed = parseManagedPolicy(
+			{ customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup: 2 }] },
+			(reasons) => {
+				dropped = reasons
+			},
+		)
+		expect(managed).toBeUndefined()
+		expect(dropped.join(" ")).toMatch(/capture-group/)
+	})
+
+	it.each([-1, 1.5])("rejects invalid secretGroup %s in local and managed policies", (secretGroup) => {
+		const customEntities = [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup }]
+		expect(() => parseLocalPolicy({ customEntities })).toThrow(/positive integer/)
+
+		let dropped: string[] = []
+		const managed = parseManagedPolicy({ customEntities }, (reasons) => {
+			dropped = reasons
+		})
+		expect(managed).toBeUndefined()
+		expect(dropped.join(" ")).toMatch(/positive integer/)
 	})
 
 	it("safe alternation in an unquantified group passes", () => {
@@ -289,10 +376,10 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 describe("parseManagedPolicy — tolerant validation (fail-open with one log)", () => {
 	it("accepts enum-style wire values", () => {
 		const policy = parseManagedPolicy({
-			categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+			categories: { environment: "KIMCHI_REDACTION_STATE_OFF" },
 			entities: { PHONE_NUMBER: "KIMCHI_REDACTION_STATE_ON" },
 		})
-		expect(policy?.categories).toEqual({ network: "off" })
+		expect(policy?.categories).toEqual({ environment: "off" })
 		expect(policy?.entities).toEqual({ PHONE_NUMBER: "on" })
 	})
 
@@ -300,22 +387,31 @@ describe("parseManagedPolicy — tolerant validation (fail-open with one log)", 
 		let dropped: string[] = []
 		const policy = parseManagedPolicy(
 			{
-				categories: { network: "off", future_category: "off" },
+				categories: { environment: "off", future_category: "off" },
 				entities: { EMAIL_ADDRESS: "off", FUTURE_ENTITY: "off" },
 			},
 			(reasons) => {
 				dropped = reasons
 			},
 		)
-		expect(policy?.categories).toEqual({ network: "off" })
+		expect(policy?.categories).toEqual({ environment: "off" })
 		expect(policy?.entities).toEqual({ EMAIL_ADDRESS: "off" })
 		expect(dropped.join(" ")).toMatch(/future_category/)
 		expect(dropped.join(" ")).toMatch(/FUTURE_ENTITY/)
 	})
 
+	it("drops a retired known category label, rather than remapping its state", () => {
+		const policy = parseManagedPolicy({
+			categories: { secrets: "off" },
+			entities: { EMAIL_ADDRESS: "off" },
+		})
+		expect(policy?.categories).toEqual({})
+		expect(policy?.entities).toEqual({ EMAIL_ADDRESS: "off" })
+	})
+
 	it("drops UNSPECIFIED and invalid custom entities", () => {
 		const policy = parseManagedPolicy({
-			categories: { network: "KIMCHI_REDACTION_STATE_UNSPECIFIED" },
+			categories: { environment: "KIMCHI_REDACTION_STATE_UNSPECIFIED" },
 			customEntities: [{ name: "EMAIL_ADDRESS", category: "emails", pattern: "x" }],
 		})
 		expect(policy).toBeUndefined()

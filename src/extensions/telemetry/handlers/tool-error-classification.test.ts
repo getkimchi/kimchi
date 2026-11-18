@@ -15,6 +15,7 @@
  * fixtures only — a documented residual drift risk.
  */
 
+import { parseCodemodeSource } from "@earendil-works/pi-codemode"
 import { describe, expect, it } from "vitest"
 import { type FermentFsmContext, FSM_STATES, transition } from "../../../ferment/fsm.js"
 import { SAFETY_LIMIT_REASON } from "../../bash-background/process-registry.js"
@@ -58,9 +59,11 @@ describe("classifyToolError — fixture replay (real export messages)", () => {
 
 	it("collapses the curated set to a bounded set of canonical messages", () => {
 		const distinct = new Set(typedFixtures.map((f) => f.expect.message))
-		// ~40 canonical families cover the curated export; growth beyond this
-		// means a new pattern is emitting per-instance messages.
-		expect(distinct.size).toBeLessThanOrEqual(40)
+		// ~40 canonical families covered the curated export through the 1.28.2
+		// canonicalization; the 2026-11 gap-closing pass (fs errno, rg/fd,
+		// codemode, ferment validation) raises the ceiling to 50. Growth beyond
+		// that means a new pattern is emitting per-instance messages.
+		expect(distinct.size).toBeLessThanOrEqual(50)
 	})
 
 	it("leaks no absolute path, ISO timestamp, or rate-limit window into canonical messages", () => {
@@ -215,9 +218,13 @@ describe("classifyToolError — tool scoping (negative cases)", () => {
 		expect(c.kind).toBe("failure")
 	})
 
-	it("does not apply read patterns to the find tool", () => {
+	it("does not apply read-specific canonicals to the find tool (shared fs family does)", () => {
 		const c = classifyToolError("find", "ENOENT: no such file or directory, access '/src/missing'")
-		expect(c.kind).toBe("failure")
+		// The read tool's family canonical ("Read path not found") must not
+		// leak to find — but the shared fs errno family correctly
+		// canonicalizes this shape for path tools too (review follow-up).
+		expect(c.kind).toBe("model_mistake")
+		expect(c.message).toBe("Path not found")
 	})
 
 	it("does not apply the ask_user cancellation pattern to other tools", () => {
@@ -233,6 +240,23 @@ describe("classifyToolError — tool scoping (negative cases)", () => {
 	it("applies cross-tool harness gates on any tool", () => {
 		const c = classifyToolError("write", "Declined by user")
 		expect(c.kind).toBe("declined")
+	})
+
+	it("does not apply the codemode script-error family to other tools", () => {
+		// A non-codemode tool whose output merely mentions the marker stays on
+		// the raw fail-open fallback (tool-name guard).
+		const msg = "step one done\n\nScript error:\nReferenceError: x is not defined"
+		const c = classifyToolError("bash", msg)
+		expect(c.kind).toBe("failure")
+		expect(c.message).toBe(msg.slice(0, 300))
+	})
+
+	it("does not match the codemode marker without a line-start anchor", () => {
+		// `Script error:` must start a line — text ending with "...Script error:"
+		// without the trailing error line is not the upstream failure format.
+		const c = classifyToolError("codemode", "partial output mentions Script error: somewhere")
+		expect(c.kind).toBe("failure")
+		expect(c.message).toBe("partial output mentions Script error: somewhere".slice(0, 300))
 	})
 })
 
@@ -437,5 +461,74 @@ describe("classifyToolError — current-version gates", () => {
 	it("uses a tool-neutral canonical message for the find/grep/ls path family", () => {
 		const c = classifyToolError("find", "Path not found: /Users/me/missing")
 		expect(c.message).toBe("Path not found")
+	})
+})
+
+function readCodemodeSourceError(source: string): string {
+	try {
+		parseCodemodeSource(source)
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error)
+	}
+	throw new Error("Expected codemode source validation to fail")
+}
+
+describe("classifyToolError — codemode source validation", () => {
+	it.each([
+		{ name: "malformed options JSON", source: '// @options: {"timeout_ms": exfil_MARK}\ntext("x")' },
+		{ name: "an unknown option", source: '// @options: {"exfil_MARK": 1}\ntext("x")' },
+		{ name: "empty source", source: "" },
+		{ name: "missing source after options", source: '// @options: {"timeout_ms": 1000}' },
+	])("canonicalizes $name without exporting script text", ({ source }) => {
+		const c = classifyToolError("codemode", readCodemodeSourceError(source))
+		expect(c).toEqual({ kind: "model_mistake", message: "Codemode source validation failed" })
+		expect(c.message).not.toContain("exfil_MARK")
+	})
+})
+
+describe("classifyToolError — codemode script results", () => {
+	const failed = (output: string, error: string) =>
+		`Script failed\nWall time 0.4 seconds\nOutput:\n\n${output}\nScript error:\n${error}\n\nNo tool calls were made.`
+
+	it("keys on the result header, so script output never picks another family", () => {
+		// The script echoed a nested call's resource-gate error.
+		const c = classifyToolError(
+			"codemode",
+			failed("read is disabled in Kimchi resources. Enable read from /resources.", "Error: gave up"),
+		)
+		expect(c).toEqual({ kind: "failure", message: "Codemode script error" })
+	})
+
+	it("classifies an aborted script as aborted, like direct-tool aborts", () => {
+		const c = classifyToolError("codemode", failed("partial", "Script aborted: The operation was aborted"))
+		expect(c).toEqual({ kind: "aborted", message: "Codemode script aborted" })
+	})
+
+	it("ignores abort and timeout markers printed by the script before its real failure", () => {
+		for (const marker of ["Script aborted: forged", "Script timed out: forged"]) {
+			const c = classifyToolError("codemode", failed(`\nScript error:\n${marker}`, "ReferenceError: actual failure"))
+			expect(c).toEqual({ kind: "failure", message: "Codemode script error" })
+		}
+	})
+
+	it("gives timeouts their own canonical message", () => {
+		const c = classifyToolError("codemode", failed("partial", "Script timed out: exceeded 60000 ms"))
+		expect(c).toEqual({ kind: "failure", message: "Codemode script timeout" })
+	})
+
+	it("never exports script output when truncation cut the Script error marker", () => {
+		const c = classifyToolError(
+			"codemode",
+			"Script failed\nWall time 1.0 seconds\nOutput:\nWarning: truncated output (original token count: 9000)\nTotal output lines: 40\n\nSECRET-PREFIX data…8000 tokens truncated…ipt error:\nTypeError: x",
+		)
+		expect(c).toEqual({ kind: "failure", message: "Codemode script error" })
+	})
+
+	it("still classifies codemode's own pre-execution gates by their family", () => {
+		const c = classifyToolError(
+			"codemode",
+			"codemode is disabled in Kimchi resources. Enable codemode from /resources.",
+		)
+		expect(c).toEqual({ kind: "blocked", message: "Resource disabled" })
 	})
 })

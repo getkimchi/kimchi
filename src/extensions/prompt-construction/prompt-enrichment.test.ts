@@ -3,6 +3,7 @@ import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, loadSkillsFromDir, type ToolInfo } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
@@ -239,6 +240,42 @@ describe("stripEmptyToolCalls", () => {
 })
 
 describe("prompt enrichment tool visibility", () => {
+	it("renders kimchi tool guidelines and drops them when the tool becomes inactive; pi tool guidelines stay filtered", async () => {
+		const mock = createExtensionApi()
+		mock.api.getFlag = vi.fn(() => false)
+		mock.api.registerTool({
+			name: "update_ferment_v2",
+			label: "Update Ferment V2",
+			description: "Submit the objective",
+			parameters: Type.Object({}),
+			promptGuidelines: ["Claim complete only after evidence."],
+			execute: async () => ({ content: [], details: undefined }),
+		})
+		mock.api.registerTool({
+			name: "codemode",
+			label: "Codemode",
+			description: "Run JavaScript",
+			parameters: Type.Object({}),
+			promptGuidelines: ["Use codemode to batch independent tool calls."],
+			execute: async () => ({ content: [], details: undefined }),
+		})
+		mock.api.setActiveTools(["update_ferment_v2", "codemode"])
+		promptEnrichmentExtension(() => [])(mock.api)
+		const handler = mock.getHandler<unknown, { systemPrompt: string }>("before_agent_start")
+		const ctx = createContext({ hasUI: false })
+		const active = await handler({}, ctx)
+		expect(active?.systemPrompt).toContain("- Claim complete only after evidence.")
+		expect(active?.systemPrompt).not.toContain("Use codemode to batch independent tool calls.")
+		expect(active?.systemPrompt).toContain(
+			"Use `codemode` when intermediate output can be filtered before it reaches you",
+		)
+
+		mock.api.setActiveTools([])
+		const inactive = await handler({}, ctx)
+		expect(inactive?.systemPrompt).not.toContain("- Claim complete only after evidence.")
+		expect(inactive?.systemPrompt).not.toContain("Use `codemode` when")
+	})
+
 	it("omits hidden tools from the rendered available tools section", async () => {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 		const tools = [

@@ -434,6 +434,22 @@ function collectRecords(fixture: { fake: { requests: Array<{ url: string; body: 
 	return out
 }
 
+/** Match redaction telemetry emitted during one of the bounded flush windows. */
+async function waitForRecords(
+	fixture: Parameters<typeof collectRecords>[0],
+	predicate: (record: ReturnType<typeof collectRecords>[number]) => boolean,
+	timeoutMs = 6_000,
+): Promise<ReturnType<typeof collectRecords>> {
+	const deadline = Date.now() + timeoutMs
+	do {
+		const matches = collectRecords(fixture).filter(predicate)
+		if (matches.length > 0) return matches
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	} while (Date.now() < deadline)
+	const eventNames = collectRecords(fixture).map((record) => record.eventName)
+	throw new Error(`Timed out waiting for matching OTLP records; received: ${JSON.stringify(eventNames)}`)
+}
+
 test("emits per-entity pii_redaction.redacted + session_affected OTLP records when redaction fires", async ({
 	terminal,
 }) => {
@@ -589,6 +605,64 @@ test("emits no pii_redaction OTLP records when the resource is off", async ({ te
 			await new Promise((resolve) => setTimeout(resolve, 6_000))
 			expect(collectRecords(fixture).map((r) => r.eventName)).not.toContain("pii_redaction.redacted")
 			expect(collectRecords(fixture).map((r) => r.eventName)).not.toContain("pii_redaction.session_affected")
+		},
+	)
+})
+
+test("legacy custom entity labels normalize and respect category OFF", async ({ terminal }) => {
+	const demoIdentifier = ["K1", "DEMO_123456"].join("_")
+	const settingsPathForHome = (home: string) => join(home, ".config", "kimchi", "harness", "settings.json")
+
+	await runKimchiSession(
+		terminal,
+		withRedactionEnabled({
+			artifactName: "pii-redaction-legacy-custom-label",
+			responses: [{ stream: ["Normalized"] }, { stream: ["Disabled"] }],
+			seedHome(home, _cwd, fakeBaseUrl) {
+				const settings = JSON.parse(readFileSync(settingsPathForHome(home), "utf8")) as Record<string, unknown>
+				settings.redaction = {
+					renderMode: "markers",
+					customEntities: [{ name: "K1_DEMO", category: "secrets", pattern: "K1_DEMO_[0-9]{6}" }],
+				}
+				writeFileSync(settingsPathForHome(home), `${JSON.stringify(settings, null, "\t")}\n`)
+				const configPath = join(home, ".config", "kimchi", "config.json")
+				const config = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>
+				config.telemetry = { enabled: true, endpoint: `${fakeBaseUrl}/logs`, metricsEndpoint: `${fakeBaseUrl}/metrics` }
+				writeFileSync(configPath, `${JSON.stringify(config, null, "\t")}\n`)
+			},
+		}),
+		async (fixture) => {
+			terminal.submit(demoIdentifier)
+			await expect(terminal.getByText("Normalized", { full: true })).toBeVisible()
+
+			const firstText = lastUserMessage(firstChatRequest(fixture) as { body: unknown })
+			expect(firstText).toContain("[REDACTED-K1_DEMO]")
+			expect(firstText).not.toContain(demoIdentifier)
+			const normalized = await waitForRecords(
+				fixture,
+				(record) => record.eventName === "pii_redaction.redacted" && record.attrs.entity_type === "K1_DEMO",
+			)
+			expect(normalized).toHaveLength(1)
+			expect(normalized[0].attrs.category).toBe("credentials")
+
+			const settingsPath = settingsPathForHome(fixture.homeDir)
+			const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>
+			;(settings.redaction as Record<string, unknown>).categories = { credentials: "off" }
+			writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`)
+
+			terminal.submit(demoIdentifier)
+			await expect(terminal.getByText("Disabled", { full: true })).toBeVisible()
+
+			const chats = fixture.fake.requests.filter((r) => r.url.startsWith("/openai/v1/chat/completions"))
+			expect(chats.length).toBeGreaterThanOrEqual(2)
+			const secondText = lastUserMessage(chats[chats.length - 1] as { body: unknown })
+			expect(secondText).toContain(demoIdentifier)
+			expect(secondText).not.toContain("[REDACTED-K1_DEMO]")
+			await waitForTurnToSettle(fixture.fake.requests)
+			const afterOff = collectRecords(fixture).filter(
+				(record) => record.eventName === "pii_redaction.redacted" && record.attrs.entity_type === "K1_DEMO",
+			)
+			expect(afterOff).toHaveLength(1)
 		},
 	)
 })

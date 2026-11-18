@@ -20,7 +20,9 @@ permissions:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest is rolling to 26.04 (github/runner-images), and the
+    # pinned Playwright 1.59.1 only supports up to 24.04. Unpin on Playwright >= 1.61.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:

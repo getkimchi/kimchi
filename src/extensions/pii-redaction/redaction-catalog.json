@@ -1,0 +1,1423 @@
+[
+	{
+		"entity": "ABA_ROUTING_NUMBER",
+		"tier": "bare_shape",
+		"category": "financial",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "ADYEN_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ALGOLIA_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ALIBABA_CLOUD_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ANSIBLE_VAULT_PASSWORD",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ANTHROPIC_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ASANA_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AU_ABN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "AU_ACN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "AU_MEDICARE",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "AU_TFN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "AUTH0_CLIENT_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AUTH0_MANAGEMENT_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AWS_ACCESS_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AWS_MWS_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AWS_SECRET_KEY",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AWS_SESSION_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AZURE_AD_CLIENT_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AZURE_CONNECTION_STRING",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AZURE_DEVOPS_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AZURE_FUNCTION_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "AZURE_STORAGE_KEY",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "BASIC_AUTH",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "BEARER_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "BITBUCKET_APP_PASSWORD",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "BITBUCKET_CLIENT_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "BRAINTREE_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "BUILDKITE_AGENT_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "BUILDKITE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CASTAI_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CIRCLECI_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CLERK_SECRET_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CLOUDFLARE_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CLOUDFLARE_CA_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "COCKROACHDB_CONNECTION",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CODECOV_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "COHERE_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CONSUL_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CONTENTFUL_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CREDENTIAL_FILE",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CREDIT_CARD",
+		"tier": "checksum",
+		"category": "financial",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "CRYPTO",
+		"tier": "bare_shape",
+		"category": "financial",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "DATABASE_CONNECTION_STRING",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DATADOG_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DE_PASSPORT",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "DE_TAX_ID",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "DEEPSEEK_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DIGITALOCEAN_SPACES_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DIGITALOCEAN_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DISCORD_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DISCORD_WEBHOOK",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DOCKER_HUB_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DOCKER_REGISTRY_AUTH",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "DRONE_CI_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "EMAIL_ADDRESS",
+		"tier": "bare_shape",
+		"category": "person_data",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ES_NIE",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "ES_NIF",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "FACEBOOK_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "FACEBOOK_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "FASTLY_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "FI_PERSONAL_IDENTITY_CODE",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "FIREBASE_AUTH_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "FIREBASE_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "FLY_IO_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GCP_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GCP_OAUTH_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GCP_SERVICE_ACCOUNT",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GENERIC_SECRET",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GITEA_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GITHUB_ACTIONS_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GITHUB_APP_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GITHUB_FINE_GRAINED_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GITHUB_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GITLAB_PIPELINE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GITLAB_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GOOGLE_AI_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GRAFANA_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "GROQ_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "HELM_REPO_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "HEROKU_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "HUBSPOT_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "HUGGINGFACE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "IBAN_CODE",
+		"tier": "checksum",
+		"category": "financial",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "IBM_CLOUD_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "IBM_COS_HMAC",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "IN_AADHAAR",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "IN_PAN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "IN_PASSPORT",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "IN_VEHICLE_REGISTRATION",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "IN_VOTER",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "INSTAGRAM_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "INTERCOM_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "IP_ADDRESS",
+		"tier": "bare_shape",
+		"category": "environment",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "IT_DRIVER_LICENSE",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "IT_FISCAL_CODE",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "IT_IDENTITY_CARD",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "IT_PASSPORT",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "IT_VAT_CODE",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "JENKINS_API_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "JENKINS_CRUMB",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "JIRA_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "JWT_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "KEYCLOAK_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "KR_PASSPORT",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "KR_RRN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "KUBERNETES_SERVICE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "LAUNCHDARKLY_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "LINEAR_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "LINKEDIN_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "LINODE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "LOCAL_PATH",
+		"tier": "anchored",
+		"category": "environment",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "LOCATION",
+		"tier": "bare_shape",
+		"category": "person_data",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "MAC_ADDRESS",
+		"tier": "bare_shape",
+		"category": "environment",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "MAILCHIMP_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "MAILGUN_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "MEDICAL_LICENSE",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "MISTRAL_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "NEON_DB_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "NETLIFY_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "NEW_RELIC_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "NG_NIN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "NOTION_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "NPM_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "OAUTH_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "OKTA_TOKEN",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "OPENAI_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "OPENAI_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ORACLE_CLOUD_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ORGANIZATION",
+		"tier": "bare_shape",
+		"category": "person_data",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "PAGERDUTY_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PAYPAL_BRAINTREE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PAYPAL_CLIENT_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PERSON",
+		"tier": "bare_shape",
+		"category": "person_data",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "PHONE_NUMBER",
+		"tier": "bare_shape",
+		"category": "person_data",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "PINECONE_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PINTEREST_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PL_PESEL",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "PLAID_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PLANETSCALE_PASSWORD",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PLANETSCALE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "POSTMARK_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PRIVATE_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PROPELAUTH_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PULUMI_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "PYPI_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "RAILWAY_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "REDIS_URL_WITH_PASSWORD",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "RENDER_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "REPLICATE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "RUBYGEMS_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SALESFORCE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SE_PERSONNUMMER",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "SECRET_FIELD",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SEGMENT_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SENDGRID_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SENTRY_AUTH_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SENTRY_DSN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SG_NRIC_FIN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "SG_UEN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "SHOPIFY_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SLACK_APP_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SLACK_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SLACK_WEBHOOK",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SONARQUBE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SQUARE_ACCESS_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SQUARE_OAUTH_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "STRIPE_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "STRIPE_WEBHOOK_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "STYTCH_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SUPABASE_KEY",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SUPABASE_SERVICE_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "SURGE_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TEAMCITY_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TEAMS_WEBHOOK",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TELEGRAM_BOT_TOKEN",
+		"tier": "anchor_required",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TERRAFORM_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TH_TNIN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "TIKTOK_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TRAVIS_CI_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TWILIO_AUTH_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TWILIO_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TWITTER_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TWITTER_API_SECRET",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "TWITTER_BEARER_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "UK_NHS",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "UK_NINO",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "UK_PASSPORT",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "UK_VEHICLE_REGISTRATION",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "URL_WITH_CREDENTIALS",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "US_BANK_NUMBER",
+		"tier": "bare_shape",
+		"category": "financial",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "US_DRIVER_LICENSE",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "US_ITIN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "US_MBI",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "US_NPI",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "US_PASSPORT",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "US_SSN",
+		"tier": "bare_shape",
+		"category": "identity_documents",
+		"defaultOn": false,
+		"liveState": "active"
+	},
+	{
+		"entity": "VAULT_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "VERCEL_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "VULTR_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "WANDB_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "WEAVIATE_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "YOUTUBE_API_KEY",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	},
+	{
+		"entity": "ZENDESK_TOKEN",
+		"tier": "anchored",
+		"category": "credentials",
+		"defaultOn": true,
+		"liveState": "active"
+	}
+]

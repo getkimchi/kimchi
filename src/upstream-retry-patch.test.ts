@@ -324,6 +324,35 @@ describe("isInfrastructureErrorRetryable", () => {
 		expect(isInfrastructureErrorRetryable(message)).toBe(true)
 	})
 
+	// pi spreads the errored message into a copy between message_end (where
+	// the raw error is preserved as an enumerable symbol and display text
+	// becomes "Retrying…") and the run-loop retry classifier
+	// (AgentSession._handlePostAgentRun). Enumerable symbols survive the
+	// spread — the classifier must recover the raw from the copy.
+	it("classifies retryable from a spread copy that carries the preserved raw symbol", () => {
+		const raw = "Stream ended without finish_reason"
+		const message = { stopReason: "error" as const, errorMessage: raw }
+		preserveRawErrorMessage(message)
+		message.errorMessage = "Retrying…"
+
+		const copy = { ...message } // the enumerable symbol survives the spread
+
+		expect(isInfrastructureErrorRetryable(copy)).toBe(true)
+	})
+
+	it("does not re-preserve a spread copy's placeholder as the raw error", () => {
+		// The copy carries the preserved symbol (enumerable survives the spread),
+		// so a second preserve call must be a no-op — never capture the mutated
+		// display text as the raw error.
+		const message = { stopReason: "error" as const, errorMessage: "Stream ended without finish_reason" }
+		preserveRawErrorMessage(message)
+		message.errorMessage = "Retrying…"
+		const copy = { ...message }
+		preserveRawErrorMessage(copy)
+
+		expect(isInfrastructureErrorRetryable(copy)).toBe(true)
+	})
+
 	it("returns false for a non-retryable error preserved then mutated", () => {
 		const message = { stopReason: "error" as const, errorMessage: "400 Bad Request" }
 		preserveRawErrorMessage(message)

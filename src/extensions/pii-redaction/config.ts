@@ -9,15 +9,18 @@
  * WHAT redacts is governed by the `redaction` block of the same
  * settings.json — two mutually exclusive shapes:
  *
- *   Legacy (unchanged semantics):
- *     { "redaction": { "excludedEntities": ["DATE_TIME", "PHONE_NUMBER"] } }
+ *   Legacy (deprecated — prefer the policy shape below):
+ *     { "redaction": { "excludedEntities": ["PHONE_NUMBER"] } }
  *     A present array REPLACES the tier-registry default wholesale, unknown
- *     entity names throw. It can switch bare detectors back on — the only
- *     way to do so for anchor-required entities.
+ *     entity names throw (the PERMANENT_ENGINE_EXCLUSIONS names are
+ *     accepted but stay excluded). The replace is partial in one respect:
+ *     the PERMANENT_ENGINE_EXCLUSIONS set survives every path, so this list
+ *     can no longer switch those detectors back on. For anchor-required
+ *     entities it remains the only way to restore the bare detector.
  *
  *   Policy (LLM-4416):
  *     { "redaction": {
- *         "categories": { "network": "off" },
+ *         "categories": { "environment": "off" },
  *         "entities": { "PHONE_NUMBER": "on" },
  *         "customEntities": [{ "name": "ACME_ID", "category": "identity_documents",
  *                              "pattern": "…", "flags"?, "secretGroup"? }] } }

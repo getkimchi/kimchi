@@ -13,6 +13,10 @@
 import type { SessionNotification, ToolCallContent } from "@agentclientprotocol/sdk"
 import type { BackgroundBashToolDetails } from "../../../extensions/bash-background/bash-background-tool.js"
 import { getSessionState } from "../../../extensions/bash-background/session-registry.js"
+import {
+	type BashBackgroundSettleOutcome,
+	backgroundHandoffHandleFromDetails,
+} from "../../../shared/bash-background-settle.js"
 import { buildToolCallUpdate } from "./utils.js"
 
 /** One held background tool call: its live ACP id + the originating pi id. */
@@ -33,31 +37,14 @@ export type BackgroundToolCallContext = {
 	 * flip alone is ephemeral: without this, a reload replays the call from
 	 * its recorded PRE-EXIT handoff result — a failed process restarting to
 	 * "completed" — because nothing in history knows the exit happened.
+	 *
+	 * `acpToolCallId` is persisted alongside the outcome so a later replay can
+	 * re-bind the settled call to the SAME ACP id the live client already
+	 * holds — without it the re-announced call lands under a fresh id and the
+	 * client keeps a duplicate (zombie) row. It is the SETTLED call's id,
+	 * which for a superseded hold differs from any currently-handoff call's.
 	 */
-	persistSettle: (piToolCallId: string, outcome: BashBackgroundSettleOutcome) => void
-}
-
-/** Terminal settle fact persisted to the transcript as a metadata-only
- *  CustomEntry (`type: "custom"` under BASH_BACKGROUND_SETTLE_MESSAGE_TYPE):
- *  a recorded FACT for future replays — it never enters model context and
- *  never triggers or steers a turn. */
-export type BashBackgroundSettleOutcome = {
-	/** exitCode 0 with no stop reason reads as success; anything else failed. */
-	isError: boolean
-	/** Captured final output (empty when the process produced none). */
-	text: string
-	/** Terminal BackgroundBashToolDetails — the same shape the wire flip sends. */
-	details: BackgroundBashToolDetails
-}
-
-/** Custom transcript message type carrying a held call's settle outcome. */
-export const BASH_BACKGROUND_SETTLE_MESSAGE_TYPE = "bash-background-settle"
-
-/** Persisted payload of a settle CustomEntry: the outcome plus the pi
- *  toolCallId of the held call it settles (write site: persistSettle in
- *  server.ts's watch context). */
-export interface BashBackgroundSettleData extends BashBackgroundSettleOutcome {
-	toolCallId: string
+	persistSettle: (piToolCallId: string, outcome: BashBackgroundSettleOutcome, acpToolCallId: string) => void
 }
 
 /**
@@ -68,11 +55,7 @@ export interface BashBackgroundSettleData extends BashBackgroundSettleOutcome {
  * adopting the same handoff contract composes.
  */
 export function backgroundHandoffHandle(result: unknown): string | undefined {
-	const details = (result as { details?: unknown } | null | undefined)?.details
-	if (!details || typeof details !== "object") return undefined
-	const d = details as { handoff?: unknown; handle?: unknown }
-	if (d.handoff !== true || typeof d.handle !== "string" || d.handle.length === 0) return undefined
-	return d.handle
+	return backgroundHandoffHandleFromDetails((result as { details?: unknown } | null | undefined)?.details)
 }
 
 /**
@@ -205,7 +188,7 @@ function settleHeldBackgroundToolCall(
 	const status = exitCode === 0 && reason === null ? ("completed" as const) : ("failed" as const)
 	// Persist BEFORE the wire flip: if this harness process dies between the
 	// two, the transcript must still carry the outcome for a future replay.
-	ctx.persistSettle(call.piToolCallId, { isError: status === "failed", text, details })
+	ctx.persistSettle(call.piToolCallId, { isError: status === "failed", text, details }, call.acpToolCallId)
 	ctx.send({
 		sessionId,
 		update: buildToolCallUpdate({

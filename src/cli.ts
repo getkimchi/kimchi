@@ -25,6 +25,7 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { createGuidedCodemodeExtension } from "./extensions/codemode/guidance.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
@@ -42,6 +43,7 @@ import { resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
+	ensureBuiltinCodemodeDisabled,
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
@@ -60,7 +62,9 @@ import { isBunBinary } from "./env.js"
 import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
 import idleGcExtension from "./extensions/adaptive-gc.js"
+import { installAgentEndWillRetryPatch } from "./extensions/agent-end-will-retry.js"
 import agentsExtension from "./extensions/agents/index.js"
+import { WEB_TOOL_MANAGED_FACTORIES } from "./extensions/agents/manager/subagent-web-tools.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import { artifactRecorderExtension } from "./extensions/artifacts/recorder.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
@@ -112,6 +116,7 @@ import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import languageCommandExtension from "./extensions/language-command.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
+import codexCorrelationExtension from "./extensions/login/codex-correlation-extension.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -159,7 +164,6 @@ import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import sideChatExtension from "./extensions/side-chat/index.js"
-import { SIDE_CHAT_RESOURCE_ID } from "./extensions/side-chat/resource.js"
 import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -167,6 +171,7 @@ import statusExtension from "./extensions/status/index.js"
 import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
 import { steerOutcomeWatcherExtension } from "./extensions/steer-outcome-watcher.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import submitTimingExtension from "./extensions/submit-timing.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
 import { buildConfigSnapshot } from "./extensions/telemetry/config-snapshot.js"
@@ -186,8 +191,6 @@ import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import undecodableImageSanitizerExtension from "./extensions/undecodable-image-sanitizer.js"
-import webFetchExtension from "./extensions/web-fetch/index.js"
-import webSearchExtension from "./extensions/web-search/index.js"
 import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
 import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
 import {
@@ -236,6 +239,7 @@ import { resolveExportSystemPrompt } from "./utils/session-system-prompt-store.j
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installAgentEndWillRetryPatch()
 installModelTableRenderer()
 installThinkingLevelAdvisor()
 installCompactionRecoveryPatch()
@@ -739,6 +743,7 @@ async function cliMain(): Promise<void> {
 				let changed = ensureHideThinkingBlockDefault(existing)
 				if (ensureQuietStartupDefault(existing)) changed = true
 				if (ensureBuiltinMcpDisabled(existing)) changed = true
+				if (ensureBuiltinCodemodeDisabled(existing)) changed = true
 				const upgraded = upgradeLegacyRetrySettings(existing.retry)
 				if (upgraded) {
 					existing.retry = upgraded
@@ -910,6 +915,10 @@ async function cliMain(): Promise<void> {
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
+				// Registers `codemode` with kimchi's selection rule. The settings
+				// bootstrap disables pi's replaceable built-in so TUI/print do not
+				// emit a conflict warning; ACP loads no pi built-ins at all.
+				createGuidedCodemodeExtension(),
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,
 				backgroundUpdateExtension,
@@ -930,6 +939,7 @@ async function cliMain(): Promise<void> {
 				branchCommandExtension,
 				...terminalUiExtensionFactories,
 				loginExtension,
+				codexCorrelationExtension,
 				startupAuthGate,
 				shellProfileMigrationExtension,
 				// session_start handlers are awaited in order; warn after the migration dialog closes.
@@ -1040,12 +1050,14 @@ async function cliMain(): Promise<void> {
 				surveysExtension(),
 				toolRenderingExtension,
 				toolGroupingExtension,
+				...enabledExtensionFactories(WEB_TOOL_MANAGED_FACTORIES),
 				...enabledExtensionFactories([
-					{ id: "tools.web_fetch", factory: webFetchExtension },
-					{ id: "tools.web_search", factory: webSearchExtension },
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
-					{ id: SIDE_CHAT_RESOURCE_ID, factory: sideChatExtension },
 				] satisfies ManagedExtensionFactory[]),
+				// Always on: /btw and the side-chat pane are core UI. The resource
+				// `extensions.side-chat-pill` gates only the "Add to side chat" pill
+				// (inside the extension), not the side chat itself.
+				sideChatExtension,
 				modelWindowSnapshotExtension,
 				modelSwitchExtension,
 				modelListExtension,
@@ -1081,6 +1093,7 @@ async function cliMain(): Promise<void> {
 				// form or that fix is silently defeated.
 				compactionResilienceExtension(),
 				requestTimingExtension,
+				submitTimingExtension,
 				llmResponseLogExtension,
 				activityExtension,
 				infrastructureErrorTracker.extension,

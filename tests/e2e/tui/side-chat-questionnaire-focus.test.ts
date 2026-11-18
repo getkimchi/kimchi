@@ -57,7 +57,7 @@ function enableSideChat(homeDir: string): void {
 		JSON.stringify({
 			...settings,
 			tuiMode: "fullscreen",
-			resources: { ...((settings.resources as Record<string, boolean>) ?? {}), "extensions.side-chat": true },
+			resources: { ...((settings.resources as Record<string, boolean>) ?? {}), "extensions.side-chat-pill": true },
 		}),
 		"utf-8",
 	)

@@ -404,12 +404,13 @@ export class AgentManager {
 							maxTurns,
 							planPath,
 							autoLoadedSkills,
+							droppedToolNames,
 						}) => {
 							if (record.status !== "stopped") {
 								record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 							}
 							record.abortReason = abortReason
-							const finalText = formatRunResultText(responseText, planPath, autoLoadedSkills)
+							const finalText = formatRunResultText({ responseText, planPath, autoLoadedSkills, droppedToolNames })
 							record.result = finalText
 							record.session = session
 							record.lastTurnCount = turnsUsed

@@ -114,6 +114,53 @@ describe("buildSystemPrompt", () => {
 		{ name: "steer_subagent", description: "Steer a running background agent" },
 	]
 
+	it.each([
+		"single",
+		"orchestrator",
+		"subagent",
+	] as const)("renders kimchi-authored guidelines and filters pi tools in %s mode", (mode) => {
+		const result = buildSystemPrompt({
+			tools: [
+				{ name: "codemode", description: "Run JavaScript", promptGuidelines: [" Batch objective updates. ", ""] },
+				{
+					name: "update_ferment_v2",
+					description: "Submit the objective",
+					promptGuidelines: ["Batch objective updates.", "Read relevant files."],
+				},
+				{
+					name: "read",
+					description: "Read files",
+					promptGuidelines: ["Use read to examine files instead of cat or sed."],
+				},
+			],
+			env: testEnv,
+			mode,
+		})
+
+		expect(result).toContain("## Tool Guidelines\n\n- Batch objective updates.\n- Read relevant files.")
+		expect(result.match(/Batch objective updates\./g)).toHaveLength(1)
+		expect(result).not.toContain("Use read to examine files instead of cat or sed.")
+		expect(result).toContain("- Independent calls whose full results you need → issue them together in one turn.")
+		expect(result).toContain("Use `codemode` when intermediate output can be filtered before it reaches you")
+		expect(result).toContain("the next call's arguments follow mechanically from an earlier result")
+		expect(result).toContain("Use direct tools when choosing the next step needs your judgment.")
+	})
+
+	it("omits codemode advice and the tool-guidelines section when no active tool contributes guidelines", () => {
+		const result = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
+		expect(result).not.toContain("## Tool Guidelines")
+		expect(result).not.toContain("Use `codemode` when")
+	})
+
+	it("omits guidelines from delegation tools filtered out of subagent prompts", () => {
+		const result = buildSystemPrompt({
+			tools: [{ name: "Agent", description: "Delegate", promptGuidelines: ["Delegate all work."] }],
+			env: testEnv,
+			mode: "subagent",
+		})
+		expect(result).not.toContain("Delegate all work.")
+	})
+
 	it("scopes consent requirements without blocking requested local development work", () => {
 		const result = buildSystemPrompt({
 			tools,

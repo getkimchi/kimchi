@@ -59,6 +59,7 @@ import {
 	ModelRuntime,
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
+	readStoredCredential,
 	type SessionHeader,
 	SessionManager,
 	SettingsManager,
@@ -84,7 +85,12 @@ import {
 	writeApiKey,
 	writeRegion,
 } from "../../config.js"
-import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
+import {
+	clearCredentialStale,
+	isAuthRejectedMessage,
+	markCredentialStale,
+	prepareCredentialForLogin,
+} from "../../credential-staleness.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import {
@@ -148,7 +154,7 @@ import { setPRMonitoringPermitted } from "../../extensions/pr-watch/session-poli
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
-import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "../../llm-gateway-error.js"
 import { collectDeprecationMarkers } from "../../model-deprecation.js"
 import { applyOrganizationHeader, updateModelsConfig } from "../../models.js"
@@ -161,10 +167,18 @@ import {
 	ACP_LIFETIME_USAGE_META_KEY,
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
+	parseToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
+	isBashBackgroundSettleData,
+} from "../../shared/bash-background-settle.js"
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
+import { CANONICAL_THINKING_LEVELS, thinkingLevelName } from "../../thinking-levels.js"
+import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -180,9 +194,16 @@ import {
 	kimchiDevMetaOf,
 	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
-import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
+import {
+	COMPACT_COMMAND_ENTRY_TYPE,
+	composeAvailableCommands,
+	createCommandsRefresher,
+	discoverSkillCommandsMap,
+	isCompactCommandEntryData,
+	tryParseCompactCommand,
+} from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
-import { handleCompact } from "./ext-methods/compact.js"
+import { type CompactResponse, handleCompact } from "./ext-methods/compact.js"
 import { handleCompactAbort } from "./ext-methods/compact-abort.js"
 import { handleFeedback } from "./ext-methods/feedback.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
@@ -215,8 +236,6 @@ import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
-	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
-	type BashBackgroundSettleData,
 	backgroundHandoffHandle,
 	type HeldBackgroundToolCall,
 	holdAndWatchBackgroundToolCall,
@@ -842,8 +861,9 @@ export class KimchiAcpAgent implements Agent {
 		const persist: WriteApiKeyOptions = { region }
 		if (selfHostedEndpoints) persist.selfHostedEndpoints = selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
-		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		// A replacement invalidates earlier marks, but a repeated key retains its
+		// observed rejection through a cached refresh until authentication succeeds.
+		prepareCredentialForLogin(token, KIMCHI_PROVIDER_ID)
 
 		// Eagerly refresh the model cache so the subsequent newSession() call
 		// finds available models without another round-trip.
@@ -939,14 +959,17 @@ export class KimchiAcpAgent implements Agent {
 	 *    auth.json and would overwrite the OAuth entries at the next launch.
 	 * 2. Persist the signed-in region so endpoint derivation matches the
 	 *    tenant the user authenticated against.
-	 * 3. Refresh models metadata with the fresh bearer (cached fallback
+	 * 3. Store the org-scoped credential durably before clearing rejection
+	 *    state for the credential it replaces.
+	 * 4. Refresh models metadata with the fresh bearer (cached fallback
 	 *    allowed, like the browser-key flow) and stamp the org header on every
 	 *    Kimchi provider — the gateway routes SSO requests by
 	 *    X-CastAi-Organization-Id (covers the cached-fallback path too).
-	 * 4. Fan the org-scoped credential out to every Kimchi-managed provider in
+	 * 5. Fan the org-scoped credential out to every Kimchi-managed provider in
 	 *    models.json (sub-providers resolve auth per provider id).
-	 * 5. Clear stale marks — auth_status flips back — and refresh every OPEN
-	 *    session's ModelRuntime snapshot (same rationale as authenticate()).
+	 * 6. Refresh every OPEN session's ModelRuntime snapshot (same rationale as
+	 *    authenticate()). updateModelsConfig already clears stale marks only
+	 *    after an authenticated fetch; the settle tail must not clear a cached-401 fallback.
 	 */
 	private async settleSsoCredential(credential: OAuthCredentials, org: KimchiOrganization): Promise<void> {
 		clearApiKey()
@@ -957,17 +980,20 @@ export class KimchiAcpAgent implements Agent {
 			writeRegion(credentialRegion)
 		}
 		const modelsPath = join(this.agentDir, "models.json")
+		const authPath = join(this.agentDir, "auth.json")
+		const orgScopedCredential = { ...credential, orgId: org.id, orgName: org.name }
+		// A failed refresh with no cached models must not leave old stored
+		// credentials with their rejection removed. Store the replacement first.
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
+		// Retire anonymous/replaced-credential state before refreshing. Preserve
+		// this bearer's known rejection through a transient cached fallback.
+		prepareCredentialForLogin(credential.access, KIMCHI_PROVIDER_ID)
 		await updateModelsConfig(modelsPath, credential.access, {
 			allowCachedFallback: true,
 			organizationId: org.id,
 		})
 		applyOrganizationHeader(modelsPath, org.id)
-		await syncOAuthCredentialToKimchiProviders(join(this.agentDir, "auth.json"), modelsPath, {
-			...credential,
-			orgId: org.id,
-			orgName: org.name,
-		})
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
 		await Promise.all(
 			[...this.sessions.values()].map((record) =>
 				record.session.modelRuntime.refresh({ allowNetwork: false }).catch(() => {}),
@@ -1153,6 +1179,10 @@ export class KimchiAcpAgent implements Agent {
 				await this.doSetModel(record, params.value ? `${params.value}` : "")
 				break
 			}
+			case "reasoning_effort": {
+				this.doSetThinkingLevel(record, params.value ? `${params.value}` : "")
+				break
+			}
 			default:
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
@@ -1178,6 +1208,27 @@ export class KimchiAcpAgent implements Agent {
 		persistPermissionModeIfChanged(sessionManager, (...args) => sessionManager.appendCustomEntry(...args), state)
 		setPermissionMode(sessionId, state)
 		return permissionMode
+	}
+
+	/** Apply a reasoning_effort set request; the value must be one of the
+	 *  advertised (model-curated) levels. */
+	private doSetThinkingLevel(record: SessionRecord, value: string): void {
+		const { session } = record
+		// The option is not advertised without a model, so a set in that state is invalid.
+		if (!session.model) {
+			throw RequestError.invalidParams(undefined, "no model is selected for this session")
+		}
+		const selection = thinkingSelection(session.model)
+		if (selection.mode !== "levels" || selection.selectable.length === 0) {
+			throw RequestError.invalidParams(undefined, "the current model offers no selectable thinking levels")
+		}
+		if (!isCanonicalThinkingLevel(value) || !selection.selectable.includes(value)) {
+			throw RequestError.invalidParams(
+				undefined,
+				`invalid thinking level "${value}". available levels: ${selection.selectable.join(", ")}`,
+			)
+		}
+		session.setThinkingLevel(value)
 	}
 
 	private async doSetModel(record: SessionRecord, value: string): Promise<string> {
@@ -1216,34 +1267,43 @@ export class KimchiAcpAgent implements Agent {
 				// Pi's setModel only throws "if no auth is configured for the model"
 				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
 			}
-			return value
-		}
+		} else {
+			const parsed = splitModelRef(value)
+			if (!parsed) {
+				throw RequestError.invalidParams(
+					undefined,
+					`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
+				)
+			}
+			const target = findModelByRef(modelRegistry, value)
+			if (!target) {
+				throw RequestError.invalidParams(
+					undefined,
+					`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
+				)
+			}
 
-		const parsed = splitModelRef(value)
-		if (!parsed) {
-			throw RequestError.invalidParams(
-				undefined,
-				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
-			)
+			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
+			setMultiModelEnabled(sessionId, false)
+			try {
+				// An explicit client request to change the model, so save it as the default.
+				await session.setModel(target, { persist: true })
+			} catch {
+				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+				// Pi's setModel only throws "if no auth is configured for the model"
+				throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
+			}
 		}
-		const target = findModelByRef(modelRegistry, value)
-		if (!target) {
-			throw RequestError.invalidParams(
-				undefined,
-				`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
-			)
-		}
-
-		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
-		setMultiModelEnabled(sessionId, false)
-		try {
-			// An explicit client request to change the model, so save it as the default.
-			await session.setModel(target, { persist: true })
-		} catch {
-			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
-			// Pi's setModel only throws "if no auth is configured for the model"
-			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
-		}
+		// Both entry points advertise refreshed options here: the model-dependent
+		// reasoning_effort set changes with the model, and unstable_setSessionModel's
+		// legacy wire shape returns {}, so those clients can only learn it via push.
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "config_option_update",
+				configOptions: buildConfigOptions(session, this.getInitialPermissionMode(session).mode),
+			},
+		})
 		return value
 	}
 
@@ -1576,6 +1636,19 @@ export class KimchiAcpAgent implements Agent {
 			// state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
 		}
+		// A prompt consisting of exactly one text block that starts with
+		// "/compact" invokes the locally-handled compaction command
+		// (advertised in availableCommands) instead of a model turn: parse per
+		// the ACP command contract (exact name, whitespace or end), then drive
+		// the same handler as the _kimchi.dev/compact ext method. A prompt
+		// carrying anything else — further text blocks, attachments — falls
+		// through to the model: silently dropping the extra content would
+		// leave the user with no signal it was ignored.
+		const singleTextBlock = params.prompt.length === 1 && params.prompt[0]?.type === "text"
+		const compactCommand = singleTextBlock ? tryParseCompactCommand(text) : undefined
+		if (compactCommand) {
+			return await this.runCompactCommand(params.sessionId, text, compactCommand, pending)
+		}
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
@@ -1615,11 +1688,32 @@ export class KimchiAcpAgent implements Agent {
 				// end_turn — the client would show a silent empty reply.
 				if (entry.turn.lastAssistantError && !entry.turn.cancelled) {
 					const terminal = entry.turn.lastAssistantError
-					// Turn-time 401 = first proof this key is dead. Blame the
-					// provider, not a key: the failing call may use config apiKey
-					// or auth.json OAuth.
+					// Turn-time 401 = first proof this credential is dead. Keep
+					// the anonymous provider mark for this process, and persist the
+					// concrete stored/configured key when it can be attributed.
 					if (isAuthRejectedMessage(terminal.errorMessage)) {
-						markCredentialStale(undefined, entry.session.model?.provider ?? KIMCHI_PROVIDER_ID)
+						const modelProviderId = entry.session.model?.provider ?? KIMCHI_PROVIDER_ID
+						// Kimchi sub-providers share one credential with the base provider;
+						// auth_status also reads this canonical rejection key.
+						const providerId = isKimchiProvider(modelProviderId) ? KIMCHI_PROVIDER_ID : modelProviderId
+						markCredentialStale(undefined, providerId)
+						try {
+							const configuredApiKey = isKimchiProvider(providerId) ? loadKimchiConfig().apiKey : undefined
+							const stored = readStoredCredential(providerId, join(this.agentDir, "auth.json"))
+							const storedApiKey =
+								stored?.type === "oauth" ? stored.access : stored?.type === "api_key" ? stored.key : undefined
+							const ambiguous =
+								configuredApiKey !== undefined &&
+								storedApiKey !== undefined &&
+								configuredApiKey !== "" &&
+								storedApiKey !== "" &&
+								configuredApiKey !== storedApiKey
+							const rejectedApiKey = ambiguous ? undefined : configuredApiKey || storedApiKey
+							if (rejectedApiKey) markCredentialStale(rejectedApiKey, providerId)
+						} catch {
+							// Attribution is best-effort. The provider mark must remain
+							// non-throwing so failTurn always delivers the original error.
+						}
 					}
 					this.failTurn(entry, toTurnError(terminal))
 				} else {
@@ -1642,6 +1736,44 @@ export class KimchiAcpAgent implements Agent {
 			},
 		)
 		return result
+	}
+
+	/** Run the locally-handled /compact command: persist the raw command text
+	 *  as a metadata-only custom entry so a session/load replay can re-surface
+	 *  it (the prompt is intercepted locally, so no session message records
+	 *  it — same pattern as the bash-background settle rows), drive the same
+	 *  handler as the _kimchi.dev/compact ext method (progress streams through
+	 *  agent_activity, the usage gauge refreshes via compaction_end) and report
+	 *  the outcome as an assistant message — the same locally-decided-outcome
+	 *  pattern as the vision gate. No live user_message_chunk echo: commands
+	 *  arrive as regular user messages, which clients render when the prompt
+	 *  is sent. */
+	private async runCompactCommand(
+		sessionId: string,
+		rawText: string,
+		args: { instructions?: string },
+		pending: PendingPrompt,
+	): Promise<PromptResponse> {
+		if (pending.cancelled) return { stopReason: "cancelled" }
+		// Written BEFORE the compaction runs so the record survives even if the
+		// session dies mid-compaction. Any outcome still belongs in the log: the
+		// user issued the command whether it compacted, failed, or was aborted.
+		this.sessions.get(sessionId)?.session.sessionManager.appendCustomEntry(COMPACT_COMMAND_ENTRY_TYPE, {
+			text: rawText,
+		})
+		const outcome = await handleCompact((id) => this.getSessionTurnTarget(id), {
+			sessionId,
+			instructions: args.instructions,
+		})
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "agent_message_chunk",
+				messageId: `km.${randomUUID()}`,
+				content: { type: "text", text: compactOutcomeText(outcome) },
+			},
+		})
+		return { stopReason: outcome.status === "cancelled" ? "cancelled" : "end_turn" }
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
@@ -2565,6 +2697,13 @@ export class KimchiAcpAgent implements Agent {
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
 				turn.refused = isRefusal(msg)
+				const authenticatedResponse = turn.refused || (msg.stopReason !== "error" && msg.stopReason !== "aborted")
+				// Any completed provider response, including a refusal, proves the
+				// credential authenticated. Local no-op turns emit no assistant message.
+				const providerId = entry.session.model?.provider
+				if (authenticatedResponse && providerId && isKimchiProvider(providerId)) {
+					clearCredentialStale(KIMCHI_PROVIDER_ID)
+				}
 				if (turn.refused) {
 					// A refusal is a turn outcome, not a failure: report it as
 					// stopReason "refusal" with the reason the user can act on. The
@@ -2805,7 +2944,7 @@ export class KimchiAcpAgent implements Agent {
 							displayContent: (sid, content) => this.displayContent(sid, content),
 							displayRecord: (sid, value) => this.displayRecord(sid, value),
 							isCurrent: () => this.sessions.get(sessionId) === entry,
-							persistSettle: (piToolCallId, outcome) => {
+							persistSettle: (piToolCallId, outcome, settleAcpToolCallId) => {
 								// A metadata-only CustomEntry (pi's `type: "custom"`):
 								// written to the session file, ignored by
 								// buildSessionContext — NEVER injected into model
@@ -2813,9 +2952,15 @@ export class KimchiAcpAgent implements Agent {
 								// a recorded FACT for future replays, not a message.
 								// The wire flip already told the live client: a persist
 								// failure degrades to wire-only, never a settle failure.
+								// Use the PASSED id, never the enclosing handoff's: a
+								// superseded-hold settle fires inside a LATER handoff's
+								// scope, and persisting that scope's live id re-binds
+								// the superseded block to it on replay, clobbering the
+								// client's live row.
 								try {
 									const data: BashBackgroundSettleData = {
 										toolCallId: piToolCallId,
+										acpToolCallId: settleAcpToolCallId,
 										isError: outcome.isError,
 										text: outcome.text,
 										details: outcome.details,
@@ -2879,8 +3024,10 @@ export class KimchiAcpAgent implements Agent {
 	// instead of buildSessionContext() avoids surfacing compaction summaries
 	// as synthetic user messages. Custom entries: the artifact-recorder
 	// extension's rows are adopted as the turn's exact artifacts (recorded
-	// live, stat-gated), replacing replay-side re-derivation; other custom
-	// entries still emit nothing.
+	// live, stat-gated), replacing replay-side re-derivation; compact-command
+	// rows re-emit their persisted text as a user message (the locally-handled
+	// command never became a session message); other custom entries still emit
+	// nothing.
 	//
 	// Notifications go straight from this method to conn.sessionUpdate; we do
 	// NOT replay through the AgentSession event emitter, so extensions like
@@ -2909,11 +3056,27 @@ export class KimchiAcpAgent implements Agent {
 
 		for (const entry of entries) {
 			if (entry && entry.type === "custom") {
+				const custom = entry as { customType?: unknown; data?: unknown }
+				if (custom.customType === COMPACT_COMMAND_ENTRY_TYPE && isCompactCommandEntryData(custom.data)) {
+					// A locally-handled /compact command never became a session
+					// message, so re-surface it here as the user message the client
+					// rendered when it sent the prompt (no live echo — see
+					// runCompactCommand). Positioned like any user turn boundary:
+					// the previous turn's artifacts flush before it.
+					flushTurnArtifacts()
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "user_message_chunk",
+							content: { type: "text", text: this.displayText(sessionId, custom.data.text) },
+						},
+					})
+					continue
+				}
 				// Recorded artifact row (extension): adopt it for this turn — the
 				// row is written once per prompt (at agent_settled), after the
 				// prompt's last assistant message (live parity), and replaces what re-derivation sniffed
 				// (exact: live detection was stat-gated).
-				const custom = entry as { customType?: unknown; data?: unknown }
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
 				if (data?.v === 1 && Array.isArray(data.artifacts)) artifactBuffer.adoptRecorded(data.artifacts)
@@ -3125,10 +3288,28 @@ export class KimchiAcpAgent implements Agent {
 				// A persisted settle overrides the pre-exit handoff for a call replayed
 				// terminal: without it a FAILED process replays as completed with no
 				// exit outcome, because the handoff records isError false and no exit
-				// code. Consumed FIFO like the results — a recycled id's settle
-				// belongs to the block whose handoff it settled.
-				const settleResult = heldAcpId === undefined ? takeReplayToolResult(settles, upstreamId) : undefined
+				// code. A persisted settle belongs to a HANDOFF result only — a recycled
+				// upstream id can pair a same-id plain result with a later handoff,
+				// and consuming the settle on the plain block would slam the
+				// background outcome (and the rebound live id) onto the wrong call.
+				// Consumed FIFO like the results: the handoff's settle follows its
+				// block in the branch, so pairing holds per occurrence — a recycled
+				// id's settle belongs to the block whose handoff it settled.
+				const settleResult =
+					heldAcpId === undefined && handoffHandle !== undefined ? takeReplayToolResult(settles, upstreamId) : undefined
 				const finalResult = settleResult ?? replayResult
+				// A call settled before this replay carries its live ACP id in the
+				// persisted settle: re-bind that id so the re-announcement updates
+				// the row the client already holds instead of opening a zombie
+				// duplicate under a fresh id. The numeric suffix must also stay
+				// ahead of record.nextToolCallId — a replay allocating counters
+				// from 0 could otherwise mint the same id for a LATER call.
+				if (record && heldAcpId === undefined && settleResult?.acpToolCallId !== undefined) {
+					record.toolCallIdMap.set(upstreamId, settleResult.acpToolCallId)
+					const seqN = parseToolCallId(settleResult.acpToolCallId)?.seq
+					if (seqN !== undefined && Number.isSafeInteger(seqN))
+						record.nextToolCallId = Math.max(record.nextToolCallId, seqN + 1)
+				}
 				const acpToolCallId = heldAcpId
 					? heldAcpId.acpToolCallId
 					: record
@@ -3870,6 +4051,45 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	}
 }
 
+const CANONICAL_THINKING_LEVEL_SET = new Set<string>(CANONICAL_THINKING_LEVELS)
+
+/** Runtime proof that a requested thinking level is one of pi's canonical
+ *  levels. Selectable sets are built from curated levels and pi's map keys —
+ *  both canonical — but typed as plain strings, so narrowing to the
+ *  setThinkingLevel parameter needs this guard instead of a call-site cast. */
+function isCanonicalThinkingLevel(value: string): value is AgentSession["thinkingLevel"] {
+	return CANONICAL_THINKING_LEVEL_SET.has(value)
+}
+
+/**
+ * Builds the SessionConfigOption for the session's thinking level — the
+ * control ACP clients render as their reasoning-effort picker (JetBrains Air
+ * binds its native effort control to the `reasoning_effort` configId).
+ * Selectable values match the TUI's /thinking selector (thinking-selection.ts);
+ * a model with nothing selectable gets NO option rather than a dead one-value
+ * selector — clients hide what they are not given. currentValue is rank-clamped
+ * into the selection so the advertised value is always one of options.
+ */
+export type AgentSessionThinkingConfig = Pick<AgentSession, "model" | "thinkingLevel">
+
+export function buildThinkingConfigOption(session: AgentSessionThinkingConfig): SessionConfigOption | null {
+	if (!session.model) return null
+	const selection = thinkingSelection(session.model)
+	if (selection.mode !== "levels" || selection.selectable.length === 0) return null
+	return {
+		id: "reasoning_effort",
+		name: "Reasoning Effort",
+		type: "select",
+		category: "thought_level",
+		description: "How much the model reasons before answering. Available levels depend on the selected model.",
+		currentValue: clampToSelection(session.thinkingLevel, selection),
+		options: selection.selectable.map((level) => ({
+			value: level,
+			name: thinkingLevelName(level),
+		})),
+	}
+}
+
 /**
  * The routed virtual rows' composite name within a built option list, or
  * undefined when the catalog has none. The `model` option's `name` is the
@@ -3889,7 +4109,32 @@ function autoOptionName(configOptions: SessionConfigOption[]): string | undefine
 
 function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
 	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
-	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+	const thinking = buildThinkingConfigOption(session)
+	if (thinking) options.push(thinking)
+	return options
+}
+
+/** The assistant-facing text for a /compact command outcome. Trailing blank
+ *  line keeps the message visually separate when a client concatenates
+ *  chunks — same convention as the vision-gate warning.
+ *
+ *  Deliberately omits the compaction summary: a completed compaction reports
+ *  a one-line status ("Context compacted from N tokens.") mirroring the
+ *  TUI's collapsed-by-default `[compaction]` row (Compacted from N tokens —
+ *  expand to read the summary). ACP chat surfaces have no expand affordance,
+ *  so printing the full summary inline would dump a long document into the
+ *  transcript on every manual compaction; neither Claude Code nor Studio do
+ *  that. The summary still reaches interested clients programmatically via
+ *  the _kimchi.dev/compact ext-method response, and the runtime keeps it in
+ *  the compaction entry itself. */
+function compactOutcomeText(outcome: CompactResponse): string {
+	if (outcome.status === "completed") {
+		const counts =
+			typeof outcome.tokensBefore === "number" ? ` from ${outcome.tokensBefore.toLocaleString("en-US")} tokens` : ""
+		return `Context compacted${counts}.\n\n`
+	}
+	return `Compaction ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""}\n\n`
 }
 
 // Checks model PRESENCE only — pi resolves a non-null model object even on
@@ -4489,6 +4734,13 @@ type ReplayToolResult = {
 	// thinner payload on replay.
 	details?: unknown
 	toolName?: string
+	/**
+	 * Settle facts only: the ACP id the settled call was announced under in
+	 * the live session. Replay re-binds it so a client that kept its live
+	 * rows across the replay sees ONE id for the call, terminal — not a
+	 * duplicate row under a fresh id (wake-replay zombie).
+	 */
+	acpToolCallId?: string
 }
 
 // First pass over the branch: index tool results by their toolCallId so the
@@ -4583,18 +4835,6 @@ function takeReplayToolResult(toolResults: Map<string, ReplayToolResult[]>, id: 
  * a recycled id's settle belongs to the block whose handoff it settled, so
  * replay consumes them FIFO off the block walk too.
  */
-/**
- * Guard for the persisted settle payload — the write site pins the shape at
- * BashBackgroundSettleData, but transcripts are untrusted IO, so replay
- * validates before consuming (details is forwarded as-is, mirroring the
- * BashBackgroundSettleOutcome contract).
- */
-function isBashBackgroundSettleData(data: unknown): data is BashBackgroundSettleData {
-	if (!data || typeof data !== "object") return false
-	const d = data as { toolCallId?: unknown; isError?: unknown; text?: unknown }
-	return typeof d.toolCallId === "string" && typeof d.isError === "boolean" && typeof d.text === "string"
-}
-
 function collectBashBackgroundSettles(entries: BranchEntry[]): Map<string, ReplayToolResult[]> {
 	const out = new Map<string, ReplayToolResult[]>()
 	for (const entry of entries) {
@@ -4605,6 +4845,7 @@ function collectBashBackgroundSettles(entries: BranchEntry[]): Map<string, Repla
 			content: entry.data.text.length > 0 ? [{ type: "text", text: entry.data.text }] : [],
 			isError: entry.data.isError,
 			details: entry.data.details,
+			acpToolCallId: entry.data.acpToolCallId,
 		})
 		out.set(entry.data.toolCallId, queued)
 	}

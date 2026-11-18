@@ -5,7 +5,7 @@
 // _meta["kimchi.dev"].auth_status. Sessionless on purpose: identity is
 // global, not session-scoped, so the request carries no sessionId.
 
-import { ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
 import { isCredentialStale } from "../../../credential-staleness.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
@@ -66,5 +66,20 @@ export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStat
 		refreshOnCreate: false,
 	})
 	const credentials = await modelRuntime.listCredentials()
-	return { authenticated: credentials.some((credential) => credential.providerId === KIMCHI_PROVIDER_ID) }
+	if (!credentials.some((credential) => credential.providerId === KIMCHI_PROVIDER_ID)) {
+		return { authenticated: false }
+	}
+
+	// listCredentials intentionally exposes presence only. Read the already
+	// stored bearer locally to compare its fingerprint with observed 401s;
+	// unlike getAuth(), this cannot refresh OAuth credentials or hit network.
+	try {
+		const stored = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
+		const storedApiKey = stored?.type === "oauth" ? stored.access : stored?.type === "api_key" ? stored.key : undefined
+		return { authenticated: !isCredentialStale(storedApiKey, KIMCHI_PROVIDER_ID) }
+	} catch {
+		// Presence was already confirmed above. If the second local read fails,
+		// degrade to the previous presence-only result rather than an ACP error.
+		return { authenticated: true }
+	}
 }

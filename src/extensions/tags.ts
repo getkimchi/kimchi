@@ -26,7 +26,9 @@ import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { readConfigSetting } from "../config/settings.js"
 import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
+import { CODEX_PROVIDER_ID } from "../kimchi-provider.js"
 import { isResourceEnabled } from "../resources/store.js"
+import { notifyUser } from "../utils/notify-user.js"
 import { getEffectiveModel } from "./auto-model/state.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
@@ -300,8 +302,7 @@ async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, ta
 	// Direct switch via /phase <name>.
 	if (!isValidPhase(trimmed)) {
 		const msg = `Invalid phase "${args.trim()}". Valid: ${VALID_PHASES.join(", ")}, none`
-		if (ctx.hasUI) ctx.ui.notify(msg, "error")
-		else console.error(msg)
+		notifyUser(ctx, msg, "error")
 		return
 	}
 
@@ -631,7 +632,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			if (isStaleCtxError(err)) return
 			throw err
 		}
-		if (!model?.provider?.startsWith("kimchi-dev")) return
+		if (!model?.provider?.startsWith("kimchi-dev") || model.provider === CODEX_PROVIDER_ID) return
 
 		const payload = event.payload as Record<string, unknown> | null
 		if (!payload || typeof payload !== "object") return

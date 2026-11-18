@@ -23,9 +23,12 @@ import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { getEffectiveModel } from "../../auto-model/state.js"
+import { DAP_ENTRY_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "../../dap/tools.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import codexCorrelationExtension from "../../login/codex-correlation-extension.js"
+import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -41,6 +44,7 @@ import {
 	getWorkId,
 	getWorkSegment,
 	tryWorkAttribution,
+	type WorkSegment,
 } from "../../work-attribution.js"
 import { detectEnv } from "../env.js"
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
@@ -58,7 +62,9 @@ import { preloadSkills } from "../prompt/skill-loader.js"
 import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
+import { sanitizeToolName } from "./result-text.js"
 import { SubagentResourceLoader } from "./subagent-resource-loader.js"
+import { subagentWebToolFactories } from "./subagent-web-tools.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
 /**
@@ -72,6 +78,11 @@ import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type Lifet
  */
 const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
 
+/** The native skill-loading tool name, appendable to a subagent's tool list
+ *  when its skills config entails it. Not part of BUILTIN_TOOL_NAMES (which
+ *  mirrors upstream's builtin set). */
+const SKILL_TOOL_NAME = "Skill"
+
 function isExcludedSubagentToolName(name: string, disallowedSet?: Set<string>): boolean {
 	return EXCLUDED_TOOL_NAMES.includes(name) || disallowedSet?.has(name) === true
 }
@@ -80,16 +91,30 @@ function getPromptToolNames(toolNames: string[], disallowedSet?: Set<string>): s
 	return toolNames.filter((name) => !isExcludedSubagentToolName(name, disallowedSet))
 }
 
-function getActiveSubagentToolNames(
+/**
+ * Compute the child session's active tool list from the persona's requested
+ * tools, the session's registered/active tools, and the persona's extension
+ * policy. Exported for tests: this filter is the gate that decides whether
+ * extension-registered tools (e.g. MCP) survive onto a subagent session.
+ */
+export function getActiveSubagentToolNames(
 	requestedToolNames: string[],
 	currentActiveToolNames: string[],
 	extensions: true | string[],
 	isRegisteredToolName: (name: string) => boolean,
 	disallowedSet?: Set<string>,
+	onDroppedUnregistered?: (names: string[]) => void,
 ): string[] {
 	const requestedToolNameSet = new Set(requestedToolNames)
 	const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
 	const candidates = new Set([...requestedToolNames, ...currentActiveToolNames])
+
+	if (onDroppedUnregistered) {
+		const dropped = requestedToolNames.filter(
+			(name) => !isExcludedSubagentToolName(name, disallowedSet) && !isRegisteredToolName(name),
+		)
+		if (dropped.length > 0) onDroppedUnregistered(dropped)
+	}
 
 	return [...candidates].filter((name) => {
 		if (isExcludedSubagentToolName(name, disallowedSet)) return false
@@ -99,6 +124,29 @@ function getActiveSubagentToolNames(
 		if (Array.isArray(extensions)) return extensions.some((ext) => name.startsWith(ext) || name.includes(ext))
 		return true
 	})
+}
+
+/**
+ * Requested names that did not make it into the child session's final active
+ * set, for any reason: unregistered, allowlist-filtered, resource-gated, or
+ * runner-excluded. `disallowed_tools` — the author's express opt-out — and
+ * runner-internal appends (SKILL_TOOL_NAME: appended for prompt
+ * documentation; no child session has ever registered a tool by that name,
+ * skills load via the brief preload blocks) are the only legitimate silences.
+ */
+export function computeDroppedToolNames(
+	requestedToolNames: string[],
+	activeToolNames: string[],
+	disallowedSet?: Set<string>,
+): string[] {
+	const activeSet = new Set(activeToolNames)
+	return [
+		...new Set(
+			requestedToolNames.filter(
+				(name) => name !== SKILL_TOOL_NAME && !disallowedSet?.has(name) && !activeSet.has(name),
+			),
+		),
+	]
 }
 
 import { markOrchestratorSteer } from "../../steer-marker.js"
@@ -268,6 +316,10 @@ export interface RunResult {
 	/** Skills auto-loaded into the system prompt because the task brief
 	 *  matched their declared triggers. */
 	autoLoadedSkills?: SkillTriggerHit[]
+	/** Requested tool names dropped because the subagent session had no
+	 *  registration for them (e.g. a `tools:` list naming a tool no extension
+	 *  registered). Surfaced as a warning on the Agent tool's result text. */
+	droppedToolNames?: string[]
 }
 
 function collectResponseText(session: AgentSession) {
@@ -436,8 +488,8 @@ Use the Skill tool to load a skill's full instructions when its description matc
 ${skillLines}`
 			// Add the Skill tool to the available tools (unless disallowed by persona config)
 			const disallowed = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
-			if (!toolNames.includes("Skill") && !disallowed?.has("Skill")) {
-				toolNames = [...toolNames, "Skill"]
+			if (!toolNames.includes(SKILL_TOOL_NAME) && !disallowed?.has(SKILL_TOOL_NAME)) {
+				toolNames = [...toolNames, SKILL_TOOL_NAME]
 			}
 		}
 	}
@@ -496,54 +548,27 @@ ${skillLines}`
 
 	const agentDir = getAgentDir()
 
-	// The subagent budget clamp must be wired with the deadline computed
-	// at run time (startTimeMs + maxDuration); effectiveMaxDuration was
-	// resolved above (with the budget block) so the bash clamp extension
-	// sees it at registration.
-	//
-	// Repo-native extensions registered directly by the Kimchi CLI are not
-	// discovered by a child session's DefaultResourceLoader. Register this
-	// safety hook explicitly so worker bash calls get a deterministic upper
-	// bound. When max_duration is 0 (unlimited), skip the wall-clock clamp
-	// and use the plain default-timeout extension instead.
-	const bashExtension =
-		effectiveMaxDuration > 0
-			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now(), type)
-			: subagentBashDefaultTimeoutExtension
-	// Subagents share this process and its patched retry classifier, so their
-	// successes must close the shared infrastructure breaker just like the parent's.
-	// Child sessions of a routed virtual model get the auto-model extension so
-	// pick learning and capability sync run there too, plus the system-prompt
-	// rebuild once a pick is known. No-op for concrete models (responseModel
-	// equals the requested id).
-	const autoExtensionFactories: InlineExtension[] = isAutoRoutedModel(model)
-		? [
-				createAutoModelRoutingExtension(),
-				(pi) => {
-					pi.on("before_agent_start", (_event, childCtx) => {
-						const effectiveModel = getEffectiveModel(childCtx)
-						const rebuilt = buildSystemPrompt(pi.getActiveTools(), effectiveModel?.id)
-						options.onSystemPrompt?.(rebuilt)
-						return { systemPrompt: rebuilt }
-					})
-				},
-			]
-		: []
-	const extensionFactories: InlineExtension[] = [
-		telemetryExtension(readEffectiveTelemetryConfig()),
-		...(isResourceEnabled(COST_PER_PR_RESOURCE_ID)
-			? [createWorkAttributionExtension(inheritedWorkId ?? null, inheritedSegment)]
-			: []),
-		requestTimingExtension,
-		...autoExtensionFactories,
-		bashExtension,
-		infrastructureBreakerExtension,
-	]
-	if (shouldRegisterDapForTools(toolNames)) {
-		extensionFactories.push(dapExtension)
-	}
-	if (options.workerReport) {
-		extensionFactories.push(createWorkerReportExtension(options.workerReport))
+	const extensionFactories = buildInlineExtensionFactories({
+		effectiveMaxDuration,
+		type,
+		model,
+		toolNames,
+		workerReport: options.workerReport,
+		costPerPrEnabled: isResourceEnabled(COST_PER_PR_RESOURCE_ID),
+		mcpAppsEnabled: isResourceEnabled("plugins.mcp-apps"),
+		inheritedWorkId,
+		inheritedSegment,
+		effectiveExtensions,
+		effectiveCwd,
+		buildSystemPrompt,
+		onSystemPrompt: options.onSystemPrompt,
+	})
+
+	// Web tools only exist for extension-enabled sessions: with extensions
+	// disabled the session is contractually hermetic, so don't register the
+	// factories at all (off means off — registration included).
+	if (effectiveExtensions !== false) {
+		extensionFactories.push(...subagentWebToolFactories())
 	}
 	// SubagentResourceLoader reads the system prompt live via the
 	// readSystemPrompt callback (see subagent-resource-loader.ts): after the
@@ -585,6 +610,51 @@ ${skillLines}`
 		modelRuntime,
 	}
 	if (effectiveExtensions === false) {
+		if (agentConfig?.source != null) {
+			// Fail fast for CUSTOM agents (source set by the user-agent loader):
+			// with extensions disabled, declared tools are honored only if the
+			// child session can actually register them — the upstream builtin
+			// set, the native Skill tool, or the DAP debugger's inline
+			// registration. Web tools intentionally do NOT qualify: an agent
+			// that wants web tools must enable extensions — fail fast with
+			// guidance instead of silently honoring or silently dropping.
+			// Built-in personas (no `source`) are untouched by this check, and
+			// disallowed_tools wins over everything — an agent that opted a
+			// name out is not failing to register it.
+			const dapRegistrable = shouldRegisterDapForTools(toolNames)
+			const unregistrableTools = toolNames.filter((name) => {
+				if (disallowedSet?.has(name)) return false
+				if (BUILTIN_TOOL_NAMES.includes(name) || name === SKILL_TOOL_NAME) return false
+				if (dapRegistrable && isDapToolName(name)) return false
+				return true
+			})
+			if (unregistrableTools.length > 0) {
+				// Two distinct classes with different honest remedies:
+				//   1. provisionable names — enabling extensions would fix them
+				//      (DAP-only failures have yet another remedy: the debugger
+				//      registers inline but its resource is disabled);
+				//   2. always-excluded names (Agent, resume_subagent, ferment tools)
+				//      — subagents NEVER receive these, regardless of the extensions
+				//      flag, so "enable extensions" would be a dead-end remedy.
+				const provisionable = unregistrableTools.filter((name) => !isExcludedSubagentToolName(name))
+				const neverReceived = unregistrableTools.filter((name) => isExcludedSubagentToolName(name))
+				const clauses: string[] = []
+				if (provisionable.length > 0) {
+					const remedy = provisionable.every(isDapToolName)
+						? `enable the "extensions.dap" resource in settings, enable extensions for this agent, or`
+						: "enable extensions for this agent, or"
+					clauses.push(
+						`${provisionable.map((n) => `"${sanitizeToolName(n)}"`).join(", ")} — ${remedy} remove these names from its 'tools:' list`,
+					)
+				}
+				if (neverReceived.length > 0) {
+					clauses.push(
+						`${neverReceived.map((n) => `"${sanitizeToolName(n)}"`).join(", ")} — subagents never receive these tools, remove them from its 'tools:' list`,
+					)
+				}
+				throw new Error(`Agent "${type}" declares non-builtin tool(s) but disables extensions — ${clauses.join("; ")}.`)
+			}
+		}
 		sessionOpts.tools = toolNames
 	}
 	if (thinkingLevel) {
@@ -602,6 +672,11 @@ ${skillLines}`
 		},
 	})
 
+	// Requested-but-unregistered tool names (e.g. a `tools:` list naming a tool
+	// no extension registered in the child session) — filled during tool
+	// resolution below, surfaced as a warning on the run result.
+	let droppedToolNames: string[] | undefined
+
 	if (effectiveExtensions !== false) {
 		const activeTools = getActiveSubagentToolNames(
 			toolNames,
@@ -610,6 +685,8 @@ ${skillLines}`
 			(name) => session.getToolDefinition(name) !== undefined,
 			disallowedSet,
 		)
+		const dropped = computeDroppedToolNames(toolNames, activeTools, disallowedSet)
+		if (dropped.length > 0) droppedToolNames = dropped
 		// upstream pi: only ACTIVE tools are callable (registered-but-inactive now
 		// fails tool lookup at execution time). The report tool registers for a
 		// ferment-linked worker but the extension-prefix filter above drops it
@@ -891,7 +968,134 @@ ${skillLines}`
 		maxTurns: effectiveMaxTurns,
 		planPath,
 		autoLoadedSkills,
+		droppedToolNames,
 	}
+}
+
+/** Inputs for {@link buildInlineExtensionFactories}. */
+export interface InlineExtensionFactoryDeps {
+	/** Resolved wall-clock budget in seconds; 0 = unlimited (default bash timeout instead of the clamp). */
+	effectiveMaxDuration: number
+	/** Subagent persona type — labels the bash clamp telemetry. */
+	type: SubagentType
+	/** Resolved run model; an auto-routed model adds the routing + prompt-rebuild factories. */
+	model: Model<Api> | undefined
+	/** Persona tool allowlist; debug_/step_ tool names gate the DAP extension via shouldRegisterDapForTools. */
+	toolNames: string[]
+	/** Host-bound report capability. Present only for Ferment-linked workers. */
+	workerReport?: WorkerReportCapability
+	/** Whether the cost-per-PR resource is enabled; false drops the work-attribution extension. */
+	costPerPrEnabled: boolean
+	/**
+	 * Whether the mcp-apps resource toggle is on (plugins.mcp-apps, same id as
+	 * the parent's gate in cli.ts). Off means off for subagents too, matching
+	 * the DAP sibling gate.
+	 */
+	mcpAppsEnabled: boolean
+	/** Work attribution inherited from the parent session; null marks attribution as unavailable. */
+	inheritedWorkId?: string | null
+	/** Work segment inherited from the parent session. */
+	inheritedSegment?: WorkSegment
+	/**
+	 * Post-workerReport-adjustment extensions gate resolved by the caller
+	 * (`options.workerReport && extensions === false ? [] : extensions`).
+	 * `false` marks an isolated child, which stays bare — no MCP tools. The
+	 * MCP adapter registers only for `true` or an allowlist containing "mcp";
+	 * allowlists without "mcp" (including the worker-report `[]` edge) skip it.
+	 */
+	effectiveExtensions: true | string[] | false
+	/** Resolved working directory; handed to the MCP adapter for config discovery. */
+	effectiveCwd: string
+	/** Rebuilds the subagent system prompt for an active-tool list / routed model id. */
+	buildSystemPrompt: (activeToolNames: string[], promptModelId?: string) => string
+	/** Notified with each rebuilt prompt (RunOptions.onSystemPrompt). */
+	onSystemPrompt?: (prompt: string) => void
+}
+
+/**
+ * Build the inline extension factory list for one subagent session.
+ *
+ * Composes the child session's inline extension list from `deps` plus a few
+ * process-level reads: the effective telemetry config, the DAP resource gate
+ * (shouldRegisterDapForTools), and the wall clock (`Date.now()`) feeding the
+ * bash clamp deadline. Assembles the factories in the canonical order —
+ * telemetry, work-attribution, request-timing, auto-model routing + prompt
+ * rebuild, bash clamp/default-timeout, infrastructure breaker, DAP,
+ * worker-report, MCP adapter.
+ */
+export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps): InlineExtension[] {
+	// The subagent budget clamp must be wired with the deadline computed
+	// at run time (startTimeMs + maxDuration).
+	//
+	// Repo-native extensions registered directly by the Kimchi CLI are not
+	// discovered by a child session's DefaultResourceLoader. Register this
+	// safety hook explicitly so worker bash calls get a deterministic upper
+	// bound. When max_duration is 0 (unlimited), skip the wall-clock clamp
+	// and use the plain default-timeout extension instead.
+	const bashExtension =
+		deps.effectiveMaxDuration > 0
+			? createSubagentBashClampExtension(deps.effectiveMaxDuration, Date.now(), deps.type)
+			: subagentBashDefaultTimeoutExtension
+	// Subagents share this process and its patched retry classifier, so their
+	// successes must close the shared infrastructure breaker just like the parent's.
+	// Child sessions of a routed virtual model get the auto-model extension so
+	// pick learning and capability sync run there too, plus the system-prompt
+	// rebuild once a pick is known. No-op for concrete models (responseModel
+	// equals the requested id).
+	const autoExtensionFactories: InlineExtension[] = isAutoRoutedModel(deps.model)
+		? [
+				createAutoModelRoutingExtension(),
+				(pi) => {
+					pi.on("before_agent_start", (_event, childCtx) => {
+						const effectiveModel = getEffectiveModel(childCtx)
+						const rebuilt = deps.buildSystemPrompt(pi.getActiveTools(), effectiveModel?.id)
+						deps.onSystemPrompt?.(rebuilt)
+						return { systemPrompt: rebuilt }
+					})
+				},
+			]
+		: []
+	const extensionFactories: InlineExtension[] = [
+		telemetryExtension(readEffectiveTelemetryConfig()),
+		...(deps.costPerPrEnabled
+			? [createWorkAttributionExtension(deps.inheritedWorkId ?? null, deps.inheritedSegment)]
+			: []),
+		requestTimingExtension,
+		...autoExtensionFactories,
+		bashExtension,
+		infrastructureBreakerExtension,
+		codexCorrelationExtension,
+	]
+	if (shouldRegisterDapForTools(deps.toolNames)) {
+		extensionFactories.push(dapExtension)
+	}
+	if (deps.workerReport) {
+		extensionFactories.push(createWorkerReportExtension(deps.workerReport))
+	}
+	// Non-isolated children get MCP tools (LLM-4465): repo-native extensions are
+	// invisible to a child session's resource loader, so the adapter must be
+	// registered inline. Gated on the persona asking for MCP — `true` (inherit
+	// everything) or an allowlist containing "mcp" — so an allowlist that
+	// excludes MCP (and the worker-report `[]` edge) never starts the adapter
+	// or spawns servers merely to filter its tool out afterwards. Appended
+	// last on purpose; the DAP × MCP ordering was verified safe for LLM-4472
+	// (per-session profile state, no ordering interaction).
+	// An allowlist entry is allowed to name the MCP namespace (the plain `mcp`
+	// proxy, or an mcp-prefixed tool/server name) — any such entry installs the
+	// adapter; the tool filter then decides which MCP tools actually surface.
+	if (
+		deps.mcpAppsEnabled &&
+		(deps.effectiveExtensions === true ||
+			(deps.effectiveExtensions !== false && deps.effectiveExtensions.some((ext) => ext.startsWith("mcp"))))
+	) {
+		// Headless children: drop config warnings (no UI; console output is noise
+		// in the parent process) and connect the built-in gateway lazily so a
+		// subagent spawn never opens an eager gateway connection.
+		extensionFactories.push(
+			createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd, suppressWarnings: true, lazyGatewayConnect: true }),
+		)
+	}
+	return extensionFactories
 }
 
 /**
@@ -917,6 +1121,13 @@ export async function resumeAgent(
 		onRuntimeCleanupRegistered?: (cleanup: () => void) => void
 	} = {},
 ): Promise<RunResult> {
+	// runAgentInner emits session_shutdown after every run (the per-run flush,
+	// mirroring the ACP pattern), which tears the MCP adapter's connections down
+	// terminally (its lifecycle manager cannot reconnect). A resumed session is
+	// the same AgentSession object, so restart its extensions with a fresh
+	// session_start — reason "resume", matching pi's own resumption event.
+	await session.extensionRunner?.emit({ type: "session_start", reason: "resume" })
+
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
@@ -1128,6 +1339,16 @@ export function getAgentConversation(session: AgentSession): string {
 // The extension registers its tools on the child's session_start, and the SDK
 // activates them because their names are in the session's tool allowlist.
 // Honors the extensions.dap /resources toggle: off means off for subagents too.
+function isDapToolName(name: string): boolean {
+	// Exact membership, not a debug_*/step_* prefix: a non-DAP tool (e.g. an
+	// MCP-provided "debug_metrics") must not be treated as a debugger name —
+	// it would escape the fail-fast check and then silently drop.
+	return (
+		(DAP_ENTRY_TOOL_NAMES as readonly string[]).includes(name) ||
+		(DAP_SESSION_TOOL_NAMES as readonly string[]).includes(name)
+	)
+}
+
 export function shouldRegisterDapForTools(toolNames: readonly string[]): boolean {
-	return isResourceEnabled("extensions.dap") && toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))
+	return isResourceEnabled("extensions.dap") && toolNames.some(isDapToolName)
 }

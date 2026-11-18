@@ -90,6 +90,19 @@ You are a senior X engineer who...
 (persona body — markdown, becomes the subagent's system prompt)
 ```
 
+### Invalid frontmatter
+
+The frontmatter must be valid YAML, with one exception: a single-line
+`description` or `display_name` may be written unquoted even when it contains
+`: ` or other YAML-special text. The whole line after the key is taken as the
+value, so agent files written for other tools usually load as they are.
+
+A file whose frontmatter still cannot be parsed is skipped. The other agents
+load, and kimchi shows a warning that names the file and the YAML error — once
+per session, when the session starts, when the `Agent` tool runs, and when
+`/agents` opens. A skipped file overrides nothing: a user, extension, or
+built-in agent with the same name stays active.
+
 ### Built-in tool names
 
 `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`
@@ -100,7 +113,9 @@ You are a senior X engineer who...
 - **`tools`** — Omit or set `none` to inherit/disable. Comma-separated lists
   restrict the agent to a subset.
 - **`extensions`** — `true` (default) inherits the parent's MCP and extension
-  tools. `false` disables them. A comma-list whitelists specific names.
+  tools. `false` disables them. A comma-list whitelists specific names. Any
+  entry in the MCP namespace (`mcp`, or an `mcp…`-named server/tool) enables
+  the MCP adapter; only matching MCP tools then surface.
 - **`skills`** — `true` (default) inherits all parent skills. A comma-list
   preloads named skills from the project's skill paths into the system prompt
   (useful when the agent needs reference material). Project skills in the nearest
@@ -220,6 +235,20 @@ Use it: *"Run an auditor in the background on this diff while I keep working."*
 The widget shows it running concurrently; the result lands as a notification
 when complete.
 
+### Web tools for all extension-enabled agents
+
+Every agent with `extensions: true` gets `web_search` and `web_fetch` in its
+child session by default — inherited via extension registration, not by name:
+the `tools:` list doesn't need to mention them. This covers read-only personas
+too: **Explore** is documented as read-only and now has network access through
+these first-class tools. (Its `bash` builtin could already `curl`; the change
+is that browsing no longer needs shell plumbing.)
+
+Remove web access for one agent with `disallowed_tools: web_search, web_fetch`,
+or for the whole org via the `web` resource toggle (`/resources`). Both are
+honored identically to any other extension-provided tool, and a tool dropped
+this way never warns — deliberate opt-outs stay silent.
+
 ### Tool restrictions via `extensions: false`
 
 `.kimchi/agents/file-mapper.md`:
@@ -239,6 +268,21 @@ report grouped by relevance. No analysis, no suggestions.
 
 `extensions: false` strips MCP-provided tools so this agent can't accidentally
 call into a heavy database or browser tool.
+
+For **custom agents**, the same flag is a hard contract: the runner registers
+no extension-provided tools (bundled web tools included — off means off), and
+spawning fails fast with an actionable error if the `tools:` list names
+anything the child session can't honor (builtins, the native `Skill` tool,
+and DAP debug tools via the `extensions.dap` resource are the only registerable
+names on this path). Previously such names were silently dropped and the agent
+ran without them; the fail-fast turns that latent misconfiguration into an
+explicit error at spawn. Remedies: enable extensions for the agent, remove the
+names from its `tools:` list, or — if every name is explicitly opted out via
+`disallowed_tools` — nothing, that's respected. Two classes: names the runner
+always excludes from subagent sessions (`Agent`, `resume_subagent`, ferment
+tools) trigger the same spawn failure but with "subagents never receive these"
+as the remedy — enabling extensions cannot register them either. Built-in personas are exempt
+from this check and behave exactly as before.
 
 ### Adaptive model selection with `models`
 

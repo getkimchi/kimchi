@@ -7,16 +7,16 @@ import type { SessionNotification } from "@agentclientprotocol/sdk"
 import { afterEach, describe, expect, it } from "vitest"
 import type { ProcessRegistry } from "../../../extensions/bash-background/process-registry.js"
 import { type BashSessionState, setSessionState } from "../../../extensions/bash-background/session-registry.js"
+import type { BashBackgroundSettleOutcome } from "../../../shared/bash-background-settle.js"
 import {
 	type BackgroundToolCallContext,
-	type BashBackgroundSettleOutcome,
 	type HeldBackgroundToolCall,
 	holdAndWatchBackgroundToolCall,
 } from "./background.js"
 
 const SESSION_ID = "background-settle-test"
 
-type PersistedSettle = { piToolCallId: string; outcome: BashBackgroundSettleOutcome }
+type PersistedSettle = { piToolCallId: string; outcome: BashBackgroundSettleOutcome; acpToolCallId: string }
 
 function makeCtx(): {
 	ctx: BackgroundToolCallContext
@@ -35,9 +35,9 @@ function makeCtx(): {
 		displayContent: (_sid, content) => content,
 		displayRecord: (_sid, value) => value,
 		isCurrent: () => true,
-		persistSettle: (piToolCallId, outcome) => {
+		persistSettle: (piToolCallId, outcome, acpToolCallId) => {
 			order.push("persist")
-			persisted.push({ piToolCallId, outcome })
+			persisted.push({ piToolCallId, outcome, acpToolCallId })
 		},
 	}
 	return { ctx, sent, persisted, order }
@@ -73,6 +73,9 @@ describe("holdAndWatchBackgroundToolCall settle persistence", () => {
 
 		expect(persisted).toHaveLength(1)
 		expect(persisted[0]?.piToolCallId).toBe("pi-1")
+		// The ACP id travels with the settle so replay can re-bind the row the
+		// live client already holds (wake-replay zombie fix).
+		expect(persisted[0]?.acpToolCallId).toBe("acp-1")
 		expect(persisted[0]?.outcome).toMatchObject({
 			isError: true,
 			text: "boom",

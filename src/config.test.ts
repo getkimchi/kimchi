@@ -6,6 +6,7 @@ import {
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	ensureBuiltinCodemodeDisabled,
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
@@ -1806,6 +1807,32 @@ describe("ensureBuiltinMcpDisabled", () => {
 		const settings: Record<string, unknown> = { extensions: { "builtin:mcp": false } }
 		expect(ensureBuiltinMcpDisabled(settings)).toBe(false)
 		expect(settings.extensions).toEqual({ "builtin:mcp": false })
+	})
+})
+
+describe("ensureBuiltinCodemodeDisabled", () => {
+	it("appends -builtin:codemode without replacing existing Kimchi overrides", () => {
+		const settings: Record<string, unknown> = { extensions: ["-builtin:mcp", "./my-ext.ts"] }
+		expect(ensureBuiltinCodemodeDisabled(settings)).toBe(true)
+		expect(settings.extensions).toEqual(["-builtin:mcp", "./my-ext.ts", "-builtin:codemode"])
+	})
+
+	it("seeds the override when extensions is absent and then leaves it alone", () => {
+		const settings: Record<string, unknown> = {}
+		expect(ensureBuiltinCodemodeDisabled(settings)).toBe(true)
+		expect(settings.extensions).toEqual(["-builtin:codemode"])
+		expect(ensureBuiltinCodemodeDisabled(settings)).toBe(false)
+	})
+
+	it.each([
+		"-builtin:codemode",
+		"+builtin:codemode",
+		"!builtin:codemode",
+		"builtin:codemode",
+	])("preserves an explicit %s choice", (entry) => {
+		const settings = { extensions: [entry] }
+		expect(ensureBuiltinCodemodeDisabled(settings)).toBe(false)
+		expect(settings.extensions).toEqual([entry])
 	})
 })
 

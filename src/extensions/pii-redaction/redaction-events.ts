@@ -38,7 +38,7 @@ export interface PiiRedactedPayload {
 	 */
 	entity_type: string
 	/**
-	 * The category the entity belongs to (e.g. emails, network) — the unit
+	 * The category the entity belongs to (e.g. credentials, identity_documents) — the unit
 	 * admins toggle. "custom" when the marker has no catalog attribution.
 	 */
 	category: string

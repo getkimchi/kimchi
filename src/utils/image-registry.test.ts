@@ -1,15 +1,22 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+	__resetImageRegistryForTest,
 	addImage,
-	clearAllImages,
+	clearSessionImages,
 	getAllImages,
 	getImagesByIds,
 	parseImageReferences,
+	removeSessionScope,
+	resolveImageContentById,
+	restoreSessionImages,
 	setImageCacheDir,
 } from "./image-registry.js"
+
+const SESSION = "session-a"
+const OTHER_SESSION = "session-b"
 
 function makeImage(
 	data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",
@@ -19,54 +26,109 @@ function makeImage(
 
 describe("image-registry", () => {
 	let dir: string
+	let otherDir: string
 
 	beforeEach(() => {
+		__resetImageRegistryForTest()
 		dir = mkdtempSync(join(tmpdir(), "imgreg-test-"))
-		setImageCacheDir(dir)
-		clearAllImages()
-		// clearAllImages recreates the dir, so re-point in case it changed
-		setImageCacheDir(dir)
+		otherDir = mkdtempSync(join(tmpdir(), "imgreg-test-b-"))
+		setImageCacheDir(SESSION, dir)
+		clearSessionImages(SESSION)
+		// clearSessionImages recreates the dir, so re-point in case it changed
+		setImageCacheDir(SESSION, dir)
 	})
 
 	afterEach(() => {
-		clearAllImages()
+		clearSessionImages(SESSION)
+		clearSessionImages(OTHER_SESSION)
+		__resetImageRegistryForTest()
 		try {
 			rmSync(dir, { recursive: true, force: true })
+			rmSync(otherDir, { recursive: true, force: true })
 		} catch {
 			// ignore
 		}
 	})
 
-	it("writes a file on addImage and registers the entry", () => {
-		const entry = addImage(1, makeImage())
+	it("resolveImageContentById reconstructs the registered image from its cached file", () => {
+		addImage(SESSION, 7, makeImage())
+		expect(resolveImageContentById(SESSION, 7)).toEqual({ kind: "ok", image: makeImage() })
+	})
+
+	it("resolveImageContentById distinguishes unknown ids from missing files", () => {
+		expect(resolveImageContentById(SESSION, 3)).toEqual({ kind: "unknown" })
+		const entry = addImage(SESSION, 4, makeImage())
+		rmSync(entry.path)
+		expect(resolveImageContentById(SESSION, 4)).toEqual({ kind: "missing-file", path: entry.path })
+	})
+
+	it("resolveImageContentById reports a read error for an unreadable registered path", () => {
+		const entry = addImage(SESSION, 5, makeImage())
+		// A directory at the file's path makes readFileSync throw EISDIR.
+		rmSync(entry.path)
+		mkdirSync(entry.path, { recursive: true })
+		const result = resolveImageContentById(SESSION, 5)
+		expect(result.kind).toBe("read-error")
+	})
+
+	it("writes a file on addImage and registers the entry with its owning session", () => {
+		const entry = addImage(SESSION, 1, makeImage())
 		expect(entry.id).toBe(1)
+		expect(entry.sessionId).toBe(SESSION)
 		expect(entry.path.endsWith("1.png")).toBe(true)
 		expect(existsSync(entry.path)).toBe(true)
 		expect(entry.sha1).toMatch(/^[a-f0-9]{40}$/)
 	})
 
+	it("scopes entries per session: same id in two sessions does not collide", () => {
+		setImageCacheDir(OTHER_SESSION, otherDir)
+		const imageA = makeImage("c2Vzc2lvbi1hLWJ5dGVz") // "session-a-bytes"
+		const imageB = makeImage("c2Vzc2lvbi1iLWJ5dGVz") // "session-b-bytes"
+		addImage(SESSION, 1, imageA)
+		addImage(OTHER_SESSION, 1, imageB)
+
+		expect(resolveImageContentById(SESSION, 1)).toEqual({ kind: "ok", image: imageA })
+		expect(resolveImageContentById(OTHER_SESSION, 1)).toEqual({ kind: "ok", image: imageB })
+	})
+
+	it("a second session starting does not wipe the first session's registry", () => {
+		setImageCacheDir(OTHER_SESSION, otherDir)
+		addImage(SESSION, 1, makeImage())
+		// Session B starts: extension clears only B's scope and points B at its dir.
+		clearSessionImages(OTHER_SESSION)
+		addImage(OTHER_SESSION, 1, makeImage("b3RoZXItYnl0ZXM="))
+		// Session A's marker resolves to A's bytes, not B's.
+		expect(resolveImageContentById(SESSION, 1)).toEqual({ kind: "ok", image: makeImage() })
+		expect(getAllImages(SESSION)).toHaveLength(1)
+	})
+
 	it("getAllImages returns entries sorted by id", () => {
-		addImage(3, makeImage())
-		addImage(1, makeImage())
-		addImage(2, makeImage())
-		const all = getAllImages()
+		addImage(SESSION, 3, makeImage())
+		addImage(SESSION, 1, makeImage())
+		addImage(SESSION, 2, makeImage())
+		const all = getAllImages(SESSION)
 		expect(all.map((e) => e.id)).toEqual([1, 2, 3])
 	})
 
 	it("getImagesByIds preserves caller-supplied order and skips unknown ids", () => {
-		addImage(1, makeImage())
-		addImage(2, makeImage())
-		const got = getImagesByIds([2, 99, 1])
+		addImage(SESSION, 1, makeImage())
+		addImage(SESSION, 2, makeImage())
+		const got = getImagesByIds(SESSION, [2, 99, 1])
 		expect(got.map((e) => e.id)).toEqual([2, 1])
 	})
 
-	it("clearAllImages deletes the directory contents and registry", () => {
-		addImage(1, makeImage())
-		addImage(2, makeImage())
-		expect(readdirSync(dir).length).toBe(2)
-		clearAllImages()
-		expect(getAllImages()).toEqual([])
+	it("clearSessionImages deletes the owning session's directory contents and registry only", () => {
+		setImageCacheDir(OTHER_SESSION, otherDir)
+		addImage(SESSION, 1, makeImage())
+		addImage(SESSION, 2, makeImage())
+		addImage(OTHER_SESSION, 3, makeImage())
+		// Two cached images plus the manifest written on every addImage.
+		expect(readdirSync(dir).length).toBe(3)
+		clearSessionImages(SESSION)
+		expect(getAllImages(SESSION)).toEqual([])
 		expect(readdirSync(dir).length).toBe(0)
+		expect(getAllImages(OTHER_SESSION)).toHaveLength(1)
+		expect(readdirSync(otherDir).filter((f) => f !== "manifest.json")).toHaveLength(1)
 	})
 
 	it("parseImageReferences extracts unique ids in order of first appearance", () => {
@@ -78,10 +140,53 @@ describe("image-registry", () => {
 	})
 
 	it("re-adding the same id overwrites the entry but keeps the file", () => {
-		const a = addImage(1, makeImage())
-		const b = addImage(1, makeImage())
+		const a = addImage(SESSION, 1, makeImage())
+		const b = addImage(SESSION, 1, makeImage())
 		expect(b.id).toBe(1)
 		expect(b.path).toBe(a.path)
-		expect(getAllImages()).toHaveLength(1)
+		expect(getAllImages(SESSION)).toHaveLength(1)
+	})
+
+	it("persists a manifest on addImage so entries survive an in-memory scope loss", () => {
+		addImage(SESSION, 1, makeImage())
+		addImage(SESSION, 3, makeImage())
+		expect(existsSync(join(dir, "manifest.json"))).toBe(true)
+
+		removeSessionScope(SESSION)
+		expect(getAllImages(SESSION)).toEqual([])
+		// The files outlive the scope; resolution fails only because the entry
+		// map is gone (this is the resume-after-restart starting point).
+		expect(resolveImageContentById(SESSION, 3)).toEqual({ kind: "unknown" })
+
+		setImageCacheDir(SESSION, dir)
+		expect(restoreSessionImages(SESSION)).toBe(3)
+		expect(resolveImageContentById(SESSION, 3)).toEqual({ kind: "ok", image: makeImage() })
+		expect(resolveImageContentById(SESSION, 1)).toEqual({ kind: "ok", image: makeImage() })
+	})
+
+	it("restoreSessionImages skips manifest entries whose file is gone and ignores unknown sessions", () => {
+		const entry = addImage(SESSION, 2, makeImage())
+		rmSync(entry.path)
+		removeSessionScope(SESSION)
+		setImageCacheDir(SESSION, dir)
+		expect(restoreSessionImages(SESSION)).toBe(0)
+		expect(getAllImages(SESSION)).toEqual([])
+		expect(restoreSessionImages("never-seen")).toBe(0)
+	})
+
+	it("restoreSessionImages returns the existing max id when the scope already has entries", () => {
+		addImage(SESSION, 5, makeImage())
+		expect(restoreSessionImages(SESSION)).toBe(5)
+		expect(getAllImages(SESSION).map((e) => e.id)).toEqual([5])
+	})
+
+	it("removeSessionScope frees memory but keeps cache files for a later restore", () => {
+		addImage(SESSION, 1, makeImage())
+		removeSessionScope(SESSION)
+		expect(getAllImages(SESSION)).toEqual([])
+		expect(readdirSync(dir).length).toBeGreaterThan(0)
+		setImageCacheDir(SESSION, dir)
+		restoreSessionImages(SESSION)
+		expect(resolveImageContentById(SESSION, 1)).toEqual({ kind: "ok", image: makeImage() })
 	})
 })

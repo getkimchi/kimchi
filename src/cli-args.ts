@@ -186,7 +186,7 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	"pr-watch": {
 		type: "boolean",
-		description: "Watch this session's branch for a PR (read-only; /pr-watch enables fixes)",
+		description: "Watch the PR for this session's branch (read-only; /pr-watch enables fixes)",
 	},
 	auto: {
 		type: "boolean",

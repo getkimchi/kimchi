@@ -137,6 +137,27 @@ it.each([
 				sessionId,
 				prompt: [{ type: "text", text: "watch this https://github.com/example/kimchi-lab/pull/7 pr" }],
 			})
+			const watchCall = fixture.client.sessionUpdates.find(
+				(update) => update.update.sessionUpdate === "tool_call" && update.update.title === "pr_watch",
+			)?.update
+			expect(watchCall).toMatchObject({
+				title: "pr_watch",
+				kind: "other",
+				rawInput: { url: "https://github.com/example/kimchi-lab/pull/7" },
+			})
+			expect(
+				fixture.client.sessionUpdates.find(
+					(update) =>
+						update.update.sessionUpdate === "tool_call_update" &&
+						update.update.toolCallId === watchCall?.toolCallId &&
+						update.update.rawOutput !== undefined,
+				)?.update,
+			).toMatchObject({
+				status: "completed",
+				rawOutput: {
+					content: [{ type: "text", text: toolResultText(fixture.fake.requests, "watch") }],
+				},
+			})
 			expect(fixture.fake.requests.some((request) => requestAdvertisesTool(request, "pr_watch"))).toBe(true)
 		} else if (kind === "command" || kind === "flag") {
 			await fixture.conn.prompt({

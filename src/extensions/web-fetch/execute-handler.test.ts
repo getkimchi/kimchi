@@ -73,6 +73,39 @@ function mockFetchResult(
 }
 
 describe("executeWebFetch", () => {
+	describe("redirect revalidation", () => {
+		it("rejects a redirect whose final URL resolves to a private or metadata address", async () => {
+			// The pre-fetch validateURL only covers the requested URL; fetchPage
+			// follows redirects, so the final URL must be revalidated before
+			// serving the body.
+			fetchPageMock.mockResolvedValue(
+				mockFetchResult("metadata payload", { finalURL: "http://169.254.169.254/latest/meta-data/" }),
+			)
+			vi.mocked(validateURL)
+				.mockReturnValueOnce({ valid: true, url: new URL("https://example.com/") })
+				.mockReturnValueOnce({ valid: false, error: "URL resolves to a private or metadata address" })
+
+			const result = await executeWebFetch({ url: "https://example.com/" })
+
+			expect(result.content[0].text).toBe(
+				"Error: redirect target blocked: URL resolves to a private or metadata address",
+			)
+			expect(cacheSetMock).not.toHaveBeenCalled()
+		})
+
+		it("serves the body when the redirect target passes validation", async () => {
+			fetchPageMock.mockResolvedValue(
+				mockFetchResult("<p>Hello</p>", { finalURL: "https://other.example.com/landing" }),
+			)
+			convertContentMock.mockReturnValue("Hello")
+
+			const result = await executeWebFetch({ url: "https://example.com/" })
+
+			expect(result.content[0].text).toContain("Final URL: https://other.example.com/landing")
+			expect(result.content[0].text).toContain("Hello")
+		})
+	})
+
 	describe("timeout parameter", () => {
 		it("passes timeout to fetchPage when provided", async () => {
 			fetchPageMock.mockResolvedValue(mockFetchResult("<p>Hello</p>"))

@@ -5,7 +5,7 @@
  * The same policy shape is accepted from two sources:
  *
  *   - local settings.json `redaction` block:
- *       { "categories": { "network": "off" }, "entities": { "PHONE_NUMBER": "on" },
+ *       { "categories": { "environment": "off" }, "entities": { "PHONE_NUMBER": "on" },
  *         "customEntities": [{ "name", "category", "pattern", "flags"?, "secretGroup"? }] }
  *     Local input is strict: an unknown category/entity or an invalid custom
  *     entity THROWS (fail-visible, same convention as excludedEntities).
@@ -34,7 +34,8 @@
  *     "the anchored custom patterns run" (the default). Entity OFF excludes
  *     the engine detector AND skips the kimchi/user custom patterns with
  *     the same name — including SECRET_FIELD's JSON-key force-redaction.
- * GUID is not configurable: it has no category.
+ * Names in PERMANENT_ENGINE_EXCLUSIONS are not configurable: no registry
+ * entry, permanently suppressed engine-side.
  */
 
 import {
@@ -44,6 +45,7 @@ import {
 	isKnownEntity,
 	isRedactionCategory,
 	listRedactionCatalog,
+	PERMANENT_ENGINE_EXCLUSIONS,
 	type RedactionCategory,
 } from "./entity-tiers.js"
 
@@ -110,6 +112,22 @@ const CUSTOM_ENTITY_NAME_RE = /^[A-Z][A-Z0-9_]{2,63}$/
 const CUSTOM_ENTITY_FLAGS_RE = /^[imsu]{0,4}$/
 const MAX_CUSTOM_ENTITIES = 50
 const MAX_PATTERN_LENGTH = 512
+
+/** Stored custom definitions may still use the previous label vocabulary.
+ * Normalize that DISPLAY/GROUPING metadata on parse; entity-level states do
+ * not pass through this map. Category-keyed policy rows are a separate wire
+ * contract and deliberately keep their documented validation semantics. */
+const LEGACY_LABEL_MAP: Readonly<Record<string, RedactionCategory>> = {
+	secrets: "credentials",
+	credentialed_urls: "credentials",
+	identity_documents: "identity_documents",
+	emails: "person_data",
+	phones: "person_data",
+	personal_details: "person_data",
+	financial: "financial",
+	local_paths: "environment",
+	network: "environment",
+}
 /**
  * ReDoS gate: reject a quantified group whose BODY — including every
  * nested group — contains alternation or another quantifier (`(a|a)*`,
@@ -280,7 +298,8 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			invalid(ctx, `${label}.name is duplicated`)
 			continue
 		}
-		const category = e.category
+		const rawCategory = e.category
+		const category = typeof rawCategory === "string" ? (LEGACY_LABEL_MAP[rawCategory] ?? rawCategory) : rawCategory
 		if (typeof category !== "string" || !isRedactionCategory(category)) {
 			invalid(ctx, `${label}.category must be one of the known categories`)
 			continue
@@ -295,9 +314,12 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			invalid(ctx, `${label}.flags must be a subset of "imsu"`)
 			continue
 		}
-		const secretGroup = e.secretGroup
-		if (secretGroup !== undefined && (!Number.isInteger(secretGroup) || (secretGroup as number) < 1)) {
-			invalid(ctx, `${label}.secretGroup must be a positive integer`)
+		const normalizedSecretGroup = e.secretGroup === 0 ? undefined : e.secretGroup
+		if (
+			normalizedSecretGroup !== undefined &&
+			(!Number.isInteger(normalizedSecretGroup) || (normalizedSecretGroup as number) < 1)
+		) {
+			invalid(ctx, `${label}.secretGroup must be a positive integer or 0 for whole-match replacement`)
 			continue
 		}
 		if (hasReDoSRisk(pattern)) {
@@ -312,8 +334,9 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			continue
 		}
 		if (
-			secretGroup !== undefined &&
-			(secretGroup as number) > countPatternCaptureGroups(compiled, typeof flags === "string" ? flags : undefined)
+			normalizedSecretGroup !== undefined &&
+			(normalizedSecretGroup as number) >
+				countPatternCaptureGroups(compiled, typeof flags === "string" ? flags : undefined)
 		) {
 			invalid(ctx, `${label}.secretGroup exceeds the pattern's capture-group count`)
 			continue
@@ -324,7 +347,7 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			category,
 			pattern,
 			flags: typeof flags === "string" ? flags : undefined,
-			secretGroup: typeof secretGroup === "number" ? secretGroup : undefined,
+			secretGroup: typeof normalizedSecretGroup === "number" ? normalizedSecretGroup : undefined,
 		})
 	}
 	return out
@@ -420,7 +443,7 @@ function resolveRedactionPolicyUncached(managed?: RedactionPolicy, local?: Local
 	const legacy = local !== undefined && "legacyExcluded" in local ? local.legacyExcluded : undefined
 	const localPolicy = legacy !== undefined ? undefined : (local as RedactionPolicy | undefined)
 
-	// Universe: registered entities with a category (GUID has none) plus the
+	// Universe: registered entities (all categorized) plus the
 	// custom definitions from both layers. Managed custom definitions win on
 	// a name collision with local ones.
 	const customDefs = new Map<string, CustomEntityDef>()
@@ -450,7 +473,9 @@ function resolveRedactionPolicyUncached(managed?: RedactionPolicy, local?: Local
 	let engineExclusions: string[]
 	const disabled = new Set<string>()
 	if (legacy !== undefined) {
-		engineExclusions = [...legacy]
+		// The legacy list replaces the tier-driven baseline wholesale — except
+		// PERMANENT_ENGINE_EXCLUSIONS, which no path may un-exclude.
+		engineExclusions = [...new Set([...legacy, ...PERMANENT_ENGINE_EXCLUSIONS])]
 		for (const name of legacy) disabled.add(name)
 	} else {
 		engineExclusions = getDefaultExcludedEntities()
@@ -511,7 +536,11 @@ export function parseLegacyExcludedEntities(raw: unknown): string[] {
 		throw new Error('settings.json "redaction.excludedEntities" must be an array of strings')
 	}
 	for (const name of raw as string[]) {
-		if (!isKnownEntity(name)) {
+		// PERMANENT_ENGINE_EXCLUSIONS names describe real engine detectors we
+		// suppress without a registry entry, so they are valid things to keep
+		// off; users copying the default exclusion list into settings must not
+		// hit "unknown entity".
+		if (!isKnownEntity(name) && !PERMANENT_ENGINE_EXCLUSIONS.includes(name)) {
 			throw new Error(`settings.json "redaction.excludedEntities": unknown entity "${name}"`)
 		}
 	}

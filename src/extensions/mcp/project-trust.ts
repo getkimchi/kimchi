@@ -24,6 +24,16 @@ interface McpProjectTrustOptions {
 	defaultProjectTrust?: DefaultProjectTrust
 }
 
+/**
+ * Answers to "Trust (this session only)", keyed by cwd. The persisted store
+ * never sees these, but subagents spawned by the same process re-run this
+ * resolver headlessly — without the cache every child would fail closed and
+ * silently drop the project MCP servers the parent is already using. A key
+ * is only ever written after a real prompt in a TUI session, so the cache
+ * cannot widen trust beyond an explicit interactive pick.
+ */
+const sessionTrustCache = new Map<string, boolean>()
+
 function readDefaultProjectTrust(cwd: string, agentDir: string): DefaultProjectTrust | undefined {
 	try {
 		return SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust()
@@ -54,6 +64,8 @@ export async function resolveMcpProjectTrust(
 		const trustStore = new ProjectTrustStore(agentDir)
 		const storedDecision = trustStore.get(ctx.cwd)
 		if (storedDecision !== null) return storedDecision
+		const sessionDecision = sessionTrustCache.get(ctx.cwd)
+		if (sessionDecision !== undefined) return sessionDecision
 
 		const defaultProjectTrust = options.defaultProjectTrust ?? readDefaultProjectTrust(ctx.cwd, agentDir)
 		if (defaultProjectTrust === "always") return true
@@ -67,7 +79,10 @@ export async function resolveMcpProjectTrust(
 			trustStore.set(ctx.cwd, true)
 			return true
 		}
-		if (selected === TRUST_ONCE) return true
+		if (selected === TRUST_ONCE) {
+			sessionTrustCache.set(ctx.cwd, true)
+			return true
+		}
 		if (selected === DO_NOT_TRUST) trustStore.set(ctx.cwd, false)
 		return false
 	} catch {

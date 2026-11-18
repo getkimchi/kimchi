@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import type { TelemetryAttributes } from "./session-context.js"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -143,4 +144,11 @@ export function extractFilePath(args: ToolArgs): string {
 /** Return a short (12-char) hex hash of a file path for privacy-safe telemetry. */
 export function hashFilePath(filePath: string): string {
 	return createHash("sha256").update(filePath).digest("hex").slice(0, 12)
+}
+
+/** Nested-call attribution shared by every record that can describe a call
+ *  issued by another tool (a codemode script): `nested: true` plus the parent
+ *  call id when present, nothing for direct model-issued calls. */
+export function nestedAttrsFor(parentToolCallId: string | undefined): TelemetryAttributes {
+	return parentToolCallId ? { nested: true, parent_tool_use_id: parentToolCallId } : {}
 }

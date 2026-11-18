@@ -81,6 +81,11 @@ describe("createBackgroundBashToolDefinition — shape", () => {
 		expect(tool.description).not.toContain("timeout")
 		expect(tool.description).not.toContain("checkin_interval")
 	})
+
+	it("does not advertise upstream PI_* environment variables that background bash never injects", () => {
+		const upstream = makeTool(createFakeOps())
+		expect(upstream.promptGuidelines).toBeUndefined()
+	})
 })
 
 describe("createBackgroundBashToolDefinition — exit before handoff", () => {

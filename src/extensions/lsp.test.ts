@@ -406,7 +406,9 @@ describe("session hooks", () => {
 			expect(result.content[0].text).not.toContain("outside the session workspace")
 			expect(result.content[0].text).toContain("No hover information")
 		} finally {
-			rmSync(alias, { force: true })
+			// recursive: Node ≥24 throws ERR_FS_EISDIR for a non-recursive rm of a
+			// symlink-to-directory; recursive still removes the link itself only.
+			rmSync(alias, { force: true, recursive: true })
 			rmSync(real, { recursive: true, force: true })
 		}
 	})

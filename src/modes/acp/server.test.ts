@@ -29,6 +29,7 @@ import {
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	type CompactionResult,
 	type ExtensionContext,
 	type ExtensionUIContext,
 	estimateTokens,
@@ -59,6 +60,10 @@ import {
 	resetProjectScopeTrustForTests,
 	setProjectScopeTrusted,
 } from "../../project-scope-trust.js"
+import {
+	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
+	type BashBackgroundSettleData,
+} from "../../shared/bash-background-settle.js"
 
 // Palette tests can inject file-change notifications without OS startup races.
 // Other tests keep native watching; skill-watcher.test.ts covers disk events.
@@ -94,11 +99,19 @@ vi.mock("../../config.js", async (importOriginal) => {
 		loadConfig: vi.fn(actual.loadConfig),
 	}
 })
-// Mock the model cache refresh so tests don't hit the network.
-vi.mock("../../models.js", () => ({
-	updateModelsConfig: vi.fn(),
-	applyOrganizationHeader: vi.fn(),
-}))
+// Mock the model cache refresh so tests don't hit the network. The real
+// module stays loaded for the thinking-level curation registry
+// (registerModelThinkingLevels / getModelThinkingLevels), which the
+// reasoning_effort config option reads.
+vi.mock(
+	"../../models.js",
+	async (importOriginal) =>
+		await importOriginal<typeof import("../../models.js")>().then((actual) => ({
+			...actual,
+			updateModelsConfig: vi.fn(),
+			applyOrganizationHeader: vi.fn(),
+		})),
+)
 // Hermetic settle tail: keep clearPiAuth/syncPiAuth real (logout tests use
 // them against temp dirs) but stub the OAuth credential fan-out.
 vi.mock("../../pi-auth.js", async (importOriginal) => ({
@@ -183,11 +196,17 @@ import {
 	vaultForSession,
 } from "../../extensions/pii-redaction/vault.js"
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
-import { updateModelsConfig } from "../../models.js"
+import { __clearModelThinkingLevelsForTest, registerModelThinkingLevels, updateModelsConfig } from "../../models.js"
+import { syncOAuthCredentialToKimchiProviders } from "../../pi-auth.js"
 import { discoveredSelfHostedRegion, regionEndpoints } from "../../regions.js"
-import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
+import {
+	ACP_LIFETIME_USAGE_META_KEY,
+	ACP_REATTACH_MID_TURN_META_KEY,
+	parseToolCallId,
+} from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { COMPACT_COMMAND_ENTRY_TYPE } from "./commands.js"
 import type { SsoFlowManager } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -246,6 +265,9 @@ interface FakeModel {
 	name?: string
 	input?: string[]
 	contextWindow?: number
+	/** Thinking surface for the reasoning_effort config option tests. */
+	reasoning?: boolean
+	thinkingLevelMap?: Record<string, string | null>
 }
 
 /** Options passed through `AgentSession.prompt()` to the fake. */
@@ -439,6 +461,30 @@ class FakeAgentSession {
 
 	async setModel(model: { provider: string; id: string }): Promise<void> {
 		this.model = model
+	}
+
+	// Reasoning-effort seam: the current level plus a tape of every
+	// setThinkingLevel call, mirroring the real AgentSession getter/setter.
+	thinkingLevel = "off"
+	setThinkingLevelCalls: string[] = []
+	setThinkingLevel(level: string): void {
+		this.setThinkingLevelCalls.push(level)
+		this.thinkingLevel = level
+	}
+
+	// Compaction seam for the /compact command: the gate prompt() reads, the
+	// call tape the command routes through handleCompact, and the impl tests
+	// override for terminal-outcome variants.
+	isCompacting = false
+	compactCalls: Array<{ instructions?: string; force?: boolean }> = []
+	compactImpl: (instructions?: string, force?: boolean) => Promise<CompactionResult> = async () => ({
+		summary: "fake compaction summary",
+		firstKeptEntryId: "entry-1",
+		tokensBefore: 12_345,
+	})
+	async compact(instructions?: string, force?: boolean): Promise<CompactionResult> {
+		this.compactCalls.push({ instructions, force })
+		return this.compactImpl(instructions, force)
 	}
 
 	async abort(): Promise<void> {
@@ -1463,6 +1509,42 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 		})
 
+		it.each([
+			{ flow: "API key", methodId: "kimchi-agent" },
+			{ flow: "SSO", methodId: "kimchi-sso-us" },
+		])("preserves a repeated $flow credential's rejection through a cached model refresh", async ({ methodId }) => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_REGION", "us")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempAgentDir)
+			resetCredentialStalenessForTests()
+			onTestFinished(() => {
+				resetCredentialStalenessForTests()
+				vi.unstubAllEnvs()
+			})
+			const token = methodId === "kimchi-agent" ? "castai_v1_test-token" : "castai_v1_sso-token"
+			markCredentialStale(token, "kimchi-dev")
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			// A transient refresh failure with cached models neither authenticates
+			// the repeated credential nor records another rejection for it.
+			vi.mocked(updateModelsConfig).mockResolvedValueOnce({ models: [] })
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				methodId === "kimchi-sso-us" ? sso.manager : undefined,
+			)
+
+			await testAgent.authenticate({ methodId })
+
+			expect(isCredentialStale(token, "kimchi-dev")).toBe(true)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale(token, "kimchi-dev")).toBe(true)
+		})
+
 		// ---- Cast AI SSO: the plain authenticate() path ----
 
 		it("authenticates with kimchi-sso-us: drives the stepwise SSO flow with the region pin", async () => {
@@ -1496,6 +1578,110 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// The web-app Agent Auth handoff is a different method — untouched.
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 			expect(writeApiKey).not.toHaveBeenCalled()
+		})
+
+		it("preserves a rejected SSO bearer when model refresh falls back to cached models", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempAgentDir)
+			resetCredentialStalenessForTests()
+			onTestFinished(() => {
+				resetCredentialStalenessForTests()
+				vi.unstubAllEnvs()
+			})
+			// A cached fallback resolves the refresh with models after recording
+			// its 401; it is not authenticated success and must not clear the mark.
+			vi.mocked(updateModelsConfig).mockImplementationOnce(async () => {
+				markCredentialStale("castai_v1_sso-token", "kimchi-dev")
+				return { models: [] }
+			})
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await testAgent.authenticate({ methodId: "kimchi-sso-us" })
+
+			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(true)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(true)
+		})
+
+		it("clears an earlier invalid-grant rejection before a replacement SSO login uses cached models", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempAgentDir)
+			resetCredentialStalenessForTests()
+			onTestFinished(() => {
+				resetCredentialStalenessForTests()
+				vi.unstubAllEnvs()
+			})
+			// An invalid grant cannot attribute the rejection to one bearer, so it
+			// leaves an anonymous process-local mark that a new login must retire.
+			markCredentialStale(undefined, "kimchi-dev")
+			// A transient refresh error resolves through cached models without an
+			// authenticated fetch or a new rejection for the replacement bearer.
+			vi.mocked(updateModelsConfig).mockResolvedValueOnce({ models: [] })
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await testAgent.authenticate({ methodId: "kimchi-sso-us" })
+
+			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(false)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(false)
+		})
+
+		it("stores the replacement SSO bearer before a no-cache model refresh fails", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempAgentDir)
+			resetCredentialStalenessForTests()
+			onTestFinished(() => {
+				resetCredentialStalenessForTests()
+				vi.mocked(syncOAuthCredentialToKimchiProviders).mockReset()
+				vi.unstubAllEnvs()
+			})
+			const authPath = join(tempAgentDir, "auth.json")
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": { type: "oauth", access: "old-rejected-token", refresh: "old-refresh-token" },
+				}),
+			)
+			markCredentialStale("old-rejected-token", "kimchi-dev")
+			const { syncOAuthCredentialToKimchiProviders: synchronizeOAuthCredential } =
+				await vi.importActual<typeof import("../../pi-auth.js")>("../../pi-auth.js")
+			vi.mocked(syncOAuthCredentialToKimchiProviders).mockImplementation(synchronizeOAuthCredential)
+			vi.mocked(updateModelsConfig).mockRejectedValueOnce(new Error("network down"))
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-sso-us" })).rejects.toThrow("network down")
+
+			const stored = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, { access?: string }>
+			expect(stored["kimchi-dev"]?.access).toBe(sso.settledCredential.credential.access)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale(sso.settledCredential.credential.access, "kimchi-dev")).toBe(false)
 		})
 
 		it("authenticates with the plain kimchi-sso method against the configured region", async () => {
@@ -7661,9 +7847,130 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 	// Chain second half: the turn-time 401 is the first proof this key is
 	// dead (it passed session/new); later auth_status calls must read
 	// logged-out.
-	it("marks the model's provider stale when the turn dies on a 401, so auth_status flips", async () => {
+	it("persists a sub-provider turn 401 under the canonical Kimchi credential", async () => {
 		resetCredentialStalenessForTests()
-		const fake = new FakeAgentSession("session-401-marks-stale")
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-stale-"))
+		const authPath = join(agentDir, "auth.json")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		try {
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": {
+						type: "oauth",
+						access: "rejected-turn-token",
+						refresh: "refresh",
+						expires: Date.now() + 1000,
+					},
+				}),
+			)
+			const fake = new FakeAgentSession("session-401-marks-stale")
+			fake.model = {
+				provider: "kimchi-dev/eu",
+				id: "some-model",
+				name: "Some Model",
+				input: ["text"],
+				contextWindow: 200_000,
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+				fake.emit(agentEnd())
+			}
+
+			const err = await agent
+				.prompt({ sessionId: "session-401-marks-stale", prompt: [{ type: "text", text: "hello" }] })
+				.catch((e) => e)
+			expect(err).toMatchObject({ code: -32000 })
+			// Provider-level mark handles this process even if credential attribution fails.
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+			// The exact stored credential also persists, so a restarted ACP process stays signed out.
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("rejected-turn-token", "kimchi-dev")).toBe(true)
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it.each(["response", "refusal"])("clears a persisted rejection after an authenticated %s", async (outcome) => {
+		resetCredentialStalenessForTests()
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-retry-success-"))
+		const authPath = join(agentDir, "auth.json")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		try {
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": { type: "oauth", access: "retry-token", refresh: "refresh", expires: Date.now() + 1000 },
+				}),
+			)
+			const fake = new FakeAgentSession("session-401-then-success")
+			fake.model = {
+				provider: "kimchi-dev",
+				id: "some-model",
+				name: "Some Model",
+				input: ["text"],
+				contextWindow: 200_000,
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+				fake.emit(agentEnd())
+			}
+			const firstError = await agent
+				.prompt({ sessionId: "session-401-then-success", prompt: [{ type: "text", text: "first attempt" }] })
+				.catch((e) => e)
+			expect(firstError).toMatchObject({ code: -32000 })
+			expect(isCredentialStale("retry-token", "kimchi-dev")).toBe(true)
+
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				const response = assistantSuccessEvent()
+				if (response.type !== "message_end" || response.message.role !== "assistant") {
+					throw new Error("unreachable")
+				}
+				if (outcome === "refusal") response.message.errorMessage = "kimchi:refusal"
+				fake.emit(response)
+				fake.emit(agentEnd())
+			}
+			await expect(
+				agent.prompt({ sessionId: "session-401-then-success", prompt: [{ type: "text", text: "retry" }] }),
+			).resolves.toMatchObject({ stopReason: outcome === "refusal" ? "refusal" : "end_turn" })
+
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("retry-token", "kimchi-dev")).toBe(false)
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("settles the original 401 when credential attribution cannot read config", async () => {
+		resetCredentialStalenessForTests()
+		const previousLoadConfig = vi.mocked(loadConfig).getMockImplementation()
+		if (!previousLoadConfig) throw new Error("expected the default loadConfig implementation")
+		const baseConfig = loadConfig()
+		const malformedConfig = { ...baseConfig }
+		Object.defineProperty(malformedConfig, "apiKey", {
+			get: () => {
+				throw new Error("malformed config.json")
+			},
+		})
+		const fake = new FakeAgentSession("session-401-config-read-failure")
 		fake.model = {
 			provider: "kimchi-dev",
 			id: "some-model",
@@ -7679,12 +7986,70 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			fake.emit(agentEnd())
 		}
 
-		const err = await agent
-			.prompt({ sessionId: "session-401-marks-stale", prompt: [{ type: "text", text: "hello" }] })
-			.catch((e) => e)
-		expect(err).toMatchObject({ code: -32000 })
-		// Provider-level mark: the turn's error names no specific key.
-		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+		try {
+			vi.mocked(loadConfig).mockReturnValue(malformedConfig)
+			const err = await agent
+				.prompt({ sessionId: "session-401-config-read-failure", prompt: [{ type: "text", text: "hello" }] })
+				.catch((e) => e)
+
+			expect(err).toMatchObject({ code: -32000, data: { kind: "auth" } })
+			expect((err as Error).message).toMatch(/401/)
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+		} finally {
+			vi.mocked(loadConfig).mockImplementation(previousLoadConfig)
+		}
+	})
+
+	it("does not persist a rejection when config and stored credentials make attribution ambiguous", async () => {
+		resetCredentialStalenessForTests()
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-ambiguous-"))
+		const authPath = join(agentDir, "auth.json")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		const previousLoadConfig = vi.mocked(loadConfig).getMockImplementation()
+		if (!previousLoadConfig) throw new Error("expected the default loadConfig implementation")
+		const baseConfig = loadConfig()
+		try {
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": { type: "oauth", access: "oauth-token", refresh: "refresh", expires: Date.now() + 1000 },
+				}),
+			)
+			const fake = new FakeAgentSession("session-401-ambiguous-credential")
+			fake.model = {
+				provider: "kimchi-dev",
+				id: "some-model",
+				name: "Some Model",
+				input: ["text"],
+				contextWindow: 200_000,
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantErrorEvent("Request failed with status code 401: Unauthorized"))
+				fake.emit(agentEnd())
+			}
+			vi.mocked(loadConfig).mockReturnValue({ ...baseConfig, apiKey: "different-config-key" })
+
+			const err = await agent
+				.prompt({ sessionId: "session-401-ambiguous-credential", prompt: [{ type: "text", text: "hello" }] })
+				.catch((e) => e)
+
+			expect(err).toMatchObject({ code: -32000 })
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("different-config-key", "kimchi-dev")).toBe(false)
+			expect(isCredentialStale("oauth-token", "kimchi-dev")).toBe(false)
+		} finally {
+			vi.mocked(loadConfig).mockImplementation(previousLoadConfig)
+			vi.unstubAllEnvs()
+			rmSync(agentDir, { recursive: true, force: true })
+		}
 	})
 
 	it("does not mark staleness on non-auth terminal errors (500)", async () => {
@@ -9178,6 +9543,50 @@ describe("unstable_setSessionModel", () => {
 		expect(fake.model?.id).toBe("model-b")
 	})
 
+	it("pushes config_option_update with refreshed options on switch", async () => {
+		// The legacy wire shape returns {}, so a client tracking the model-dependent
+		// reasoning_effort option can only learn the new selection from this push.
+		registerModelThinkingLevels("provider-a/model-a", ["low", "high", "max"])
+		const fake = new FakeAgentSession("switch-session")
+		fake.model = {
+			provider: "provider-a",
+			id: "model-a",
+			name: "Model A",
+			input: ["text"],
+			contextWindow: 200_000,
+			reasoning: true,
+			thinkingLevelMap: { low: "low", high: "high", max: "max" },
+		}
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "provider-a", id: "model-a", name: "Model A" },
+				{ provider: "provider-b", id: "model-b", name: "Model B" },
+			],
+		}
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const { configOptions } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(configOptions?.find((o) => o.id === "reasoning_effort")).toBeDefined()
+		const updatesBeforeSwitch = updates.length
+
+		await agent.unstable_setSessionModel({
+			sessionId: "switch-session",
+			modelId: "provider-b/model-b",
+		})
+
+		const pushed = updates.slice(updatesBeforeSwitch).find((u) => u.update.sessionUpdate === "config_option_update")
+		const options = (pushed?.update as { configOptions?: Array<{ id: string; currentValue?: string }> })?.configOptions
+		expect(options?.find((o) => o.id === "model")?.currentValue).toBe("provider-b/model-b")
+		// The non-reasoning target offers no selectable levels — the push drops
+		// the option so the client doesn't keep advertising the stale set.
+		expect(options?.find((o) => o.id === "reasoning_effort")).toBeUndefined()
+	})
+
 	it("throws invalidParams for unknown modelId", async () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
@@ -9406,6 +9815,454 @@ describe("setSessionConfigOption", () => {
 		const selectOption = res.configOptions[0] as any
 		expect(selectOption.options).toHaveLength(4)
 		expect(selectOption.options.map((o: SelectOptionItem) => o.value)).toEqual(PERMISSION_MODES)
+	})
+
+	describe("reasoning_effort config option", () => {
+		const REASONING_MODEL: FakeModel = {
+			provider: "test",
+			id: "reasoner",
+			name: "Reasoner",
+			input: ["text"],
+			contextWindow: 200_000,
+			reasoning: true,
+			thinkingLevelMap: { low: "low", high: "high", max: "max" },
+		}
+
+		function makeAgent(fake: FakeAgentSession): KimchiAcpAgent {
+			return new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+		}
+
+		afterEach(() => {
+			__clearModelThinkingLevelsForTest()
+		})
+
+		it("advertises the curated selection with the session level as currentValue", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			const fake = new FakeAgentSession("test-session-effort-advertise")
+			fake.model = REASONING_MODEL
+			fake.thinkingLevel = "high"
+			const agent = makeAgent(fake)
+
+			const { configOptions } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const effort = configOptions?.find((o) => o.id === "reasoning_effort")
+			expect(effort).toMatchObject({
+				name: "Reasoning Effort",
+				type: "select",
+				category: "thought_level",
+				currentValue: "high",
+			})
+			// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
+			const select = effort as any
+			expect(select.options).toEqual([
+				{ value: "low", name: "Low" },
+				{ value: "high", name: "High" },
+				{ value: "max", name: "Max" },
+			])
+		})
+
+		it("sets a valid level and reports the new current value", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			const fake = new FakeAgentSession("test-session-effort-set")
+			fake.model = REASONING_MODEL
+			const agent = makeAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.setSessionConfigOption({
+				sessionId: "test-session-effort-set",
+				configId: "reasoning_effort",
+				value: "max",
+			})
+
+			expect(fake.setThinkingLevelCalls).toEqual(["max"])
+			expect(fake.thinkingLevel).toBe("max")
+			const effort = res.configOptions?.find((o) => o.id === "reasoning_effort")
+			expect(effort?.currentValue).toBe("max")
+		})
+
+		it("rejects a level outside the selection without assigning it", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high"])
+			const fake = new FakeAgentSession("test-session-effort-invalid")
+			fake.model = REASONING_MODEL
+			const agent = makeAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-effort-invalid",
+					configId: "reasoning_effort",
+					value: "max",
+				}),
+			).rejects.toMatchObject({ code: -32602 })
+			expect(fake.setThinkingLevelCalls).toEqual([])
+		})
+
+		it("omits the option for models with no selectable levels and rejects sets", async () => {
+			const fake = new FakeAgentSession("test-session-effort-none")
+			// Default fake model: no reasoning flag → nothing selectable.
+			const agent = makeAgent(fake)
+			const { configOptions } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			expect(configOptions?.find((o) => o.id === "reasoning_effort")).toBeUndefined()
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-effort-none",
+					configId: "reasoning_effort",
+					value: "high",
+				}),
+			).rejects.toMatchObject({ code: -32602 })
+			expect(fake.setThinkingLevelCalls).toEqual([])
+		})
+
+		it("rejects a set when the session has no model", async () => {
+			// buildThinkingConfigOption omits the option without a model; the
+			// setter must reject the same state instead of applying a level
+			// against thinkingSelection(undefined)'s canonical fallback set.
+			// (newSession itself refuses model-less sessions, so the state is
+			// only reachable if the model drops after creation.)
+			const fake = new FakeAgentSession("test-session-effort-nomodel")
+			const agent = makeAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			fake.model = undefined
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-effort-nomodel",
+					configId: "reasoning_effort",
+					value: "high",
+				}),
+			).rejects.toMatchObject({ code: -32602 })
+			expect(fake.setThinkingLevelCalls).toEqual([])
+		})
+
+		it("clamps currentValue to the rank-nearest selectable level", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			const fake = new FakeAgentSession("test-session-effort-clamp")
+			fake.model = REASONING_MODEL
+			// "medium" is pi-supported for this map but not curated — the stored
+			// level predates the curation, so the advertised value clamps upward.
+			fake.thinkingLevel = "medium"
+			const agent = makeAgent(fake)
+
+			const { configOptions } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const effort = configOptions?.find((o) => o.id === "reasoning_effort")
+			expect(effort?.currentValue).toBe("high")
+		})
+
+		it("refreshes the option after a model switch", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			const fake = new FakeAgentSession("test-session-effort-switch")
+			fake.model = REASONING_MODEL
+			// Registry rows only feed the model picker and find-by-ref; the
+			// session's model keeps the full FakeModel shape with its thinking
+			// surface.
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "test", id: "reasoner", name: "Reasoner" },
+					{ provider: "test", id: "plain", name: "Plain" },
+				],
+			}
+			const agent = makeAgent(fake)
+			const { configOptions } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			expect(configOptions?.find((o) => o.id === "reasoning_effort")).toBeDefined()
+
+			const res = await agent.setSessionConfigOption({
+				sessionId: "test-session-effort-switch",
+				configId: "model",
+				value: "test/plain",
+			})
+
+			expect(fake.model).toMatchObject({ provider: "test", id: "plain" })
+			// The non-reasoning target model has no selectable levels, so the
+			// refreshed list the client replaces its state with drops the option.
+			expect(res.configOptions?.find((o) => o.id === "reasoning_effort")).toBeUndefined()
+			expect(res.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("test/plain")
+		})
+
+		it("pushes config_option_update on a model switch via set_config_option", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			const fake = new FakeAgentSession("test-session-effort-switch-push")
+			fake.model = REASONING_MODEL
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "test", id: "reasoner", name: "Reasoner" },
+					{ provider: "test", id: "plain", name: "Plain" },
+				],
+			}
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const updatesBeforeSwitch = updates.length
+
+			await agent.setSessionConfigOption({
+				sessionId: "test-session-effort-switch-push",
+				configId: "model",
+				value: "test/plain",
+			})
+
+			const pushed = updates.slice(updatesBeforeSwitch).find((u) => u.update.sessionUpdate === "config_option_update")
+			const options = (pushed?.update as { configOptions?: Array<{ id: string; currentValue?: string }> })
+				?.configOptions
+			expect(options?.find((o) => o.id === "model")?.currentValue).toBe("test/plain")
+		})
+	})
+
+	describe("compact command", () => {
+		function makeRecordingAgent(fake: FakeAgentSession): {
+			agent: KimchiAcpAgent
+			updates: SessionNotification[]
+		} {
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			return { agent, updates }
+		}
+
+		it("advertises the compact command in the session palette", async () => {
+			const fake = new FakeAgentSession("test-session-compact-advertise")
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			await flushDeferredCommands()
+
+			const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const palette = update?.update as { availableCommands: Array<Record<string, unknown>> }
+			expect(palette.availableCommands.find((c) => c.name === "compact")).toMatchObject({
+				name: "compact",
+				description: expect.any(String),
+				input: { hint: expect.any(String) },
+			})
+		})
+
+		it("runs compaction for a /compact prompt without a model turn", async () => {
+			const fake = new FakeAgentSession("test-session-compact-run")
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.prompt({
+				sessionId: "test-session-compact-run",
+				prompt: [{ type: "text", text: "/compact" }],
+			})
+
+			expect(fake.compactCalls).toEqual([{ instructions: undefined, force: false }])
+			expect(fake.promptCalls).toEqual([])
+			expect(res.stopReason).toBe("end_turn")
+			// No user echo: commands arrive as regular user messages, which the
+			// client already rendered when it sent the prompt.
+			expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(false)
+			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+			// A completed compaction prints a one-line status (token count), never
+			// the summary — mirroring the TUI's collapsed-by-default [compaction]
+			// row. The full summary stays available programmatically in the
+			// _kimchi.dev/compact response.
+			expect((outcome?.update as { content: { text: string } }).content.text).toBe(
+				"Context compacted from 12,345 tokens.\n\n",
+			)
+			expect((outcome?.update as { content: { text: string } }).content.text).not.toContain("fake compaction summary")
+		})
+
+		it("omits the token count when the compaction result has none", async () => {
+			const fake = new FakeAgentSession("test-session-compact-notokens")
+			fake.compactImpl = async () => ({
+				summary: "fake compaction summary",
+				firstKeptEntryId: "entry-1",
+				tokensBefore: undefined as unknown as number,
+			})
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-notokens",
+				prompt: [{ type: "text", text: "/compact" }],
+			})
+
+			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+			expect((outcome?.update as { content: { text: string } }).content.text).toBe("Context compacted.\n\n")
+		})
+
+		it("passes free text after /compact as the compaction instructions", async () => {
+			const fake = new FakeAgentSession("test-session-compact-args")
+			const { agent } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-args",
+				prompt: [{ type: "text", text: "/compact keep the API notes" }],
+			})
+
+			expect(fake.compactCalls).toEqual([{ instructions: "keep the API notes", force: false }])
+		})
+
+		it("does not treat /compactfoo as the command", async () => {
+			const fake = new FakeAgentSession("test-session-compact-prefix")
+			const { agent } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-prefix",
+				prompt: [{ type: "text", text: "/compactfoo now" }],
+			})
+
+			expect(fake.compactCalls).toEqual([])
+			expect(fake.promptCalls.map((c) => c.prompt)).toEqual(["/compactfoo now"])
+		})
+
+		it("treats a /compact prompt carrying extra blocks as an ordinary turn", async () => {
+			// The command dispatch only matches a lone text block; with an
+			// attachment or further text the extra content would otherwise be
+			// silently dropped — the user gets no signal it was ignored.
+			const fake = new FakeAgentSession("test-session-compact-extra")
+			fake.model = { provider: "test", id: "vision-model", input: ["text", "image"] }
+			const { agent } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-extra",
+				prompt: [
+					{ type: "text", text: "/compact" },
+					{ type: "image", data: "base64data", mimeType: "image/png" },
+				],
+			})
+			await agent.prompt({
+				sessionId: "test-session-compact-extra",
+				prompt: [
+					{ type: "text", text: "/compact" },
+					{ type: "text", text: "see above" },
+				],
+			})
+
+			expect(fake.compactCalls).toEqual([])
+			expect(fake.promptCalls).toHaveLength(2)
+		})
+
+		it("reports a cancelled compaction as stopReason cancelled", async () => {
+			const fake = new FakeAgentSession("test-session-compact-cancelled")
+			fake.compactImpl = async () => {
+				throw new Error("Compaction cancelled")
+			}
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.prompt({
+				sessionId: "test-session-compact-cancelled",
+				prompt: [{ type: "text", text: "/compact" }],
+			})
+
+			expect(res.stopReason).toBe("cancelled")
+			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+			expect((outcome?.update as { content: { text: string } }).content.text).toContain("Compaction cancelled")
+		})
+
+		it("reports an expected compaction no-op as a failed outcome with end_turn", async () => {
+			const fake = new FakeAgentSession("test-session-compact-noop")
+			fake.compactImpl = async () => {
+				throw new Error("Nothing to compact")
+			}
+			const { agent, updates } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.prompt({
+				sessionId: "test-session-compact-noop",
+				prompt: [{ type: "text", text: "/compact" }],
+			})
+
+			expect(res.stopReason).toBe("end_turn")
+			const outcome = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+			expect((outcome?.update as { content: { text: string } }).content.text).toContain("Nothing to compact")
+		})
+
+		it("persists the raw command text as a metadata-only custom entry", async () => {
+			// The command prompt is intercepted locally, so no session message
+			// records that it ever ran: without this row a session/load replay
+			// loses the invocation entirely. Recorded before the compaction
+			// runs, so even a failed or aborted one leaves its mark.
+			const fake = new FakeAgentSession("test-session-compact-persist")
+			const { agent } = makeRecordingAgent(fake)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await agent.prompt({
+				sessionId: "test-session-compact-persist",
+				prompt: [{ type: "text", text: "/compact keep the API notes" }],
+			})
+
+			const persisted = fake.branch.filter(
+				(e) => (e as { type?: string; customType?: string }).customType === COMPACT_COMMAND_ENTRY_TYPE,
+			)
+			expect(persisted).toEqual([
+				{
+					type: "custom",
+					customType: COMPACT_COMMAND_ENTRY_TYPE,
+					data: { text: "/compact keep the API notes" },
+				},
+			])
+		})
+
+		function makeReplayAgent(fake: FakeAgentSession): { agent: KimchiAcpAgent; updates: SessionNotification[] } {
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+				sessionLoader: async () => asSession(fake),
+			})
+			return { agent, updates }
+		}
+
+		it("replays a persisted compact-command entry as a user message on session load", async () => {
+			const fake = new FakeAgentSession("test-session-compact-replay")
+			fake.branch = [
+				userTextEntry("how does this work?", "u1", null),
+				assistantTextEntry("Like this.", "a1", "u1"),
+				{
+					type: "custom",
+					customType: COMPACT_COMMAND_ENTRY_TYPE,
+					data: { text: "/compact keep the API notes" },
+				} as never,
+				userTextEntry("now change it", "u2", "a1"),
+			]
+			const { agent, updates } = makeReplayAgent(fake)
+			await agent.loadSession({ sessionId: "test-session-compact-replay", cwd: "/tmp", mcpServers: [] })
+
+			const userChunks = updates
+				.filter((u) => u.update.sessionUpdate === "user_message_chunk")
+				.map((u) => (u.update as { content: { text: string } }).content.text)
+			expect(userChunks).toEqual(["how does this work?", "/compact keep the API notes", "now change it"])
+		})
+
+		it("ignores a malformed compact-command entry on replay", async () => {
+			// Transcript entries are untrusted IO: a partial/corrupt payload is
+			// dropped, never crashed on nor rendered as an empty message.
+			const fake = new FakeAgentSession("test-session-compact-replay-bad")
+			fake.branch = [
+				userTextEntry("hello", "u1", null),
+				{
+					type: "custom",
+					customType: COMPACT_COMMAND_ENTRY_TYPE,
+					data: { text: 42 },
+				} as never,
+			]
+			const { agent, updates } = makeReplayAgent(fake)
+			await agent.loadSession({ sessionId: "test-session-compact-replay-bad", cwd: "/tmp", mcpServers: [] })
+
+			const userChunks = updates
+				.filter((u) => u.update.sessionUpdate === "user_message_chunk")
+				.map((u) => (u.update as { content: { text: string } }).content.text)
+			expect(userChunks).toEqual(["hello"])
+		})
 	})
 
 	describe("model config option", () => {
@@ -14342,6 +15199,53 @@ describe("KimchiAcpAgent background bash handoff", () => {
 		await waitFor(() => updatesFor(secondAcpId).some((u) => u.status === "completed"))
 	})
 
+	// Regression for the superseded-hold replay clobber: persistSettle must use
+	// the acpToolCallId argument handed to it (the SETTLED call's id), never the
+	// enclosing handoff's. Persisting the NEW hold's live id would re-bind the
+	// superseded block to that id on replay, clobbering the client's live row.
+	it("persists a superseded hold's settle with the FIRST handoff's ACP id, not the new hold's", async () => {
+		const handle = spawnBackgroundSleep()
+
+		await promptWithHandoff(handle)
+		const firstAcpId = toolCalls()[0]?.toolCallId ?? ""
+		expect(firstAcpId).not.toBe("")
+
+		// A second tool result hands off the SAME registry handle (e.g. a
+		// foreground/re-background cycle re-tracking one process) under a
+		// different upstream id, so the two handoffs hold different ACP ids.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-2",
+				toolName: "bash",
+				args: { command: "sleep 900" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-2",
+				toolName: "bash",
+				result: handoffResult(handle),
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "track it again" }] })).stopReason).toBe(
+			"end_turn",
+		)
+		const secondAcpId = toolCalls()[1]?.toolCallId ?? ""
+		expect(secondAcpId).not.toBe(firstAcpId)
+
+		// The superseded hold's settle is the only one persisted (the process
+		// has not exited), and it must settle the FIRST call's identity.
+		const settles = fake.branch
+			.filter((e) => (e as { type?: string; customType?: string }).customType === BASH_BACKGROUND_SETTLE_MESSAGE_TYPE)
+			.map((e) => (e as { data: BashBackgroundSettleData }).data)
+		expect(settles).toHaveLength(1)
+		expect(settles[0]?.toolCallId).toBe("tc-1")
+		expect(settles[0]?.acpToolCallId).toBe(firstAcpId)
+	})
+
 	it("replays a still-running background call as in_progress under the SAME ACP id on reload in the same harness process, and the exit still settles it afterwards", async () => {
 		const handle = spawnBackgroundSleep()
 
@@ -14402,11 +15306,11 @@ describe("KimchiAcpAgent background bash handoff", () => {
 		expect(res.stopReason).toBe("end_turn")
 		const heldAcpId = toolCalls()[0]?.toolCallId ?? ""
 
-		// The process exits BEFORE the reload: the hold settles, so a later
-		// replay must present the call as terminal (no dangling spinner).
-		await ops.exitMatching("sleep", 0)
-		await waitFor(() => updatesFor(heldAcpId).some((u) => u.status === "completed"))
-
+		// The persisted branch, as pi would record it: the recorded result of
+		// the backgrounded call is its pre-exit handoff (details.handoff). Set
+		// BEFORE the exit so the exit watcher's persisted settle (metadata-only
+		// CustomEntry, carrying the live ACP id) lands in the same branch the
+		// reload replays from — mirroring the real session file's ordering.
 		fake.branch = [
 			userTextEntry("run it", "u1", null),
 			assistantBlocksEntry(
@@ -14431,24 +15335,93 @@ describe("KimchiAcpAgent background bash handoff", () => {
 			},
 		]
 
+		// The process exits BEFORE the reload: the hold settles, so a later
+		// replay must present the call as terminal (no dangling spinner).
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(heldAcpId).some((u) => u.status === "completed"))
+
 		updates.length = 0
 		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
 
 		const replayCalls = toolCalls()
 		expect(replayCalls).toHaveLength(1)
-		// Held state was retired by the settle: replay falls back to a fresh id …
-		expect(replayCalls[0]?.toolCallId).not.toBe(heldAcpId)
+		// The persisted settle carries the live ACP id: replay re-binds it, so a
+		// client that kept its live rows across the replay sees ONE id for the
+		// call — no zombie duplicate (wake-replay regression).
+		expect(replayCalls[0]?.toolCallId).toBe(heldAcpId)
 		// … and a TERMINAL status — the recorded result is the handoff, but the
 		// process is no longer held, so replaying in_progress would spin forever.
 		expect(replayCalls[0]?.status).toBe("completed")
-		const replayed = updatesFor(replayCalls[0]?.toolCallId ?? "")
+		const replayed = updatesFor(heldAcpId)
 		expect(replayed.some((u) => u.status === "in_progress")).toBe(false)
-		// The in-flight markers are normalized away so the terminal status and
-		// the details payload cannot contradict each other on the wire.
+		// The replayed outcome is the persisted settle: terminal details matching
+		// the terminal status, no in-flight handoff markers.
 		const details = replayed[replayed.length - 1]?.rawOutput?.details
 		expect(details?.handoff).toBeUndefined()
-		expect(details?.exited).toBeUndefined()
-		expect(details?.exitCode).toBeNull()
+		expect(details?.exited).toBe(true)
+		expect(details?.exitCode).toBe(0)
+	})
+
+	// Regression for the wake-replay zombie row (settle→wake transcript):
+	// handoff turn ends, an unrelated prompt runs (its agent_start wipes the
+	// per-turn id mappings), THEN the process exits and settles. A replay
+	// that follows must re-announce the call under the ONE id the live client
+	// holds, terminal — not mint a fresh id for a duplicate running row.
+	it("rebinds the settled call's live ACP id on replay when a prompt ran between handoff and exit", async () => {
+		const handle = spawnBackgroundSleep()
+
+		const res = await promptWithHandoff(handle)
+		expect(res.stopReason).toBe("end_turn")
+		const heldAcpId = toolCalls()[0]?.toolCallId ?? ""
+
+		// The in-between prompt (transcript's "Hello" turn): its agent_start
+		// clears toolCallIdMap, so the handoff's id-stability record survives
+		// only in the held map until the settle.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Hello" }] })).stopReason).toBe("end_turn")
+
+		// The persisted branch up to the exit: handoff turn + the in-between
+		// prompt. The settle entry appends to the tail when the process exits.
+		fake.branch = [
+			userTextEntry("run it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-tc-1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle, exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			userTextEntry("Hello", "u2", "tr-tc-1"),
+			assistantBlocksEntry([{ type: "text", text: "Hi!" }], "a2", "u2"),
+		]
+
+		await ops.exitMatching("sleep", 0)
+		await waitFor(() => updatesFor(heldAcpId).some((u) => u.status === "completed"))
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		// Exactly one bash call row, under the settle-rebound live id,
+		// terminal — the client's live indicator equals a fresh reload.
+		expect(toolCalls()).toHaveLength(1)
+		expect(toolCalls()[0]?.toolCallId).toBe(heldAcpId)
+		expect(toolCalls()[0]?.status).toBe("completed")
 	})
 
 	it("replays the persisted settle outcome on reload: a failed process replays failed with its exit code, not completed", async () => {
@@ -14586,5 +15559,163 @@ describe("KimchiAcpAgent background bash handoff", () => {
 		expect(replayCalls[1]?.status).toBe("completed")
 		expect(JSON.stringify(updatesFor(readId).map((u) => u.rawOutput))).toContain("file body")
 		expect(JSON.stringify(updatesFor(readId).map((u) => u.rawOutput))).not.toContain("boom")
+	})
+
+	it("does not consume a background settle for a same-id plain call that precedes the handed-off call", async () => {
+		// Reverse recycling order: a completed plain call used the upstream id
+		// FIRST; the handed-off (later settled) call reused it SECOND. A settle
+		// only ever settles a HANDOFF — the plain call's block must not consume
+		// it, or its identity/status get clobbered by the background outcome
+		// while the real settled call re-announces under a fresh id (the
+		// zombie-class bug, reintroduced by mis-pairing).
+		fake.branch = [
+			userTextEntry("two steps", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "read", arguments: { path: "/tmp/unrelated.txt" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-a",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "read",
+					content: [{ type: "text", text: "file body" }],
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a2",
+				"tr-a",
+			),
+			{
+				type: "message",
+				id: "tr-b",
+				parentId: "a2",
+				timestamp: "2026-05-09T00:00:03Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle: "h-dead", exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			{
+				type: "custom",
+				id: "st-b",
+				parentId: "tr-b",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-background-settle",
+				data: {
+					toolCallId: "tc-1",
+					acpToolCallId: "kt.bash.7",
+					isError: false,
+					text: "exit payload",
+					details: { handle: "h-dead", exited: true, exitCode: 0, reason: null },
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+
+		const replayCalls = toolCalls()
+		expect(replayCalls).toHaveLength(2)
+		// The plain read replays with ITS OWN result and a fresh id — never the
+		// settle's identity or exit payload.
+		expect(replayCalls[0]?.status).toBe("completed")
+		expect(replayCalls[0]?.toolCallId).not.toBe("kt.bash.7")
+		expect(JSON.stringify(updatesFor(replayCalls[0]?.toolCallId ?? "").map((u) => u.rawOutput))).toContain("file body")
+		expect(JSON.stringify(updatesFor(replayCalls[0]?.toolCallId ?? "").map((u) => u.rawOutput))).not.toContain(
+			"exit payload",
+		)
+		// The handed-off call re-binds the persisted live id with the settle's outcome.
+		expect(replayCalls[1]?.toolCallId).toBe("kt.bash.7")
+		expect(replayCalls[1]?.status).toBe("completed")
+		expect(JSON.stringify(updatesFor("kt.bash.7").map((u) => u.rawOutput))).toContain("exit payload")
+	})
+
+	// Counter-advance regression: a replayed rebind to kt.bash.7 must push
+	// nextToolCallId PAST 7 — a freshly loaded record allocates from 0, so
+	// without the advance a later live call would mint kt.<tool>.7's suffix
+	// again and collide with the rebound row.
+	it("allocates the next ACP tool-call id past a rebound id's numeric suffix after a replay", async () => {
+		fake.branch = [
+			userTextEntry("run it", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "sleep 900" } }],
+				"a1",
+				"u1",
+			),
+			{
+				type: "message",
+				id: "tr-tc-1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Command handed off; still running in the background." }],
+					details: { handle: "h-dead", exited: false, exitCode: null, handoff: true },
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			{
+				type: "custom",
+				id: "st-tc-1",
+				parentId: "tr-tc-1",
+				timestamp: "2026-05-09T00:00:05Z",
+				customType: "bash-background-settle",
+				data: {
+					toolCallId: "tc-1",
+					acpToolCallId: "kt.bash.7",
+					isError: false,
+					text: "exit payload",
+					details: { handle: "h-dead", exited: true, exitCode: 0, reason: null },
+				},
+			},
+		]
+
+		updates.length = 0
+		await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+		expect(toolCalls()).toHaveLength(1)
+		expect(toolCalls()[0]?.toolCallId).toBe("kt.bash.7")
+
+		// A live turn after the reload allocates a fresh ACP id from the counter.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-9",
+				toolName: "bash",
+				args: { command: "echo hi" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-9",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "hi" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		expect((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "again" }] })).stopReason).toBe("end_turn")
+
+		const laterCalls = toolCalls().filter((c) => c.toolCallId !== "kt.bash.7")
+		expect(laterCalls).toHaveLength(1)
+		const parsed = parseToolCallId(laterCalls[0]?.toolCallId ?? "")
+		expect(parsed).not.toBeNull()
+		expect(parsed?.seq).toBeGreaterThan(7)
 	})
 })

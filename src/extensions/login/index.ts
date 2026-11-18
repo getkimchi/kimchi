@@ -1,10 +1,10 @@
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth"
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { chatCompletionsApi } from "../../models.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
+import { createGatewayCodexProvider, registerGatewayCodexApi } from "./codex-gateway.js"
 import { createKimchiProviderOAuth } from "./flow.js"
 
 export default function loginExtension(pi: ExtensionAPI): void {
@@ -13,7 +13,8 @@ export default function loginExtension(pi: ExtensionAPI): void {
 
 	// Builtin providers are disabled globally; explicitly restore the approved subscription provider.
 	registerBunOAuthFlows()
-	pi.registerProvider(openaiCodexProvider())
+	registerGatewayCodexApi()
+	pi.registerProvider(createGatewayCodexProvider())
 
 	// Apply a custom llmEndpoint as an in-memory baseUrl override for the kimchi-dev provider.
 	// This routes chat requests to the override even when the metadata refresh falls back to the

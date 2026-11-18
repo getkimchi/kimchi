@@ -4467,6 +4467,7 @@ export default function (pi: ExtensionAPI) {
 			label: "read",
 			description: readTool.description,
 			parameters: readTool.parameters,
+			promptGuidelines: readTool.promptGuidelines,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				return readTool.execute(toolCallId, params, signal, onUpdate, ctx)
 			},
@@ -4523,6 +4524,8 @@ export default function (pi: ExtensionAPI) {
 			label: "bash",
 			description: bashTool.description,
 			parameters: bashTool.parameters,
+			// Keep the PI_* env guideline out of codemode too: background bash
+			// wins this slot and does not inject those variables.
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				return bashTool.execute(toolCallId, params, signal, onUpdate, ctx)
 			},
@@ -4589,6 +4592,7 @@ export default function (pi: ExtensionAPI) {
 			label: "grep",
 			description: grepTool.description,
 			parameters: grepTool.parameters,
+			promptGuidelines: grepTool.promptGuidelines,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				return grepTool.execute(toolCallId, params, signal, onUpdate, ctx)
 			},
@@ -4638,6 +4642,7 @@ export default function (pi: ExtensionAPI) {
 			label: "find",
 			description: findTool.description,
 			parameters: findTool.parameters,
+			promptGuidelines: findTool.promptGuidelines,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				return findTool.execute(toolCallId, params, signal, onUpdate, ctx)
 			},
@@ -4689,6 +4694,7 @@ export default function (pi: ExtensionAPI) {
 			label: "ls",
 			description: lsTool.description,
 			parameters: lsTool.parameters,
+			promptGuidelines: lsTool.promptGuidelines,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				return lsTool.execute(toolCallId, params, signal, onUpdate, ctx)
 			},
@@ -4742,6 +4748,7 @@ export default function (pi: ExtensionAPI) {
 			label: "write",
 			description: writeTool.description,
 			parameters: writeTool.parameters,
+			promptGuidelines: writeTool.promptGuidelines,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				// Execution-side deref (see vault.ts EXEC_DEREF_TOOLS): the model
 				// issued tokens; the file gets the user's real values. params stay
@@ -4882,6 +4889,7 @@ export default function (pi: ExtensionAPI) {
 			label: "edit",
 			description: editTool.description,
 			parameters: editTool.parameters,
+			promptGuidelines: editTool.promptGuidelines,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				// Execution-side deref (see vault.ts EXEC_DEREF_TOOLS): a model-issued
 				// token in oldText no longer beats the exact-match gate — ops run on

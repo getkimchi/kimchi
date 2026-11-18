@@ -5,6 +5,7 @@ import type {
 	ExtensionHandler,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
+
 import type { McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
 import {
 	createMcpAdapter,
@@ -22,6 +23,7 @@ import {
 	reapplyCurrentProfile,
 	registerReadOnlyToolProvider,
 } from "../../shared/planning/tool-profile-manager.js"
+import { notifyUser } from "../../utils/notify-user.js"
 import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -292,6 +294,20 @@ function createUpstreamApi(
 export interface KimchiMcpAdapterExtensionOptions {
 	cwd?: string
 	callerServers?: Record<string, ServerEntry>
+	/** Injected built-in gateway (tests); production builds it from resources + config. */
+	builtinGateway?: BuiltInGatewayServer
+	/**
+	 * Drop warnings instead of surfacing them (UI notify / console fallback).
+	 * Used by headless child sessions, where a console warning is stderr noise
+	 * in the parent process.
+	 */
+	suppressWarnings?: boolean
+	/**
+	 * Connect the built-in gateway lazily (strip its keep-alive lifecycle so
+	 * first use is cached metadata, reconnect on first tool call). Used by child
+	 * sessions so every subagent spawn does not open an eager gateway connection.
+	 */
+	lazyGatewayConnect?: boolean
 }
 
 export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensionOptions = {}): ExtensionFactory {
@@ -364,14 +380,20 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			// A user-configured server wins over it — by gateway address, or by
 			// holding the built-in's name at any address (the adapter refuses
 			// runtime registration for name collisions as well).
-			const gatewayServer = buildBuiltinGatewayServer()
+			const gatewayServer = options.builtinGateway ?? buildBuiltinGatewayServer()
+			// Children connect the gateway lazily: dropping the keep-alive lifecycle
+			// spares every subagent an eager connection; first tool use reconnects.
+			const adjustedGatewayServer =
+				options.lazyGatewayConnect && gatewayServer !== undefined
+					? { name: gatewayServer.name, entry: { url: gatewayServer.entry.url, headers: gatewayServer.entry.headers } }
+					: gatewayServer
 			const gateway =
-				gatewayServer === undefined ||
-				selectedResult.config.mcpServers[gatewayServer.name] !== undefined ||
-				options.callerServers?.[gatewayServer.name] !== undefined ||
+				adjustedGatewayServer === undefined ||
+				selectedResult.config.mcpServers[adjustedGatewayServer.name] !== undefined ||
+				options.callerServers?.[adjustedGatewayServer.name] !== undefined ||
 				hasGatewayAddress(selectedResult.config, getGatewayAddresses())
 					? undefined
-					: gatewayServer
+					: adjustedGatewayServer
 			const config = options.callerServers
 				? {
 						...selectedResult.config,
@@ -430,8 +452,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		}
 
 		for (const warning of warnings) {
-			if (ctx.hasUI) ctx.ui.notify(warning, "warning")
-			else console.warn(warning)
+			if (options.suppressWarnings) continue
+			notifyUser(ctx, warning, "warning")
 		}
 		for (const handler of upstreamHandlers.session_start) await handler(event, ctx)
 	})

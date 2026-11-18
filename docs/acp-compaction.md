@@ -41,6 +41,40 @@ response and the aborted `compaction_end` activity are ordered independently,
 so clients should treat them as two views of the same outcome, not wait for
 both.
 
+## Invoking compaction: the `/compact` command
+
+Prompt-driving clients (JetBrains Air, Zed) discover the manual compaction
+affordance as an advertised ACP command: `/compact` in `availableCommands`
+(the ACP Slash Commands contract). The command arrives as an ordinary
+`session/prompt` whose first text block starts with `/compact` — optionally
+followed by free-text instructions for the summary, mapping onto the same
+`instructions` parameter as the ext method. The name must be followed by
+whitespace or the end of the block, so `/compactfoo` is an ordinary prompt.
+
+The prompt is handled locally: it never reaches the model and creates no
+turn. There is no live `user_message_chunk` echo — commands arrive as
+regular user messages, which clients render when the prompt is sent. To keep
+the invocation from vanishing on session reload (the runtime records only
+the summary, not the command text), the raw prompt text is persisted as a
+metadata-only custom session entry (`type: "custom"`, customType
+`compact-command`) BEFORE the compaction runs — so even an aborted or failed
+compaction leaves its mark — and session/load replay re-emits it as a
+`user_message_chunk`, positioned where the command was issued. The entry
+never enters model context (same pattern as the bash-background settle
+rows).
+
+The command runs the same handler as `_kimchi.dev/compact` — so progress
+streams through the `agent_activity` notifications and the usage gauge
+refreshes via the same `compaction_end` event — and the terminal outcome is
+reported as an `agent_message_chunk` (live-only, not persisted): a one-line
+status on success ("Context compacted from N tokens.") or the
+cancelled/failed outcome. The full summary is deliberately NOT printed —
+mirroring the TUI's collapsed-by-default `[compaction]` row; ACP chat
+surfaces have no expand affordance — but stays available programmatically
+in the `_kimchi.dev/compact` ext-method response (and in the runtime's
+compaction entry). The PromptResponse carries `stopReason: "end_turn"` for
+`completed`/`failed`, or `cancelled` when the compaction was aborted.
+
 ## Lifecycle: `_kimchi.dev/agent_activity`
 
 Compaction streams no transcript or session-update traffic by design — the
@@ -104,9 +138,12 @@ Semantics:
 ## Where it lives
 
 - Ext methods: `src/modes/acp/ext-methods/compact.ts`, `compact-abort.ts`
+- Command advertisement + dispatch: `src/modes/acp/commands.ts`
+  (`tryParseCompactCommand`, `COMPACT_COMMAND_ENTRY_TYPE`),
+  `src/modes/acp/server.ts` (`runCompactCommand`, `replayTranscript`)
 - Activity forwarding: `src/modes/acp/activity-updates.ts`
 - Lifecycle + value refresh: `src/modes/acp/server.ts`
   (`onSessionEvent`, `emitPostCompactionUsage`)
 - Unit tests: `src/modes/acp/server.test.ts`
-  ("KimchiAcpAgent post-compaction usage_update"); e2e:
+  ("KimchiAcpAgent post-compaction usage_update", "compact command"); e2e:
   `tests/e2e/acp/compaction.test.ts`

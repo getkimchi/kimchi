@@ -2,7 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { humanizeContextWindow } from "./extensions/vision-support.js"
-import { getModelThinkingLevels } from "./models.js"
+import { getModelLabel, getModelThinkingLevels } from "./models.js"
 import { thinkingColumnValue } from "./thinking-levels.js"
 
 export interface ModelTableRow {
@@ -27,8 +27,14 @@ export function renderModelTable(
 	theme: Pick<Theme, "fg">,
 	vision = false,
 	getLevels: (ref: string) => string[] | undefined = getModelThinkingLevels,
+	getLabel: (ref: string) => string | undefined = getModelLabel,
 ): string[] {
 	if (rows.length === 0) return []
+	// A model offered by several providers shows one labelled entry per provider.
+	// Rows whose id is not the model id (the virtual multi-model row) keep theirs.
+	rows = rows.map((row) =>
+		row.id === row.model.id ? { ...row, id: getLabel(`${row.model.provider}/${row.model.id}`) ?? row.id } : row,
+	)
 	const clip = (text: string, cells: number) => truncateToWidth(text, Math.max(0, cells), "…")
 	const pad = (text: string, cells: number) => {
 		const clipped = clip(text, cells)

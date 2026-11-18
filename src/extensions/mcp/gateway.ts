@@ -1,6 +1,7 @@
 import type { McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { gatewayAuthHeaders, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { getEnvironmentApiKey, readApiKeyFromConfigFile, resolveEndpoints } from "../../config.js"
+import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { REGIONS } from "../../regions.js"
 import { isResourceEnabled } from "../../resources/store.js"
 
@@ -92,13 +93,24 @@ export function buildBuiltinGatewayServer(): BuiltInGatewayServer | undefined {
 	if (url === undefined || !isSecureUrl(url)) return undefined
 	const credentials = resolveGatewayCredentials({ apiKey: getEnvironmentApiKey() ?? readApiKeyFromConfigFile() ?? "" })
 	if (!credentials.token) return undefined
-	// Custom headers suppress the adapter's OAuth auto-detection for this URL.
+	// API keys stay in static headers. For SSO, the adapter resolves the
+	// current provider token before every request, so expiry uses the
+	// harness's existing refresh path instead of a stale persisted bearer.
+	// Only the non-secret organization id is static in that entry.
 	// keep-alive connects at extension load instead of on first tool call (the
 	// lazy default serves tools from the disk cache and shows "not listening")
 	// and adds health-check reconnects for the remote endpoint.
 	return {
 		name: GATEWAY_SERVER_NAME,
-		entry: { url, headers: gatewayAuthHeaders(credentials), lifecycle: "keep-alive" },
+		entry:
+			credentials.source === "oauth"
+				? {
+						url,
+						auth: { provider: KIMCHI_PROVIDER_ID },
+						headers: credentials.organizationId ? { "X-CastAi-Organization-Id": credentials.organizationId } : {},
+						lifecycle: "keep-alive",
+					}
+				: { url, headers: gatewayAuthHeaders(credentials), lifecycle: "keep-alive" },
 	}
 }
 
