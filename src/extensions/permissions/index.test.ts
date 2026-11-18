@@ -632,6 +632,30 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBe("planning-adhoc")
 	})
 
+	it("keeps mcp admitted when its read-only provider registers after the initial plan snapshot", async () => {
+		const harness = createPermissionsHarness(["read", "grep", "write", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools()).not.toContain("mcp")
+		expect(harness.activeTools()).not.toContain("write")
+
+		// The metadata-driven provider arrives after permissions has already
+		// hidden this active gateway, as happens during session replacement.
+		const unregister = registerReadOnlyToolProvider(harness.pi, () => ["mcp"])
+		harness.pi.registerTool({
+			name: "mcp",
+			label: "MCP",
+			description: "MCP gateway",
+			parameters: {},
+			execute: vi.fn(),
+		})
+		ToolProfileManager.reapplyCurrentProfile(harness.pi)
+		await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(harness.activeTools()).toContain("mcp")
+		expect(harness.activeTools()).not.toContain("write")
+		unregister()
+	})
+
 	it("session_start self-heals a stale planning-ferment profile when no ferment is active", async () => {
 		notifyFermentActive(false)
 		const harness = createPermissionsHarness(["read", "bash", "write", "grep"])

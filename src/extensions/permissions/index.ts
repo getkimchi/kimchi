@@ -368,7 +368,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// can re-enable them. Without this snapshot, restore would be a no-op
 			// because `ToolProfileManager.apply` (via `pi.setActiveTools`) does
 			// not preserve the prior active-tool set.
-			planModeHiddenTools = pi.getActiveTools().filter((name) => !isPlanModeTool(name))
+			planModeHiddenTools = pi.getActiveTools().filter((name) => name !== "mcp" && !isPlanModeTool(name))
 			// Register the disable vote with the cooperative visibility layer so
 			// `restoreToolsFromPlanMode`'s `planToolVisibility.enable(...)` call
 			// matches the matching disable vote (and so the snapshot below does

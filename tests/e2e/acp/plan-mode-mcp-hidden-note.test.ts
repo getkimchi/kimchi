@@ -70,6 +70,8 @@ describe(
 			artifactSuffix,
 		}) => {
 			const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" }, { toolPrefix })
+			const resumedRead =
+				toolPrefix === undefined ? gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" }) : undefined
 			fixture = await startAcpMcpFixture({
 				artifactName: `acp-plan-mode-mcp-gateway-read-${artifactSuffix}`,
 				extraArgs: ["--plan"],
@@ -94,7 +96,13 @@ describe(
 						],
 					},
 				},
-				responses: [read.response, modelReply("I read LLM-4358 while staying in plan mode.")],
+				responses: [
+					read.response,
+					modelReply("I read LLM-4358 while staying in plan mode."),
+					...(resumedRead === undefined
+						? []
+						: [resumedRead.response, modelReply("The gateway still works after resuming in plan mode.")]),
+				],
 			})
 			const sessionId = await newSession(fixture, fixture.workDir)
 			expect((await prompt(fixture, sessionId, "Read LLM-4358 to inform the plan")).stopReason).toBe("end_turn")
@@ -107,6 +115,15 @@ describe(
 				}),
 			).toBe(true)
 			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Enable MCP access in plan mode")
+
+			if (resumedRead === undefined) return
+			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			expect((await prompt(fixture, sessionId, "Read it again after resuming the plan session")).stopReason).toBe(
+				"end_turn",
+			)
+			requireRequestAdvertisingTool(fixture.fake.requests.slice(-1), "mcp")
+			expect(toolResultText(fixture.fake.requests, resumedRead)).toContain("LLM-4358: Enable MCP access in plan mode")
+			expect(fixture.mcp.eventsOfType("tool_called").filter((event) => event.name === "getJiraIssue")).toHaveLength(2)
 		})
 
 		it("executes a plan-mode gateway read from an ACP caller-only server", async () => {

@@ -1,5 +1,5 @@
 import { expect, Key, test } from "@microsoft/tui-test"
-import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { mcpResourceResult, mcpToolResult } from "./support/mcp-fixture.js"
 import {
@@ -148,8 +148,9 @@ test("reads through an annotated direct MCP tool in plan mode while hiding write
 	)
 })
 
-test("reads Jira through the MCP gateway without leaving plan mode", async ({ terminal }) => {
+test("reads Jira through the MCP gateway without leaving a resumed plan-mode session", async ({ terminal }) => {
 	const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
+	const resumedRead = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
 	await runMcpKimchiSession(
 		terminal,
 		{
@@ -176,7 +177,12 @@ test("reads Jira through the MCP gateway without leaving plan mode", async ({ te
 					],
 				},
 			},
-			responses: [read.response, modelReply("I read LLM-4358 through the gateway while planning.")],
+			responses: [
+				read.response,
+				modelReply("I read LLM-4358 through the gateway while planning."),
+				resumedRead.response,
+				modelReply("The resumed plan-mode gateway read also succeeded."),
+			],
 		},
 		async (fixture, trace) => {
 			terminal.submit("Read LLM-4358 through the gateway to inform the plan")
@@ -193,6 +199,19 @@ test("reads Jira through the MCP gateway without leaving plan mode", async ({ te
 			).toBe(true)
 			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Enable MCP access in plan mode")
 			trace.step("read-only Jira gateway call executed without leaving plan mode")
+
+			terminal.submit("/resume")
+			await waitForText(terminal, "Resume session", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, "Resumed session", { timeoutMs: STARTUP_TIMEOUT_MS })
+			terminal.submit("Read the issue again after resuming")
+			await waitForText(terminal, "The resumed plan-mode gateway read also succeeded.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			requireRequestAdvertisingTool(fixture.fake.requests.slice(-1), "mcp")
+			expect(toolResultText(fixture.fake.requests, resumedRead)).toContain("LLM-4358: Enable MCP access in plan mode")
+			expect(fixture.mcp.eventsOfType("tool_called").filter((event) => event.name === "getJiraIssue")).toHaveLength(2)
+			trace.step("late registration leaves the gateway visible and callable after TUI resume")
 		},
 	)
 })
