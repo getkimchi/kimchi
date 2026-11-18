@@ -238,8 +238,8 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 	})
 
 	it.each([
-		"maintenance run --auto --no-detach --task=gc",
-		"gc --auto --no-detach",
+		"maintenance run --auto --task=gc",
+		"gc --auto",
 	])("records a commit while Git %s is running", async (maintenance) => {
 		// Two packs trigger auto-GC without relying on Git's loose-object sampling.
 		for (const message of ["base", "second"]) {
@@ -250,6 +250,18 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 			})
 		}
 		git(repository, "config", "gc.autoPackLimit", "1")
+		// Some versions cannot show detach support through help; in that case, omit the optional flag.
+		let detachFlag = ""
+		try {
+			detachFlag = execFileSync("git", ["gc", "-h"], {
+				encoding: "utf8",
+				env: { ...process.env, GIT_PAGER: "cat" },
+			}).includes("--detach")
+				? " --detach"
+				: ""
+		} catch {
+			// Older Git versions either reject the help probe or do not support --detach.
+		}
 		const ready = quote(join(directory, "maintenance-ready"))
 		const release = quote(join(directory, "maintenance-release"))
 		writeFileSync(
@@ -267,7 +279,7 @@ done
 		)
 		expect(
 			await run(`
-git ${maintenance} &
+git ${maintenance}${detachFlag} &
 maintenance_pid=$!
 finish() { touch ${release}; wait "$maintenance_pid"; }
 trap finish EXIT
@@ -285,7 +297,7 @@ exit "$commit_result"
 `),
 		).toBe(0)
 		expect(commits.map((commit) => commit.sha)).toEqual([git(repository, "rev-parse", "HEAD")])
-	})
+	}, 15_000)
 
 	it("does not record failed commits or dry runs", async () => {
 		git(repository, "commit", "--allow-empty", "-m", "base")

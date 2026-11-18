@@ -1317,18 +1317,22 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		const options = { llm: makeFakeLlm([]), createBackend: () => Promise.resolve(fake.backend) }
 		await runCaptureWorker(["--job", first, "--db", dbPath()], options)
 		await runCaptureWorker(["--job", second, "--db", dbPath()], options)
-		expect(fake.items[0]?.metadata).toMatchObject({
-			version: 1,
-			kind: "semantic",
-			source: "extracted",
-			normalizedTextHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-		})
-		expect(fake.items[1]?.metadata).toMatchObject({
-			kind: "hypothesis",
-			source: "extracted",
-			derived: true,
-			canonical: false,
-		})
+		for (const items of [fake.items, [...fake.items].reverse()]) {
+			const observation = items.find((item) => item.memory === "the user keeps herbs on the kitchen counter")
+			const derivation = items.find((item) => item.memory === "[derived] the adapter is probably incompatible")
+			expect(observation?.metadata).toMatchObject({
+				version: 1,
+				kind: "semantic",
+				source: "extracted",
+				normalizedTextHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+			})
+			expect(derivation?.metadata).toMatchObject({
+				kind: "hypothesis",
+				source: "extracted",
+				derived: true,
+				canonical: false,
+			})
+		}
 	})
 
 	it("writes and accumulates the per-session completion record", async () => {

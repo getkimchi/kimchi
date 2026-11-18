@@ -175,6 +175,8 @@ describe("comment stripping", () => {
 })
 
 describe("env var registry", () => {
+	// Full-repository parsing and I/O varies on shared CI runners. Keep a
+	// generous but bounded timeout for that cold path rather than narrowing coverage.
 	it("registers every KIMCHI_*/PI_*/CASTAI_* variable referenced in src", () => {
 		const registered = allRegisteredNames()
 		const missing: string[] = []
@@ -195,7 +197,7 @@ describe("env var registry", () => {
 			`unregistered environment variables — add them to src/env-vars.ts. Prefixed names that are NOT env vars (proto enum wire names, log prefixes) can be exempted from the literal scan via LITERAL_EXEMPT_FILES:\n${missing.join("\n")}`,
 		).toEqual([])
 		expect(typos, `prefixed names that are not SCREAMING_SNAKE_CASE — typos?:\n${typos.join("\n")}`).toEqual([])
-	})
+	}, 30_000)
 
 	it("detects prefixed names destructured from process.env", () => {
 		const sources = new Map([
