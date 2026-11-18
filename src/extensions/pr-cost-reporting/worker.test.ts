@@ -1971,7 +1971,7 @@ describe("prelude stretching of a big group", () => {
 		const costSync = (await import("../work-attribution/cost-sync.js")) as unknown as {
 			readWorkCostReportAsync: { mock: { calls: unknown[][] } }
 		}
-		const reportStretch = costSync.readWorkCostReportAsync.mock.calls.at(-1)?.[2] as (() => Promise<void>) | undefined
+		const reportStretch = costSync.readWorkCostReportAsync.mock.calls.at(-1)?.[1] as (() => Promise<void>) | undefined
 		// The translation's stretcher is buildEvents' last parameter.
 		const eventsStretch = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.at(-1) as
 			| (() => Promise<void>)
