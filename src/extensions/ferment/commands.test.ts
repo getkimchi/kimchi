@@ -10,6 +10,9 @@ import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createContext } from "../__mocks__/context.js"
 import { seedOrgPolicy } from "../__mocks__/org-policy.js"
+import { createSessionLogHarness } from "../__mocks__/session-log.js"
+import { createDirectorState } from "../director/plan.js"
+import { DirectorStore } from "../director/state.js"
 import { HERDR_EVENTS, withBlocked } from "../herdr-events.js"
 import {
 	FermentCommandController,
@@ -173,6 +176,18 @@ function createCompleteFerment(h: CommandHarness, name: string): Ferment {
 }
 
 describe("FermentCommandController", () => {
+	it("rejects a new ferment while Director is active", async () => {
+		const h = createHarness()
+		const directorLog = createSessionLogHarness()
+		new DirectorStore(directorLog).commit(createDirectorState("Director-owned run", "director-run"), 0)
+		vi.spyOn(h.ctx.sessionManager, "getEntries").mockReturnValue(directorLog.entries)
+
+		await expect(
+			startFermentForIntent({ pi: h.pi, ctx: h.ctx, runtime: h.runtime, rawIntent: "competing runtime" }),
+		).rejects.toThrow(/Director is active/i)
+		expect(h.runtime.getActive()).toBeUndefined()
+	})
+
 	it("executes new commands through injected runtime storage", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()

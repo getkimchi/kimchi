@@ -51,6 +51,7 @@ import {
 	trackSubagentSpawned,
 	trySessionId,
 } from "../telemetry/index.js"
+import { createDirectorWorkerGateway, registerDirectorWorkerGateway } from "./director-gateway.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -1337,6 +1338,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	)
 	activeManager = manager
+	registerDirectorWorkerGateway(pi, createDirectorWorkerGateway(manager))
 
 	// Agents and their settings both live under the session's .kimchi/ — one
 	// helper so no surface can refresh one without the other.
@@ -1881,6 +1883,11 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 				const rawType = params.subagent_type as SubagentType
+				if (rawType.trim().toLowerCase() === "director") {
+					return textResult(
+						"Director is main-session-only. Start it explicitly with /skill:director; do not spawn it as a subagent.",
+					)
+				}
 				const resolved = resolveType(rawType)
 				const subagentType = resolved ?? AGENT_GENERAL_PURPOSE
 				const fellBack = resolved === undefined

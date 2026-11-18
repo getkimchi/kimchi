@@ -634,6 +634,30 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(text).not.toContain("not allowed in multi-model mode")
 	})
 
+	it("rejects a nested Director instead of falling back to another agent type", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-nested-director",
+			{ prompt: "Orchestrate another Director", description: "nested", subagent_type: "director" },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(result.content[0]?.text).toContain("Director is main-session-only")
+		expect(result.content[0]?.text).toContain("/skill:director")
+		expect(managerInstance.spawn).not.toHaveBeenCalled()
+	})
+
 	it("calls spawn when no model parameter is supplied regardless of multi-mode", async () => {
 		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
 		const pi = makeMockPi()

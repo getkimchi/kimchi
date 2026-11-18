@@ -317,6 +317,18 @@ describe("buildScriptPayload", () => {
 			expect(visibleWidth(renderFittedLine(segments, 40, context.theme))).toBeLessThanOrEqual(40)
 		}
 	})
+	it("shows Director by default and removes its segment when the run is cleared", () => {
+		const data = createMockStatusLineData()
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(new Map([["director", "Director — demo objective"]]))
+		const context = { ctx: createMockContext(), theme: createMockTheme(), statusLineData: data }
+		expect(
+			stripAnsi(buildStatusLineSegments(context, new Set()).find((segment) => segment.id === "director")?.text ?? ""),
+		).toBe("Director — demo objective")
+
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(new Map())
+		expect(buildStatusLineSegments(context, new Set()).some((segment) => segment.id === "director")).toBe(false)
+	})
+
 	it("shows PR lookup status in both footers and hides it when no work has commits", () => {
 		const context = {
 			ctx: createMockContext(),

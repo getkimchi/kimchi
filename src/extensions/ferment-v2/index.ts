@@ -11,6 +11,7 @@ import type {
 import { buildSessionContext } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { assertDirectorInactive } from "../director/compatibility.js"
 import { formatCount } from "../format.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
 import { getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
@@ -57,6 +58,7 @@ import {
 } from "./final-answer.js"
 import { type FermentV2Lesson, updateFermentV2Lessons } from "./lessons.js"
 import { objectiveFilePath, objectiveText, saveObjectiveFile } from "./objective-file.js"
+import { setFermentV2OrchestrationStatus } from "./orchestration-state.js"
 import {
 	type FermentV2PlanExecutorResult,
 	isApprovedPlanObjective,
@@ -563,6 +565,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function syncRunStatus(fermentV2: FermentV2State): void {
+		setFermentV2OrchestrationStatus(pi, fermentV2?.status)
 		currentContext?.ui.setStatus("ferment-v2", formatFermentV2Status(fermentV2, evaluationAbort !== undefined))
 	}
 
@@ -1103,6 +1106,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		settleBeforeMutation = true,
 	): Promise<FermentV2PlanExecutorResult | "unavailable"> {
 		const sessionId = bindSession(ctx)
+		assertDirectorInactive(ctx.sessionManager)
 		const captured = currentFermentV2
 		let terminalWaiter: Promise<void> | undefined
 		const approvedPlan = presentation?.kind === "approved-plan"

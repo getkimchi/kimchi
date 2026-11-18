@@ -22,6 +22,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import { createSessionLogHarness } from "../__mocks__/session-log.js"
+import { createDirectorState } from "../director/plan.js"
+import { DirectorStore } from "../director/state.js"
 import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
@@ -156,6 +159,17 @@ describe("Ferment V2 extension", () => {
 
 		const result = await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})
 		expect(result.details.fermentV2).toBeNull()
+	})
+
+	it("rejects a new Ferment V2 while Director is active", async () => {
+		const directorLog = createSessionLogHarness()
+		new DirectorStore(directorLog).commit(createDirectorState("Director-owned run", "director-run"), 0)
+		vi.spyOn(harness.ctx.sessionManager, "getEntries").mockReturnValue(directorLog.entries)
+
+		await harness.command("competing runtime")
+
+		expect(harness.currentFermentV2()).toBeUndefined()
+		expect(harness.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Director is active"), "warning")
 	})
 
 	it("creates a Ferment V2, persists it, and confirms unfinished replacement", async () => {

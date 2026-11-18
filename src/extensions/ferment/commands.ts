@@ -4,6 +4,7 @@ import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
 import { successCriteriaToAnswer } from "../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
+import { assertDirectorInactive } from "../director/compatibility.js"
 import { HERDR_EVENTS, type HerdrBlockedPayload } from "../herdr-events.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { isFermentRunnable } from "../permissions/policy.js"
@@ -210,6 +211,7 @@ export async function startInteractiveFerment({
 	ctx,
 	runtime = defaultFermentRuntime,
 }: StartInteractiveFermentDeps): Promise<void> {
+	assertDirectorInactive(ctx.sessionManager)
 	const active = runtime.getActive()
 	if (active && active.status === "running") {
 		ctx.ui.notify(
@@ -252,6 +254,7 @@ export async function startFermentForIntent({
 	rawIntent: string
 	title?: string
 }): Promise<{ name: string } | undefined> {
+	assertDirectorInactive(ctx.sessionManager)
 	const active = runtime.getActive()
 	if (active && active.status === "running") {
 		ctx.ui.notify(

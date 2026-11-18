@@ -455,6 +455,46 @@ describe("SkillManager", () => {
 		}
 	}
 
+	describe("user-invocation-only skills", () => {
+		const hiddenSkill =
+			"---\nname: director\ndescription: Delegation only\ndisable-model-invocation: true\n---\nDirector instructions."
+
+		it("refuses direct and categorized harness skills, including linked files", async () => {
+			mkdirSync(join(tmpDir, "director", "references"), { recursive: true })
+			writeFileSync(join(tmpDir, "director", "SKILL.md"), hiddenSkill)
+			writeFileSync(join(tmpDir, "director", "references", "private.md"), "Do not expose this.")
+			mkdirSync(join(tmpDir, "orchestration", "nested-director"), { recursive: true })
+			writeFileSync(join(tmpDir, "orchestration", "nested-director", "SKILL.md"), hiddenSkill)
+
+			for (const [name, result] of [
+				["director", await mgr.view("director")],
+				["director", await mgr.view("director", "references/private.md")],
+				["nested-director", await mgr.view("nested-director")],
+			] as const) {
+				expect(result.success).toBe(false)
+				expect(result.error).toContain("user-invocation-only")
+				expect(result.error).toContain(`/skill:${name}`)
+				expect(result.content).toBeUndefined()
+			}
+		})
+
+		it("refuses bundled skills", async () => {
+			const bundledDir = mkdtempSync(join(tmpdir(), "kimchi-skill-hidden-bundled-"))
+			try {
+				mkdirSync(join(bundledDir, "director"), { recursive: true })
+				writeFileSync(join(bundledDir, "director", "SKILL.md"), hiddenSkill)
+				const manager = new SkillManager(tmpDir, { bundledRoots: [bundledDir] })
+
+				const result = await manager.view("director")
+				expect(result.success).toBe(false)
+				expect(result.error).toContain("user-invocation-only")
+				expect(result.error).toContain("/skill:director")
+			} finally {
+				rmSync(bundledDir, { recursive: true, force: true })
+			}
+		})
+	})
+
 	describe("discovered skills (session inventory tier)", () => {
 		it("views a skill resolved through the discovered provider", async () => {
 			const discoveredDir = mkdtempSync(join(tmpdir(), "kimchi-skill-discovered-"))

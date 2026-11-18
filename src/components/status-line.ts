@@ -26,6 +26,7 @@ export type SegmentId =
 	| "model"
 	| "thinking"
 	| "ferment"
+	| "director"
 	| "agents"
 	| "context"
 	| "usage"
@@ -833,6 +834,18 @@ function buildFermentSegment(
 	}
 }
 
+function buildDirectorSegment(
+	theme: Theme,
+	statusLineData: ReadonlyFooterDataProvider,
+	hidden: boolean,
+): Segment | null {
+	if (hidden) return null
+	const status = statusLineData.getExtensionStatuses().get("director")
+	if (!status) return null
+	const text = accentText(theme, status)
+	return { id: "director", text, width: visibleWidth(text) }
+}
+
 export interface StatusLineBuildContext {
 	ctx: ExtensionContext
 	theme: Theme
@@ -860,6 +873,7 @@ export function buildStatusLineSegments(
 		buildModelSegment(ctx, theme),
 		buildThinkingSegment(ctx, theme, pinned.has("thinking")),
 		buildFermentSegment(theme, pinned.has("ferment"), statusLineData),
+		buildDirectorSegment(theme, statusLineData, hidden.has("director")),
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),
 		buildContextSegment(ctx, theme),

@@ -58,7 +58,13 @@ import { FERMENT_V2_TOOL_NAMES } from "../../extensions/ferment-v2/constants.js"
 // ---------------------------------------------------------------------------
 
 /** Discriminating label baked into the profile name (mode + phase). */
-export type ToolProfile = "idle" | "worker" | "planning-adhoc" | "planning-ferment" | "implementation-ferment"
+export type ToolProfile =
+	| "idle"
+	| "worker"
+	| "planning-adhoc"
+	| "planning-ferment"
+	| "implementation-ferment"
+	| "orchestration-director"
 
 /** Which execution mode gates this tool's availability. */
 export type ToolMode = "shared" | "adhoc" | "ferment"
@@ -286,6 +292,17 @@ export const WRITE_TOOLS: ToolEntry[] = [
 	{ name: "get_subagent_result", modes: ["ferment"] },
 ]
 
+export const DIRECTOR_MODE_TOOLS: ToolEntry[] = [
+	{ name: "Agent", modes: ["adhoc", "ferment"] },
+	{ name: "resume_subagent", modes: ["adhoc", "ferment"] },
+	{ name: "steer_subagent", modes: ["adhoc", "ferment"] },
+	{ name: "get_subagent_result", modes: ["adhoc", "ferment"] },
+	{ name: "questionnaire", modes: ["adhoc"], routing: "interactive" },
+	{ name: "skill_view", modes: ["adhoc", "ferment"] },
+	{ name: "director_plan", modes: ["adhoc", "ferment"] },
+	{ name: "director_finish", modes: ["adhoc", "ferment"] },
+]
+
 // ---------------------------------------------------------------------------
 // Derivation
 // ---------------------------------------------------------------------------
@@ -315,6 +332,9 @@ export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
 
 		case "worker":
 			return []
+
+		case "orchestration-director":
+			return [...DIRECTOR_MODE_TOOLS]
 
 		case "planning-adhoc":
 			return [

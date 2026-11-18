@@ -205,10 +205,13 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 
 		// Read-only MCP direct tools registered with a planning provider stay
 		// visible while planning (see src/extensions/mcp/read-only.ts); the
-		// gateway and all write-capable tools remain catalog-excluded.
-		const catalogNames = new Set(allowedNames)
-		for (const name of collectReadOnlyProviderNames(pi)) {
-			if (!catalogNames.has(name)) allowedNames.push(name)
+		// gateway and all write-capable tools remain catalog-excluded. Director's
+		// explicit orchestration allowlist never widens through these providers.
+		if (profile !== "orchestration-director") {
+			const catalogNames = new Set(allowedNames)
+			for (const name of collectReadOnlyProviderNames(pi)) {
+				if (!catalogNames.has(name)) allowedNames.push(name)
+			}
 		}
 
 		// Filter out tools that the cooperative visibility layer has voted to

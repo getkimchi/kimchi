@@ -6,6 +6,8 @@ import { registerResumeSubagentTool } from "./resume-tool.js"
 function setupManager() {
 	const record = {
 		id: "agent-1",
+		type: "Builder",
+		description: "Continue work",
 		status: "completed",
 		currentAttemptId: 0,
 		session: {},
@@ -23,8 +25,9 @@ function setupManager() {
 		resume: vi.fn(async () => record),
 	} as unknown as AgentManager
 	const registerTool = vi.fn()
-	registerResumeSubagentTool({ registerTool } as unknown as ExtensionAPI, manager)
-	return { manager, record, tool: registerTool.mock.calls[0]?.[0] }
+	const emit = vi.fn()
+	registerResumeSubagentTool({ registerTool, events: { emit } } as unknown as ExtensionAPI, manager)
+	return { manager, record, emit, tool: registerTool.mock.calls[0]?.[0] }
 }
 
 describe("resume_subagent", () => {
@@ -71,6 +74,34 @@ describe("resume_subagent", () => {
 			agentId: "agent-1",
 			status: "completed",
 			agentOutcome: { outcome: "completed" },
+		})
+	})
+
+	it("commits start and terminal transitions for Director's resumed worker", async () => {
+		const { emit, manager, record, tool } = setupManager()
+		vi.mocked(manager.resume).mockImplementation(async () => {
+			expect(emit).toHaveBeenCalledTimes(1)
+			expect(emit).toHaveBeenLastCalledWith("subagents:started", expect.objectContaining({ id: "agent-1" }))
+			return record as never
+		})
+
+		await tool.execute(
+			"call-continuation",
+			{ agent_id: "agent-1", prompt: "continue workflow", max_turns: 3, max_duration: 30 },
+			undefined,
+			undefined,
+			undefined,
+		)
+
+		expect(emit.mock.calls.map(([event]) => event)).toEqual(["subagents:started", "subagents:completed"])
+		expect(emit).toHaveBeenLastCalledWith("subagents:completed", {
+			id: "agent-1",
+			type: "Builder",
+			description: "Continue work",
+			visibility: undefined,
+			status: "completed",
+			result: "continued",
+			error: undefined,
 		})
 	})
 

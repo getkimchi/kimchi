@@ -137,6 +137,22 @@ describe("apply", () => {
 		expect(vi.mocked(pi.setActiveTools).mock.calls[1][0]).not.toContain("write")
 	})
 
+	it("does not admit read-only providers or unrelated late tools into Director", () => {
+		const pi = makeMockPi({ allTools: [{ name: "unrelated_late_tool" }] })
+		registerReadOnlyToolProvider(pi, () => ["srv_read_only"])
+
+		apply("orchestration-director", "adhoc", pi)
+		const initial = vi.mocked(pi.setActiveTools).mock.calls[0][0]
+		expect(initial).toContain("director_plan")
+		expect(initial).toContain("skill_view")
+		expect(initial).not.toContain("read")
+		expect(initial).not.toContain("bash")
+		expect(initial).not.toContain("srv_read_only")
+
+		reapplyCurrentProfile(pi)
+		expect(vi.mocked(pi.setActiveTools).mock.calls[1][0]).not.toContain("unrelated_late_tool")
+	})
+
 	it("a provider registered on one pi never surfaces in another pi's snapshot", () => {
 		const dapPi = makeMockPi()
 		const fermentPi = makeMockPi()

@@ -187,6 +187,22 @@ describe("WRITE_TOOLS", () => {
 })
 
 describe("getToolsForProfile", () => {
+	it("exposes only Director orchestration and lifecycle tools", () => {
+		expect(namesOf(getToolsForProfile("orchestration-director"))).toEqual([
+			"Agent",
+			"resume_subagent",
+			"steer_subagent",
+			"get_subagent_result",
+			"questionnaire",
+			"skill_view",
+			"director_plan",
+			"director_finish",
+		])
+		for (const forbidden of ["read", "grep", "find", "ls", "bash", "edit", "write", "web_fetch", "web_search", "mcp"]) {
+			expect(namesOf(getToolsForProfile("orchestration-director"))).not.toContain(forbidden)
+		}
+	})
+
 	describe("idle", () => {
 		it("returns only shared core tools", () => {
 			const result = getToolsForProfile("idle")

@@ -303,6 +303,7 @@ export const SKILL_INVOKE_PREFIX = "Invoking skill: "
 const SKILL_COMMAND_RE = /^\/skill:(\S+)/
 // Built from the module constant above — never from skill content.
 const SKILL_INVOKE_RE = new RegExp(`^${SKILL_INVOKE_PREFIX}(\\S+)`)
+const SKILL_ARGS_RE = /(?:^|\n)<!-- kimchi-skill-args:([^ ]*) -->/
 
 export interface SkillCommandMatch {
 	name: string
@@ -322,6 +323,19 @@ export function parseSkillCommand(text: string): SkillCommandMatch | undefined {
 	const raw = SKILL_COMMAND_RE.exec(text)
 	if (raw) return { name: raw[1], matchText: text.slice(raw[0].length) }
 	const invoke = SKILL_INVOKE_RE.exec(text)
-	if (invoke) return { name: invoke[1] }
+	if (invoke) {
+		const args = SKILL_ARGS_RE.exec(text)?.[1]
+		if (!args) return { name: invoke[1] }
+		try {
+			return { name: invoke[1], matchText: decodeURIComponent(args) }
+		} catch {
+			return { name: invoke[1] }
+		}
+	}
 	return undefined
+}
+
+/** Lossless argument metadata for native lifecycle consumers, not inferred from skill content. */
+export function skillArgsMarker(args: string): string {
+	return `<!-- kimchi-skill-args:${encodeURIComponent(args)} -->`
 }

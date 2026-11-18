@@ -7,6 +7,7 @@ export type StatusLineElementId =
 	| "model"
 	| "thinking"
 	| "ferment"
+	| "director"
 	| "agents"
 	| "context"
 	| "usage"
@@ -126,6 +127,12 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		id: "shells",
 		label: "Shells",
 		description: "Running background Bash commands (shown while any run)",
+		defaultVisible: true,
+	},
+	{
+		id: "director",
+		label: "Director",
+		description: "Active Director objective (cleared on completion)",
 		defaultVisible: true,
 	},
 ]

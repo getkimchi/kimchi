@@ -52,20 +52,49 @@ export function registerResumeSubagentTool(pi: ExtensionAPI, manager: AgentManag
 					}
 				}
 
-				const record = await manager.resume(
-					agentId,
-					purpose === "finalize_report" ? undefined : (params.prompt as string),
-					purpose === "finalize_report"
-						? { signal, purpose }
-						: {
-								signal,
-								maxTurns: params.max_turns as number,
-								tokenBudget: params.token_budget as number | undefined,
-								maxDuration: params.max_duration as number,
-								purpose,
-							},
+				const worker = {
+					id: agentId,
+					type: existing.type,
+					description: existing.description,
+					visibility: existing.visibility,
+				}
+				pi.events.emit("subagents:started", worker)
+				let record: Awaited<ReturnType<AgentManager["resume"]>>
+				try {
+					record = await manager.resume(
+						agentId,
+						purpose === "finalize_report" ? undefined : (params.prompt as string),
+						purpose === "finalize_report"
+							? { signal, purpose }
+							: {
+									signal,
+									maxTurns: params.max_turns as number,
+									tokenBudget: params.token_budget as number | undefined,
+									maxDuration: params.max_duration as number,
+									purpose,
+								},
+					)
+				} catch (error) {
+					pi.events.emit("subagents:failed", {
+						...worker,
+						status: "error",
+						error: error instanceof Error ? error.message : String(error),
+					})
+					throw error
+				}
+				if (!record) {
+					pi.events.emit("subagents:failed", { ...worker, status: "error", error: "Failed to resume agent" })
+					return textResult(`Failed to resume agent "${agentId}".`)
+				}
+				pi.events.emit(
+					record.status === "completed" || record.status === "steered" ? "subagents:completed" : "subagents:failed",
+					{
+						...worker,
+						status: record.status,
+						result: record.result,
+						error: record.error,
+					},
 				)
-				if (!record) return textResult(`Failed to resume agent "${agentId}".`)
 				const outcome = record.latestOutcome
 					? `\n\nagent_outcome:\n${JSON.stringify(record.latestOutcome, null, 2)}`
 					: ""

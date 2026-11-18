@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from
 import { basename, dirname, join, resolve, sep } from "node:path"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
-import { isAgentCreatedSkillDir } from "./skill-triggers.js"
+import { isAgentCreatedSkillDir, isModelInvocationDisabled } from "./skill-triggers.js"
 
 /**
  * Check if a skill directory exists.
@@ -579,6 +579,23 @@ export class SkillManager {
 		const loc = await this._findSkill(name)
 		if (!loc) {
 			return { success: false, error: `Skill '${name}' not found.` }
+		}
+
+		// Discovered inventory carries the visibility bit on its Skill record.
+		// Harness/bundled lookup resolves by path instead, so read its entry
+		// frontmatter before exposing the body or any linked file.
+		if (loc.origin !== "discovered") {
+			try {
+				const entryContent = await readFile(join(loc.skillDir, loc.entryFile), "utf-8")
+				if (isModelInvocationDisabled(entryContent)) {
+					return {
+						success: false,
+						error: `Skill '${name}' is user-invocation-only. Invoke it explicitly with /skill:${name}.`,
+					}
+				}
+			} catch {
+				// Preserve the existing missing/read-error behaviour below.
+			}
 		}
 
 		// Loose single-.md skills have no linked files, and their skillDir can be

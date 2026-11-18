@@ -135,6 +135,21 @@ describe("buildSkillListBlock", () => {
 		expect(block).toContain("- **claude-skill**: Claude skill description")
 		expect(block).toContain("- **pi-skill**: Pi skill description")
 	})
+
+	it("hides user-only skills from the model list but keeps their human commands", () => {
+		const hidden = {
+			...makeSkillInfo("director", "Delegation-only main-session role", "/director/SKILL.md"),
+			disableModelInvocation: true,
+		}
+		const loader = makeLoader([makeSkillInfo("researcher", "Research assistance", "/researcher/SKILL.md"), hidden])
+
+		const block = buildSkillListBlock(loader)
+		expect(block).toContain("- **researcher**: Research assistance")
+		expect(block).not.toContain("director")
+
+		const commands = buildSkillAvailableCommands(discoverAcpSkillCommands(loader))
+		expect(commands.map((command) => command.name)).toEqual(["skill:director", "skill:researcher"])
+	})
 })
 
 describe("buildSkillCommandPrompt", () => {
@@ -145,7 +160,9 @@ describe("buildSkillCommandPrompt", () => {
 			skillContent: "Use strict types.",
 		}
 		const prompt = buildSkillCommandPrompt(rewrite)
-		expect(prompt).toBe("Invoking skill: typescript-safety\n\nUse strict types.\n\nreview this file")
+		expect(prompt).toBe(
+			"Invoking skill: typescript-safety\n\nUse strict types.\n\n<!-- kimchi-skill-args:review%20this%20file -->\n\nreview this file",
+		)
 	})
 
 	it("returns only the skill content when no remaining text is provided", () => {

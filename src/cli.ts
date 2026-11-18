@@ -88,6 +88,7 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
+import directorExtension from "./extensions/director/index.js"
 import documentIntakeExtension from "./extensions/documents/intake.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
@@ -998,6 +999,7 @@ async function cliMain(): Promise<void> {
 				...enabledExtensionFactories([
 					{ id: FERMENT_V2_RESOURCE_ID, factory: fermentV2Extension },
 				] satisfies ManagedExtensionFactory[]),
+				directorExtension,
 				helpExtension,
 				themeSelectorExtension,
 				customizeStatusLineExtension,

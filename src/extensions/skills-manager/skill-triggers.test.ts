@@ -237,6 +237,20 @@ describe("parseSkillCommand", () => {
 		expect(parseSkillCommand("/skill:pdf")).toEqual({ name: "pdf", matchText: "" })
 	})
 
+	it("parses encoded ACP invocation args without deriving them from the skill body", () => {
+		expect(
+			parseSkillCommand(
+				"Invoking skill: director\n\nBody\n\n<!-- kimchi-skill-args:implement%20Director%20%2B%20verify -->",
+			)?.matchText,
+		).toBe("implement Director + verify")
+	})
+
+	it("ignores malformed ACP argument metadata", () => {
+		expect(
+			parseSkillCommand("Invoking skill: director\n\nBody\n\n<!-- kimchi-skill-args:%E0%A4%A -->")?.matchText,
+		).toBeUndefined()
+	})
+
 	it("parses the ACP rewrite header form with no match text", () => {
 		expect(parseSkillCommand("Invoking skill: docx\n\nbody with .pdf mentions")).toEqual({ name: "docx" })
 	})

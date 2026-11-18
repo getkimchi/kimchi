@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises"
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
 import type { ResourceLoader } from "@earendil-works/pi-coding-agent"
 import { stripFrontmatter } from "@earendil-works/pi-coding-agent"
-import { SKILL_INVOKE_PREFIX } from "../../extensions/skills-manager/skill-triggers.js"
+import { SKILL_INVOKE_PREFIX, skillArgsMarker } from "../../extensions/skills-manager/skill-triggers.js"
 
 export interface AcpSkillInfo {
 	readonly name: string
@@ -16,10 +16,14 @@ export interface AcpSkillInfo {
  * prompt's skills section (same precedence, collision rules, trust, packages,
  * and extension contributions) instead of re-deriving skill locations here.
  */
-export function discoverAcpSkillCommands(loader: ResourceLoader): AcpSkillInfo[] {
+export function discoverAcpSkillCommands(
+	loader: ResourceLoader,
+	options?: { modelVisibleOnly?: boolean },
+): AcpSkillInfo[] {
 	const { skills } = loader.getSkills()
 	const byName = new Map<string, AcpSkillInfo>()
 	for (const skill of skills) {
+		if (options?.modelVisibleOnly && skill.disableModelInvocation) continue
 		if (!byName.has(skill.name)) {
 			byName.set(skill.name, {
 				name: skill.name,
@@ -50,7 +54,7 @@ export function buildSkillAvailableCommands(skills: readonly AcpSkillInfo[]): Av
  * the system prompt. Returns an empty string when the loader reports no skills.
  */
 export function buildSkillListBlock(loader: ResourceLoader): string {
-	const skills = discoverAcpSkillCommands(loader)
+	const skills = discoverAcpSkillCommands(loader, { modelVisibleOnly: true })
 	if (skills.length === 0) return ""
 
 	const lines = skills.map((s) => `- **${s.name}**: ${s.description || `Use the ${s.name} skill.`}`)
@@ -134,5 +138,5 @@ export function buildSkillCommandPrompt(rewrite: SkillCommandRewrite): string {
 	const { skillName, remainingText, skillContent } = rewrite
 	const header = `${SKILL_INVOKE_PREFIX}${skillName}`
 	const prefix = [header, "", skillContent].join("\n")
-	return remainingText ? `${prefix}\n\n${remainingText}` : prefix
+	return remainingText ? `${prefix}\n\n${skillArgsMarker(remainingText)}\n\n${remainingText}` : prefix
 }

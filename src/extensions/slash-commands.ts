@@ -22,6 +22,7 @@ export const SLASH_COMMANDS = {
 	new: { hint: "Start a new session" },
 	btw: { hint: "Side chat branched from this session" },
 	agents: { hint: "Manage background agents" },
+	director: { hint: "Show or stop native Director orchestration" },
 	permissions: { hint: "View or change permission mode and rules" },
 	phase: { hint: "Show or change the current work phase" },
 	language: { hint: "Show or pin the language Kimchi replies in" },
