@@ -42,6 +42,9 @@ describe("skipped agent files entry", () => {
 		expect(lines).toHaveLength(1)
 		expect(lines?.[0]).toContain("[1 agent issue] Some agents were not loaded.")
 		expect(lines?.[0]).toContain(EXPAND)
+		// Column 1, like pi's own "Warning:" notices — a custom entry is
+		// otherwise drawn at column 0 and reads one cell left of them.
+		expect(lines?.[0]?.startsWith(" [1 agent issue]")).toBe(true)
 		// The hint is right-aligned: it ends at the terminal edge.
 		expect(visibleWidth(lines?.[0] ?? "")).toBe(80)
 		expect(lines?.[0]?.endsWith(EXPAND)).toBe(true)
@@ -60,12 +63,12 @@ describe("skipped agent files entry", () => {
 	it("expands to the header, one line per file and the fix line", () => {
 		const lines = render({ token: "start-1", files: one }, { expanded: true }) ?? []
 
-		expect(lines[0]).toContain("[Agent issues]")
+		expect(lines[0].startsWith(" [Agent issues]")).toBe(true)
 		expect(lines[0]).toContain(COLLAPSE)
 		expect(lines[0]).not.toContain("Some agents were not loaded.")
 		expect(lines.slice(1)).toEqual([
-			"  .kimchi/agents/a.md — unexpected end of the stream",
-			"Fix the YAML frontmatter to load them.",
+			"   .kimchi/agents/a.md — unexpected end of the stream",
+			" Fix the YAML frontmatter to load them.",
 		])
 	})
 
@@ -104,8 +107,8 @@ describe("skipped agent files entry", () => {
 			// deeper so a wrapped row cannot be read as a second file. No blank
 			// line at the start — the failure this replaced produced one.
 			expect(rows.length).toBeGreaterThan(2)
-			expect(rows[0].startsWith("  .kimchi")).toBe(true)
-			for (const row of rows.slice(1)) expect(row.startsWith("    ")).toBe(true)
+			expect(rows[0].startsWith("   .kimchi")).toBe(true)
+			for (const row of rows.slice(1)) expect(row.startsWith("     ")).toBe(true)
 			expect(rows.some((row) => row.trim().length === 0)).toBe(false)
 			expect(rows.join("\n")).toContain("tools")
 		})

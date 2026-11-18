@@ -39,6 +39,8 @@ test("an unparseable agent file collapses to one line that expands via ctrl+o", 
 			await waitForText(terminal, "[1 agent issue] Some agents were not loaded.", { full: true })
 			await waitForText(terminal, "(ctrl+o to expand)", { full: true })
 			expect(fullText(terminal)).not.toContain("broken-agent.md")
+			// Column 1, flush with pi's own "Warning:" notices.
+			expect(fullText(terminal)).toMatch(/^ \[1 agent issue\]/m)
 			trace.step("startup collapsed the skipped agent file into one line")
 
 			terminal.keyPress("o", { ctrl: true })

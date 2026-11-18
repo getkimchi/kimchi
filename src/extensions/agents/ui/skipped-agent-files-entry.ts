@@ -36,6 +36,13 @@ type LineTheme = Pick<Theme, "fg">
  */
 const WRAP_MIN_WIDTH = 20
 
+/**
+ * Left pad, matching pi's own transcript notices (`showWarning`/`showStatus`
+ * render `ThemedText(..., 1, 0)`). A custom entry is otherwise drawn at column
+ * 0, one column left of the warning right above it.
+ */
+const LEFT_PAD = " "
+
 function headerLine(left: string, expanded: boolean, theme: LineTheme, width: number): string {
 	// Reserve the hint's width first so it stays visible on narrow terminals —
 	// only the summary text truncates.
@@ -86,13 +93,17 @@ class SkippedAgentFilesLine implements Component {
 	}
 
 	render(width: number): string[] {
-		if (width < 1) return []
+		const contentWidth = width - LEFT_PAD.length
+		if (contentWidth < 1) return []
 		const left = this.expanded ? "[Agent issues]" : this.summary
-		const lines = [headerLine(left, this.expanded, this.theme, width)]
-		if (!this.expanded) return lines
-		for (const { path, reason } of this.files) lines.push(...rowLines(path, reason, width))
-		lines.push(...fixLines(width))
-		return lines
+		const lines = [headerLine(left, this.expanded, this.theme, contentWidth)]
+		if (this.expanded) {
+			for (const { path, reason } of this.files) lines.push(...rowLines(path, reason, contentWidth))
+			lines.push(...fixLines(contentWidth))
+		}
+		// The pad is added last so every line keeps one column of margin while
+		// the hint stays flush with the right edge.
+		return lines.map((line) => LEFT_PAD + line)
 	}
 
 	invalidate(): void {}
