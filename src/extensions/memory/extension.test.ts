@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AgentSideConnection } from "@agentclientprotocol/sdk"
@@ -10,7 +10,7 @@ import { createAcpUIContext } from "../../modes/acp/acp-ui-context.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
-import { MEMORY_PRE_REQUEST_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
+import { MEMORY_PRE_REQUEST_TIMEOUT_MS, MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
@@ -75,6 +75,32 @@ async function settle(): Promise<void> {
 /** Last recorded call for one status/widget key — the settle signal the recall chain leaves behind. */
 function lastCallFor(calls: ReadonlyArray<readonly [string, ...unknown[]]>, key: string) {
 	return calls.filter((call) => call[0] === key).at(-1)
+}
+
+/** Marks captured via the timing sink while KIMCHI_SUBMIT_TIMING points at `file`. */
+function recordedMarks(file: string): Array<Record<string, unknown>> {
+	return readFileSync(file, "utf-8")
+		.split("\n")
+		.filter((line) => line !== "")
+		.map((line) => JSON.parse(line) as Record<string, unknown>)
+}
+
+/**
+ * Temp marks sink for one test: sets KIMCHI_SUBMIT_TIMING for the test body;
+ * cleanup() removes the env var and the directory. Call before the try —
+ * a finally cannot see a const declared inside it.
+ */
+function useMarksSink(): { file: string; cleanup: () => void } {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-memory-marks-"))
+	const file = join(dir, "marks.jsonl")
+	process.env.KIMCHI_SUBMIT_TIMING = file
+	return {
+		file,
+		cleanup: () => {
+			delete process.env.KIMCHI_SUBMIT_TIMING
+			rmSync(dir, { recursive: true, force: true })
+		},
+	}
 }
 
 function startEvent(prompt: string): BeforeAgentStartEvent {
@@ -326,36 +352,452 @@ describe("memory extension", () => {
 		}
 	})
 
-	it("degrades to no-memory when the digest search hangs — and retries the digest next turn", async () => {
+	it("a digest that outlives its wait is adopted on the next turn - no second computation", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const marks = useMarksSink()
 		try {
-			// Only the first search hangs; later calls resolve. A timeout must
-			// NOT cache the failure: the next turn recomputes the digest.
-			const search = vi.fn((query: string) => {
-				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
-				return Promise.resolve([{ memory: `fact for ${query.length}`, score: 0.7 }])
-			})
+			let release: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						release = resolve
+					}),
+			)
 			const { sendMessage, start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			vi.mocked(fakeCtx.ui.notify).mockClear()
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			const result = await pending
+			// Degraded to the bare notice - the one bounded wait was spent.
+			expect(result?.systemPrompt).toContain("captured automatically")
+			expect(result?.systemPrompt).not.toContain("fact for")
+			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
+			// The abandoned computation lands late.
+			release?.([{ memory: "fact for late", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			// The settle still belongs to the starting turn (turn 2 has not run):
+			// the recall notify fires, once.
+			expect(vi.mocked(fakeCtx.ui.notify)).toHaveBeenCalledTimes(1)
+			// The adoption leaves its terminal mark — every adoption path must,
+			// including the timer-continuation window.
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(true)
+			// Turn 2 adopts it: no wait, no second search. Turn 2's prompt stays
+			// inside delivered territory (its only content word is "late") so the
+			// detached recall branch is inert — the count then asserts the digest
+			// computation alone, independent of microtask ordering in the recall
+			// chain (a recall search would otherwise land a hop after this await).
+			const turn2 = await start(startEvent("late"), fakeCtx)
+			expect(turn2?.systemPrompt).toContain("fact for late")
+			expect(search).toHaveBeenCalledTimes(1)
+			expect(sendMessage).not.toHaveBeenCalled()
+		} finally {
+			marks.cleanup()
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a late-failing digest search is discarded, not cached as an empty epoch — the next turn retries", async () => {
+		// The reviewer's window: turn 1's search fails AFTER the 2 s wait.
+		// Pre-fix, the settle adopted the failure's null as the epoch's empty
+		// digest and the session silently lost prefix memory until compaction;
+		// now it must be discarded and the next turn must retry (detached — the
+		// epoch's blocking-wait credit stays consumed).
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const marks = useMarksSink()
+		try {
+			let failFirst: ((err: Error) => void) | undefined
+			const search = vi.fn(() => {
+				if (search.mock.calls.length === 1) {
+					return new Promise<Array<{ memory?: string; score?: number }>>((_resolve, reject) => {
+						failFirst = reject
+					})
+				}
+				return Promise.resolve([{ memory: "recovered after failure", score: 0.7 }])
+			})
+			const { start } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 			)
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
-			const result = await pending
-			// Degraded to no facts — the notice is still present.
-			expect(result?.systemPrompt).toContain("captured automatically")
-			expect(result?.systemPrompt).not.toContain("fact for")
-			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
-			// Retry: turn 2 recomputes the digest into the prefix (no recall —
-			// the digest search already used this prompt).
+			const first = await pending
+			// The bounded wait was spent on a search that had not settled.
+			expect(first?.systemPrompt).toContain("captured automatically")
+			// The failure lands late — inside the reviewer's window.
+			failFirst?.(new Error("gateway 5xx"))
+			await vi.advanceTimersByTimeAsync(0)
+			// Discarded as a failure: the epoch does NOT adopt an empty digest.
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.discarded")).toBe(true)
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(false)
+			// Turn 2 retries (detached — bare this turn; a drift recall fires too,
+			// nothing is delivered yet), the retry succeeds, and turn 3 — whose
+			// prompt word is covered by then — carries the recovered digest.
+			const second = await start(startEvent("turn 2"), fakeCtx)
+			expect(second?.systemPrompt).toContain("captured automatically")
+			await vi.advanceTimersByTimeAsync(0)
+			const third = await start(startEvent("recovered"), fakeCtx)
+			expect(third?.systemPrompt).toContain("recovered after failure")
+			expect(search.mock.calls.length).toBeGreaterThanOrEqual(2)
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(true)
+		} finally {
+			marks.cleanup()
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a throwing settle handler is contained — no unhandled rejection, adoption still recorded", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const unhandled: unknown[] = []
+		const onUnhandled = (reason: unknown) => unhandled.push(reason)
+		process.on("unhandledRejection", onUnhandled)
+		const marks = useMarksSink()
+		try {
+			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						resolvers.push(resolve)
+					}),
+			)
+			const ctx = createContext()
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			// Turn 1 waits its bounded 2 s and times out; the attempt stays pending.
+			const pending = start(startEvent("turn 1"), ctx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			// Past the search bound the attempt is presumed hung and abandoned;
+			// resolvers[0] (its search) never settles — that is the point.
+			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			// Turn 2 starts the RETRY DETACHED: `settled` is dropped without any
+			// withTimeout ever attaching handlers to it, so a rethrown settle
+			// error would be a genuine unhandled rejection — the assertion on
+			// `unhandled` below is load-bearing on exactly this branch.
+			const turn2 = start(startEvent("turn 2"), ctx)
+			await vi.advanceTimersByTimeAsync(0)
+			await turn2
+			expect(resolvers).toHaveLength(2)
+			// The one realistically throwing step in the settle: the UI bridge,
+			// armed for the detached attempt's settle only.
+			vi.mocked(ctx.ui.setStatus).mockImplementationOnce(() => {
+				throw new Error("ui bridge broke")
+			})
+			resolvers[1]?.([{ memory: "resilient fact", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			expect(unhandled).toEqual([])
+			expect(consoleError.mock.calls.some(([m]) => String(m).includes("digest settle failed"))).toBe(true)
+			// The adoption was recorded before the UI step, and the next turn
+			// uses the digest (its prompt stays inside delivered territory).
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(true)
+			// Mutual exclusion of terminals: a post-adoption throw must not also
+			// emit the catch's discarded backstop (the identity guard is false).
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.discarded")).toBe(false)
+			const turn3 = await start(startEvent("resilient fact"), ctx)
+			expect(turn3?.systemPrompt).toContain("resilient fact")
+		} finally {
+			process.off("unhandledRejection", onUnhandled)
+			marks.cleanup()
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a digest settling during a later turn updates the status but suppresses the mid-turn recall notify", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						resolvers.push(resolve)
+					}),
+			)
+			const ctx = createContext()
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), ctx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			// Turn 2 runs (and finishes) while the attempt is still in flight —
+			// it takes the digest-pending branch, so no second search fires yet;
+			// the only recorded resolver is the timed-out attempt's.
+			await start(startEvent("turn 2 - new territory"), ctx)
+			// The settle lands AFTER turn 2 started — the attempt no longer
+			// belongs to the current turn, so the popup must not fire mid-turn.
+			resolvers[0]?.([{ memory: "late fact", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			expect(vi.mocked(ctx.ui.notify)).not.toHaveBeenCalled()
+			// The status segment still updates — the count is current.
+			expect(vi.mocked(ctx.ui.setStatus).mock.calls.some((c) => c[0] === MEMORY_STATUS_KEY && c[1] === "1")).toBe(true)
+			// And the digest is adopted for the next turn.
+			const turn3 = await start(startEvent("turn 3"), ctx)
+			expect(turn3?.systemPrompt).toContain("late fact")
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a still-pending digest is neither re-run nor waited on by later turns", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const search = vi.fn(() => new Promise<Array<{ memory?: string }>>(() => {}))
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			// Turn 2 returns without advancing time: it must not block.
 			const turn2 = await start(startEvent("turn 2"), fakeCtx)
-			expect(turn2?.systemPrompt).toContain("fact for")
+			expect(turn2?.systemPrompt).toContain("captured automatically")
+			expect(search).toHaveBeenCalledTimes(1)
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a digest presumed hung is abandoned past the search bound and retried without blocking", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const search = vi.fn((query: string) => {
+				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
+				return Promise.resolve([{ memory: `fact for ${query.length}`, score: 0.7 }])
+			})
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			// Turn 2 abandons the hung attempt and starts one detached retry: it
+			// returns at once with the bare notice (no second 2 s wait).
+			const turn2 = await start(startEvent("turn 2"), fakeCtx)
+			expect(turn2?.systemPrompt).not.toContain("fact for")
 			expect(search).toHaveBeenCalledTimes(2)
-			// The recall valve is untouched: turn 3's drift fires and delivers.
-			await start(startEvent("turn 3 - fresh territory"), fakeCtx)
-			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS)
-			expect(search).toHaveBeenCalledTimes(3)
-			expect(sendMessage).toHaveBeenCalledTimes(1)
+			await vi.advanceTimersByTimeAsync(0)
+			// The retry landed in the background - turn 3 adopts it.
+			const turn3 = await start(startEvent("turn 3"), fakeCtx)
+			expect(turn3?.systemPrompt).toContain("fact for")
+			expect(search).toHaveBeenCalledTimes(2)
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a late digest is discarded when a compaction intervened", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const marks = useMarksSink()
+		try {
+			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						resolvers.push(resolve)
+					}),
+			)
+			const { start, getHandler } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			getHandler("session_compact")({ type: "session_compact" }, fakeCtx)
+			// The stale attempt lands after the epoch moved on.
+			resolvers[0]?.([{ memory: "stale fact", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			// The discard itself is the test subject — not just its downstream
+			// effect on the prompt (which the pre-adoption baseline also passes).
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.discarded")).toBe(true)
+			// Not adopted: the next start recomputes (second search) and the
+			// stale text never reaches the prompt.
+			const turn2 = start(startEvent("turn 2"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			resolvers[1]?.([{ memory: "fresh fact", score: 0.7 }])
+			const result = await turn2
+			expect(search).toHaveBeenCalledTimes(2)
+			expect(result?.systemPrompt).not.toContain("stale fact")
+		} finally {
+			marks.cleanup()
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a late digest is discarded when memory was toggled off and on while it was in flight", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const marks = useMarksSink()
+		try {
+			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						resolvers.push(resolve)
+					}),
+			)
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			// Flip off then on; each start observes the flip (epoch bump).
+			setSessionMemoryOverride(fakeCtx.sessionManager, false)
+			await start(startEvent("while off"), fakeCtx)
+			// Landing while disabled must not touch state either.
+			resolvers[0]?.([{ memory: "stale fact", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			// The discard itself is the test subject, not just the prompt effect.
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.discarded")).toBe(true)
+			setSessionMemoryOverride(fakeCtx.sessionManager, true)
+			const turn = start(startEvent("after re-enable"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			resolvers[1]?.([{ memory: "fresh fact", score: 0.7 }])
+			const result = await turn
+			expect(search).toHaveBeenCalledTimes(2)
+			expect(result?.systemPrompt).not.toContain("stale fact")
+		} finally {
+			marks.cleanup()
+			setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a digest discarded for an unobserved toggle-off does not wedge the re-enabled session", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const resolvers: Array<(hits: Array<{ memory?: string; score?: number }>) => void> = []
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						resolvers.push(resolve)
+					}),
+			)
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending
+			// Off and back on entirely BETWEEN starts — no turn observes the
+			// flip, so no epoch bump happens; the settle while disabled must not
+			// leave a settled attempt parked as "in flight".
+			setSessionMemoryOverride(fakeCtx.sessionManager, false)
+			resolvers[0]?.([{ memory: "stale fact", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			setSessionMemoryOverride(fakeCtx.sessionManager, true)
+			// The next start retries immediately — a fresh BLOCKING attempt
+			// instead of bare-notice turns until the 10 s abandon bound.
+			const turn = start(startEvent("after re-enable"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			resolvers[1]?.([{ memory: "fresh fact", score: 0.7 }])
+			const result = await turn
+			expect(search).toHaveBeenCalledTimes(2)
+			expect(result?.systemPrompt).toContain("fresh fact")
+		} finally {
+			setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("concurrent searcher callers share one init; a wedged init is abandoned past the bound", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			let createCalls = 0
+			const { getRegisteredTool, api } = createExtensionApi()
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: () => {
+					createCalls += 1
+					return createCalls === 1 ? new Promise(() => {}) : Promise.resolve({ search: async () => [] })
+				},
+			})(api)
+			const tool = getRegisteredTool("memory_search")
+			const toolCtx = createToolContext()
+			void tool.execute("a", { query: "x" }, undefined, undefined, toolCtx)
+			void tool.execute("b", { query: "y" }, undefined, undefined, toolCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			expect(createCalls).toBe(1)
+			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			await tool.execute("c", { query: "z" }, undefined, undefined, toolCtx)
+			expect(createCalls).toBe(2)
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("an abandoned searcher init that fails late must not latch a session failure over a newer init", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			let rejectA: ((error: Error) => void) | undefined
+			let resolveB: (() => void) | undefined
+			const searchB = vi.fn(async () => [{ memory: "b fact", score: 0.7 }])
+			let createCalls = 0
+			const { getRegisteredTool, api } = createExtensionApi()
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: () => {
+					createCalls += 1
+					if (createCalls === 1) {
+						return new Promise<never>((_, reject) => {
+							rejectA = reject
+						})
+					}
+					return new Promise<{ search: typeof searchB }>((resolve) => {
+						resolveB = () => resolve({ search: searchB })
+					})
+				},
+			})(api)
+			const tool = getRegisteredTool("memory_search")
+			const toolCtx = createToolContext()
+			// Init A wedges; its eventual rejection is absorbed by its joiner — the
+			// point is what it must NOT do to the session.
+			void tool.execute("a", { query: "x" }, undefined, undefined, toolCtx).catch(() => {})
+			await vi.advanceTimersByTimeAsync(0)
+			expect(createCalls).toBe(1)
+			// A is abandoned past the bound; B starts and is STILL IN FLIGHT when
+			// A finally rejects — the observable window: pre-fix, the late
+			// rejection latches searcherFailed and a call in this window degrades
+			// instead of joining B.
+			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			const execB = tool.execute("b", { query: "y" }, undefined, undefined, toolCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			expect(createCalls).toBe(2)
+			rejectA?.(new Error("late failure"))
+			await vi.advanceTimersByTimeAsync(0)
+			// A caller in the window between A's late rejection and B's completion
+			// must join B, not degrade to no-memory.
+			const execC = tool.execute("c", { query: "z" }, undefined, undefined, toolCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			resolveB?.()
+			await Promise.all([execB, execC])
+			expect(createCalls).toBe(2)
+			// Both window callers joined B and each searched once — pre-fix, the
+			// late rejection latches searcherFailed and "c" degrades without
+			// searching (searchB would be 1).
+			expect(searchB).toHaveBeenCalledTimes(2)
 		} finally {
 			vi.useRealTimers()
 			consoleError.mockRestore()
@@ -402,7 +844,7 @@ describe("memory extension", () => {
 		}
 	})
 
-	it("a hung searcher factory degrades per turn and never wedges the session — the next turn retries", async () => {
+	it("a hung searcher factory degrades the turn and never wedges the session - a later turn retries it", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
@@ -426,11 +868,15 @@ describe("memory extension", () => {
 			expect(result?.systemPrompt).toContain("captured automatically")
 			expect(result?.systemPrompt).not.toContain("late-blooming")
 			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
-			// The wedged factory call did not wedge the session: turn 2 retries
-			// with a FRESH factory call and the digest lands in the prefix.
-			const turn2 = await start(startEvent("turn 2"), fakeCtx)
+			// Past the search bound both the stuck digest attempt and the stuck
+			// init are abandoned: turn 2 starts a FRESH factory call detached
+			// and returns at once; turn 3 adopts the digest it computes.
+			await vi.advanceTimersByTimeAsync(MEMORY_SEARCH_TIMEOUT_MS + 10)
+			await start(startEvent("turn 2"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
 			expect(createCalls).toBe(2)
-			expect(turn2?.systemPrompt).toContain("late-blooming fact")
+			const turn3 = await start(startEvent("turn 3"), fakeCtx)
+			expect(turn3?.systemPrompt).toContain("late-blooming fact")
 			expect(sendMessage).not.toHaveBeenCalled()
 		} finally {
 			vi.useRealTimers()
@@ -594,69 +1040,6 @@ describe("memory extension", () => {
 		expect(driftQuery).not.toContain("HEAD_MARKER")
 		expect(driftQuery?.length).toBeLessThanOrEqual(TURN_RECALL_QUERY_MAX_CHARS)
 	})
-
-	it("shows the recall indicator while retrieval runs and clears it after", async () => {
-		const ctx = createContext()
-		const setDuringSearch: Array<unknown> = []
-		const search = vi.fn(async () => {
-			// What was on screen while the search was in flight?
-			setDuringSearch.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
-			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
-		})
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent("set up the repo"), ctx)
-		// The indicator was on screen during the retrieval, and the turn
-		// ended with it cleared — nothing left behind.
-		expect(setDuringSearch).toEqual([["memory-recall", ["› set up the repo", "Recalling memory…"]]])
-		const recallCalls = vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")
-		expect(recallCalls.at(-1)).toEqual(["memory-recall", undefined])
-	})
-
-	it("truncates a long prompt to one line in the recall widget", async () => {
-		const ctx = createContext()
-		const seen: Array<unknown> = []
-		const search = vi.fn(async () => {
-			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
-			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
-		})
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent(`edge ${"x".repeat(200)}`), ctx)
-		// One capped line with an ellipsis — never the full 200-char payload.
-		expect(seen).toEqual([["memory-recall", [`› edge ${"x".repeat(114)}…`, "Recalling memory…"]]])
-	})
-
-	it("shows only the first line of a multi-line prompt in the recall widget", async () => {
-		const ctx = createContext()
-		const seen: Array<unknown> = []
-		const search = vi.fn(async () => {
-			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
-			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
-		})
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent("first line of a paste\nsecond line stays hidden"), ctx)
-		expect(seen).toEqual([["memory-recall", ["› first line of a paste", "Recalling memory…"]]])
-	})
-
-	it("falls back to the bare progress line for a whitespace-only prompt", async () => {
-		const ctx = createContext()
-		const seen: Array<unknown> = []
-		const search = vi.fn(async () => {
-			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
-			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
-		})
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent("   "), ctx)
-		expect(seen).toEqual([["memory-recall", ["Recalling memory…"]]])
-	})
-
 	it("sets the memory status segment to the delivered fact count", async () => {
 		const ctx = createContext()
 		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
@@ -756,47 +1139,6 @@ describe("memory extension", () => {
 		)
 		await start(startEvent("set up the repo"), ctx)
 		expect(vi.mocked(ctx.ui.notify).mock.calls).toContainEqual(["Recalled 2 memories", "info"])
-	})
-
-	it("clears the recall indicator even when retrieval fails", async () => {
-		const ctx = createContext()
-		const search = vi
-			.fn()
-			.mockResolvedValueOnce([{ memory: "user prefers pnpm over npm", score: 0.7 }])
-			.mockRejectedValueOnce(new Error("gateway down"))
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent("set up the repo"), ctx)
-		// Only the detached recall's widget calls count from here — turn 1's
-		// digest indicator must not satisfy the "was set" assertion.
-		const callsBeforeTurn2 = vi.mocked(ctx.ui.setWidget).mock.calls.length
-		// Turn 2 drifts into uncovered territory and the search throws — the
-		// finally guard must still clear the indicator.
-		await start(startEvent("what do I bake?"), ctx)
-		await flushRecall(() =>
-			expect(lastCallFor(vi.mocked(ctx.ui.setWidget).mock.calls.slice(callsBeforeTurn2), "memory-recall")).toEqual([
-				"memory-recall",
-				undefined,
-			]),
-		)
-		const recallCalls = vi
-			.mocked(ctx.ui.setWidget)
-			.mock.calls.slice(callsBeforeTurn2)
-			.filter((call) => call[0] === "memory-recall")
-		expect(recallCalls.some((call) => call[1] !== undefined)).toBe(true)
-	})
-
-	it("never touches the widget API without a UI (headless / ACP)", async () => {
-		const ctx = createContext({ hasUI: false })
-		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent("set up the repo"), ctx)
-		// Retrieval still ran — the indicator is purely a TUI affordance.
-		expect(search).toHaveBeenCalled()
-		expect(vi.mocked(ctx.ui.setWidget).mock.calls.every((call) => call[0] !== "memory-recall")).toBe(true)
 	})
 
 	it("gate skips retrieval when the conversation stays covered", async () => {
@@ -1134,6 +1476,46 @@ describe("memory extension — digest selection gate", () => {
 		}
 	})
 
+	it("a hung selection gate falls back to the threshold rule within the pre-request budget", async () => {
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const hang = async () => await new Promise<Response>(() => {})
+			const { start } = await setup(
+				createMemoryExtension({
+					isEnabled: () => true,
+					createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
+					decision: () => ({
+						gate: {
+							endpoint: "https://gw.test/typesafe/v1/systemone",
+							apiKey: "k",
+							fetchImpl: hang,
+							maxRetries: 0,
+						},
+						enabled: new Set(["digest"]),
+					}),
+				}),
+			)
+			const turn = start(startEvent("memory check"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS)
+			const turn1 = await turn
+			// The turn itself cannot wait past its budget, so it runs bare; the hung gate's
+			// timeout falls the selection back to the threshold rule, and the digest that
+			// lands is adopted by the next turn instead of stalling to the abandon bound.
+			expect(turn1?.systemPrompt).not.toContain("greplier")
+			expect(consoleError.mock.calls.some((call) => String(call[0]).includes("digest selection gate timed out"))).toBe(
+				true,
+			)
+			await vi.advanceTimersByTimeAsync(10)
+			const turn2 = await start(startEvent("memory check"), fakeCtx)
+			expect(turn2?.systemPrompt).toContain("greplier")
+			expect(turn2?.systemPrompt).toContain("Freya")
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
 	it("the digest gate off (subset env): no selector call, threshold rule applies", async () => {
 		const decisionFetch = vi.fn(async () => {
 			throw new Error("must not be called")
@@ -1414,5 +1796,239 @@ describe("memory saved feedback (completion record)", () => {
 		writeRecord(3)
 		await start(startEvent("turn 2"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
+	})
+
+	it("a delete while a digest attempt is in flight discards the settle — the fact never lands", async () => {
+		// Two actors at the production await point: turn 1's digest search hangs
+		// past its bounded wait; a /memory delete lands while the attempt is
+		// still in flight; the search then settles with the now-deleted fact.
+		// The epoch bump the delete performed must discard the settle — no
+		// adoption, no status resurrection — and the next turn re-searches.
+		const admin = await import("./admin.js")
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const marks = useMarksSink()
+		try {
+			let releaseSearch: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
+			const search = vi.fn(
+				() =>
+					new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						releaseSearch = resolve
+					}),
+			)
+			const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+			const command = getRegisteredCommand("memory")
+			const ctx = createContext()
+			const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+			const pending = start(startEvent("set up the repo"), ctx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await pending // bare notice — the attempt is still in flight
+			expect(search).toHaveBeenCalledTimes(1)
+
+			// The delete lands while the attempt is in flight.
+			vi.mocked(admin.runAdminCommand).mockResolvedValue({
+				text: "Deleted live-fred.",
+				json: "{}",
+				code: 0,
+				useJson: false,
+			})
+			await command.handler("delete live-fred", createCommandContext())
+
+			// The stale search settles with the deleted fact — discarded by epoch.
+			releaseSearch?.([{ memory: "user prefers pnpm over npm", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			expect(vi.mocked(ctx.ui.setStatus).mock.calls.every(([, v]) => v !== "1")).toBe(true)
+			expect(recordedMarks(marks.file).some((m) => m.event === "memory.digest.adopted")).toBe(false)
+
+			// The next turn re-searches against the smaller store.
+			const turn2 = start(startEvent("set up the repo again"), ctx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			await turn2
+			expect(search).toHaveBeenCalledTimes(2)
+		} finally {
+			marks.cleanup()
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("a delete while a drift recall is in flight discards its delivery — no ledger resurrection", async () => {
+		// Two actors: turn 1 delivers a digest; turn 2 drifts (a recall fires,
+		// its search hangs); a /memory delete clears the ledger mid-search; the
+		// search settles with the deleted fact. The recall's epoch guard must
+		// drop the delivery instead of re-seeding the cleared ledger.
+		const admin = await import("./admin.js")
+		vi.useFakeTimers()
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => {})
+		try {
+			let calls = 0
+			let releaseSecond: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
+			const search = vi.fn(() => {
+				calls++
+				if (calls === 1) return Promise.resolve([{ memory: "the user lives in Lisbon", score: 0.7 }])
+				return new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+					releaseSecond = resolve
+				})
+			})
+			const { api, getRegisteredCommand, getHandler, sendMessage } = createExtensionApi()
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+			const command = getRegisteredCommand("memory")
+			const ctx = createContext()
+			const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+			// Turn 1 delivers the digest (call 1).
+			await start(startEvent("where does the user live"), ctx)
+			expect(search).toHaveBeenCalledTimes(1)
+
+			// Turn 2 drifts (call 2 hangs in flight) — content words deliberately
+			// outside the delivered fact's vocabulary.
+			await start(startEvent("what do I bake"), ctx)
+			await vi.advanceTimersByTimeAsync(0)
+			expect(search).toHaveBeenCalledTimes(2)
+
+			// The delete clears the ledger while the recall search hangs.
+			vi.mocked(admin.runAdminCommand).mockResolvedValue({
+				text: "Deleted live-fred.",
+				json: "{}",
+				code: 0,
+				useJson: false,
+			})
+			await command.handler("delete live-fred", createCommandContext())
+
+			// The recall settles with a NEW fact — the delivery must be dropped.
+			releaseSecond?.([{ memory: "the user bakes sourdough", score: 0.7 }])
+			await vi.advanceTimersByTimeAsync(0)
+			expect(sendMessage).not.toHaveBeenCalled()
+			expect(vi.mocked(ctx.ui.setStatus).mock.calls.every(([, v]) => v !== "2")).toBe(true)
+		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+			consoleInfo.mockRestore()
+		}
+	})
+
+	it("a successful /memory delete invalidates the digest — the count drops at once and the next start recomputes", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }), captureId: CAPTURE_ID })(
+			api,
+		)
+		const command = getRegisteredCommand("memory")
+		const ctx = createContext()
+		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+		// Turn 1 delivers the digest; the segment counts it.
+		await start(startEvent("set up the repo"), ctx)
+		expect(search).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+
+		// A successful delete shrinks the store the digest was computed against.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "Deleted live-fred.",
+			json: "{}",
+			code: 0,
+			useJson: false,
+		})
+		const cmdCtx = createCommandContext()
+		await command.handler("delete live-fred", cmdCtx)
+		// The count drops at once — the ledger no longer lists deleted facts.
+		expect(vi.mocked(cmdCtx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, undefined])
+
+		// The epoch was bumped: the next start recomputes (second search) and
+		// re-delivers against the still-mocked store.
+		const turn2 = await start(startEvent("set up the repo"), ctx)
+		expect(search).toHaveBeenCalledTimes(2)
+		expect(turn2?.systemPrompt).toContain("pnpm")
+	})
+
+	it("a panel deletion runs the same invalidation as the CLI path", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+		const command = getRegisteredCommand("memory")
+		const ctx = createContext()
+		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+		// Turn 1 delivers; the segment counts it.
+		await start(startEvent("set up the repo"), ctx)
+		expect(search).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+
+		// The list panel mounts (TUI mode) with the invalidation wired in.
+		vi.mocked(admin.adminListFacts).mockResolvedValue([
+			{ id: "live-fred", memory: "the user's dog is named Fred", scopeId: "personal" },
+		])
+		vi.mocked(admin.adminDeleteFacts).mockResolvedValue({
+			deleted: [{ id: "live-fred", scope: "personal" }],
+			notFound: [],
+		})
+		const cmdCtx = createCommandContext()
+		await command.handler("list", cmdCtx)
+		const factory = vi.mocked(cmdCtx.ui.custom).mock.calls[0]?.[0]
+		const mounted = factory(
+			{ requestRender: () => {}, terminal: { rows: 24 } } as never,
+			{} as never,
+			{} as never,
+			vi.fn(),
+		)
+		if (!(mounted instanceof MemoryPanel)) throw new Error("expected a MemoryPanel")
+
+		// Deleting through the panel: the count drops at once (the shared
+		// onStoreShrunk ran — on the command context's UI bridge)…
+		mounted.handleInput("d")
+		await vi.waitFor(() =>
+			expect(vi.mocked(cmdCtx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, undefined]),
+		)
+		// …and the next start recomputes (second search) — the epoch was bumped.
+		const turn2 = await start(startEvent("set up the repo again"), ctx)
+		expect(search.mock.calls.length).toBeGreaterThanOrEqual(2)
+		expect(turn2?.systemPrompt).toContain("pnpm")
+	})
+
+	it("a consolidate that applied nothing leaves the digest alone — only applied deletions invalidate", async () => {
+		const admin = await import("./admin.js")
+		const { api, getRegisteredCommand, getHandler } = createExtensionApi()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(api)
+		const command = getRegisteredCommand("memory")
+		const ctx = createContext()
+		const start = getHandler<BeforeAgentStartEvent, { systemPrompt?: string } | undefined>("before_agent_start")
+
+		// Turn 1 delivers and adopts the digest.
+		await start(startEvent("set up the repo"), ctx)
+		expect(search).toHaveBeenCalledTimes(1)
+
+		// A clean-store consolidate (or a declined confirmation) returns code 0
+		// with applied: false — no store change, so nothing is invalidated.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "Store is already clean — no redundant copies.",
+			json: '{\n  "scans": [],\n  "deletions": [],\n  "applied": false\n}',
+			code: 0,
+			useJson: false,
+			data: { scans: [], deletions: [], applied: false },
+		})
+		await command.handler("consolidate", createCommandContext())
+		await start(startEvent("still set up"), ctx)
+		expect(search).toHaveBeenCalledTimes(1) // the adopted digest survives
+
+		// An applied consolidation rewrote the store — now it invalidates.
+		vi.mocked(admin.runAdminCommand).mockResolvedValue({
+			text: "Deleted 2 redundant fact(s).",
+			json: '{\n  "scans": [],\n  "deletions": [],\n  "applied": true\n}',
+			code: 0,
+			useJson: false,
+			data: { scans: [], deletions: [], applied: true },
+		})
+		await command.handler("consolidate --yes", createCommandContext())
+		const turn3 = await start(startEvent("set up the repo again"), ctx)
+		// The recompute ran (a drift recall may add its own search on the same
+		// turn — the ledger was cleared, so the prompt is uncovered again).
+		expect(search.mock.calls.length).toBeGreaterThanOrEqual(2)
+		expect(turn3?.systemPrompt).toContain("pnpm")
 	})
 })

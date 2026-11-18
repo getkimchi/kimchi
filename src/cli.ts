@@ -112,6 +112,7 @@ import {
 	default as interactiveErrorSurfaceExtension,
 } from "./extensions/interactive-error-surface.js"
 import { applyInteractiveModelSessionPatch } from "./extensions/interactive-model-session.js"
+import { applyInteractiveWorkingIndicatorPatch } from "./extensions/interactive-working-indicator.js"
 import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import languageCommandExtension from "./extensions/language-command.js"
@@ -253,6 +254,11 @@ applyInteractiveErrorSurfacePatch()
 // component instance is constructed.
 applyRefusalNoticeRenderingPatch()
 applyInteractiveModelSessionPatch()
+// Arm the working spinner at prompt acceptance instead of first turn_start,
+// so slow before_agent_start hooks (the memory digest's bounded first-turn
+// wait) show the regular spinner rather than a parked screen. Must run before
+// any InteractiveMode instance is constructed.
+applyInteractiveWorkingIndicatorPatch()
 // No-op pi's install/update ping (pi.dev/api/report-install) on the
 // InteractiveMode prototype — belt-and-braces on top of PI_TELEMETRY=0 in
 // entry.ts. Must run before any InteractiveMode instance is constructed.

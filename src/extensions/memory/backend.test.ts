@@ -10,12 +10,14 @@ import {
 	disableMem0Telemetry,
 	EXTRACTION_MODEL,
 	historyDbPath,
+	LOCAL_TELEMETRY_ID,
 	MEMORY_CREDENTIALS_ERROR,
 	MEMORY_EMBEDDING_DIMS,
 	MEMORY_EMBEDDING_MODEL,
 	memoryDbPath,
 	projectDbPath,
 	resolveExtractionModel,
+	skipTelemetryIdWrite,
 	tagEmbeddingRequests,
 } from "./backend.js"
 import type { SharedEmbedder } from "./embedder.js"
@@ -321,6 +323,28 @@ describe("createMemoryBackend", () => {
 			}
 		})
 	})
+	describe("skipTelemetryIdWrite", () => {
+		afterEach(() => {
+			vi.unstubAllEnvs()
+		})
+
+		it("stamps a local id when telemetry is disabled, so mem0 never writes one into the store", () => {
+			vi.stubEnv("MEM0_TELEMETRY", "false")
+			const memory = { telemetryId: "anonymous" }
+			skipTelemetryIdWrite(memory)
+			expect(memory.telemetryId).toBe(LOCAL_TELEMETRY_ID)
+			// mem0 only looks up (and persists) an id for these two values.
+			expect(["anonymous", "anonymous-supabase", ""]).not.toContain(memory.telemetryId)
+		})
+
+		it("leaves mem0's own id flow alone when the operator opted in to telemetry", () => {
+			vi.stubEnv("MEM0_TELEMETRY", "true")
+			const memory = { telemetryId: "anonymous" }
+			skipTelemetryIdWrite(memory)
+			expect(memory.telemetryId).toBe("anonymous")
+		})
+	})
+
 	describe("tagEmbeddingRequests", () => {
 		it("tags gateway /embeddings requests only — custom endpoints stay untouched", async () => {
 			const originalFetch = globalThis.fetch
