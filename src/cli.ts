@@ -105,6 +105,7 @@ import helpExtension from "./extensions/help.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
+import imagePayloadBudgetExtension from "./extensions/image-payload-budget.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
 import {
@@ -1106,6 +1107,8 @@ async function cliMain(): Promise<void> {
 				infrastructureBreakerExtension,
 				interactiveErrorSurfaceExtension,
 				rateLimitNoticeExtension,
+				// Keep last: the byte budget is measured after every other request transform.
+				imagePayloadBudgetExtension,
 			]
 
 			if (IS_ACP_MODE) {
