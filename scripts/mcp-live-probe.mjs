@@ -111,6 +111,33 @@ function redirectClassMismatch(redirectUri, redirectUriPrefix) {
 	return "class mismatch"
 }
 
+/** Sanitized response metadata: fixed headers and body categories only, never raw content. */
+function responseDiagnostics(answer) {
+	const details = []
+	for (const [key, label] of [
+		["server", "server"],
+		["cfMitigated", "cf-mitigated"],
+		["contentType", "content-type"],
+	]) {
+		const value = answer.diagnostics?.[key]
+		if (value) details.push(`${label}=${value}`)
+	}
+	const body = answer.body ?? ""
+	const bodyMarkers = [
+		["cloudflare", /cloudflare/i],
+		["challenge-platform", /challenge-platform|cf-chl/i],
+		["attention-required", /attention required/i],
+		["just-a-moment", /just a moment/i],
+		["access-denied", /access denied/i],
+		["forbidden", /forbidden/i],
+		["ip-not-permitted", /IP address not permitted/i],
+	]
+		.filter(([, pattern]) => pattern.test(body))
+		.map(([label]) => label)
+	if (bodyMarkers.length > 0) details.push(`body-markers=${bodyMarkers.join(",")}`)
+	return details.length > 0 ? ` [${details.join("; ")}]` : ""
+}
+
 /**
  * Check the provider's direct answer to the authorize URL (no sign-in).
  * `transient` marks network errors and 5xx responses — the entry retries once.
@@ -122,7 +149,10 @@ export function checkProviderAnswer(answer, baseUrl) {
 	if (status >= 500) return { failures: [`provider answered HTTP ${status}`], transient: true }
 	if (status >= 400) {
 		const marker = PROVIDER_ERROR_MARKERS.find((candidate) => (body ?? "").toLowerCase().includes(candidate))
-		return { failures: [`provider answered HTTP ${status}${marker ? ` (${marker})` : ""}`], transient: false }
+		return {
+			failures: [`provider answered HTTP ${status}${marker ? ` (${marker})` : ""}${responseDiagnostics(answer)}`],
+			transient: false,
+		}
 	}
 	if (status >= 300) {
 		if (!location) return { failures: ["provider redirect has no Location header"], transient: false }
@@ -135,7 +165,10 @@ export function checkProviderAnswer(answer, baseUrl) {
 		if (signin !== undefined && signin.status >= 500)
 			return { failures: [`sign-in page answered HTTP ${signin.status}`], transient: true }
 		if (signin !== undefined && signin.status >= 400)
-			return { failures: [`sign-in page answered HTTP ${signin.status}`], transient: false }
+			return {
+				failures: [`sign-in page answered HTTP ${signin.status}${responseDiagnostics(signin)}`],
+				transient: false,
+			}
 		if (signin?.body !== undefined) {
 			const marker = PROVIDER_ERROR_MARKERS.find((candidate) => signin.body.toLowerCase().includes(candidate))
 			if (marker) return { failures: [`sign-in page contains ${marker}`], transient: false }
@@ -158,7 +191,12 @@ async function fetchOnce(url) {
 		const location = response.headers.get("location") ?? undefined
 		let body
 		if (!location) body = (await response.text()).slice(0, 65_536)
-		return { status: response.status, location, body }
+		const diagnostics = {
+			server: response.headers.get("server") ?? undefined,
+			cfMitigated: response.headers.get("cf-mitigated") ?? undefined,
+			contentType: response.headers.get("content-type") ?? undefined,
+		}
+		return { status: response.status, location, body, diagnostics }
 	} catch (error) {
 		return { networkError: error instanceof Error ? error.message : String(error) }
 	}
@@ -467,6 +505,29 @@ function selfTest() {
 			"https://as.example/authorize",
 		),
 		{ failures: ["sign-in page answered HTTP 404"], transient: false },
+	)
+	const challengeCheck = checkProviderAnswer(
+		{
+			status: 302,
+			location: "https://provider/signin",
+			signin: {
+				status: 403,
+				body: "<title>Just a moment...</title> Cloudflare https://reflected.invalid/private-body",
+				diagnostics: { server: "cloudflare", cfMitigated: "challenge", contentType: "text/html; charset=UTF-8" },
+			},
+		},
+		"https://as.example/authorize",
+	)
+	expect("sign-in page 403 includes sanitized challenge metadata", challengeCheck, {
+		failures: [
+			"sign-in page answered HTTP 403 [server=cloudflare; cf-mitigated=challenge; content-type=text/html; charset=UTF-8; body-markers=cloudflare,just-a-moment]",
+		],
+		transient: false,
+	})
+	expect(
+		"response diagnostics exclude raw body content and URLs",
+		JSON.stringify(challengeCheck).includes("https://") || JSON.stringify(challengeCheck).includes("private-body"),
+		false,
 	)
 	expect(
 		"sign-in page 5xx is transient",
