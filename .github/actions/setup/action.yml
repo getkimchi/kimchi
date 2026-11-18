@@ -37,6 +37,12 @@ runs:
       env:
         PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
+    - name: Verify native smoke-test module
+      shell: bash
+      run: |
+        pnpm rebuild node-pty --reporter=append-only
+        node -e "require('node-pty')"
+
     - name: Cache Playwright browsers
       if: inputs.playwright == 'true'
       uses: actions/cache@v4
