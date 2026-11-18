@@ -2,7 +2,11 @@ import type { Message, Model } from "@earendil-works/pi-ai"
 import { stream } from "@earendil-works/pi-ai/api/openai-responses"
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript"
 import { describe, expect, it } from "vitest"
-import { IMAGE_PAYLOAD_REMOVED_NOTE, trimImagePayloadToBudget } from "./image-payload-budget.js"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
+import imagePayloadBudgetExtension, {
+	IMAGE_PAYLOAD_REMOVED_NOTE,
+	trimImagePayloadToBudget,
+} from "./image-payload-budget.js"
 
 function bodyBytes(payload: unknown): number {
 	return Buffer.byteLength(JSON.stringify(payload))
@@ -64,6 +68,61 @@ describe("trimImagePayloadToBudget", () => {
 			{ type: "input_text", text: "slide 0" },
 			{ type: "input_text", text: IMAGE_PAYLOAD_REMOVED_NOTE },
 		])
+	})
+
+	it("does not serialize payloads without embedded images", () => {
+		const payload = {
+			messages: [{ role: "user", content: [{ type: "text", text: "text-only request" }] }],
+			toJSON() {
+				throw new Error("text-only payload should not be serialized")
+			},
+		}
+
+		expect(trimImagePayloadToBudget(payload, 1)).toBe(0)
+	})
+
+	it.each([
+		{
+			name: "OpenAI chat-completions",
+			image: { type: "image_url", image_url: { url: dataUrl(4096) } },
+			replacement: { type: "text", text: IMAGE_PAYLOAD_REMOVED_NOTE },
+		},
+		{
+			name: "Anthropic",
+			image: { type: "image", source: { type: "base64", data: Buffer.alloc(4096, 1).toString("base64") } },
+			replacement: { type: "text", text: IMAGE_PAYLOAD_REMOVED_NOTE },
+		},
+		{
+			name: "Google inlineData",
+			image: { inlineData: { mimeType: "image/png", data: Buffer.alloc(4096, 1).toString("base64") } },
+			replacement: { text: IMAGE_PAYLOAD_REMOVED_NOTE },
+		},
+		{
+			name: "Mistral imageUrl",
+			image: { type: "image_url", imageUrl: dataUrl(4096) },
+			replacement: { type: "text", text: IMAGE_PAYLOAD_REMOVED_NOTE },
+		},
+	])("trims $name blocks with the provider-correct text replacement", ({ image, replacement }) => {
+		const payload = { content: [image] }
+
+		expect(bodyBytes(payload)).toBeGreaterThan(1000)
+		expect(trimImagePayloadToBudget(payload, 1000)).toBe(1)
+		expect(payload.content).toEqual([replacement])
+		expect(bodyBytes(payload)).toBeLessThanOrEqual(1000)
+	})
+})
+
+describe("imagePayloadBudgetExtension", () => {
+	it("returns the trimmed payload from its registered hook and undefined for a no-op", async () => {
+		const { api, getHandler } = createExtensionApi()
+		imagePayloadBudgetExtension(api)
+		const handler = getHandler("before_provider_request")
+		const oversized = responsesPayload([18 * 1024 * 1024])
+		const withinBudget = responsesPayload([16])
+
+		expect(await handler({ payload: oversized }, {} as never)).toBe(oversized)
+		expect(oversized.input[0].content[1]).toEqual({ type: "input_text", text: IMAGE_PAYLOAD_REMOVED_NOTE })
+		expect(await handler({ payload: withinBudget }, {} as never)).toBeUndefined()
 	})
 })
 

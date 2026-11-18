@@ -276,7 +276,7 @@ export function installCompactionRecoveryPatch(
 				// pi-ai recognizes structured request_too_large responses, but not
 				// nginx's HTML rendering of the same HTTP 413 body-overflow verdict.
 				const error =
-					classification?.reason === "context_window_exceeded" && /\b413\b/.test(raw)
+					classification?.reason === "context_window_exceeded" && classification.httpStatusCode === 413
 						? `${raw}\nrequest_too_large`
 						: raw
 				if (error !== message.errorMessage) {
