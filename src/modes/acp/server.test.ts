@@ -1575,6 +1575,38 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(true)
 		})
 
+		it("clears an earlier invalid-grant rejection before a replacement SSO login uses cached models", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempAgentDir)
+			resetCredentialStalenessForTests()
+			onTestFinished(() => {
+				resetCredentialStalenessForTests()
+				vi.unstubAllEnvs()
+			})
+			// An invalid grant cannot attribute the rejection to one bearer, so it
+			// leaves an anonymous process-local mark that a new login must retire.
+			markCredentialStale(undefined, "kimchi-dev")
+			// A transient refresh error resolves through cached models without an
+			// authenticated fetch or a new rejection for the replacement bearer.
+			vi.mocked(updateModelsConfig).mockResolvedValueOnce({ models: [] })
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await testAgent.authenticate({ methodId: "kimchi-sso-us" })
+
+			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(false)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(false)
+		})
+
 		it("authenticates with the plain kimchi-sso method against the configured region", async () => {
 			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
 			vi.stubEnv("KIMCHI_REGION", "eu")

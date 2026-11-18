@@ -43,12 +43,17 @@ function fingerprint(apiKey: string): string {
 	return createHash("sha256").update(apiKey, "utf8").digest("hex")
 }
 
-function readPersistentRejections(path: string): PersistentRejections {
+function readPersistentRejections(path: string, forUpdate = false): PersistentRejections {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
 		if (!parsed || typeof parsed !== "object") return { version: 1, providers: {} }
 		const document = parsed as { version?: unknown; providers?: unknown }
-		if (document.version !== 1) return { version: 1, providers: {} }
+		if (document.version !== 1) {
+			// Reads ignore newer formats, but an older binary must never silently
+			// replace their fields with an empty v1 document during an update.
+			if (forUpdate) throw new Error("unsupported credential-rejections.json version")
+			return { version: 1, providers: {} }
+		}
 		const providers = document.providers
 		if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
 			return { version: 1, providers: {} }
@@ -73,6 +78,11 @@ function waitForLockRetry(delayMs: number): void {
 }
 
 function updatePersistentRejections(path: string, update: (state: PersistentRejections) => PersistentRejections): void {
+	// Successful turns clear credentials constantly. Avoid creating or locking
+	// a sidecar when the current state would not change. Repeat the read and
+	// update under the lock below for any write that is actually necessary.
+	const initialState = readPersistentRejections(path, true)
+	if (update(initialState) === initialState) return
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
 	closeSync(openSync(path, "a", 0o600))
 	let release: (() => void) | undefined
@@ -92,7 +102,9 @@ function updatePersistentRejections(path: string, update: (state: PersistentReje
 		}
 	}
 	try {
-		writeJson(path, update(readPersistentRejections(path)))
+		const currentState = readPersistentRejections(path, true)
+		const nextState = update(currentState)
+		if (nextState !== currentState) writeJson(path, nextState)
 	} finally {
 		release?.()
 	}

@@ -964,6 +964,10 @@ export class KimchiAcpAgent implements Agent {
 			writeRegion(credentialRegion)
 		}
 		const modelsPath = join(this.agentDir, "models.json")
+		// A settled login replaces the old credential. Clear its anonymous mark
+		// before refreshing: a transient cached fallback is not authenticated
+		// success, while a real 401 below records a rejection for this new bearer.
+		clearCredentialStale(KIMCHI_PROVIDER_ID)
 		await updateModelsConfig(modelsPath, credential.access, {
 			allowCachedFallback: true,
 			organizationId: org.id,

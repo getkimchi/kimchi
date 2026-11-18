@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { lockSync } from "proper-lockfile"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	clearCredentialStale,
 	isAuthRejectedMessage,
@@ -62,10 +62,13 @@ describe("persistent credential rejections", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-credential-rejections-"))
 		statePath = join(dir, "credential-rejections.json")
+		resetCredentialStalenessForTests()
+		vi.spyOn(console, "warn").mockImplementation(() => {})
 	})
 
 	afterEach(() => {
 		rmSync(dir, { recursive: true, force: true })
+		vi.restoreAllMocks()
 	})
 
 	it("persists only fingerprints and recognizes only the rejected credential after a reset", () => {
@@ -103,6 +106,33 @@ describe("persistent credential rejections", () => {
 		)
 
 		expect(isCredentialStale(rejectedToken, "kimchi-dev", statePath)).toBe(false)
+	})
+
+	it.each(["mark", "clear"])("preserves an unsupported-version sidecar during %s", (operation) => {
+		const original = `${JSON.stringify({
+			version: 2,
+			providers: { "kimchi-dev": ["future-fingerprint"] },
+			futureState: { rotateAfter: "later" },
+		})}\n`
+		writeFileSync(statePath, original)
+
+		if (operation === "mark") markCredentialStale("new-key", "kimchi-dev", statePath)
+		else clearCredentialStale("kimchi-dev", statePath)
+
+		expect(readFileSync(statePath, "utf8")).toBe(original)
+	})
+
+	it("does not create a missing sidecar or rewrite when there is no rejection to clear", () => {
+		clearCredentialStale("kimchi-dev", statePath)
+		expect(existsSync(statePath)).toBe(false)
+
+		markCredentialStale("other-key", "other-provider", statePath)
+		const original = readFileSync(statePath, "utf8")
+		const mtimeNs = statSync(statePath, { bigint: true }).mtimeNs
+		clearCredentialStale("kimchi-dev", statePath)
+
+		expect(readFileSync(statePath, "utf8")).toBe(original)
+		expect(statSync(statePath, { bigint: true }).mtimeNs).toBe(mtimeNs)
 	})
 
 	it("keeps the sidecar owner-only across atomic rewrites", () => {
