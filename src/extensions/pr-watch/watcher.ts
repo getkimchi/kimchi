@@ -382,6 +382,7 @@ export class PRWatcher {
 					content: repairPrompt(target, pr, events),
 					details: { pullRequest: pr.url, headSha: pr.headSha, cwd: target.cwd },
 				},
+				// The session-policy opt-in gate in index.ts prevents unsolicited ACP watcher turns.
 				{ triggerTurn: true, deliverAs: "followUp" },
 			)
 		} catch (error) {
