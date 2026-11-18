@@ -315,10 +315,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				return
 			}
 
-			if (
-				req.method === "POST" &&
-				(req.url?.startsWith("/openai/v1/chat/completions") || req.url === "/chat/completions")
-			) {
+			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
 				const script = pickResponseScript(request, mainQueue, subagentQueue)
 				if (script.holdUntil) {
 					await script.holdUntil
@@ -398,7 +395,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
 	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
 	const responseModel = script.responseModel ?? model
-	if (request.stream === false || isSessionNameRequest({ body: request })) {
+	if (request.stream === false) {
 		writeJson(
 			res,
 			200,
@@ -676,18 +673,6 @@ function pickResponseScript(
 	)
 }
 
-/** Session naming uses non-streaming JSON and shares the gateway with main agent turns. */
-export function isSessionNameRequest(request: FakeResponseRequest): boolean {
-	const body = request.body
-	if (!body || typeof body !== "object" || !("messages" in body) || !Array.isArray(body.messages)) return false
-	const first = body.messages[0]
-	return (
-		first?.role === "system" &&
-		typeof first.content === "string" &&
-		first.content.startsWith("Name the user's actual task:")
-	)
-}
-
 /** Separate matching calls must not consume a scripted assistant turn. */
 export function isWorkMatchingRequest(request: FakeResponseRequest): boolean {
 	const body = request.body
@@ -703,11 +688,7 @@ export function isWorkMatchingRequest(request: FakeResponseRequest): boolean {
 function takeResponseScript(queue: FakeResponseScript[], request: FakeResponseRequest): FakeResponseScript | undefined {
 	const matched = queue.findIndex((script) => script.match?.(request))
 	const index =
-		matched >= 0
-			? matched
-			: isWorkMatchingRequest(request) || isSessionNameRequest(request)
-				? -1
-				: queue.findIndex((script) => !script.match)
+		matched >= 0 ? matched : isWorkMatchingRequest(request) ? -1 : queue.findIndex((script) => !script.match)
 	return index >= 0 ? queue.splice(index, 1)[0] : undefined
 }
 

@@ -1,6 +1,5 @@
 import { expect, Key, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { isSessionNameRequest } from "./support/fake-openai-server.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { mcpResourceResult, mcpToolResult } from "./support/mcp-fixture.js"
 import {
@@ -183,7 +182,7 @@ test("reads Jira through the MCP gateway without leaving a resumed plan-mode ses
 				// from consuming either of the scripted gateway turns.
 				{
 					...modelReply("Read Jira through the gateway"),
-					match: isSessionNameRequest,
+					match: (request) => JSON.stringify(request.body).includes("Name the user's actual task"),
 				},
 				read.response,
 				modelReply("I read LLM-4358 through the gateway while planning."),

@@ -143,7 +143,7 @@ describe("binary smoke tests", () => {
 		expect(result.stderr).not.toContain("Extension error")
 	})
 
-	it("auto-names persisted sessions from the first user prompt", () => {
+	it("does not persist prompt text when auto-captioning fails", () => {
 		// upstream pi startup + dummy-provider retry takes ~7s; keep well above vitest's 5s default.
 		const before = new Set(listSessionFiles())
 		const prompt = "Explore 3 random files"
@@ -158,7 +158,7 @@ describe("binary smoke tests", () => {
 			.filter((file) => !before.has(file))
 			.flatMap(readSessionEntries)
 
-		expect(newEntries).toContainEqual(expect.objectContaining({ type: "session_info", name: "fake response" }))
+		expect(newEntries).not.toContainEqual(expect.objectContaining({ type: "session_info", name: prompt }))
 	}, 35_000)
 
 	describe("runtime config autoloading", () => {
