@@ -7863,7 +7863,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		}
 	})
 
-	it("clears a persisted rejection after an authenticated retry succeeds", async () => {
+	it.each(["response", "refusal"])("clears a persisted rejection after an authenticated %s", async (outcome) => {
 		resetCredentialStalenessForTests()
 		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-turn-retry-success-"))
 		const authPath = join(agentDir, "auth.json")
@@ -7902,12 +7902,17 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 
 			fake.promptImpl = async () => {
 				fake.emit({ type: "agent_start" })
-				fake.emit(assistantSuccessEvent())
+				const response = assistantSuccessEvent()
+				if (response.type !== "message_end" || response.message.role !== "assistant") {
+					throw new Error("unreachable")
+				}
+				if (outcome === "refusal") response.message.errorMessage = "kimchi:refusal"
+				fake.emit(response)
 				fake.emit(agentEnd())
 			}
 			await expect(
 				agent.prompt({ sessionId: "session-401-then-success", prompt: [{ type: "text", text: "retry" }] }),
-			).resolves.toMatchObject({ stopReason: "end_turn" })
+			).resolves.toMatchObject({ stopReason: outcome === "refusal" ? "refusal" : "end_turn" })
 
 			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
 			resetCredentialStalenessForTests()

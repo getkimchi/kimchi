@@ -2655,6 +2655,13 @@ export class KimchiAcpAgent implements Agent {
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
 				turn.refused = isRefusal(msg)
+				const authenticatedResponse = turn.refused || (msg.stopReason !== "error" && msg.stopReason !== "aborted")
+				// Any completed provider response, including a refusal, proves the
+				// credential authenticated. Local no-op turns emit no assistant message.
+				const providerId = entry.session.model?.provider
+				if (authenticatedResponse && providerId && isKimchiProvider(providerId)) {
+					clearCredentialStale(KIMCHI_PROVIDER_ID)
+				}
 				if (turn.refused) {
 					// A refusal is a turn outcome, not a failure: report it as
 					// stopReason "refusal" with the reason the user can act on. The
@@ -2688,11 +2695,6 @@ export class KimchiAcpAgent implements Agent {
 					turn.lastAssistantError = { stopReason: "error", errorMessage: getRawErrorMessage(msg) }
 				} else if (msg.stopReason !== "aborted") {
 					turn.lastAssistantError = undefined
-					// A completed assistant response proves the credential just
-					// authenticated successfully, including after an earlier 401. Local
-					// no-op turns emit no assistant message and cannot clear rejection state.
-					const providerId = entry.session.model?.provider
-					if (providerId && isKimchiProvider(providerId)) clearCredentialStale(KIMCHI_PROVIDER_ID)
 				}
 				// Emit whatever text a block carries that streaming never sent —
 				// an extension can zero text_delta while streaming and restore the
