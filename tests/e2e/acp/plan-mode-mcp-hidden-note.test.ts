@@ -14,6 +14,11 @@ import { newSession, prompt } from "./support/scenarios.js"
 
 const NOTE_FRAGMENT = "Plan mode is active: the `mcp` gateway"
 
+const GATEWAY_READ_CASES = [
+	{ label: "displayed wire name", toolPrefix: undefined, artifactSuffix: "wire-name" },
+	{ label: "upstream original name", toolPrefix: "none" as const, artifactSuffix: "original-name" },
+] as const
+
 describe(
 	"ACP integration — plan mode MCP note",
 	() => {
@@ -59,10 +64,13 @@ describe(
 			expect(systemText).toContain("read-only operations")
 		})
 
-		it("executes an annotated Jira read through the gateway without leaving plan mode", async () => {
-			const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
+		it.each(GATEWAY_READ_CASES)("executes an annotated Jira read using the $label without leaving plan mode", async ({
+			toolPrefix,
+			artifactSuffix,
+		}) => {
+			const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" }, { toolPrefix })
 			fixture = await startAcpMcpFixture({
-				artifactName: "acp-plan-mode-mcp-gateway-read",
+				artifactName: `acp-plan-mode-mcp-gateway-read-${artifactSuffix}`,
 				extraArgs: ["--plan"],
 				mcp: {
 					behavior: {

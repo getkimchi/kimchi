@@ -127,6 +127,10 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 vi.mock("./read-only.js", () => ({
 	collectReadOnlyMcpWireNames: (_config: McpConfig, server?: string) =>
 		[...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`)),
+	isReadOnlyQualifiedMcpGatewayTool: (_config: McpConfig, toolName: string, server?: string) => {
+		const names = [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
+		return names.includes(toolName) || (server !== undefined && names.includes(`${server}_${toolName}`))
+	},
 }))
 
 vi.mock("../permissions/mode-controller.js", () => ({
@@ -723,6 +727,7 @@ describe("upstream MCP adapter facade", () => {
 			["list", { server: "docs" }],
 			["read", { tool: "docs_get_issue", args: {} }],
 			["read-on-server", { tool: "docs_get_issue", server: "docs", args: {} }],
+			["read-original-on-server", { tool: "get_issue", server: "docs", args: {} }],
 		] as const
 		for (const [id, params] of readOnlyCalls) {
 			const result = await gateway.execute(id, params, undefined, undefined, createToolContext())

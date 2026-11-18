@@ -25,9 +25,13 @@ import { isServerCacheValid, loadMetadataCache, reconstructToolMetadata } from "
 import {
 	formatServerNamespace,
 	formatToolName,
+	getServerPrefix,
+	getToolNameCandidates,
 	isServerDisabled,
 	type McpConfig,
 	resolveToolPrefix,
+	type ToolMetadata,
+	type ToolPrefix,
 } from "pi-mcp-adapter/types"
 
 const READ_ONLY_NAME_PREFIXES = /^(get|search|list|read|fetch)/
@@ -49,18 +53,17 @@ export function isReadOnlyQualifiedMcpTool(originalName: string, annotations?: T
 	return false
 }
 
-/**
- * Compute the wire names of read-only-qualified direct tools from the
- * adapter's valid metadata, using upstream filtering and wire-name rules.
- * Ambiguous names fail closed: a read-only claim must never authorize a
- * different server's tool. The facade intersects these candidates with its
- * registered tools before exposing them to the planning profile. With
- * `server`, only that server's tools qualify, as for a gateway call naming it.
- */
-export function collectReadOnlyMcpWireNames(config: McpConfig, server?: string): string[] {
+interface McpToolCandidate {
+	serverName: string
+	prefix: ToolPrefix
+	tool: ToolMetadata
+	readOnly: boolean
+}
+
+function collectMcpToolCandidates(config: McpConfig): McpToolCandidate[] {
 	const cache = loadMetadataCache()
 	if (!cache?.servers) return []
-	const qualified = new Map<string, boolean>()
+	const candidates: McpToolCandidate[] = []
 	const reserved = new Set([
 		"mcp",
 		"mcpScript",
@@ -78,16 +81,87 @@ export function collectReadOnlyMcpWireNames(config: McpConfig, server?: string):
 		for (const tool of reconstructToolMetadata(serverName, entry, prefix, definition, config.mcpServers, cache)) {
 			if (reserved.has(tool.name)) continue
 			const source = entry.tools.find((candidate) => candidate.name === tool.originalName)
-			qualified.set(
-				tool.name,
-				(server === undefined || serverName === server) &&
-					!qualified.has(tool.name) &&
+			candidates.push({
+				serverName,
+				prefix,
+				tool,
+				readOnly:
 					nameCounts.get(tool.name) === 1 &&
 					!tool.resourceUri &&
 					source !== undefined &&
 					isReadOnlyQualifiedMcpTool(source.name, source.annotations),
-			)
+			})
 		}
 	}
+	return candidates
+}
+
+/**
+ * Compute the wire names of read-only-qualified direct tools from the
+ * adapter's valid metadata, using upstream filtering and wire-name rules.
+ * Ambiguous names fail closed: a read-only claim must never authorize a
+ * different server's tool. The facade intersects these candidates with its
+ * registered tools before exposing them to the planning profile. With
+ * `server`, only that server's tools qualify, as for a gateway call naming it.
+ */
+export function collectReadOnlyMcpWireNames(config: McpConfig, server?: string): string[] {
+	const qualified = new Map<string, boolean>()
+	for (const { serverName, tool, readOnly } of collectMcpToolCandidates(config)) {
+		qualified.set(tool.name, (server === undefined || serverName === server) && !qualified.has(tool.name) && readOnly)
+	}
 	return [...qualified].filter(([, readOnly]) => readOnly).map(([name]) => name)
+}
+
+function hasSingleReadOnlyMatch(candidates: McpToolCandidate[]): boolean {
+	return candidates.length === 1 && candidates[0]?.readOnly === true
+}
+
+function resolveServerGatewayTool(candidates: McpToolCandidate[], toolName: string, serverName: string): boolean {
+	const scoped = candidates.filter((candidate) => candidate.serverName === serverName)
+	const exact = scoped.filter((candidate) => candidate.tool.name === toolName)
+	if (exact.length > 0) return hasSingleReadOnlyMatch(exact)
+	return hasSingleReadOnlyMatch(
+		scoped.filter((candidate) =>
+			getToolNameCandidates(candidate.tool.originalName, serverName, candidate.prefix).has(toolName),
+		),
+	)
+}
+
+function prefixedServerScope(config: McpConfig, toolName: string): string | undefined {
+	const candidates = Object.entries(config.mcpServers)
+		.filter(([, definition]) => !isServerDisabled(definition))
+		.map(([serverName, definition]) => ({
+			serverName,
+			prefix: getServerPrefix(serverName, resolveToolPrefix(definition, config.settings?.toolPrefix)),
+		}))
+		.filter(({ prefix }) => prefix.length > 0 && toolName.startsWith(`${prefix}_`))
+		.sort((a, b) => b.prefix.length - a.prefix.length)
+	if (candidates.length === 0) return undefined
+	const longest = candidates[0]?.prefix.length
+	const best = candidates.filter(({ prefix }) => prefix.length === longest)
+	return best.length === 1 ? best[0]?.serverName : undefined
+}
+
+/**
+ * Whether a gateway tool argument resolves to one read-only tool using the
+ * adapter's displayed/original/legacy name semantics. Exact displayed names
+ * win over original names, followed by prefixed-server and candidate aliases;
+ * every ambiguity, stale metadata entry, and cross-server collision fails closed.
+ */
+export function isReadOnlyQualifiedMcpGatewayTool(config: McpConfig, toolName: string, server?: string): boolean {
+	const candidates = collectMcpToolCandidates(config)
+	if (server !== undefined) return resolveServerGatewayTool(candidates, toolName, server)
+
+	const exact = candidates.filter((candidate) => candidate.tool.name === toolName)
+	if (exact.length > 0) return hasSingleReadOnlyMatch(exact)
+	const original = candidates.filter((candidate) => candidate.tool.originalName === toolName)
+	if (original.length > 0) return hasSingleReadOnlyMatch(original)
+
+	const scopedServer = prefixedServerScope(config, toolName)
+	if (scopedServer !== undefined) return resolveServerGatewayTool(candidates, toolName, scopedServer)
+	return hasSingleReadOnlyMatch(
+		candidates.filter((candidate) =>
+			getToolNameCandidates(candidate.tool.originalName, candidate.serverName, candidate.prefix).has(toolName),
+		),
+	)
 }

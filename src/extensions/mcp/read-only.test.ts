@@ -9,7 +9,11 @@ vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => ({
 	loadMetadataCache: () => cacheState.cache,
 }))
 
-import { collectReadOnlyMcpWireNames, isReadOnlyQualifiedMcpTool } from "./read-only.js"
+import {
+	collectReadOnlyMcpWireNames,
+	isReadOnlyQualifiedMcpGatewayTool,
+	isReadOnlyQualifiedMcpTool,
+} from "./read-only.js"
 
 describe("isReadOnlyQualifiedMcpTool", () => {
 	it("qualifies any tool with an explicit readOnlyHint, regardless of name", () => {
@@ -156,5 +160,31 @@ describe("collectReadOnlyMcpWireNames", () => {
 	it("returns nothing without a cache", () => {
 		cacheState.cache = undefined
 		expect(collectReadOnlyMcpWireNames({ mcpServers: {} })).toEqual([])
+	})
+
+	it("accepts original names when they resolve to one read-only tool", () => {
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue", "alpha")).toBe(true)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue")).toBe(true)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "create_issue", "alpha")).toBe(false)
+	})
+
+	it("fails closed for ambiguous unscoped originals but allows server-scoped matches", () => {
+		const collisionConfig = { ...config, settings: { toolPrefix: "none" as const } }
+		setCache(collisionConfig, {
+			alpha: [{ name: "get_access", annotations: { readOnlyHint: false } }],
+			beta: [{ name: "get_access", annotations: { readOnlyHint: true } }],
+		})
+		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access")).toBe(false)
+		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access", "alpha")).toBe(false)
+		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access", "beta")).toBe(true)
+	})
+
+	it("preserves displayed-name precedence when an original alias names another tool", () => {
+		setCache(config, {
+			alpha: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
+			beta: [{ name: "get_issue", annotations: { readOnlyHint: false } }],
+		})
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue")).toBe(false)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "alpha_get_issue")).toBe(true)
 	})
 })

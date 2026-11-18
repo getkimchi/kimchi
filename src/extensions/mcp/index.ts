@@ -41,7 +41,7 @@ import {
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { installOfflineAccessAuthorizationUrlTransform } from "./oauth-offline-access.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
-import { collectReadOnlyMcpWireNames } from "./read-only.js"
+import { collectReadOnlyMcpWireNames, isReadOnlyQualifiedMcpGatewayTool } from "./read-only.js"
 import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
 
 const MCP_PROXY_TOOL = "mcp"
@@ -108,10 +108,11 @@ function isBlockedInPlanning(
 	toolName: string,
 	params: unknown,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
+	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): boolean {
 	if (toolName === MCP_SCRIPT_TOOL) return true
 	if (toolName === MCP_PROXY_TOOL && typeof params === "object" && params !== null && "connect" in params) return true
-	return canChangeFiles(toolName, params, getReadOnlyToolNames)
+	return canChangeFiles(toolName, params, getReadOnlyToolNames, isReadOnlyGatewayTool)
 }
 
 /**
@@ -122,11 +123,12 @@ function canChangeFiles(
 	toolName: string,
 	params: unknown,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
+	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): boolean {
 	if (toolName !== MCP_PROXY_TOOL) return !getReadOnlyToolNames().includes(toolName)
 	// The adapter's schema makes these strings.
 	const { action, tool, server } = params as { action?: string; tool?: string; server?: string }
-	return action !== undefined || (tool !== undefined && !getReadOnlyToolNames(server).includes(tool))
+	return action !== undefined || (tool !== undefined && !isReadOnlyGatewayTool(tool, server))
 }
 
 type UpstreamLifecycleHandler = ExtensionHandler<unknown, unknown>
@@ -162,6 +164,7 @@ function createUpstreamApi(
 	policy: McpToolSurfacePolicy,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
+	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
 	const registeredToolNames = new Set<string>()
@@ -212,11 +215,11 @@ function createUpstreamApi(
 						execute: async (...args: Parameters<typeof execute>) => {
 							if (
 								isPlanningMode(target, args[4]) &&
-								isBlockedInPlanning(brandedTool.name, args[1], getReadOnlyToolNames)
+								isBlockedInPlanning(brandedTool.name, args[1], getReadOnlyToolNames, isReadOnlyGatewayTool)
 							) {
 								return blockedPlanningResult(brandedTool.name)
 							}
-							const result = canChangeFiles(brandedTool.name, args[1], getReadOnlyToolNames)
+							const result = canChangeFiles(brandedTool.name, args[1], getReadOnlyToolNames, isReadOnlyGatewayTool)
 								? await observeToolFiles(args[4], args[0], "mcp", () => execute(...args))
 								: await execute(...args)
 							return brandMcpAdapterOwnedToolResult(result)
@@ -460,6 +463,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
 					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server),
+					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server),
 				),
 			)
 			if (gateway !== undefined) registerGatewayRuntimeServer(pi, gateway)
