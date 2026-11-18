@@ -8,6 +8,29 @@
 export const DOC_CLI_SKILLS = ["pdf", "docx", "xlsx", "pptx"] as const
 export type DocCliSkill = (typeof DOC_CLI_SKILLS)[number]
 
+/** All executable subcommands per skill. Telemetry normalizes operations
+ *  against this closed set so arbitrary command tokens never leave the client. */
+export const DOC_CLI_COMMANDS: Record<DocCliSkill, readonly string[]> = {
+	pdf: [
+		"read",
+		"info",
+		"fields",
+		"fill-form",
+		"create",
+		"merge",
+		"split",
+		"reorder",
+		"rotate",
+		"dump-shapes",
+		"edit-draw",
+		"render",
+		"html",
+	],
+	docx: ["read", "info", "create", "edit", "render"],
+	xlsx: ["read", "info", "create", "edit", "recalc"],
+	pptx: ["read", "inspect", "check", "create", "edit", "render"],
+}
+
 /** Read-only subcommands per skill — the ones the permission gate also
  *  accepts in default mode (mutating commands still prompt there, and
  *  everything still skips the classifier in auto mode). Derived from each
