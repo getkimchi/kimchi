@@ -3,6 +3,7 @@ import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { mcpResourceResult, mcpToolResult } from "./support/mcp-fixture.js"
 import {
+	describeMcpTool,
 	directMcpCall,
 	emptyMcpCall,
 	gatewayMcpCall,
@@ -192,6 +193,51 @@ test("reads Jira through the MCP gateway without leaving plan mode", async ({ te
 			).toBe(true)
 			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Enable MCP access in plan mode")
 			trace.step("read-only Jira gateway call executed without leaving plan mode")
+		},
+	)
+})
+
+test("refuses a mutating gateway tool call in plan mode without downstream effects", async ({ terminal }) => {
+	const write = gatewayMcpCall("get_write_access", { level: "admin" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-gateway-write-blocked",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				behavior: {
+					catalogTools: [
+						{
+							name: "get_write_access",
+							description: "Change fixture permissions",
+							inputSchema: {
+								type: "object",
+								properties: { level: { type: "string" } },
+								additionalProperties: false,
+							},
+							annotations: { readOnlyHint: false },
+						},
+					],
+					tools: [
+						mcpToolResult("get_write_access", {
+							content: [{ type: "text", text: "MUTATION EXECUTED" }],
+						}),
+					],
+				},
+			},
+			responses: [write.response, modelReply("The mutation was blocked in plan mode.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Attempt the write even though plan mode is active")
+			await waitForText(terminal, "The mutation was blocked in plan mode.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			const result = toolResultText(fixture.fake.requests, write)
+			expect(result).toContain("This MCP gateway call is unavailable in plan mode.")
+			expect(result).not.toContain("MUTATION EXECUTED")
+			expect(fixture.mcp.hasEvent("tool_called", { name: "get_write_access" })).toBe(false)
+			trace.step("plan refusal reached the model and the mutating MCP tool was never called")
 		},
 	)
 })
@@ -415,6 +461,52 @@ test("returns MCP server status for an empty gateway call", async ({ terminal })
 			})
 			expect(toolResultText(fixture.fake.requests, status)).toMatch(/MCP: 1\/1 servers/)
 			trace.step("empty gateway call preserved the MCP status contract")
+		},
+	)
+})
+
+test("does not expose configured secrets through status or describe in plan mode", async ({ terminal }) => {
+	const secret = "plan-mode-config-secret-sentinel"
+	const status = emptyMcpCall()
+	const describe = describeMcpTool("getJiraIssue")
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-metadata-secret-redaction",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				serverEnv: { MCP_TEST_API_KEY: secret },
+				behavior: {
+					catalogTools: [
+						{
+							name: "getJiraIssue",
+							description: "Read a Jira issue",
+							inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							annotations: { readOnlyHint: true },
+						},
+					],
+				},
+			},
+			responses: [
+				status.response,
+				describe.response,
+				modelReply("Metadata was returned without configuration secrets."),
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Inspect server status and the Jira tool schema before planning")
+			await waitForText(terminal, "Metadata was returned without configuration secrets.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			const statusText = toolResultText(fixture.fake.requests, status)
+			const describeText = toolResultText(fixture.fake.requests, describe)
+			expect(statusText).toContain("MCP:")
+			expect(describeText).toContain("fixture_getJiraIssue")
+			expect(statusText).not.toContain(secret)
+			expect(describeText).not.toContain(secret)
+			expect(JSON.stringify(fixture.fake.requests)).not.toContain(secret)
+			trace.step("status and describe reached the model without the config secret")
 		},
 	)
 })

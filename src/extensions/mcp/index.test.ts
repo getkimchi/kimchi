@@ -683,6 +683,28 @@ describe("upstream MCP adapter facade", () => {
 		})
 	})
 
+	it("blocks namespace proxies even when their nested tool is read-only-qualified", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		planning.currentProfile = "planning-adhoc"
+		permissionState.mode = "plan"
+		readOnlyState.wireNames.add("docs_get_issue")
+		const namespaceExecute = vi.fn(tool("mcp__docs", "MCP namespace").execute)
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		upstream.api?.registerTool({ ...tool("mcp__docs", "MCP namespace"), execute: namespaceExecute })
+
+		const result = await harness
+			.getRegisteredTool("mcp__docs")
+			.execute("namespace", { tool: "docs_get_issue", args: {} }, undefined, undefined, createToolContext())
+
+		expect(namespaceExecute).not.toHaveBeenCalled()
+		expect(result).toMatchObject({
+			isError: true,
+			details: { error: "plan_mode_mcp_blocked", tool: "mcp__docs" },
+		})
+	})
+
 	it("admits read-only-qualified direct tools and the gateway in the planning surface", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		planning.currentProfile = "planning-adhoc"
@@ -754,6 +776,7 @@ describe("upstream MCP adapter facade", () => {
 			["auth-start", { action: "auth-start", server: "docs" }],
 			["auth-complete", { action: "auth-complete", server: "docs" }],
 			["connect", { connect: "docs" }],
+			["action-connect", { action: "connect", server: "docs" }],
 			["ui-messages", { action: "ui-messages" }],
 			["unknown-action", { action: "future-state-change" }],
 			["unknown-parameter", { mode: "status" }],
