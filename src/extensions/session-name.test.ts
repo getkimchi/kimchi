@@ -257,6 +257,25 @@ describe("skill invocation title input", () => {
 		expect(hint.length).toBeLessThanOrEqual(500)
 	})
 
+	it("keeps an argument-less ACP invocation stand-alone even behind user context", () => {
+		// The persisted ACP rewrite exposes no body/args boundary, so a no-args
+		// expansion cannot be told apart from one carrying arguments at the end;
+		// both must stand alone to keep that trailing text inside the cap.
+		const expanded = buildSkillCommandPrompt({
+			skillName: "gatekeeper",
+			remainingText: "",
+			skillContent: "Skill instructions. ".repeat(200),
+		})
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "Fix the resume menu jumping on scroll" } },
+			{ type: "message", message: { role: "user", content: expanded } },
+		])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		expect(hint).toContain("Invoking skill: gatekeeper")
+		expect(hint).not.toContain("Fix the resume menu jumping on scroll")
+		expect(hint.length).toBeLessThanOrEqual(500)
+	})
+
 	it("lets a skill invocation dominate the bundled hint so its arguments survive the cap", () => {
 		const args = "Explain what a closure is in JavaScript"
 		const expanded = buildSkillCommandPrompt({

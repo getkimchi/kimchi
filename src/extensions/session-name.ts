@@ -69,7 +69,10 @@ type SessionEntries = ReturnType<ExtensionContext["sessionManager"]["getBranch"]
  *
  * `standAlone` marks hints whose user text sits at the end and would be cut
  * by the hint cap if bundled behind an earlier message; name-only hints have
- * nothing at risk and can bundle for context.
+ * nothing at risk and can bundle for context. ACP expansions are always
+ * marked stand-alone: their rewrite exposes no body/args boundary, so args
+ * presence is indistinguishable and the tail (which may be skill-body end
+ * when no arguments were given) must stay inside the cap window.
  */
 function titleHintFromText(text: string): { hint: string; standAlone: boolean } | null {
 	const normalized = text.replaceAll("\r\n", "\n")
