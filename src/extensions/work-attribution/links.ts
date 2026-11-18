@@ -487,6 +487,8 @@ export interface ContinuationProgress {
 	historyUnknown?: ContinuationHistory["unknown"]
 	historyReceipts?: Set<string>
 	historyCandidates?: Map<string, { row: WorkRecord; continuation: WorkContinuation }>
+	/** Record identities merged by the immediately-preceding pass, so the slack-window overlap of the next incremental read does not re-append rows. Bounded to one pass's rows: the overlap is always with the preceding watermark, so the set is replaced each pass. */
+	historyMerged?: Set<string>
 	historySince?: number
 	/** Per-journal stats of the last pass that built the incremental state, to tell append-only growth from rewrites. */
 	journalStats?: Map<string, { size: string; mtimeNs: string; ctimeNs: string }>
@@ -624,11 +626,19 @@ export async function reconcileWorkContinuations(
 			}
 		})
 		if (invalid.length) throw invalidRecordsError(invalid)
+		// The slack window re-reads rows the previous pass already merged; their identity is
+		// remembered so indexRecord cannot append duplicates. Rows share a body only when they
+		// share a record hash — the ledger dedups on it — so the serialized row is a stable key.
+		const previous = progress.historyMerged
+		const merged = new Set<string>()
 		// All-or-nothing: a mid-merge throw drops the accumulated state so the next pass
 		// rebuilds from one full read, instead of re-merging this window forever.
 		try {
 			for (const row of fresh) {
 				checkBudget()
+				const identity = JSON.stringify(row)
+				merged.add(identity)
+				if (previous?.has(identity)) continue
 				indexRecord(index, row)
 				const found = receipt(row)
 				if (!found) continue
@@ -644,10 +654,12 @@ export async function reconcileWorkContinuations(
 			progress.historyIndex = undefined
 			progress.historyReceipts = undefined
 			progress.historyCandidates = undefined
+			progress.historyMerged = undefined
 			progress.journalStats = undefined
 			progress.historyRecords = undefined
 			throw error
 		}
+		progress.historyMerged = merged
 		// Settled receipts must leave the pending map, or the per-pass cap counts dead work forever.
 		for (const key of done) candidates.delete(key)
 		// A work named by an unknown record type that arrived this pass must not confirm from a
@@ -662,7 +674,10 @@ export async function reconcileWorkContinuations(
 		index = history.index
 		receipts = new Set()
 		candidates = new Map()
+		// The next incremental pass re-reads this pass's slack tail: remember the rows it merged.
+		const merged = new Set<string>()
 		for (const row of history.records) {
+			merged.add(JSON.stringify(row))
 			await stretch()
 			const found = receipt(row)
 			if (!found) continue
@@ -677,6 +692,7 @@ export async function reconcileWorkContinuations(
 		progress.historyUnknown = history.unknown
 		progress.historyReceipts = receipts
 		progress.historyCandidates = candidates
+		progress.historyMerged = merged
 	}
 	progress.historySince = startedAt
 	if (parsedFingerprint) {

@@ -996,7 +996,13 @@ const CHUNK_RESERVE_MS = 500
 /** The group translation in progress: units committed while its marked records stay unchanged. */
 const PROGRESS_NOTE = "translation-progress"
 
-/** The built plan of a translation pass's prelude lives in its own note, written once per input signature. */
+/** The built plan of a translation pass's prelude lives in its own note, written once per input signature.
+ *
+ * Deliberate single slot: only one group's plan and progress are retained at a time. When several groups
+ * translate across interleaved passes, group B's rebuild overwrites group A's suspended plan — the
+ * signature checks make the fallback correct (A re-runs its full prelude), so only the resume optimization
+ * is lost, never correctness. Per-group keys (`translation-plan:<groupKey>`, cleaned on completion) are the
+ * upgrade if that loss ever shows up in real interleaving. */
 const PLAN_NOTE = "translation-plan"
 
 /** The persisted composition of a translation pass's prelude, JSON round-trippable through the plan note. */
@@ -1016,7 +1022,7 @@ interface PlanTail {
 const PLAN_GENERATION = Date.now()
 
 /** Full input fingerprint of a group pass: which works, and which marked records in each. */
-function planSignature(works: readonly string[], changed: ReadonlyMap<string, string>): string {
+function groupSignatureParts(works: readonly string[], changed: ReadonlyMap<string, string>): string {
 	return (
 		"v1\0" +
 		[...works].sort().join("\0") +
@@ -1026,6 +1032,10 @@ function planSignature(works: readonly string[], changed: ReadonlyMap<string, st
 			.sort()
 			.join("\0")
 	)
+}
+
+function planSignature(works: readonly string[], changed: ReadonlyMap<string, string>): string {
+	return groupSignatureParts(works, changed)
 }
 
 /**
@@ -1101,17 +1111,7 @@ const STALLED_RETRY_MS = 5 * 60_000
 
 /** Both parts of a group's input: the works it spans and the marked records awaiting translation. */
 function groupSignature(works: readonly string[], changed: ReadonlyMap<string, string>): string {
-	const hash = createHash("sha256")
-	hash.update(
-		"v1\0" +
-			[...works].sort().join("\0") +
-			"\0" +
-			[...changed]
-				.map(([h, t]) => `${h}:${t}`)
-				.sort()
-				.join("\0"),
-	)
-	return hash.digest("hex")
+	return createHash("sha256").update(groupSignatureParts(works, changed)).digest("hex")
 }
 
 /**
