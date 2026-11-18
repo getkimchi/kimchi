@@ -69,7 +69,11 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
-import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
+import {
+	createToolVisibility,
+	getDisabledToolNames,
+	type ToolVisibilityAPI,
+} from "../prompt-construction/tool-visibility.js"
 import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
@@ -293,6 +297,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	const planStopNudgeCounts = new Map<string, number>()
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
+	let restoreMcpAfterPlan = false
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
@@ -368,6 +373,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// can re-enable them. Without this snapshot, restore would be a no-op
 			// because `ToolProfileManager.apply` (via `pi.setActiveTools`) does
 			// not preserve the prior active-tool set.
+			restoreMcpAfterPlan = pi.getActiveTools().includes("mcp")
 			planModeHiddenTools = pi.getActiveTools().filter((name) => name !== "mcp" && !isPlanModeTool(name))
 			// Register the disable vote with the cooperative visibility layer so
 			// `restoreToolsFromPlanMode`'s `planToolVisibility.enable(...)` call
@@ -389,6 +395,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		} catch {
 			// best-effort restore
 		}
+		if (restoreMcpAfterPlan && !getDisabledToolNames(pi).has("mcp")) {
+			pi.setActiveTools([...new Set([...pi.getActiveTools(), "mcp"])])
+		}
+		restoreMcpAfterPlan = false
 		planModeHiddenTools = []
 		planModeApplied = false
 	}
