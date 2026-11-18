@@ -62,6 +62,180 @@ describe("handlers/tools", () => {
 		vi.restoreAllMocks()
 	})
 
+	describe("document CLI telemetry", () => {
+		async function runDocumentBash(input: {
+			command: string
+			toolCallId: string
+			isError?: boolean
+			resultText?: string
+			parentToolCallId?: string
+		}) {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			ctx.turnIndex = 4
+			ctx.lastRoutedModel = "document-test-backend"
+			ctx.lastTraceContext = { traceId: "aaaabbbbccccddddeeeeffff00001111", spanId: "1122334455667788" }
+			handleToolExecutionStart(ctx, {
+				toolCallId: input.toolCallId,
+				toolName: "bash",
+				args: { command: input.command },
+			})
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: input.toolCallId,
+				isError: input.isError,
+				parentToolCallId: input.parentToolCallId,
+				result: input.resultText === undefined ? undefined : { content: [{ type: "text", text: input.resultText }] },
+			})
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			return parseLogEvents(fetchMock).filter((event) => event.attrs.tool_use_id === input.toolCallId)
+		}
+
+		it("emits one minimal success event beside the existing bash records", async () => {
+			const events = await runDocumentBash({
+				command: 'kimchi doc-cli pdf read "/private/report.pdf"',
+				toolCallId: "doc-success",
+			})
+			const documentEvents = events.filter((event) => event.eventName === "document_cli.completed")
+			expect(documentEvents).toHaveLength(1)
+			const documentEvent = documentEvents[0]
+			expect(documentEvent.attrs).toMatchObject({
+				document_type: "pdf",
+				operation: "read",
+				outcome: "success",
+				turn_index: "4",
+				tool_use_id: "doc-success",
+				routed_model: "document-test-backend",
+			})
+			expect(Number(documentEvent.attrs.duration_ms)).toBeGreaterThanOrEqual(0)
+			expect(events.find((event) => event.eventName === "command_executed")?.attrs.command_outcome).toBe("success")
+			expect(parseLogEvents(fetchMock).find((event) => event.eventName === "tool_result")).toBeDefined()
+			for (const removed of [
+				"success",
+				"exit_code",
+				"timeout_seconds",
+				"invocation_route",
+				"canonicalization",
+				"nested",
+				"parent_tool_use_id",
+				"request.trace_id",
+				"request.span_id",
+				"error_code",
+			]) {
+				expect(Object.keys(documentEvent.attrs)).not.toContain(removed)
+			}
+			expect(JSON.stringify(documentEvent.attrs)).not.toContain("/private/report.pdf")
+		})
+
+		it("emits a bounded typed error and retains the command join", async () => {
+			const events = await runDocumentBash({
+				command: "kimchi doc-cli pdf read encrypted.pdf",
+				toolCallId: "doc-typed-error",
+				isError: true,
+				resultText: "error [password-protected]: /private/encrypted.pdf\n\nCommand exited with code 2",
+			})
+			const documentEvent = events.find((event) => event.eventName === "document_cli.completed")
+			expect(documentEvent?.attrs).toMatchObject({
+				document_type: "pdf",
+				operation: "read",
+				outcome: "nonzero_exit",
+				error_code: "password-protected",
+				tool_use_id: "doc-typed-error",
+			})
+			expect(documentEvent?.attrs.exit_code).toBeUndefined()
+			expect(JSON.stringify(documentEvent?.attrs)).not.toContain("/private/encrypted.pdf")
+			expect(events.find((event) => event.eventName === "command_executed")?.attrs.exit_code).toBe("2")
+		})
+
+		it("uses unclassified for an untyped nonzero exit", async () => {
+			const events = await runDocumentBash({
+				command: "kimchi doc-cli docx create --content missing.md --out result.docx",
+				toolCallId: "doc-untyped-error",
+				isError: true,
+				resultText: "unknown command failure\n\nCommand exited with code 2",
+			})
+			expect(events.find((event) => event.eventName === "document_cli.completed")?.attrs).toMatchObject({
+				document_type: "docx",
+				operation: "create",
+				outcome: "nonzero_exit",
+				error_code: "unclassified",
+			})
+		})
+
+		it.each([
+			"1",
+			"0.5",
+		])("records timeout outcomes without duplicating timeout diagnostics (%s seconds)", async (seconds) => {
+			const toolCallId = `doc-timeout-${seconds}`
+			const events = await runDocumentBash({
+				command: "kimchi doc-cli pptx render deck.pptx --out rendered",
+				toolCallId,
+				isError: true,
+				resultText: `Command timed out after ${seconds} seconds`,
+			})
+			const documentEvent = events.find((event) => event.eventName === "document_cli.completed")
+			expect(documentEvent?.attrs).toMatchObject({ document_type: "pptx", operation: "render", outcome: "timeout" })
+			expect(documentEvent?.attrs.error_code).toBeUndefined()
+			expect(documentEvent?.attrs.timeout_seconds).toBeUndefined()
+			expect(Number(documentEvent?.attrs.duration_ms)).toBeGreaterThanOrEqual(0)
+			expect(events.find((event) => event.eventName === "command_executed")?.attrs.timeout_seconds).toBe(seconds)
+		})
+
+		it.each([
+			["Command terminated without an exit code", "terminated"],
+			["Command aborted", "aborted"],
+			["unexpected runtime failure", "execution_error"],
+		])("maps the existing bash outcome for %s", async (resultText, outcome) => {
+			const events = await runDocumentBash({
+				command: "kimchi doc-cli xlsx recalc input.xlsx --out output.xlsx",
+				toolCallId: `doc-outcome-${outcome}`,
+				isError: true,
+				resultText,
+			})
+			const documentEvent = events.find((event) => event.eventName === "document_cli.completed")
+			expect(documentEvent?.attrs.outcome).toBe(outcome)
+			expect(documentEvent?.attrs.error_code).toBeUndefined()
+		})
+
+		it.each([
+			"Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user.",
+			"The user declined this action before execution and said: use staging instead",
+		])("emits no completion event when execution did not happen", async (resultText) => {
+			const events = await runDocumentBash({
+				command: "kimchi doc-cli pdf create --content doc.md --out output.pdf",
+				toolCallId: "doc-pre-execution",
+				isError: true,
+				resultText,
+			})
+			expect(events.find((event) => event.eventName === "document_cli.completed")).toBeUndefined()
+			expect(events.find((event) => event.eventName === "tool_outcome")).toBeDefined()
+		})
+
+		it("recognizes the fallback and joins a nested call without extra document fields", async () => {
+			const events = await runDocumentBash({
+				command: "node /private/skills/xlsx/scripts/xlsx.mjs info data.xlsx",
+				toolCallId: "doc-fallback",
+				parentToolCallId: "codemode-parent",
+			})
+			const documentEvents = events.filter((event) => event.eventName === "document_cli.completed")
+			expect(documentEvents).toHaveLength(1)
+			expect(documentEvents[0].attrs).toMatchObject({ document_type: "xlsx", operation: "info", outcome: "success" })
+			expect(documentEvents[0].attrs.nested).toBeUndefined()
+			expect(documentEvents[0].attrs.invocation_route).toBeUndefined()
+			expect(events.find((event) => event.eventName === "command_executed")?.attrs).toMatchObject({
+				tool_use_id: "doc-fallback",
+				nested: "true",
+				parent_tool_use_id: "codemode-parent",
+			})
+			expect(JSON.stringify(documentEvents[0].attrs)).not.toContain("/private/skills")
+		})
+
+		it("emits nothing for ordinary bash", async () => {
+			const events = await runDocumentBash({ command: "ls -la", toolCallId: "doc-not-document" })
+			expect(events.find((event) => event.eventName === "document_cli.completed")).toBeUndefined()
+		})
+	})
+
 	// -----------------------------------------------------------------------
 	// read tool
 	// -----------------------------------------------------------------------
