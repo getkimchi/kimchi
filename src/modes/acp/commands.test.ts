@@ -99,9 +99,9 @@ describe("composeAvailableCommands", () => {
 			["beta", { name: "beta", description: "Beta skill", filePath: "/skills/beta/SKILL.md" }],
 		])
 
-		const commands = composeAvailableCommands(skills)
+		const commands = composeAvailableCommands(skills, true)
 
-		expect(commands[0]?.name).toBe("bug")
+		expect(commands.slice(0, 4).map((c) => c.name)).toEqual(["bug", "compact", "language", "pr-watch"])
 		const skillCmds = commands.filter((c) => c.name.startsWith("skill:"))
 		expect(skillCmds.map((c) => c.name)).toEqual(["skill:alpha", "skill:beta"])
 		expect(skillCmds[0]?.input).toEqual({ hint: "Optional prompt to run with this skill loaded." })
@@ -109,6 +109,12 @@ describe("composeAvailableCommands", () => {
 
 	it("returns only the static palette when a session has no skills", () => {
 		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["bug", "compact", "language"])
+		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).toEqual([
+			"bug",
+			"compact",
+			"language",
+			"pr-watch",
+		])
 	})
 })
 

@@ -311,6 +311,12 @@ describe("describeToolCall", () => {
 			expect: { title: "memory_search", kind: "other", locations: [] },
 		},
 		{
+			name: "pr_watch keeps the tool name as title",
+			toolName: "pr_watch",
+			args: { url: "https://github.com/example/kimchi-lab/pull/7" },
+			expect: { title: "pr_watch", kind: "other", locations: [] },
+		},
+		{
 			name: "unmapped tool with a pattern argument keeps the tool name as title",
 			toolName: "mcp__github__search",
 			args: { pattern: "*.md" },

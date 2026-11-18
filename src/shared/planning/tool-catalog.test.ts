@@ -43,6 +43,7 @@ const TOOL_NAMES = {
 		"skill",
 		"web_fetch",
 		"web_search",
+		"pr_watch",
 		...WORKFLOW_OUTPUT_TOOL_NAMES,
 		"mcp",
 		...DAP_TOOL_NAMES,
@@ -229,6 +230,12 @@ describe("getToolsForProfile", () => {
 
 		it("includes bash", () => {
 			expect(names).toContain("bash")
+		})
+
+		it("keeps PR watch controls visible without exposing file writes", () => {
+			expect(names).toContain("pr_watch")
+			expect(names).not.toContain("edit")
+			expect(names).not.toContain("write")
 		})
 
 		it("includes bash_control wherever bash is (the pair moves together)", () => {
