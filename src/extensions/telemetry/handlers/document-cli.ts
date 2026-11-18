@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { DOC_CLI_COMMANDS, DOC_CLI_SKILLS, type DocCliSkill } from "../../documents/doc-cli-skills.js"
 import { DOCUMENT_ERROR_CODES, type DocumentErrorCode } from "../../documents/model.js"
 import { isDocCliCommand } from "../../permissions/bundled-skill-cli.js"
-import { parseCommandSegments, splitLeadingEnv, stripTrailingOutputFilters } from "../../permissions/taxonomy.js"
+import { parseCommandSegments, stripTrailingOutputFilters } from "../../permissions/taxonomy.js"
 import type { TelemetryContext } from "../session-context.js"
 import type { ToolErrorClassification } from "./tool-error-classification.js"
 
@@ -39,17 +39,15 @@ export function attributeDocumentCliCommand(command: string): DocumentCliAttribu
 	// Keep the same single-command constraints as the primary gate. Leading env
 	// assignments are safe to recognize here because permission checks are separate.
 	if (!command.trim() || command.includes("$(") || command.includes("`") || /[\r\n]/.test(command)) return undefined
-	const rawTokens = parseCommandSegments(command)[0]?.tokens ?? []
-	const quotedWhitespace = rawTokens.some((token) => /\s/.test(token))
-	const head = quotedWhitespace ? command : (stripTrailingOutputFilters(command) ?? command)
-	const { rest } = splitLeadingEnv(head)
-	const segments = parseCommandSegments(rest)
-	if (segments.length !== 1) return undefined
-	for (const op of segments[0].ops) {
+	const [head, ...filters] = parseCommandSegments(command)
+	if (!head || (filters.length > 0 && stripTrailingOutputFilters(command) === null)) return undefined
+	for (const op of head.ops) {
 		if (!(op.op === ">&" && op.target && /^[0-9]+$/.test(op.target))) return undefined
 	}
 
-	const tokens = segments[0].tokens
+	// Parsed head tokens already drop env assignments and preserve quoted spaces;
+	// unlike rebuilding a command string, this also handles output-filter tails.
+	const tokens = head.tokens
 	if (tokens[0] !== "node") return undefined
 	const script = tokens[1]?.match(/[\\/]scripts[\\/](pdf|docx|xlsx|pptx)\.mjs$/)
 	if (!script) return undefined
