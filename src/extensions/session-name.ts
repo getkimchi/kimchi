@@ -258,11 +258,13 @@ async function createSessionNameSuggestion(
 
 export default function sessionNameExtension() {
 	return (pi: ExtensionAPI) => {
-		let namingState = { completed: false, inFlight: false, attempts: 0 }
+		// Failed or exhausted attempts intentionally leave the session unnamed rather than
+		// publishing prompt text as a completed caption. There is no terminal prompt fallback here.
+		let namingState = { completed: false, inFlight: false, attempts: 0, warnedMissingCredentials: false }
 		let generation = 0
 		const pendingNames = new Set<Promise<void>>()
 		pi.on("session_start", () => {
-			namingState = { completed: false, inFlight: false, attempts: 0 }
+			namingState = { completed: false, inFlight: false, attempts: 0, warnedMissingCredentials: false }
 			generation++
 		})
 
@@ -292,11 +294,14 @@ export default function sessionNameExtension() {
 							const failure = result.failure
 							if (failure) {
 								if (failure.category !== "missing_credentials") state.attempts = attempt
-								const status = failure.status === undefined ? "" : ` status=${failure.status}`
-								const credentials = failure.hasCredentials ? "present" : "absent"
-								console.warn(
-									`[session-name] auto-caption failed category=${failure.category}${status} attempt=${attempt} credentials=${credentials}`,
-								)
+								if (failure.category !== "missing_credentials" || !state.warnedMissingCredentials) {
+									const status = failure.status === undefined ? "" : ` status=${failure.status}`
+									const credentials = failure.hasCredentials ? "present" : "absent"
+									console.warn(
+										`[session-name] auto-caption failed category=${failure.category}${status} attempt=${attempt} credentials=${credentials}`,
+									)
+								}
+								if (failure.category === "missing_credentials") state.warnedMissingCredentials = true
 							}
 							return
 						}

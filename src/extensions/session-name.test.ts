@@ -487,7 +487,7 @@ describe("sessionNameExtension turn_end handler", () => {
 		for (let attempt = 0; attempt < 3; attempt++) await harness.endTurn()
 		expect(fetchMock).not.toHaveBeenCalled()
 		expect(harness.setSessionName).not.toHaveBeenCalled()
-		expect(warnMock).toHaveBeenLastCalledWith(
+		expect(warnMock).toHaveBeenCalledExactlyOnceWith(
 			"[session-name] auto-caption failed category=missing_credentials attempt=1 credentials=absent",
 		)
 
@@ -549,6 +549,51 @@ describe("sessionNameExtension turn_end handler", () => {
 
 		expect(fetchMock).toHaveBeenCalledTimes(3)
 		expect(harness.setSessionName).not.toHaveBeenCalled()
+	})
+
+	it("resets the retry budget for a new session", async () => {
+		vi.stubGlobal("console", { ...console, warn: vi.fn() })
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+			.mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+			.mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+			.mockImplementation(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+
+		for (let attempt = 0; attempt < 3; attempt++) await harness.endTurn()
+		expect(fetchMock).toHaveBeenCalledTimes(3)
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+
+		await harness.getHandler("session_start")({}, harness.ctx)
+		await harness.endTurn()
+
+		expect(fetchMock).toHaveBeenCalledTimes(4)
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+	})
+
+	it("counts configuration exceptions toward the retry cap and names after recovery", async () => {
+		vi.stubGlobal("console", { ...console, warn: vi.fn() })
+		const fetchMock = vi.fn(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+		let configAttempts = 0
+		mockLoadConfig.mockImplementation(() => {
+			configAttempts += 1
+			if (configAttempts <= 2) throw new Error("configuration unavailable")
+			return { apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" }
+		})
+
+		await harness.endTurn()
+		await harness.endTurn()
+		await harness.endTurn()
+
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+		expect(fetchMock).toHaveBeenCalledOnce()
+
+		await harness.endTurn()
+		expect(fetchMock).toHaveBeenCalledOnce()
 	})
 
 	it("waits past a greeting and names the task on the next turn", async () => {
