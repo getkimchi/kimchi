@@ -722,6 +722,18 @@ describe("upstream MCP adapter facade", () => {
 		const readOnlyCalls = [
 			["status", {}],
 			["search", { search: "issue" }],
+			[
+				"search-with-options",
+				{
+					search: "issue",
+					searchMode: "lexical",
+					regex: true,
+					includeSchemas: true,
+					limit: 5,
+					offset: 0,
+					server: "docs",
+				},
+			],
 			["describe", { describe: "docs_get_issue" }],
 			["instructions", { instructions: "docs" }],
 			["list", { server: "docs" }],
@@ -742,6 +754,13 @@ describe("upstream MCP adapter facade", () => {
 			["auth-start", { action: "auth-start", server: "docs" }],
 			["auth-complete", { action: "auth-complete", server: "docs" }],
 			["connect", { connect: "docs" }],
+			["ui-messages", { action: "ui-messages" }],
+			["unknown-action", { action: "future-state-change" }],
+			["unknown-parameter", { mode: "status" }],
+			["mixed-read-and-connect", { search: "issue", connect: "docs" }],
+			["mixed-read-operations", { search: "issue", describe: "docs_get_issue" }],
+			["undefined-action", { action: undefined }],
+			["install-without-action", { url: "https://example.test/mcp" }],
 		] as const
 		for (const [id, params] of blockedCalls) {
 			const result = await gateway.execute(id, params, undefined, undefined, createToolContext())

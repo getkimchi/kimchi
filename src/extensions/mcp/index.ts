@@ -85,7 +85,7 @@ function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
 function blockedPlanningResult(toolName: string) {
 	const reason =
 		toolName === MCP_PROXY_TOOL
-			? "This MCP gateway call is unavailable in plan mode. Use status, search, describe, instructions, or a read-only-qualified tool call."
+			? "This MCP gateway call is unavailable in plan mode. Use status, search, describe, instructions, server list, or a read-only-qualified tool call."
 			: `MCP tool "${toolName}" is unavailable in plan mode.`
 	return {
 		content: [{ type: "text" as const, text: reason }],
@@ -99,11 +99,44 @@ function isHiddenFromPlanning(toolName: string, isReadOnlyTool: (wireName: strin
 	return toolName === MCP_SCRIPT_TOOL || (toolName !== MCP_PROXY_TOOL && !isReadOnlyTool(toolName))
 }
 
-/**
- * Execution remains fail-closed even when a hidden or stale tool reaches the facade.
- * Explicit actions and reconnects are not reads: they can install servers, update
- * metadata, or start/authenticate OAuth flows, so planning rejects all of them.
- */
+const PLAN_SEARCH_KEYS = new Set(["search", "searchMode", "regex", "includeSchemas", "limit", "offset", "server"])
+
+function hasOnlyKeys(params: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+	return Object.keys(params).every((key) => allowed.has(key))
+}
+
+function hasValidServer(params: Record<string, unknown>): boolean {
+	return params.server === undefined || (typeof params.server === "string" && params.server.length > 0)
+}
+
+/** Positive allowlist for every adapter dispatch shape that is read-only in plan mode. */
+function isAllowlistedGatewayCall(
+	params: unknown,
+	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
+): boolean {
+	if (typeof params !== "object" || params === null || Array.isArray(params)) return false
+	const input = params as Record<string, unknown>
+	const keys = Object.keys(input)
+	if (keys.length === 0) return true
+	if (keys.length === 1 && keys[0] === "instructions") return typeof input.instructions === "string"
+	if (keys.length === 1 && keys[0] === "server") return hasValidServer(input)
+	if (typeof input.describe === "string")
+		return hasOnlyKeys(input, new Set(["describe", "server"])) && hasValidServer(input)
+	if (typeof input.search === "string") return hasOnlyKeys(input, PLAN_SEARCH_KEYS) && hasValidServer(input)
+	if (
+		typeof input.tool === "string" &&
+		input.tool.length > 0 &&
+		hasOnlyKeys(input, new Set(["tool", "args", "server"]))
+	) {
+		return (
+			hasValidServer(input) &&
+			isReadOnlyGatewayTool(input.tool, typeof input.server === "string" ? input.server : undefined)
+		)
+	}
+	return false
+}
+
+/** Planning never uses the file-attribution heuristic to authorize gateway state changes. */
 function isBlockedInPlanning(
 	toolName: string,
 	params: unknown,
@@ -111,7 +144,7 @@ function isBlockedInPlanning(
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): boolean {
 	if (toolName === MCP_SCRIPT_TOOL) return true
-	if (toolName === MCP_PROXY_TOOL && typeof params === "object" && params !== null && "connect" in params) return true
+	if (toolName === MCP_PROXY_TOOL) return !isAllowlistedGatewayCall(params, isReadOnlyGatewayTool)
 	return canChangeFiles(toolName, params, getReadOnlyToolNames, isReadOnlyGatewayTool)
 }
 
