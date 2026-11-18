@@ -165,6 +165,30 @@ vi.mock("./manager/agent-manager.js", () => {
 				hasRunning: vi.fn().mockReturnValue(false),
 				detachToBackground: vi.fn().mockReturnValue(false),
 				detachRemoteRuns: vi.fn(),
+				countAbortableBackground: vi.fn(
+					// Mirror the real accounting well enough for notice tests:
+					// only background-flagged records count; transients don't.
+					() => [...records.values()].filter((r) => (r as { isBackground?: boolean }).isBackground === true).length,
+				),
+				extractRunningLocal: vi.fn(() => {
+					const active = [...records.values()].filter((r) => {
+						const status = (r as { status?: string }).status
+						return status === "running" || status === "queued"
+					})
+					for (const r of active) records.delete((r as { id: string }).id)
+					return { records: active, queued: [], midResumeIds: new Set() }
+				}),
+				adoptRecords: vi.fn(
+					(
+						adopted: Array<Record<string, unknown>>,
+						_queued: unknown,
+						_midResumeIds: unknown,
+						_pi: unknown,
+						_ctx: unknown,
+					) => {
+						for (const r of adopted) records.set(r.id as string, r)
+					},
+				),
 			}
 			return manager
 		}),
@@ -240,7 +264,9 @@ import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-
 import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { RemoteAgentSession } from "./manager/remote-agent-session.js"
+import { clearHandoff, peekHandoff, stageHandoff } from "./manager/subagent-handoff.js"
 import type { RemoteRunState } from "./remote-run-persistence.js"
 import { applyAndEmitLoaded } from "./settings.js"
 import type { Theme } from "./ui/agent-widget.js"
@@ -291,7 +317,8 @@ function makeMockPi(): ExtensionAPI & {
 		_handlers: handlers,
 		sendMessage,
 		fireShutdown: async () => {
-			for (const handler of handlers.get("session_shutdown") ?? []) await handler({})
+			for (const handler of handlers.get("session_shutdown") ?? [])
+				await handler({}, { sessionManager: { getSessionFile: () => "/tmp/session.json" } })
 		},
 	}
 	return stub as unknown as ExtensionAPI & {
@@ -1494,7 +1521,14 @@ function getRegisteredTool(
 type MockManagerInstance = {
 	_records: Map<string, Record<string, unknown>>
 	onComplete: (record: Record<string, unknown>) => void
-	spawn: ReturnType<typeof vi.fn>
+	spawn: ReturnType<
+		typeof vi.fn<(pi: unknown, ctx: unknown, type: string, prompt: string, options: Record<string, unknown>) => string>
+	>
+	getRecord: (id: string) => Record<string, unknown> | undefined
+	adoptRecords: ReturnType<typeof vi.fn>
+	countAbortableBackground: ReturnType<typeof vi.fn>
+	abortAll: ReturnType<typeof vi.fn>
+	dispose: ReturnType<typeof vi.fn>
 }
 
 function latestManagerInstance(): MockManagerInstance {
@@ -2162,6 +2196,278 @@ describe("remote completion ownership during session replacement", () => {
 	})
 })
 
+describe("local agents survive session replacement (fork/new)", () => {
+	let inheritedParentSessionId: string | undefined
+
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+		// These tests must run as the main session: a kimchi process spawned
+		// as a subagent exports KIMCHI_PARENT_SESSION_ID, which trips the
+		// adoption guard (the ACP suite deletes it for the same reason).
+		inheritedParentSessionId = process.env[PARENT_SESSION_ID_ENV_KEY]
+		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+	})
+
+	afterEach(() => {
+		// The handoff slot is module-level state — never leak it across tests.
+		clearHandoff()
+		if (inheritedParentSessionId === undefined) {
+			Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+		} else {
+			process.env[PARENT_SESSION_ID_ENV_KEY] = inheritedParentSessionId
+		}
+	})
+
+	it("stages running agents on fork and adopts them in the replacement session", async () => {
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+		})
+		agentsExtension(pi1.api)
+		const manager1 = latestManagerInstance()
+		const id = manager1.spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "fork", targetSessionFile: "/tmp/new-session.json" },
+			live1.ctx,
+		)
+
+		// fork hands off instead of aborting
+		expect(manager1.abortAll).not.toHaveBeenCalled()
+		expect(manager1.getRecord(id)).toBeUndefined()
+		expect(peekHandoff("/tmp/old-session.json")).toMatchObject({ fromSessionFile: "/tmp/old-session.json" })
+		expect(peekHandoff("/tmp/old-session.json")?.records.map((r) => r.id)).toEqual([id])
+
+		// the replacement session claims the handoff by lineage
+		const pi2 = createExtensionApi()
+		const notify2 = vi.fn()
+		const live2 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/new-session.json" },
+			ui: { notify: notify2 },
+		})
+		agentsExtension(pi2.api)
+		const manager2 = latestManagerInstance()
+		await pi2.emit(
+			"session_start",
+			{ type: "session_start", reason: "fork", previousSessionFile: "/tmp/old-session.json" },
+			live2.ctx,
+		)
+
+		expect(peekHandoff("/tmp/old-session.json")).toBeUndefined()
+		expect(notify2).toHaveBeenCalledWith("1 background agent continue running from the previous session", "info")
+		expect(manager2.adoptRecords).toHaveBeenCalledWith(
+			[expect.objectContaining({ id })],
+			[],
+			expect.any(Set),
+			pi2.api,
+			live2.ctx,
+		)
+		expect(manager2.getRecord(id)).toMatchObject({ id, status: "running" })
+
+		// the adopted agent's completion reaches the replacement's notification surface
+		manager2.onComplete(
+			makeRunningRecord({
+				id,
+				status: "completed",
+				result: "done",
+				completedAt: Date.now(),
+				toolUses: 2,
+				lastTurnCount: 3,
+			}),
+		)
+		await vi.waitFor(() =>
+			expect(pi2.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "subagent-notification" }),
+				expect.objectContaining({ deliverAs: "followUp" }),
+			),
+		)
+
+		// no double adoption: the claimed slot is empty — a replayed
+		// session_start with the same lineage claims nothing
+		await pi2.emit(
+			"session_start",
+			{ type: "session_start", reason: "fork", previousSessionFile: "/tmp/old-session.json" },
+			live2.ctx,
+		)
+		expect(manager2.adoptRecords).toHaveBeenCalledTimes(1)
+	})
+
+	it("aborts on reason new (plain /new): a clean slate carries no agents over", async () => {
+		// /new starts an EMPTY conversation — completion notifications landing
+		// there would reference agent ids the new session never spawned
+		// (reviewer call, 2026-11-17). Same terminal path as resume.
+		const notify = vi.fn()
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+			ui: { notify },
+		})
+		agentsExtension(pi1.api)
+		const manager1 = latestManagerInstance()
+		manager1.spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+		await pi1.emit("tool_execution_start", { toolCallId: "t1", toolName: "read" }, live1.ctx)
+
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "new", targetSessionFile: "/tmp/new-session.json" },
+			live1.ctx,
+		)
+		expect(manager1.abortAll).toHaveBeenCalledWith({ skipRemote: true })
+		expect(manager1.countAbortableBackground).toHaveBeenCalled()
+		expect(peekHandoff("/tmp/old-session.json")).toBeUndefined()
+		expect(notify).toHaveBeenCalledWith("Aborted 1 background agent — starting a new session", "warning")
+		expect(manager1.dispose).toHaveBeenCalled()
+	})
+
+	it("keeps the terminal path for quit: abortAll + dispose, nothing staged", async () => {
+		const pi = createExtensionApi()
+		const live = createLiveContext({ mode: "tui" })
+		agentsExtension(pi.api)
+		const manager = latestManagerInstance()
+		manager.spawn(pi.api, live.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+
+		await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, live.ctx)
+
+		expect(manager.abortAll).toHaveBeenCalledWith({ skipRemote: true })
+		expect(manager.dispose).toHaveBeenCalled()
+		expect(peekHandoff("/tmp/session.json")).toBeUndefined()
+	})
+
+	it("aborts and notifies on resume to an unrelated session", async () => {
+		const notify = vi.fn()
+		const pi = createExtensionApi()
+		const live = createLiveContext({ mode: "tui", ui: { notify } })
+		agentsExtension(pi.api)
+		const manager = latestManagerInstance()
+		manager.spawn(pi.api, live.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+		// A transient visual record: abortAll counts it, but it must not
+		// inflate the resume notice.
+		manager._records.set("transient-1", { id: "transient-1", status: "running" })
+		// currentUi is wired by tool_execution_start — fire one so the
+		// resume notice has a surface to land on.
+		await pi.emit("tool_execution_start", { toolCallId: "t1", toolName: "read" }, live.ctx)
+
+		await pi.emit("session_shutdown", { type: "session_shutdown", reason: "resume" }, live.ctx)
+
+		expect(manager.abortAll).toHaveBeenCalledWith({ skipRemote: true })
+		expect(manager.dispose).toHaveBeenCalled()
+		expect(notify).toHaveBeenCalledWith("Aborted 1 background agent — switching sessions", "warning")
+		expect(peekHandoff("/tmp/session.json")).toBeUndefined()
+	})
+
+	it("does not claim the handoff for a child-style session start (no lineage)", async () => {
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+		})
+		agentsExtension(pi1.api)
+		latestManagerInstance().spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "fork", targetSessionFile: "/tmp/new-session.json" },
+			live1.ctx,
+		)
+		expect(peekHandoff("/tmp/old-session.json")).toBeDefined()
+
+		// A subagent session starts fresh — reason "startup", no
+		// previousSessionFile — so it never claims the previous session's
+		// agents. (An env-var child check would be wrong here: the runner
+		// keeps KIMCHI_PARENT_SESSION_ID set on the process for the whole
+		// lifetime of a running background agent.)
+		const pi2 = createExtensionApi()
+		const live2 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/new-session.json" },
+		})
+		agentsExtension(pi2.api)
+		const manager2 = latestManagerInstance()
+		await pi2.emit("session_start", { type: "session_start", reason: "startup" }, live2.ctx)
+
+		expect(manager2.adoptRecords).not.toHaveBeenCalled()
+		// the slot survives for a real main-session replacement
+		expect(peekHandoff("/tmp/old-session.json")).toBeDefined()
+	})
+
+	it("aborts a never-claimed staged handoff on the terminal path", async () => {
+		const pi = createExtensionApi()
+		const live = createLiveContext({ mode: "tui" })
+		agentsExtension(pi.api)
+
+		// a stale handoff staged by an earlier runtime that no replacement
+		// ever claimed — its records must not keep running headless
+		const abort = vi.fn()
+		stageHandoff({
+			fromSessionFile: "/tmp/gone-session.json",
+			records: [makeRunningRecord({ abortController: { abort } }) as never],
+			queued: [],
+			midResumeIds: new Set(),
+			activity: [],
+		})
+
+		await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, live.ctx)
+
+		expect(abort).toHaveBeenCalledTimes(1)
+		expect(peekHandoff("/tmp/gone-session.json")).toBeUndefined()
+	})
+
+	it("retains the staged handoff when the replacement's lineage does not match", async () => {
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+		})
+		agentsExtension(pi1.api)
+		latestManagerInstance().spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "fork", targetSessionFile: "/tmp/unrelated.json" },
+			live1.ctx,
+		)
+
+		const pi2 = createExtensionApi()
+		const live2 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/unrelated.json" },
+		})
+		agentsExtension(pi2.api)
+		const manager2 = latestManagerInstance()
+		await pi2.emit(
+			"session_start",
+			{ type: "session_start", reason: "resume", previousSessionFile: "/tmp/somewhere-else.json" },
+			live2.ctx,
+		)
+
+		expect(manager2.adoptRecords).not.toHaveBeenCalled()
+		expect(peekHandoff("/tmp/old-session.json")).toBeDefined()
+	})
+})
+
 describe("Agent tool session-cwd agent resolution", () => {
 	beforeEach(() => {
 		vi.useRealTimers()
@@ -2227,7 +2533,8 @@ describe("Agent tool session-cwd agent resolution", () => {
 		const sessionCwd = "/tmp/issue1677-session-project"
 
 		const ctx = { cwd: sessionCwd, sessionManager: { getBranch: () => [] } }
-		for (const handler of pi._handlers.get("session_start") ?? []) await handler(undefined, ctx)
+		for (const handler of pi._handlers.get("session_start") ?? [])
+			await handler({ type: "session_start", reason: "startup" } as never, ctx)
 
 		expect(vi.mocked(applyAndEmitLoaded).mock.calls.some((c) => c[2] === sessionCwd)).toBe(true)
 	})

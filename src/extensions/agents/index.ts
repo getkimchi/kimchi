@@ -74,6 +74,7 @@ import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./m
 import { deleteRemoteSession, type RemoteSessionMeta } from "./manager/remote-agent-runner.js"
 import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
+import { abortAllStagedHandoffs, abortStagedHandoff, stageHandoff, takeHandoffFor } from "./manager/subagent-handoff.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
 import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
@@ -1391,6 +1392,34 @@ export default function (pi: ExtensionAPI) {
 	const widget = new AgentWidget(manager, agentActivity)
 	activeWidget = widget
 
+	// Adopt the running local agents handed off by the previous session runtime
+	// (fork/new — see subagent-handoff.ts). The claim is keyed by lineage: only
+	// the replacement of the outgoing session file gets them. Registered before
+	// the remote-reattach handler below so adoption is immediate.
+	pi.on("session_start", async (event, ctx) => {
+		// NOTE: no KIMCHI_PARENT_SESSION_ID guard here. The runner keeps that
+		// env var set on the process for the WHOLE lifetime of a running
+		// background agent (withParentSessionEnv), so at branch time it is
+		// always set — an env check would reject the hand-off exactly when it
+		// must happen. Subagent sessions never reach the claim anyway: they
+		// start with reason "startup" and no previousSessionFile, which
+		// takeHandoffFor refuses (undefined never claims).
+		const handoff = takeHandoffFor(event.previousSessionFile)
+		if (!handoff) return
+		manager.adoptRecords(handoff.records, handoff.queued, handoff.midResumeIds, pi, ctx)
+		for (const [id, entry] of handoff.activity) agentActivity.set(id, entry)
+		widget.setUICtx(ctx.ui as UICtx)
+		widget.ensureTimer()
+		widget.update()
+		const backgroundCount = handoff.records.filter((r) => r.isBackground).length
+		if (backgroundCount > 0 && ctx.hasUI) {
+			ctx.ui.notify?.(
+				`${backgroundCount} background agent${backgroundCount === 1 ? "" : "s"} continue running from the previous session`,
+				"info",
+			)
+		}
+	})
+
 	spawnRemoteAgentFn = async (pi, ctx, promptText, desc, opts) => {
 		widget.setUICtx(ctx.ui as UICtx)
 		const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1)
@@ -1533,17 +1562,74 @@ export default function (pi: ExtensionAPI) {
 
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		// fork (/branch, /clone) replaces the session but CONTINUES the
+		// conversation — its history contains the Agent tool calls, so the
+		// branch hands running local agents to the replacement instead of
+		// aborting them (subagent-handoff.ts). Everything else — quit, /new
+		// (a clean slate: orphaned completions would pollute a conversation
+		// that never saw those spawns), resume to an unrelated session,
+		// reload — keeps the terminal path.
+		const continuing = event.reason === "fork"
 		sessionShuttingDown = true
 		manager.detachRemoteRuns()
 		unsubCtrlB?.()
 		unsubCtrlB = undefined
 		unsubKill?.()
 		unsubKill = undefined
+		const ui = currentUi
 		currentUi = undefined
+		if (continuing) {
+			const { records, queued, midResumeIds } = manager.extractRunningLocal()
+			const activity: Array<[string, AgentActivity]> = []
+			for (const record of records) {
+				const entry = agentActivity.get(record.id)
+				if (entry) activity.push([record.id, entry])
+			}
+			// Pending batch joins reference this instance's GroupJoinManager —
+			// adopted completions fall back to individual nudges in the new one.
+			currentBatchAgents = []
+			if (records.length > 0 || queued.length > 0) {
+				stageHandoff({
+					// Lineage key: the replacement's session_start.previousSessionFile
+					// must match this (the outgoing) session file to claim the handoff.
+					fromSessionFile: ctx.sessionManager.getSessionFile(),
+					records,
+					queued,
+					midResumeIds,
+					activity,
+				})
+			}
+			if (batchFinalizeTimer) {
+				clearTimeout(batchFinalizeTimer)
+				batchFinalizeTimer = undefined
+			}
+			nudgeScheduler.beginShutdown()
+			widget.dispose()
+			manager.dispose()
+			return
+		}
 		// Remote runs survive the process — they are owned by the worker and
 		// resumable via kimchi --session (remote-run-persistence.ts).
+		// The notice must count exactly what abortAll kills: abortAll's return
+		// also includes transients and the call spares remote runs, so the
+		// manager mirrors its own kill list (queued + active local background).
+		const backgroundAborted = manager.countAbortableBackground()
 		manager.abortAll({ skipRemote: true })
+		// Terminal shutdown: no replacement of THIS session can appear, so its
+		// unclaimed handoff is aborted instead of running headless (scoped to
+		// this session; quit is process exit — abort every staged handoff).
+		if (event.reason === "quit") abortAllStagedHandoffs()
+		else abortStagedHandoff(ctx.sessionManager.getSessionFile())
+		if (backgroundAborted > 0 && (event.reason === "resume" || event.reason === "new")) {
+			// Switching sessions stops local agents — but say so, instead of
+			// killing them silently.
+			const action = event.reason === "new" ? "starting a new session" : "switching sessions"
+			ui?.notify(
+				`Aborted ${backgroundAborted} background agent${backgroundAborted === 1 ? "" : "s"} — ${action}`,
+				"warning",
+			)
+		}
 		budgetRetryCandidates.clear()
 		if (batchFinalizeTimer) {
 			clearTimeout(batchFinalizeTimer)
