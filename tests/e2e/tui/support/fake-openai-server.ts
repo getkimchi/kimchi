@@ -673,6 +673,20 @@ function pickResponseScript(
 	)
 }
 
+/** Latest main-agent chat request, excluding auxiliary calls that carry no tools. */
+export function latestAgentChatRequest(requests: readonly FakeResponseRequest[]): FakeResponseRequest | undefined {
+	return requests
+		.filter(
+			(request) =>
+				request.url.endsWith("/chat/completions") &&
+				request.body !== null &&
+				typeof request.body === "object" &&
+				"tools" in request.body &&
+				Array.isArray(request.body.tools),
+		)
+		.at(-1)
+}
+
 /** Separate matching calls must not consume a scripted assistant turn. */
 export function isWorkMatchingRequest(request: FakeResponseRequest): boolean {
 	const body = request.body
