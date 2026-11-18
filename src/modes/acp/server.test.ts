@@ -1509,6 +1509,42 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 		})
 
+		it.each([
+			{ flow: "API key", methodId: "kimchi-agent" },
+			{ flow: "SSO", methodId: "kimchi-sso-us" },
+		])("preserves a repeated $flow credential's rejection through a cached model refresh", async ({ methodId }) => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_REGION", "us")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempAgentDir)
+			resetCredentialStalenessForTests()
+			onTestFinished(() => {
+				resetCredentialStalenessForTests()
+				vi.unstubAllEnvs()
+			})
+			const token = methodId === "kimchi-agent" ? "castai_v1_test-token" : "castai_v1_sso-token"
+			markCredentialStale(token, "kimchi-dev")
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			// A transient refresh failure with cached models neither authenticates
+			// the repeated credential nor records another rejection for it.
+			vi.mocked(updateModelsConfig).mockResolvedValueOnce({ models: [] })
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				methodId === "kimchi-sso-us" ? sso.manager : undefined,
+			)
+
+			await testAgent.authenticate({ methodId })
+
+			expect(isCredentialStale(token, "kimchi-dev")).toBe(true)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale(token, "kimchi-dev")).toBe(true)
+		})
+
 		// ---- Cast AI SSO: the plain authenticate() path ----
 
 		it("authenticates with kimchi-sso-us: drives the stepwise SSO flow with the region pin", async () => {

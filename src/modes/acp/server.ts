@@ -85,7 +85,12 @@ import {
 	writeApiKey,
 	writeRegion,
 } from "../../config.js"
-import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
+import {
+	clearCredentialStale,
+	isAuthRejectedMessage,
+	markCredentialStale,
+	prepareCredentialForLogin,
+} from "../../credential-staleness.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import {
@@ -848,8 +853,9 @@ export class KimchiAcpAgent implements Agent {
 		const persist: WriteApiKeyOptions = { region }
 		if (selfHostedEndpoints) persist.selfHostedEndpoints = selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
-		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		// A replacement invalidates earlier marks, but a repeated key retains its
+		// observed rejection through a cached refresh until authentication succeeds.
+		prepareCredentialForLogin(token, KIMCHI_PROVIDER_ID)
 
 		// Eagerly refresh the model cache so the subsequent newSession() call
 		// finds available models without another round-trip.
@@ -971,9 +977,9 @@ export class KimchiAcpAgent implements Agent {
 		// A failed refresh with no cached models must not leave old stored
 		// credentials with their rejection removed. Store the replacement first.
 		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
-		// A transient cached fallback is not authenticated success, so clear the
-		// old state before refreshing; a real 401 records it again for this bearer.
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		// Retire anonymous/replaced-credential state before refreshing. Preserve
+		// this bearer's known rejection through a transient cached fallback.
+		prepareCredentialForLogin(credential.access, KIMCHI_PROVIDER_ID)
 		await updateModelsConfig(modelsPath, credential.access, {
 			allowCachedFallback: true,
 			organizationId: org.id,

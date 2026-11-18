@@ -171,21 +171,46 @@ export function markCredentialStale(apiKey: string | undefined, providerId: stri
 	}
 }
 
-/** Authenticated success (refresh, fresh login) means credentials work again. */
-export function clearCredentialStale(providerId: string, statePath?: string): void {
-	stalenessByProvider.delete(providerId)
+function clearPersistentRejection(
+	providerId: string,
+	statePath: string | undefined,
+	retainedFingerprint?: string,
+): void {
 	const path = rejectionsPath(statePath)
 	if (!path) return
 	try {
 		updatePersistentRejections(resolve(path), (state) => {
 			if (!(providerId in state.providers)) return state
+			const rejected = state.providers[providerId]
+			const retained =
+				retainedFingerprint === undefined ? [] : rejected.filter((value) => value === retainedFingerprint)
+			if (retainedFingerprint !== undefined && retained.length === rejected.length) return state
 			const providers = { ...state.providers }
-			delete providers[providerId]
+			if (retained.length > 0) providers[providerId] = retained
+			else delete providers[providerId]
 			return { ...state, providers }
 		})
 	} catch (error) {
 		console.warn("[credential-staleness] could not clear rejected credential fingerprints", error)
 	}
+}
+
+/** Authenticated success (refresh, fresh login) means credentials work again. */
+export function clearCredentialStale(providerId: string, statePath?: string): void {
+	stalenessByProvider.delete(providerId)
+	clearPersistentRejection(providerId, statePath)
+}
+
+/** Start a login without turning an unverified cached refresh into success.
+ * Anonymous and replaced-credential marks are obsolete, but a repeated
+ * credential must retain its observed rejection until authenticated success.
+ */
+export function prepareCredentialForLogin(apiKey: string, providerId: string, statePath?: string): void {
+	const retainedFingerprint = fingerprint(apiKey)
+	const entry = stalenessByProvider.get(providerId)
+	stalenessByProvider.delete(providerId)
+	if (entry?.staleKeys.has(retainedFingerprint)) providerEntry(providerId).staleKeys.add(retainedFingerprint)
+	clearPersistentRejection(providerId, statePath, retainedFingerprint)
 }
 
 /**

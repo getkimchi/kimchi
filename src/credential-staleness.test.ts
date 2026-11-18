@@ -12,6 +12,7 @@ import {
 	isAuthRejectedMessage,
 	isCredentialStale,
 	markCredentialStale,
+	prepareCredentialForLogin,
 	resetCredentialStalenessForTests,
 } from "./credential-staleness.js"
 
@@ -93,6 +94,21 @@ describe("persistent credential rejections", () => {
 
 		expect(isCredentialStale("dead-key", "kimchi-dev", statePath)).toBe(false)
 		expect(isCredentialStale("other-key", "other-provider", statePath)).toBe(true)
+	})
+
+	it("retains only the presented credential's persisted rejection when preparing a repeated login", () => {
+		markCredentialStale("repeated-token", "kimchi-dev", statePath)
+		markCredentialStale("replaced-token", "kimchi-dev", statePath)
+		markCredentialStale(undefined, "kimchi-dev")
+
+		prepareCredentialForLogin("repeated-token", "kimchi-dev", statePath)
+
+		expect(isCredentialStale("repeated-token", "kimchi-dev", statePath)).toBe(true)
+		expect(isCredentialStale("replaced-token", "kimchi-dev", statePath)).toBe(false)
+		expect(isCredentialStale(undefined, "kimchi-dev", statePath)).toBe(false)
+		resetCredentialStalenessForTests()
+		expect(isCredentialStale("repeated-token", "kimchi-dev", statePath)).toBe(true)
+		expect(isCredentialStale("replaced-token", "kimchi-dev", statePath)).toBe(false)
 	})
 
 	it("ignores unknown sidecar versions instead of reinterpreting them as v1", () => {
