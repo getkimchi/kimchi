@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { RecallDeadline } from "./deadline.js"
 import type { MemorySearchHit } from "./inject.js"
 import {
 	buildLoopRecallQueries,
@@ -47,7 +48,9 @@ function baseArgs(rig: Rig, overrides: Partial<RecallRunArgs> = {}): RecallRunAr
 		decideGate: null,
 		deliveredFacts: rig.deliveredFacts,
 		deliveredKeys: rig.deliveredKeys,
-		emit: (partial) => rig.emitted.push(partial),
+		emit: (partial) => {
+			rig.emitted.push(partial)
+		},
 		...overrides,
 	}
 }
@@ -90,7 +93,15 @@ describe("runRecall", () => {
 		)
 		expect(outcome).toBe("gate-skip")
 		expect(searched).toBe(0)
-		expect(rig.emitted).toEqual([{ trigger: "user-turn", gate: { lookup: "skip" }, hits: [], injected: [] }])
+		expect(rig.emitted).toEqual([
+			expect.objectContaining({
+				trigger: "user-turn",
+				gate: { lookup: "skip" },
+				hits: [],
+				injected: [],
+				conclusion: "gate-skip",
+			}),
+		])
 	})
 
 	it("a throwing gate falls back to search (pre-gate behavior)", async () => {
@@ -154,6 +165,18 @@ describe("runRecall", () => {
 		])
 	})
 
+	it("keeps useful hits when another facet returns an empty/null result", async () => {
+		const rig = makeRig()
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				queries: ["empty facet", "useful facet"],
+				search: async (query) => (query === "empty facet" ? null : [hit("useful fact")]),
+			}),
+		)
+		expect(outcome).toBe("injected")
+		expect(rig.deliveredFacts).toEqual(["useful fact"])
+	})
+
 	it("an undefined result from any facet is an overall no-searcher skip", async () => {
 		const rig = makeRig()
 		const outcome = await runRecall(
@@ -181,7 +204,9 @@ describe("runRecall", () => {
 
 	it("injects a steer, seeds the shared ledger, and traces hits/composition", async () => {
 		const rig = makeRig()
-		const outcome = await runRecall(baseArgs(rig, { search: async () => [hit("a durable preference")] }))
+		const outcome = await runRecall(
+			baseArgs(rig, { search: async () => [{ ...hit("a durable preference"), id: "fact-1" }] }),
+		)
 		expect(outcome).toBe("injected")
 		expect(rig.sent).toHaveLength(1)
 		const msg = rig.sent[0] as { customType: string; content: Array<{ text: string }>; display: boolean }
@@ -190,10 +215,74 @@ describe("runRecall", () => {
 		expect(msg.content[0].text).toContain("[User memory — recalled from previous sessions]")
 		expect(rig.deliveredFacts).toContain("a durable preference")
 		expect(rig.deliveredKeys.size).toBe(1)
-		expect(rig.emitted).toHaveLength(1)
-		expect(rig.emitted[0].trigger).toBe("user-turn")
-		expect((rig.emitted[0].hits as Array<{ text: string }>)[0].text).toBe("a durable preference")
-		expect(rig.emitted[0].injected).toEqual(["a durable preference"])
+		expect(rig.emitted).toHaveLength(2)
+		expect(rig.emitted[0]).toMatchObject({
+			trigger: "user-turn",
+			selected: ["a durable preference"],
+			injected: [],
+			steered: false,
+			conclusion: "selected",
+		})
+		expect(rig.emitted[1]).toMatchObject({
+			trigger: "user-turn",
+			injected: ["a durable preference"],
+			steered: true,
+			conclusion: "steered",
+		})
+		expect(rig.emitted[0].recall_id).toBe(rig.emitted[1].recall_id)
+		expect(rig.emitted[0].selectedIds).toEqual(["fact-1"])
+		expect(rig.emitted[1].injectedIds).toEqual(["fact-1"])
+	})
+
+	it("does not send if delivery permission is lost after selection", async () => {
+		const rig = makeRig()
+		const deadline = new RecallDeadline({
+			scheduledStep: "user-turn",
+			generation: 1,
+			timeoutMs: 1_000,
+			id: "permission-lost",
+		})
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				deadline,
+				search: async () => [hit("a durable preference")],
+				emit: (partial) => {
+					rig.emitted.push(partial)
+					if (partial.selected) deadline.cancel("droppedStale")
+				},
+			}),
+		)
+		expect(outcome).toBe("droppedStale")
+		expect(rig.sent).toHaveLength(0)
+		expect(rig.deliveredFacts).toEqual([])
+		deadline.dispose()
+	})
+
+	it("records a steer accepted before the delivery-notification cancellation", async () => {
+		const rig = makeRig()
+		const deadline = new RecallDeadline({
+			scheduledStep: "user-turn",
+			generation: 1,
+			timeoutMs: 1_000,
+			id: "accepted-send",
+		})
+		const pi = { sendMessage: () => deadline.cancel("droppedStale") } as unknown as ExtensionAPI
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				deadline,
+				pi,
+				search: async () => [{ ...hit("a durable preference"), id: "fact-1" }],
+			}),
+		)
+		expect(outcome).toBe("injected")
+		expect(rig.deliveredFacts).toEqual(["a durable preference"])
+		expect(deadline.status).toBe("steered")
+		expect(rig.emitted.at(-1)).toMatchObject({
+			recall_id: "accepted-send",
+			conclusion: "steered",
+			injectedIds: ["fact-1"],
+		})
+		deadline.dispose()
 	})
 
 	it("a second recall with only already-delivered facts returns no-hits (cross-path dedupe)", async () => {
@@ -207,6 +296,92 @@ describe("runRecall", () => {
 		expect(rig.sent).toHaveLength(1) // only the first
 		expect(rig.emitted[0].trigger).toBe("step-budget")
 		expect(rig.emitted[0].injected).toEqual([])
+	})
+
+	it("a send failure has a selected trace but no delivery or ledger mutation", async () => {
+		const rig = makeRig()
+		const pi = {
+			sendMessage: () => {
+				throw new Error("replaced session")
+			},
+		} as unknown as ExtensionAPI
+		const outcome = await runRecall(baseArgs(rig, { pi, search: async () => [hit("a durable preference")] }))
+		expect(outcome).toBe("failed")
+		expect(rig.emitted[0]).toMatchObject({ conclusion: "selected", injected: [], steered: false })
+		expect(rig.emitted.at(-1)).toMatchObject({
+			conclusion: "unreachable",
+			injected: [],
+			steered: false,
+			error: "replaced session",
+		})
+		expect(rig.deliveredFacts).toEqual([])
+		expect(rig.deliveredKeys.size).toBe(0)
+	})
+
+	it("a stale generation cancels before search and never mutates delivery state", async () => {
+		const rig = makeRig()
+		const deadline = new RecallDeadline({ scheduledStep: "user-turn", generation: 1, timeoutMs: 100 })
+		deadline.cancel("droppedStale")
+		const searched = vi.fn(async () => [hit("late fact")])
+		const outcome = await runRecall(baseArgs(rig, { deadline, search: searched }))
+		expect(outcome).toBe("droppedStale")
+		expect(searched).not.toHaveBeenCalled()
+		expect(rig.emitted.at(-1)).toMatchObject({
+			recall_id: deadline.id,
+			generation: 1,
+			conclusion: "droppedStale",
+			injected: [],
+		})
+		expect(rig.deliveredFacts).toEqual([])
+		deadline.dispose()
+	})
+
+	it("a timeout aborts the request and emits timed-out, not no-hits or injected", async () => {
+		const rig = makeRig()
+		const deadline = new RecallDeadline({ scheduledStep: "user-turn", generation: 1, timeoutMs: 0 })
+		const outcome = await runRecall(
+			baseArgs(rig, {
+				deadline,
+				search: (_query) =>
+					new Promise((_resolve, reject) => {
+						deadline.signal.addEventListener("abort", () => reject(deadline.signal.reason), { once: true })
+					}),
+			}),
+		)
+		expect(outcome).toBe("timed-out")
+		expect(rig.emitted.at(-1)).toMatchObject({ conclusion: "timed-out", injected: [], steered: false })
+		expect(rig.deliveredFacts).toEqual([])
+		deadline.dispose()
+	})
+
+	it("bounds even a search implementation that ignores AbortSignal", async () => {
+		const rig = makeRig()
+		const deadline = new RecallDeadline({ scheduledStep: "user-turn", generation: 1, timeoutMs: 0 })
+		const outcome = await runRecall(baseArgs(rig, { deadline, search: () => new Promise(() => {}) }))
+		expect(outcome).toBe("timed-out")
+		expect(rig.emitted.at(-1)).toMatchObject({ conclusion: "timed-out", injected: [], steered: false })
+		deadline.dispose()
+	})
+
+	it("a provider rejection after cancellation is cancelled, not a permanent recall failure", async () => {
+		const rig = makeRig()
+		const deadline = new RecallDeadline({ scheduledStep: "user-turn", generation: 1, timeoutMs: 100 })
+		let rejectRequest: ((error: Error) => void) | undefined
+		const pending = runRecall(
+			baseArgs(rig, {
+				deadline,
+				search: () =>
+					new Promise((_resolve, reject) => {
+						rejectRequest = reject
+					}),
+			}),
+		)
+		deadline.cancel("cancelled")
+		rejectRequest?.(new Error("provider closed the request"))
+		await expect(pending).resolves.toBe("cancelled")
+		expect(rig.emitted.at(-1)).toMatchObject({ conclusion: "cancelled", injected: [], steered: false })
+		expect(rig.deliveredFacts).toEqual([])
+		deadline.dispose()
 	})
 })
 
@@ -259,13 +434,22 @@ describe("buildLoopRecallQuery", () => {
 		expect(query.length).toBeLessThanOrEqual(2000)
 	})
 
-	it("recent turn texts land as facets after the receipts, bounded per facet", () => {
+	it("keeps only the newest distinct context facet after the evidence", () => {
 		const facets = buildLoopRecallQueries(
 			"aim: plan",
 			["state: room A"],
 			["user said follow the wall", "previous note: door is stuck"],
 		)
-		expect(facets).toEqual(["aim: plan", "state: room A", "user said follow the wall", "previous note: door is stuck"])
+		expect(facets).toEqual(["aim: plan", "state: room A", "previous note: door is stuck"])
+	})
+
+	it("bounds a large mixed need to at most three facets", () => {
+		const facets = buildLoopRecallQueries(
+			"decide the next action",
+			["old state", "new state"],
+			["one old turn", "the newest need"],
+		)
+		expect(facets).toEqual(["decide the next action", "new state", "the newest need"])
 	})
 
 	it("turn texts slice to the per-facet char budget", () => {

@@ -73,7 +73,7 @@ export const MEMORY_DRAIN_CONCURRENCY = 6
  * into minutes of idle HTTP. Bounded; no LLM involved, just embedder +
  * sqlite. Override: KIMCHI_MEMORY_DRAIN_COMMIT_CONCURRENCY.
  */
-export const MEMORY_DRAIN_COMMIT_CONCURRENCY = 4
+export const MEMORY_DRAIN_COMMIT_CONCURRENCY = 1
 
 /**
  * Jobs per drain wave (phase A claim pass). A monolithic wave's
@@ -301,7 +301,7 @@ export const MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS = 500
 export const MEMORY_CAPTURE_TOOL_RESULT_TAIL_CHARS = 200
 
 /** Default max NEW facts per progressive turn recall (per re-evaluation); env override. */
-export const TURN_RECALL_MAX_FACTS = 5
+export const TURN_RECALL_MAX_FACTS = 3
 export function turnRecallMaxFacts(env: NodeJS.ProcessEnv = process.env): number {
 	const raw = Number.parseInt(env.KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS ?? "", 10)
 	return Number.isFinite(raw) && raw > 0 ? raw : TURN_RECALL_MAX_FACTS
@@ -350,6 +350,11 @@ export const MEMORY_SEARCH_TIMEOUT_MS = 10_000
  */
 export const MEMORY_PRE_REQUEST_TIMEOUT_MS = 2_000
 
+/** One total mid-loop retrieval budget and the cooldown after meaningful
+ * need changes; unlike the old serial facet chain, no 70-second queue. */
+export const MEMORY_LOOP_RECALL_TIMEOUT_MS = 5_000
+export const MEMORY_LOOP_RECALL_CHANGED_COOLDOWN_MS = 1_000
+
 /**
  * Tag marking a captured fact as a prior DERIVATION (an interpretation,
  * judgment call, aggregation choice) rather than an external observation.
@@ -369,6 +374,10 @@ export const EXTRACTION_DERIVED_TAG = "[derived]"
  * its own per-attempt timeout.
  */
 export const MEMORY_REQUEST_TIMEOUT_MS = 60_000
+
+/** Sustained d3 outage threshold before new extraction pauses instead of
+ * falling open indefinitely. Shorter failures retain existing behavior. */
+export const DECISION_OUTAGE_PAUSE_MS = 120_000
 
 /** Gate condition A: skip retrieval when this fraction of the recent
  * conversation's content words are already covered by delivered facts. */

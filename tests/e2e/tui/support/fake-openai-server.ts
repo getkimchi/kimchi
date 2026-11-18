@@ -127,6 +127,8 @@ interface StartFakeOpenAiServerOptions {
 	refreshedOAuthAccessToken?: string
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	/** Opt in to deterministic local embeddings for memory-edit tests. */
+	enableMemoryEmbeddings?: boolean
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
 	/** Org policy served on the platform endpoints the harness queries at startup
@@ -267,6 +269,16 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 						...(model.description ? { description: model.description } : {}),
 						...model.metadata,
 					})),
+				})
+				return
+			}
+
+			if (options.enableMemoryEmbeddings === true && req.method === "POST" && req.url?.endsWith("/embeddings")) {
+				writeJson(res, 200, {
+					object: "list",
+					data: [{ object: "embedding", embedding: [1, ...Array.from({ length: 1023 }, () => 0)], index: 0 }],
+					model: "fake-embedding",
+					usage: { prompt_tokens: 1, total_tokens: 1 },
 				})
 				return
 			}

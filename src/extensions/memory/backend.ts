@@ -23,7 +23,9 @@ import {
 } from "../../auth/gateway-credentials.js"
 import { type KimchiConfig, loadConfig } from "../../config.js"
 import { defaultMemoryDir, MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
+import { mergeRecallSignal } from "./deadline.js"
 import type { SharedEmbedder } from "./embedder.js"
+import { type MemoryMetadata, readMemoryMetadata } from "./metadata.js"
 import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 
 /**
@@ -43,6 +45,7 @@ export interface Mem0SearchHit {
 	id: string
 	memory: string
 	score?: number
+	metadata?: MemoryMetadata
 }
 
 /**
@@ -57,11 +60,19 @@ export function normalizeMem0SearchResults(raw: unknown): Mem0SearchHit[] {
 		id?: string
 		memory?: string
 		score?: number
+		metadata?: unknown
 	}>
-	return list.filter(
-		(r): r is { id: string; memory: string; score?: number } =>
-			typeof r.id === "string" && typeof r.memory === "string",
-	)
+	return list
+		.filter(
+			(r): r is { id: string; memory: string; score?: number; metadata?: unknown } =>
+				typeof r.id === "string" && typeof r.memory === "string",
+		)
+		.map((r) => ({
+			id: r.id,
+			memory: r.memory,
+			...(r.score !== undefined ? { score: r.score } : {}),
+			...(r.metadata !== undefined ? { metadata: readMemoryMetadata(r.metadata, r.memory) } : {}),
+		}))
 }
 
 /**
@@ -129,6 +140,7 @@ async function fetchAvailableModelIds(
 	}
 }
 
+import { elapsedRequestMs, requestCancellationMetadata } from "./timing.js"
 import { recordUsage } from "./usage-ledger.js"
 
 export const MEMORY_EMBEDDING_TAG = "memory:embedding"
@@ -171,7 +183,9 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 		const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input?.url ?? "")
 		const state = gatewayInterceptorState
 		if (!state.origin || requestOrigin(url) !== state.origin) return original(input, init)
-		let signal = init?.signal
+		const startedAt = performance.now()
+		const providedSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
+		let signal = mergeRecallSignal(providedSignal)
 		// Headers: only the SSO org routing value, only when missing — a
 		// models.json-stamped provider request keeps its own (identical) value.
 		let headers: Headers | undefined
@@ -192,30 +206,39 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 			// minutes — long past any external driver abort point. Scope
 			// the bound to embedding requests only: gateway session LLM traffic
 			// on the same origin needs its longer stream budgets.
-			signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(MEMORY_REQUEST_TIMEOUT_MS)])
+			signal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(MEMORY_REQUEST_TIMEOUT_MS)])
 		}
 		if (url.includes("/embeddings") && init?.body) {
+			let body: (Record<string, unknown> & { tags?: string[] }) | undefined
 			try {
-				const body = JSON.parse(String(init.body)) as Record<string, unknown> & { tags?: string[] }
+				body = JSON.parse(String(init.body)) as Record<string, unknown> & { tags?: string[] }
+			} catch {
+				// Not a JSON body — use the original payload below.
+			}
+			if (body) {
 				const tags = Array.isArray(body.tags) ? [...body.tags] : []
 				if (!tags.includes(MEMORY_EMBEDDING_TAG)) tags.push(MEMORY_EMBEDDING_TAG)
 				if (typeof body.model === "string") embeddingModel = body.model
 				const taggedBody = JSON.stringify({ ...body, tags })
-				return recordEmbeddingUsage(
-					url,
-					embeddingModel,
-					await (headers
+				try {
+					const response = await (headers
 						? original(input, { ...init, headers, body: taggedBody, signal })
-						: original(input, { ...init, body: taggedBody, signal })),
-				)
-			} catch {
-				// Not a JSON body — pass through untouched
+						: original(input, { ...init, body: taggedBody, signal }))
+					return recordEmbeddingUsage(url, embeddingModel, response, elapsedRequestMs(startedAt))
+				} catch (error) {
+					logEmbeddingNetworkError(embeddingModel, error, startedAt)
+				}
 			}
 		}
-		const response = await (headers
-			? original(input, { ...init, headers, signal })
-			: original(input, { ...init, signal }))
-		return recordEmbeddingUsage(url, embeddingModel, response)
+		try {
+			const response = await (headers
+				? original(input, { ...init, headers, signal })
+				: original(input, { ...init, signal }))
+			return recordEmbeddingUsage(url, embeddingModel, response, elapsedRequestMs(startedAt))
+		} catch (error) {
+			if (url.includes("/embeddings")) logEmbeddingNetworkError(embeddingModel, error, startedAt)
+			throw error
+		}
 	}
 	intercepted._memoryGatewayIntercepted = true
 	globalThis.fetch = intercepted
@@ -237,10 +260,15 @@ export { defaultMemoryDir, memoryDbPath } from "./config.js"
  * the clone is read asynchronously so the interceptor never blocks the
  * embedding on ledger I/O. Fail-soft by contract (see usage-ledger.ts):
  * recording must never break an embedding. */
-function recordEmbeddingUsage(url: string, model: string | undefined, response: Response): Response {
+function recordEmbeddingUsage(
+	url: string,
+	model: string | undefined,
+	response: Response,
+	durationMs: number,
+): Response {
 	if (!url.includes("/embeddings")) return response
 	if (!response.ok) {
-		recordUsage({ kind: "embedding", model, failed: true })
+		recordUsage({ kind: "embedding", model, failed: true, durationMs })
 		return response
 	}
 	response
@@ -248,13 +276,23 @@ function recordEmbeddingUsage(url: string, model: string | undefined, response: 
 		.json()
 		.then((parsed) => {
 			const usage = parsed as { usage?: { prompt_tokens?: number; total_tokens?: number } }
-			recordUsage({ kind: "embedding", model, inputTokens: usage.usage?.prompt_tokens })
+			recordUsage({ kind: "embedding", model, inputTokens: usage.usage?.prompt_tokens, durationMs })
 		})
 		.catch(() => {
 			// Non-JSON or unreadable clone — nothing to record; the original
 			// response is returned intact either way.
 		})
 	return response
+}
+
+function logEmbeddingNetworkError(model: string | undefined, error: unknown, startedAt: number): void {
+	recordUsage({
+		kind: "embedding",
+		model,
+		failed: true,
+		durationMs: elapsedRequestMs(startedAt),
+		...requestCancellationMetadata(error),
+	})
 }
 
 /**

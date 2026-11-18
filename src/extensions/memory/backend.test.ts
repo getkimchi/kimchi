@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -15,12 +15,14 @@ import {
 	MEMORY_EMBEDDING_DIMS,
 	MEMORY_EMBEDDING_MODEL,
 	memoryDbPath,
+	normalizeMem0SearchResults,
 	projectDbPath,
 	resolveExtractionModel,
 	skipTelemetryIdWrite,
 	tagEmbeddingRequests,
 } from "./backend.js"
 import { MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
+import { RecallDeadline, withRecallDeadline } from "./deadline.js"
 import type { SharedEmbedder } from "./embedder.js"
 import { usageLedgerPath } from "./usage-ledger.js"
 
@@ -45,6 +47,32 @@ function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 		...overrides,
 	}
 }
+
+describe("memory search result lifecycle metadata", () => {
+	it("preserves valid metadata and validates untrusted payloads", () => {
+		const [row] = normalizeMem0SearchResults({
+			results: [
+				{
+					id: "h1",
+					memory: "a probable adapter mismatch",
+					score: 0.6,
+					metadata: { kind: "hypothesis", confidence: 0.4 },
+				},
+			],
+		})
+		expect(row).toMatchObject({
+			id: "h1",
+			memory: "a probable adapter mismatch",
+			metadata: { kind: "hypothesis", confidence: 0.4, derived: true, canonical: false },
+		})
+		const [legacy] = normalizeMem0SearchResults([{ id: "legacy", memory: "an old fact" }])
+		expect(legacy).toEqual({ id: "legacy", memory: "an old fact" })
+		const [unknown] = normalizeMem0SearchResults([
+			{ id: "unknown", memory: "an old fact", metadata: { kind: "whatever" } },
+		])
+		expect(unknown?.metadata?.kind).toBe("unclassified")
+	})
+})
 
 describe("buildMemoryConfig", () => {
 	it("wires the gateway endpoints by default", () => {
@@ -413,6 +441,33 @@ describe("createMemoryBackend", () => {
 			}
 		})
 
+		it("cancels only its own request-scoped recall signal", async () => {
+			const originalFetch = globalThis.fetch
+			const seen: RequestInit[] = []
+			globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				seen.push(init ?? {})
+				return new Response("{}", { status: 200 })
+			})
+			const own = new RecallDeadline({ scheduledStep: "own", generation: 1, timeoutMs: 100 })
+			const peer = new RecallDeadline({ scheduledStep: "peer", generation: 2, timeoutMs: 100 })
+			try {
+				tagEmbeddingRequests("https://gw.test/scoped/v1")
+				const request = (deadline: RecallDeadline): Promise<Response> =>
+					withRecallDeadline(deadline, () =>
+						globalThis.fetch("https://gw.test/scoped/v1/embeddings", { method: "POST", body: "{}" }),
+					)
+				await request(own)
+				await request(peer)
+				own.cancel("droppedStale")
+				expect(seen[0]?.signal?.aborted).toBe(true)
+				expect(seen[1]?.signal?.aborted).toBe(false)
+			} finally {
+				own.dispose()
+				peer.dispose()
+				globalThis.fetch = originalFetch
+			}
+		})
+
 		it("gateway /embeddings gets the merged signal even with no caller signal; non-embeddings keeps init untouched", async () => {
 			const originalFetch = globalThis.fetch
 			const seen: Array<{ url: string; init: RequestInit | undefined }> = []
@@ -467,6 +522,39 @@ describe("createMemoryBackend", () => {
 			const row = JSON.parse(lines[lines.length - 1] ?? "") as Record<string, unknown>
 			expect(row).toMatchObject({ kind: "embedding", model: "bge-m3", inputTokens: 7 })
 		})
+	})
+})
+
+describe("embedding request timing", () => {
+	it("exposes the current duplicate embedding fallback while preserving its original rejection", async () => {
+		const originalFetch = globalThis.fetch
+		let requests = 0
+		const error = new Error("connection closed")
+		globalThis.fetch = vi.fn(async () => {
+			requests += 1
+			throw error
+		})
+		const path = usageLedgerPath()
+		const before = (existsSync(path) ? readFileSync(path, "utf-8") : "").split("\n").filter((line) => line.length > 0)
+		try {
+			tagEmbeddingRequests("https://gw.test/v1")
+			await expect(
+				globalThis.fetch("https://gw.test/v1/embeddings", {
+					method: "POST",
+					headers: { authorization: "Bearer k" },
+					body: JSON.stringify({ model: "bge-m3", input: ["text"] }),
+				}),
+			).rejects.toBe(error)
+		} finally {
+			globalThis.fetch = originalFetch
+		}
+		expect(requests).toBe(2)
+		const rows = readFileSync(path, "utf-8")
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as { failed?: boolean; durationMs?: number })
+		expect(rows).toHaveLength(before.length + 2)
+		for (const row of rows.slice(-2)) expect(row).toMatchObject({ failed: true, durationMs: expect.any(Number) })
 	})
 })
 

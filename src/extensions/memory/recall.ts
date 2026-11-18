@@ -16,9 +16,36 @@ import {
 	MEMORY_STEP_QUERY_MAX_CHARS,
 	MEMORY_STEP_REASONING_HEAD_CHARS,
 } from "./config.js"
+import {
+	awaitRecallDeadline,
+	type RecallCancellationReason,
+	RecallDeadline,
+	recallCancellationReason,
+	withRecallDeadline,
+} from "./deadline.js"
 import { buildTurnRecall, factKey, isCovered, type MemorySearchHit } from "./inject.js"
+import { createRecallNeed, type RecallNeed, recallNeedFacets } from "./recall-need.js"
 
-export type RecallOutcome = "injected" | "covered" | "gate-skip" | "no-hits" | "no-searcher" | "failed"
+export type RecallOutcome =
+	| "injected"
+	| "covered"
+	| "gate-skip"
+	| "no-hits"
+	| "no-searcher"
+	| "failed"
+	| "cancelled"
+	| "timed-out"
+	| "droppedStale"
+
+export function selectedFactIds(
+	hits: readonly { id?: string; memory?: string }[],
+	selected: readonly string[],
+): string[] {
+	const bodies = new Set(selected)
+	return [
+		...new Set(hits.flatMap((hit) => (typeof hit.id === "string" && bodies.has(hit.memory ?? "") ? [hit.id] : []))),
+	]
+}
 
 export interface RecallRunArgs {
 	/** What fired this evaluation: "user-turn" | "step-budget" | "state-revisit" | "step-budget-turnend" (fallback). */
@@ -50,7 +77,33 @@ export interface RecallRunArgs {
 	deliveredFacts: string[]
 	deliveredKeys: Set<string>
 	/** Trace emitter: runRecall stamps trigger plus gate/hits/injected/composition/duration; the caller stamps kind/query. */
-	emit: (partial: Record<string, unknown>) => void
+	emit: (partial: Record<string, unknown>) => void | Promise<void>
+	/** Created and owned by the session scheduler. Tests without a deadline
+	 * retain the same 10s bounded behavior through a local fallback. */
+	deadline?: RecallDeadline
+}
+
+async function finishRecallFailure(
+	args: RecallRunArgs,
+	deadline: RecallDeadline,
+	err: unknown,
+	startedAt: number,
+	failureReason?: RecallCancellationReason,
+): Promise<RecallOutcome> {
+	const reason =
+		failureReason ??
+		recallCancellationReason(err) ??
+		(err === deadline.signal.reason ? (deadline.cancellationReason ?? "cancelled") : undefined)
+	await args.emit({
+		trigger: args.trigger,
+		error: err instanceof Error ? err.message : String(err),
+		injected: [],
+		steered: false,
+		...deadline.trace(),
+		conclusion: reason ? deadline.conclusion : "unreachable",
+		durationMs: Date.now() - startedAt,
+	})
+	return reason ?? "failed"
 }
 
 const RECALL_STEER_PREFIX =
@@ -63,8 +116,24 @@ const RECALL_STEER_PREFIX =
  * outcome instead of duplicating the classification.
  */
 export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
+	const ownDeadline = args.deadline
+		? undefined
+		: new RecallDeadline({ scheduledStep: args.trigger, generation: 0, timeoutMs: 10_000 })
+	const deadline = args.deadline ?? (ownDeadline as RecallDeadline)
+	try {
+		return await withRecallDeadline(deadline, () => runRecallAttempt(args, deadline))
+	} catch (err) {
+		return finishRecallFailure(args, deadline, err, deadline.createdAt, deadline.cancellationReason)
+	} finally {
+		ownDeadline?.dispose()
+	}
+}
+
+async function runRecallAttempt(args: RecallRunArgs, deadline: RecallDeadline): Promise<RecallOutcome> {
 	const { trigger, query, queries, pi, search, decideGate, deliveredFacts, deliveredKeys, emit, ctx } = args
 	void ctx // kept in the signature: triggered callers wrap `search` with the indicator themselves
+	const startedAt = Date.now()
+	deadline.assertActive()
 	if (isCovered(query, deliveredFacts)) {
 		console.info("[memory] recall skipped: conversation covered by delivered facts")
 		return "covered"
@@ -74,16 +143,24 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 		try {
 			skip = await decideGate()
 		} catch (err) {
-			// Gate failure keeps the pre-gate behavior — search anyway.
-			console.error(`[memory] recall gating failed, searching anyway:`, err instanceof Error ? err.message : err)
+			if (deadline.signal.aborted) throw err
+			// A gate failure keeps pre-gate behavior within the OWNING deadline.
+			const failure = recallCancellationReason(err) === "timed-out" ? "timed out" : "failed"
+			console.error(`[memory] recall gating ${failure}, searching anyway:`, err instanceof Error ? err.message : err)
 		}
 	}
 	if (skip) {
 		console.info("[memory] recall skipped: decision gate judged no archive value")
-		emit({ trigger, gate: { lookup: "skip" }, hits: [], injected: [] })
+		await emit({
+			trigger,
+			gate: { lookup: "skip" },
+			hits: [],
+			injected: [],
+			...deadline.trace(),
+			conclusion: "gate-skip",
+		})
 		return "gate-skip"
 	}
-	const startedAt = Date.now()
 	// Multi-facet retrieval: one search per facet, union merged by text with
 	// the best score winning. A null result from ANY facet keeps the old
 	// traced-empty-hits contract; undefined from any facet = no backend →
@@ -94,34 +171,34 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 	const facetBreakdown: Array<{ text: string; hits: number }> = []
 	let hits: MemorySearchHit[] | null | undefined
 	try {
-		if (facets.length === 1) {
-			hits = await search(facets[0])
-		} else {
-			// Sequential, not fan-out: the caller's wrapped search carries the
-			// UI indicator + per-search timeout, the backend queues its own
-			// embeds anyway, and partial facets stay cheap (≤3). A null from
-			// any facet keeps the traced-empty-hits contract; undefined from
-			// any facet = no backend → silent skip overall.
+		const results = await Promise.all(
+			facets.map(async (facet) => {
+				deadline.assertActive()
+				const result = await awaitRecallDeadline(
+					Promise.resolve().then(() => search(facet)),
+					deadline,
+				)
+				deadline.assertActive()
+				return result
+			}),
+		)
+		if (results.some((result) => result === undefined)) hits = undefined
+		else {
 			const merged = new Map<string, MemorySearchHit>()
-			let emptyBackend = false
-			for (const q of facets) {
-				const sub = await search(q)
-				if (sub === undefined) {
-					emptyBackend = true
-					break
-				}
-				facetBreakdown.push({ text: q, hits: (sub ?? []).length })
-				for (const h of sub ?? []) {
+			for (const [i, result] of results.entries()) {
+				facetBreakdown.push({ text: facets[i] as string, hits: (result ?? []).length })
+				for (const h of result ?? []) {
 					const text = h.memory ?? ""
 					const prior = merged.get(text)
 					if (!prior || (h.score ?? 0) > (prior.score ?? 0)) merged.set(text, h)
 				}
 			}
-			hits = emptyBackend ? undefined : [...merged.values()]
+			hits = [...merged.values()]
 		}
 	} catch (err) {
-		emit({ trigger, error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - startedAt })
-		return "failed"
+		const failureReason = deadline.cancellationReason
+		deadline.cancel()
+		return finishRecallFailure(args, deadline, err, startedAt, failureReason)
 	}
 	if (hits === undefined) return "no-searcher"
 	const list = hits ?? []
@@ -131,15 +208,32 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 	// agent event.
 	let recall: ReturnType<typeof buildTurnRecall>
 	try {
-		// Delivery re-check for the detached path: a mid-flight toggle-off
-		// suppresses the steer AND the ledger mutation (#1701 contract).
-		const deliverable = args.mayDeliver ? args.mayDeliver() : true
-		recall = list.length > 0 && deliverable ? buildTurnRecall(list, deliveredKeys, query) : undefined
+		deadline.assertActive()
+		if (args.mayDeliver && !args.mayDeliver()) deadline.cancel("droppedStale")
+		deadline.assertActive()
+		recall = list.length > 0 ? buildTurnRecall(list, deliveredKeys, query) : undefined
+		const base = {
+			trigger,
+			...(facetBreakdown.length > 1 ? { facets: facetBreakdown } : {}),
+			hits: list.map((h) => ({ factId: h.id, text: h.memory, score: h.score })),
+			composition: recall?.composition,
+			durationMs: Date.now() - startedAt,
+		}
 		if (recall) {
-			for (const fact of recall.facts) {
-				deliveredKeys.add(factKey(fact))
-				deliveredFacts.push(fact)
-			}
+			deadline.markDelivered("selected")
+			// Selection is honestly visible, but never aliases delivery.
+			await emit({
+				...base,
+				...deadline.trace(),
+				selected: recall.facts,
+				selectedIds: selectedFactIds(list, recall.facts),
+				injected: [],
+				steered: false,
+			})
+			// A throw here leaves NO delivered-ledger mutation; "selected" must
+			// not be mistaken for a steer by status lines or net-usefulness data.
+			if (args.mayDeliver && !args.mayDeliver()) deadline.cancel("droppedStale")
+			deadline.assertActive()
 			pi.sendMessage(
 				{
 					customType: "memory-recall",
@@ -148,21 +242,29 @@ export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
 				},
 				{ deliverAs: "steer", triggerTurn: false },
 			)
+			// sendMessage accepted the payload; a later cancellation cannot
+			// retroactively remove it from the delivery ledger or trace.
+			deadline.recordAcceptedDelivery("steered")
+			for (const fact of recall.facts) {
+				deliveredKeys.add(factKey(fact))
+				deliveredFacts.push(fact)
+			}
 			console.info(`[memory] recall delivered: ${JSON.stringify(recall.composition)}`)
-		} else if (list.length > 0) {
-			console.info("[memory] recall: nothing new cleared the bar")
+			await emit({
+				...base,
+				...deadline.trace(),
+				injected: recall.facts,
+				injectedIds: selectedFactIds(list, recall.facts),
+				steered: true,
+			})
+		} else {
+			if (list.length > 0) console.info("[memory] recall: nothing new cleared the bar")
+			await emit({ ...base, ...deadline.trace(), injected: [], steered: false, selected: [], conclusion: "no-hits" })
 		}
-		emit({
-			trigger,
-			...(facetBreakdown.length > 1 ? { facets: facetBreakdown } : {}),
-			hits: list.map((h) => ({ text: h.memory, score: h.score })),
-			injected: recall?.facts ?? [],
-			composition: recall?.composition,
-			durationMs: Date.now() - startedAt,
-		})
 	} catch (err) {
-		emit({ trigger, error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - startedAt })
-		return "failed"
+		const failureReason = deadline.cancellationReason
+		deadline.cancel()
+		return finishRecallFailure(args, deadline, err, startedAt, failureReason)
 	}
 	return recall ? "injected" : "no-hits"
 }
@@ -180,30 +282,39 @@ const spliceReceipt = (t: string): string => {
 	return `${t.slice(0, headBudget)}\n…\n${t.slice(-tailBudget)}`
 }
 
-/** Per-aspect facet queries: [reasoning head?, receipt-1, receipt-2,
- * recent message texts…] — each bounded, each a clean embedding topic
- * (the plan voice vs. each visible state vs. the recent conversation
- * turns). Recent turn texts land AFTER receipts: they are context, not
- * the trigger's own evidence, and the blended cap trims from the tail.
- * Facets dedupe by exact trimmed text (a reasoning head copied from its
- * own message text never embeds twice). */
+/** A structured objective, latest observable evidence, and optionally one
+ * distinct recent need — never six unbounded turns of context queued one
+ * after another. Empty signals produce no fallback-topic search. */
+export function buildLoopRecallNeed(
+	reasoningText: string,
+	envReceipts: readonly string[],
+	recentTurns: readonly string[] = [],
+): RecallNeed {
+	return createRecallNeed({
+		objective: reasoningText.slice(0, MEMORY_STEP_REASONING_HEAD_CHARS),
+		evidence: envReceipts
+			.filter((t) => t.length > 0)
+			.slice(-2)
+			.map(spliceReceipt),
+		recentContext: recentTurns.at(-1)?.slice(0, MEMORY_LOOP_CONTEXT_TURN_CHARS),
+	})
+}
+
+export function hasLoopRecallSignals(
+	reasoningText: string,
+	envReceipts: readonly string[],
+	recentTurns: readonly string[],
+): boolean {
+	return Boolean(reasoningText.trim() || envReceipts.some((t) => t.trim()) || recentTurns.some((t) => t.trim()))
+}
+
 export function buildLoopRecallQueries(
 	reasoningText: string,
 	envReceipts: readonly string[],
 	recentTurns: readonly string[] = [],
 ): string[] {
-	const facets: string[] = []
-	const head = reasoningText.slice(0, MEMORY_STEP_REASONING_HEAD_CHARS).trim()
-	if (head) facets.push(head)
-	for (const t of envReceipts.filter((t) => t.length > 0).slice(-2)) {
-		const sliced = spliceReceipt(t).trim()
-		if (sliced && !facets.includes(sliced)) facets.push(sliced)
-	}
-	for (const t of recentTurns) {
-		const sliced = t.slice(0, MEMORY_LOOP_CONTEXT_TURN_CHARS).trim()
-		if (sliced && !facets.includes(sliced)) facets.push(sliced)
-	}
-	return facets
+	if (!hasLoopRecallSignals(reasoningText, envReceipts, recentTurns)) return []
+	return recallNeedFacets(buildLoopRecallNeed(reasoningText, envReceipts, recentTurns))
 }
 
 /** Blended form for coverage checks, gates, and the trace — same spans. */

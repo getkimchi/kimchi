@@ -1,6 +1,6 @@
 /**
  * `kimchi memory ...` — user-facing memory management (overview, list,
- * search, delete, reset). A thin shell over the shared admin core
+ * search, delete, reset, consolidate, maintain, explain, edit, dashboard). A thin shell over the shared admin core
  * (src/extensions/memory/admin.ts); the in-session /memory command uses
  * the same core. Deletion is user-only by design — the model never gets a
  * write tool (docs/memory-extension.md). enable/disable surface the core's

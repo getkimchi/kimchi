@@ -18,15 +18,23 @@ import {
 	GATE_MIN_COVERAGE,
 	TURN_RECALL_HARD_FACTS_CAP,
 	TURN_RECALL_MAX_FACT_CHARS,
+	TURN_RECALL_MAX_FACTS,
 	TURN_RECALL_SCORE_TIE_EPSILON,
 	tokensEstimated,
 	turnRecallMaxFacts,
 } from "./config.js"
+import { contentWords, selectDiverseFacts } from "./diversity.js"
 import { factClassesEnabled, staleAwareDigestEnabled } from "./flags.js"
+import { type MemoryMetadata, memoryEvidencePrefix } from "./metadata.js"
+
+export { contentWords } from "./diversity.js"
 
 export interface MemorySearchHit {
+	/** Stable fact ID carried into recall evidence without changing memory text. */
+	id?: string
 	memory?: string
 	score?: number
+	metadata?: MemoryMetadata
 }
 
 export interface DigestCandidate {
@@ -61,20 +69,18 @@ export interface DigestResult {
 interface Candidate {
 	text: string
 	score: number
+	metadata?: MemoryMetadata
 }
 
 function collectCandidates(hits: MemorySearchHit[]): Candidate[] {
-	// Deduplicate identical texts — a store duplicate (from a raced or
-	// crashed capture) must not occupy two digest slots. The highest score
-	// per text wins; Map insertion order keeps equal-score sorts stable.
-	const byText = new Map<string, number>()
-	for (const hit of hits) {
-		const text = (hit.memory ?? "").trim()
-		if (!text) continue
-		const score = hit.score ?? 0
-		byText.set(text, Math.max(byText.get(text) ?? 0, score))
-	}
-	return [...byText.entries()].map(([text, score]) => ({ text, score })).sort((a, b) => b.score - a.score)
+	// Exact and near paraphrases share one slot before d3 sees the candidates.
+	// The references contain provenance fields here; keep text/score aligned
+	// through the same semantic cluster pass on both ends of the selector.
+	return selectDiverseFacts(hits).map((hit) => ({
+		text: hit.memory as string,
+		score: hit.score ?? 0,
+		...(hit.metadata ? { metadata: hit.metadata } : {}),
+	}))
 }
 
 /**
@@ -159,14 +165,17 @@ export function buildMemoryDigest(hits: MemorySearchHit[], selected?: ReadonlySe
 	const candidates = collectCandidates(hits)
 	composition.considered = candidates.length
 
-	const kept = gateCandidates(candidates, composition, DIGEST_MAX_FACTS, selected)
+	const gated = gateCandidates(candidates, composition, DIGEST_MAX_FACTS, selected)
+	// Independent d3 item decisions cannot reintroduce a paraphrase cluster.
+	const approved = new Set(gated.map((candidate) => candidate.text))
+	const kept = selected ? candidates.filter((candidate) => approved.has(candidate.text)) : gated
 
 	if (kept.length === 0) return undefined
 
 	// Enforce the token budget over the whole section, dropping the
 	// lowest-scored facts first (they are at the tail).
 	for (;;) {
-		const text = renderFactClasses(kept.map((c) => `- ${c.text}`).join("\n"))
+		const text = renderFactClasses(kept.map((c) => `- ${memoryEvidencePrefix(c.text, c.metadata)}${c.text}`).join("\n"))
 		const section = digestSection(text)
 		const used = tokensEstimated(section.length)
 		if (used <= DIGEST_MAX_TOKENS || kept.length === 1) {
@@ -177,7 +186,9 @@ export function buildMemoryDigest(hits: MemorySearchHit[], selected?: ReadonlySe
 				// renderFactClasses first: a [derived]-tagged fact must survive
 				// this path with its marker intact, never leak the raw tag.
 				composition.overBudget += 1
-				const truncated = truncateRenderFactClasses(kept[0].text)
+				const truncated = truncateRenderFactClasses(
+					`${memoryEvidencePrefix(kept[0].text, kept[0].metadata)}${kept[0].text}`,
+				)
 				composition.tokensEstimated = tokensEstimated(truncated.length)
 				return { text: truncated, facts: [kept[0].text], composition }
 			}
@@ -289,71 +300,6 @@ export function factKey(text: string): string {
 	return createHash("sha1").update(text.trim().toLowerCase()).digest("hex")
 }
 
-const STOPWORDS = new Set([
-	"the",
-	"and",
-	"for",
-	"are",
-	"but",
-	"not",
-	"you",
-	"all",
-	"can",
-	"her",
-	"was",
-	"one",
-	"our",
-	"out",
-	"day",
-	"get",
-	"has",
-	"him",
-	"his",
-	"how",
-	"its",
-	"new",
-	"now",
-	"old",
-	"see",
-	"two",
-	"way",
-	"who",
-	"did",
-	"yes",
-	"that",
-	"this",
-	"with",
-	"from",
-	"they",
-	"have",
-	"were",
-	"about",
-	"which",
-	"their",
-	"there",
-	"what",
-	"when",
-	"your",
-	"will",
-	"would",
-	"could",
-	"should",
-	"into",
-	"than",
-	"then",
-	"them",
-	"some",
-	"just",
-	"like",
-	"also",
-	"because",
-])
-
-/** Content words (lowercased, ≥3 chars, stopword-filtered) for the cheap gate. */
-export function contentWords(text: string): string[] {
-	return (text.toLowerCase().match(/[a-z0-9']{3,}/g) ?? []).filter((w) => !STOPWORDS.has(w))
-}
-
 /**
  * Gate condition A: the fraction of the recent conversation's content words
  * covered by the delivered facts. High coverage means the conversation is
@@ -442,6 +388,7 @@ export function buildTurnRecall(
 			// ties with it — co-select rather than dropping by list position,
 			// bounded by the hard cap the steer budget tolerates.
 			const isTie =
+				maxFacts > TURN_RECALL_MAX_FACTS &&
 				kept.length < TURN_RECALL_HARD_FACTS_CAP &&
 				capScore !== undefined &&
 				candidate.score >= capScore - TURN_RECALL_SCORE_TIE_EPSILON
@@ -454,9 +401,11 @@ export function buildTurnRecall(
 	}
 	if (kept.length === 0) return undefined
 
-	const factText = (t: string): string =>
-		t.length > TURN_RECALL_MAX_FACT_CHARS ? `${t.slice(0, TURN_RECALL_MAX_FACT_CHARS - 1)}…` : t
-	const text = kept.map((c) => `- ${factText(c.text)}`).join("\n")
+	const factText = (candidate: Candidate): string => {
+		const text = `${memoryEvidencePrefix(candidate.text, candidate.metadata)}${candidate.text}`
+		return text.length > TURN_RECALL_MAX_FACT_CHARS ? `${text.slice(0, TURN_RECALL_MAX_FACT_CHARS - 1)}…` : text
+	}
+	const text = kept.map((candidate) => `- ${factText(candidate)}`).join("\n")
 	composition.facts = kept.length
 	composition.tokensEstimated = tokensEstimated(text.length)
 	return { text, facts: kept.map((c) => c.text), composition }

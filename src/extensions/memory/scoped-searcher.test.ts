@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { projectDbPath } from "./backend.js"
 import { digestDbPath } from "./config.js"
 import type { SharedEmbedder } from "./embedder.js"
+import { memoryMetadataForText } from "./metadata.js"
 import { createScopedSearcher, mergeScopedResults, type ScopedBackend } from "./scoped-searcher.js"
 
 describe("mergeScopedResults", () => {
@@ -17,6 +18,55 @@ describe("mergeScopedResults", () => {
 		]
 		const merged = mergeScopedResults(personal, project, 8)
 		expect(merged.map((m) => m.memory)).toEqual(["pr1", "p1", "pr2"])
+	})
+
+	it("orders current canonical working state separately from durable evidence", () => {
+		const older = {
+			memory: "previous working state",
+			score: 0.9,
+			metadata: memoryMetadataForText("previous working state", {
+				kind: "working",
+				canonical: true,
+				validOrder: 1,
+				episode: "series",
+			}),
+		}
+		const current = {
+			memory: "current working state",
+			score: 0.1,
+			metadata: memoryMetadataForText("current working state", {
+				kind: "working",
+				canonical: true,
+				validOrder: 2,
+				episode: "series",
+			}),
+		}
+		const procedure = {
+			memory: "durable procedure",
+			score: 0.9,
+			metadata: memoryMetadataForText("durable procedure", { kind: "procedural", canonical: true }),
+		}
+		const legacy = { memory: "an old legacy fact", score: 0.5 }
+		expect(mergeScopedResults([older, procedure, legacy], [current], 8, "current-working")).toEqual([current])
+		expect(mergeScopedResults([older, procedure, legacy], [current], 8, "current-working")[0]?.metadata).toMatchObject({
+			validOrder: 2,
+		})
+		const evidence = mergeScopedResults([older, procedure, legacy], [current], 8, "durable-evidence")
+		expect(evidence.map((hit) => hit.memory)).toEqual(["durable procedure", "an old legacy fact"])
+		const secondEpisode = {
+			memory: "another episode's working fact",
+			score: 0.2,
+			metadata: memoryMetadataForText("another episode's working fact", {
+				kind: "working",
+				canonical: true,
+				validOrder: 1,
+				episode: "other-series",
+			}),
+		}
+		expect(mergeScopedResults([current, secondEpisode], [], 8, "current-working")).toHaveLength(2)
+		expect(mergeScopedResults([older, procedure, legacy], [current], 8).map((hit) => hit.memory)).toContain(
+			"an old legacy fact",
+		)
 	})
 
 	it("trims to topK keeping the highest scores regardless of store", () => {

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { authoredEnabled, factClassesEnabled, parseBooleanFlag, staleAwareDigestEnabled } from "./flags.js"
+import {
+	authoredEnabled,
+	factClassesEnabled,
+	parseBooleanFlag,
+	singleDrainWaveEnabled,
+	sqliteLedgerEnabled,
+	staleAwareDigestEnabled,
+} from "./flags.js"
 
 describe("parseBooleanFlag", () => {
 	it("truthy grammar: any non-empty non-0 non-false value enables", () => {
@@ -37,5 +44,19 @@ describe("lane predicates (shared parse points)", () => {
 		expect(staleAwareDigestEnabled({ KIMCHI_MEMORY_STALE_AWARE_DIGEST: "yes" })).toBe(true)
 		expect(staleAwareDigestEnabled({ KIMCHI_MEMORY_STALE_AWARE_DIGEST: "no" })).toBe(true) // non-falsey non-0
 		expect(staleAwareDigestEnabled({ KIMCHI_MEMORY_STALE_AWARE_DIGEST: "false" })).toBe(false)
+	})
+
+	it("sqliteLedgerEnabled is an explicit strict opt-in", () => {
+		expect(sqliteLedgerEnabled({})).toBe(false)
+		expect(sqliteLedgerEnabled({ KIMCHI_MEMORY_SQLITE_LEDGER: "1" })).toBe(true)
+		expect(sqliteLedgerEnabled({ KIMCHI_MEMORY_SQLITE_LEDGER: "true" })).toBe(false)
+		expect(sqliteLedgerEnabled({ KIMCHI_MEMORY_SQLITE_LEDGER: "yes" })).toBe(false)
+	})
+
+	it("singleDrainWaveEnabled requires the literal 1", () => {
+		expect(singleDrainWaveEnabled({ KIMCHI_MEMORY_DRAIN_ONE_WAVE: "1" })).toBe(true)
+		for (const value of [undefined, "", "0", "true", "yes"]) {
+			expect(singleDrainWaveEnabled({ KIMCHI_MEMORY_DRAIN_ONE_WAVE: value })).toBe(false)
+		}
 	})
 })

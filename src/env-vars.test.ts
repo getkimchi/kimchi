@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { join, relative, resolve, sep } from "node:path"
+import ts from "typescript"
 import { describe, expect, it } from "vitest"
 import { ENV_VARS, IGNORED_ENV_VARS, TEST_SUITE_ENV_VARS } from "./env-vars.js"
 
@@ -120,7 +121,8 @@ function readAllSources(): Map<string, string> {
  * purpose and avoids a full tokenizer.
  */
 function stripComments(source: string): string {
-	return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/[^\n]*$/gm, "")
+	const sourceFile = ts.createSourceFile("inline.ts", source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS)
+	return ts.createPrinter({ removeComments: true }).printFile(sourceFile)
 }
 
 function collectReferencedEnvVars(sources: Map<string, string>): Map<string, string[]> {
@@ -160,6 +162,17 @@ function collectReferencedEnvVars(sources: Map<string, string>): Map<string, str
 function allRegisteredNames(): Set<string> {
 	return new Set([...ENV_VARS.map((v) => v.name), ...IGNORED_ENV_VARS, ...TEST_SUITE_ENV_VARS])
 }
+
+describe("comment stripping", () => {
+	it("preserves comment markers inside literal text", () => {
+		const source =
+			"const text = String.raw`before /* word */ after`;\nprocess.env.KIMCHI_MEMORY_DRAIN_CONCURRENCY = 3\n// another comment"
+		const stripped = stripComments(source)
+		expect(stripped).toContain("KIMCHI_MEMORY_DRAIN_CONCURRENCY")
+		expect(stripped).toContain("before /* word */ after")
+		expect(stripped).not.toContain("another comment")
+	})
+})
 
 describe("env var registry", () => {
 	it("registers every KIMCHI_*/PI_*/CASTAI_* variable referenced in src", () => {
@@ -208,6 +221,7 @@ describe("env var registry", () => {
 		// must be dropped from the registry. Comments never count — a var
 		// kept alive solely by prose is dead code. Matches word boundaries,
 		// so KIMCHI_PROXY cannot false-match KIMCHI_PROXY_HELPER.
+		// This case parses the full repository corpus twice; allow for parallel CI load.
 		const sources = readAllSources()
 		const nonTestCode = [...sources.entries()]
 			.filter(([file]) => !file.endsWith(".test.ts"))
@@ -236,7 +250,7 @@ describe("env var registry", () => {
 			staleTestOnly,
 			`test-suite registry entries no longer referenced anywhere in src — remove from TEST_SUITE_ENV_VARS:\n${staleTestOnly.join("\n")}`,
 		).toEqual([])
-	})
+	}, 20_000)
 
 	it("has unique, non-empty entries across all lists", () => {
 		const names = new Set<string>()

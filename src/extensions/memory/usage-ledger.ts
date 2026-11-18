@@ -15,6 +15,7 @@
 import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { defaultMemoryDir } from "./backend.js"
+import type { RecallCancellationReason } from "./deadline.js"
 
 /** Ledger row kinds — the call surfaces that record. Gate kinds (triage,
  * valuation, digest, recall, supersede, admin) identify the d3 gate via
@@ -42,6 +43,10 @@ export interface UsageRecord {
 	outputTokens?: number
 	/** d3 calls: questions per systemone request. */
 	questions?: number
+	/** Wall time across this request's network lifecycle, including retries. */
+	durationMs?: number
+	/** Explicit cancellation/deadline reason when known, not every failure. */
+	cancelled?: RecallCancellationReason
 	failed?: boolean
 }
 

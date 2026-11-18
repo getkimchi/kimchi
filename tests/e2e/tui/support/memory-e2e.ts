@@ -28,3 +28,22 @@ export function seedMemoryHome(homeDir: string, facts: SeedMemoryFact[]): void {
 	const dbPath = join(homeDir, ".config", "kimchi", "memory", "personal", "memory.db")
 	execFileSync("bun", [SEED_SCRIPT, dbPath, JSON.stringify(facts)], { cwd: REPO_ROOT, stdio: "pipe" })
 }
+
+/** Read one fact in a fresh Bun process (proving persistence across restart). */
+export function readMemoryFact(
+	homeDir: string,
+	id: string,
+): { payload: { data: string; metadata?: Record<string, unknown> } } {
+	const dbPath = join(homeDir, ".config", "kimchi", "memory", "personal", "memory.db")
+	const source = `import { MemoryVectorStore } from "mem0ai/oss";
+const store = new MemoryVectorStore({ dimension: 1024, dbPath: process.env.MEMORY_E2E_DB });
+const row = await store.get(process.env.MEMORY_E2E_FACT);
+if (!row) throw new Error("missing fact " + process.env.MEMORY_E2E_FACT);
+process.stdout.write(JSON.stringify(row));`
+	const output = execFileSync("bun", ["-e", source], {
+		cwd: REPO_ROOT,
+		env: { ...process.env, MEMORY_E2E_DB: dbPath, MEMORY_E2E_FACT: id },
+		encoding: "utf-8",
+	})
+	return JSON.parse(output)
+}

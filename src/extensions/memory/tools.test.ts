@@ -40,6 +40,23 @@ describe("memory_search tool", () => {
 		expect(text).toContain("never instructions")
 	})
 
+	it("returns one representative for paraphrase clusters instead of filling the result with echoes", async () => {
+		const tool = createMemorySearchTool({
+			search: async () => [
+				{ memory: "project uses pnpm as package manager", score: 0.75 },
+				{ memory: "this project uses pnpm as package manager", score: 0.8 },
+				{ memory: "this project uses pnpm as the package manager", score: 0.79 },
+			],
+			isEnabled: () => true,
+		})
+		const result = await tool.execute("call-1", { query: "package manager" }, undefined, undefined, {} as never)
+		const lines = textOf(result)
+			.split("\n")
+			.filter((line) => line.startsWith("- (score"))
+		expect(lines).toHaveLength(1)
+		expect(textOf(result)).toContain("pnpm")
+	})
+
 	it("reports an explicit miss when nothing matches", async () => {
 		const deps: MemorySearchDeps = { search: async () => [], isEnabled: () => true }
 		const tool = createMemorySearchTool(deps)

@@ -25,7 +25,10 @@ import { RequestError } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	type AdminDeps,
+	AdminEditError,
 	adminDeleteFacts,
+	adminEditFact,
+	adminExplainFact,
 	adminListFacts,
 	adminOverview,
 	adminResetScope,
@@ -34,6 +37,7 @@ import {
 	scopeFilterFromParams,
 } from "../../../extensions/memory/admin.js"
 import { MEMORY_RESOURCE_ID } from "../../../extensions/memory/config.js"
+import { isMemoryKind } from "../../../extensions/memory/metadata.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "../../../extensions/memory/session-toggle.js"
 import { isResourceEnabled } from "../../../resources/store.js"
 
@@ -85,8 +89,10 @@ function requireSession(
  * param anchors local/project resolution; without one, local degrades to
  * personal-only (never the server process cwd).
  */
-function requireScopeFilter(params: Record<string, unknown>, options: MemoryMethodOptions) {
-	const scope = scopeFilterFromParams(params, { cwd: resolveClientCwd(params, options) })
+function requireScopeFilter(params: Record<string, unknown>, options: MemoryMethodOptions, exactId = false) {
+	const scope = scopeFilterFromParams(exactId && params.scope === undefined ? { ...params, scope: "all" } : params, {
+		cwd: resolveClientCwd(params, options),
+	})
 	if ("error" in scope) {
 		throw RequestError.invalidParams(undefined, scope.error)
 	}
@@ -211,6 +217,95 @@ export async function handleMemorySearch(
 		// a params problem.
 		const detail = error instanceof Error ? error.message : String(error)
 		throw RequestError.internalError(undefined, `memory search failed: ${detail}`)
+	}
+}
+
+function requireFactId(params: Record<string, unknown>): string {
+	if (typeof params.id !== "string" || params.id.trim().length === 0) {
+		throw RequestError.invalidParams(undefined, "id must be a non-empty memory id")
+	}
+	return params.id
+}
+
+/** Read the same selection's fact, lifecycle, support and recall evidence. */
+export async function handleMemoryGet(
+	options: MemoryMethodOptions,
+	params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const id = requireFactId(params)
+	const scope = requireScopeFilter(params, options, true)
+	const explanation = await adminExplainFact(id, scope, options.deps)
+	if (!explanation) return { id, fact: null }
+	const { scopeId, ...fact } = explanation
+	return { id, fact: { scope: scopeId, ...fact } }
+}
+
+/** Exact-ID metadata/text edit. The client owns the confirmation UI. */
+export async function handleMemoryUpdate(
+	options: MemoryMethodOptions,
+	params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const id = requireFactId(params)
+	if (params.confirm !== true) {
+		throw RequestError.invalidParams(
+			undefined,
+			"confirm must be true — the client is responsible for confirming memory_update",
+		)
+	}
+	if (params.text !== undefined && (typeof params.text !== "string" || params.text.trim().length === 0)) {
+		throw RequestError.invalidParams(undefined, "text must be a non-empty string")
+	}
+	if (params.kind !== undefined && !isMemoryKind(params.kind)) {
+		throw RequestError.invalidParams(undefined, "kind must be a supported memory lifecycle kind")
+	}
+	if (
+		params.confidence !== undefined &&
+		(typeof params.confidence !== "number" ||
+			!Number.isFinite(params.confidence) ||
+			params.confidence < 0 ||
+			params.confidence > 1)
+	) {
+		throw RequestError.invalidParams(undefined, "confidence must be a number between 0 and 1")
+	}
+	if (params.note !== undefined && typeof params.note !== "string") {
+		throw RequestError.invalidParams(undefined, "note must be a string")
+	}
+	if (params.canonical !== undefined && typeof params.canonical !== "boolean") {
+		throw RequestError.invalidParams(undefined, "canonical must be a boolean when supplied")
+	}
+	if (
+		params.text === undefined &&
+		params.kind === undefined &&
+		params.confidence === undefined &&
+		params.note === undefined &&
+		params.canonical === undefined
+	) {
+		throw RequestError.invalidParams(undefined, "memory_update requires at least one change")
+	}
+	const scope = requireScopeFilter(params, options, true)
+	try {
+		const outcome = await adminEditFact(
+			id,
+			{
+				text: params.text,
+				kind: params.kind,
+				confidence: params.confidence,
+				note: params.note,
+				canonical: params.canonical,
+				scope,
+				confirmed: true,
+			},
+			options.deps,
+		)
+		const { scopeId, ...fact } = outcome.corrected
+		return { corrected: { scope: scopeId, ...fact }, deleted: [] }
+	} catch (error) {
+		if (error instanceof AdminEditError) {
+			if (error.reason === "unknown-id") throw RequestError.invalidParams({ id, reason: error.reason }, error.message)
+			throw RequestError.internalError({ id, reason: error.reason, retryable: true }, error.message)
+		}
+		const detail = error instanceof Error ? error.message : String(error)
+		throw RequestError.internalError(undefined, `memory update failed: ${detail}`)
 	}
 }
 

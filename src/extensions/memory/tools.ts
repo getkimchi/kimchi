@@ -3,15 +3,22 @@
  * The tool stays free of extension wiring (dap.ts deps-injection pattern):
  * search is injected as a dependency.
  */
+import { randomUUID } from "node:crypto"
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { redactText } from "../pii-redaction/redactor.js"
+import { selectDiverseFacts } from "./diversity.js"
+import { type MemoryMetadata, memoryEvidencePrefix } from "./metadata.js"
 import { createRecallRecorder } from "./trace.js"
 
 export { authoredEnabled } from "./flags.js"
 
 export interface MemorySearchDeps {
-	search: (query: string) => Promise<Array<{ memory?: string; score?: number; scope?: "personal" | "project" }>>
+	search: (
+		query: string,
+	) => Promise<
+		Array<{ id?: string; memory?: string; score?: number; scope?: "personal" | "project"; metadata?: MemoryMetadata }>
+	>
 	/** Session-toggle gate — when false, the tool reports the disabled state instead of searching. */
 	isEnabled: () => boolean
 }
@@ -118,6 +125,7 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 				)
 			}
 			const startedAt = Date.now()
+			const recallId = randomUUID()
 			// Distinguish infrastructure failure from an empty result: an
 			// embedder/cluster outage silhouettes the whole part and otherwise
 			// surfaces as "No memories matched" — the agent then concludes the
@@ -131,22 +139,32 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 					`Memory search failed while reaching the memory store: ${err instanceof Error ? err.message : String(err)}. Treat the store as UNREACHABLE, not empty — retry later instead of assuming there is nothing stored.`,
 				)
 			}
-			// Recall trace: one compact record per search — the dashboard's
-			// retrieval visibility. Fail-soft by construction (null recorder).
-			createRecallRecorder()?.emit({
+			const selected = selectDiverseFacts(hits)
+			// Recall trace: include both retrieval and representative selection.
+			const recorder = createRecallRecorder()
+			recorder?.emit({
 				type: "recall",
 				kind: "tool-search",
+				recall_id: recallId,
 				query: params.query,
-				hits: hits.map((hit) => ({ store: hit.scope ?? "personal", score: hit.score, text: hit.memory })),
+				hits: hits.map((hit) => ({
+					factId: hit.id,
+					store: hit.scope ?? "personal",
+					score: hit.score,
+					text: hit.memory,
+				})),
+				selected: selected.map((hit) => hit.memory),
+				selectedIds: selected.map((hit) => hit.id).filter((id): id is string => id !== undefined),
 				durationMs: Date.now() - startedAt,
 			})
-			if (hits.length === 0) {
+			await recorder?.flush?.()
+			if (selected.length === 0) {
 				return textResult("No memories matched that query.")
 			}
-			const lines = hits.map((hit) => {
+			const lines = selected.map((hit) => {
 				const score = hit.score === undefined ? "?" : hit.score.toFixed(3)
 				const scope = hit.scope === "project" ? "[project] " : ""
-				return `- (score ${score}) ${scope}${hit.memory ?? ""}`.trimEnd()
+				return `- (score ${score}) ${memoryEvidencePrefix(hit.memory ?? "", hit.metadata)}${scope}${hit.memory ?? ""}`.trimEnd()
 			})
 			// Stored fact text can quote hostile content — frame the output as
 			// data so it is never followed as instructions.

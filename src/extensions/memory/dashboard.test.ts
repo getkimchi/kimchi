@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { isLoopbackRemote, type MemoryDashboard, startMemoryDashboard } from "./dashboard.js"
+import { deferSupersede } from "./decision-outage.js"
 
 // The dashboard serves the memory root directly — an isolated temp root
 // carries the crafted queue/trace fixtures.
@@ -45,7 +46,9 @@ describe("memory dashboard server", () => {
 		const response = await get(url, "/")
 		expect(response.status).toBe(200)
 		expect(response.headers.get("content-type")).toContain("text/html")
-		expect(await response.text()).toContain("Kimchi Memory Dashboard")
+		const html = await response.text()
+		expect(html).toContain("Kimchi Memory Dashboard")
+		expect(html).toContain("recall-outcome")
 	})
 
 	it("/api/queue lists pending jobs with scope/attempts/staged state, quarantine, and lock state", async () => {
@@ -85,6 +88,20 @@ describe("memory dashboard server", () => {
 		expect(first).toMatchObject({ messages: 1, project: "castai/kimchi", drainAttempts: 1, stagedWindows: 2 })
 		const second = queue.pending.find((p) => p.name === "a2.json")
 		expect(second).toMatchObject({ messages: 2, project: null })
+	})
+
+	it("/api/queue reports deferred supersession state", async () => {
+		deferSupersede("personal", ["one", "two"], memoryRoot)
+		const { url } = await serve()
+		const queue = (await (await get(url, "/api/queue")).json()) as {
+			degraded?: { deferredSupersedes: number; deferredStores: number; invalidFiles: number }
+		}
+		expect(queue.degraded).toEqual({
+			degradedAt: expect.any(Number),
+			deferredSupersedes: 2,
+			deferredStores: 1,
+			invalidFiles: 0,
+		})
 	})
 
 	it("/api/queue marks an unparseable job instead of failing", async () => {
@@ -139,6 +156,36 @@ describe("memory dashboard server", () => {
 		expect(response.status).toBe(200)
 		const body = (await response.json()) as { events: Array<{ type: string }> }
 		expect(body.events.map((e) => e.type)).toEqual(["drain_start", "job"])
+	})
+
+	it("/api/trace aggregates a partitioned drain as one logical record", async () => {
+		const base = "drain-2026-11-12T09-00-00-444.jsonl"
+		writeDrain(base, [drainEvent({ type: "drain_start" })])
+		writeDrain(base.replace(".jsonl", ".part-1.jsonl"), [drainEvent({ type: "job", job: "j.json" })])
+		const { url } = await serve()
+		const list = (await (await get(url, "/api/traces")).json()) as Array<{
+			name: string
+			jobs: number
+			mtimeMs: number
+		}>
+		expect(list).toEqual([
+			expect.objectContaining({
+				name: base,
+				jobs: 1,
+				windows: 0,
+				added: 0,
+				skipped: 0,
+				apiCalls: 0,
+				errors: 0,
+				durationMs: null,
+				finished: false,
+			}),
+		])
+		expect(list[0]?.mtimeMs).toBeGreaterThan(0)
+		const detail = (await (await get(url, `/api/trace?name=${encodeURIComponent(base)}`)).json()) as {
+			events: Array<{ type: string }>
+		}
+		expect(detail.events.map((event) => event.type)).toEqual(["drain_start", "job"])
 	})
 
 	it("/api/trace rejects traversal, nested names, non-trace names, and missing files with 400", async () => {
@@ -222,6 +269,72 @@ describe("memory dashboard — recall (retrieval) endpoints", () => {
 		expect(recalls[0]).toMatchObject({ kind: "tool-search", error: "gateway down", hits: 0, injected: 0 })
 		expect(recalls[1]).toMatchObject({ kind: "digest-progressive", gateSkip: true })
 		expect(recalls[2]).toMatchObject({ kind: "digest-init", hits: 1, injected: 1 })
+	})
+
+	it("/api/recalls filters by kind, trigger, and outcome", async () => {
+		const prefix = "recall-2026-11-12T09-00-00-"
+		writeDrain(`${prefix}111.jsonl`, [
+			drainEvent({
+				type: "recall",
+				kind: "digest-init",
+				trigger: "user-turn",
+				recall_id: "r1",
+				conclusion: "selected",
+				selected: ["alpha"],
+				injected: [],
+			}),
+			drainEvent({
+				type: "recall",
+				kind: "digest-init",
+				recall_id: "r1",
+				conclusion: "attachedToTurn",
+				injected: ["alpha"],
+				attachedToTurn: true,
+			}),
+		])
+		writeDrain(`${prefix}222.jsonl`, [
+			drainEvent({
+				type: "recall",
+				kind: "digest-progressive",
+				trigger: "step-budget",
+				recall_id: "r2",
+				conclusion: "droppedStale",
+				selected: ["beta"],
+				injected: [],
+			}),
+		])
+		writeDrain(`${prefix}333.jsonl`, [
+			drainEvent({
+				type: "recall",
+				kind: "tool-search",
+				trigger: "user-turn",
+				recall_id: "r3",
+				conclusion: "cancelled",
+				selected: [],
+				injected: [],
+			}),
+		])
+		const { url } = await serve()
+		const byKind = (await (await get(url, "/api/recalls?kind=digest-init")).json()) as Array<Record<string, unknown>>
+		expect(byKind).toHaveLength(1)
+		expect(byKind[0]).toMatchObject({
+			name: `${prefix}111.jsonl`,
+			conclusion: "attachedToTurn",
+			recallId: "r1",
+			selected: 1,
+			injected: 1,
+		})
+		const byTrigger = (await (await get(url, "/api/recalls?trigger=step-budget")).json()) as Array<
+			Record<string, unknown>
+		>
+		expect(byTrigger).toHaveLength(1)
+		expect(byTrigger[0]?.conclusion).toBe("droppedStale")
+		expect(byTrigger[0]?.recallId).toBe("r2")
+		const byOutcome = (await (await get(url, "/api/recalls?outcome=cancelled")).json()) as Array<
+			Record<string, unknown>
+		>
+		expect(byOutcome).toHaveLength(1)
+		expect(byOutcome[0]).toMatchObject({ kind: "tool-search", conclusion: "cancelled", recallId: "r3", injected: 0 })
 	})
 
 	it("/api/recalls surfaces the facet count from multi-facet traces", async () => {

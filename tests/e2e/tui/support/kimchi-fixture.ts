@@ -132,6 +132,8 @@ export interface CreateKimchiFixtureOptions {
 	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	/** Deterministic local embeddings for memory metadata-edit workflows. */
+	enableMemoryEmbeddings?: boolean
 	/** Provider id written to models.json and used for the initial CLI selection. */
 	providerId?: string
 	/** Initial CLI model id. Set false to exercise the model saved in settings.json. */
@@ -232,6 +234,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 				{
 					apiKey: "fake",
 					llmEndpoint: fake.baseUrl,
+					...(options.enableMemoryEmbeddings ? { memoryEmbedding: { model: "fake-embedding" } } : {}),
 					skillPaths: [],
 					migrationState: "done",
 					onboarding: { hideSessionModeDialog: true },

@@ -11,13 +11,14 @@
  */
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext, SessionEntry, ToolResultEvent } from "@earendil-works/pi-coding-agent"
 import { getEnvironmentApiKey } from "../../config.js"
 import { defaultMemoryDir } from "./backend.js"
-import type { CaptureMessage } from "./capture-worker.js"
+import { type CaptureJobStore, getCaptureJobStore } from "./capture-jobs.js"
+import { type CaptureMessage, capturedMessageHashes, messageHash } from "./capture-worker.js"
 import {
 	captureIncrementalMessages,
 	digestDbPath,
@@ -76,6 +77,9 @@ export function wireMemoryCapture(
 	/** The calling session's capture id — stamped on spawned job payloads so the
 	 *  worker's completion record can attribute saved counts per session. */
 	session?: string,
+	/** Persistent session identity for dedupe, resolved lazily from each owning
+	 * session's context. Kept separate from the per-runtime completion id. */
+	dedupeSessionId?: (ctx: ExtensionContext) => string | undefined,
 ): MemoryCaptureWiring {
 	if (captureDisabled()) {
 		if (onLoopStep) {
@@ -92,7 +96,7 @@ export function wireMemoryCapture(
 	const incremented: IncrementalCaptureState = createIncrementalCaptureState()
 	pi.on("session_before_compact", (event, ctx) => {
 		if (!isActive()) return
-		captureMessages(extractMessages(event.branchEntries), ctx.cwd, session)
+		captureMessages(extractMessages(event.branchEntries), ctx.cwd, session, dedupeSessionId?.(ctx), true)
 	})
 	// Mid-loop producers: evaluate the same non-overlapping increment at turn
 	// end (human-paced sessions) and after every tool step (agentic loops) —
@@ -101,7 +105,15 @@ export function wireMemoryCapture(
 	const incrementalThreshold = captureIncrementalMessages() // resolved once at wiring — not per turn_end/tool_result
 	const fireIncrement = (ctx: ExtensionContext): void => {
 		if (!isActive()) return
-		incrementalCapture(ctx.sessionManager.getEntries(), incremented, ctx.cwd, undefined, session, incrementalThreshold)
+		incrementalCapture(
+			ctx.sessionManager.getEntries(),
+			incremented,
+			ctx.cwd,
+			undefined,
+			session,
+			incrementalThreshold,
+			dedupeSessionId?.(ctx),
+		)
 	}
 	pi.on("turn_end", (_event, ctx) => {
 		fireIncrement(ctx)
@@ -121,7 +133,7 @@ export function wireMemoryCapture(
 		// what the queue already holds — and bounded jobs: a poisoned window
 		// costs its own span, not the session backlog.
 		const tail = extractMessages(ctx.sessionManager.getEntries()).slice(incremented.spawnedCount)
-		captureMessagesTail(tail, ctx.cwd, MEMORY_CAPTURE_JOB_MAX_MESSAGES, session)
+		captureMessagesTail(tail, ctx.cwd, MEMORY_CAPTURE_JOB_MAX_MESSAGES, session, dedupeSessionId?.(ctx), true)
 	})
 	return { fireIncrement, resetIncrement }
 }
@@ -133,10 +145,21 @@ export function captureMessagesTail(
 	cwd: string,
 	perJobMax = MEMORY_CAPTURE_JOB_MAX_MESSAGES,
 	session?: string,
+	dedupeSessionId?: string,
+	allowBacklog = false,
 ): boolean {
+	const freshTail = filterCapturedMessages(tail, cwd, dedupeSessionId ?? session)
 	let ok = true
-	for (let i = 0; i < tail.length; i += perJobMax) {
-		ok = captureMessages(tail.slice(i, i + perJobMax), cwd, session) && ok
+	for (let i = 0; i < freshTail.length; i += perJobMax) {
+		ok =
+			captureMessages(
+				freshTail.slice(i, i + perJobMax),
+				cwd,
+				session,
+				dedupeSessionId ?? session,
+				false,
+				allowBacklog,
+			) && ok
 	}
 	return ok
 }
@@ -163,6 +186,51 @@ export interface IncrementalCaptureState {
 	spawnedCount: number
 }
 
+export interface CaptureQueuePolicy {
+	increment: number
+	deferNewJobs: boolean
+	level: number
+}
+
+/** Backpressure changes batching/scheduling only, never retention. A deep or
+ * old pending queue favors larger batches and existing staged commits. */
+export function captureQueuePolicy(
+	depth: number,
+	oldestAgeMs: number | undefined,
+	baseIncrement: number,
+): CaptureQueuePolicy {
+	const age = Math.max(0, oldestAgeMs ?? 0)
+	const deferNewJobs = depth >= 128 || age >= 300_000
+	if (deferNewJobs) return { increment: Math.max(1, baseIncrement) * 6, deferNewJobs, level: 3 }
+	if (depth >= 64 || age >= 120_000) return { increment: Math.max(1, baseIncrement) * 4, deferNewJobs, level: 2 }
+	if (depth >= 16 || age >= 30_000) return { increment: Math.max(1, baseIncrement) * 2, deferNewJobs, level: 1 }
+	return { increment: Math.max(1, baseIncrement), deferNewJobs, level: 0 }
+}
+
+const queueAlerts = new WeakMap<CaptureJobStore, number>()
+
+function currentQueuePolicy(store: CaptureJobStore, baseIncrement: number): CaptureQueuePolicy {
+	let policy: CaptureQueuePolicy
+	try {
+		const depth = store.count("pending")
+		const oldestAgeMs = store.oldestPendingAgeMs(Date.now())
+		policy = captureQueuePolicy(depth, oldestAgeMs, baseIncrement)
+		const prior = queueAlerts.get(store) ?? 0
+		if (policy.level > prior) {
+			console.warn(
+				`[memory] capture queue health: depth ${depth}, oldest pending ${oldestAgeMs ?? 0}ms; ${policy.deferNewJobs ? "keeping new messages for larger later batches" : "increasing batch size"}`,
+			)
+			queueAlerts.set(store, policy.level)
+		}
+	} catch (err) {
+		console.error(
+			`[memory] capture queue health unavailable; using normal capture increments: ${err instanceof Error ? err.message : err}`,
+		)
+		policy = { increment: Math.max(1, baseIncrement), deferNewJobs: false, level: 0 }
+	}
+	return policy
+}
+
 export function createIncrementalCaptureState(): IncrementalCaptureState {
 	return { spawnedCount: 0 }
 }
@@ -185,16 +253,33 @@ export function incrementalCapture(
 	spawn: (messages: CaptureMessage[], cwd: string) => boolean | undefined = captureMessagesTail,
 	session?: string,
 	increment: number = captureIncrementalMessages(),
+	dedupeSessionId?: string,
+	allowBacklog = false,
 ): void {
-	const messages = extractMessages(entries)
-	if (messages.length - state.spawnedCount < increment) return
-	const batch = messages.slice(state.spawnedCount)
+	const extractedMessages = extractMessages(entries)
+	// The incremental mark indexes the FULL extraction, not the dedupe-filtered
+	// list. Filter only the tail, or previously captured messages would shift
+	// the slice boundary and silently skip fresh ones on later captures.
+	const tail = extractedMessages.slice(state.spawnedCount)
+	const messages = filterCapturedMessages(tail, cwd, dedupeSessionId ?? session)
+	// Everything new is already committed: consume it so each later event
+	// does not rebuild and re-filter the entire historical prefix.
+	if (messages.length === 0 && tail.length > 0) {
+		state.spawnedCount = extractedMessages.length
+		return
+	}
+	const effectiveIncrement = currentQueuePolicy(getCaptureJobStore(), increment).increment
+	if (messages.length < effectiveIncrement) return
+	const batch = messages
 	// The default spawn threads the session's capture id through per-job max
 	// so the worker's completion record can attribute saved counts.
 	if (spawn === captureMessagesTail) {
-		if (captureMessagesTail(batch, cwd, MEMORY_CAPTURE_JOB_MAX_MESSAGES, session) === false) return
+		if (
+			captureMessagesTail(batch, cwd, MEMORY_CAPTURE_JOB_MAX_MESSAGES, session, dedupeSessionId, allowBacklog) === false
+		)
+			return
 	} else if (spawn(batch, cwd) === false) return
-	state.spawnedCount = messages.length
+	state.spawnedCount = extractedMessages.length
 }
 
 export function extractMessages(entries: readonly SessionEntry[]): CaptureMessage[] {
@@ -216,8 +301,8 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
 			const content = messageText(message.content)
 			if (content.trim()) messages.push({ role: "user", content })
 		} else if (message.role === "assistant") {
-			const content = gatedAssistantText(message.content)
-			const thinking = thinkingText(message.content)
+			const content = filterHarnessStatusText(gatedAssistantText(message.content) ?? "")
+			const thinking = filterHarnessStatusText(thinkingText(message.content))
 			if (content) {
 				// Engaged/notes/e conclusions all ride in the visible text; the
 				// model's own reasoning rides alongside — the "valuable insight"
@@ -322,6 +407,21 @@ function boundedResult(text: string): string {
 	return `${text.slice(0, head)} …[${text.length - head - tail} chars elided]… ${text.slice(-tail)}`
 }
 
+/** Complete harness status/counter lines are bookkeeping, not durable
+ * observations. Generic sequence/status syntax only — no domain keywords. */
+const HARNESS_COUNTER =
+	/^\s*[-*]?\s*(?:steps?|turns?|attempts?|iterations?|ticks?)\s*(?:#|:)?\s*\d+(?:\s*(?:of|\/)\s*\d+)?(?:\s+(?:complete|completed|done|pending|queued|running|paused|blocked))?\s*$/i
+const HARNESS_STATUS =
+	/^\s*[-*]?\s*(?:(?:status|state|progress|tasks?|todo):\s*(?:pending|queued|running|paused|blocked|complete|completed|done|in[ _]progress|failed|\d+(?:\.\d+)?%?|\d+\s+remaining)|\[[ xX~-]\]\s+.+)$/i
+
+export function filterHarnessStatusText(text: string): string {
+	return text
+		.split("\n")
+		.filter((line) => !HARNESS_COUNTER.test(line) && !HARNESS_STATUS.test(line))
+		.join("\n")
+		.trim()
+}
+
 /**
  * Structural gate for assistant capture: the turn must be pure text — no
  * toolCall blocks (work product; such turns are excluded whole: their text
@@ -410,23 +510,86 @@ export function thinkingText(content: unknown): string {
 	return parts.join("\n\n").slice(0, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS)
 }
 
-function captureMessages(messages: CaptureMessage[], cwd: string, session?: string): boolean {
+const CAPTURE_LEDGER_CACHE_MS = 10_000
+const capturedLedgerCache = new Map<string, { hashes: Set<string>; mtimeMs?: number; readAt: number }>()
+
+/** Drop messages already committed under the persistent session's hash scope.
+ * The pre-enqueue check prevents a resumed process from writing another full
+ * history worth of jobs. The short mtime-keyed cache avoids re-reading a large
+ * ledger on every tool result; the worker remains the locked source of truth. */
+function filterCapturedMessages(messages: CaptureMessage[], cwd: string, session?: string): CaptureMessage[] {
+	const project = resolveProjectScope(cwd)?.id ?? null
+	const root = defaultMemoryDir()
+	const ledger = join(root, "captured-hashes.json")
+	const mtimeMs = existsSync(ledger) ? statSync(ledger).mtimeMs : undefined
+	const prior = capturedLedgerCache.get(root)
+	const cache =
+		prior && prior.mtimeMs === mtimeMs && Date.now() - prior.readAt < CAPTURE_LEDGER_CACHE_MS
+			? prior
+			: { hashes: capturedMessageHashes(), mtimeMs, readAt: Date.now() }
+	capturedLedgerCache.set(root, cache)
+	const captured = cache.hashes
+	return messages.filter((message) => {
+		const hash = session ? messageHash(message, { session, project }) : messageHash(message)
+		return !captured.has(hash)
+	})
+}
+
+function captureMessages(
+	messages: CaptureMessage[],
+	cwd: string,
+	session?: string,
+	dedupeSessionId?: string,
+	filterCaptured = true,
+	allowBacklog = false,
+): boolean {
 	if (captureDisabled() || messages.length === 0) return true
 	try {
+		const freshMessages = filterCaptured ? filterCapturedMessages(messages, cwd, dedupeSessionId ?? session) : messages
+		if (freshMessages.length === 0) return true
 		const dbPath = digestDbPath()
 		const pendingDir = join(defaultMemoryDir(), "pending")
 		mkdirSync(pendingDir, { recursive: true })
 		const project = resolveProjectScope(cwd)
-		// Deterministic job id: identical content in the same scope overwrites
-		// the same job file instead of queueing duplicates.
+		// Deterministic job id: identical content in the same persistent session
+		// and project overwrites one job instead of replaying under a new runtime.
 		const id = createHash("sha1")
-			.update(JSON.stringify({ messages, project: project?.id ?? null, session }))
+			.update(
+				JSON.stringify({ messages: freshMessages, project: project?.id ?? null, session: dedupeSessionId ?? session }),
+			)
 			.digest("hex")
 			.slice(0, 16)
 		const jobFile = join(pendingDir, `${id}.json`)
+		// A resumed stable-session job is the same work unit. Preserve the
+		// in-flight payload's runtime attribution, staging, and attempt state
+		// instead of clobbering it with a fresh runtime's metadata.
+		if (existsSync(jobFile)) {
+			// Existing staged jobs always take priority over new production.
+			spawnCaptureWorker(jobFile, dbPath)
+			return true
+		}
+		if (!allowBacklog && currentQueuePolicy(getCaptureJobStore(), captureIncrementalMessages()).deferNewJobs) {
+			return false
+		}
 		const tmp = `${jobFile}.${process.pid}.tmp`
-		writeFileSync(tmp, JSON.stringify({ messages, project, session }))
+		writeFileSync(
+			tmp,
+			JSON.stringify({
+				version: 2,
+				messages: freshMessages,
+				project,
+				session,
+				dedupeSession: dedupeSessionId ?? session,
+			}),
+		)
 		renameSync(tmp, jobFile)
+		getCaptureJobStore().upsert(jobFile, {
+			version: 2,
+			messages: freshMessages,
+			project,
+			session,
+			dedupeSession: dedupeSessionId ?? session,
+		})
 		spawnCaptureWorker(jobFile, dbPath)
 		return true
 	} catch (err) {

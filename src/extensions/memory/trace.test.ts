@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -9,7 +9,9 @@ import {
 	listRecallFiles,
 	listTraceFiles,
 	pruneRecallTraces,
+	pruneTraceBudget,
 	pruneTraces,
+	readDrainEvents,
 	readTraceEvents,
 	resolveRecallFile,
 	resolveTraceFile,
@@ -65,19 +67,122 @@ describe("traceDrainKeep", () => {
 })
 
 describe("createTraceRecorder", () => {
-	it("appends newline-terminated JSON events, ts stamped at emit", () => {
+	it("appends newline-terminated JSON events, ts stamped at emit", async () => {
 		const recorder = createTraceRecorder()
 		expect(recorder).not.toBeNull()
 		expect(recorder?.file).toContain(`${tracesDir()}${"/drain-"}`)
 		expect(recorder?.file.endsWith(".jsonl")).toBe(true)
 		recorder?.emit({ type: "drain_start", pid: 1 })
 		recorder?.emit({ type: "phase", phase: "store-add", fact: "hello" })
+		await recorder?.flush?.()
 		const events = readTraceEvents(recorder?.file as string)
 		expect(events.map((e) => e.type)).toEqual(["drain_start", "phase"])
 		for (const event of events) {
 			expect(typeof event.ts === "string" && !Number.isNaN(Date.parse(event.ts))).toBe(true)
 		}
 		expect(events[1]?.phase).toBe("store-add")
+	})
+
+	it("keeps raw API text only in full mode", async () => {
+		const compact = createTraceRecorder({ redact: false })
+		compact?.emit({
+			type: "api",
+			request: { model: "m", system: "private context" },
+			response: { content: "private answer" },
+		})
+		await compact?.flush?.()
+		const compactEvents = readTraceEvents(compact?.file as string)
+		expect(compactEvents[0]?.request).toMatchObject({ model: "m", requestBytes: expect.any(Number) })
+		expect(compactEvents[0]?.response).toMatchObject({ responseBytes: expect.any(Number) })
+		expect(JSON.stringify(compactEvents)).not.toContain("private context")
+		expect(JSON.stringify(compactEvents)).not.toContain("private answer")
+
+		const raw = createTraceRecorder({ rawExchanges: true, redact: false })
+		raw?.emit({
+			type: "api",
+			request: { model: "m", system: "private context" },
+			response: { content: "private answer" },
+		})
+		await raw?.flush?.()
+		const rawEvents = readTraceEvents(raw?.file as string)
+		expect((rawEvents[0]?.request as Record<string, unknown>).system).toBe("private context")
+		expect((rawEvents[0]?.response as Record<string, unknown>).content).toBe("private answer")
+	})
+
+	it("rotates partitioned files by bytes while preserving valid JSONL", async () => {
+		const recorder = createTraceRecorder({ rawExchanges: true, maxFileBytes: 1024 })
+		for (let i = 0; i < 20; i++) recorder?.emit({ type: "phase", job: `job-${i}.json`, phase: "store-add" })
+		await recorder?.flush?.()
+		await vi.waitFor(() => expect(listTraceFiles().length).toBeGreaterThan(0), { timeout: 2_000 })
+		const files = listTraceFiles()
+		expect(files).toHaveLength(1)
+		await vi.waitFor(() => expect(readDrainEvents(files[0] as string)).toHaveLength(20), { timeout: 2_000 })
+		const partitions = readdirSync(tracesDir()).filter((name) => name.endsWith(".jsonl"))
+		expect(partitions.length).toBeGreaterThan(1)
+		for (const name of partitions) {
+			expect(statSync(join(tracesDir(), name)).size).toBeLessThanOrEqual(1024)
+			expect(readTraceEvents(join(tracesDir(), name)).length).toBeGreaterThan(0)
+		}
+		expect(resolveTraceFile(files[0] as string)).not.toBeNull()
+	})
+
+	it("bounds stalled writers and reports failed, unflushed work without holding capture", async () => {
+		const recorder = createTraceRecorder({ append: () => new Promise<void>(() => {}), writeTimeoutMs: 5 })
+		recorder?.emit({ type: "drain_start" })
+		await expect(recorder?.flush?.()).resolves.toBeUndefined()
+		await vi.waitFor(() => expect(recorder?.stats?.()?.failed).toBe(1))
+		expect(recorder?.stats?.()).toMatchObject({ failed: 1, unflushed: 0, timedOut: 1, dropped: 0 })
+	})
+
+	it("serializes timed-out status when a later append succeeds", async () => {
+		let attempts = 0
+		const recorder = createTraceRecorder({
+			writeTimeoutMs: 5,
+			append: async (file, body) => {
+				attempts++
+				if (attempts === 1) return new Promise<void>(() => {})
+				const { appendFile } = await import("node:fs/promises")
+				await appendFile(file, body, "utf-8")
+			},
+		})
+		recorder?.emit({ type: "drain_start" })
+		await vi.waitFor(() => expect(recorder?.stats?.()?.failed).toBe(1))
+		// The failed batch only surfaces stats when a later batch writes.
+		await new Promise<void>((resolve) => setTimeout(resolve, 275))
+		recorder?.emit({ type: "phase", phase: "store-add" })
+		await vi.waitFor(
+			() => expect(readTraceEvents(recorder?.file as string).some((event) => event.type === "trace_stats")).toBe(true),
+			{
+				timeout: 2_000,
+			},
+		)
+		expect(recorder?.stats?.()).toMatchObject({ failed: 1, timedOut: 1 })
+		const stat = readTraceEvents(recorder?.file as string).find((event) => event.type === "trace_stats")
+		expect(stat).toMatchObject({ failed: 1, timedOut: 1, unflushed: 0 })
+	})
+
+	it("enforces an aggregate byte budget without parsing records", () => {
+		mkdirSync(tracesDir(), { recursive: true })
+		for (let i = 0; i < 3; i++)
+			writeFileSync(join(tracesDir(), `drain-2026-11-${i}-test.jsonl`), "x".repeat(1024), "utf-8")
+		pruneTraceBudget(2000)
+		const remaining = readdirSync(tracesDir())
+		expect(remaining.reduce((sum, name) => sum + statSync(join(tracesDir(), name)).size, 0)).toBeLessThanOrEqual(2000)
+		expect(remaining.some((name) => name.includes("2-test"))).toBe(true)
+	})
+
+	it("reports dropped queue events explicitly", async () => {
+		const recorder = createTraceRecorder({
+			maxPending: 1,
+			writeTimeoutMs: 5,
+			append: () => new Promise<void>(() => {}),
+		})
+		recorder?.emit({ type: "phase", phase: "one" })
+		recorder?.emit({ type: "phase", phase: "two" })
+		expect(recorder?.stats?.()?.dropped).toBe(1)
+		await recorder?.flush?.()
+		await vi.waitFor(() => expect(recorder?.stats?.()?.failed).toBe(1))
+		expect(recorder?.stats?.()).toMatchObject({ failed: 1, dropped: 1, unflushed: 0, timedOut: 1 })
 	})
 
 	it("returns null when KIMCHI_MEMORY_TRACE_DRAINS=0 (tracing off)", () => {
@@ -100,16 +205,16 @@ describe("createTraceRecorder", () => {
 		}
 	})
 
-	it("emit never throws when the drain file path becomes unwritable", () => {
+	it("emit never throws when the drain file path becomes unwritable", async () => {
 		const recorder = createTraceRecorder()
 		expect(recorder).not.toBeNull()
-		// Replace the file with a directory → appendFileSync fails on every emit.
 		rmSync(recorder?.file as string, { force: true })
 		mkdirSync(recorder?.file as string, { recursive: true })
 		vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
 			expect(() => recorder?.emit({ type: "phase" })).not.toThrow()
 			expect(() => recorder?.emit({ type: "phase" })).not.toThrow()
+			await expect(recorder?.flush?.()).resolves.toBeUndefined()
 		} finally {
 			vi.restoreAllMocks()
 		}
@@ -192,11 +297,12 @@ describe("traceRecallKeep", () => {
 })
 
 describe("createRecallRecorder", () => {
-	it("writes recall-*.jsonl files with ts-stamped events", () => {
+	it("writes recall-*.jsonl files with ts-stamped events", async () => {
 		const recorder = createRecallRecorder()
 		expect(recorder).not.toBeNull()
 		expect(recorder?.file).toContain(`${tracesDir()}/recall-`)
 		recorder?.emit({ type: "recall", kind: "tool-search", query: "q", hits: [] })
+		await recorder?.flush?.()
 		const events = readTraceEvents(recorder?.file as string)
 		expect(events[0]?.type).toBe("recall")
 		expect(events[0]?.kind).toBe("tool-search")

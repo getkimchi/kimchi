@@ -12,11 +12,13 @@
 import { batchChoice, type DecisionGateOptions } from "./decision-gate.js"
 import { supersedeQuestion, supersedeState } from "./gates.js"
 import { mapWithConcurrency } from "./map-concurrency.js"
+import type { MemoryMetadata } from "./metadata.js"
 
 export interface SupersedeCandidate {
 	id: string
 	memory: string
 	score?: number
+	metadata?: MemoryMetadata
 }
 
 /** Returns the ids of candidates the new facts explicitly replace. */
@@ -72,9 +74,12 @@ export async function findSupersededIds(
 			if (!byId.has(candidate.id)) byId.set(candidate.id, candidate)
 		}
 	}
-	const candidates = [...byId.values()]
+	// Explicit user corrections/authored facts never become passive-delete
+	// candidates. They are outside extraction's authority even when a later
+	// model judgment seems contradictory.
+	const candidates = [...byId.values()].filter((candidate) => candidate.metadata?.source !== "authored")
 	if (candidates.length === 0) return []
 	const judged = await judge(newFacts, candidates)
-	const known = new Set(byId.keys())
+	const known = new Set(candidates.map((candidate) => candidate.id))
 	return judged.filter((id) => known.has(id))
 }

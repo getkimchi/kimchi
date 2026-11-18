@@ -38,3 +38,13 @@ export function authoredEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 export function staleAwareDigestEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return parseBooleanFlag(env, "KIMCHI_MEMORY_STALE_AWARE_DIGEST")
 }
+
+/** Opt-in incremental SQLite hash ledger. Strict "1" keeps legacy JSON as the default. */
+export function sqliteLedgerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_SQLITE_LEDGER", { strict: true })
+}
+
+/** Opt-in single batch; unset keeps the normal drain-until-empty loop. */
+export function singleDrainWaveEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return parseBooleanFlag(env, "KIMCHI_MEMORY_DRAIN_ONE_WAVE", { strict: true })
+}

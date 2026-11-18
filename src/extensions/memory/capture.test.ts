@@ -19,12 +19,16 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import {
 	captureDisabled,
+	captureMessagesTail,
+	captureQueuePolicy,
 	createIncrementalCaptureState,
 	extractMessages,
+	filterHarnessStatusText,
 	incrementalCapture,
 	spawnCaptureWorker,
 	wireMemoryCapture,
 } from "./capture.js"
+import { getCaptureJobStore } from "./capture-jobs.js"
 import {
 	ASSISTANT_FACTS_SYSTEM_PROMPT,
 	applyDerivedTags,
@@ -48,6 +52,7 @@ import {
 	RECEIPTS_EXTRACTION_SUFFIX,
 	receiptsEnabled,
 	routeTaskFacts,
+	runBatchedSupersede,
 	runCaptureWorker,
 	STRICT_NOISE_FACT_PATTERNS,
 	SUPERSEDE_SYSTEM_PROMPT,
@@ -68,8 +73,10 @@ import {
 	MEMORY_FACT_MAX_CHARS,
 } from "./config.js"
 import type { DecisionGateOptions } from "./decision-gate.js"
+import { readDeferredSupersede } from "./decision-outage.js"
 import { buildValuationState, TRIAGE_QUESTION_NAMES } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
+import type { MemoryMetadata } from "./metadata.js"
 import { readTraceEvents, tracesDir } from "./trace.js"
 import { usageLedgerPath } from "./usage-ledger.js"
 
@@ -271,6 +278,17 @@ describe("mapWithConcurrency", () => {
 })
 
 describe("incrementalCapture", () => {
+	const realHome = process.env.HOME
+	let home: string
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-capture-incremental-"))
+		process.env.HOME = home
+	})
+	afterEach(() => {
+		process.env.HOME = realHome
+		rmSync(home, { recursive: true, force: true })
+	})
+
 	const msgEntry = (content: string) =>
 		({ type: "message", message: { role: "user", content } }) as unknown as SessionEntry
 
@@ -331,6 +349,59 @@ describe("incrementalCapture", () => {
 		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
 		incrementalCapture(entries, createIncrementalCaptureState(), "/test/cwd", spawn)
 		expect(spawn).toHaveBeenCalledTimes(2)
+	})
+
+	it("skips committed history under a new runtime id but captures it in a different persistent session", () => {
+		const persistent = "persistent-session"
+		const message = msg("user", "durable history")
+		mkdirSync(defaultMemoryDir(), { recursive: true })
+		writeFileSync(
+			join(defaultMemoryDir(), "captured-hashes.json"),
+			JSON.stringify([messageHash(message, { session: persistent, project: null })]),
+		)
+		const spawn = vi.fn()
+		const state = createIncrementalCaptureState()
+		incrementalCapture([msgEntry(message.content)], state, "/test/cwd", spawn, "runtime-id", 1, persistent)
+		expect(spawn).not.toHaveBeenCalled()
+		expect(state.spawnedCount).toBe(1)
+
+		incrementalCapture(
+			[msgEntry(message.content)],
+			createIncrementalCaptureState(),
+			"/test/cwd",
+			spawn,
+			"runtime-other",
+			1,
+			"other-session",
+		)
+		expect(spawn).toHaveBeenCalledTimes(1)
+	})
+
+	it("filters only the tail past the incremental mark instead of shifting it", () => {
+		const persistent = "persistent-session"
+		const previous = msg("user", "older durable state")
+		mkdirSync(defaultMemoryDir(), { recursive: true })
+		writeFileSync(
+			join(defaultMemoryDir(), "captured-hashes.json"),
+			JSON.stringify([messageHash(previous, { session: persistent, project: null })]),
+		)
+		const fresh = Array.from({ length: MEMORY_CAPTURE_INCREMENTAL_MESSAGES + 4 }, (_, i) => msg("user", `fresh-${i}`))
+		const previousState = createIncrementalCaptureState()
+		const spawn = vi.fn()
+		incrementalCapture(
+			[msgEntry(previous.content), ...fresh.map((m) => msgEntry(m.content))],
+			previousState,
+			"/test/cwd",
+			spawn,
+			"runtime-id",
+			MEMORY_CAPTURE_INCREMENTAL_MESSAGES,
+			persistent,
+		)
+		expect(spawn).toHaveBeenCalledTimes(1)
+		const batch = (spawn.mock.calls[0] as CaptureMessage[][])[0]
+		expect(batch).toHaveLength(fresh.length)
+		expect(batch.every((m) => m.content.startsWith("fresh-"))).toBe(true)
+		expect(batch.some((m) => m.content === previous.content)).toBe(false)
 	})
 })
 
@@ -1038,13 +1109,13 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 	function makeFakeBackend(options: { failAdds?: boolean; failAddsMessage?: string } = {}) {
 		const added: string[] = []
 		const deleted: string[] = []
-		const items: Array<{ id: string; memory: string }> = []
+		const items: Array<{ id: string; memory: string; metadata?: MemoryMetadata }> = []
 		let nextId = 0
 		const backend: CaptureBackend = {
-			add: async (fact) => {
+			add: async (fact, addOptions) => {
 				if (options.failAdds) throw new Error(options.failAddsMessage ?? "store unavailable")
 				nextId += 1
-				items.push({ id: `m${nextId}`, memory: fact })
+				items.push({ id: `m${nextId}`, memory: fact, metadata: addOptions.metadata })
 				added.push(fact)
 			},
 			delete: async (id) => {
@@ -1202,6 +1273,64 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(ledger).toHaveLength(1)
 	})
 
+	it("drains only one bounded batch under the strict single-wave flag", async () => {
+		const originalBatch = process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH
+		const originalOneWave = process.env.KIMCHI_MEMORY_DRAIN_ONE_WAVE
+		try {
+			process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH = "1"
+			process.env.KIMCHI_MEMORY_DRAIN_ONE_WAVE = "true"
+			const control = makeFakeBackend()
+			const first = writeJob("01-control-first", [msg("user", "control first memory")])
+			const second = writeJob("02-control-second", [msg("user", "control second memory")])
+			const controlCaptured = await runCaptureWorker(["--job", first, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(control.backend),
+			})
+			expect(controlCaptured).toBe(2)
+			expect(control.added).toEqual(["control first memory", "control second memory"])
+			expect(existsSync(second)).toBe(false)
+
+			process.env.KIMCHI_MEMORY_DRAIN_ONE_WAVE = "1"
+			const pilot = makeFakeBackend()
+			const pilotFirst = writeJob("03-pilot-first", [msg("user", "pilot first memory")])
+			const pilotSecond = writeJob("04-pilot-second", [msg("user", "pilot second memory")])
+			const pilotCaptured = await runCaptureWorker(["--job", pilotFirst, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(pilot.backend),
+			})
+			expect(pilotCaptured).toBe(1)
+			expect(pilot.added).toEqual(["pilot first memory"])
+			expect(existsSync(pilotFirst)).toBe(false)
+			expect(existsSync(pilotSecond)).toBe(true)
+		} finally {
+			if (originalBatch === undefined) delete process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH
+			else process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH = originalBatch
+			if (originalOneWave === undefined) delete process.env.KIMCHI_MEMORY_DRAIN_ONE_WAVE
+			else process.env.KIMCHI_MEMORY_DRAIN_ONE_WAVE = originalOneWave
+		}
+	})
+
+	it("writes known lifecycle metadata without upgrading derived interpretations", async () => {
+		const fake = makeFakeBackend()
+		const first = writeJob("observed", [msg("user", "the user keeps herbs on the kitchen counter")])
+		const second = writeJob("interpreted", [msg("user", "[derived] the adapter is probably incompatible")])
+		const options = { llm: makeFakeLlm([]), createBackend: () => Promise.resolve(fake.backend) }
+		await runCaptureWorker(["--job", first, "--db", dbPath()], options)
+		await runCaptureWorker(["--job", second, "--db", dbPath()], options)
+		expect(fake.items[0]?.metadata).toMatchObject({
+			version: 1,
+			kind: "semantic",
+			source: "extracted",
+			normalizedTextHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+		})
+		expect(fake.items[1]?.metadata).toMatchObject({
+			kind: "hypothesis",
+			source: "extracted",
+			derived: true,
+			canonical: false,
+		})
+	})
+
 	it("writes and accumulates the per-session completion record", async () => {
 		const fake = makeFakeBackend()
 		const session = "11111111-2222-3333-4444-555555555555"
@@ -1227,6 +1356,8 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 	})
 
 	describe("drain tracing", () => {
+		beforeEach(() => vi.stubEnv("KIMCHI_MEMORY_TRACE_EXCHANGES", "full"))
+		afterEach(() => vi.unstubAllEnvs())
 		/** Events of one drain trace file (index -1 = newest). */
 		const drainEvents = (index = -1) => {
 			const files = readdirSync(tracesDir()).sort()
@@ -1385,7 +1516,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 				fact: "a durable preference",
 			})
 			const redaction = events.find((e) => e.type === "phase" && e.phase === "redaction")
-			expect(String(redaction?.before)).toContain("sk-proj-")
+			expect(String(redaction?.before)).toContain("[REDACTED-OPENAI_API_KEY]")
 			expect(String(redaction?.after)).not.toContain("sk-proj-")
 		})
 
@@ -1723,7 +1854,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			// Untouched — the holder's own drain consumes it later.
 			expect(existsSync(jobFile)).toBe(true)
 		} finally {
-			await release!()
+			if (release) await release()
 		}
 	})
 
@@ -1887,6 +2018,30 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			createBackend: () => Promise.resolve(makeFakeBackend().backend),
 		})
 		expect(transcripts).toEqual(["user: older job message", "user: newer job message"])
+	})
+
+	it("dedupes identical facts across jobs with one shared store view", async () => {
+		const first = writeJob("first", [msg("user", "first observation")])
+		const second = writeJob("second", [msg("user", "second observation")])
+		const fake = makeFakeBackend()
+		const readStore = vi.spyOn(fake.backend, "getAll")
+		const fetchImpl: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [
+						{ message: { content: JSON.stringify({ personal: ["shared durable observation"], project: [] }) } },
+					],
+				}),
+				{ status: 200 },
+			)
+		const captured = await runCaptureWorker(["--job", first, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["shared durable observation"])
+		expect(readStore).toHaveBeenCalledTimes(1)
+		expect(existsSync(second)).toBe(false)
 	})
 
 	it("a fact whose normalized text already exists is not re-added", async () => {
@@ -2097,6 +2252,38 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			createBackend: () => Promise.resolve(fake.backend),
 		})
 		expect(fake.added).toEqual(["older job message", "newer job message"]) // chronological
+	})
+
+	it("reports each completed supersede candidate search to the watchdog", async () => {
+		const { backend } = makeFakeBackend()
+		const progress: number[] = []
+		let queries = 0
+		backend.search = async () => {
+			queries += 1
+			return { results: [{ id: String(queries), memory: "candidate", score: 0.5 }] }
+		}
+		await runBatchedSupersede(backend, ["new fact"], async () => [], {
+			trace: null,
+			store: "personal",
+			onProgress: () => progress.push(queries),
+		})
+		expect(progress).toEqual([0, 1, 1])
+	})
+
+	it("defers a slow supersede without failing the drain", async () => {
+		const { backend } = makeFakeBackend()
+		const slowJudge = backend.search.bind(backend)
+		backend.search = (...args) =>
+			new Promise((resolve) => {
+				setTimeout(() => resolve(slowJudge(...args)), 200)
+			})
+		const completed = await runBatchedSupersede(backend, ["new fact"], async () => [], {
+			trace: null,
+			store: "personal",
+			timeoutMs: 20,
+		})
+		expect(completed).toBe(false)
+		expect(readDeferredSupersede("personal").newFacts).toEqual(["new fact"])
 	})
 
 	it("runs ONE supersede judge per store across the whole drain, chronologically", async () => {
@@ -2550,7 +2737,9 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		vi.mocked(spawn).mockImplementation(() => child)
 		const entry = { type: "message", message: { role: "user", content: "remember this" } } as unknown as SessionEntry
 		// createContext's cwd (/tmp) is not a git repository → personal scope.
-		const ctx = createContext({ sessionManager: { getEntries: () => [entry] } })
+		const ctx = createContext({
+			sessionManager: { getEntries: () => [entry], getSessionId: () => "persistent-session" },
+		})
 
 		shutdown({ type: "session_shutdown" }, ctx)
 
@@ -2559,17 +2748,27 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		const job = JSON.parse(
 			readFileSync(join(home, ".config", "kimchi", "memory", "pending", pending[0] as string), "utf-8"),
 		) as {
+			version?: number
+			session?: string
+			dedupeSession?: string
 			messages: CaptureMessage[]
 			project: unknown
 		}
+		expect(job.version).toBe(2)
+		expect(job.session).toBe("capture-sess")
+		expect(job.dedupeSession).toBe("capture-sess")
 		expect(job.messages).toEqual([{ role: "user", content: "remember this" }])
 		expect(job.project).toBeNull()
 		expect(spawn).toHaveBeenCalledTimes(1)
 
-		// The deterministic id: re-invoking with the same content overwrites
-		// the same job file instead of queueing a duplicate.
+		// The deterministic id preserves the existing in-flight payload rather
+		// than clobbering its staged/runtime state on resume.
+		const original = readFileSync(join(home, ".config", "kimchi", "memory", "pending", pending[0] as string), "utf-8")
 		shutdown({ type: "session_shutdown" }, ctx)
 		expect(readdirSync(join(home, ".config", "kimchi", "memory", "pending"))).toHaveLength(1)
+		expect(readFileSync(join(home, ".config", "kimchi", "memory", "pending", pending[0] as string), "utf-8")).toBe(
+			original,
+		)
 	})
 
 	it("an isActive gate of false skips capture entirely", () => {
@@ -3779,6 +3978,67 @@ describe("valuation context threading (KIMCHI_MEMORY_VALUATION_CONTEXT)", () => 
 		expect(bodies.length).toBeGreaterThan(0)
 		expect(bodies[0]).not.toContain("The dog is named Freya")
 		expect(bodies[0]).not.toContain("already holds these memories")
+	})
+})
+
+describe("capture admission and resource backpressure", () => {
+	it("raises batch size, then defers new jobs as queue depth and age rise", () => {
+		expect(captureQueuePolicy(0, 0, 2)).toEqual({ increment: 2, deferNewJobs: false, level: 0 })
+		expect(captureQueuePolicy(16, 0, 2)).toEqual({ increment: 4, deferNewJobs: false, level: 1 })
+		expect(captureQueuePolicy(64, 0, 2)).toEqual({ increment: 8, deferNewJobs: false, level: 2 })
+		expect(captureQueuePolicy(1, 300_000, 2)).toEqual({ increment: 12, deferNewJobs: true, level: 3 })
+	})
+
+	it("filters complete harness counter/status lines but retains a verified correction", () => {
+		expect(
+			filterHarnessStatusText(
+				"step 42\nstatus: complete\n- [ ] inspect module\nAfter the test passed, using TCP resolved the timeout.",
+			),
+		).toBe("After the test passed, using TCP resolved the timeout.")
+		expect(filterHarnessStatusText("The current preference is pnpm, not npm.")).toBe(
+			"The current preference is pnpm, not npm.",
+		)
+	})
+
+	it("retains an unscheduled tail through backlog and force-allows terminal capture", () => {
+		const previousHome = process.env.HOME
+		const home = mkdtempSync(join(tmpdir(), "kimchi-backpressure-"))
+		process.env.HOME = home
+		// This file shares spawn mocks; measure this scenario, not earlier calls.
+		vi.mocked(spawn).mockClear()
+		try {
+			const store = getCaptureJobStore()
+			store.reset()
+			store.upsert(
+				join(defaultMemoryDir(), "pending", "pending-staged.json"),
+				{ messages: [{ role: "user", content: "committed staged work" }] },
+				"pending",
+				Date.now() - 300_001,
+			)
+			const entries = Array.from(
+				{ length: 6 },
+				(_value, index) =>
+					({ type: "message", message: { role: "user", content: `retained fact ${index}` } }) as SessionEntry,
+			)
+			const state = createIncrementalCaptureState()
+			vi.mocked(spawn).mockImplementation(() => {
+				const child = new EventEmitter() as unknown as ChildProcess
+				child.unref = vi.fn()
+				queueMicrotask(() => child.emit("spawn"))
+				return child
+			})
+			incrementalCapture(entries, state, "/tmp", captureMessagesTail, "backlog-test", 1, "backlog-test")
+			expect(store.pending(10)).toHaveLength(0)
+			expect(state.spawnedCount).toBe(0)
+
+			incrementalCapture(entries, state, "/tmp", captureMessagesTail, "backlog-test", 1, "backlog-test", true)
+			expect(spawn).toHaveBeenCalledTimes(1)
+			expect(state.spawnedCount).toBe(6)
+		} finally {
+			getCaptureJobStore().close()
+			process.env.HOME = previousHome
+			rmSync(home, { recursive: true, force: true })
+		}
 	})
 })
 

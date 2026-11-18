@@ -27,6 +27,7 @@
 		"perf:budgets": "python3 tools/perf/gate.py --calibrate",
 		"memory:check": "bun run src/extensions/memory/backend.check.ts",
 		"memory:measure": "bun run src/extensions/memory/verify-measure.ts",
+		"memory:queue-scale": "bun run src/extensions/memory/queue-scale.check.ts",
 		"typecheck": "tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"check:acp-wire": "node scripts/check-acp-wire.mjs",

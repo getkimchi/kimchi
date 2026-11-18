@@ -66,6 +66,18 @@ import {
 	projectDbPath,
 	resolveExtractionModel,
 } from "./backend.js"
+import { getCaptureJobStore } from "./capture-jobs.js"
+import type { CaptureMigrationProgress } from "./capture-migration.js"
+import {
+	type CaptureBackend,
+	CapturedHashLedger,
+	type CommitStoreView,
+	createCommitStoreView,
+	factTokens,
+	loadCapturedHashes,
+	normalizeFactText,
+	recordCommittedFact,
+} from "./commit.js"
 import {
 	ADD_FAILURE_MAX_ATTEMPTS,
 	EXTRACTION_DERIVED_TAG,
@@ -85,15 +97,24 @@ import {
 	TRANSIENT_JOB_MAX_ATTEMPTS,
 	UNKNOWN_CAPTURE_SESSION_ID,
 } from "./config.js"
+import { awaitRecallDeadline, RecallDeadline, recallCancellationReason, withRecallDeadline } from "./deadline.js"
 import {
 	batchChoice,
 	type ChoiceAnswer,
 	type DecisionGateOptions,
 	decide,
+	probeDecisionGate,
 	sharedDecisionBreaker,
 	systemoneEndpoint,
 } from "./decision-gate.js"
-import { factClassesEnabled, parseBooleanFlag } from "./flags.js"
+import {
+	completeDeferredSupersedePrefix,
+	deferSupersede,
+	OUTAGE_DEFER_REASON,
+	outageDeferralActive,
+	readDeferredSupersedeBatch,
+} from "./decision-outage.js"
+import { factClassesEnabled, parseBooleanFlag, singleDrainWaveEnabled, sqliteLedgerEnabled } from "./flags.js"
 import type { DecisionGateKind } from "./gates.js"
 import {
 	buildValuationState,
@@ -105,8 +126,10 @@ import {
 	valuationQuestion,
 } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
+import { memoryMetadataForText } from "./metadata.js"
 import { createDecisionSupersedeJudge, findSupersededIds, type SupersedeJudge } from "./supersede.js"
-import { createTraceRecorder, type OnExchange, pruneTraces, type TraceRecorder } from "./trace.js"
+import { elapsedRequestMs, requestCancellationMetadata, timedStoreCall } from "./timing.js"
+import { createTraceRecorder, type OnExchange, pruneTraceBudget, pruneTraces, type TraceRecorder } from "./trace.js"
 import { recordUsage, type UsageKind } from "./usage-ledger.js"
 
 export interface CaptureMessage {
@@ -121,13 +144,15 @@ export interface CaptureMessage {
 }
 
 export interface CaptureJob {
+	/** Current stable-session job shape. Absent means legacy runtime-scoped identity. */
+	version?: 2
 	messages: CaptureMessage[]
 	/** Project scope when captured inside a repository; null/absent → personal only. */
 	project?: { id: string; contextLine: string } | null
-	/** Session id at capture time — scopes the message hash so the same text
-	 * in different sessions (or projects) is captured independently, while
-	 * crash-resume still dedupes within a session. A uuid, not a timestamp. */
+	/** Runtime capture id used for saved-count attribution, never dedupe scope. */
 	session?: string
+	/** Persistent session id scoped into message hashes for resume-safe dedupe. */
+	dedupeSession?: string
 }
 
 /**
@@ -408,6 +433,16 @@ export async function chatJson(
 	kind: UsageKind,
 	maxAttempts = 4,
 ): Promise<string> {
+	const trackedExchange = options.onExchange
+	const startedAt = performance.now()
+	options = {
+		...options,
+		onExchange: (exchange) =>
+			trackedExchange?.({
+				...exchange,
+				...(exchange.durationMs === undefined ? { durationMs: elapsedRequestMs(startedAt) } : {}),
+			}),
+	}
 	const requestBody = {
 		model: options.model,
 		// Deterministic extraction: needle facts must not appear or
@@ -446,15 +481,16 @@ export async function chatJson(
 		// Timeout / network failure after the retry budget — attempts were
 		// made but no usage came back; a failed row keeps the outage visible
 		// in the local ledger.
-		recordUsage({ kind, model: options.model, failed: true })
+		recordUsage({ kind, model: options.model, failed: true, durationMs: elapsedRequestMs(startedAt) })
 		options.onExchange?.({
 			request: { model: options.model, system, user },
 			error: err instanceof Error ? err.message : String(err),
+			...requestCancellationMetadata(err),
 		})
 		throw err
 	})
 	if (!response.ok) {
-		recordUsage({ kind, model: options.model, failed: true })
+		recordUsage({ kind, model: options.model, failed: true, durationMs: elapsedRequestMs(startedAt) })
 		options.onExchange?.({
 			request: { model: options.model, system, user },
 			error: `HTTP ${response.status}`,
@@ -470,7 +506,7 @@ export async function chatJson(
 	const body = (await response.json().catch((err: unknown) => {
 		// Malformed response body — same failure-recording pattern as the
 		// other failure branches above: ledger row + trace error, then throw.
-		recordUsage({ kind, model: options.model, failed: true })
+		recordUsage({ kind, model: options.model, failed: true, durationMs: elapsedRequestMs(startedAt) })
 		options.onExchange?.({
 			request: { model: options.model, system, user },
 			error: `unparseable response body: ${err instanceof Error ? err.message : String(err)}`,
@@ -482,7 +518,7 @@ export async function chatJson(
 	}
 	const content = body.choices?.[0]?.message?.content
 	if (typeof content !== "string") {
-		recordUsage({ kind, model: options.model, failed: true })
+		recordUsage({ kind, model: options.model, failed: true, durationMs: elapsedRequestMs(startedAt) })
 		options.onExchange?.({
 			request: { model: options.model, system, user },
 			error: "completion response has no message content",
@@ -496,6 +532,7 @@ export async function chatJson(
 		model: options.model,
 		inputTokens: body.usage?.prompt_tokens,
 		outputTokens: body.usage?.completion_tokens,
+		durationMs: elapsedRequestMs(startedAt),
 	})
 	options.onExchange?.({
 		request: { model: options.model, system, user },
@@ -627,6 +664,7 @@ type TraceApiKind =
 	| "triage"
 	| "valuation"
 	| "supersede-d3"
+	| "recovery-probe"
 
 /** Clone llm options with the exchange hook bound to an api event
  * carrying the given kind + event context (job/window or store). */
@@ -787,49 +825,9 @@ function renderWindow(window: CaptureMessage[], lane: "user" | "assistant" | "mi
 	return window.map((m) => `${m.role}: ${m.content}`).join("\n\n")
 }
 
-/**
- * Shared ledger: which messages have been processed, regardless of which
- * store their facts landed in. Lives at the memory root — one window's
- * messages hash once across both stores.
- */
-function hashesPath(): string {
-	return join(defaultMemoryDir(), "captured-hashes.json")
-}
-
-function loadHashes(): Set<string> {
-	const path = hashesPath()
-	// One-time migration: the ledger used to live in personal/ (when there
-	// was only one store). Move it to the root so both stores share it.
-	const legacy = join(defaultMemoryDir(), "personal", "captured-hashes.json")
-	if (!existsSync(path) && existsSync(legacy)) {
-		try {
-			renameSync(legacy, path)
-		} catch {
-			// Failed migration → empty ledger → re-extraction (duplicates are
-			// bounded by supersede; never data loss).
-		}
-	}
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"))
-		if (!Array.isArray(parsed)) return new Set()
-		return new Set(parsed.filter((item): item is string => typeof item === "string"))
-	} catch {
-		// Missing or corrupt file — start with an empty set (worst case:
-		// duplicate extraction, never data loss).
-		return new Set()
-	}
-}
-
-function saveHashes(hashes: Set<string>): void {
-	const path = hashesPath()
-	mkdirSync(dirname(path), { recursive: true })
-	// Merge-on-save (lost-update defense): fold in whatever is on disk so a
-	// mark written by any other run is never dropped. Under the capture lock
-	// this is belt-and-braces for a stolen-lock edge.
-	for (const hash of loadHashes()) hashes.add(hash)
-	const tmp = `${path}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify([...hashes], null, 0)}\n`, "utf-8")
-	renameSync(tmp, path)
+/** Read the shared captured-message ledger for pre-enqueue dedupe. */
+export function capturedMessageHashes(): Set<string> {
+	return loadCapturedHashes()
 }
 
 /** Completion record path — per-session stored-fact counts for in-session
@@ -911,23 +909,13 @@ export function isValuationDiscard(answer: ChoiceAnswer | undefined): boolean {
  * Node-side orchestration tests (the default factory builds mem0 via
  * createMemoryBackend, which requires the Bun runtime).
  */
-export interface CaptureBackend {
-	add(fact: string, options: { userId: string; infer: boolean }): Promise<unknown>
-	delete(id: string): Promise<unknown>
-	getAll(config: { filters: { user_id: string } }): Promise<{ results: Array<{ id: string; memory: string }> }>
-	search(query: string, config: { filters: { user_id: string }; topK: number }): Promise<unknown>
-}
+export type { CaptureBackend } from "./commit.js"
 
 /** The store this worker writes to (personal or per-project). */
 type Backend = CaptureBackend
 
 /** The default store factory: mem0 via createMemoryBackend (Bun-only). */
 const defaultCaptureBackend = (dbPath: string): Promise<CaptureBackend> => createMemoryBackend({ dbPath })
-
-/** Normalized comparison key for exact-duplicate fact detection. */
-export function normalizeFactText(text: string): string {
-	return text.trim().replace(/\s+/g, " ").toLowerCase()
-}
 
 // ---------------------------------------------------------------------------
 // Fact-class classifier (KIMCHI_MEMORY_FACT_CLASSES): an LLM post-pass over
@@ -1203,116 +1191,7 @@ export function stripAttribution(text: string): string {
 		.trim()
 }
 
-/** Tokens that carry no fact content — pronouns, copulas, connectives. */
-const FACT_STOPWORDS = new Set([
-	"a",
-	"an",
-	"the",
-	"and",
-	"or",
-	"but",
-	"of",
-	"to",
-	"in",
-	"on",
-	"for",
-	"with",
-	"at",
-	"by",
-	"from",
-	"as",
-	"per",
-	"is",
-	"are",
-	"was",
-	"were",
-	"be",
-	"been",
-	"being",
-	"it",
-	"its",
-	"this",
-	"that",
-	"these",
-	"those",
-	"i",
-	"me",
-	"my",
-	"mine",
-	"we",
-	"us",
-	"our",
-	"ours",
-	"you",
-	"your",
-	"they",
-	"them",
-	"their",
-	"theirs",
-	"he",
-	"him",
-	"his",
-	"she",
-	"her",
-	"has",
-	"have",
-	"had",
-	"do",
-	"does",
-	"did",
-	"not",
-	"no",
-	"so",
-	"if",
-	"then",
-	"else",
-	"which",
-	"who",
-	"whom",
-	"whose",
-	"what",
-	"when",
-	"where",
-	"why",
-	"how",
-	"about",
-	"into",
-	"over",
-	"under",
-	"up",
-	"down",
-	"than",
-	"there",
-	"here",
-	"would",
-	"could",
-	"should",
-	"will",
-	"can",
-	"may",
-	"might",
-	"must",
-	"just",
-	"only",
-	"also",
-	"even",
-	"still",
-	"already",
-	"yet",
-	"one",
-	"two",
-])
-
-/** Lowercased alphanumeric token set, stopwords dropped. */
-export function factTokens(text: string): Set<string> {
-	const tokens = new Set<string>()
-	for (const match of text.toLowerCase().matchAll(/[a-z0-9]+/g)) {
-		const token = match[0]
-		if (token.length < 2 || FACT_STOPWORDS.has(token)) continue
-		tokens.add(token)
-	}
-	return tokens
-}
+export { factTokens, normalizeFactText }
 
 /** Token-set Jaccard similarity — the twin collapse metric. */
 export function tokenJaccard(a: Set<string>, b: Set<string>): number {
@@ -1371,55 +1250,6 @@ export function attributedNearDuplicateMatch(
 	return best
 }
 
-/**
- * The normalized text of every stored fact for the memory user — the
- * exact-duplicate guard's lookup set. One local SQLite read (mem0 getAll;
- * no embedding or LLM calls). Degrades to an empty set on failure so the
- * guard never blocks capture.
- */
-interface ExistingFacts {
-	/** Normalized text of every stored fact — the exact-duplicate guard. */
-	texts: Set<string>
-	/** Token sets paired with their normalized text — the attributed
-	 * near-duplicate guard (assistant-pass twins re-phrase the user-pass
-	 * fact, so text equality never fires) and the tracer's twin report.
-	 * Built once per store per job; hundreds of entries, cheap. */
-	entries: Array<{ text: string; tokens: Set<string> }>
-	/** Raw stored texts, store order — the gated valuation digest
-	 * (KIMCHI_MEMORY_VALUATION_CONTEXT); normalizing would tell the gate
-	 * lies like casing changes. */
-	rawTexts: string[]
-}
-
-/**
- * The normalized texts and token sets of every stored fact for the memory
- * user — the capture guards' lookup surface. One local SQLite read (mem0
- * getAll; no embedding or LLM calls). Degrades to empty sets on failure so
- * the guards never block capture.
- */
-async function existingFacts(backend: Backend): Promise<ExistingFacts> {
-	try {
-		const { results } = await backend.getAll({ filters: { user_id: MEMORY_USER_ID } })
-		const texts = new Set<string>()
-		const entries: Array<{ text: string; tokens: Set<string> }> = []
-		const rawTexts: string[] = []
-		for (const item of results) {
-			const normalized = normalizeFactText(item.memory)
-			if (normalized.length === 0) continue
-			texts.add(normalized)
-			entries.push({ text: normalized, tokens: factTokens(normalized) })
-			rawTexts.push(item.memory)
-		}
-		return { texts, entries, rawTexts }
-	} catch (err) {
-		console.error(
-			"[memory-capture] duplicate guard unavailable, adding without dedupe:",
-			err instanceof Error ? err.message : err,
-		)
-		return { texts: new Set(), entries: [], rawTexts: [] }
-	}
-}
-
 export interface RunCaptureWorkerOptions {
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
@@ -1442,6 +1272,9 @@ export interface RunCaptureWorkerOptions {
 	 * watchdog aborts a drain only when NO window / commit has settled for
 	 * this long; a healthy catch-up drain runs as long as it needs. */
 	drainInactivityMs?: number
+	/** Bounded legacy job/hash import progress, carrying the same watchdog
+	 * evidence as later window/commit progress. */
+	onMigrationProgress?: CaptureMigrationProgress
 	/** Heartbeat hook: invoked as each window settles and each job commits. */
 	onProgress?: () => void
 	/** Internal: job files already processed by THIS worker run (committed,
@@ -1454,6 +1287,8 @@ export interface RunCaptureWorkerOptions {
 	 * tracing explicitly; when absent the drain creates one itself
 	 * (honouring KIMCHI_MEMORY_TRACE_DRAINS). */
 	trace?: TraceRecorder | null
+	/** Sustained-open d3 circuit: hold remaining work for a later recovery. */
+	deferred?: boolean
 }
 
 /** The d3 gate context for this drain: flagged-on gates get a live endpoint;
@@ -1520,7 +1355,10 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		// the trace store — both fail-soft, see trace.ts. An injected
 		// options.trace (tests) wins and skips the default creation.
 		const trace = options.trace !== undefined ? options.trace : createTraceRecorder()
-		if (trace) pruneTraces()
+		if (trace) {
+			pruneTraces()
+			pruneTraceBudget()
+		}
 		// Dead-man switch: a hung worker otherwise holds the lock forever —
 		// the live mtime refresh never goes stale, so nothing can steal it.
 		// The watchdog is INACTIVITY-based: a healthy drain heartbeats via
@@ -1551,8 +1389,14 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 		const hardTimer = setTimeout(() => abort.abort(new DrainWatchdogError(hardBudget, "hard-timeout")), hardBudget)
 		try {
 			const pendingDir = join(defaultMemoryDir(), "pending")
-			const pendingNames = (): Set<string> =>
-				new Set(existsSync(pendingDir) ? readdirSync(pendingDir).filter((n) => n.endsWith(".json")) : [])
+			const pendingNames = (): Set<string> => {
+				reconcilePendingFiles(pendingDir)
+				const store = getCaptureJobStore(undefined, (phase, completed) => {
+					heartbeat()
+					options.onMigrationProgress?.(phase, completed)
+				})
+				return new Set(store.pending(Number.MAX_SAFE_INTEGER))
+			}
 			let captured = 0
 			const processed = new Set<string>()
 			// Drain, then keep re-draining until the pending/ queue is EMPTY —
@@ -1572,12 +1416,13 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 					abortSignal: abort.signal,
 					trace,
 				})
-				if (abort.signal.aborted) break
-				const remaining = [...pendingNames()].filter((n) => !processed.has(join(pendingDir, n)))
+				if (abort.signal.aborted || singleDrainWaveEnabled()) break
+				const remaining = [...pendingNames()].filter((n) => !processed.has(n))
 				if (remaining.length === 0) break
 			}
 			return captured
 		} finally {
+			await trace?.flush?.()
 			clearInterval(watchdog)
 			clearTimeout(hardTimer)
 		}
@@ -1616,8 +1461,10 @@ export interface JobPlan {
 		staged?: StagedExtraction
 	}
 	project: CaptureJob["project"]
-	/** Session id from the job — scopes the hashes marked at commit. */
+	/** Runtime capture id from the job — saved-count attribution. */
 	session: string | undefined
+	/** Persistent session id for dedupe; absent on legacy/test plans falls back to `session`. */
+	dedupeSession?: string
 	/** Cross-drain poison bookkeeping, persisted on the job JSON. */
 	drainAttempts: number
 	/** Cross-drain transient bookkeeping (wholly-transient failing drains),
@@ -1654,7 +1501,9 @@ interface ExtractionTask {
 
 /** Per-window phase-B outcome — the poison/transient split drives the
  * inline retry round (transient only) and cross-drain quarantine. */
-type ExtractionOutcome = { ok: true; facts: TaggedFacts } | { ok: false; kind: "poison" | "transient" }
+type ExtractionOutcome =
+	| { ok: true; facts: TaggedFacts; paused?: true }
+	| { ok: false; kind: "poison" | "transient"; paused?: never }
 
 /**
  * Process every pending capture job, pipelined in three phases (see the
@@ -1680,11 +1529,10 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const pendingDir = join(defaultMemoryDir(), "pending")
 	mkdirSync(pendingDir, { recursive: true })
 	sweepStaleJobs(pendingDir)
-	const jobFiles = readdirSync(pendingDir)
-		.filter((name) => name.endsWith(".json"))
-		.map((name) => join(pendingDir, name))
-		.filter((p) => !options.processed?.has(p))
-		.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs)
+	// Reconcile manual requeues (failed/*.json moved back to pending) and
+	// compatibility files without rereading every pending payload per wave.
+	reconcilePendingFiles(pendingDir)
+	const jobFiles = getCaptureJobStore().pending(Number.MAX_SAFE_INTEGER, options.processed)
 
 	// Wave cap: a monolithic wave scales its commit-latency lineely with
 	// backlog size while inflow keeps arriving — the backlog CAN'T be
@@ -1694,7 +1542,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const batched = jobFiles.slice(0, batch)
 
 	// Phase A — sequential claim pass (fast, no LLM).
-	const hashes = loadHashes()
+	const hashes = loadCapturedHashes()
 	const claimed = new Set<string>()
 	const plans: JobPlan[] = []
 	let failed = 0
@@ -1854,7 +1702,15 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	}
 	let results: ExtractionOutcome[]
 	let triagedOut = 0
-	if (decision.enabled.has("triage") && decision.gate) {
+	const deferExtraction =
+		decision.enabled.has("triage") &&
+		decision.gate &&
+		outageDeferralActive(decision.gate.breaker ?? sharedDecisionBreaker)
+	if (deferExtraction) {
+		options.deferred = true
+		trace?.emit({ type: "phase", phase: "decision-outage-deferred", reason: OUTAGE_DEFER_REASON })
+		results = tasks.map(() => ({ ok: true as const, facts: EMPTY_TAGGED, paused: true as const }))
+	} else if (decision.enabled.has("triage") && decision.gate) {
 		const gate = decision.gate
 		const skips = await mapWithConcurrency(tasks, drainConcurrency, async (task) => {
 			options.onProgress?.()
@@ -1939,7 +1795,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			for (const window of plan.windows) {
 				const outcome = results[index] as ExtractionOutcome
 				index += 1
-				if (outcome.ok) {
+				if (outcome.ok && !outcome.paused) {
 					plan.extractedWindows.push(window)
 					plan.personalFacts.push(...outcome.facts.personal)
 					plan.projectFacts.push(...outcome.facts.project)
@@ -1948,7 +1804,8 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 						plan.projectFacts.push(...routed.toProject)
 						plan.personalFacts.push(...routed.toPersonal)
 					}
-				} else if (outcome.kind === "poison") {
+				} else if (outcome.paused) {
+				} else if (!outcome.ok && outcome.kind === "poison") {
 					plan.poisonedWindowCount += 1
 				} else {
 					plan.transientWindowCount += 1
@@ -1967,9 +1824,9 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 				...(plan.staged?.windowHashes ?? []),
 				...plan.extractedWindows.flatMap((window) =>
 					window.map((message) =>
-						plan.session === undefined
+						plan.dedupeSession === undefined
 							? messageHash(message)
-							: messageHash(message, { session: plan.session, project: plan.project?.id ?? null }),
+							: messageHash(message, { session: plan.dedupeSession, project: plan.project?.id ?? null }),
 					),
 				),
 			],
@@ -2012,6 +1869,17 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			projectBackends.set(projectId, await createBackend(projectDbPath(projectId)))
 		}
 	}
+	const personalView = await createCommitStoreView(personalBackend, { trace, store: "personal" })
+	const projectViews = new Map<string, CommitStoreView>()
+	for (const [projectId, backend] of projectBackends) {
+		projectViews.set(projectId, await createCommitStoreView(backend, { trace, store: projectId }))
+	}
+	const ledger = new CapturedHashLedger(
+		hashes,
+		trace,
+		sqliteLedgerEnabled() ? getCaptureJobStore() : undefined,
+		defaultMemoryDir(),
+	)
 	const personalAdded: string[] = []
 	const projectAdded = new Map<string, string[]>()
 	let captured = 0
@@ -2043,7 +1911,17 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	)
 	await mapWithConcurrency(plans, commitConcurrency, async (plan) => {
 		try {
-			const added = await commitPlan(plan, personalBackend, projectBackends, createBackend, valuationGate, trace)
+			const added = await commitPlan(
+				plan,
+				personalBackend,
+				projectBackends,
+				createBackend,
+				valuationGate,
+				trace,
+				personalView,
+				projectViews,
+				ledger,
+			)
 			personalAdded.push(...added.personal)
 			for (const [projectId, facts] of added.project) {
 				projectAdded.set(projectId, [...(projectAdded.get(projectId) ?? []), ...facts])
@@ -2141,6 +2019,8 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	if (quarantined > 0) {
 		console.info(`[memory-capture] ${quarantined} job(s) quarantined to failed/ (requeue: mv back into pending/)`)
 	}
+	ledger.save()
+	if (sqliteLedgerEnabled()) ledger.exportSnapshot()
 	tCommit = Date.now()
 
 	// Batched supersede: ONE judge pass per store across the whole drain —
@@ -2155,6 +2035,16 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// Circuit-open shortcut: the candidate SEARCHES run before the judge
 	// (per-fact embedder round trips — 43min on the 2026-11-14 field run),
 	// and with the judge degraded they buy nothing. Skip the whole phase.
+	// A paused extraction wave would otherwise skip every future gate call,
+	// so its breaker could never recover. Permit one normal half-open probe
+	// once its cooldown elapses; no ungated extraction occurs meanwhile.
+	if (options.deferred && decision.gate && !(decision.gate.breaker ?? sharedDecisionBreaker).shouldSkip()) {
+		try {
+			await probeDecisionGate(trace ? withGateApiHook(decision.gate, "recovery-probe", {}, trace) : decision.gate)
+		} catch (err) {
+			console.error(`[memory-capture] d3 recovery probe failed: ${err instanceof Error ? err.message : err}`)
+		}
+	}
 	const supersedeD3Blocked =
 		decision.enabled.has("supersede") && decision.gate && (decision.gate.breaker ?? sharedDecisionBreaker).shouldSkip()
 	const makeSupersedeJudge = (store: string): SupersedeJudge => {
@@ -2171,19 +2061,49 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		}
 	}
 	if (supersedeD3Blocked) {
-		console.info("[memory-capture] supersede skipped — d3 circuit open (facts committed; cleanup deferred)")
-		trace?.emit({ type: "phase", phase: "supersede-skipped", reason: "circuit-open" })
+		deferSupersede("personal", personalAdded)
+		for (const [projectId, facts] of projectAdded) deferSupersede(projectId, facts)
+		console.info("[memory-capture] supersede deferred — d3 circuit open (facts committed)")
+		trace?.emit({ type: "phase", phase: "supersede-deferred", reason: "circuit-open" })
 	} else {
+		const personalDeferred = readDeferredSupersedeBatch("personal")
+		if (
+			personalDeferred.facts.length > 0 &&
+			(await runBatchedSupersede(personalBackend, personalDeferred.facts, makeSupersedeJudge("personal"), {
+				trace,
+				store: "personal",
+				onProgress: options.onProgress,
+				abortSignal: options.abortSignal,
+			}))
+		) {
+			completeDeferredSupersedePrefix("personal", personalDeferred.facts.length)
+		}
+		for (const [projectId, backend] of projectBackends) {
+			const deferred = readDeferredSupersedeBatch(projectId)
+			if (
+				deferred.facts.length > 0 &&
+				(await runBatchedSupersede(backend, deferred.facts, makeSupersedeJudge(projectId), {
+					trace,
+					store: projectId,
+					onProgress: options.onProgress,
+					abortSignal: options.abortSignal,
+				}))
+			) {
+				completeDeferredSupersedePrefix(projectId, deferred.facts.length)
+			}
+		}
 		await runBatchedSupersede(personalBackend, personalAdded, makeSupersedeJudge("personal"), {
 			trace,
 			store: "personal",
 			onProgress: options.onProgress,
+			abortSignal: options.abortSignal,
 		})
 		for (const [projectId, backend] of projectBackends) {
 			await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], makeSupersedeJudge(projectId), {
 				trace,
 				store: projectId,
 				onProgress: options.onProgress,
+				abortSignal: options.abortSignal,
 			})
 		}
 	}
@@ -2246,6 +2166,25 @@ function failedJobsDir(): string {
 	return join(defaultMemoryDir(), "failed")
 }
 
+/** Synchronize manually-written compatibility files and manual failed/-to-
+ * pending requeues. Known pending payloads are not reread. */
+function reconcilePendingFiles(pendingDir: string): void {
+	for (const name of readdirSync(pendingDir).filter((name) => name.endsWith(".json"))) {
+		const jobFile = join(pendingDir, name)
+		if (getCaptureJobStore().stateOf(jobFile) === "pending") continue
+		try {
+			getCaptureJobStore().upsert(jobFile, JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob)
+		} catch (err) {
+			// Leave poisoned files for the normal planJob error/quarantine path:
+			// reconciliation must never make a compatibility file fatal globally.
+			console.error(
+				`[memory-capture] deferred unreadable compatibility job ${name}: ${err instanceof Error ? err.message : err}`,
+			)
+			getCaptureJobStore().upsert(jobFile, { messages: [] })
+		}
+	}
+}
+
 /** The reaper: sweep pending jobs too old to be worth retrying — bounds
  * accumulation when capture persistently fails. Quarantined jobs get a
  * longer post-mortem TTL in failed/ before the same sweep. */
@@ -2263,6 +2202,7 @@ function sweepJobsDir(dir: string, maxAgeMs: number, label: string): void {
 		try {
 			if (statSync(path).mtimeMs < cutoff) {
 				rmSync(path, { force: true })
+				getCaptureJobStore().setState(path, "failed")
 				console.error(
 					`[memory-capture] swept stale ${label} (older than ${Math.round(maxAgeMs / 86_400_000)} days): ${name}`,
 				)
@@ -2298,10 +2238,12 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		// so it doesn't fail every future drain (the session JSONL keeps the
 		// source messages if ever needed again).
 		rmSync(jobFile, { force: true })
+		getCaptureJobStore().setState(jobFile, "failed")
 		throw new Error(`unparseable job file removed: ${err instanceof Error ? err.message : err}`)
 	}
 	if (!Array.isArray(job.messages)) {
 		rmSync(jobFile, { force: true })
+		getCaptureJobStore().setState(jobFile, "failed")
 		throw new Error("job file has no messages array, removed")
 	}
 	const staged = parseStaged(job.staged)
@@ -2311,8 +2253,15 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		// Pre-upgrade jobs without a session field fall back to the legacy
 		// v1 hash — matching the old ledger entries for that one drain.
 		const hash =
-			job.session === undefined
+			(job.dedupeSession ?? job.session) === undefined
 				? messageHash(m)
+				: messageHash(m, { session: job.dedupeSession ?? job.session, project: job.project?.id ?? null })
+		// A v2 ledger entry from an older runtime remains valid under the
+		// persistent session's scope. Check it before paying another extraction;
+		// new stable-session hashes are added at commit.
+		const legacyHash =
+			(job.dedupeSession ?? job.session) === (job.session ?? "")
+				? hash
 				: messageHash(m, { session: job.session, project: job.project?.id ?? null })
 		// Staged coverage counts as captured even before the (commit-gated)
 		// ledger save: the window's facts are already durable in this job
@@ -2320,9 +2269,10 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		// re-adds without re-extracting. The claim applies either way — this
 		// job owns the message, so an overlapping job in the same drain
 		// dedupes against it instead of re-extracting the same content.
-		if (hashes.has(hash) || claimed.has(hash)) return false
+		if (hashes.has(hash) || hashes.has(legacyHash) || claimed.has(hash) || claimed.has(legacyHash)) return false
 		claimed.add(hash)
-		if (stagedHashes.has(hash)) return false
+		claimed.add(legacyHash)
+		if (stagedHashes.has(hash) || stagedHashes.has(legacyHash)) return false
 		return true
 	})
 	if (fresh.length === 0) {
@@ -2332,6 +2282,7 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		// after a successful add, and the add-failure cap quarantines it.
 		if (staged === undefined) {
 			rmSync(jobFile, { force: true })
+			getCaptureJobStore().setState(jobFile, "complete")
 			return null
 		}
 	}
@@ -2343,6 +2294,7 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		jobObject: job,
 		project: job.project ?? null,
 		session: job.session,
+		dedupeSession: job.dedupeSession ?? job.session,
 		drainAttempts: toAttempt(job.drainAttempts),
 		transientAttempts: toAttempt(job.transientAttempts),
 		addAttempts: toAttempt(job.addAttempts),
@@ -2380,6 +2332,7 @@ function stageExtraction(plan: JobPlan, staged: StagedExtraction): boolean {
 		}
 		plan.jobObject.staged = staged
 		plan.staged = staged
+		getCaptureJobStore().upsert(plan.jobFile, plan.jobObject)
 		return true
 	} catch (err) {
 		console.warn(
@@ -2425,6 +2378,8 @@ function recordAddFailureAttempt(plan: JobPlan): boolean {
 		const tmp = `${plan.jobFile}.${process.pid}.tmp`
 		writeFileSync(tmp, `${JSON.stringify({ ...plan.jobObject, addAttempts: attempts }, null, 0)}\n`, "utf-8")
 		renameSync(tmp, plan.jobFile)
+		plan.jobObject.addAttempts = attempts
+		getCaptureJobStore().upsert(plan.jobFile, plan.jobObject)
 		try {
 			utimesSync(plan.jobFile, new Date(), mtime)
 		} catch (err) {
@@ -2437,6 +2392,7 @@ function recordAddFailureAttempt(plan: JobPlan): boolean {
 			const failedDir = failedJobsDir()
 			mkdirSync(failedDir, { recursive: true })
 			renameSync(plan.jobFile, join(failedDir, basename(plan.jobFile)))
+			getCaptureJobStore().setState(join(failedDir, basename(plan.jobFile)), "failed", plan.jobObject)
 			console.error(
 				`[memory-capture] quarantined add-failed job after ${attempts} attempts: ${basename(plan.jobFile)} → failed/ (staged facts preserved; requeue: mv back into pending/)`,
 			)
@@ -2481,6 +2437,7 @@ function recordFailedAttempt(plan: JobPlan, kind: "poison" | "transient"): boole
 		const tmp = `${plan.jobFile}.${process.pid}.tmp`
 		writeFileSync(tmp, `${JSON.stringify({ ...plan.jobObject, [counterField]: attempts }, null, 0)}\n`, "utf-8")
 		renameSync(tmp, plan.jobFile)
+		getCaptureJobStore().upsert(plan.jobFile, { ...plan.jobObject, [counterField]: attempts })
 		try {
 			utimesSync(plan.jobFile, new Date(), mtime)
 		} catch (err) {
@@ -2493,6 +2450,7 @@ function recordFailedAttempt(plan: JobPlan, kind: "poison" | "transient"): boole
 			const failedDir = failedJobsDir()
 			mkdirSync(failedDir, { recursive: true })
 			renameSync(plan.jobFile, join(failedDir, basename(plan.jobFile)))
+			getCaptureJobStore().setState(join(failedDir, basename(plan.jobFile)), "failed", plan.jobObject)
 			console.error(
 				`[memory-capture] quarantined ${kind} job after ${attempts} attempts: ${basename(plan.jobFile)} → failed/`,
 			)
@@ -2569,6 +2527,9 @@ async function commitPlan(
 	createBackend: (dbPath: string) => Promise<CaptureBackend>,
 	valueGate?: (facts: string[], existing?: string[], job?: string, sources?: string[]) => Promise<Set<string>>,
 	trace?: TraceRecorder | null,
+	personalView?: CommitStoreView,
+	projectViews?: Map<string, CommitStoreView>,
+	ledger?: CapturedHashLedger,
 ): Promise<{
 	captured: number
 	personal: string[]
@@ -2587,12 +2548,11 @@ async function commitPlan(
 	let skippedOversized = 0
 	const addAll = async (backend: Backend, facts: string[], store: string): Promise<string[]> => {
 		if (facts.length === 0) return []
-		const existing = await existingFacts(backend)
+		const existing =
+			store === "personal"
+				? (personalView ?? (await createCommitStoreView(backend)))
+				: (projectViews?.get(store) ?? (await createCommitStoreView(backend)))
 		const added: string[] = []
-		// Token sets of facts added earlier in this drain — an assistant-pass
-		// twin of a fact the user pass already produced collapses here, before
-		// either reaches the store.
-		const addedEntries: Array<{ text: string; tokens: Set<string> }> = []
 		// Phase 1: redact (the session-export PII redactor — src/extensions/
 		// pii-redaction — same engine and [REDACTED-TYPE] markers as JSONL/HTML
 		// exports, applied before dedupe so with/without-credential forms
@@ -2665,7 +2625,7 @@ async function commitPlan(
 				trace?.emit({ type: "phase", phase: "exact-dup-skip", job: jobName, store, fact })
 				continue
 			}
-			const nearMatch = attributedNearDuplicateMatch(normalized, [...existing.entries, ...addedEntries])
+			const nearMatch = attributedNearDuplicateMatch(normalized, existing.entries)
 			if (nearMatch) {
 				trace?.emit({
 					type: "phase",
@@ -2678,13 +2638,17 @@ async function commitPlan(
 				})
 				continue
 			}
-			const result = await backend.add(fact, { userId: MEMORY_USER_ID, infer: false })
+			const result = await timedStoreCall(trace, { kind: "store-add", store, job: jobName }, () =>
+				backend.add(fact, {
+					userId: MEMORY_USER_ID,
+					infer: false,
+					metadata: memoryMetadataForText(fact),
+				}),
+			)
 			trace?.emit({ type: "phase", phase: "store-add", job: jobName, store, fact, id: addedMemoryId(result) })
-			// The same fact can be returned twice within one job's extraction —
-			// track it so the second occurrence is skipped here, not just
-			// left for a later drain to dedupe against the store.
-			existing.texts.add(normalized)
-			addedEntries.push({ text: normalized, tokens: factTokens(normalized) })
+			// The same fact can be returned in a later job — merge it into this
+			// wave's coherent store view, not a per-job stale snapshot.
+			recordCommittedFact(existing, fact)
 			added.push(fact)
 			captured += 1
 		}
@@ -2705,24 +2669,28 @@ async function commitPlan(
 	// here too: the ledger save is commit-gated so pre-staging binaries never
 	// see uncommitted coverage, while this build's no-re-extract guarantee
 	// is carried by the job file's staged.windowHashes either way.
-	const hashes = loadHashes()
+	const windowHashes: string[] = []
 	for (const window of plan.extractedWindows) {
 		for (const message of window) {
-			hashes.add(
-				plan.session === undefined
+			windowHashes.push(
+				plan.dedupeSession === undefined
 					? messageHash(message)
-					: messageHash(message, { session: plan.session, project: plan.project?.id ?? null }),
+					: messageHash(message, { session: plan.dedupeSession, project: plan.project?.id ?? null }),
 			)
 		}
 	}
-	for (const hash of plan.staged?.windowHashes ?? []) hashes.add(hash)
-	saveHashes(hashes)
+	for (const hash of plan.staged?.windowHashes ?? []) windowHashes.push(hash)
+	ledger?.mark(windowHashes)
 	// Delete the job file only when every window was extracted — a window
 	// that failed both attempts stays unmarked so the next drain retries it,
 	// which requires the job file to still exist. On a retry, the fresh-filter
 	// drops the already-hashed messages and reprocesses only the failed ones.
 	if (plan.extractedWindows.length === plan.windows.length) {
+		// Persist captured hashes BEFORE deleting the job. The wave-end merge
+		// remains a backstop, but no successful job can outlive its ledger.
+		ledger?.save()
 		rmSync(plan.jobFile, { force: true })
+		getCaptureJobStore().setState(plan.jobFile, "complete", plan.jobObject)
 		trace?.emit({
 			type: "job_end",
 			job: jobName,
@@ -2754,25 +2722,74 @@ async function commitPlan(
  * supersede is a quality pass, not a correctness invariant. When `ctx`
  * carries a trace recorder, candidate searches and deletions emit phase
  * events for the dashboard. */
-async function runBatchedSupersede(
+export async function runBatchedSupersede(
 	backend: Backend,
 	newFacts: string[],
 	judge: SupersedeJudge,
-	ctx?: { trace: TraceRecorder | null; store: string; onProgress?: () => void },
-): Promise<void> {
-	if (newFacts.length === 0) return
-	const searchAll = async (query: string) => {
-		const hits = normalizeMem0SearchResults(
-			await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: SUPERSEDE_SEARCH_TOPK }),
+	ctx?: {
+		trace: TraceRecorder | null
+		store: string
+		onProgress?: () => void
+		abortSignal?: AbortSignal
+		timeoutMs?: number
+		root?: string
+	},
+): Promise<boolean> {
+	const deadline = new RecallDeadline({
+		scheduledStep: "supersede",
+		generation: 0,
+		timeoutMs: ctx?.timeoutMs ?? 120_000,
+		parentSignal: ctx?.abortSignal,
+	})
+	try {
+		return await awaitRecallDeadline(
+			withRecallDeadline(deadline, () => executeBatchedSupersede(backend, newFacts, judge, ctx)),
+			deadline,
 		)
-		ctx?.trace?.emit({
-			type: "phase",
-			phase: "supersede-search",
-			store: ctx.store,
-			query,
-			hits: hits.map((hit) => hit.id),
-		})
-		return hits
+	} catch (error) {
+		if (recallCancellationReason(error) !== "timed-out") throw error
+		deferSupersede(ctx?.store ?? "personal", newFacts, ctx?.root)
+		ctx?.trace?.emit({ type: "phase", phase: "supersede-deferred", reason: "timeout" })
+		return false
+	} finally {
+		deadline.dispose()
+	}
+}
+
+async function executeBatchedSupersede(
+	backend: Backend,
+	newFacts: string[],
+	judge: SupersedeJudge,
+	ctx?: {
+		trace: TraceRecorder | null
+		store: string
+		onProgress?: () => void
+		root?: string
+	},
+): Promise<boolean> {
+	if (newFacts.length === 0) return true
+	let completed = true
+	const searchAll = async (query: string) => {
+		try {
+			const hits = normalizeMem0SearchResults(
+				await timedStoreCall(ctx?.trace, { kind: "store-search", store: ctx?.store }, () =>
+					backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: SUPERSEDE_SEARCH_TOPK }),
+				),
+			)
+			ctx?.trace?.emit({
+				type: "phase",
+				phase: "supersede-search",
+				store: ctx.store,
+				query,
+				hits: hits.map((hit) => hit.id),
+			})
+			return hits
+		} finally {
+			// A settled search is actual progress, even when it fails. Without
+			// this, a large store's serial candidate lookups can trigger the
+			// drain's inactivity watchdog between coarse batch boundaries.
+			ctx?.onProgress?.()
+		}
 	}
 	const instrumented: SupersedeJudge = async (facts, candidates) => {
 		const deleted = await judge(facts, candidates)
@@ -2804,9 +2821,15 @@ async function runBatchedSupersede(
 		try {
 			const superseded = await findSupersededIds(batch, searchAll, instrumented)
 			for (const id of superseded) {
-				await backend.delete(id)
+				await timedStoreCall(ctx?.trace, { kind: "store-delete", store: ctx?.store }, () => backend.delete(id))
 			}
 		} catch (err) {
+			if (recallCancellationReason(err) === "timed-out") throw err
+			completed = false
+			// Persist rejected semantic maintenance instead of retrying it
+			// without an auditable recovery path. Capture jobs remain intact.
+			deferSupersede(ctx?.store ?? "personal", batch, ctx?.root)
+			ctx?.trace?.emit({ type: "phase", phase: "supersede-deferred", reason: "judge-failed" })
 			console.error(
 				"[memory-capture] supersede judge failed — conflicting facts left in place:",
 				err instanceof Error ? err.message : err,
@@ -2815,6 +2838,7 @@ async function runBatchedSupersede(
 			ctx?.onProgress?.()
 		}
 	}
+	return completed
 }
 
 /**

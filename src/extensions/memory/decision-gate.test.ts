@@ -7,7 +7,9 @@ import {
 	DecisionBreaker,
 	DecisionGateError,
 	decide,
+	MEMORY_DECISION_PROBE_TAG,
 	MEMORY_DECISION_TAG,
+	probeDecisionGate,
 	sharedDecisionBreaker,
 	systemoneEndpoint,
 } from "./decision-gate.js"
@@ -212,6 +214,30 @@ describe("decide onExchange hook", () => {
 		expect(exchanges[0]?.response?.answers).toEqual(result.answers)
 		expect(exchanges[0]?.response?.id).toBe("decision-x")
 		expect(exchanges[0]?.response?.usage).toEqual({ input_tokens: 10, output_tokens: 0 })
+	})
+
+	it("measures request durations and attributes recovery probes separately", async () => {
+		const bodies: Array<Record<string, unknown>> = []
+		const durations: Array<number | undefined> = []
+		const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+			return jsonResponse(answersBody([bodies.length === 1 ? "q1" : "available"]))
+		}) as unknown as typeof fetch
+		await decide(
+			{ ...GATE, fetchImpl, onExchange: (exchange) => durations.push(exchange.durationMs) },
+			"the full state text",
+			{ q1: question },
+		)
+		expect(durations[0]).toEqual(expect.any(Number))
+		const breaker = new DecisionBreaker({ now: () => 1_000 })
+		await probeDecisionGate({
+			...GATE,
+			breaker,
+			fetchImpl,
+			onExchange: (exchange) => durations.push(exchange.durationMs),
+		})
+		expect(durations[1]).toEqual(expect.any(Number))
+		expect(bodies[bodies.length - 1]).toMatchObject({ tags: [MEMORY_DECISION_TAG, MEMORY_DECISION_PROBE_TAG] })
 	})
 
 	it("receives the HTTP status on a rejected call", async () => {

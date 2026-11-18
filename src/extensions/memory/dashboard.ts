@@ -26,13 +26,16 @@ import { createServer, type ServerResponse } from "node:http"
 import { join } from "node:path"
 import { defaultMemoryDir } from "./backend.js"
 import { CAPTURE_LOCK_STALE_MS } from "./config.js"
+import { type DeferredOutageSummary, deferredOutageSummary } from "./decision-outage.js"
 import {
 	listRecallFiles,
 	listTraceFiles,
+	readDrainEvents,
 	readTraceEvents,
 	resolvePendingJobFile,
 	resolveRecallFile,
 	resolveTraceFile,
+	traceDrainMtime,
 	traceFileMtime,
 	tracesDir,
 } from "./trace.js"
@@ -79,6 +82,7 @@ interface QueueSnapshot {
 	pendingDir: string
 	pending: PendingJobSummary[]
 	quarantined: string[]
+	degraded?: DeferredOutageSummary
 	lock: { state: "held" | "stale" | "free"; ageMs: number | null }
 	lastDrain: { name: string; mtimeMs: number } | null
 }
@@ -148,6 +152,7 @@ function readQueueSnapshot(memoryRoot: string): QueueSnapshot {
 			pending,
 			quarantined,
 			lock: { state: ageMs > CAPTURE_LOCK_STALE_MS ? "stale" : "held", ageMs },
+			degraded: deferredOutageSummary(memoryRoot),
 			lastDrain: lastDrainFile(memoryRoot),
 		}
 	} catch {
@@ -156,6 +161,7 @@ function readQueueSnapshot(memoryRoot: string): QueueSnapshot {
 			pending,
 			quarantined,
 			lock: { state: "free", ageMs: null },
+			degraded: deferredOutageSummary(memoryRoot),
 			lastDrain: lastDrainFile(memoryRoot),
 		}
 	}
@@ -165,7 +171,7 @@ function lastDrainFile(memoryRoot: string): { name: string; mtimeMs: number } | 
 	const files = listTraceFiles(memoryRoot)
 	const last = files[files.length - 1]
 	if (!last) return null
-	return { name: last, mtimeMs: traceFileMtime(join(tracesDir(memoryRoot), last)) }
+	return { name: last, mtimeMs: traceDrainMtime(last, memoryRoot) }
 }
 
 // ---------------------------------------------------------------------------
@@ -186,8 +192,7 @@ interface DrainSummary {
 }
 
 function summarizeDrain(memoryRoot: string, name: string): DrainSummary {
-	const file = join(tracesDir(memoryRoot), name)
-	const events = readTraceEvents(file)
+	const events = readDrainEvents(name, memoryRoot)
 	let jobs = 0
 	let windows = 0
 	let apiCalls = 0
@@ -217,7 +222,7 @@ function summarizeDrain(memoryRoot: string, name: string): DrainSummary {
 	}
 	return {
 		name,
-		mtimeMs: traceFileMtime(file),
+		mtimeMs: traceDrainMtime(name, memoryRoot),
 		jobs,
 		windows,
 		added: captured ?? 0,
@@ -247,45 +252,56 @@ interface RecallSummary {
 	gateSkip: boolean
 	durationMs: number | null
 	error: string | null
+	recallId: string | null
+	conclusion: string | null
+	selected: number
 }
 
 function summarizeRecall(memoryRoot: string, name: string): RecallSummary {
 	const file = join(tracesDir(memoryRoot), name)
 	const events = readTraceEvents(file)
-	let kind: string | null = null
-	let trigger: string | null = null
-	let queryPreview = ""
-	let facets: number | null = null
-	let hits = 0
-	let injected = 0
-	let gateSkip = false
-	let durationMs: number | null = null
-	let error: string | null = null
-	for (const event of events) {
-		if (event.type !== "recall") continue
-		if (typeof event.kind === "string") kind = event.kind
-		if (typeof event.trigger === "string") trigger = event.trigger
-		if (typeof event.query === "string") queryPreview = event.query.slice(0, 80)
-		if (Array.isArray(event.facets)) facets = event.facets.length
-		if (Array.isArray(event.hits)) hits = event.hits.length
-		if (Array.isArray(event.injected)) injected = event.injected.length
-		const gate = event.gate as { lookup?: string } | undefined
-		if (gate?.lookup === "skip") gateSkip = true
-		if (typeof event.durationMs === "number") durationMs = event.durationMs
-		if (typeof event.error === "string") error = event.error
+	const event = [...events].reverse().find((entry) => entry.type === "recall")
+	if (!event) {
+		return {
+			name,
+			mtimeMs: traceFileMtime(file),
+			kind: null,
+			trigger: null,
+			queryPreview: "",
+			facets: null,
+			hits: 0,
+			injected: 0,
+			selected: 0,
+			gateSkip: false,
+			durationMs: null,
+			error: null,
+			recallId: null,
+			conclusion: null,
+		}
 	}
+	const gate = event.gate as { lookup?: string } | undefined
+	const selected = Array.isArray(event.selected)
+		? event.selected.length
+		: Array.isArray(event.injected)
+			? event.injected.length
+			: 0
+	const injected = Array.isArray(event.injected) ? event.injected.length : 0
+	const conclusion = typeof event.conclusion === "string" ? event.conclusion : null
 	return {
 		name,
 		mtimeMs: traceFileMtime(file),
-		kind,
-		trigger,
-		queryPreview,
-		facets,
-		hits,
+		kind: typeof event.kind === "string" ? event.kind : null,
+		trigger: typeof event.trigger === "string" ? event.trigger : null,
+		queryPreview: typeof event.query === "string" ? event.query.slice(0, 80) : "",
+		facets: Array.isArray(event.facets) ? event.facets.length : null,
+		hits: Array.isArray(event.hits) ? event.hits.length : 0,
 		injected,
-		gateSkip,
-		durationMs,
-		error,
+		selected,
+		gateSkip: gate?.lookup === "skip",
+		durationMs: typeof event.durationMs === "number" ? event.durationMs : null,
+		error: typeof event.error === "string" ? event.error : null,
+		recallId: typeof event.recall_id === "string" ? event.recall_id : null,
+		conclusion,
 	}
 }
 
@@ -326,18 +342,23 @@ export function startMemoryDashboard(options: MemoryDashboardOptions = {}): Prom
 				}
 				if (url.pathname === "/api/trace") {
 					const name = url.searchParams.get("name") ?? ""
-					const file = resolveTraceFile(name, memoryRoot)
-					if (!file) {
+					if (!resolveTraceFile(name, memoryRoot)) {
 						sendJson(response, 400, { error: "not a trace file" })
 						return
 					}
-					sendJson(response, 200, { name, events: readTraceEvents(file) })
+					sendJson(response, 200, { name, events: readDrainEvents(name, memoryRoot) })
 					return
 				}
 				if (url.pathname === "/api/recalls") {
+					const kind = url.searchParams.get("kind")
+					const trigger = url.searchParams.get("trigger")
+					const outcome = url.searchParams.get("outcome")
 					const recalls = listRecallFiles(memoryRoot)
 						.reverse() // newest first
 						.map((name) => summarizeRecall(memoryRoot, name))
+						.filter((recall) => !kind || recall.kind === kind)
+						.filter((recall) => !trigger || recall.trigger === trigger)
+						.filter((recall) => !outcome || recall.conclusion === outcome)
 					sendJson(response, 200, recalls)
 					return
 				}
@@ -460,6 +481,8 @@ const DASHBOARD_HTML = `<!doctype html>
 <div class="section" id="drains"></div>
 
 <h2>Recalls (retrieval)</h2>
+<label class="muted" for="recall-outcome">Outcome
+<input id="recall-outcome" type="text" placeholder="outcome (e.g. steered)" /></label>
 <div class="section" id="recalls"></div>
 
 <div id="detail"></div>
@@ -510,6 +533,9 @@ async function renderQueue() {
     const lockCls = q.lock.state === "held" ? "ok" : q.lock.state === "stale" ? "warn" : "muted";
     const line = el("div", root);
     el("span", line, lockCls, "Lock: " + q.lock.state + (q.lock.ageMs !== null ? " (" + fmtAge(q.lock.ageMs) + ")" : ""));
+    if (q.degraded) {
+      el("span", line, "warn", "d3 degraded: " + q.degraded.deferredSupersedes + " deferred supersede fact(s), " + q.degraded.deferredStores + " store(s)");
+    }
     el("span", line, "muted", "   Pending: " + q.pending.length + "  Quarantined: " + q.quarantined.length);
     if (q.pending.length) {
       const t = el("table", root);
@@ -709,7 +735,8 @@ async function openDrain(name) {
 
 async function renderRecalls() {
   try {
-    const recalls = await get("/api/recalls");
+    const outcome = document.getElementById("recall-outcome").value;
+    const recalls = await get("/api/recalls" + (outcome ? "?outcome=" + encodeURIComponent(outcome) : ""));
     const root = document.getElementById("recalls");
     root.textContent = "";
     if (!recalls.length) {
@@ -718,7 +745,7 @@ async function renderRecalls() {
     }
     const t = el("table", root);
     const head = el("tr", t);
-    for (const h of ["recall", "kind", "trigger", "facets", "hits", "injected", "gate", "ms", "error", "query"]) el("th", head, "", h);
+    for (const h of ["recall", "kind", "trigger", "outcome", "facets", "hits", "injected", "gate", "ms", "error", "query"]) el("th", head, "", h);
     for (const r of recalls) {
       const tr = el("tr", t);
       const td = el("td", tr);
@@ -726,6 +753,7 @@ async function renderRecalls() {
       link.onclick = () => openRecall(r.name);
       el("td", tr, "muted", r.kind || "?");
       el("td", tr, "muted", r.trigger || "");
+      el("td", tr, r.conclusion ? "" : "muted", r.conclusion || "");
       el("td", tr, "muted", r.facets !== null ? r.facets : "");
       el("td", tr, "", r.hits);
       el("td", tr, r.injected ? "ok" : "", r.injected);
@@ -825,6 +853,7 @@ async function refresh() {
   await renderRecalls();
 }
 
+document.getElementById("recall-outcome").onchange = renderRecalls;
 refresh();
 setInterval(() => {
   if (!state.paused) refresh();

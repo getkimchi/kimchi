@@ -232,7 +232,8 @@ describe("buildTurnRecall (progressive-recall value gate)", () => {
 		expect(recall?.composition.overCap).toBe(7 - TURN_RECALL_MAX_FACTS)
 	})
 
-	it("score ties within epsilon co-select past the cap, bounded by the hard cap", () => {
+	it("score ties within epsilon co-select past an explicitly higher cap, bounded by the hard cap", () => {
+		process.env.KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS = "8"
 		// 0.5 to 0.495 spans are all within tie epsilon of the cap score;
 		// candidates at 0.30 are far below and count as overflow.
 		const hits = [
@@ -242,6 +243,7 @@ describe("buildTurnRecall (progressive-recall value gate)", () => {
 		const recall = buildTurnRecall(hits, new Set(), "")
 		expect(recall?.facts).toHaveLength(8) // hard cap, not cap 5
 		expect(recall?.composition.overCap).toBe(3) // 2 tied past hard cap + 1 distant
+		delete process.env.KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS
 	})
 
 	it("KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS=3 restores the legacy cap", () => {
@@ -282,6 +284,27 @@ describe("buildTurnRecall (progressive-recall value gate)", () => {
 
 	it("returns undefined when nothing new clears the bar", () => {
 		expect(buildTurnRecall([{ memory: "weak", score: 0.1 }], new Set(), "")).toBeUndefined()
+	})
+})
+
+describe("progressive recall caps", () => {
+	const env = "KIMCHI_MEMORY_TURN_RECALL_MAX_FACTS"
+	const facts = ["alpha decision", "bravo decision", "charlie decision", "delta decision", "echo decision"].map(
+		(root) => ({ memory: root, score: 0.9 }),
+	)
+
+	it(`uses the default three diverse facts with no cap expansion`, () => {
+		delete process.env[env]
+		const recall = buildTurnRecall(facts, new Set(), "new root guidance")
+		expect(recall?.facts).toHaveLength(TURN_RECALL_MAX_FACTS)
+		expect(recall?.facts).toEqual(["alpha decision", "bravo decision", "charlie decision"])
+	})
+
+	it("preserves a higher explicit cap for newer non-redundant candidates", () => {
+		process.env[env] = "5"
+		const recall = buildTurnRecall(facts, new Set(), "new root guidance")
+		expect(recall?.facts).toHaveLength(5)
+		delete process.env[env]
 	})
 })
 

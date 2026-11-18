@@ -20,11 +20,13 @@
 import { GATEWAY_ORGANIZATION_HEADER } from "../../auth/gateway-credentials.js"
 import { fetchWithRetry, isRetryableStatus } from "../../utils/http.js"
 import { mapWithConcurrency } from "./map-concurrency.js"
+import { elapsedRequestMs, requestCancellationMetadata } from "./timing.js"
 import type { OnExchange } from "./trace.js"
 import { recordUsage, type UsageKind } from "./usage-ledger.js"
 
 /** Usage-tracking tag for billing attribution (matches memory:extraction). */
 export const MEMORY_DECISION_TAG = "memory:decision"
+export const MEMORY_DECISION_PROBE_TAG = "memory:decision-probe"
 
 /** The gateway hard-rejects bodies with more questions than this (spike-verified 400). */
 export const DECISION_QUESTION_CAP = 64
@@ -69,45 +71,40 @@ export interface DecisionGateOptions {
 	organizationId?: string
 	/** Decision model id; the platform's stable alias today. */
 	model?: string
-	/** Per-attempt HTTP timeout. Turn-path callers should stay ≤ MEMORY_SEARCH_TIMEOUT_MS. */
+	/** Optional operation-specific observability tags. */
 	timeoutMs?: number
 	/** Retry budget on retryable statuses (429/5xx family). */
 	maxRetries?: number
 	/** Optional observability hook receiving the exact request body and the
 	 * parsed response (and error/status on failure). Only the capture worker
-	 * sets it (drain tracing) — the session turn path passes no hook and
-	 * changes no behavior. */
+	 * sets it (drain tracing) — the session turn path passes no hook. */
 	onExchange?: OnExchange
 	/** Contract guardrail: a process-local d3 availability circuit breaker.
-	 * When unset the process-shared one applies (sessions, admin ops and the
-	 * capture worker each riding their own process). */
+	 * When unset the process-shared one applies. */
 	breaker?: DecisionBreaker
+	/** Operation-specific observability tags. */
+	tags?: readonly string[]
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
-	/** Drain watchdog signal — abort rejects in-flight gate calls so a hung
-	 * drain can release the capture lock instead of waiting out a retry
-	 * budget while the mtime keeps the lock from looking stale. */
+	/** Drain watchdog signal — abort rejects in-flight gate calls. */
 	abortSignal?: AbortSignal
 }
 
-/** A gate call failed in a way the caller must degrade on (never session-fatal). */
+/** A gate call failed in a way the caller must degrade (never session-fatal). */
 export class DecisionGateError extends Error {}
 
-/**
- * d3 availability circuit breaker. When the decision endpoint black-holes
- * (observed 2026-11-13: the sandbox gateway accepted d3 requests but never
- * responded — every decide paid the full 20s x 2-retry budget), serial
- * gate calls stall the drain by minutes. The breaker makes degradation
- * CHEAP: after N consecutive transport failures the circuit opens and
- * gates ride their existing fail-open paths instantly; every probe
- * interval exactly ONE specimen decide tests recovery and closes it again.
- * Contract failures (unparseable answers) are NOT outages — they never
- * trip the breaker; the gate answered after all.
- */
+export interface DecisionAvailabilitySnapshot {
+	open: boolean
+	degradedAt: number
+	nextProbeAt: number
+	probeInFlight: boolean
+}
+
 export class DecisionBreaker {
 	private open = false
 	private consecutive = 0
 	private nextProbeAt = 0
+	private degradedAt = 0
 	private probeDelayMs
 	private probeInFlight = false
 	private readonly now: () => number
@@ -143,6 +140,16 @@ export class DecisionBreaker {
 		if (this.probeInFlight) return true
 		return this.now() < this.nextProbeAt
 	}
+
+	/** Availability and recovery timing for traces and bounded outage policy. */
+	snapshot(): DecisionAvailabilitySnapshot {
+		return {
+			open: this.open,
+			degradedAt: this.degradedAt,
+			nextProbeAt: this.nextProbeAt,
+			probeInFlight: this.probeInFlight,
+		}
+	}
 	/** Reserve the single probe slot — returns TRUE only when THIS call
 	 * actually holds it, so probe bookkeeping can tell the holder from
 	 * straggler calls that were already in flight when the circuit tripped
@@ -174,6 +181,7 @@ export class DecisionBreaker {
 		if (!this.open) {
 			if (this.consecutive < this.threshold) return // specimen failures eat the bill silently
 			this.open = true
+			this.degradedAt = this.now()
 			this.nextProbeAt = this.now() + this.probeDelayMs
 			this.transition(
 				"open",
@@ -243,13 +251,23 @@ export async function decide(
 			`decide() got ${names.length} questions; the gateway caps at ${DECISION_QUESTION_CAP} — batch via batchChoice()`,
 		)
 	}
+	const trackedExchange = gate.onExchange
+	const startedAt = performance.now()
+	gate = {
+		...gate,
+		onExchange: (exchange) =>
+			trackedExchange?.({
+				...exchange,
+				...(exchange.durationMs === undefined ? { durationMs: elapsedRequestMs(startedAt) } : {}),
+			}),
+	}
 	const requestBody = {
 		model: gate.model ?? "d3",
 		state,
 		questions,
 		// Same payload field the /tags extension sets on session LLM
 		// requests, so billing attributes this traffic.
-		tags: [MEMORY_DECISION_TAG],
+		tags: gate.tags ?? [MEMORY_DECISION_TAG],
 	}
 	const breaker = gate.breaker ?? sharedDecisionBreaker
 	if (breaker.shouldSkip()) {
@@ -281,9 +299,10 @@ export async function decide(
 			// Timeout / network failure after the retry budget — a failed row
 			// keeps the outage visible in the local ledger (zero tokens: no
 			// usage came back).
-			recordUsage({ kind, model: gate.model ?? "d3", failed: true })
+			recordUsage({ kind, model: gate.model ?? "d3", failed: true, durationMs: elapsedRequestMs(startedAt) })
 			gate.onExchange?.({
 				request: requestBody,
+				...requestCancellationMetadata(err),
 				error: err instanceof Error ? err.message : String(err),
 			})
 			// A drain-watchdog abort is OUR caller cancelling, not an endpoint
@@ -294,7 +313,7 @@ export async function decide(
 			throw err
 		})
 		if (!response.ok) {
-			recordUsage({ kind, model: gate.model ?? "d3", failed: true })
+			recordUsage({ kind, model: gate.model ?? "d3", failed: true, durationMs: elapsedRequestMs(startedAt) })
 			gate.onExchange?.({ request: requestBody, error: `HTTP ${response.status}`, status: response.status })
 			// Availability accounting is about TRANSPORT and retryable classes
 			// (429/5xx): a deterministic 4xx means the endpoint answered —
@@ -307,7 +326,7 @@ export async function decide(
 		const body = (await response.json().catch((err: unknown) => {
 			// Malformed response body — the endpoint answered but undecipherably:
 			// that IS an outage signal, not a contract miss.
-			recordUsage({ kind, model: gate.model ?? "d3", failed: true })
+			recordUsage({ kind, model: gate.model ?? "d3", failed: true, durationMs: elapsedRequestMs(startedAt) })
 			gate.onExchange?.({
 				request: requestBody,
 				error: `unparseable response body: ${err instanceof Error ? err.message : String(err)}`,
@@ -316,7 +335,7 @@ export async function decide(
 			throw err
 		})) as Partial<DecisionResponse>
 		if (typeof body !== "object" || body === null || typeof body.answers !== "object" || body.answers === null) {
-			recordUsage({ kind, model: gate.model ?? "d3", failed: true })
+			recordUsage({ kind, model: gate.model ?? "d3", failed: true, durationMs: elapsedRequestMs(startedAt) })
 			// Contract failure, not an outage: the endpoint RESPONDED, so the
 			// circuit stays healthy — probe bookkeeping sees success.
 			breaker.recordSuccess()
@@ -325,7 +344,7 @@ export async function decide(
 		for (const name of names) {
 			const answer = body.answers[name]
 			if (!isChoiceAnswer(answer)) {
-				recordUsage({ kind, model: gate.model ?? "d3", failed: true })
+				recordUsage({ kind, model: gate.model ?? "d3", failed: true, durationMs: elapsedRequestMs(startedAt) })
 				breaker.recordSuccess() // contract miss, not an outage
 				throw new DecisionGateError(`systemone response is missing a parseable answer for question ${name}`)
 			}
@@ -346,6 +365,7 @@ export async function decide(
 			inputTokens: usage.input_tokens,
 			outputTokens: usage.output_tokens,
 			questions: names.length,
+			durationMs: elapsedRequestMs(startedAt),
 		})
 		gate.onExchange?.({
 			request: requestBody,
@@ -376,6 +396,24 @@ export async function decide(
  * batch; answers come back in item order. Used by gates that judge a list
  * (valuation: keep/discard per fact; digest: inject/skip per candidate).
  */
+/** One half-open health check during a sustained capture outage. It carries
+ * no conversation evidence and writes no facts; its only effect is to let
+ * the breaker's normal recordSuccess/recordFailure bookkeeping recover. */
+export async function probeDecisionGate(gate: DecisionGateOptions): Promise<void> {
+	await decide(
+		{ ...gate, tags: [...new Set([...(gate.tags ?? [MEMORY_DECISION_TAG]), MEMORY_DECISION_PROBE_TAG])] },
+		"This is a memory service availability probe. No conversation is supplied and no fact will be extracted or written.",
+		{
+			available: {
+				type: "choice",
+				instructions: "Is the memory decision service answering this availability probe?",
+				criteria: { yes: "A well-formed response was received." },
+			},
+		},
+		"d3",
+	)
+}
+
 export async function batchChoice(
 	gate: DecisionGateOptions,
 	state: string,
