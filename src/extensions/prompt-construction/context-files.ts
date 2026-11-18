@@ -1,5 +1,8 @@
 /**
- * Discover project context files (AGENTS.md, CLAUDE.md) by walking up
+ * Discover context files (AGENTS.md, CLAUDE.md).
+ *
+ * Global files: Claude Code's user CLAUDE.md, then kimchi's own AGENTS.md
+ * (see loadGlobalContextFiles). Project files: discovered by walking up
  * the directory tree from cwd to root.
  *
  * This replicates the discovery logic from Pi's internal
@@ -16,7 +19,8 @@
  * Files are returned in root → cwd order (ancestors first).
  */
 
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
+import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 
@@ -84,28 +88,63 @@ export function loadProjectContextFiles(cwd: string): ContextFile[] {
 	return files
 }
 
+export interface GlobalContextFileOptions {
+	/** Read the Claude Code user file ($CLAUDE_CONFIG_DIR or ~/.claude)/CLAUDE.md. */
+	includeClaudeCodeInstructions: boolean
+}
+
+/** Claude Code honors CLAUDE_CONFIG_DIR, so we must too, or we would read a file the user does not use. */
+function claudeCodeConfigDir(): string {
+	return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")
+}
+
+function sameRealPath(a: string, b: string): boolean {
+	try {
+		return realpathSync(a) === realpathSync(b)
+	} catch {
+		return false
+	}
+}
+
 /**
- * Discover the global context file (AGENTS.md) from the agent
- * configuration directory (~/.config/kimchi/harness/).
+ * Discover the global context files, in prompt order:
  *
- * Only AGENTS.md is checked globally. If a `.local.md` variant
- * (AGENTS.local.md) exists, it is appended.
+ * 1. Claude Code's user instructions (`$CLAUDE_CONFIG_DIR/CLAUDE.md`, default
+ *    `~/.claude/CLAUDE.md`), when `includeClaudeCodeInstructions` is set.
+ *    Only CLAUDE.md is read there; Claude Code has no global `.local.md`.
+ * 2. Kimchi's AGENTS.md in the agent configuration directory
+ *    (~/.config/kimchi/harness/), with AGENTS.local.md appended if present.
  *
- * Returns an array of at most one ContextFile, or empty if none found.
+ * Kimchi's own file comes last because later files win on conflict, and it
+ * is the more specific one for kimchi. The Claude Code file is dropped when
+ * it is the same file as AGENTS.md (symlink) or holds the same text, so the
+ * same rules never appear twice.
  */
-export function loadGlobalContextFiles(): ContextFile[] {
+export function loadGlobalContextFiles(options: GlobalContextFileOptions): ContextFile[] {
+	const files: ContextFile[] = []
 	const dir = getAgentDir()
-	if (!dir) return []
-	const filePath = join(dir, "AGENTS.md")
+	const agentsPath = dir ? join(dir, "AGENTS.md") : undefined
+	const agentsPrimary = agentsPath ? tryReadFile(agentsPath) : null
+
+	if (options.includeClaudeCodeInstructions) {
+		const claudePath = join(claudeCodeConfigDir(), "CLAUDE.md")
+		const claude = tryReadFile(claudePath)
+		const duplicate =
+			claude !== null &&
+			agentsPath !== undefined &&
+			agentsPrimary !== null &&
+			(sameRealPath(claudePath, agentsPath) || claude.trim() === agentsPrimary.trim())
+		if (claude !== null && !duplicate) files.push({ path: claudePath, content: claude })
+	}
+
+	if (!dir || !agentsPath) return files
 	const localPath = join(dir, localVariant("AGENTS.md"))
-	const primary = tryReadFile(filePath)
 	const local = tryReadFile(localPath)
-	if (primary !== null) {
-		const content = local !== null ? `${primary}\n\n${local}` : primary
-		return [{ path: filePath, content }]
+	if (agentsPrimary !== null) {
+		const content = local !== null ? `${agentsPrimary}\n\n${local}` : agentsPrimary
+		files.push({ path: agentsPath, content })
+	} else if (local !== null) {
+		files.push({ path: localPath, content: local })
 	}
-	if (local !== null) {
-		return [{ path: localPath, content: local }]
-	}
-	return []
+	return files
 }
