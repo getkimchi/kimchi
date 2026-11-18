@@ -407,7 +407,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.on("session_start", async (event, ctx) => {
-		const generation = ++sessionGeneration
+		sessionGeneration++
 		privateCatalogs = new Map()
 		// A replacement path (new/fork/switch/resume) just invalidated the old pi;
 		// its pending resnapshot is obsolete.
@@ -476,13 +476,15 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					: config
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
-			const onSessionMetadata = (serverName: string, entry: ServerCacheEntry): void => {
-				if (generation !== sessionGeneration) return
-				if (entry.cacheScope === "private") privateCatalogs.set(serverName, entry)
-				else privateCatalogs.delete(serverName)
-			}
 			const adapterOptions: McpAdapterOptions = {
-				onSessionMetadata,
+				createSessionMetadataObserver: () => {
+					const generation = sessionGeneration
+					return (serverName: string, entry: ServerCacheEntry): void => {
+						if (generation !== sessionGeneration) return
+						if (entry.cacheScope === "private") privateCatalogs.set(serverName, entry)
+						else privateCatalogs.delete(serverName)
+					}
+				},
 				...(options.callerServers || selectedResult.useProgrammaticConfig
 					? { config, defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION }
 					: // Default the adapter's global config to the Studio-shared file so

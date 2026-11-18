@@ -153,7 +153,7 @@ describe("subagent MCP tool inheritance — real extension", () => {
 		expect(upstream.options).toEqual({
 			configPath: mcpConfigPath,
 			defaultProtocolVersion: "auto",
-			onSessionMetadata: expect.any(Function),
+			createSessionMetadataObserver: expect.any(Function),
 		})
 		expect(installKeyringRequireBridge).toHaveBeenCalled()
 		// The fake adapter's startup listed the server catalog through the

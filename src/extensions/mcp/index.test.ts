@@ -22,6 +22,7 @@ const upstream = vi.hoisted(() => ({
 	api: undefined as ExtensionAPI | undefined,
 	options: undefined as McpAdapterOptions | undefined,
 	sessionMetadataObserver: undefined as McpAdapterOptions["onSessionMetadata"],
+	sessionObserverFactory: undefined as McpAdapterOptions["createSessionMetadataObserver"],
 	input: vi.fn(),
 	sessionStart: vi.fn(),
 }))
@@ -73,9 +74,10 @@ vi.mock("pi-mcp-adapter", () => ({
 	MCP_RUNTIME_REGISTER_EVENT: "pi-mcp-adapter:runtime-register:v1",
 	MCP_RUNTIME_REGISTER_VERSION: 1,
 	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
-		const { onSessionMetadata, ...adapterOptions } = options
+		const { onSessionMetadata, createSessionMetadataObserver, ...adapterOptions } = options
 		upstream.options = adapterOptions
-		upstream.sessionMetadataObserver = onSessionMetadata
+		upstream.sessionMetadataObserver = createSessionMetadataObserver?.() ?? onSessionMetadata
+		upstream.sessionObserverFactory = createSessionMetadataObserver
 		upstream.api = api
 		api.on("session_start", upstream.sessionStart)
 		api.on("input", upstream.input)
@@ -203,6 +205,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.input.mockReset()
 		upstream.sessionStart.mockReset()
 		upstream.sessionMetadataObserver = undefined
+		upstream.sessionObserverFactory = undefined
 		configState.config = { mcpServers: {} }
 		configState.userConfig = { mcpServers: {} }
 		configState.configPath = undefined
@@ -941,7 +944,7 @@ describe("upstream MCP adapter facade", () => {
 			tools: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
 			cacheScope: "private",
 		}
-		upstream.sessionMetadataObserver?.("jira", entry)
+		upstream.sessionObserverFactory?.()?.("jira", entry)
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 		const gateway = harness.getRegisteredTool("mcp")
@@ -955,7 +958,8 @@ describe("upstream MCP adapter facade", () => {
 		expect(readOnlyState.privateCatalogs.at(-1)?.get("jira")).toBe(entry)
 
 		await start(harness)
-		upstream.sessionMetadataObserver?.("jira", entry)
+		const replacementObserver = upstream.sessionObserverFactory?.()
+		replacementObserver?.("jira", entry)
 		await gateway.execute(
 			"second",
 			{ tool: "jira_get_issue", server: "jira", args: {} },
@@ -963,9 +967,10 @@ describe("upstream MCP adapter facade", () => {
 			undefined,
 			createToolContext(),
 		)
-		expect(readOnlyState.privateCatalogs.at(-1)?.has("jira")).toBe(false)
+		expect(readOnlyState.privateCatalogs.at(-1)?.get("jira")).toBe(entry)
+		expect(gatewayExecute).toHaveBeenCalledTimes(2)
 		await harness.getHandler("session_shutdown")({ type: "session_shutdown" }, createContext())
-		upstream.sessionMetadataObserver?.("jira", entry)
+		replacementObserver?.("jira", entry)
 		expect(readOnlyState.privateCatalogs.at(-1)?.has("jira")).toBe(false)
 	})
 

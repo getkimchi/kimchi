@@ -57,7 +57,8 @@
 #     when upstream re-reads shared credentials before and on refresh
 #     failure)
 #   - Live session catalog observation: getkimchi/kimchi#1787; propose this
-#     onSessionMetadata observer upstream for review and remove the hunk when
+#     onSessionMetadata observer and its per-runtime factory upstream for review
+#     and remove the hunk when
 #     upstream exposes session-bound catalog metadata (including private
 #     authorization scopes) to host authorization policy without persisting it.
 # Changes:
@@ -966,12 +967,14 @@ diff --git a/dist/types.d.ts b/dist/types.d.ts
 index cd540e229b893f6c9cec107b736dcea22ce4111c..c81f47a123b4f2851022f132e24de554531c5fd2 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -522,6 +522,17 @@ export interface McpConfig {
+@@ -522,6 +522,19 @@ export interface McpConfig {
  export interface McpAdapterOptions {
      config?: McpConfig;
      configPath?: string;
 +    /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
 +    onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
++    /** Create a session-bound observer during each runtime initialization. */
++    createSessionMetadataObserver?: () => (serverName: string, entry: ServerCacheEntry) => void;
 +    /**
 +     * MCP protocol era applied to every configured server whose entry does not
 +     * set `protocolVersion` itself. `"auto"` offers the SDK's default
@@ -1130,7 +1133,7 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
              }
            : {}),
 +        ...(defaultProtocolVersion !== undefined ? { defaultProtocolVersion } : {}),
-+        onSessionMetadata: options.onSessionMetadata,
++        onSessionMetadata: options.createSessionMetadataObserver?.() ?? options.onSessionMetadata,
          oauthRuntime,
          excludeProjectServers,
          // Pi awaits session_start handlers in order. Returning before the approval
@@ -1150,7 +1153,7 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
    // Opt-in `mcp.panel.open` keys open the panel without touching the editor draft.
    // Shortcut handlers get no reload(), so dispatch the command: its context has one.
    if (!programmaticConfig) {
-@@ -2370,6 +2377,10 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
+@@ -2370,6 +2377,11 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
      installMcpAdapter(pi, {
        ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
        ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
@@ -1158,6 +1161,7 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
 +        ? { defaultProtocolVersion: options.defaultProtocolVersion }
 +        : {}),
 +      onSessionMetadata: options.onSessionMetadata,
++      createSessionMetadataObserver: options.createSessionMetadataObserver,
      });
    };
  }
@@ -2320,12 +2324,14 @@ diff --git a/types.ts b/types.ts
 index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..12089e9a604b522e7e03f0ee1ecd15324ab48207 100644
 --- a/types.ts
 +++ b/types.ts
-@@ -732,6 +732,17 @@ export interface McpConfig {
+@@ -732,6 +732,19 @@ export interface McpConfig {
  export interface McpAdapterOptions {
    config?: McpConfig;
    configPath?: string;
 +  /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
 +  onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
++  /** Create a session-bound observer during each runtime initialization. */
++  createSessionMetadataObserver?: () => (serverName: string, entry: ServerCacheEntry) => void;
 +  /**
 +   * MCP protocol era applied to every configured server whose entry does not
 +   * set `protocolVersion` itself. `"auto"` offers the SDK's default
