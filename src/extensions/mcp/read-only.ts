@@ -81,15 +81,20 @@ function collectMcpToolCandidates(config: McpConfig): McpToolCandidate[] {
 		for (const tool of reconstructToolMetadata(serverName, entry, prefix, definition, config.mcpServers, cache)) {
 			if (reserved.has(tool.name)) continue
 			const source = entry.tools.find((candidate) => candidate.name === tool.originalName)
+			const sourceResource =
+				tool.resourceUri === undefined
+					? undefined
+					: entry.resources.find((resource) => resource.uri === tool.resourceUri)
 			candidates.push({
 				serverName,
 				prefix,
 				tool,
 				readOnly:
-					nameCounts.get(tool.name) === 1 &&
-					!tool.resourceUri &&
-					source !== undefined &&
-					isReadOnlyQualifiedMcpTool(source.name, source.annotations),
+					sourceResource !== undefined ||
+					(nameCounts.get(tool.name) === 1 &&
+						tool.resourceUri === undefined &&
+						source !== undefined &&
+						isReadOnlyQualifiedMcpTool(source.name, source.annotations)),
 			})
 		}
 	}

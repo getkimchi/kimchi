@@ -465,10 +465,10 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			const effectiveConfig =
 				gateway !== undefined
 					? {
-							...selectedResult.config,
-							mcpServers: { ...selectedResult.config.mcpServers, [gateway.name]: gateway.entry },
+							...config,
+							mcpServers: { ...config.mcpServers, [gateway.name]: gateway.entry },
 						}
-					: selectedResult.config
+					: config
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
 			const adapterOptions: McpAdapterOptions =

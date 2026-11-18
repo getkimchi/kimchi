@@ -1,6 +1,7 @@
 // ACP integration: plan mode advertises the MCP gateway for read-only
 // operations and tells the model why write-capable direct tools are absent.
 
+import { rmSync } from "node:fs"
 import { afterEach, describe, expect, it } from "vitest"
 import { mcpToolResult } from "../tui/support/mcp-fixture.js"
 import {
@@ -106,6 +107,63 @@ describe(
 				}),
 			).toBe(true)
 			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Enable MCP access in plan mode")
+		})
+
+		it("executes a plan-mode gateway read from an ACP caller-only server", async () => {
+			const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
+			fixture = await startAcpMcpFixture({
+				artifactName: "acp-plan-mode-mcp-caller-only-read",
+				extraArgs: ["--plan"],
+				mcp: {
+					behavior: {
+						catalogTools: [
+							{
+								name: "getJiraIssue",
+								description: "Read a Jira issue",
+								inputSchema: {
+									type: "object",
+									properties: { issueIdOrKey: { type: "string" } },
+									additionalProperties: false,
+								},
+								annotations: { readOnlyHint: true },
+							},
+						],
+						tools: [
+							mcpToolResult("getJiraIssue", {
+								content: [{ type: "text", text: "LLM-4358 from the ACP caller" }],
+							}),
+						],
+					},
+				},
+				responses: [read.response, modelReply("I read the caller-only Jira server in plan mode.")],
+			})
+			// Remove the initial file definition: session/new below is the sole source
+			// of this server for the adapter and must also be the authorization source.
+			rmSync(fixture.mcp.configPath)
+			const server = fixture.mcp.serverDefinition
+			if (server.command === undefined) throw new Error("Expected the stdio MCP fixture")
+			const session = await fixture.conn.newSession({
+				cwd: fixture.workDir,
+				mcpServers: [
+					{
+						name: fixture.mcp.serverName,
+						command: server.command,
+						args: server.args ?? [],
+						env: Object.entries(server.env ?? {}).map(([name, value]) => ({ name, value })),
+					},
+				],
+			})
+
+			expect((await prompt(fixture, session.sessionId, "Read LLM-4358 from the caller server")).stopReason).toBe(
+				"end_turn",
+			)
+			expect(
+				fixture.mcp.hasEvent("tool_called", {
+					name: "getJiraIssue",
+					arguments: { issueIdOrKey: "LLM-4358" },
+				}),
+			).toBe(true)
+			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358 from the ACP caller")
 		})
 	},
 	STARTUP_TIMEOUT_MS,

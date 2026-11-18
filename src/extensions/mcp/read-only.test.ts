@@ -179,6 +179,15 @@ describe("collectReadOnlyMcpWireNames", () => {
 		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access", "beta")).toBe(true)
 	})
 
+	it("qualifies cached resource-backed read tools", () => {
+		const resourceConfig: McpConfig = { mcpServers: { alpha: { ...config.mcpServers.alpha } } }
+		const cache = setCache(resourceConfig, { alpha: [] })
+		cache.servers.alpha.resources = [{ name: "figjam", uri: "file:///board" }]
+
+		expect(isReadOnlyQualifiedMcpGatewayTool(resourceConfig, "read_figjam", "alpha")).toBe(true)
+		expect(isReadOnlyQualifiedMcpGatewayTool(resourceConfig, "alpha_read_figjam", "alpha")).toBe(true)
+	})
+
 	it("preserves displayed-name precedence when an original alias names another tool", () => {
 		setCache(config, {
 			alpha: [{ name: "get_issue", annotations: { readOnlyHint: true } }],

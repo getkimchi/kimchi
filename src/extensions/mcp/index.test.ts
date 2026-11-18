@@ -57,7 +57,10 @@ const oauthBranding = vi.hoisted(() => ({
 	brandedContext: vi.fn(<T>(ctx: T): T => ctx),
 }))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
-const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
+const readOnlyState = vi.hoisted(() => ({
+	wireNames: new Set<string>(),
+	authorizationConfigs: [] as McpConfig[],
+}))
 const gatewayState = vi.hoisted(() => ({
 	server: undefined as { name: string; entry: ServerEntry } | undefined,
 	addresses: ["https://api.cast.ai/mcp"],
@@ -127,7 +130,8 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 vi.mock("./read-only.js", () => ({
 	collectReadOnlyMcpWireNames: (_config: McpConfig, server?: string) =>
 		[...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`)),
-	isReadOnlyQualifiedMcpGatewayTool: (_config: McpConfig, toolName: string, server?: string) => {
+	isReadOnlyQualifiedMcpGatewayTool: (config: McpConfig, toolName: string, server?: string) => {
+		readOnlyState.authorizationConfigs.push(config)
 		const names = [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
 		return names.includes(toolName) || (server !== undefined && names.includes(`${server}_${toolName}`))
 	},
@@ -201,6 +205,7 @@ describe("upstream MCP adapter facade", () => {
 		planning.currentProfile = undefined
 		permissionState.mode = undefined
 		readOnlyState.wireNames.clear()
+		readOnlyState.authorizationConfigs.length = 0
 		planning.applyCooperativeTweak.mockClear()
 		planning.reapplyCurrentProfile.mockReset().mockReturnValue(false)
 	})
@@ -881,6 +886,25 @@ describe("upstream MCP adapter facade", () => {
 				settings: { scriptMode: false },
 			},
 			defaultProtocolVersion: "auto",
+		})
+
+		planning.currentProfile = "planning-adhoc"
+		readOnlyState.wireNames.add("callerOnly_get_issue")
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+		await harness
+			.getRegisteredTool("mcp")
+			.execute(
+				"gateway",
+				{ tool: "callerOnly_get_issue", server: "callerOnly", args: {} },
+				undefined,
+				undefined,
+				createToolContext(),
+			)
+		expect(gatewayExecute).toHaveBeenCalledOnce()
+		expect(readOnlyState.authorizationConfigs.at(-1)?.mcpServers).toMatchObject({
+			shared: { command: "from-acp" },
+			callerOnly: { command: "caller-only" },
 		})
 	})
 

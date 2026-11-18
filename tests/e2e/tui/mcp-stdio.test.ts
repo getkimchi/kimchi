@@ -368,6 +368,46 @@ test("reads an MCP resource through the gateway", async ({ terminal }) => {
 	)
 })
 
+test("reads an MCP resource through the gateway in plan mode", async ({ terminal }) => {
+	const resource = gatewayMcpCall("read_fixture_note")
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-plan-resource",
+			extraArgs: ["--plan=true"],
+			mcp: {
+				behavior: {
+					resources: [
+						mcpResourceResult("fixture://note", {
+							contents: [
+								{
+									uri: "fixture://note",
+									mimeType: "text/plain",
+									text: "fixture resource: kimchi-mcp-resource",
+								},
+							],
+						}),
+					],
+				},
+			},
+			responses: [resource.response, modelReply("The MCP resource was read without leaving plan mode.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Read the MCP fixture resource before planning")
+			await waitForText(terminal, "The MCP resource was read without leaving plan mode.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			const resourceEvent = await fixture.mcp.waitForEvent("resource_read", {
+				where: { uri: "fixture://note" },
+			})
+			expect(resourceEvent.uri).toBe("fixture://note")
+			expect(toolResultText(fixture.fake.requests, resource)).toContain("fixture resource: kimchi-mcp-resource")
+			trace.step("nested resource read crossed MCP and model boundaries in plan mode")
+		},
+	)
+})
+
 test("preserves MCP text and safely represents image content for a text-only model", async ({ terminal }) => {
 	const mixedContent = gatewayMcpCall("mixed_content")
 	await runMcpKimchiSession(
