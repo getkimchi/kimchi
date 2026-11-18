@@ -169,9 +169,9 @@ export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[
  * - The harness dir is excluded because pi loads it natively via
  *   includeDefaults (agentDir/skills) — contributing it again is redundant.
  * - Bundled skills already present in a stronger path (harness, config, or
- *   project) are silently skipped via a filtered temp copy, so no collision
- *   warnings are emitted. New bundled skills not present elsewhere are still
- *   contributed.
+ *   project) are silently skipped, so no collision warnings are emitted.
+ *   Remaining bundled skills are contributed through their original individual
+ *   directories, avoiding temporary copies on every session's discovery.
  *
  * @param cwd Working directory for project ancestor search.
  * @param homeDir Override for os.homedir() (tests).
@@ -227,8 +227,7 @@ export function resolveSkillPathsForDiscovery(
 		if (!existsSync(normalized)) continue
 
 		if (root.kind === "bundled") {
-			const filtered = filterBundledSkills(normalized, skillNamesFromStronger)
-			if (filtered) {
+			for (const filtered of filterBundledSkills(normalized, skillNamesFromStronger)) {
 				seen.add(filtered)
 				paths.push(filtered)
 			}
@@ -386,10 +385,8 @@ function visibleBundledDir(bundledDir: string): string | undefined {
 	return value
 }
 
-function filterBundledSkills(bundledDir: string, existingSkillNames: Set<string>): string | undefined {
-	const bundledSkills = listSkillNames(bundledDir).filter((name) => !bundledSkillDisabledByResource(bundledDir, name))
-	if (bundledSkills.length === 0) return undefined
-	const newSkills = bundledSkills.filter((name) => !existingSkillNames.has(name))
-	if (newSkills.length === 0) return undefined
-	return copySkillsToTempDir(bundledDir, newSkills)
+function filterBundledSkills(bundledDir: string, existingSkillNames: Set<string>): string[] {
+	return listSkillNames(bundledDir)
+		.filter((name) => !bundledSkillDisabledByResource(bundledDir, name) && !existingSkillNames.has(name))
+		.map((name) => join(bundledDir, name))
 }
