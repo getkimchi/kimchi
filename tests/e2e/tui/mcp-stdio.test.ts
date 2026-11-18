@@ -178,6 +178,12 @@ test("reads Jira through the MCP gateway without leaving a resumed plan-mode ses
 				},
 			},
 			responses: [
+				// Session naming shares the fake model endpoint; keep its asynchronous request
+				// from consuming either of the scripted gateway turns.
+				{
+					...modelReply("Read Jira through the gateway"),
+					match: (request) => JSON.stringify(request.body).includes("Name the user's actual task"),
+				},
 				read.response,
 				modelReply("I read LLM-4358 through the gateway while planning."),
 				resumedRead.response,
