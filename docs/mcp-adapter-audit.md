@@ -79,8 +79,9 @@ The binary build combines master's Photon WASM embedding with this branch's
 `src/binary-entry.ts`, preserving the in-binary keyring recovery dispatcher.
 ACP import discovery/application use the package's `ServerEntry` type;
 session-scoped MCP setup and master's session/authentication changes are
-both retained. Planning continues to exclude MCP tools by this branch's
-existing policy while retaining master's Ferment V2 tools.
+both retained. Planning admits read-only-qualified direct MCP tools and an
+argument-restricted gateway, while blocking mutations, scripts, and namespace
+proxies and retaining master's Ferment V2 tools.
 
 ## Local behavior retained
 
@@ -323,10 +324,12 @@ reconnects, and calls to non-read-only tools also stay blocked: the gateway
 remains capable of arbitrary server-side execution, so its arguments are
 checked on every call.
 
-Annotations reach the facade through the adapter's persistent metadata cache,
-which a third patch hunk keeps by serializing `annotations` alongside name and
-schema. The facade registers a `registerReadOnlyToolProvider` with the profile
-manager; planning profiles union provider names with the planning catalog. A
+Annotations reach the facade through the adapter's persistent shared metadata
+cache and its current session-only catalogs, including private authorization
+scopes. Private catalogs remain in memory and must match the current server
+configuration before reconstruction; they never become shared cache entries.
+The facade registers a `registerReadOnlyToolProvider` with the profile manager;
+planning profiles union provider names with the planning catalog. A
 planning snapshot is refreshed before the agent starts, closing the race where
 direct tools finish registering after the initial profile selection.
 
@@ -438,7 +441,7 @@ regressions:
 | OAuth callback branding | Users finish authorization on an unbranded package page or provider errors render unsafe HTML | Compiled-browser success/denial scenarios plus renderer and real HTTP-response unit tests |
 | Repository project trust | Opening a clone executes a project `.mcp.json` command during cache bootstrap | Compiled TUI accept/deny sentinel scenarios plus headless ACP denial and trust-resolution units |
 | Product/model branding | Setup, MCP App pages, or model guidance identifies Kimchi as Pi or recommends a hidden tool | Compiled setup/browser/model-contract scenarios plus exact-boundary units |
-| Plan-mode MCP exposure leak | A non-read-only direct or gateway MCP tool becomes visible or callable during planning | TUI scenario asserts the gateway and write-capable direct tools are neither advertised nor callable; unit tests verify read-only qualification, planning-catalog admission via the provider seam, and the defensive execution block |
+| Plan-mode MCP exposure leak | A read-only gateway operation is incorrectly denied, or a non-read-only direct or gateway MCP tool becomes visible or callable during planning | TUI/ACP scenarios require an advertised gateway and successful qualified reads while asserting that mutating gateway calls and write-capable direct tools remain blocked; unit tests verify read-only qualification, planning-catalog admission via the provider seam, and the defensive execution block |
 | ACP session isolation | One Desktop session sees another session's servers, or caller definitions lose precedence | ACP `session/new`/`session/load`, collision, direct-tool registration, and multi-session configuration tests |
 | Probe cleanup and OAuth isolation | Probe hangs, leaves a callback listener/process alive, or overwrites another server's credentials | CLI and compiled ACP probes for stdio, HTTP, timeout/failure, OAuth, and same-name/different-URL behavior |
 | Adapter startup and direct-tool synchronization | First request lacks tools, a restrictive profile is widened, or stale tools survive reconnect | TUI lifecycle, restart, stdio, failure, and planning scenarios |
