@@ -1,4 +1,5 @@
-import { Container, Spacer } from "@earendil-works/pi-tui"
+import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
+import { Box, Container, Spacer, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
 	buildCurrentToolLine,
@@ -7,16 +8,42 @@ import {
 	classifyTool,
 	computeExpandPropagation,
 	decideAssistantTextFold,
+	ensureOriginalChildren,
 	findToolGroup,
 	formatSummary,
+	getCollapseWorkMode,
 	getParent,
+	invalidateCollapseWorkModeCache,
 	isSupersededByLaterTool,
+	maybeInjectCollapseWorkSetting,
 	muteAssistantLines,
 	patchAddChild,
+	patchToolGroupRendering,
+	renderHeaderOnly,
+	resetToolGroupingSessionState,
 } from "./tool-grouping.js"
+
+// The fold mode is the only input these render paths take from settings; keep it
+// controllable per test instead of touching the user's real settings file.
+const settings = vi.hoisted(() => ({ mode: "tools" as "all" | "tools" | "off", reads: 0 }))
+vi.mock("./work-collapse-settings.js", () => ({
+	readCollapseWorkMode: () => {
+		settings.reads += 1
+		return settings.mode
+	},
+	writeCollapseWorkMode: (mode: "all" | "tools" | "off") => {
+		settings.mode = mode
+		return { ok: true as const, path: "/tmp/mock-settings.json", scope: "global" as const }
+	},
+	resolveCollapseWorkProjectTrust: () => false,
+	isCollapseWorkOverriddenByProject: () => false,
+}))
 
 afterEach(() => {
 	vi.useRealTimers()
+	settings.mode = "tools"
+	settings.reads = 0
+	resetToolGroupingSessionState()
 })
 
 describe("classifyTool", () => {
@@ -99,7 +126,7 @@ describe("formatSummary", () => {
 		expect(formatSummary(new Map([["command", 3]]), false)).toBe("ran 3 commands")
 	})
 	it("formats past tense operation", () => {
-		expect(formatSummary(new Map([["operation", 2]]), false)).toBe("2 operations")
+		expect(formatSummary(new Map([["operation", 2]]), false)).toBe("ran 2 operations")
 	})
 	it("formats continuous tense file", () => {
 		expect(formatSummary(new Map([["file", 2]]), true)).toBe("reading 2 files")
@@ -305,6 +332,13 @@ describe("isSupersededByLaterTool", () => {
 		expect(isSupersededByLaterTool(children, 0)).toBe(true)
 	})
 
+	it("is true for a same-run tool separated by a spacer only", () => {
+		const a = mockTool("a")
+		const b = mockTool("b")
+		const children = [a, new Spacer(1), b]
+		expect(isSupersededByLaterTool(children, 0)).toBe(true)
+	})
+
 	it("is false for the last tool", () => {
 		const a = mockTool("a")
 		const b = mockTool("b")
@@ -317,6 +351,25 @@ describe("isSupersededByLaterTool", () => {
 		const text = { lastMessage: { role: "assistant" } }
 		const children = [a, text]
 		expect(isSupersededByLaterTool(children, 0)).toBe(false)
+	})
+
+	it("does not cross a turn boundary into the next turn's tools", () => {
+		const a = mockTool("a")
+		const text = { lastMessage: { role: "assistant" } }
+		const userTurn = { lastMessage: { role: "user" } }
+		const b = mockTool("b")
+		const children = [a, text, userTurn, b]
+		expect(isSupersededByLaterTool(children, 0)).toBe(false)
+	})
+
+	it("stops at the first run breaker, matching findRunSpan", () => {
+		const a = mockTool("a")
+		const other = { render: () => [], invalidate: () => {} }
+		const b = mockTool("b")
+		const children = [a, other, b]
+		expect(isSupersededByLaterTool(children, 0)).toBe(false)
+		// …and the run itself agrees there is no group to fold.
+		expect(findToolGroup(a, children)).toEqual([a])
 	})
 })
 
@@ -522,7 +575,7 @@ describe("buildGroupView", () => {
 		expect(headerLine).toContain("1 failed")
 	})
 
-	it("shows 'Working…' with duration while in progress", () => {
+	it("shows 'Working for' with duration while in progress", () => {
 		const now = new Date("2026-01-01T00:00:05.000Z")
 		vi.useFakeTimers()
 		vi.setSystemTime(now)
@@ -534,16 +587,347 @@ describe("buildGroupView", () => {
 		;(run[1] as any).rendererState = { _executionStartedAt: now.getTime() - 5000 }
 		const view = buildGroupView(run, plainTheme)
 		const headerLine = view.render(120)[0]
-		expect(headerLine).toContain("Working…")
-		expect(headerLine).toContain("5.0s")
+		expect(headerLine).toContain("Working for 5.0s")
 		expect(headerLine).toContain("ctrl+o to expand")
 	})
 
-	it("falls back to counts-only when no timestamps are available", () => {
+	it("falls back to a bare status label when no timestamps are available", () => {
 		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("read", { path: "b.ts" })]
 		const view = buildGroupView(run, plainTheme)
 		const headerLine = view.render(120)[0]
-		expect(headerLine).toContain("Worked")
+		expect(headerLine).toContain("Done")
 		expect(headerLine).toContain("read 2 files")
+	})
+
+	it("renders an error glyph and an error-coloured failure count for failed runs", () => {
+		const run = [mockToolFull("read", { path: "a.ts" }), mockTool("b", { isError: true })]
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(run[0] as any).rendererState = { _executionStartedAt: Date.now() - 5000, _executionEndedAt: Date.now() }
+		const view = buildGroupView(run, plainTheme)
+		const headerLine = view.render(120)[0]
+		expect(headerLine).toContain("✗")
+		expect(headerLine).not.toContain("✓")
+		expect(headerLine).toContain("1 failed call")
+	})
+})
+
+describe("buildGroupView live timer on mixed runs", () => {
+	const plainTheme = {
+		fg: (_key: string, value: string) => value,
+	}
+
+	it("keeps advancing while a completed member sits in the same run", () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date("2026-01-01T00:00:10.000Z"))
+		const now = Date.now()
+		const completed = mockToolFull("read", { path: "a.ts" })
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(completed as any).rendererState = { _executionStartedAt: now - 8000, _executionEndedAt: now - 7000 }
+		const running = mockToolFull("bash", { command: "cargo build" }, { isPartial: true })
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(running as any).rendererState = { _executionStartedAt: now - 1000 }
+
+		const header = buildGroupView([completed, running], plainTheme).render(120)[0]
+		expect(header).toContain("Working")
+		// Live elapsed (8.0s from the run start), not the frozen completed span (1.0s).
+		expect(header).toContain("8.0s")
+		expect(header).not.toContain("1.0s")
+
+		vi.advanceTimersByTime(3000)
+		const later = buildGroupView([completed, running], plainTheme).render(120)[0]
+		expect(later).toContain("11.0s")
+	})
+
+	it("keeps the frozen run span once every member has completed", () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date("2026-01-01T00:00:10.000Z"))
+		const now = Date.now()
+		const completed = mockToolFull("read", { path: "a.ts" })
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(completed as any).rendererState = { _executionStartedAt: now - 8000, _executionEndedAt: now - 7000 }
+		vi.advanceTimersByTime(3000)
+		const header = buildGroupView([completed], plainTheme).render(120)[0]
+		expect(header).toContain("Worked for 1.0s")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Render-level fake component (inherits the real ToolExecutionComponent
+// prototype so the module's prototype patches are exercised end to end).
+// ---------------------------------------------------------------------------
+
+interface FakeToolHarness {
+	// biome-ignore lint/suspicious/noExplicitAny: fake ToolExecutionComponent instance
+	fake: any
+	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
+	callRegion: any
+	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
+	resultRegion: any
+	originalBg: (text: string) => string
+}
+
+const renderTheme = { fg: (_key: string, value: string) => value }
+
+function makeFakeToolHarness(index: number): FakeToolHarness {
+	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
+	const callRegion: any = { render: () => [`call-${index}`], invalidate: () => {} }
+	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
+	const resultRegion: any = { render: () => [`result-${index}`], invalidate: () => {} }
+	const originalBg = (text: string) => text
+	// biome-ignore lint/suspicious/noExplicitAny: Box children are swapped with stand-ins
+	const contentBox: any = new Box(1, 1, originalBg)
+	contentBox.children = [callRegion, resultRegion]
+
+	// biome-ignore lint/suspicious/noExplicitAny: fake instance of the patched prototype
+	const fake: any = Object.create(ToolExecutionComponent.prototype)
+	Object.assign(fake, {
+		children: [contentBox],
+		contentBox,
+		toolName: "read",
+		toolCallId: `tc-${index}`,
+		args: { path: `file-${index}.ts` },
+		isPartial: false,
+		expanded: false,
+		result: { content: [], isError: false },
+		rendererState: {},
+		ui: { theme: renderTheme },
+	})
+	fake.updateDisplay = vi.fn(() => {
+		contentBox.children = [callRegion, resultRegion]
+	})
+	return { fake, callRegion, resultRegion, originalBg }
+}
+
+describe("patched render: mode-off restore", () => {
+	it("restores the original children when the mode switches from tools to off", () => {
+		settings.mode = "tools"
+		patchAddChild()
+		patchToolGroupRendering()
+
+		const first = makeFakeToolHarness(1)
+		const second = makeFakeToolHarness(2)
+		const parent = new Container()
+		parent.addChild(first.fake)
+		parent.addChild(second.fake)
+
+		first.fake.render(80)
+		// Folded: the contentBox holds the group row only, repainted per tool state.
+		expect(first.fake.contentBox.children).toHaveLength(1)
+		expect(first.fake.contentBox.bgFn).not.toBe(first.originalBg)
+		expect(first.fake.contentBox.paddingY).toBe(0)
+
+		settings.mode = "off"
+		invalidateCollapseWorkModeCache()
+		first.fake.render(80)
+
+		// This is the regression: the old code restored cosmetics and then let the
+		// dead-code guard swallow the rebuild, leaving the folded row on screen.
+		expect(first.fake.updateDisplay).toHaveBeenCalledTimes(1)
+		expect(first.fake.contentBox.children).toEqual([first.callRegion, first.resultRegion])
+		expect(first.fake.contentBox.bgFn).toBe(first.originalBg)
+		expect(first.fake.contentBox.paddingY).toBe(1)
+	})
+
+	it("does not rebuild again on later off-mode frames", () => {
+		settings.mode = "tools"
+		patchAddChild()
+		patchToolGroupRendering()
+
+		const first = makeFakeToolHarness(3)
+		const second = makeFakeToolHarness(4)
+		const parent = new Container()
+		parent.addChild(first.fake)
+		parent.addChild(second.fake)
+		first.fake.render(80)
+
+		settings.mode = "off"
+		invalidateCollapseWorkModeCache()
+		first.fake.render(80)
+		first.fake.render(80)
+		expect(first.fake.updateDisplay).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("ensureOriginalChildren", () => {
+	it("is a no-op when no fold swap is registered", () => {
+		const harness = makeFakeToolHarness(5)
+		ensureOriginalChildren(harness.fake)
+		expect(harness.fake.updateDisplay).not.toHaveBeenCalled()
+		expect(harness.fake.contentBox.children).toEqual([harness.callRegion, harness.resultRegion])
+	})
+
+	it("restores cosmetics and rebuilds the children exactly once", () => {
+		const harness = makeFakeToolHarness(6)
+		renderHeaderOnly(harness.fake, () => ["call-6"], 80) // registers the swap
+		harness.fake.contentBox.children = [harness.callRegion]
+		harness.fake.contentBox.bgFn = () => ""
+		harness.fake.contentBox.paddingY = 0
+
+		ensureOriginalChildren(harness.fake)
+		expect(harness.fake.updateDisplay).toHaveBeenCalledTimes(1)
+		expect(harness.fake.contentBox.children).toEqual([harness.callRegion, harness.resultRegion])
+		expect(harness.fake.contentBox.bgFn).toBe(harness.originalBg)
+		expect(harness.fake.contentBox.paddingY).toBe(1)
+
+		ensureOriginalChildren(harness.fake)
+		expect(harness.fake.updateDisplay).toHaveBeenCalledTimes(1)
+	})
+
+	it("never throws and re-arms the swap when updateDisplay fails", () => {
+		const harness = makeFakeToolHarness(7)
+		renderHeaderOnly(harness.fake, () => ["call-7"], 80)
+		harness.fake.contentBox.bgFn = () => ""
+
+		const failing = vi.fn(() => {
+			throw new Error("updateDisplay boom")
+		})
+		harness.fake.updateDisplay = failing
+		expect(() => ensureOriginalChildren(harness.fake)).not.toThrow()
+		// Cosmetics are already restored; only the rebuild is left for a later frame.
+		expect(harness.fake.contentBox.bgFn).toBe(harness.originalBg)
+
+		harness.fake.updateDisplay = vi.fn()
+		ensureOriginalChildren(harness.fake)
+		expect(harness.fake.updateDisplay).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("renderHeaderOnly", () => {
+	it("appends the expand hint to the header line", () => {
+		const harness = makeFakeToolHarness(8)
+		const lines = renderHeaderOnly(harness.fake, () => ["call-8"], 80)
+		expect(lines).toHaveLength(1)
+		expect(lines[0]).toContain("call-8")
+		expect(lines[0]).toContain("ctrl+o to expand")
+	})
+
+	it("targets the last visible line and keeps padding lines intact", () => {
+		const harness = makeFakeToolHarness(9)
+		const lines = renderHeaderOnly(harness.fake, () => ["", "call-9", ""], 80)
+		expect(lines).toHaveLength(3)
+		expect(lines[0]).toBe("")
+		expect(lines[1]).toContain("ctrl+o to expand")
+		expect(lines[2]).toBe("")
+	})
+
+	it("never emits an over-wide line", () => {
+		const harness = makeFakeToolHarness(10)
+		const lines = renderHeaderOnly(harness.fake, () => ["x".repeat(60)], 20)
+		// Measured in visible cells so SGR sequences don't count toward the width.
+		expect(visibleWidth(lines[0])).toBeLessThanOrEqual(20)
+	})
+
+	it("registers the swap so a left click toggles the expand state", () => {
+		patchToolGroupRendering()
+		const harness = makeFakeToolHarness(11)
+		renderHeaderOnly(harness.fake, () => ["call-11"], 80)
+
+		expect(harness.fake.expanded).toBe(false)
+		const result = harness.fake.handleMouse({
+			type: "click",
+			button: "left",
+			x: 1,
+			y: 0,
+			width: 80,
+			height: 10,
+			screenX: 1,
+			screenY: 0,
+		})
+		expect(result).toEqual({ handled: true })
+		expect(harness.fake.expanded).toBe(true)
+	})
+})
+
+describe("getCollapseWorkMode caching", () => {
+	it("reads the settings file at most once within the TTL window", () => {
+		resetToolGroupingSessionState()
+		settings.reads = 0
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"))
+
+		expect(getCollapseWorkMode()).toBe("tools")
+		expect(getCollapseWorkMode()).toBe("tools")
+		expect(getCollapseWorkMode()).toBe("tools")
+		expect(settings.reads).toBe(1)
+
+		// After the TTL elapses the next read re-consults the file.
+		vi.advanceTimersByTime(5_001)
+		expect(getCollapseWorkMode()).toBe("tools")
+		expect(settings.reads).toBe(2)
+	})
+
+	it("invalidateCollapseWorkModeCache forces the next read to observe a change", () => {
+		resetToolGroupingSessionState()
+		settings.reads = 0
+		expect(getCollapseWorkMode()).toBe("tools")
+		settings.mode = "off"
+		// Without invalidation the cached value is still served.
+		expect(getCollapseWorkMode()).toBe("tools")
+		invalidateCollapseWorkModeCache()
+		expect(getCollapseWorkMode()).toBe("off")
+	})
+})
+
+describe("maybeInjectCollapseWorkSetting", () => {
+	function makeList() {
+		const items: Array<{ id: string; label: string; description: string; currentValue: string; values: string[] }> = []
+		const calls: Array<{ id: string; value: string }> = []
+		const list = {
+			items,
+			onChange: (id: string, value: string) => {
+				calls.push({ id, value })
+			},
+		}
+		return { list, items, calls }
+	}
+
+	it("injects the Collapse work row with the three modes", () => {
+		const { list, items } = makeList()
+		expect(maybeInjectCollapseWorkSetting(list)).toBe(true)
+		expect(items).toHaveLength(1)
+		expect(items[0]).toMatchObject({
+			id: "collapse-work",
+			label: "Collapse work",
+			currentValue: "tools",
+			values: ["all", "tools", "off"],
+		})
+		expect(items[0]?.description.length ?? 0).toBeGreaterThan(0)
+	})
+
+	it("does not inject twice", () => {
+		const { list, items } = makeList()
+		maybeInjectCollapseWorkSetting(list)
+		expect(maybeInjectCollapseWorkSetting(list)).toBe(false)
+		expect(items).toHaveLength(1)
+	})
+
+	it("persists changes through the wrapped onChange and delegates other ids", () => {
+		const { list, calls } = makeList()
+		maybeInjectCollapseWorkSetting(list)
+
+		list.onChange("collapse-work", "off")
+		expect(settings.mode).toBe("off")
+		expect(calls).toEqual([])
+
+		list.onChange("hide-thinking", "true")
+		expect(calls).toEqual([{ id: "hide-thinking", value: "true" }])
+	})
+
+	it("ignores objects that are not settings lists", () => {
+		expect(maybeInjectCollapseWorkSetting(undefined)).toBe(false)
+		expect(maybeInjectCollapseWorkSetting({})).toBe(false)
+		expect(maybeInjectCollapseWorkSetting({ items: [] })).toBe(false)
+	})
+})
+
+describe("muteAssistantLines memoization", () => {
+	it("returns the cached result for the same input array and colour", () => {
+		const lines = ["first line", "second line"]
+		const first = muteAssistantLines(lines, "\x1b[90m")
+		const second = muteAssistantLines(lines, "\x1b[90m")
+		expect(second).toBe(first)
+
+		const other = muteAssistantLines(["different"], "\x1b[90m")
+		expect(other).not.toBe(first)
 	})
 })

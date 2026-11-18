@@ -180,7 +180,9 @@ export function firstRunSettingsDefaults(): Record<string, unknown> {
 	return {
 		quietStartup: true,
 		theme: "kimchi-minimal",
-		retry: RETRY_DEFAULTS,
+		// Deep copy so callers mutating a nested field (e.g.
+		// `retry.provider.timeoutMs`) can't corrupt the shared defaults.
+		retry: structuredClone(RETRY_DEFAULTS),
 		hideThinkingBlock: true,
 		collapseWork: "all",
 	}
