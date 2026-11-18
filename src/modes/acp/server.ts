@@ -945,13 +945,15 @@ export class KimchiAcpAgent implements Agent {
 	 *    auth.json and would overwrite the OAuth entries at the next launch.
 	 * 2. Persist the signed-in region so endpoint derivation matches the
 	 *    tenant the user authenticated against.
-	 * 3. Refresh models metadata with the fresh bearer (cached fallback
+	 * 3. Store the org-scoped credential durably before clearing rejection
+	 *    state for the credential it replaces.
+	 * 4. Refresh models metadata with the fresh bearer (cached fallback
 	 *    allowed, like the browser-key flow) and stamp the org header on every
 	 *    Kimchi provider — the gateway routes SSO requests by
 	 *    X-CastAi-Organization-Id (covers the cached-fallback path too).
-	 * 4. Fan the org-scoped credential out to every Kimchi-managed provider in
+	 * 5. Fan the org-scoped credential out to every Kimchi-managed provider in
 	 *    models.json (sub-providers resolve auth per provider id).
-	 * 5. Refresh every OPEN session's ModelRuntime snapshot (same rationale as
+	 * 6. Refresh every OPEN session's ModelRuntime snapshot (same rationale as
 	 *    authenticate()). updateModelsConfig already clears stale marks only
 	 *    after an authenticated fetch; the settle tail must not clear a cached-401 fallback.
 	 */
@@ -964,20 +966,20 @@ export class KimchiAcpAgent implements Agent {
 			writeRegion(credentialRegion)
 		}
 		const modelsPath = join(this.agentDir, "models.json")
-		// A settled login replaces the old credential. Clear its anonymous mark
-		// before refreshing: a transient cached fallback is not authenticated
-		// success, while a real 401 below records a rejection for this new bearer.
+		const authPath = join(this.agentDir, "auth.json")
+		const orgScopedCredential = { ...credential, orgId: org.id, orgName: org.name }
+		// A failed refresh with no cached models must not leave old stored
+		// credentials with their rejection removed. Store the replacement first.
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
+		// A transient cached fallback is not authenticated success, so clear the
+		// old state before refreshing; a real 401 records it again for this bearer.
 		clearCredentialStale(KIMCHI_PROVIDER_ID)
 		await updateModelsConfig(modelsPath, credential.access, {
 			allowCachedFallback: true,
 			organizationId: org.id,
 		})
 		applyOrganizationHeader(modelsPath, org.id)
-		await syncOAuthCredentialToKimchiProviders(join(this.agentDir, "auth.json"), modelsPath, {
-			...credential,
-			orgId: org.id,
-			orgName: org.name,
-		})
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
 		await Promise.all(
 			[...this.sessions.values()].map((record) =>
 				record.session.modelRuntime.refresh({ allowNetwork: false }).catch(() => {}),

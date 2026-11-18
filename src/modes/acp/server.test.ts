@@ -197,6 +197,7 @@ import {
 } from "../../extensions/pii-redaction/vault.js"
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { __clearModelThinkingLevelsForTest, registerModelThinkingLevels, updateModelsConfig } from "../../models.js"
+import { syncOAuthCredentialToKimchiProviders } from "../../pi-auth.js"
 import { discoveredSelfHostedRegion, regionEndpoints } from "../../regions.js"
 import {
 	ACP_LIFETIME_USAGE_META_KEY,
@@ -1605,6 +1606,46 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(false)
 			resetCredentialStalenessForTests()
 			expect(isCredentialStale("castai_v1_sso-token", "kimchi-dev")).toBe(false)
+		})
+
+		it("stores the replacement SSO bearer before a no-cache model refresh fails", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempAgentDir)
+			resetCredentialStalenessForTests()
+			onTestFinished(() => {
+				resetCredentialStalenessForTests()
+				vi.mocked(syncOAuthCredentialToKimchiProviders).mockReset()
+				vi.unstubAllEnvs()
+			})
+			const authPath = join(tempAgentDir, "auth.json")
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": { type: "oauth", access: "old-rejected-token", refresh: "old-refresh-token" },
+				}),
+			)
+			markCredentialStale("old-rejected-token", "kimchi-dev")
+			const { syncOAuthCredentialToKimchiProviders: synchronizeOAuthCredential } =
+				await vi.importActual<typeof import("../../pi-auth.js")>("../../pi-auth.js")
+			vi.mocked(syncOAuthCredentialToKimchiProviders).mockImplementation(synchronizeOAuthCredential)
+			vi.mocked(updateModelsConfig).mockRejectedValueOnce(new Error("network down"))
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-sso-us" })).rejects.toThrow("network down")
+
+			const stored = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, { access?: string }>
+			expect(stored["kimchi-dev"]?.access).toBe(sso.settledCredential.credential.access)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale(sso.settledCredential.credential.access, "kimchi-dev")).toBe(false)
 		})
 
 		it("authenticates with the plain kimchi-sso method against the configured region", async () => {
