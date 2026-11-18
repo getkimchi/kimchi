@@ -1054,7 +1054,7 @@ it("withholds a receipt that was already pending when an unknown record type lat
 it("an incremental pass over a spanning backlog breathes through the fresh-window merge", async () => {
 	// Pass 1 completes 25 of 30 receipts and the cap leaves 5 pending, so quiet is NOT set, the
 	// incremental state is retained, and pass 2 runs the incremental branch over a 2,500-record
-	// backlog. The merge must breathe through it — the review's repro measured zero stretches.
+	// backlog, breathing once per fresh row on top of the paged windowed read.
 	for (let index = 0; index < 30; index++) acceptedContinuation("plan", `planner-${index}`)
 	await flushWorkSummaries()
 	const progress = {}
@@ -1084,8 +1084,9 @@ it("an incremental pass over a spanning backlog breathes through the fresh-windo
 })
 
 it("a rebuild retains only the recent slack tail of merged identities, as fixed-size hashes", async () => {
-	// The review's repro: after the first pass the accumulated state held every history row's full
-	// serialized body (2,501 identities for a 2,500-row history) and kept growing with every append.
+	// The retained identity set holds only rows a future pass's window can still re-read: after a
+	// rebuild over rows imported well before the pass, the set is empty — never the whole history —
+	// and identities are fixed-size record hashes, never serialized bodies.
 	vi.useFakeTimers({ toFake: ["Date"] })
 	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))
 	const flow = acceptedContinuation("plan", "planner-tail", { omitOrigin: true })
@@ -1119,7 +1120,7 @@ it("releases the accumulated incremental state past the retained-row cap; the ne
 	const progress: ContinuationProgress = {}
 	// The first pass runs with a zero cap: the rebuild still indexes and sweeps, but the
 	// accumulated state is released at its end — a permanently pending receipt cannot grow
-	// the index forever (the memory bound the review asked for).
+	// the index without bound.
 	await reconcileWorkContinuations(
 		dir,
 		new AbortController().signal,
@@ -1141,9 +1142,10 @@ it("releases the accumulated incremental state past the retained-row cap; the ne
 })
 
 it("a record captured during a rebuild pass is indexed by the next incremental pass", async () => {
-	// The review's live-repro'd race: the rebuild used to fill its merged set from a second windowed
-	// read pinning a later watermark, so a record captured mid-pass was marked already-merged without
-	// ever being indexed — and skipped by every later incremental pass, silently losing its link.
+	// merged identities come from the same snapshot the rebuild indexed: a record captured mid-pass
+	// (after the history read resolved) is absent from both the index and the merged set, so the
+	// next incremental pass indexes it — never skips it as already merged, which would silently
+	// lose its link.
 	const flow = acceptedContinuation("plan", "planner-race", { omitOrigin: true })
 	await flushWorkSummaries()
 	const progress: ContinuationProgress = {}

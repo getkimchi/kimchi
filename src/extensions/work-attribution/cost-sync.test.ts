@@ -2268,8 +2268,8 @@ describe("idle cost passes", () => {
 
 describe("async cost-report discovery breathing", () => {
 	it("stretches through billing discovery before the calculator starts, not only inside it", async () => {
-		// The review's repro: 2,500 requests completed all three whole-history discovery passes with a
-		// single stretch (the calculator's first). Discovery must breathe on its own.
+		// Discovery breathes on its own: the whole-history passes yield at their 2,000-row cadence
+		// before the calculator starts, instead of completing inside its first stretch.
 		const records = Array.from({ length: 5000 }, (_, index) => ({
 			version: 1,
 			type: "request",
