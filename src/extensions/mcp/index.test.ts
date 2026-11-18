@@ -524,6 +524,49 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.applyCooperativeTweak).not.toHaveBeenCalled()
 	})
 
+	it("keeps the gateway visible and executable when planning reconciliation omits it", async () => {
+		const profiles = await vi.importActual<typeof ToolProfileManager>("../../shared/planning/tool-profile-manager.js")
+		profiles.resetAll()
+		planning.reapplyCurrentProfile.mockImplementation(profiles.reapplyCurrentProfile)
+		planning.registerReadOnlyToolProvider.mockImplementation(profiles.registerReadOnlyToolProvider)
+		planning.currentProfile = "planning-adhoc"
+		cliState.plan = true
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		readOnlyState.wireNames.add("docs_get_issue")
+		const harness = createExtensionApi()
+		harness.api.registerTool(tool("read", "Read"))
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		const api = upstream.api
+		if (!api) throw new Error("Adapter was not installed")
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		api.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+
+		profiles.apply("planning-adhoc", "adhoc", harness.api)
+		api.setActiveTools(api.getActiveTools().filter((name) => name !== "mcp"))
+		profiles.reapplyCurrentProfile(harness.api)
+		expect(harness.getActiveToolNames()).toContain("mcp")
+		const result = await harness
+			.getRegisteredTool("mcp")
+			.execute(
+				"gateway",
+				{ tool: "docs_get_issue", server: "docs", args: {} },
+				undefined,
+				undefined,
+				createToolContext(),
+			)
+		expect(gatewayExecute).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
+
+		planning.currentProfile = undefined
+		cliState.plan = false
+		profiles.apply("idle", "adhoc", harness.api)
+		api.setActiveTools(api.getActiveTools().filter((name) => name !== "mcp"))
+		profiles.reapplyCurrentProfile(harness.api)
+		expect(harness.getActiveToolNames()).not.toContain("mcp")
+		profiles.resetAll()
+	})
+
 	it.each([
 		"idle",
 		"planning-adhoc",

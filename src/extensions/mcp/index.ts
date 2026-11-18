@@ -321,11 +321,16 @@ function createUpstreamApi(
 				return (toolNames: string[]): void => {
 					const allowedNames = toolNames.filter((name) => !policy.suppressedToolNames.has(name))
 					const allowed = new Set(allowedNames)
+					const profile = getCurrentProfile(target)
+					const preserveGateway =
+						getParsedCliArgs().options.plan === true || profile === "planning-adhoc" || profile === "planning-ferment"
 					const removed: string[] = []
 					adapterActiveNames.clear()
 					for (const name of registeredToolNames) {
 						if (allowed.has(name)) adapterActiveNames.add(name)
-						else removed.push(name)
+						// Omitting the admitted gateway from a planning snapshot must
+						// not create a lasting vote; reconciliation removes other tools normally.
+						else if (!preserveGateway || name !== MCP_PROXY_TOOL) removed.push(name)
 					}
 					// Persist only this adapter's votes so all later profile snapshots
 					// respect removals, without changing other extensions' visibility.
