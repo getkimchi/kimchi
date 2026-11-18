@@ -31,11 +31,30 @@ describe("document CLI command attribution", () => {
 		)
 	})
 
+	it("recognizes a quoted path followed by an output filter", () => {
+		expect(
+			attributeDocumentCliCommand('node /opt/skills/pdf/scripts/pdf.mjs read "/tmp/my report.pdf" 2>&1 | tail -20'),
+		).toEqual({ documentType: "pdf", operation: "read" })
+	})
+
+	it.each([
+		["docx", "/tmp/my report.docx", "head -5"],
+		["xlsx", "/tmp/my data.xlsx", "wc -l"],
+		["pptx", "/tmp/my deck.pptx", "grep read"],
+	])("recognizes %s quoted input with a sibling output filter", (documentType, input, filter) => {
+		const command = `KIMCHI_DOCUMENT_MAX_MB=25 node /opt/skills/${documentType}/scripts/${documentType}.mjs read "${input}" 2>&1 | ${filter}`
+		expect(attributeDocumentCliCommand(command)).toEqual({ documentType, operation: "read" })
+	})
+
 	it("recognizes Windows fallback paths", () => {
 		expect(attributeDocumentCliCommand(String.raw`node "C:\skills\pdf\scripts\pdf.mjs" info input.pdf`)).toEqual({
 			documentType: "pdf",
 			operation: "info",
 		})
+	})
+
+	it("does not attribute a noncanonical primary env prefix", () => {
+		expect(attributeDocumentCliCommand("KIMCHI_DOCUMENT_MAX_MB=25 kimchi doc-cli pdf read input.pdf")).toBeUndefined()
 	})
 
 	it("normalizes unknown operations without retaining their text", () => {

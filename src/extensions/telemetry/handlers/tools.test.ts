@@ -197,6 +197,18 @@ describe("handlers/tools", () => {
 			expect(documentEvent?.attrs.error_code).toBeUndefined()
 		})
 
+		it("reports an unclassified error as an execution error, not a success", async () => {
+			const events = await runDocumentBash({
+				command: "kimchi doc-cli pdf info input.pdf",
+				toolCallId: "doc-unclassified-error",
+				isError: true,
+				resultText: "A user-configured hook rejected this command",
+			})
+			expect(events.find((event) => event.eventName === "document_cli.completed")?.attrs.outcome).toBe(
+				"execution_error",
+			)
+		})
+
 		it.each([
 			"Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user.",
 			"The user declined this action before execution and said: use staging instead",
