@@ -190,6 +190,7 @@ export function resolveSkillPathsForDiscovery(
 	},
 ): string[] {
 	const home = options?.homeDir ?? homedir()
+	const originalBundledDir = options?.bundledDir === undefined ? resolveBundledSkillsDir(home) : options.bundledDir
 	const roots = resolveSkillRoots({
 		cwd,
 		homeDir: home,
@@ -227,9 +228,12 @@ export function resolveSkillPathsForDiscovery(
 		if (!existsSync(normalized)) continue
 
 		if (root.kind === "bundled") {
-			for (const filtered of filterBundledSkills(normalized, skillNamesFromStronger)) {
-				seen.add(filtered)
-				paths.push(filtered)
+			if (!originalBundledDir) continue
+			// Other resolveSkillRoots consumers may need the cached gated view;
+			// discovery always enumerates the original per-skill directories.
+			for (const skillDir of filterBundledSkills(resolve(originalBundledDir), skillNamesFromStronger)) {
+				seen.add(skillDir)
+				paths.push(skillDir)
 			}
 			continue
 		}
@@ -338,6 +342,7 @@ function readDisablesSkillsNames(skillFilePath: string): string[] {
 	}
 }
 
+/** Materialize a filtered skill set for visibleBundledDir(), its only caller. */
 function copySkillsToTempDir(bundledDir: string, names: string[]): string {
 	const tempDir = mkdtempSync(join(tmpdir(), "kimchi-bundled-skills-"))
 	process.once("exit", () => {

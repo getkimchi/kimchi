@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { resolveSkillRoots } from "./resolve-skill-roots.js"
+import { resolveSkillPathsForDiscovery, resolveSkillRoots } from "./resolve-skill-roots.js"
 
 let agentDir: string
 let oldAgentDir: string | undefined
@@ -53,6 +53,18 @@ describe("requires-resource bundled skill gating", () => {
 		const bundled = roots.find((root) => root.kind === "bundled")
 		expect(bundled?.dir).toBeDefined()
 		expect(readdirSync(bundled?.dir ?? "").sort()).toEqual(["ungated"])
+	})
+
+	it("discovers resource-enabled survivors from their original directories", () => {
+		const bundledDir = makeBundledDir()
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ resources: { "skills.pptx": false } }))
+		const options = { homeDir: agentDir, bundledDir, configPaths: [] }
+
+		const first = resolveSkillPathsForDiscovery("/nonexistent-cwd", options)
+		const second = resolveSkillPathsForDiscovery("/nonexistent-cwd", options)
+
+		expect(first).toEqual([join(bundledDir, "ungated")])
+		expect(second).toEqual([join(bundledDir, "ungated")])
 	})
 
 	it("toggle flips reuse the cached visible dir instead of making new temp copies", () => {
