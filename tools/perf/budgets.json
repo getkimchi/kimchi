@@ -56,7 +56,7 @@
   },
   "read_mb": {
    "limit": 2800.0,
-   "budget_note": "per-pass re-reads of the scaled ledger. Calibrated from CI perf-gate runs on the fix branch: 2,238 and 2,239MB across two runs (dead stable; the mac-tier sweep measured 0.6-26MB for the same binaries — read volume is runner-class-dependent, budgets are runner-class-pinned). 2.8G = 1.25x over measured healthy; the full-re-read eras measure an order of magnitude higher"
+   "budget_note": "per-pass re-reads of the scaled ledger. Calibrated from CI perf-gate runs on the fix branch: 2,238 and 2,239MB across two runs (dead stable; the mac-tier sweep measured 0.6-26MB for the same binaries \u2014 read volume is runner-class-dependent, budgets are runner-class-pinned). 2.8G = 1.25x over measured healthy; the full-re-read eras measure an order of magnitude higher"
   },
   "keylat_p95_ms": {
    "limit": 100.0,
@@ -65,10 +65,6 @@
   "keylat_max_ms": {
    "limit": 25.0,
    "budget_note": "steady-state worst keystroke echo after the 10s post-ready settle (startup artifact excluded). Fix branch measures 9.8-16.6ms across mac and CI; every unfixed release holds the loop 163ms-2.2s per pass (serially verified at the boundary tags). 25ms clears the worst observed healthy sample by 1.5x and fails the unfixed class by >=6.5x"
-  },
-  "additive_missing": {
-   "limit": 0.0,
-   "budget_note": "additive ledger indexes ABSENT after a run over the scaled fixture; the fix applies work_records_imported, outbox_pending_cover and outbox_batches_by_account on open — 0 missing on fixed binaries, 3 on unfixed"
   },
   "blocking_instr_p95": {
    "limit": 100000000.0,

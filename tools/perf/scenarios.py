@@ -715,8 +715,10 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
       - event-loop holds inside a pass (an unhinted windowed read scans the
         table; an unchunked history walk owns the loop whole) — visible as
         keystroke echo latency while the pass runs.
-    The post-run index census (advisory) records which indexes the binary
-    itself left behind, so additive-index application is observable.
+    The post-run index census is advisory record data (research sweeps read
+    it); the index-apply invariant is not gated here — the store tests own it
+    ("an existing ledger gains the additive indexes on open" plus the
+    busy-deferred self-heal regression).
     """
     argv = [binary, "--provider", "fake", "--model", "basic"]
     # Opt-in main-thread instruction accounting for watchdog-observed blocking

@@ -175,19 +175,6 @@ EXTRACTORS = {
                           "steady-state worst keystroke echo (post-settle); per-pass event-loop hold detector", (ABS, 150.0)),
         "blocking_instr_p95": (lambda r: r.get("blocking_instr_p95"), "instructions",
                                 "p95 main-thread instructions per watchdog-observed blocking episode", (RATIO, WORK)),
-        # The additive index set (work_records_imported, outbox_pending_cover,
-        # outbox_batches_by_account) is applied per-open by the ledger fix and
-        # by nothing else: a binary that opens the scaled fixture and leaves
-        # all three behind is proven to run its ledger path against production
-        # scale with covering indexes; one that leaves them absent re-scans.
-        # Measured as MISSING (3 - present): the healthy reading is 0, the
-        # pre-fix reading is 3 — a ceiling budget where zero is legitimate,
-        # hence zero_ok (a zero here is a passing count, not a dead counter).
-        "additive_missing": (lambda r: 3 - sum(1 for n in (r.get("ledger_indexes") or [])
-                                               if n in ("work_records_imported", "outbox_pending_cover",
-                                                        "outbox_batches_by_account")),
-                             "count",
-                             "additive ledger indexes ABSENT after a run over the scaled fixture (the windowed-read/outbox fix applies them on open)", (ABS, 0.0, "zero_ok")),
     },
 }
 
