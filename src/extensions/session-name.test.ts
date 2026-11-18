@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { buildSkillCommandPrompt } from "../modes/acp/skill-commands.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { backendFor } from "./pr-cost-reporting/ledger/records.js"
@@ -198,6 +199,115 @@ describe("extractFirstUserMessage", () => {
 			},
 		} as unknown as { sessionManager: { getBranch: () => unknown[]; getEntries: () => unknown[] } }
 		expect(extractFirstUserMessage(ctx as never)).toBe("from entries")
+	})
+})
+
+describe("skill invocation title input", () => {
+	// Shaped like upstream _expandSkillCommand's output, including the
+	// references line it always inserts inside the block.
+	const nativeSkillBlock = (args?: string) => {
+		const body = "Long skill instructions. ".repeat(80) // > 500 chars
+		const block = `<skill name="gatekeeper" location="/skills/gatekeeper/SKILL.md">\nReferences are relative to /skills/gatekeeper.\n\n${body.trim()}\n</skill>`
+		return args ? `${block}\n\n${args}` : block
+	}
+
+	it("uses only the user arguments from a native CLI skill block", () => {
+		const args = "Explain what a closure is in JavaScript"
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: nativeSkillBlock(args) } }])
+		const hint = extractFirstUserMessage(ctx as never)
+		expect(hint).toBe(args)
+	})
+
+	it("falls back to the skill name when a native CLI skill block has no arguments", () => {
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: nativeSkillBlock() } }])
+		expect(extractFirstUserMessage(ctx as never)).toBe("gatekeeper")
+	})
+
+	it("keeps the header and trailing arguments from a real ACP skill expansion", () => {
+		const args = "Explain what a closure is in JavaScript"
+		// Numbered so the body's head ("Instruction 0") cannot recur in the tail.
+		const skillContent = Array.from({ length: 200 }, (_, i) => `Instruction ${i}.`).join(" ")
+		const expanded = buildSkillCommandPrompt({
+			skillName: "diagnosing-bugs",
+			remainingText: args,
+			skillContent,
+		})
+		expect(expanded.length).toBeGreaterThan(500)
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: expanded } }])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		expect(hint).toContain("Invoking skill: diagnosing-bugs")
+		expect(hint).toContain(args)
+		// The body's head is gone; only its tail can remain ahead of the args.
+		expect(hint).not.toContain("Instruction 0.")
+		expect(hint.length).toBeLessThanOrEqual(500)
+	})
+
+	it("names an ACP skill invocation that has no arguments", () => {
+		const skillContent = "Skill instructions. ".repeat(200)
+		const expanded = buildSkillCommandPrompt({
+			skillName: "gatekeeper",
+			remainingText: "",
+			skillContent,
+		})
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: expanded } }])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		expect(hint).toContain("Invoking skill: gatekeeper")
+		// The hint stays within the cap: invocation header plus at most a
+		// bounded tail — never the raw expansion.
+		expect(hint.length).toBeLessThanOrEqual(500)
+	})
+
+	it("lets a skill invocation dominate the bundled hint so its arguments survive the cap", () => {
+		const args = "Explain what a closure is in JavaScript"
+		const expanded = buildSkillCommandPrompt({
+			skillName: "diagnosing-bugs",
+			remainingText: args,
+			skillContent: "Skill instructions. ".repeat(200),
+		})
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "First task about refactoring the parser module" } },
+			{ type: "message", message: { role: "user", content: expanded } },
+		])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		// The bundled join would exceed the 500-char cap and cut the trailing
+		// arguments, so the invocation must stand alone as the hint.
+		expect(hint).toContain(args)
+		expect(hint.length).toBeLessThanOrEqual(500)
+	})
+
+	it("bundles a name-only skill invocation with neighbouring user context", () => {
+		// No args: the hint is the bare skill name, so a task stated in the
+		// previous message must survive bundling instead of being discarded.
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "Fix the resume menu jumping on scroll" } },
+			{ type: "message", message: { role: "user", content: nativeSkillBlock() } },
+		])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		expect(hint).toContain("Fix the resume menu jumping on scroll")
+		expect(hint).toContain("gatekeeper")
+	})
+
+	it("leaves ordinary text byte-faithful, including CRLF line endings", () => {
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "Fix the parser\r\nand also the lexer" } },
+		])
+		expect(extractFirstUserMessage(ctx as never)).toBe("Fix the parser\r\nand also the lexer")
+	})
+
+	it("sends no concrete example title in the naming system prompt", async () => {
+		const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => {
+			return new Response(JSON.stringify({ choices: [{ message: { content: "Some Title" } }] }), { status: 200 })
+		})
+		vi.stubGlobal("fetch", fetchMock)
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "uai como voce ta" } }])
+		await suggestSessionName(ctx as never, undefined, true)
+		const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as {
+			messages: Array<{ role: string; content: string }>
+		}
+		const systemPrompt = body.messages.find((m) => m.role === "system")?.content ?? ""
+		expect(systemPrompt).not.toContain("Fix resume menu jumping")
+		expect(systemPrompt).not.toContain("For example")
 	})
 })
 

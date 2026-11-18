@@ -10,6 +10,7 @@ import { basename } from "node:path"
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
+	parseSkillBlock,
 	SettingsManager,
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
@@ -17,6 +18,7 @@ import { gatewayAuthHeaders, resolveGatewayCredentials } from "../auth/gateway-c
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 import { notifyUser } from "../utils/notify-user.js"
+import { SKILL_INVOKE_PREFIX } from "./skills-manager/skill-triggers.js"
 import { createNativeUsageCapture } from "./work-attribution/native-usage.js"
 import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
 
@@ -24,7 +26,7 @@ export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
 const SESSION_NAME_TIMEOUT_MS = 10_000
 
 const SESSION_NAME_MAX_LEN = 50
-const SESSION_NAME_SYSTEM_PROMPT = `Name the user's actual task: lead with the action and name the affected component, bug, or feature. For example: Fix resume menu jumping. Ignore greetings and conversational filler. Avoid generic labels like Coding Help or Greeting and Introduction. Respond ONLY with the title (3-6 words, max ${SESSION_NAME_MAX_LEN} chars). No quotes, explanation, or markdown.`
+const SESSION_NAME_SYSTEM_PROMPT = `Name the user's actual task: lead with the action and name the affected component, bug, or feature. Ignore greetings and conversational filler, and avoid generic labels like requests for general help. Respond ONLY with the title (3-6 words, max ${SESSION_NAME_MAX_LEN} chars). No quotes, explanation, or markdown.`
 const HINT_MAX_LEN = 500
 
 function getSessionNameMaxRetries(cwd: string): number {
@@ -58,6 +60,35 @@ export function extractFirstUserMessage(ctx: ExtensionContext): string | null {
 type SessionEntries = ReturnType<ExtensionContext["sessionManager"]["getBranch"]>
 
 /**
+ * Title hint for one user message, or null when the message is not a skill
+ * invocation and should be used as-is. Skill invocations arrive pre-expanded
+ * with instructions the user did not write, and the user's request sits after
+ * them (or is absent). Native CLI expansion uses the `<skill>` block; the ACP
+ * server rewrites `/skill:<name> args` to `Invoking skill: <name>` + body +
+ * args, whose arguments are always trailing.
+ *
+ * `standAlone` marks hints whose user text sits at the end and would be cut
+ * by the hint cap if bundled behind an earlier message; name-only hints have
+ * nothing at risk and can bundle for context.
+ */
+function titleHintFromText(text: string): { hint: string; standAlone: boolean } | null {
+	const normalized = text.replaceAll("\r\n", "\n")
+	const native = parseSkillBlock(normalized)
+	if (native) {
+		const hint = native.userMessage ?? native.name
+		return { hint, standAlone: Boolean(native.userMessage) }
+	}
+	if (!normalized.startsWith(SKILL_INVOKE_PREFIX)) return null
+	const firstNewline = normalized.indexOf("\n")
+	if (firstNewline === -1) return null
+	const header = normalized.slice(0, firstNewline)
+	// Keep the header plus a tail sized to survive capHint intact: the args are
+	// at the end, and the skill body between header and args is not user text.
+	const tailStart = Math.max(firstNewline + 1, normalized.length - (HINT_MAX_LEN - header.length - 1))
+	return { hint: `${header}\n${normalized.slice(tailStart)}`, standAlone: true }
+}
+
+/**
  * Iterate forward and collect text from the first few user messages.
  * Bundles up to 3 messages for richer context, capped in total length.
  */
@@ -88,7 +119,13 @@ function extractEarlyUserText(entries: SessionEntries): string | null {
 		}
 
 		if (text && !/^(?:hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you)[\s!.?]*$/i.test(text)) {
-			texts.push(text)
+			const skillHint = titleHintFromText(text)
+			// An arg-carrying invocation is self-sufficient naming input: the
+			// user's request rides at its end, and an earlier bundled message
+			// would push it past the cap. A name-only invocation has nothing at
+			// risk and keeps bundling for context.
+			if (skillHint?.standAlone) return skillHint.hint
+			texts.push(skillHint?.hint ?? text)
 			if (texts.length >= 3) break
 		}
 	}
