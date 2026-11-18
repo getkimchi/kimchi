@@ -150,7 +150,11 @@ describe("subagent MCP tool inheritance — real extension", () => {
 		// (the upstream loader discovers it as a global layer, so no programmatic
 		// config is passed). If the server config never loaded, the surface
 		// policy suppresses the proxy tool and the assertions below fail.
-		expect(upstream.options).toEqual({ configPath: mcpConfigPath, defaultProtocolVersion: "auto" })
+		expect(upstream.options).toEqual({
+			configPath: mcpConfigPath,
+			defaultProtocolVersion: "auto",
+			onSessionMetadata: expect.any(Function),
+		})
 		expect(installKeyringRequireBridge).toHaveBeenCalled()
 		// The fake adapter's startup listed the server catalog through the
 		// mocked SDK client.
