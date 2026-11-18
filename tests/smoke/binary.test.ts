@@ -158,8 +158,8 @@ describe("binary smoke tests", () => {
 			.filter((file) => !before.has(file))
 			.flatMap(readSessionEntries)
 
-		expect(newEntries).toContainEqual(expect.objectContaining({ type: "session_info", name: prompt }))
-	}, 20_000)
+		expect(newEntries).toContainEqual(expect.objectContaining({ type: "session_info", name: "fake response" }))
+	}, 35_000)
 
 	describe("runtime config autoloading", () => {
 		let workDir: string

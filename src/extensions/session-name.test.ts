@@ -337,6 +337,18 @@ describe("suggestSessionName", () => {
 		expect(body.model).toBe("deepseek-v4-flash-0731")
 	})
 
+	it("uses default retries when retry settings omit maxRetries", async () => {
+		mockGetRetrySettings.mockReturnValue({ enabled: true, baseDelayMs: 0 })
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: "Generated caption" } }] }))),
+		)
+		const ctx = createMockCtx([])
+
+		await expect(suggestSessionName(ctx as never, "Task", true)).resolves.toBe("Generated caption")
+	})
+
 	it("should truncate long user messages", async () => {
 		const ctx = createMockCtx([
 			{

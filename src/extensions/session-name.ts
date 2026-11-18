@@ -30,7 +30,8 @@ const HINT_MAX_LEN = 500
 
 function getSessionNameMaxRetries(cwd: string): number {
 	try {
-		return Math.min(SettingsManager.create(cwd).getRetrySettings().maxRetries, 2)
+		const maxRetries = SettingsManager.create(cwd).getRetrySettings().maxRetries
+		return Number.isFinite(maxRetries) ? Math.min(maxRetries, 2) : Math.min(RETRY_DEFAULTS.maxRetries, 2)
 	} catch {
 		return Math.min(RETRY_DEFAULTS.maxRetries, 2)
 	}
