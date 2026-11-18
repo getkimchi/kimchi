@@ -214,7 +214,16 @@ test("reads Jira through the MCP gateway without leaving a resumed plan-mode ses
 			await waitForText(terminal, "The resumed plan-mode gateway read also succeeded.", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
-			requireRequestAdvertisingTool(fixture.fake.requests.slice(-1), "mcp")
+			// Title generation can finish after the resumed turn; inspect the latest
+			// main-agent request rather than assuming it is the last recorded request.
+			const agentRequests = fixture.fake.requests.filter(
+				(request) =>
+					request.body !== null &&
+					typeof request.body === "object" &&
+					"tools" in request.body &&
+					Array.isArray(request.body.tools),
+			)
+			requireRequestAdvertisingTool(agentRequests.slice(-1), "mcp")
 			expect(toolResultText(fixture.fake.requests, resumedRead)).toContain("LLM-4358: Enable MCP access in plan mode")
 			expect(fixture.mcp.eventsOfType("tool_called").filter((event) => event.name === "getJiraIssue")).toHaveLength(2)
 			trace.step("late registration leaves the gateway visible and callable after TUI resume")
