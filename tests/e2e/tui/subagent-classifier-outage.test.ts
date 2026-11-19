@@ -8,9 +8,9 @@
  *
  * Key wiring notes:
  *   - Classifier requests are identified by the classifier's system prompt;
- *     `--auto` overrides the fixture's yolo env. PR 1's policy source forwards
- *     the parent's live mode and rules to each worker role, rather than using
- *     per-child mode environment keys.
+ *     `--auto` overrides the fixture's yolo env. The parent's live mode and
+ *     rules are forwarded to each worker role rather than per-child mode
+ *     environment keys.
  *   - The non-classifier queue order is: parent turn 1 (Agent tool call) →
  *     child turn 1 (write tool call) → child turn 2 (after the decision) →
  *     parent turn 2 (Agent result). Agent calls are allow-listed, so only
@@ -121,8 +121,8 @@ test("escalated prompt names the subagent in the main session; approving runs th
 			expect(classifierRequests.length).toBeGreaterThanOrEqual(1)
 			trace.step(`classifier made ${classifierRequests.length} failing request(s)`)
 
-			// Deny is deliberately first; choose "Yes — just this call" explicitly.
-			terminal.keyDown()
+			// Enter selects "Yes — just this call" first, matching the main session.
+			await new Promise((resolve) => setTimeout(resolve, 250))
 			terminal.submit("")
 			await waitForText(terminal, "The subagent wrote the file.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
@@ -165,7 +165,7 @@ test("requires-confirmation asks with the classifier reason and risk before allo
 			expect(classifierRequests).toHaveLength(1)
 			trace.step("classifier ran once before the escalation")
 
-			terminal.keyDown() // choose "Yes — just this call", not the deny-first default
+			await new Promise((resolve) => setTimeout(resolve, 250))
 			terminal.submit("")
 			await waitForText(terminal, "The subagent wrote the file.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
@@ -197,8 +197,11 @@ test("escaping the escalated prompt denies the subagent's call", async ({ termin
 			await waitForText(terminal, ORIGIN_LINE, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("escalated prompt visible")
 
+			// The opening input guard deliberately consumes in-flight keys,
+			// including Escape. Exercise deliberate cancellation after it expires.
+			await new Promise((resolve) => setTimeout(resolve, 250))
 			terminal.keyEscape()
-			trace.step("escaped — the call is denied")
+			trace.step("escaped after the opening guard — the call is denied")
 
 			await waitForText(terminal, "The subagent reported it was denied.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(bufferText(terminal)).not.toContain(CLASSIFIER_ERROR)

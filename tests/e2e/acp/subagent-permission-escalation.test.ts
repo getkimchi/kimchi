@@ -9,8 +9,8 @@
 // Wiring notes (mirrors tests/e2e/acp/permission-classifier-outage.test.ts):
 //   - `match` predicates reserve each script for its intended request —
 //     interleaved classifier/title requests must not steal FIFO turns.
-//   - `--auto` overrides the fixture's yolo env. PR 1's policy source forwards
-//     the parent's live policy to each worker role rather than using mode env keys.
+//   - `--auto` overrides the fixture's yolo env. The parent's live policy is
+//     forwarded to each worker role instead of per-child mode env keys.
 
 import type { ClientCapabilities, RequestPermissionRequest } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
