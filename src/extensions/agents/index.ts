@@ -278,6 +278,7 @@ interface GetSubagentResultDetails {
 	error?: string
 	bodyText: string
 	agentOutcome?: AgentOutcome
+	waitCancelled?: boolean
 }
 
 function formatAgentOutcomeBlock(outcome: AgentOutcome | undefined): string {
@@ -2759,6 +2760,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 				const texts = backgroundText(backgroundNotificationsReachUser(surfaceMode))
 				let bodyForDisplay: string
+				let waitCancelled: true | undefined
 				if (record.status === "queued") {
 					bodyForDisplay = texts.queuedBody(manager.getMaxConcurrent())
 					output += bodyForDisplay
@@ -2767,6 +2769,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						bodyForDisplay = texts.timedOutBody(GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000)
 					} else if (waitOutcome === "aborted") {
 						bodyForDisplay = texts.abortedBody
+						waitCancelled = true
 					} else {
 						bodyForDisplay = texts.runningBody
 					}
@@ -2816,6 +2819,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					error: record.error,
 					bodyText: formatAgentBodyForDisplay(bodyForDisplay),
 					agentOutcome: record.latestOutcome,
+					...(waitCancelled && { waitCancelled }),
 				}
 
 				return textResult(output, details)

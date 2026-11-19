@@ -1,6 +1,6 @@
 import { initTheme, type ToolDefinition, ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, stripTerminalSequences, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { safePanelText as safeBashText } from "../../components/input-panel.js"
 import { testTheme as theme } from "../__mocks__/theme.js"
 import { createToolRenderContext } from "../__mocks__/tool-render-context.js"
@@ -424,5 +424,101 @@ describe("Bash display", () => {
 		}
 		expect(bashStatus(stopped)).toBe("Stopped · 5s")
 		expect(bashStatusColor(stopped)).toBe("warning")
+	})
+})
+
+describe("Bash display live tick", () => {
+	beforeEach(() => vi.useFakeTimers())
+	afterEach(() => vi.useRealTimers())
+
+	function liveCard(registry: ReturnType<typeof createProcessRegistry>, handle: string) {
+		const renderers = createBashRenderers(() => registry)
+		const result = { content: [], details: { display: registry.displaySnapshot(handle) } }
+		const invalidate = vi.fn()
+		const ctx = createToolRenderContext({ args: { command: "sleep 60" }, expanded: true, invalidate })
+		const text = () =>
+			renderers
+				.renderResult(result, { expanded: true, isPartial: true }, theme, ctx)
+				.render(100)
+				.map(stripTerminalSequences)
+				.join("\n")
+		return { ctx, invalidate, text }
+	}
+
+	it("advances a silent running card once per second and stops after exit", async () => {
+		const registry = createProcessRegistry()
+		const ops = createFakeOps()
+		const handle = registry.spawn(ops, "sleep 60", "/tmp", undefined, { limitSeconds: 60 })
+		try {
+			ops.emit("started\n")
+			const card = liveCard(registry, handle)
+			expect(card.text()).toContain("Running · 0s")
+			expect(card.text()).toContain("Last output 0s ago")
+			await vi.advanceTimersByTimeAsync(3000)
+			expect(card.invalidate).toHaveBeenCalledTimes(3)
+			expect(card.text()).toContain("Running · 3s")
+			expect(card.text()).toContain("Last output 3s ago")
+			await ops.exit(0)
+			await registry.whenExited(handle)
+			const settled = card.invalidate.mock.calls.length
+			await vi.advanceTimersByTimeAsync(5000)
+			expect(card.invalidate).toHaveBeenCalledTimes(settled)
+			expect(card.text()).toContain("Exited 0 · 3s")
+		} finally {
+			await registry.shutdown()
+		}
+	})
+
+	it("stops ticking after unsubscribe", async () => {
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(createFakeOps(), "sleep 60", "/tmp", undefined, { limitSeconds: 60 })
+		try {
+			const card = liveCard(registry, handle)
+			card.text()
+			await vi.advanceTimersByTimeAsync(1000)
+			expect(card.invalidate).toHaveBeenCalledTimes(1)
+			card.ctx.state.bashRow.unsubscribe()
+			await vi.advanceTimersByTimeAsync(5000)
+			expect(card.invalidate).toHaveBeenCalledTimes(1)
+		} finally {
+			await registry.shutdown()
+		}
+	})
+
+	it("stops the old row's tick when a new row takes over the handle", async () => {
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(createFakeOps(), "sleep 60", "/tmp", undefined, { limitSeconds: 60 })
+		try {
+			const first = liveCard(registry, handle)
+			first.text()
+			const second = liveCard(registry, handle)
+			second.text()
+			await vi.advanceTimersByTimeAsync(2000)
+			expect(first.invalidate).not.toHaveBeenCalled()
+			expect(second.invalidate).toHaveBeenCalledTimes(2)
+		} finally {
+			await registry.shutdown()
+		}
+	})
+
+	it("never ticks a persisted check-in that has no live process", async () => {
+		const registry = createProcessRegistry()
+		const renderers = createBashRenderers(() => registry)
+		const invalidate = vi.fn()
+		const ctx = createToolRenderContext({ invalidate })
+		const render = () =>
+			renderers
+				.renderResult({ content: [], details: { display } }, { expanded: false, isPartial: false }, theme, ctx)
+				.render(100)
+				.map(stripTerminalSequences)
+				.join("\n")
+		try {
+			expect(render()).toContain("Still running at check-in · 42s")
+			await vi.advanceTimersByTimeAsync(5000)
+			expect(invalidate).not.toHaveBeenCalled()
+			expect(render()).toContain("Still running at check-in · 42s")
+		} finally {
+			await registry.shutdown()
+		}
 	})
 })
