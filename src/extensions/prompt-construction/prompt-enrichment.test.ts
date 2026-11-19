@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
-import { setResourceOverride } from "../../resources/store.js"
+import { resetResourceOverride, setResourceOverride } from "../../resources/store.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
 import {
@@ -774,6 +774,7 @@ describe("Claude Code global instructions resource", () => {
 	})
 
 	afterEach(() => {
+		resetResourceOverride(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID)
 		if (oldAgentDir === undefined) {
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
