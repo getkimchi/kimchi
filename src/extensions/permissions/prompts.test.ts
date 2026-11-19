@@ -5,6 +5,7 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
 import { installVaultLifecycle, resetTokenVaults, tokenFor, vaultForSession } from "../pii-redaction/vault.js"
+import { __setWorkingAnimatorForTest } from "../ui.js"
 import {
 	buildPermissionChoices,
 	formatRiskBadge,
@@ -121,6 +122,41 @@ describe("promptForApproval — withWorkingHidden", () => {
 		const ctx = fakeCtx()
 		await promptForApproval({ toolName: "bash", input: { command: "echo hello" }, ctx })
 		expect(String(ctx.ui.select.mock.calls[0]?.[0])).not.toContain("Subagent")
+	})
+
+	it("settles without the selector when another dialog takes its place", async () => {
+		// The displaced selector never resolves. The prompt must still return,
+		// and must not hold the working animation paused or touch the indicator
+		// that now belongs to the other dialog.
+		const ctx = fakeCtx()
+		ctx.ui.select = vi.fn(() => new Promise<string | undefined>(() => {}))
+		const controller = { pause: vi.fn(), resume: vi.fn(), stop: vi.fn() }
+		__setWorkingAnimatorForTest(controller)
+		let withdraw: (() => void) | undefined
+		const stopWatching = vi.fn()
+		try {
+			const pending = promptForApproval({
+				toolName: "bash",
+				input: { command: "echo hello" },
+				ctx,
+				onForeignDialog: (onWithdraw) => {
+					withdraw = onWithdraw
+					return stopWatching
+				},
+			})
+			await vi.waitFor(() => expect(ctx.ui.select).toHaveBeenCalledOnce())
+			withdraw?.()
+
+			expect(await pending).toEqual({ kind: "aborted" })
+			expect(ctx.ui.select.mock.calls[0]?.[2]?.signal?.aborted).toBe(false)
+			expect(controller.pause).toHaveBeenCalledTimes(1)
+			expect(controller.resume).toHaveBeenCalledTimes(1)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledTimes(1)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+			expect(stopWatching).toHaveBeenCalledOnce()
+		} finally {
+			__setWorkingAnimatorForTest(undefined)
+		}
 	})
 
 	it("hides working indicator before feedback input and shows it after", async () => {

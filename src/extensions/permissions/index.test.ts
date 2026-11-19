@@ -1202,6 +1202,39 @@ describe("classifier outage escalation to the parent session", () => {
 		expect(parentCtx.ui.select).toHaveBeenCalledOnce()
 	})
 
+	it("keeps the subagent's prompt open when the session's own prompt queues behind it", async () => {
+		// The session's own prompt announces its blocked state before it enters
+		// the queue. Counted as a foreign dialog, it made the visible subagent
+		// prompt step aside for a prompt that could only open after it.
+		const { parent, parentCtx, worker, workerCtx } = await setupEscalation()
+		parentCtx.mode = "tui"
+		const answers: Array<(choice: string | undefined) => void> = []
+		const shown: string[][] = []
+		parentCtx.ui.select = vi.fn(
+			(_title: string, choices: string[]) =>
+				new Promise<string | undefined>((resolve) => {
+					shown.push(choices)
+					answers.push(resolve)
+				}),
+		) as unknown as ExtensionUIContext["select"]
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+
+		const subagentCall = worker.fire("tool_call", event, workerCtx)
+		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledTimes(1))
+		// The waiting notice is for a prompt that is held back, not an open one.
+		expect(parentCtx.ui.setStatus).not.toHaveBeenCalledWith("permission-subagent-wait", expect.any(String))
+		const ownCall = parent.fire("tool_call", { ...event, toolCallId: "own-call" }, parentCtx)
+		// Several polls of the foreign-dialog watcher.
+		await new Promise((resolve) => setTimeout(resolve, 120))
+		expect(parentCtx.ui.select).toHaveBeenCalledTimes(1)
+
+		answers[0]?.(shown[0]?.[0])
+		expect(await subagentCall).toBeUndefined()
+		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledTimes(2))
+		answers[1]?.(shown[1]?.[0])
+		expect(await ownCall).toBeUndefined()
+	})
+
 	it("re-evaluates while a draft blocks the selector after a mode change to yolo", async () => {
 		const { parentCtx, worker, workerCtx } = await setupEscalation()
 		parentCtx.mode = "tui"
