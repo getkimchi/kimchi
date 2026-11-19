@@ -8,9 +8,17 @@ import type {
 	ThinkingLevelMap,
 } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
-import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
+import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
+import type { ModelRuntime, ProviderConfig } from "@earendil-works/pi-coding-agent"
+import { resolveRefreshAwareKimchiAuth } from "./auth/refresh-aware-credential.js"
+import { isInvalidGrantError } from "./cli-auth/oauth.js"
 import { resolveEndpoints } from "./config.js"
-import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
+import {
+	clearCredentialStale,
+	clearRefreshedCredentialStale,
+	isAuthRejectedMessage,
+	markCredentialStale,
+} from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
 import { CODEX_PROVIDER_ID, isKimchiProvider, KIMCHI_PROVIDER_ID, PI_CODEX_PROVIDER_ID } from "./kimchi-provider.js"
 import {
@@ -21,6 +29,7 @@ import {
 	stripDeprecationMarker,
 	writeModelDeprecations,
 } from "./model-deprecation.js"
+import { syncOAuthCredentialToKimchiProviders } from "./pi-auth.js"
 import { deriveThinkingLevelMap, normalizeThinkingLevels } from "./thinking-levels.js"
 import { getVersion } from "./utils.js"
 
@@ -125,6 +134,14 @@ export class ModelsFetchError extends Error {
 	}
 }
 
+function normalizeOAuthDiscoveryError(error: unknown): unknown {
+	if (!(error instanceof ModelsError) || error.code !== "oauth") return error
+	if (isInvalidGrantError(error.cause)) {
+		return new ModelsFetchError("Failed to fetch models: 401 Unauthorized", { status: 401, transient: false })
+	}
+	return new ModelsFetchError("Failed to refresh OAuth credential before model discovery", { transient: true })
+}
+
 /** True when `error` is a transient (retryable) model-refresh failure. */
 export function isTransientModelsError(error: unknown): error is ModelsFetchError {
 	return error instanceof ModelsFetchError && error.transient
@@ -142,6 +159,14 @@ export interface FetchModelsOptions {
 	/** Kimchi SSO: organization id sent as `X-CastAi-Organization-Id` on the metadata
 	 * fetch and stamped into every Kimchi provider's models.json headers. */
 	organizationId?: string
+}
+
+export interface DiscoverModelsOptions extends FetchModelsOptions {
+	/** Refresh the canonical stored OAuth credential before gateway discovery. API keys bypass this path. */
+	refreshOAuth?: {
+		authPath: string
+		installOAuth: (runtime: ModelRuntime) => void
+	}
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -886,7 +911,7 @@ export function readExperimentalModels(modelsJsonPath: string): ModelMetadata[] 
 export async function updateModelsConfig(
 	modelsJsonPath: string,
 	apiKey: string,
-	options: FetchModelsOptions = {},
+	options: DiscoverModelsOptions = {},
 ): Promise<ModelsConfigResult> {
 	const result = await discoverModelsConfig(modelsJsonPath, apiKey, options)
 	if (result.refreshed) {
@@ -907,12 +932,12 @@ export async function updateModelsConfig(
 export async function discoverModelsConfig(
 	modelsJsonPath: string,
 	apiKey: string,
-	options: FetchModelsOptions = {},
+	options: DiscoverModelsOptions = {},
 ): Promise<DiscoveredModelsConfig & { refreshed: boolean }> {
 	const otherProviders = readExistingProviders(modelsJsonPath)
 	const otherModels = extractModelsFromProviders(otherProviders as Record<string, { models?: PiModelConfig[] }>)
 
-	if (!apiKey) {
+	const cachedResult = () => {
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
 		return {
 			models: sortModels([...cached, ...otherModels]),
@@ -920,17 +945,43 @@ export async function discoverModelsConfig(
 			refreshed: false,
 		}
 	}
+	if (!apiKey && !options.refreshOAuth) return cachedResult()
 
+	let discoveryApiKey = apiKey
+	let discoveryOptions: FetchModelsOptions = options
 	let fetched: ModelMetadata[]
 	try {
-		fetched = await fetchAvailableModels(apiKey, options)
+		if (!apiKey && options.refreshOAuth) {
+			let resolution: Awaited<ReturnType<typeof resolveRefreshAwareKimchiAuth>>
+			try {
+				resolution = await resolveRefreshAwareKimchiAuth(
+					{ authPath: options.refreshOAuth.authPath, modelsPath: modelsJsonPath },
+					options.refreshOAuth.installOAuth,
+				)
+			} catch (error) {
+				throw normalizeOAuthDiscoveryError(error)
+			}
+			const credential = resolution.credential
+			if (credential?.type !== "oauth") return cachedResult()
+			discoveryApiKey = credential.access
+			const orgId = (credential as typeof credential & { orgId?: unknown }).orgId
+			discoveryOptions = {
+				...options,
+				organizationId: typeof orgId === "string" && orgId.length > 0 ? orgId : undefined,
+			}
+			if (resolution.refreshed) {
+				await syncOAuthCredentialToKimchiProviders(options.refreshOAuth.authPath, modelsJsonPath, { ...credential })
+				clearRefreshedCredentialStale(resolution.previousAccessToken, credential.access, KIMCHI_PROVIDER_ID)
+			}
+		}
+		fetched = await fetchAvailableModels(discoveryApiKey, discoveryOptions)
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err)
 		// Refresh is an authenticated call: a 401 means the on-disk key is
 		// dead, not absent. Mark before the rethrow decision so the mark
 		// survives the cached-fallback path too.
 		if (isAuthRejectedMessage(message)) {
-			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID)
+			markCredentialStale(discoveryApiKey, KIMCHI_PROVIDER_ID)
 		}
 		// Environment-account discovery must not populate UI metadata from the
 		// saved account when cached fallback is explicitly disabled.
@@ -940,7 +991,7 @@ export async function discoverModelsConfig(
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return {
 			models: sortModels([...cached, ...otherModels]),
-			providers: buildModelsConfig(cached, options.endpoint, options.organizationId).providers,
+			providers: buildModelsConfig(cached, discoveryOptions.endpoint, discoveryOptions.organizationId).providers,
 			refreshed: false,
 		}
 	}
@@ -975,7 +1026,7 @@ export async function discoverModelsConfig(
 	const models = sortModels(activeModels)
 	return {
 		models: sortModels([...activeModels, ...otherModels]),
-		providers: buildModelsConfig(models, options.endpoint, options.organizationId).providers,
+		providers: buildModelsConfig(models, discoveryOptions.endpoint, discoveryOptions.organizationId).providers,
 		refreshed: true,
 	}
 }

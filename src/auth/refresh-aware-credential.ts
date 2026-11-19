@@ -14,6 +14,8 @@ type StoredCredential = NonNullable<ReturnType<typeof readStoredCredential>>
 
 export type RefreshAwareCredentialResolution = {
 	auth: RefreshAwareAuth
+	/** Canonical credential read after getAuth releases its persist-before-release lock. */
+	credential: StoredCredential | undefined
 	/** True only when the persisted OAuth credential changed during this resolution. */
 	refreshed: boolean
 	/** Previous bearer used only for in-memory/persistent rejection bookkeeping; never logged. */
@@ -60,6 +62,7 @@ export async function resolveRefreshAwareKimchiAuth(
 			(before.access !== after.access || before.expires !== after.expires)
 		return {
 			auth,
+			credential: after,
 			refreshed,
 			previousAccessToken: refreshed && before?.type === "oauth" ? before.access : undefined,
 		}
