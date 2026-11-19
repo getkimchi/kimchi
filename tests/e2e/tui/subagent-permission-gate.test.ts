@@ -152,7 +152,7 @@ test("auto mode asks the parent when the classifier is not safe; approval runs t
 			const promptView = fullText(terminal)
 			trace.step("escalated non-safe prompt visible in the parent")
 			// The subagent prompt keeps the main session's order: Enter accepts
-			// the first choice rather than moving off deny-first ordering.
+			// the first choice rather than using a subagent-only order.
 			await new Promise((resolve) => setTimeout(resolve, 250))
 			terminal.submit("")
 			await waitForText(terminal, "PARENT-AUTO-DENY-DONE", { timeoutMs: STREAM_TIMEOUT_MS })
