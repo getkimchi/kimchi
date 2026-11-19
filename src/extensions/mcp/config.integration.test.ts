@@ -106,6 +106,72 @@ describe("MCP configuration with the real upstream loader", () => {
 		expect(loadKimchiMcpConfig({ cwd }).config.mcpServers.project.disabled).not.toBe(true)
 	})
 
+	it("strips inherited credentials on a URL override and reports only the dropped fields", async () => {
+		const { loadKimchiMcpConfig, LEGACY_PROJECT_MCP_CONFIG } = await import("./config.js")
+		const { getLegacyMcpMigrationNotices } = await import("pi-mcp-adapter/config")
+		const globalPath = join(agentDir, "mcp.json")
+		writeFileSync(
+			globalPath,
+			JSON.stringify({
+				mcpServers: {
+					shared: {
+						url: "https://global.example.test/mcp",
+						headers: { Authorization: "global-header-value" },
+						bearerToken: "global-token-value",
+						bearerTokenEnv: "GLOBAL_TOKEN_ENV",
+						requestHeadersCommand: "global-command.sh",
+						caFile: "global-ca.pem",
+						auth: { provider: "global-provider" },
+						oauth: { clientId: "global-client" },
+						directTools: ["echo"],
+					},
+				},
+			}),
+		)
+		const legacyPath = join(cwd, LEGACY_PROJECT_MCP_CONFIG)
+		mkdirSync(dirname(legacyPath), { recursive: true })
+		writeFileSync(
+			legacyPath,
+			JSON.stringify({
+				mcpServers: {
+					shared: {
+						url: "https://project.example.test/mcp",
+						headers: { Authorization: "project-header-value" },
+					},
+				},
+			}),
+		)
+
+		const { config } = loadKimchiMcpConfig({ cwd })
+		expect(config.mcpServers.shared).toEqual({
+			url: "https://project.example.test/mcp",
+			headers: { Authorization: "project-header-value" },
+			directTools: ["echo"],
+		})
+
+		const notices = getLegacyMcpMigrationNotices(cwd).filter((notice) => notice.includes('"shared"'))
+		expect(notices).toHaveLength(1)
+		const notice = notices[0] ?? ""
+		expect(notice).toContain(globalPath)
+		expect(notice).toContain(legacyPath)
+		for (const field of ["bearerToken", "bearerTokenEnv", "requestHeadersCommand", "caFile", "auth", "oauth"]) {
+			expect(notice).toContain(field)
+		}
+		expect(notice).not.toMatch(/\bheaders\b/)
+		for (const secret of [
+			"global-header-value",
+			"global-token-value",
+			"GLOBAL_TOKEN_ENV",
+			"global-command.sh",
+			"global-ca.pem",
+			"global-provider",
+			"global-client",
+			"project-header-value",
+		]) {
+			expect(notice).not.toContain(secret)
+		}
+	})
+
 	it("retains the adapter default project path for hosts without the compatibility setting", async () => {
 		const { getProjectPiConfigPath } = await import("pi-mcp-adapter/config")
 		const manifestDir = join(cwd, "host-manifest")
