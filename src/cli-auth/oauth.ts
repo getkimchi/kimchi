@@ -637,6 +637,8 @@ export interface KimchiSsoOAuthHooks {
 	 * either way so upstream wraps it as ModelsError("oauth", …).
 	 */
 	onInvalidGrant?: (credential: OAuthCredentials, error: OAuthTokenError) => void
+	/** Reuse only the exact canonical replacement persisted for this prompt. */
+	shouldReuseCredential?: (credential: OAuthCredentials) => boolean
 }
 
 /**
@@ -663,6 +665,7 @@ export function kimchiSsoExtensionOAuth(
 			return loginWithKimchiOauth(config, callbacks)
 		},
 		refreshToken: async (credentials, signal) => {
+			if (hooks.shouldReuseCredential?.(credentials)) return credentials
 			try {
 				return await refreshKimchiOauth(credentials, signal)
 			} catch (error) {

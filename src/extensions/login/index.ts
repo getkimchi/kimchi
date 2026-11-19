@@ -23,7 +23,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	// cached (gateway) models.json — without persisting a project-local endpoint into the global
 	// models.json. Only set when explicitly configured so the default gateway keeps flowing.
 	const { customLlmEndpoint } = loadConfig()
-	const kimchiOAuth = createKimchiProviderOAuth()
+	const kimchiOAuth = createKimchiProviderOAuth(join(agentDir, "auth.json"))
 
 	const kimchiProvider: Parameters<typeof pi.registerProvider>[1] = { oauth: kimchiOAuth }
 	if (customLlmEndpoint) {

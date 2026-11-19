@@ -10,6 +10,7 @@ import {
 	type RefreshAwareCredentialPaths,
 	resolveRefreshAwareKimchiAuth,
 } from "./refresh-aware-credential.js"
+import { rememberPreparedOAuthCredential } from "./short-lived-credential-handoff.js"
 
 /**
  * Refresh canonical Kimchi OAuth state before an active TUI/ACP user prompt.
@@ -48,6 +49,11 @@ export async function prepareActivePromptKimchiCredential(
 			activeCredential?.type === "oauth" &&
 			(activeCredential.access !== credential.access || activeCredential.refresh !== credential.refresh) &&
 			Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= activeCredential.expires
+		if (Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= credential.expires) {
+			rememberPreparedOAuthCredential(paths.authPath, credential, {
+				fanoutPending: resolution.refreshed || staleActiveCredential,
+			})
+		}
 		if (!resolution.refreshed && !staleActiveCredential) return "ready"
 		try {
 			await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
@@ -65,6 +71,9 @@ export async function prepareActivePromptKimchiCredential(
 		}
 		if (resolution.refreshed) {
 			clearRefreshedCredentialStale(resolution.previousAccessToken, resolution.auth.auth.apiKey, KIMCHI_PROVIDER_ID)
+		}
+		if (Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= credential.expires) {
+			rememberPreparedOAuthCredential(paths.authPath, credential, { fanoutPending: false })
 		}
 		return "ready"
 	} catch (error) {

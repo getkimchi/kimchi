@@ -12,93 +12,103 @@ import {
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
-describe("ACP integration — OAuth refresh during an active prompt", () => {
-	let fixture: AcpFixture
-	let oauth: FakeOAuthRefreshServer
-	let authPath = ""
+for (const replacementExpiresInSeconds of [3600, 60]) {
+	describe(`ACP integration — active prompt with a ${replacementExpiresInSeconds}s OAuth replacement`, () => {
+		let fixture: AcpFixture
+		let oauth: FakeOAuthRefreshServer
+		let authPath = ""
 
-	beforeEach(async () => {
-		oauth = await startFakeOAuthRefreshServer()
-		fixture = await startAcpFixture({
-			artifactName: "oauth-prompt-refresh",
-			providerId: "kimchi-dev/openai",
-			defaultModel: "basic",
-			responses: [
-				{
-					match: (request) => request.headers.authorization === `Bearer ${EXPIRING_ACCESS_TOKEN}`,
-					status: 401,
-					body: { error: "Expired fake token" },
+		beforeEach(async () => {
+			oauth = await startFakeOAuthRefreshServer({ expiresInSeconds: replacementExpiresInSeconds })
+			fixture = await startAcpFixture({
+				artifactName: "oauth-prompt-refresh",
+				providerId: "kimchi-dev/openai",
+				defaultModel: "basic",
+				responses: [
+					{
+						match: (request) => request.headers.authorization === `Bearer ${EXPIRING_ACCESS_TOKEN}`,
+						status: 401,
+						body: { error: "Expired fake token" },
+					},
+					{
+						match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+						stream: [REFRESH_CONTINUED_REPLY],
+					},
+					{
+						match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+						stream: ["Refreshed follow-up continued."],
+					},
+				],
+				seedHome: (homeDir) => {
+					authPath = seedExpiringOAuthCredential(homeDir, oauth.tokenUrl)
 				},
-				{
-					match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
-					stream: [REFRESH_CONTINUED_REPLY],
-				},
-				{
-					match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
-					stream: ["Refreshed follow-up continued."],
-				},
-			],
-			seedHome: (homeDir) => {
-				authPath = seedExpiringOAuthCredential(homeDir, oauth.tokenUrl)
-			},
+			})
+		}, STARTUP_TIMEOUT_MS)
+
+		afterEach(async () => {
+			await fixture.stop()
+			await oauth.close()
 		})
-	}, STARTUP_TIMEOUT_MS)
 
-	afterEach(async () => {
-		await fixture.stop()
-		await oauth.close()
+		it("refreshes and persists OAuth while preserving the prompt and ordinary session updates", async () => {
+			const sessionId = await newSession(fixture, fixture.workDir)
+
+			const result = await prompt(fixture, sessionId, "Continue with the refreshed credential")
+
+			expect(result.stopReason).toBe("end_turn")
+			expect(result.chunks).toBe(REFRESH_CONTINUED_REPLY)
+			expect(oauth.grants).toEqual([{ grantType: "refresh_token", refreshToken: "e2e-original-refresh" }])
+			const stored = JSON.parse(readFileSync(authPath, "utf-8")) as Record<
+				string,
+				{ access?: string; refresh?: string; expires?: number }
+			>
+			for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+				expect(stored[providerId]?.access).toBe(REPLACEMENT_ACCESS_TOKEN)
+				expect(stored[providerId]?.refresh).toBe("e2e-rotated-refresh")
+				expect(stored[providerId]?.expires).toBe(stored["kimchi-dev"]?.expires)
+			}
+			const followUp = await prompt(fixture, sessionId, "Continue again with the persisted credential")
+			expect(followUp.stopReason).toBe("end_turn")
+			expect(followUp.chunks).toBe(`${REFRESH_CONTINUED_REPLY}Refreshed follow-up continued.`)
+			expect(oauth.grants).toHaveLength(replacementExpiresInSeconds === 60 ? 2 : 1)
+			const afterFollowUp = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, Record<string, unknown>>
+			for (const field of ["access", "refresh", "expires"]) {
+				expect(afterFollowUp["kimchi-dev/openai"]?.[field]).toBe(afterFollowUp["kimchi-dev"]?.[field])
+			}
+			const authorizations = fixture.fake.requests.map(chatAuthorization).filter((value) => value !== undefined)
+			expect(authorizations).toEqual([`Bearer ${REPLACEMENT_ACCESS_TOKEN}`, `Bearer ${REPLACEMENT_ACCESS_TOKEN}`])
+
+			const updatesBeforeReplay = fixture.client.sessionUpdates.length
+			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			const replayedText = fixture.client.sessionUpdates
+				.slice(updatesBeforeReplay)
+				.filter(({ update }) => update.sessionUpdate === "agent_message_chunk")
+				.map(({ update }) =>
+					update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" ? update.content.text : "",
+				)
+				.join("")
+			expect(replayedText).toBe(`${REFRESH_CONTINUED_REPLY}Refreshed follow-up continued.`)
+
+			expect(fixture.client.permissionRequests).toHaveLength(0)
+			expect(fixture.client.elicitationRequests).toHaveLength(0)
+			expect(
+				fixture.client.sessionUpdates.every(({ sessionId: updateSessionId }) => updateSessionId === sessionId),
+			).toBe(true)
+		})
+
+		it("returns the ordinary auth-required outcome for a revoked refresh grant", async () => {
+			oauth.revokeGrants()
+			const sessionId = await newSession(fixture, fixture.workDir)
+
+			const error = await fixture.conn
+				.prompt({ sessionId, prompt: [{ type: "text", text: "Use the revoked credential" }] })
+				.then(
+					() => undefined,
+					(failure: unknown) => failure,
+				)
+
+			expect(error).toMatchObject({ code: -32000, message: expect.stringContaining("auth required") })
+			expect(oauth.grants).toHaveLength(1)
+		})
 	})
-
-	it("refreshes and persists OAuth while preserving the prompt and ordinary session updates", async () => {
-		const sessionId = await newSession(fixture, fixture.workDir)
-
-		const result = await prompt(fixture, sessionId, "Continue with the refreshed credential")
-
-		expect(result.stopReason).toBe("end_turn")
-		expect(result.chunks).toBe(REFRESH_CONTINUED_REPLY)
-		expect(oauth.grants).toEqual([{ grantType: "refresh_token", refreshToken: "e2e-original-refresh" }])
-		const stored = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, { access?: string; refresh?: string }>
-		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
-			expect(stored[providerId]?.access).toBe(REPLACEMENT_ACCESS_TOKEN)
-			expect(stored[providerId]?.refresh).toBe("e2e-rotated-refresh")
-		}
-		const followUp = await prompt(fixture, sessionId, "Continue again with the persisted credential")
-		expect(followUp.stopReason).toBe("end_turn")
-		expect(followUp.chunks).toBe(`${REFRESH_CONTINUED_REPLY}Refreshed follow-up continued.`)
-		expect(oauth.grants).toHaveLength(1)
-		const authorizations = fixture.fake.requests.map(chatAuthorization).filter((value) => value !== undefined)
-		expect(authorizations).toEqual([`Bearer ${REPLACEMENT_ACCESS_TOKEN}`, `Bearer ${REPLACEMENT_ACCESS_TOKEN}`])
-
-		const updatesBeforeReplay = fixture.client.sessionUpdates.length
-		await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
-		const replayedText = fixture.client.sessionUpdates
-			.slice(updatesBeforeReplay)
-			.filter(({ update }) => update.sessionUpdate === "agent_message_chunk")
-			.map(({ update }) =>
-				update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" ? update.content.text : "",
-			)
-			.join("")
-		expect(replayedText).toBe(`${REFRESH_CONTINUED_REPLY}Refreshed follow-up continued.`)
-
-		expect(fixture.client.permissionRequests).toHaveLength(0)
-		expect(fixture.client.elicitationRequests).toHaveLength(0)
-		expect(fixture.client.sessionUpdates.every(({ sessionId: updateSessionId }) => updateSessionId === sessionId)).toBe(
-			true,
-		)
-	})
-
-	it("returns the ordinary auth-required outcome for a revoked refresh grant", async () => {
-		oauth.revokeGrants()
-		const sessionId = await newSession(fixture, fixture.workDir)
-
-		const error = await fixture.conn
-			.prompt({ sessionId, prompt: [{ type: "text", text: "Use the revoked credential" }] })
-			.then(
-				() => undefined,
-				(failure: unknown) => failure,
-			)
-
-		expect(error).toMatchObject({ code: -32000, message: expect.stringContaining("auth required") })
-		expect(oauth.grants).toHaveLength(1)
-	})
-})
+}

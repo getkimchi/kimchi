@@ -1668,7 +1668,7 @@ export class KimchiAcpAgent implements Agent {
 				? "ready"
 				: await prepareActivePromptKimchiCredential(
 						{ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") },
-						installKimchiOAuth,
+						(runtime) => installKimchiOAuth(runtime, join(this.agentDir, "auth.json")),
 						activeProviderId,
 					)
 		if (!entry.turn) return result
@@ -1901,7 +1901,7 @@ export class KimchiAcpAgent implements Agent {
 					// (installKimchiOAuth registers the real refresh handler on the
 					// throwaway runtime; getAuth reuses it). See ext-methods/sso-credential.ts.
 					const response = await handleSsoCredential(
-						{ installOAuth: installKimchiOAuth },
+						{ installOAuth: (runtime) => installKimchiOAuth(runtime, join(this.agentDir, "auth.json")) },
 						{
 							authPath: join(this.agentDir, "auth.json"),
 							modelsPath: join(this.agentDir, "models.json"),
@@ -4590,7 +4590,7 @@ async function createSsoAwareModelRuntime(agentDir: string) {
 		authPath: join(agentDir, "auth.json"),
 		modelsPath: join(agentDir, "models.json"),
 	})
-	installKimchiOAuth(modelRuntime)
+	installKimchiOAuth(modelRuntime, join(agentDir, "auth.json"))
 	return modelRuntime
 }
 

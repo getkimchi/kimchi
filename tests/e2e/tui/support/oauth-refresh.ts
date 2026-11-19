@@ -20,7 +20,10 @@ export interface FakeOAuthRefreshServer {
 }
 
 /** A loopback-only OAuth token endpoint that rotates fake credentials. It never logs request bodies or headers. */
-export async function startFakeOAuthRefreshServer(): Promise<FakeOAuthRefreshServer> {
+export async function startFakeOAuthRefreshServer(
+	options: { expiresInSeconds?: number } = {},
+): Promise<FakeOAuthRefreshServer> {
+	const { expiresInSeconds = 3600 } = options
 	const grants: RefreshGrant[] = []
 	let revoked = false
 	const server: Server = createServer((req, res) => {
@@ -49,7 +52,7 @@ export async function startFakeOAuthRefreshServer(): Promise<FakeOAuthRefreshSer
 				JSON.stringify({
 					access_token: REPLACEMENT_ACCESS_TOKEN,
 					refresh_token: "e2e-rotated-refresh",
-					expires_in: 3600,
+					expires_in: expiresInSeconds,
 					token_type: "Bearer",
 				}),
 			)
