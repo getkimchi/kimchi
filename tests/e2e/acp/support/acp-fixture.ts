@@ -104,6 +104,8 @@ export interface AcpFixtureOptions {
 	 * a custom extension that exercises those calls.
 	 */
 	extensionPath?: string
+	/** Mutate the isolated fixture after its default config/models/settings are written and before the harness starts. */
+	seedHome?: (homeDir: string, workDir: string, fakeBaseUrl: string) => void
 	/** Seed the isolated Kimchi config with the shared repository-owned MCP fixture. */
 	mcp?: McpFixtureOptions
 	/** Org policy served by the fake platform endpoints (api-keys:verify +
@@ -453,6 +455,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			)
 		}
 		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
+		options.seedHome?.(homeDir, workDir, fake.baseUrl)
 
 		// pi-coding-agent auto-loads `${agentDir}/extensions/*.js` on every session.
 		const extPath = extensionPath ?? TEST_EXTENSION_PATH

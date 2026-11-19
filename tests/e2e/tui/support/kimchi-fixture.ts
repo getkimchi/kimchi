@@ -739,12 +739,25 @@ function formatTuiArtifact({ name, outcome, terminal, fixture, steps, error }: W
 		].join("\n"),
 		error ? `## Error\n\n${formatError(error)}` : undefined,
 		`## Scenario Steps\n\n${formatSteps(steps)}`,
-		`## Fake OpenAI Requests\n\n${formatJson(fixture.fake.requests)}`,
+		`## Fake OpenAI Requests\n\n${formatJson(redactedRequests(fixture))}`,
 		`## Final Viewable Terminal\n\n${viewText(terminal)}`,
 		`## Final Full Terminal Buffer\n\n${fullText(terminal)}`,
 	]
 		.filter((section): section is string => Boolean(section))
 		.join("\n\n")
+}
+
+/** Keep credentials out of failure artifacts while preserving the live request records used by assertions. */
+function redactedRequests(fixture: KimchiFixture): KimchiFixture["fake"]["requests"] {
+	return fixture.fake.requests.map((request) => ({
+		...request,
+		headers: Object.fromEntries(
+			Object.entries(request.headers).map(([name, value]) => [
+				name,
+				name.toLowerCase() === "authorization" && value !== undefined ? "[redacted]" : value,
+			]),
+		),
+	}))
 }
 
 function formatSteps(steps: TuiStepSnapshot[]): string {
