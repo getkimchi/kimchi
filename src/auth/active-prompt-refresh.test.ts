@@ -31,12 +31,7 @@ describe("active prompt Kimchi credential preparation", () => {
 
 	it("refreshes once and persists the replacement to canonical and active sub-provider entries", async () => {
 		writeOAuthCredential(Date.now() + 60_000)
-		const oauth = fakeOAuthDeps((credential) => ({
-			...credential,
-			access: "replacement-access",
-			refresh: "rotated-refresh",
-			expires: Date.now() + 3_600_000,
-		}))
+		const oauth = rotatingOAuthDeps()
 
 		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth)
 		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth)
@@ -74,14 +69,48 @@ describe("active prompt Kimchi credential preparation", () => {
 		expect(readStore()["kimchi-dev/openai"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
 	})
 
+	it("does not overwrite a distinct active credential outside the refresh window", async () => {
+		const activeCredential = {
+			type: "oauth",
+			access: "independent-active-access",
+			refresh: "independent-active-refresh",
+			expires: Date.now() + 10 * 60_000,
+		}
+		writeFileSync(
+			paths.authPath,
+			JSON.stringify({
+				"kimchi-dev": {
+					type: "oauth",
+					access: "replacement-access",
+					refresh: "rotated-refresh",
+					expires: Date.now() + 20 * 60_000,
+				},
+				"kimchi-dev/openai": activeCredential,
+			}),
+		)
+		const oauth = fakeOAuthDeps()
+
+		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")
+
+		expect(oauth.refreshCalls).toHaveLength(0)
+		expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+		expect(readStore()["kimchi-dev/openai"]).toEqual(activeCredential)
+	})
+
+	it("does not refresh Kimchi credentials for an unrelated active provider", async () => {
+		writeOAuthCredential(Date.now() + 60_000)
+		const oauth = fakeOAuthDeps()
+
+		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "anthropic")
+
+		expect(oauth.refreshCalls).toHaveLength(0)
+		expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+		expect(readStore()).toMatchObject({ "kimchi-dev": { access: "expiring-access", refresh: "original-refresh" } })
+	})
+
 	it("retries a transient fan-out write and preserves the rotated grant for the active provider", async () => {
 		writeOAuthCredential(Date.now() + 60_000)
-		const oauth = fakeOAuthDeps((credential) => ({
-			...credential,
-			access: "replacement-access",
-			refresh: "rotated-refresh",
-			expires: Date.now() + 3_600_000,
-		}))
+		const oauth = rotatingOAuthDeps()
 		vi.mocked(syncOAuthCredentialToKimchiProviders).mockRejectedValueOnce(new Error("fake transient store write"))
 
 		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")
@@ -110,31 +139,52 @@ describe("active prompt Kimchi credential preparation", () => {
 			throw new Error("loopback temporarily unavailable")
 		})
 
-		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBeUndefined()
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
 
 		expect(isCredentialStale("expiring-access", "kimchi-dev")).toBe(false)
 		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
 	})
 
-	it("preserves definitive invalid_grant errors", async () => {
+	it("classifies definitive invalid_grant without throwing into an input hook", async () => {
 		writeOAuthCredential(Date.now() + 60_000)
 		const oauth = fakeOAuthDeps(() => {
 			throw new OAuthTokenError("fake refresh grant revoked", { code: "invalid_grant", status: 400 })
 		})
 
-		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).rejects.toMatchObject({
-			code: "oauth",
-			cause: { code: "invalid_grant" },
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("oauth_revoked")
+		expect(oauth.refreshCalls).toHaveLength(1)
+	})
+
+	it("logs token-free diagnostics when fan-out fails twice", async () => {
+		writeOAuthCredential(Date.now() + 60_000)
+		const oauth = rotatingOAuthDeps()
+		vi.mocked(syncOAuthCredentialToKimchiProviders).mockRejectedValue(
+			new TypeError("unexpected error containing original-refresh"),
+		)
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"ready",
+		)
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledTimes(2)
+		expect(error).toHaveBeenCalledWith({
+			event: "kimchi.oauth.refresh",
+			outcome: "preflight_failed",
+			errorType: "TypeError",
 		})
+		expect(JSON.stringify(error.mock.calls)).not.toContain("original-refresh")
 	})
 
-	it("does not turn a credential-store failure into definitive rejection", async () => {
-		const oauth = fakeOAuthDeps()
-		writeFileSync(paths.authPath, "{")
-
-		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBeUndefined()
-		expect(oauth.refreshCalls).toHaveLength(0)
-	})
+	function rotatingOAuthDeps(): ReturnType<typeof fakeOAuthDeps> {
+		return fakeOAuthDeps((credential) => ({
+			...credential,
+			access: "replacement-access",
+			refresh: "rotated-refresh",
+			expires: Date.now() + 3_600_000,
+		}))
+	}
 
 	function writeOAuthCredential(expires: number): void {
 		writeFileSync(

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { expect, test } from "@microsoft/tui-test"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import {
 	chatAuthorization,
 	EXPIRING_ACCESS_TOKEN,
@@ -62,6 +63,29 @@ test("an active prompt refreshes and persists OAuth before continuing without si
 				expect(oauth.grants).toHaveLength(1)
 				await expect(terminal.getByText("Sign in", { full: false })).not.toBeVisible()
 				await expect(terminal.getByText("auth required", { full: false })).not.toBeVisible()
+			},
+		)
+	} finally {
+		await oauth.close()
+	}
+})
+
+test("a revoked grant exposes the existing sign-in action without crashing the session", async ({ terminal }) => {
+	const oauth = await startFakeOAuthRefreshServer()
+	try {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: "oauth-prompt-refresh-revoked",
+				providerId: "kimchi-dev/openai",
+				responses: [],
+				seedHome: (homeDir) => seedExpiringOAuthCredential(homeDir, oauth.tokenUrl),
+			},
+			async () => {
+				oauth.revokeGrants()
+				terminal.submit("Use the revoked credential")
+				await waitForText(terminal, "Run /login to sign in again", { timeoutMs: STREAM_TIMEOUT_MS })
+				await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
 			},
 		)
 	} finally {

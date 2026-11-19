@@ -3,9 +3,13 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { isInvalidGrantError } from "../cli-auth/oauth.js"
 import { clearRefreshedCredentialStale } from "../credential-staleness.js"
-import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 import { syncOAuthCredentialToKimchiProviders } from "../pi-auth.js"
-import { type RefreshAwareCredentialPaths, resolveRefreshAwareKimchiAuth } from "./refresh-aware-credential.js"
+import {
+	KIMCHI_OAUTH_MINIMUM_VALIDITY_MS,
+	type RefreshAwareCredentialPaths,
+	resolveRefreshAwareKimchiAuth,
+} from "./refresh-aware-credential.js"
 
 /**
  * Refresh canonical Kimchi OAuth state before an active TUI/ACP user prompt.
@@ -18,21 +22,21 @@ import { type RefreshAwareCredentialPaths, resolveRefreshAwareKimchiAuth } from 
  *
  * Transient refresh and store failures deliberately fall through to the
  * original prompt's existing auth path; they are not proof of rejection and
- * must not mark credentials stale. Definitive invalid_grant keeps the normal
- * thrown-error sign-in behavior. API keys never enter this path.
+ * must not mark credentials stale. A definitive invalid_grant returns its own
+ * outcome: input-hook rejections do not propagate, so each surface adapter
+ * stops the prompt and presents its existing sign-in action.
  */
-const ACTIVE_CREDENTIAL_SYNC_WINDOW_MS = 5 * 60_000
-
 export async function prepareActivePromptKimchiCredential(
 	paths: RefreshAwareCredentialPaths,
 	installOAuth: (runtime: ModelRuntime) => void,
 	activeProviderId = KIMCHI_PROVIDER_ID,
-): Promise<void> {
+): Promise<"ready" | "oauth_revoked"> {
+	if (activeProviderId !== undefined && !isKimchiProvider(activeProviderId)) return "ready"
 	try {
-		if (readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)?.type !== "oauth") return
+		if (readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)?.type !== "oauth") return "ready"
 		const resolution = await resolveRefreshAwareKimchiAuth(paths, installOAuth)
 		const credential = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
-		if (credential?.type !== "oauth" || !resolution.auth?.auth.apiKey) return
+		if (credential?.type !== "oauth" || !resolution.auth?.auth.apiKey) return "ready"
 		const activeCredential =
 			activeProviderId === KIMCHI_PROVIDER_ID ? undefined : readStoredCredential(activeProviderId, paths.authPath)
 		// A coalesced peer may have persisted the canonical replacement after
@@ -41,8 +45,8 @@ export async function prepareActivePromptKimchiCredential(
 		const staleActiveCredential =
 			activeCredential?.type === "oauth" &&
 			(activeCredential.access !== credential.access || activeCredential.refresh !== credential.refresh) &&
-			Date.now() + ACTIVE_CREDENTIAL_SYNC_WINDOW_MS >= activeCredential.expires
-		if (!resolution.refreshed && !staleActiveCredential) return
+			Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= activeCredential.expires
+		if (!resolution.refreshed && !staleActiveCredential) return "ready"
 		try {
 			await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
 		} catch {
@@ -54,7 +58,16 @@ export async function prepareActivePromptKimchiCredential(
 		if (resolution.refreshed) {
 			clearRefreshedCredentialStale(resolution.previousAccessToken, resolution.auth.auth.apiKey, KIMCHI_PROVIDER_ID)
 		}
+		return "ready"
 	} catch (error) {
-		if (error instanceof ModelsError && error.code === "oauth" && isInvalidGrantError(error.cause)) throw error
+		const errorType = error instanceof Error ? error.name : typeof error
+		if (error instanceof ModelsError && error.code === "oauth" && isInvalidGrantError(error.cause)) {
+			console.error({ event: "kimchi.oauth.refresh", outcome: "grant_rejected", errorType })
+			return "oauth_revoked"
+		}
+		// Error text and stacks can contain provider-supplied credential material.
+		// Log only the category so unexpected failures remain diagnosable safely.
+		console.error({ event: "kimchi.oauth.refresh", outcome: "preflight_failed", errorType })
+		return "ready"
 	}
 }

@@ -5,7 +5,6 @@ import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-re
 import { loadConfig } from "../../config.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { chatCompletionsApi } from "../../models.js"
-import { isAcpSessionHost } from "../../modes/acp/state.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 import { createGatewayCodexProvider, registerGatewayCodexApi } from "./codex-gateway.js"
 import { createKimchiProviderOAuth } from "./flow.js"
@@ -33,19 +32,21 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	pi.registerProvider(KIMCHI_PROVIDER_ID, kimchiProvider)
 
 	pi.on("input", async (event, ctx) => {
-		// Limit the preflight to original user prompts on the two interactive
-		// surfaces. Headless runs, native RPC, and extension/subagent prompts
-		// retain their existing auth behavior and gain no extra refresh path.
-		const activeTuiPrompt = event.source === "interactive" && ctx.mode === "tui"
-		const activeAcpPrompt = event.source === "rpc" && isAcpSessionHost()
-		if (!activeTuiPrompt && !activeAcpPrompt) return
-		await prepareActivePromptKimchiCredential(
+		// Limit the preflight to original TUI prompts. ACP refreshes at its
+		// session/prompt adapter, where a revoked grant becomes -32000 instead
+		// of an extension error. Other sources retain their existing auth path.
+		if (event.source !== "interactive" || ctx.mode !== "tui") return
+		const preparation = await prepareActivePromptKimchiCredential(
 			{ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") },
 			(runtime) => {
 				runtime.registerProvider(KIMCHI_PROVIDER_ID, { oauth: kimchiOAuth })
 			},
 			ctx.model?.provider,
 		)
+		if (preparation === "oauth_revoked") {
+			ctx.ui.notify("OAuth refresh was rejected. Run /login to sign in again.", "error")
+			return { action: "handled" as const }
+		}
 	})
 
 	// Register the same OAuth handler for every Kimchi-managed sub-provider

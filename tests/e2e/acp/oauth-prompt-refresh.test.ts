@@ -86,4 +86,19 @@ describe("ACP integration — OAuth refresh during an active prompt", () => {
 			true,
 		)
 	})
+
+	it("returns the ordinary auth-required outcome for a revoked refresh grant", async () => {
+		oauth.revokeGrants()
+		const sessionId = await newSession(fixture, fixture.workDir)
+
+		const error = await fixture.conn
+			.prompt({ sessionId, prompt: [{ type: "text", text: "Use the revoked credential" }] })
+			.then(
+				() => undefined,
+				(failure: unknown) => failure,
+			)
+
+		expect(error).toMatchObject({ code: -32000, message: expect.stringContaining("auth required") })
+		expect(oauth.grants).toHaveLength(1)
+	})
 })

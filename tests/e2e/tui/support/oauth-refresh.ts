@@ -15,12 +15,14 @@ export interface RefreshGrant {
 export interface FakeOAuthRefreshServer {
 	tokenUrl: string
 	grants: RefreshGrant[]
+	revokeGrants(): void
 	close(): Promise<void>
 }
 
 /** A loopback-only OAuth token endpoint that rotates fake credentials. It never logs request bodies or headers. */
 export async function startFakeOAuthRefreshServer(): Promise<FakeOAuthRefreshServer> {
 	const grants: RefreshGrant[] = []
+	let revoked = false
 	const server: Server = createServer((req, res) => {
 		if (req.method !== "POST" || req.url !== "/token") {
 			res.writeHead(404).end()
@@ -37,6 +39,11 @@ export async function startFakeOAuthRefreshServer(): Promise<FakeOAuthRefreshSer
 				grantType: params.get("grant_type") ?? "",
 				refreshToken: params.get("refresh_token") ?? "",
 			})
+			if (revoked) {
+				res.writeHead(400, { "content-type": "application/json" })
+				res.end(JSON.stringify({ error: "invalid_grant", error_description: "E2E refresh grant revoked" }))
+				return
+			}
 			res.writeHead(200, { "content-type": "application/json" })
 			res.end(
 				JSON.stringify({
@@ -56,6 +63,9 @@ export async function startFakeOAuthRefreshServer(): Promise<FakeOAuthRefreshSer
 	return {
 		tokenUrl: `http://127.0.0.1:${port}/token`,
 		grants,
+		revokeGrants: () => {
+			revoked = true
+		},
 		close: () =>
 			new Promise<void>((done) => {
 				server.closeAllConnections()

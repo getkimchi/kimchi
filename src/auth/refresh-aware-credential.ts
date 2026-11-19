@@ -10,6 +10,13 @@ export type RefreshAwareCredentialPaths = {
 	credentials?: CredentialStore
 }
 
+/**
+ * Keep aligned with DEFAULT_OAUTH_MINIMUM_VALIDITY_MS in the pinned pi-ai
+ * auth/resolve module. Upstream does not export it, so all harness call sites
+ * that reason about ModelRuntime's refresh window share this local value.
+ */
+export const KIMCHI_OAUTH_MINIMUM_VALIDITY_MS = 5 * 60_000
+
 export type RefreshAwareAuth = Awaited<ReturnType<ModelRuntime["getAuth"]>>
 
 type PiStoredCredential = NonNullable<ReturnType<typeof readStoredCredential>>

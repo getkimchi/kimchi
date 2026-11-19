@@ -65,6 +65,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import open from "open"
+import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
 import { getParsedCliArgs } from "../../cli-args.js"
 import {
 	authMethodRegion,
@@ -1656,6 +1657,34 @@ export class KimchiAcpAgent implements Agent {
 			turnReject = reject
 		})
 		entry.turn = createTurnContext(turnResolve, turnReject)
+		// This is the ACP counterpart of the TUI input preflight. Keep turn creation
+		// in its original position so steering, feedback, and cancellation observe
+		// an active turn during the auth await. Resolve revoked grants through the
+		// ordinary typed failure path without another model-request grant attempt.
+		const activeProviderId = entry.session.model?.provider
+		const preparation =
+			activeProviderId !== undefined && !isKimchiProvider(activeProviderId)
+				? "ready"
+				: await prepareActivePromptKimchiCredential(
+						{ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") },
+						installKimchiOAuth,
+						activeProviderId,
+					)
+		if (!entry.turn) return result
+		if (entry.turn.cancelled) {
+			this.finalizeTurn(entry, "cancelled")
+			return result
+		}
+		if (preparation === "oauth_revoked") {
+			this.failTurn(
+				entry,
+				RequestError.authRequired(
+					{ kind: "auth" },
+					"OAuth refresh was rejected: auth required. Call session/authenticate to sign in again, then retry.",
+				),
+			)
+			return result
+		}
 		// Kick off session.prompt but don't await inside the async function body —
 		// shutdown() needs to be able to reject `result` and have the caller's await
 		// on prompt() settle immediately, which can't happen while this body is
