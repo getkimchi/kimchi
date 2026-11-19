@@ -19,7 +19,7 @@ import { getSettingsManager } from "../../settings-watcher.js"
 import { getGlobalDefault, setMultiModelEnabled } from "../multi-model.js"
 import { syncAutoCapabilities } from "./capabilities.js"
 import { AUTO_MODEL_NAME, AUTO_MODEL_PROVIDER, GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "./constants.js"
-import { type RoutedModelResolution, resolveRoutedModel } from "./routed-model.js"
+import { type RoutedModelRegistry, type RoutedModelResolution, resolveRoutedModel } from "./routed-model.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "./state.js"
 
 export const ROUTED_MODEL_RESOLUTION_ENTRY = "kimchi_routed_model_resolution"
@@ -30,6 +30,8 @@ type PersistedRoutedResolution = {
 	requestedId: string
 	provider: string
 	modelId: string
+	/** Concrete model's provider block when it differs from the requested one. */
+	routedProvider?: string
 }
 
 /** Exported for the ACP routed-model mirror; the persisted shape is shared
@@ -45,7 +47,8 @@ export function isPersistedRoutedResolution(data: unknown): data is PersistedRou
 		"provider" in data &&
 		typeof data.provider === "string" &&
 		"modelId" in data &&
-		typeof data.modelId === "string"
+		typeof data.modelId === "string" &&
+		(!("routedProvider" in data) || typeof data.routedProvider === "string")
 	)
 }
 
@@ -65,16 +68,17 @@ export function isRoutedResolutionEntry(entry: SessionEntry): entry is RoutedRes
 }
 
 function routedEntry(resolution: RoutedModelResolution, requestedId: string): PersistedRoutedResolution {
+	// `provider` stays the requested virtual provider: consumers compose the
+	// requested ref from it. Only a pick served by a sibling block needs the
+	// extra field, so base-block entries keep their existing shape for replay.
+	const routedProvider = resolution.kind === "model" ? resolution.model.provider : undefined
 	return {
 		version: 1,
 		requestedId,
 		provider: AUTO_MODEL_PROVIDER,
 		modelId: resolution.kind === "unknown" ? resolution.rawId : resolution.model.id,
+		...(routedProvider && routedProvider !== AUTO_MODEL_PROVIDER ? { routedProvider } : {}),
 	}
-}
-
-function routedIdOf(resolution: RoutedModelResolution): string {
-	return resolution.kind === "unknown" ? resolution.rawId : resolution.model.id
 }
 
 /** Rendered when the backend routes a request to a concrete model. */
@@ -181,14 +185,20 @@ function hasPersistedDefault(): boolean {
  */
 function findMetadataSuccessor(
 	deadId: string,
-	modelRegistry: Pick<ExtensionContext["modelRegistry"], "find">,
+	modelRegistry: RoutedModelRegistry & Pick<ExtensionContext["modelRegistry"], "hasConfiguredAuth">,
 ): { model: Model<Api>; note?: string } | undefined {
 	const info = readModelDeprecations(resolve(getAgentConfigDir(), "models.json")).get(deadId)
 	if (!info) return undefined
 	const slugs = [info.replacement_model, ...(info.alternatives?.map((alternative) => alternative.slug) ?? [])]
 	for (const slug of slugs) {
-		const candidate = slug ? modelRegistry.find(AUTO_MODEL_PROVIDER, slug) : undefined
-		if (candidate) return { model: candidate, note: info.deprecation_note }
+		// Successors can live on a sibling gateway block too, so resolve like a routed pick.
+		const resolution = slug ? resolveRoutedModel(AUTO_MODEL_PROVIDER, slug, modelRegistry) : undefined
+		if (resolution?.kind !== "model") continue
+		// setModel gates on configured auth: a candidate from a block this machine
+		// cannot authenticate (e.g. Codex without a ChatGPT login) would fail
+		// silently and never reach the policy heirs. Treat it as unserved.
+		if (!modelRegistry.hasConfiguredAuth(resolution.model)) continue
+		return { model: resolution.model, note: info.deprecation_note }
 	}
 	return undefined
 }
@@ -245,16 +255,14 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 		if (message.provider !== AUTO_MODEL_PROVIDER) return
 		if (!message.responseModel || message.responseModel === message.model) return
 
-		const resolution = resolveRoutedModel(message.provider, message.responseModel, ctx.modelRegistry)
-		const routedId = routedIdOf(resolution)
+		// The reported pick is the dedup key: both resolver branches return a model
+		// whose id equals `responseModel`, so the catalog lookup can sit behind the
+		// guard. `message_update` fires per streamed chunk and the sibling fallback
+		// scans the whole catalog — resolving first would rescan per token.
+		if (lastNotifiedModel.get(sessionId) === message.responseModel) return
+		lastNotifiedModel.set(sessionId, message.responseModel)
 
-		// Announce only when the routed model changed, so a session that keeps
-		// landing on the same concrete model isn't spammed. Grouping the state
-		// write, capability sync, and notice behind this guard is what makes the
-		// (per-token) `message_update` path safe: these run once per pick, not
-		// once per streamed token.
-		if (lastNotifiedModel.get(sessionId) === routedId) return
-		lastNotifiedModel.set(sessionId, routedId)
+		const resolution = resolveRoutedModel(message.provider, message.responseModel, ctx.modelRegistry)
 
 		// Backend-reachable concrete model: record it and re-sync capabilities
 		// to its real window/tokens so compaction and thinking controls match.
@@ -548,7 +556,8 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			}
 
 			lastNotifiedModel.set(sessionId, data.modelId)
-			const concrete = ctx.modelRegistry.find(data.provider, data.modelId)
+			const resolution = resolveRoutedModel(data.routedProvider ?? data.provider, data.modelId, ctx.modelRegistry)
+			const concrete = resolution.kind === "model" ? resolution.model : undefined
 			if (concrete && concrete.id !== ctx.model.id) {
 				setAutoRoutingState(sessionId, { status: "resolved", model: concrete, requestedId: data.requestedId })
 				try {

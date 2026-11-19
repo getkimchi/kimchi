@@ -115,14 +115,20 @@ function messageUpdate(message: Partial<Record<string, unknown>>): MessageUpdate
 	} as unknown as MessageUpdateEvent
 }
 
-function routedEntry(requestedId: string, modelId: string): SessionEntry {
+function routedEntry(requestedId: string, modelId: string, routedProvider?: string): SessionEntry {
 	return {
 		type: "custom",
 		id: crypto.randomUUID(),
 		parentId: null,
 		timestamp: new Date().toISOString(),
 		customType: ROUTED_MODEL_RESOLUTION_ENTRY,
-		data: { version: 1, requestedId, provider: "kimchi-dev", modelId },
+		data: {
+			version: 1,
+			requestedId,
+			provider: "kimchi-dev",
+			modelId,
+			...(routedProvider ? { routedProvider } : {}),
+		},
 	}
 }
 
@@ -133,6 +139,15 @@ describe("isRoutedResolutionEntry", () => {
 		if (isRoutedResolutionEntry(entry)) {
 			expect(entry.data).toEqual({ version: 1, requestedId: "auto", provider: "kimchi-dev", modelId: "kimi-k3" })
 		}
+	})
+
+	it("accepts an optional routed provider and rejects a malformed one", () => {
+		const entry = routedEntry("auto", "claude-haiku-5-5", "kimchi-dev/anthropic")
+		expect(isRoutedResolutionEntry(entry)).toBe(true)
+
+		const data = (entry as Extract<SessionEntry, { type: "custom" }>).data as Record<string, unknown>
+		const malformed = { ...(entry as object), data: { ...data, routedProvider: 42 } }
+		expect(isRoutedResolutionEntry(malformed as SessionEntry)).toBe(false)
 	})
 
 	it("rejects other custom types, malformed data, and non-custom entries", () => {
@@ -224,6 +239,24 @@ describe("auto-model extension", () => {
 		expect(setModel).toHaveBeenCalledTimes(1)
 	})
 
+	it("resolves a sibling pick once, not once per streamed update", () => {
+		// The sibling fallback scans the whole catalog, so the dedup guard must
+		// run before resolution: message_update fires per token.
+		const { getHandler, getAppendedEntries } = setup()
+		const target = model("claude-haiku-5-5", { provider: "kimchi-dev/anthropic" })
+		const find = vi.fn(() => undefined)
+		const getAll = vi.fn(() => [target])
+		const c = ctx({ modelRegistry: { find, getAll } })
+		const onMessageUpdate = getHandler<MessageUpdateEvent>("message_update")
+
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+
+		expect(getAll).toHaveBeenCalledTimes(1)
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(1)
+	})
+
 	it("does not re-cap a model selected while the routed request was in flight", () => {
 		// The user switched from auto to a concrete model while the request was
 		// streaming. The routed response still names kimi-k3; syncing it onto
@@ -266,6 +299,43 @@ describe("auto-model extension", () => {
 		expect(setModel).toHaveBeenCalledTimes(1)
 		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toEqual([
 			{ version: 1, requestedId: "auto-beta", provider: "kimchi-dev", modelId: "kimi-k3" },
+		])
+	})
+
+	it("syncs a pick served by a sibling gateway block", () => {
+		// Regression: claude-* models are registered under `kimchi-dev/anthropic`,
+		// not the request's `kimchi-dev` block. The exact lookup missed them, so
+		// the pick resolved as unknown and the session kept Auto's 16k max output
+		// for its whole life (observed via mitmproxy on every turn).
+		const { getHandler, getAppendedEntries, setModel } = setup()
+		const target = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+		})
+		const c = ctx({ modelRegistry: { find: () => undefined, getAll: () => [target] } })
+
+		getHandler<MessageEndEvent>("message_end")(
+			messageEnd({ model: "auto-beta", responseModel: "claude-haiku-5-5" }),
+			c as never,
+		)
+
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({
+			status: "resolved",
+			model: target,
+			requestedId: "auto-beta",
+		})
+		expect(setModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "auto-beta", contextWindow: 1_000_000, maxTokens: 128_000 }),
+		)
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toEqual([
+			{
+				version: 1,
+				requestedId: "auto-beta",
+				provider: "kimchi-dev",
+				modelId: "claude-haiku-5-5",
+				routedProvider: "kimchi-dev/anthropic",
+			},
 		])
 	})
 
@@ -411,6 +481,59 @@ describe("auto-model extension", () => {
 			model: target,
 			requestedId: "auto-beta",
 		})
+		expect(setModel).toHaveBeenCalledTimes(1)
+	})
+
+	it("hydrates a persisted pick served by a sibling gateway block", async () => {
+		const { getHandler, setModel } = setup()
+		const target = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+		})
+		const onSessionStart = getHandler<"session_start">("session_start")
+		const c = ctx({
+			modelRegistry: { find: () => undefined, getAll: () => [target] },
+			sessionManager: {
+				getSessionId: () => SESSION_ID,
+				getEntries: () => [routedEntry("auto-beta", "claude-haiku-5-5")],
+			},
+		})
+
+		await onSessionStart({ type: "session_start" } as never, c as never)
+
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({
+			status: "resolved",
+			model: target,
+			requestedId: "auto-beta",
+		})
+		expect(setModel).toHaveBeenCalledTimes(1)
+	})
+
+	it("hydrates using the persisted routed provider", async () => {
+		const { getHandler, setModel } = setup()
+		const target = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+		})
+		const onSessionStart = getHandler<"session_start">("session_start")
+		const c = ctx({
+			// No fallback candidates: hydration must use the recorded provider.
+			modelRegistry: {
+				find: (provider: string, modelId: string) =>
+					provider === "kimchi-dev/anthropic" && modelId === "claude-haiku-5-5" ? target : undefined,
+				getAll: () => [],
+			},
+			sessionManager: {
+				getSessionId: () => SESSION_ID,
+				getEntries: () => [routedEntry("auto-beta", "claude-haiku-5-5", "kimchi-dev/anthropic")],
+			},
+		})
+
+		await onSessionStart({ type: "session_start" } as never, c as never)
+
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: target })
 		expect(setModel).toHaveBeenCalledTimes(1)
 	})
 
@@ -644,6 +767,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		const served = ids.map((id) => model(id, { name: `Model ${id}` }))
 		return {
 			find: (_p: string, mid: string) => served.find((m) => m.id === mid),
+			getAll: () => served,
 			getAvailable: () => served,
 		}
 	}
@@ -865,6 +989,7 @@ describe("self-heal — persisted default no longer served", () => {
 		const served = ids.map((id) => model(id, { name: `Model ${id}` }))
 		return {
 			find: (_p: string, mid: string) => served.find((m) => m.id === mid),
+			getAll: () => served,
 			getAvailable: () => served,
 		}
 	}
@@ -955,6 +1080,42 @@ describe("self-heal — persisted default no longer served", () => {
 			`Default model "${DEAD}" is no longer served and has been replaced. New sessions start on Model kimi-k3 (the new default). Details: https://kimchi.dev/deprecations/deepseek-v4-flash To pick a different model for this session, use your client's model selector (/model in the terminal).`,
 			"info",
 		)
+	})
+
+	it("heals to a metadata-declared successor served by a sibling gateway block", async () => {
+		seedDeprecations({ [DEAD]: { replacement_model: "claude-haiku-5-5" } })
+		const successor = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			name: "Model claude-haiku-5-5",
+		})
+		const { setModel, start } = runSessionStart({
+			modelRegistry: { find: () => undefined, getAll: () => [successor] },
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(successor, { persist: true })
+	})
+
+	it("skips a metadata successor this machine cannot authenticate", async () => {
+		// setModel gates on configured auth: a Codex-block successor without a
+		// ChatGPT login fails silently and would block the policy heirs.
+		seedDeprecations({ [DEAD]: { replacement_model: "codex-model" } })
+		const codex = model("codex-model", { provider: "kimchi-dev/openai-codex", name: "Model codex-model" })
+		const flash = model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" })
+		const { setModel, ctx, start } = runSessionStart({
+			modelRegistry: {
+				find: () => undefined,
+				getAll: () => [codex],
+				getAvailable: () => [flash],
+				hasConfiguredAuth: (candidate) => candidate.provider !== "kimchi-dev/openai-codex",
+			},
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(flash, { persist: true })
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Model deepseek-v4-flash-0731"), "info")
 	})
 
 	it("walks the declared alternatives until one is served", async () => {
