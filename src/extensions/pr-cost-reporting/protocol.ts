@@ -370,8 +370,32 @@ const schemas: Record<string, readonly Field[]> = {
 }
 
 /** Production is Bun, as for the ledger; Temporal preserves Go's nanosecond timestamps and numeric offsets. */
-export function canonicalTime(value: string | Date): string {
-	const text = value instanceof Date ? value.toISOString() : value
+const canonicalMemo = new Map<string, string>()
+const nanosMemo = new Map<string, bigint>()
+const MEMO_LIMIT = 2_048
+const FAR_FUTURE_BOUND = "2200-01-01T00:00:00Z"
+let zeroTimeNanos: bigint | undefined
+let farFutureNanos: bigint | undefined
+/** Parsed on first use, never at module load: runtimes without Temporal must still be able to
+ * import this module for its pure parts; the parse cost is paid once per process. */
+function zeroTimeBound(): bigint {
+	zeroTimeNanos ??= Temporal.Instant.from(ZeroTime).epochNanoseconds
+	return zeroTimeNanos
+}
+function farFutureBound(): bigint {
+	farFutureNanos ??= Temporal.Instant.from(FAR_FUTURE_BOUND).epochNanoseconds
+	return farFutureNanos
+}
+/** Timestamps repeat across the many encodes and validations of one pass; both directions are pure. */
+function memoized<T>(map: Map<string, T>, key: string, compute: (key: string) => T): T {
+	const hit = map.get(key)
+	if (hit !== undefined) return hit
+	if (map.size >= MEMO_LIMIT) map.clear()
+	const value = compute(key)
+	map.set(key, value)
+	return value
+}
+function canonicalTimeText(text: string): string {
 	const instant = Temporal.Instant.from(text)
 	const offset = text.endsWith("Z") ? "Z" : text.slice(-6)
 	const result =
@@ -381,9 +405,13 @@ export function canonicalTime(value: string | Date): string {
 	if (result[4] !== "-") throw new TypeError("Invalid wire year")
 	return result
 }
+export function canonicalTime(value: string | Date): string {
+	const text = value instanceof Date ? value.toISOString() : value
+	return memoized(canonicalMemo, text, canonicalTimeText)
+}
 
 export function timeNanos(value: string): bigint {
-	return Temporal.Instant.from(value).epochNanoseconds
+	return memoized(nanosMemo, value, (text) => Temporal.Instant.from(text).epochNanoseconds)
 }
 
 /** Protobuf carries timestamps in UTC; normalizing first keeps an event's local hash and ID independent of its offset. */
@@ -447,9 +475,7 @@ function convert(type: string, value: unknown): unknown {
 	if (type === "q") {
 		if (value == null) return "0"
 		if (typeof value !== "string") throw new TypeError("Invalid wire int64")
-		const digits = value.startsWith("-") ? value.slice(1) : value
-		if (!digits.length || !Array.from(digits).every((character) => character >= "0" && character <= "9"))
-			throw new TypeError("Invalid wire int64")
+		if (!/^-?\d+$/.test(value)) throw new TypeError("Invalid wire int64")
 		const integer = BigInt(value)
 		if (integer < -(1n << 63n) || integer >= 1n << 63n) throw new TypeError("Invalid wire int64")
 		return integer.toString()
@@ -472,15 +498,31 @@ function convert(type: string, value: unknown): unknown {
 	return shape(type, value)
 }
 
+// JSON.stringify serializes valid JS strings already. Buffer.from is only
+// needed for lone UTF-16 surrogates: historically it normalized those to
+// U+FFFD, and changing that now would change event IDs and golden bytes.
+const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|[\uDC00-\uDFFF](?<![\uD800-\uDBFF])/
+// Well-formed JSON.stringify escapes every lone surrogate as a \udXXX sequence and emits
+// paired surrogates raw, so such a sequence in the fast-path output means a value held a
+// lone surrogate. A value containing the literal text "\\ud800" merely forces the slow path.
+const escapedSurrogate = /\\u[dD][89a-fA-F][0-9a-fA-F]/
+const escapes: Record<string, string> = {
+	"<": "\\u003c",
+	">": "\\u003e",
+	"&": "\\u0026",
+	"\u2028": "\\u2028",
+	"\u2029": "\\u2029",
+}
+
 function encode(value: unknown): string {
-	return JSON.stringify(value, (_key, entry) =>
-		typeof entry === "string" ? Buffer.from(entry).toString("utf8") : entry,
-	)
-		.replaceAll("<", "\\u003c")
-		.replaceAll(">", "\\u003e")
-		.replaceAll("&", "\\u0026")
-		.replaceAll("\u2028", "\\u2028")
-		.replaceAll("\u2029", "\\u2029")
+	// The plain stringify fast path skips the per-entry replacer callback entirely; the
+	// escaped-surrogate check above decides when its normalization is actually needed.
+	let text = JSON.stringify(value)
+	if (escapedSurrogate.test(text))
+		text = JSON.stringify(value, (_key, entry) =>
+			typeof entry === "string" && loneSurrogate.test(entry) ? Buffer.from(entry).toString("utf8") : entry,
+		)
+	return text.replace(/[<>&\u2028\u2029]/g, (character) => escapes[character])
 }
 
 export function encodeEvent(event: Event): string {
@@ -490,7 +532,11 @@ export function encodeBatch(batch: Batch): string {
 	return encode(shape("batch", batch))
 }
 export function eventHash(event: Event): string {
-	return createHash("sha256").update(encodeEvent(event)).digest("hex")
+	return eventHashEncoded(encodeEvent(event))
+}
+/** Hash of an already-encoded event: the encoding and its hash share one pass at hot call sites. */
+export function eventHashEncoded(encoded: string): string {
+	return createHash("sha256").update(encoded).digest("hex")
 }
 export function stableID(...parts: string[]): string {
 	const hash = createHash("sha256").update(encode(parts)).digest("hex").slice(0, 32)
@@ -498,11 +544,8 @@ export function stableID(...parts: string[]): string {
 }
 
 function uuidBytes(value: string): Buffer | undefined {
-	const parts = value.split("-")
-	if (parts.map((part) => part.length).join(",") !== "8,4,4,4,12") return undefined
-	const compact = parts.join("").toLowerCase()
-	const bytes = Buffer.from(compact, "hex")
-	return bytes.length === 16 && bytes.toString("hex") === compact ? bytes : undefined
+	if (!uuidShape.test(value)) return undefined
+	return Buffer.from(value.replaceAll("-", "").toLowerCase(), "hex")
 }
 
 function nonzeroUUID(value: string): boolean {
@@ -528,19 +571,19 @@ function validateClaimEvidence(event: Event, invalid: () => never): void {
 	}
 	if (event.correction) {
 		const correction = event.correction
-		const at = Temporal.Instant.from(correction.recordedAt).epochNanoseconds
+		const at = timeNanos(correction.recordedAt)
 		if (
 			!nonzeroUUID(correction.id) ||
 			correction.revision < 1 ||
 			!["work-command", "producer-confirmation"].includes(correction.source) ||
 			at < 0n ||
-			at >= Temporal.Instant.from("2200-01-01T00:00:00Z").epochNanoseconds
+			at >= farFutureBound()
 		)
 			invalid()
 	}
 	if (event.startedAt) {
-		const at = Temporal.Instant.from(event.startedAt).epochNanoseconds
-		if (at < 0n || at > Temporal.Instant.from(event.observeTime).epochNanoseconds + 600_000_000_000n) invalid()
+		const at = timeNanos(event.startedAt)
+		if (at < 0n || at > timeNanos(event.observeTime) + 600_000_000_000n) invalid()
 	}
 	if (
 		event.source === "kimchi" &&
@@ -551,6 +594,7 @@ function validateClaimEvidence(event: Event, invalid: () => never): void {
 		invalid()
 }
 const payloads = ["work", "usage", "tool", "file", "commit", "pullRequest", "link", "coverage"] as const
+const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export function eventKind(e: Event): string {
 	const key = payloads.find((k) => e[k] != null)
 	return key === "pullRequest" ? "pull_request" : (key ?? "")
@@ -560,14 +604,12 @@ const containsAny = (text: string, characters: string) =>
 const digit = (character: string) => character >= "0" && character <= "9"
 function bounded(value: unknown, maximum: number): boolean {
 	const text = value ?? ""
-	return (
-		typeof text === "string" &&
-		Buffer.byteLength(text) <= maximum &&
-		!Array.from(text).some((character) => {
-			const code = character.charCodeAt(0)
-			return code <= 31 || (code >= 127 && code <= 159)
-		})
-	)
+	if (typeof text !== "string" || Buffer.byteLength(text) > maximum) return false
+	for (let index = 0; index < text.length; index++) {
+		const code = text.charCodeAt(index)
+		if (code <= 31 || (code >= 127 && code <= 159)) return false
+	}
+	return true
 }
 /** A Git remote host: a name, or a name and a port from 1 to 65535 without a leading zero after one colon. */
 function repositoryHost(host: string): boolean {
@@ -597,8 +639,7 @@ export const gitID = (value: string) =>
 function dec(s: unknown): bigint | undefined {
 	if (typeof s === "number" && Number.isSafeInteger(s)) return BigInt(s)
 	if (typeof s !== "string" || !s.length) return
-	const digits = s.startsWith("-") ? s.slice(1) : s
-	if (!digits.length || !Array.from(digits).every(digit)) return
+	if (!/^-?\d+$/.test(s)) return
 	const n = BigInt(s)
 	return n >= -(1n << 63n) && n < 1n << 63n ? n : undefined
 }
@@ -662,7 +703,7 @@ function issueValid(keys: IssueKey[] = []): boolean {
 		})
 	)
 }
-export function validateEvent(e: Event): void {
+export function validateEvent(e: Event, encoded?: string): void {
 	const rev = dec(e.revision),
 		base = dec(e.baseRevision ?? "0")
 	if (
@@ -678,13 +719,13 @@ export function validateEvent(e: Event): void {
 		!bounded(e.source, 64)
 	)
 		throw new Error("missing event identity")
-	if (Temporal.Instant.from(e.observeTime).epochNanoseconds === Temporal.Instant.from(ZeroTime).epochNanoseconds)
-		throw new Error("missing event identity")
+	if (timeNanos(e.observeTime) === zeroTimeBound()) throw new Error("missing event identity")
 	if (payloads.filter((k) => e[k] != null).length !== 1) throw new Error("exactly one typed event is required")
 	if (base !== rev - 1n || (rev > 1n && !e.baseEventId)) throw new Error("invalid revision chain")
 	for (const id of [e.id, e.entityId, e.deviceId, e.workId, e.sessionId, e.turnId, e.agentId])
 		if (Buffer.byteLength(id ?? "") > 128 || containsAny(id ?? "", "\r\n\0")) throw new Error("invalid identity")
-	if (Buffer.byteLength(encodeEvent(e)) > 65536) throw new Error("event exceeds bound")
+	// The bound check reuses a caller's encoding of this same event when it has one.
+	if (Buffer.byteLength(encoded ?? encodeEvent(e)) > 65536) throw new Error("event exceeds bound")
 	const invalid: () => never = () => {
 		throw new Error("invalid typed event evidence")
 	}
@@ -856,10 +897,7 @@ export function validateEvent(e: Event): void {
 			(dec(c.count) ?? 0n) < 1n ||
 			!bounded(c.model, 128) ||
 			(c.observedUsage != null && !rawValid(c.observedUsage)) ||
-			(c.windowStartTime &&
-				c.windowEndTime &&
-				Temporal.Instant.from(c.windowEndTime).epochNanoseconds <
-					Temporal.Instant.from(c.windowStartTime).epochNanoseconds)
+			(c.windowStartTime && c.windowEndTime && timeNanos(c.windowEndTime) < timeNanos(c.windowStartTime))
 		)
 			invalid()
 	}
@@ -892,10 +930,10 @@ export function validateAccountingRaw(schema: string, raw: RawUsage, partition: 
 }
 
 /** Shared service admission precedes durable CAS; cumulative counters remain supplemental evidence. */
-export function validateIngestEvent(event: Event): void {
-	validateEvent(event)
+export function validateIngestEvent(event: Event, encoded?: string): void {
+	validateEvent(event, encoded)
 	if ([event.id, event.entityId, event.deviceId].some((id) => !uuidBytes(id))) throw new Error("Invalid event identity")
-	const observed = Temporal.Instant.from(event.observeTime).epochNanoseconds
+	const observed = timeNanos(event.observeTime)
 	if (observed < 0n || observed > BigInt(Date.now()) * 1_000_000n + 600_000_000_000n)
 		throw new Error("Event outside supported accounting timestamps")
 	const usage = event.usage

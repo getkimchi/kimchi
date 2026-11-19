@@ -10,7 +10,10 @@
  *   foreign-check  plant a foreign user_version, then prove openStore refuses it
  *   hold-writer    BEGIN IMMEDIATE, print {"held":true}, sleep <arg>ms, COMMIT
  *   read-only      open the store in a second process; count meta rows
+ *   schema-check   open, drop the additive indexes, reopen; print the additive apply's effect
  *   write-probe    try BEGIN IMMEDIATE; report acquisition or lock error + elapsed
+ *   self-heal      hold the writer lock while a store and the cached backend open; prove the
+ *                  deferred additive apply heals on the live connection after release
  *   capture        capture one record JSON (<arg>) via the v2 records seam
  *   head           print the saved projection head for work <arg>
  *   rows           print the saved projection view for work <arg>
@@ -19,18 +22,25 @@
 
 import { Database } from "bun:sqlite"
 import { mkdirSync, readdirSync, readSync, statSync, writeSync } from "node:fs"
+import { createRequire } from "node:module"
 import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline"
 import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
 import {
+	backendFor,
 	capture,
+	closeBackends,
 	fingerprint,
 	getNote,
 	readRecords,
+	readRecordsSinceSql,
+	readTransitionRepositories,
 	readWorkHead,
 	readWorkSummary,
+	workRecordsImportedPresent,
 } from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
+import { reportingDirectory } from "../../../../src/extensions/pr-cost-reporting/queue.js"
 import {
 	readWorkRecords,
 	readWorkRecordsAsync,
@@ -125,6 +135,54 @@ async function readOnly(agent: string): Promise<void> {
 	store.close()
 }
 
+async function planSince(agent: string, seed?: string): Promise<void> {
+	const store = openStore(agent)
+	// The planner's choice only diverges at scale: without statistics, table sizes past ~20k rows
+	// make the unhinted windowed read lose to a full scan; a fresh ledger cannot show it.
+	if (seed === "seed") {
+		const count = store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records").get()?.count ?? 0
+		if (count < 20_000) {
+			const insert = store.db.query(
+				"INSERT INTO work_records (record_hash, type, work_id, session_id, body, source_path, source_generation, source_offset, imported_at) VALUES (?, 'request', 'plan-since-seed', 'plan-since', ?, 'seed', 0, NULL, ?)",
+			)
+			store.tx(() => {
+				for (let index = 0; index < 25_000; index++) insert.run(`plan-since-${index}`, "{}", 1_700_000_000_000 + index)
+			})
+		}
+	}
+	const present = workRecordsImportedPresent(store.db)
+	const sql = readRecordsSinceSql(present).replace("?", "1730000000000")
+	const plan = store.db
+		.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${sql}`)
+		.all()
+		.map((row) => row.detail)
+	store.close()
+	out({ plan, hinted: present })
+}
+
+async function schemaCheck(agent: string): Promise<void> {
+	const listFrom = (db: { query: <T>(sql: string) => { all: () => T[] } }): string[] =>
+		db
+			.query<{ name: string }, []>(
+				"SELECT name FROM sqlite_master WHERE type='index' AND (name LIKE 'outbox_%' OR name = 'work_records_imported')",
+			)
+			.all()
+			.map((row) => row.name)
+			.sort()
+	// One handle for the drop: opening again would re-apply the additive schema before we could measure it.
+	const first = openStore(agent)
+	const before = listFrom(first.db)
+	first.db.exec(
+		"DROP INDEX IF EXISTS outbox_pending_cover; DROP INDEX IF EXISTS outbox_batches_by_account; DROP INDEX IF EXISTS work_records_imported",
+	)
+	const afterDrop = listFrom(first.db)
+	first.close()
+	const second = openStore(agent)
+	const afterReopen = listFrom(second.db)
+	second.close()
+	out({ before, afterDrop, afterReopen })
+}
+
 async function writeProbe(agent: string): Promise<void> {
 	const started = Date.now()
 	const store = openStore(agent)
@@ -137,6 +195,33 @@ async function writeProbe(agent: string): Promise<void> {
 	} finally {
 		store.close()
 	}
+}
+
+async function selfHeal(agent: string): Promise<void> {
+	// A busy-deferred additive apply must heal on the live connection, not wait for a reopen. Warm the
+	// projection meta first (a first-ever backend construction would write it under the lock), drop the
+	// additive indexes, hold the writer lock while a witness store and the cached backend open (both
+	// defer), release, then run one windowed read through the cached backend.
+	const seed = openStore(agent)
+	backendFor(agent)
+	closeBackends()
+	seed.db.exec(
+		"DROP INDEX IF EXISTS outbox_pending_cover; DROP INDEX IF EXISTS outbox_batches_by_account; DROP INDEX IF EXISTS work_records_imported",
+	)
+	seed.db.exec("BEGIN IMMEDIATE")
+	seed.db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('hold', '1')")
+	const witness = openStore(agent)
+	const backend = backendFor(agent)
+	const sameBackend = backendFor(agent) === backend
+	const deferredDuringLock = witness.additiveDeferred
+	const presentDuringLock = workRecordsImportedPresent(witness.db)
+	seed.db.exec("COMMIT")
+	seed.close()
+	const rows = readRecords(agent, { modifiedSince: 0 })
+	const presentAfterRead = workRecordsImportedPresent(witness.db)
+	witness.close()
+	closeBackends()
+	out({ deferredDuringLock, presentDuringLock, sameBackend, readRows: rows.length, presentAfterRead })
 }
 
 async function captureRecord(agent: string, recordJson: string): Promise<void> {
@@ -324,24 +409,31 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		const { backendFor, readStoredRecordsAsync } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 		)
-		const { effectiveClaim, observeEvents, pendingBatch } = await import(
+		const { effectiveClaims, observeEvents, pendingBatch } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
 		)
 		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
 		const { readWorkCostReport } = await import("../../../../src/extensions/work-attribution/cost-sync.js")
+		const backend = backendFor(agent)
+		let claimReads = 0
+		const claimRows = backend.outboxClaims
+		backend.outboxClaims = (accountKey, entityIds) => {
+			claimReads++
+			return claimRows(accountKey, entityIds)
+		}
 		const stored = await readStoredRecordsAsync(agent, () => {})
 		const { report } = readWorkCostReport(
 			agent,
 			stored.map((row) => JSON.parse(row.body)),
 		)
 		const producer = "33333333-3333-4333-8333-333333333333"
-		const built = buildEvents(
+		const built = await buildEvents(
 			stored,
 			report,
 			new Map([[agent, { provider: "github", host: "github.com", id: "999", name: "fork/repo" }]]),
 			producer,
 			() => {},
-			(key, id) => effectiveClaim(backendFor(agent), key, id),
+			(key, ids) => effectiveClaims(backend, key, ids),
 		)
 		for (const group of built.accounts)
 			observeEvents(agent, accountKey(group.account), group.facts, group.recordHashes, () => {})
@@ -359,6 +451,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 			body: JSON.parse(Buffer.from(first.body).toString()),
 			reopened: Buffer.from(first.body).equals(Buffer.from(reopened.body)),
 			unresolved: built.unresolved,
+			claimReads,
 		})
 		closeBackends()
 		return
@@ -1997,7 +2090,10 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"foreign-check": (agent) => foreignCheck(agent),
 	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),
 	"read-only": (agent) => readOnly(agent),
+	"schema-check": (agent) => schemaCheck(agent),
+	"plan-since": (agent, arg) => planSince(agent, arg),
 	"write-probe": (agent) => writeProbe(agent),
+	"self-heal": (agent) => selfHeal(agent),
 	capture: (agent, json) => captureRecord(agent, json ?? "{}"),
 	head: (agent, workId) => printHead(agent, workId ?? ""),
 	rows: (agent, workId) => printRows(agent, workId ?? ""),
@@ -2024,6 +2120,115 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		}
 	},
 	records: (agent, workId) => printRecords(agent, workId || undefined),
+	"transition-repositories": async (agent, damaged) => {
+		if (damaged) {
+			const store = openStore(agent)
+			store.db
+				.query(
+					"INSERT INTO work_records (record_hash,type,work_id,session_id,body,source_path,source_generation,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+				)
+				.run("damaged-body", "file_transition", "work", "session", "{invalid", "bench", 0, 0)
+			store.close()
+		}
+		out(readTransitionRepositories(agent))
+	},
+	"hold-raw": async (agent, ms) => {
+		// Hold the writer lock WITHOUT opening through openStore: the additive/required
+		// applies must not run in the holder, so the contended reader sees the pre-migration
+		// schema exactly.
+		const { Database } = createRequire(import.meta.url)("bun:sqlite") as typeof import("bun:sqlite")
+		const db = new Database(join(reportingDirectory(agent), "ledger.db"))
+		db.exec("BEGIN IMMEDIATE")
+		out({ held: true })
+		await new Promise((resolve) => setTimeout(resolve, Number(ms ?? "0")))
+		db.exec("ROLLBACK")
+		db.close()
+	},
+	"claims-parity": async (agent) => {
+		const { createHash } = await import("node:crypto")
+		const { backendFor } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+		const { effectiveClaims, effectiveClaimsAsync } = await import(
+			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+		)
+		const backend = backendFor(agent)
+		const entities: string[] = []
+		backend.tx(() => {
+			for (let index = 0; index < 600; index++) {
+				const entityId = `entity-${index}`
+				entities.push(entityId)
+				for (let revision = 1; revision <= 3; revision++) {
+					const event = {
+						id: `ev-${index}-${revision}`,
+						source: "kimchi",
+						entityId,
+						revision: String(revision),
+						startedAt: `2026-01-0${revision}T00:00:00.000Z`,
+						work: {},
+					}
+					const body = Buffer.from(JSON.stringify(event))
+					backend.insertOutboxEvent({
+						id: `ev-${index}-${revision}`,
+						accountKey: "account",
+						entityId,
+						kind: "work",
+						body,
+						hash: createHash("sha256").update(body).digest("hex"),
+						createdAt: index * 10 + revision,
+						ackedAt: null,
+						blocked: revision === 2 && index % 7 === 0 ? "conflict" : "",
+					})
+				}
+			}
+		})
+		const sync = effectiveClaims(backend, "account", entities)
+		let stretches = 0
+		const async = await effectiveClaimsAsync(
+			backend,
+			"account",
+			entities,
+			async () => {
+				stretches++
+			},
+			() => {},
+		)
+		let same = sync.size === async.size
+		for (const [id, event] of sync) if (JSON.stringify(event) !== JSON.stringify(async.get(id))) same = false
+		out({ same, entities: sync.size, stretches })
+	},
+	"pre-migrate": async (agent) => {
+		// Strip a ledger to its pre-migration shape: no materialized repository
+		// set and no additive imported_at index, with user_version still 1.
+		const store = openStore(agent)
+		store.db.exec("DROP TRIGGER IF EXISTS work_records_repository_probe")
+		store.db.exec("DROP TABLE IF EXISTS transition_repositories")
+		store.db.exec("DROP INDEX IF EXISTS work_records_imported")
+		store.close()
+		out({ preMigrated: true })
+	},
+	"records-since": (agent, arg) => {
+		out(readRecords(agent, { modifiedSince: Number(arg ?? "0") }))
+	},
+	"repository-backfill": async (agent) => {
+		// Odd rows first: the insert-time trigger must skip a damaged body and a non-text
+		// repository without failing the insert.
+		const odd = openStore(agent)
+		const insert = odd.db.query(
+			"INSERT INTO work_records (record_hash,type,work_id,session_id,body,source_path,source_generation,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+		)
+		insert.run("bf-damaged", "file_transition", "work", "session", "{invalid", "bench", 0, 0)
+		insert.run("bf-numeric", "file_transition", "work", "session", '{"repository": 123}', "bench", 0, 0)
+		odd.close()
+		// Remove the materialized set entirely: the ledger now "predates" it, so the next
+		// open's additive pass must backfill from the authority rows under the same tolerance.
+		const pre = openStore(agent)
+		pre.db.exec("DROP TRIGGER IF EXISTS work_records_repository_probe")
+		pre.db.exec("DROP TABLE IF EXISTS transition_repositories")
+		pre.close()
+		const post = openStore(agent)
+		const repositories = readTransitionRepositories(agent)
+		post.close()
+		out(repositories)
+	},
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"native-usage": (agent) => nativeUsage(agent),
 	"native-usage-anthropic": (agent) => nativeUsage(agent, true),

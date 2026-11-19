@@ -13,8 +13,11 @@ import {
 import {
 	readRecords as ledgerReadRecords,
 	readRecordsAsync as ledgerReadRecordsAsync,
+	readRecordsSinceAsync as ledgerReadRecordsSinceAsync,
+	readTransitionRepositories as ledgerTransitionRepositories,
 	fingerprint as recordsFingerprint,
 	recoverDirty,
+	type WindowedRecord,
 } from "../pr-cost-reporting/ledger/records.js"
 import { debugWorkAttribution } from "./diagnostics.js"
 
@@ -205,11 +208,45 @@ export function readWorkRecords(
 	} else hydrateQuietly(agentDir)
 	return ledgerReadRecords(agentDir, { modifiedSince }, checkBudget)
 }
+
+/** The strict windowed read, breathing between ledger pages for a caller driving the UI loop. */
+export async function readWorkRecordsSinceAsync(
+	agentDir: string,
+	modifiedSince: number,
+	checkBudget: () => void,
+	stretch: () => Promise<void>,
+	onRecordProblem: (problem: WorkRecordProblem) => void,
+): Promise<WindowedRecord[]> {
+	// Same strictness as readWorkRecords: an unfinished import or consumed damage never authorizes silently.
+	if (importJournalSlice(agentDir, checkBudget)) throw new Error("Legacy work history is still importing")
+	reportJournalProblems(agentDir, onRecordProblem, checkBudget)
+	return ledgerReadRecordsSinceAsync(agentDir, modifiedSince, checkBudget, stretch)
+}
+
+/** The strict anchored history read, breathing between ledger pages for a caller driving the UI loop;
+ * each row carries its record hash and import time so callers dedup and bound on fixed-size anchors. */
+export async function readWorkRecordsForHistoryAsync(
+	agentDir: string,
+	checkBudget: () => void,
+	stretch: () => Promise<void>,
+	onRecordProblem: (problem: WorkRecordProblem) => void,
+): Promise<WindowedRecord[]> {
+	// Same strictness as readWorkRecords: an unfinished import or consumed damage never authorizes silently.
+	if (importJournalSlice(agentDir, checkBudget)) throw new Error("Legacy work history is still importing")
+	reportJournalProblems(agentDir, onRecordProblem, checkBudget)
+	return ledgerReadRecordsAsync(agentDir, checkBudget, stretch)
+}
 /** Records of one type, oldest first; background scans read only the rows they use through the type index. */
 export function readWorkRecordsOfType(agentDir: string, type: WorkRecord["type"]): WorkRecord[] {
 	hydrateQuietly(agentDir)
 	return ledgerReadRecords(agentDir, { type })
 }
+/** Stored native-capture repository discovery; legacy journals import first. */
+export function readFileTransitionRepositories(agentDir: string): string[] {
+	hydrateQuietly(agentDir)
+	return ledgerTransitionRepositories(agentDir)
+}
+
 function hydrateQuietly(agentDir: string): void {
 	try {
 		hydrate(agentDir)
@@ -225,7 +262,7 @@ export async function readWorkRecordsAsync(
 ): Promise<WorkRecord[]> {
 	const checkBudget = () => signal.throwIfAborted()
 	await importWorkRecordsAsync(agentDir, checkBudget, onRecordProblem)
-	return ledgerReadRecordsAsync(agentDir, checkBudget)
+	return (await ledgerReadRecordsAsync(agentDir, checkBudget)).map((row) => row.record)
 }
 
 /** Import once before reading an authority prefix with its original hashes or parsed work records. */

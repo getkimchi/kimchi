@@ -309,9 +309,9 @@ describe("manual commit reconciliation", () => {
 		transitionReads = 0
 		commitReads = 0
 		const shared: SharedTypeReads = {}
-		const repositories = await knownTransitionRepositories(() => {}, shared)
+		const repositories = await knownTransitionRepositories(() => {})
 		expect(repositories).toHaveLength(2)
-		expect(shared.fileTransitions?.length).toBeGreaterThanOrEqual(2)
+		expect(transitionReads).toBe(0) // Discovery only needs distinct repositories.
 		for (const repository of repositories)
 			await reconcileRepositoryTransitions(
 				repository,
@@ -320,7 +320,9 @@ describe("manual commit reconciliation", () => {
 				() => {},
 				shared,
 			)
-		// Discovery read the table once into `shared`; every repository's pass reused it.
+		// The first genuine reconciliation fills the shared cache; every later
+		// repository reuses it. Discovery itself did not decode the whole table.
+		expect(shared.fileTransitions?.length).toBeGreaterThanOrEqual(2)
 		expect(transitionReads).toBe(1)
 		// The first repository's reconcile cached the commits table for the second.
 		expect(commitReads).toBe(1)
