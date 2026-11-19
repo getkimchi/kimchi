@@ -30,7 +30,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { seedOrgPolicy } from "../__mocks__/org-policy.js"
-import { runAsAgentWorker } from "../agent-worker-context.js"
+import { isAgentWorker, runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { BUILTIN_TOOL_NAMES } from "../agents/personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
@@ -44,25 +44,38 @@ import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
 import { runCloudAgent } from "../remote-run/runner.js"
+import { STALE_CTX_MESSAGE_PREFIX } from "../stale-ctx.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
+import { resetClassifierBreakerForTests } from "./classifier-breaker.js"
+import {
+	CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON,
+	CLASSIFIER_UNAVAILABLE_BLOCK_REASON,
+	CLASSIFIER_UNAVAILABLE_PROMPT_SUBTITLE,
+	CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE,
+	classifierBlockedNotice,
+	classifierBlockReason,
+	classifierBlockReasonCodeTail,
+} from "./classifier-health.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
-import { PERMISSIONS_ENV_KEY } from "./constants.js"
+import { ESCALATED_PROMPT_TIMEOUT_MS, PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, {
 	checkCompoundCommand,
 	createWorkerPermissionsExtension,
 	handleCompoundConfirm,
 	notifyFermentActive,
+	type WorkerPermissionsOptions,
 } from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from "./mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { registerParentSurface, unregisterParentSurface } from "./parent-surface-registry.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
 import { getPermissionPolicySource } from "./policy-source-registry.js"
-import type { ToolPermissionPrompter } from "./prompter.js"
+import type { PermissionRequest, ToolPermissionPrompter } from "./prompter.js"
 import { isReadOnlyTool } from "./taxonomy.js"
 
 vi.mock("../remote-run/runner.js", async (importOriginal) => {
@@ -160,6 +173,7 @@ afterEach(async () => {
 })
 
 beforeEach(cleanPermissionEnv)
+beforeEach(() => resetClassifierBreakerForTests())
 beforeEach(() => {
 	populateCliArgs([])
 	isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
@@ -265,6 +279,14 @@ type RegisteredCommand = {
 	handler: (args: string, ctx: ExtensionContext) => unknown | Promise<unknown>
 }
 
+function createWorkerHarness(
+	toolNames: string[],
+	options: WorkerPermissionsOptions,
+	flags: Record<string, boolean | string | undefined> = {},
+) {
+	return createPermissionsHarness(toolNames, flags, undefined, createWorkerPermissionsExtension(options))
+}
+
 function createPermissionsHarness(
 	toolNames: string[],
 	flags: Record<string, boolean | string | undefined> = {},
@@ -364,6 +386,9 @@ describe("classifier health reporting", () => {
 	beforeEach(() => {
 		vi.mocked(classifyToolCall).mockClear()
 	})
+	afterEach(() => {
+		unregisterAcpPrompter(TEST_SESSION_ID)
+	})
 
 	it("warns once per session for missing models and emits only structured unavailable events", async () => {
 		const harness = createPermissionsHarness(["bash"], { auto: true })
@@ -439,12 +464,237 @@ describe("classifier health reporting", () => {
 		const ctx = createClassifierContext()
 		const emissions = vi.fn()
 		harness.pi.events.on(PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE, emissions)
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 		await harness.fire("session_start", {}, ctx)
 		vi.mocked(ctx.ui.notify).mockClear()
 		vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
-		expect(await harness.fire("tool_call", event, ctx)).toMatchObject({ block: true })
+		const result = await harness.fire("tool_call", event, ctx)
+		expect(result).toMatchObject({ block: true })
+		expect(result).toHaveProperty(
+			"reason",
+			CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON + classifierBlockReasonCodeTail("no_candidates"),
+		)
 		expect(emissions).toHaveBeenCalledTimes(1)
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		// session_start may log unrelated headless warnings (config, bundled
+		// skills); assert the blocked-call notice itself, exactly once.
+		const blockedNotices = errorSpy.mock.calls.filter((call) => String(call[0]).includes("was blocked"))
+		expect(blockedNotices).toHaveLength(1)
+		expect(blockedNotices[0]?.[0]).toBe(classifierBlockedNotice("bash", "no_candidates"))
+		// One warning per blocked call: the notice names the cause, so the
+		// generic health line is not sent on top of it.
+		const healthLines = errorSpy.mock.calls.filter((call) => String(call[0]).includes("Calls requiring classification"))
+		expect(healthLines).toHaveLength(0)
+		expect(JSON.stringify([result, errorSpy.mock.calls])).not.toContain("SENTINEL_SECRET")
+		errorSpy.mockRestore()
+	})
+
+	it("asks with fixed outage copy when the classifier failed and a prompt exists", async () => {
+		const subtitles: Array<string | undefined> = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				subtitles.push(req.subtitle)
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = { ...createClassifierContext(), mode: "rpc", hasUI: true } as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+		expect(await harness.fire("tool_call", event, ctx)).toBeUndefined()
+		expect(subtitles).toEqual([CLASSIFIER_UNAVAILABLE_PROMPT_SUBTITLE])
+	})
+
+	it("points a blocked subagent's model at the main agent", async () => {
+		const harness = createWorkerHarness(["bash"], { parentSessionId: "missing-parent", persona: "Explore" })
+		const ctx = createClassifierContext()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+		const result = await harness.fire("tool_call", event, ctx)
+		expect(result).toMatchObject({ block: true })
+		expect(result).toHaveProperty(
+			"reason",
+			classifierBlockReason("no_candidates", true) + classifierBlockReasonCodeTail("no_candidates"),
+		)
+		expect(JSON.stringify([result, errorSpy.mock.calls])).not.toContain("SENTINEL_SECRET")
+		errorSpy.mockRestore()
+	})
+
+	it("serves a tripped outage without re-running the ladder", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = createClassifierContext()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			ok: false,
+			reason: "SENTINEL_SECRET",
+			failureCode: "timeout",
+		} as const)
+		const first = await harness.fire("tool_call", event, ctx)
+		expect(first).toMatchObject({ block: true })
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		// The breaker is open: instant stored failure, no provider call, and the
+		// block still carries the fixed outage copy.
+		const second = await harness.fire("tool_call", event, ctx)
+		expect(second).toMatchObject({ block: true })
+		expect(second).toHaveProperty(
+			"reason",
+			CLASSIFIER_UNAVAILABLE_BLOCK_REASON + classifierBlockReasonCodeTail("timeout"),
+		)
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(errorSpy.mock.calls.filter((call) => String(call[0]).includes("was blocked"))).toHaveLength(2)
+		// The tripping call is on the no-prompt path: the per-block warning
+		// covers it — no second generic trip notice (review finding H).
+		expect(
+			errorSpy.mock.calls.filter((call) => String(call[0]).includes("Calls requiring classification")),
+		).toHaveLength(0)
+		expect(JSON.stringify([first, second, errorSpy.mock.calls])).not.toContain("SENTINEL_SECRET")
+		errorSpy.mockRestore()
+	})
+
+	it("routes a blocked subagent's warning to the parent session's sink", async () => {
+		const parentNotify = vi.fn()
+		registerParentSurface("parent-notice-session", { notify: parentNotify })
+		const harness = createWorkerHarness(["bash"], { parentSessionId: "parent-notice-session", persona: "Explore" })
+		const ctx = createClassifierContext()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			await harness.fire("session_start", {}, ctx)
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+			const result = await harness.fire("tool_call", event, ctx)
+			expect(result).toMatchObject({ block: true })
+			// One warning for one blocked call.
+			expect(parentNotify).toHaveBeenCalledTimes(1)
+			expect(parentNotify).toHaveBeenCalledWith(
+				`[Explore] ${classifierBlockedNotice("bash", "no_candidates")}`,
+				"warning",
+			)
+			// The sink handled it — no stderr fallback for the block notice.
+			expect(errorSpy.mock.calls.filter((call) => String(call[0]).includes("was blocked"))).toHaveLength(0)
+		} finally {
+			errorSpy.mockRestore()
+			unregisterParentSurface("parent-notice-session")
+		}
+	})
+
+	it("prefixes the parent's warning with the worker's persona", async () => {
+		const parentNotify = vi.fn()
+		registerParentSurface("persona-parent", { notify: parentNotify })
+		const harness = createWorkerHarness(["bash"], { parentSessionId: "persona-parent", persona: "Explore" })
+		const ctx = createClassifierContext()
+		// A sibling's persona in the shared env must not leak into the label.
+		process.env.KIMCHI_AGENT_PERSONA = "SomeOtherAgent"
+		try {
+			await harness.fire("session_start", {}, ctx)
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+			const result = await harness.fire("tool_call", event, ctx)
+			expect(result).toMatchObject({ block: true })
+			expect(parentNotify).toHaveBeenCalledWith(
+				`[Explore] ${classifierBlockedNotice("bash", "no_candidates")}`,
+				"warning",
+			)
+		} finally {
+			unregisterParentSurface("persona-parent")
+			Reflect.deleteProperty(process.env, "KIMCHI_AGENT_PERSONA")
+		}
+	})
+
+	it("falls back to stderr when a blocked worker's parent has no sink", async () => {
+		const harness = createWorkerHarness(["bash"], { parentSessionId: "gone-parent", persona: "Explore" })
+		const ctx = createClassifierContext()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			await harness.fire("session_start", {}, ctx)
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+			const result = await harness.fire("tool_call", event, ctx)
+			expect(result).toMatchObject({ block: true })
+			expect(errorSpy.mock.calls.filter((call) => String(call[0]).includes("was blocked"))).toHaveLength(1)
+		} finally {
+			errorSpy.mockRestore()
+		}
+	})
+
+	it("falls back to stderr when the parent session's context went stale", async () => {
+		registerParentSurface("stale-parent", {
+			notify: () => {
+				throw new Error(`${STALE_CTX_MESSAGE_PREFIX} — session was replaced`)
+			},
+		})
+		const harness = createWorkerHarness(["bash"], { parentSessionId: "stale-parent", persona: "Explore" })
+		const ctx = createClassifierContext()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			await harness.fire("session_start", {}, ctx)
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+			const result = await harness.fire("tool_call", event, ctx)
+			expect(result).toMatchObject({ block: true })
+			expect(errorSpy.mock.calls.filter((call) => String(call[0]).includes("was blocked"))).toHaveLength(1)
+		} finally {
+			errorSpy.mockRestore()
+			unregisterParentSurface("stale-parent")
+		}
+	})
+
+	it("keeps parallel workers' warnings with their own parent and persona", async () => {
+		const notifyA = vi.fn()
+		const notifyB = vi.fn()
+		registerParentSurface("parent-a", { notify: notifyA })
+		registerParentSurface("parent-b", { notify: notifyB })
+		const workerA = createWorkerHarness(["bash"], { parentSessionId: "parent-a", persona: "Explore" })
+		const workerB = createWorkerHarness(["bash"], { parentSessionId: "parent-b", persona: "Plan" })
+		const ctx = createClassifierContext()
+		try {
+			await workerA.fire("session_start", {}, ctx)
+			await workerB.fire("session_start", {}, ctx)
+			// Both classifications are in flight together, so the two workers
+			// overlap the way parallel subagents do.
+			const slowUnavailable = () =>
+				new Promise<typeof unavailable>((resolve) => setTimeout(() => resolve(unavailable), 5))
+			vi.mocked(classifyToolCall).mockImplementationOnce(slowUnavailable).mockImplementationOnce(slowUnavailable)
+			const [resultA, resultB] = await Promise.all([
+				workerA.fire("tool_call", event, ctx),
+				workerB.fire("tool_call", event, ctx),
+			])
+			expect(resultA).toMatchObject({ block: true })
+			expect(resultB).toMatchObject({ block: true })
+			const notice = classifierBlockedNotice("bash", "no_candidates")
+			expect(notifyA.mock.calls).toEqual([[`[Explore] ${notice}`, "warning"]])
+			expect(notifyB.mock.calls).toEqual([[`[Plan] ${notice}`, "warning"]])
+		} finally {
+			unregisterParentSurface("parent-a")
+			unregisterParentSurface("parent-b")
+		}
+	})
+
+	it("does not forward a worker's fallback-model notice to the parent", async () => {
+		const parentNotify = vi.fn()
+		registerParentSurface("degraded-parent", { notify: parentNotify })
+		const harness = createWorkerHarness(["bash"], { parentSessionId: "degraded-parent", persona: "Explore" })
+		const ctx = createClassifierContext()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		const emissions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.CLASSIFIER_DEGRADED, emissions)
+		try {
+			await harness.fire("session_start", {}, ctx)
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(degraded)
+			const result = await harness.fire("tool_call", event, ctx)
+			expect(result).toBeUndefined()
+			expect(emissions).toHaveBeenCalledTimes(1)
+			expect(parentNotify).not.toHaveBeenCalled()
+			expect(errorSpy.mock.calls.filter((call) => String(call[0]).includes("fallback model"))).toHaveLength(0)
+		} finally {
+			errorSpy.mockRestore()
+			unregisterParentSurface("degraded-parent")
+		}
+	})
+
+	it("words the blocked-call notice for the cause", () => {
+		expect(classifierBlockedNotice("bash", "no_api_key")).toContain("KIMCHI_API_KEY")
+		expect(classifierBlockedNotice("bash", "no_candidates")).not.toContain("KIMCHI_API_KEY")
+		expect(classifierBlockedNotice("bash", "invalid_output")).not.toContain("until it recovers")
+		expect(classifierBlockedNotice("bash", "timeout")).toContain("until it recovers")
 	})
 
 	it("notifies with actionable KIMCHI_API_KEY copy once per session for no_api_key", async () => {

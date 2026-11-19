@@ -82,8 +82,16 @@ import { markHarnessSteer } from "../steer-marker.js"
 import { CONFIRM_TODOS_TOOL_NAME, TODO_TOOL_NAMES } from "../todos/tool.js"
 import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
 import { isDocCliCommand, isReadOnlyDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
-import { classifyToolCall } from "./classifier.js"
-import { classifierHealth } from "./classifier-health.js"
+import { classifyToolCallViaBreaker } from "./classifier-breaker.js"
+import {
+	CLASSIFIER_RECOVERED_NOTICE,
+	CLASSIFIER_UNAVAILABLE_PROMPT_SUBTITLE,
+	CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE,
+	classifierBlockedNotice,
+	classifierBlockReason,
+	classifierBlockReasonCodeTail,
+	classifierHealth,
+} from "./classifier-health.js"
 import { resolveClassifierCandidates } from "./classifier-models.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
@@ -302,6 +310,44 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 	// practice. The doc-cli allow itself needs no anchor (the binary resolves
 	// the script, not the model); this root backs the write/edit denial that
 	// keeps the load path unplantable.
+	// This session's parent surface, registered while it can reach its user so
+	// subagents can hand it their classifier warnings and escalate permission
+	// prompts when their classifier fails or requires confirmation.
+	let parentSurface: ParentSurface | undefined
+	let parentSurfaceSessionId: string | undefined
+
+	/**
+	 * Route a classifier notice to a human. A subagent worker has no UI of its
+	 * own: its warning goes to the parent session's registered sink, prefixed
+	 * with the subagent persona when known, falling back to stderr when the
+	 * parent is gone or its context is stale. Sessions with a UI get a toast;
+	 * every other context gets stderr, so a blocked call is never silent.
+	 */
+	function reportClassifierNotice(ctx: ExtensionContext, message: string, level: ParentSurfaceLevel): void {
+		// Identity comes from this worker extension's immutable role arguments;
+		// parallel workers cannot overwrite one another's parent or persona.
+		if (options.role === "worker") {
+			const surface = getParentSurface(options.parentSessionId)
+			if (surface) {
+				const prefixed = `[${options.persona}] ${message}`
+				try {
+					surface.notify(prefixed, level)
+					return
+				} catch (err) {
+					// The parent session was replaced mid-run — its UI surface is
+					// gone. Fall through to stderr rather than failing the gate.
+					if (!isStaleCtxError(err)) throw err
+				}
+			}
+		}
+		if (ctx.hasUI) {
+			ctx.ui.notify(message, level)
+		} else {
+			// stderr for both levels: stdout is program output in print runs.
+			console.error(message)
+		}
+	}
+
 	let bundledSkillCliRoot: string | null = null
 	let appliedPermissionMode: PermissionModeState | undefined
 	let applyingPermissionMode = false
@@ -893,6 +939,27 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 			// ACP already emitted the config update from controller.setMode().
 			// This call is only for local transition side effects.
 			changeMode(ctx, current.mode, next, "controller", true)
+
+		// Parent surface: a session that can reach its user accepts its
+		// subagents' classifier warnings and their escalated permission prompts.
+		// The prompter is resolved lazily per request (at session_start time the
+		// ACP prompter may not be registered yet), so registration covers any
+		// potentially-capable session and prompts fail late instead.
+		if (ctx.hasUI || ctx.mode === "rpc") {
+			// Re-attach without an intervening shutdown (load+resume coalescing)
+			// must not stack a second surface for the same session.
+			if (parentSurface && parentSurfaceSessionId) {
+				unregisterParentSurface(parentSurfaceSessionId, parentSurface)
+			}
+			parentSurface = {
+				notify: (message, level) => {
+					if (ctx.hasUI) ctx.ui.notify(message, level)
+					else console.error(message)
+				},
+			}
+			parentSurfaceSessionId = sessionId
+			registerParentSurface(sessionId, parentSurface)
+		}
 		})
 	})
 
@@ -919,6 +986,11 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 		// alive (it still owns the `pi` binding for session-shutdown cleanup); the
 		// registry entry below is the canonical lookup path.
 		const planModeSupplementBlock = buildPlanModeSupplementBlock(getRuntimePermissionMode)
+		if (parentSurface && parentSurfaceSessionId) {
+			unregisterParentSurface(parentSurfaceSessionId, parentSurface)
+		}
+		parentSurface = undefined
+		parentSurfaceSessionId = undefined
 		PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
 			modes: ["adhoc"],
 		})
@@ -1796,7 +1868,12 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 				}
 				if (mode === "auto" || !promptAvailable) {
 					const { candidates, missingRefs } = resolveClassifierCandidates(ctx.modelRegistry)
-					const verdict = await classifyToolCall(
+					const {
+						result: verdict,
+						tripped,
+						recovered,
+						fromBreaker,
+					} = await classifyToolCallViaBreaker(
 						candidates,
 						ctx.modelRegistry,
 						{ toolName, input, cwd: ctx.cwd },
@@ -1807,12 +1884,34 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 						},
 						ctx.signal,
 					)
-					const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
-					if (health) {
-						pi.events.emit(health.channel, health.payload)
-						if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
-							classifierWarnings.add(health.notifyKey)
-							ctx.ui.notify(health.message, "warning")
+					// Health events describe real classifier calls; a stored breaker
+					// failure is a cache hit, not a new failure.
+					if (!fromBreaker) {
+						const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
+						if (health) {
+							pi.events.emit(health.channel, health.payload)
+							if (health.channel === PERMISSION_EVENTS.CLASSIFIER_DEGRADED) {
+								// A fallback model answered: informational, and it recurs on
+								// every call while a model ref is missing. Only the session
+								// that owns a UI shows it, once — a worker forwarding it would
+								// toast the parent on every subagent run.
+								if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
+									classifierWarnings.add(health.notifyKey)
+									ctx.ui.notify(health.message, "warning")
+								}
+							} else if (promptAvailable) {
+								// The health line is for the prompt path only: without a
+								// prompt the call is blocked below, and that notice names the
+								// cause — sending both would warn twice for one call. A trip
+								// warns every time; failures the breaker ignores (bad output,
+								// no candidates, no API key) warn once per session.
+								if (tripped) {
+									reportClassifierNotice(ctx, health.message, "warning")
+								} else if (!classifierWarnings.has(health.notifyKey)) {
+									classifierWarnings.add(health.notifyKey)
+									reportClassifierNotice(ctx, health.message, "warning")
+								}
+							}
 						}
 					}
 
@@ -1828,7 +1927,43 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 								isWorker
 									? " Do not retry; report to the main agent that the call needs the user's approval. (no UI to confirm)"
 									: " (no UI to confirm)"
+					if (recovered) {
+						// A probe succeeded and closed the breaker — say so once.
+						reportClassifierNotice(ctx, CLASSIFIER_RECOVERED_NOTICE, "info")
+					}
 							}`,
+					// A failed classification (timeout, provider error, bad output) is not
+					// a verdict: it never confirms the call. With a prompt the user is
+					// asked under fixed outage copy (no provider diagnostics); without
+					// one the call fails closed with an instructive block reason.
+					// Aborted results keep the fall-through handling — a user cancel is
+					// not an outage.
+					if (!verdict.ok && verdict.failureCode !== "aborted") {
+						if (!promptAvailable) {
+							reportClassifierNotice(ctx, classifierBlockedNotice(toolName, verdict.failureCode), "warning")
+							emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
+							return {
+								block: true,
+								// The code tail is a bounded enum value so tool-error telemetry
+								// can recover the failure code; never provider text.
+								reason:
+									classifierBlockReason(verdict.failureCode, isWorker) +
+									classifierBlockReasonCodeTail(verdict.failureCode),
+							}
+						}
+						const result = await handleConfirm(event, {
+							ctx,
+							pi,
+							subtitle: CLASSIFIER_UNAVAILABLE_PROMPT_SUBTITLE,
+							session,
+							activeAborts: activeAbortControllers,
+							promptToolCalls: activePromptToolCalls,
+							allRules,
+							permissionMode: mode,
+						})
+						if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
+						return result
+					}
 						}
 					}
 					const result = await handleConfirm(event, {
