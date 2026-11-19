@@ -202,6 +202,9 @@ index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091fa
      }
      return manifest.piConfig
    } catch {
+#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
+#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
+#     drive ui.select/ui.input but not AltScreen overlays)
 diff --git a/commands.ts b/commands.ts
 index da763cf88cc2f9556b6c678bebf084cf667d1b96..7d051051edee8105abcfb6cbbaa3dbf11e20ba9a 100644
 --- a/commands.ts
@@ -1157,6 +1160,13 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..884991fd586af6ef8e22095a04e2a8ee
      });
    };
  }
+#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
+#     the call-path readiness gates never re-read the shared credential store
+#     for a plain OAuth server in needs-auth, so a live session stayed broken
+#     after re-authentication elsewhere (settings probe, another chat) wrote a
+#     fresh credential; upstream tracking issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     retries needs-auth routes against the store without an interactive flow)
 diff --git a/init.ts b/init.ts
 index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3fdc8c34b 100644
 --- a/init.ts
