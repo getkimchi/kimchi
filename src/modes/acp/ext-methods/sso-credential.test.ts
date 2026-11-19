@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
+import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeApiKey } from "../../../config.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
@@ -156,6 +157,20 @@ describe("handleSsoCredential", () => {
 		writeFileSync(paths.authPath, "{corrupt")
 		const error = await errorFrom(() => handleSsoCredential(fakeOAuthDeps(), paths))
 		expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE" })
+	})
+
+	it("maps ModelRuntime.create failures to SSO_STORE_UNAVAILABLE", async () => {
+		const create = vi.spyOn(ModelRuntime, "create").mockRejectedValueOnce(new Error("runtime construction failed"))
+		const deps = { installOAuth: vi.fn() }
+
+		try {
+			const error = await errorFrom(() => handleSsoCredential(deps, paths))
+
+			expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE", detail: "runtime construction failed" })
+			expect(deps.installOAuth).not.toHaveBeenCalled()
+		} finally {
+			create.mockRestore()
+		}
 	})
 
 	// The store is intentionally tolerant: a missing models.json does not break
