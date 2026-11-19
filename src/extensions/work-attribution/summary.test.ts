@@ -93,6 +93,8 @@ function parseLegacyJournal(
 }
 
 const NATIVE_DRIVER = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+// Native coordination takes about 10 seconds normally and needs headroom under full-suite CI load.
+const NATIVE_TEST_TIMEOUT_MS = 30_000
 interface NativeSummaryState {
 	authority: { record_hash: string; body: string }[]
 	markers: { record_hash: string }[]
@@ -159,7 +161,7 @@ function startNativeProcess(command: "summary-writer" | "summary-reader", argume
 		child.once("error", reject)
 		child.once("close", (code) => (code === 0 ? resolve() : reject(new Error(`${label} exited ${code}: ${errors}`))))
 	})
-	const timeout = setTimeout(() => child.kill("SIGKILL"), 10000)
+	const timeout = setTimeout(() => child.kill("SIGKILL"), NATIVE_TEST_TIMEOUT_MS)
 	void done.finally(() => clearTimeout(timeout)).catch(() => {})
 	return {
 		child,
@@ -1294,5 +1296,5 @@ describe("readable work summaries", () => {
 			await Promise.all(writers.map((writer) => writer.stop()))
 			await reader.stop()
 		}
-	}, 15000)
+	}, 30_000)
 })
