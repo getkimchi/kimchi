@@ -123,17 +123,44 @@ const renderBashResult: (
 			rows.get(display.handle)?.unsubscribe?.()
 			rows.set(display.handle, row)
 			const target = row
+			const handle = display.handle
 			let subscribed = false
-			target.unsubscribe = registry.observeDisplay(display.handle, (snapshot) => {
+			let running = false
+			let tick: ReturnType<typeof setInterval> | undefined
+			const stopTick = () => {
+				clearInterval(tick)
+				tick = undefined
+			}
+			const stopObserving = registry.observeDisplay(handle, (snapshot) => {
 				const final = snapshot.state !== "running" ? registry.finalSnapshot(snapshot.handle, true) : undefined
 				target.result = {
 					content: [{ type: "text", text: final?.content ?? snapshot.output }],
 					details: { ...final, display: snapshot },
 				}
-				target.isPartial = snapshot.state === "running"
+				running = snapshot.state === "running"
+				target.isPartial = running
+				if (!running) stopTick()
 				if (subscribed) target.invalidate()
 			})
 			subscribed = true
+			// The registry only notifies on output and exit, so a silent command needs
+			// a clock to keep its elapsed time and output age moving.
+			if (running) {
+				tick = setInterval(() => {
+					const snapshot = registry.displaySnapshot(handle)
+					if (snapshot?.state !== "running") return stopTick()
+					target.result = {
+						content: target.result.content,
+						details: Object.assign({}, target.result.details, { display: snapshot }),
+					}
+					target.invalidate()
+				}, 1000)
+				tick.unref()
+			}
+			target.unsubscribe = () => {
+				stopTick()
+				stopObserving()
+			}
 		} else if (row.source.content !== result.content || row.source.details !== result.details) {
 			// Pi recreates the result wrapper on invalidation; only a new payload is an update.
 			row.source = result

@@ -1684,6 +1684,7 @@ describe("get_subagent_result wait contract", () => {
 		expect(text).toContain("Wait cancelled")
 		expect(text).not.toContain("still running")
 		expect(record.resultConsumed).not.toBe(true)
+		expect(result).toMatchObject({ details: { waitCancelled: true } })
 	})
 
 	it("wait: true returns the result and consumes it when the agent completes during the wait", async () => {
@@ -1707,6 +1708,7 @@ describe("get_subagent_result wait contract", () => {
 		const text = result.content[0]?.text ?? ""
 		expect(text).toContain("all done")
 		expect(record.resultConsumed).toBe(true)
+		expect(result).not.toHaveProperty("details.waitCancelled")
 	})
 
 	it("still-running report points at the completion notification instead of wait/poll", async () => {
