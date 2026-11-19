@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { requestWorkLinks as resolveWorkLinks } from "@getkimchi/kimchi-bridge/work/kimchi/links"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
@@ -18,10 +19,12 @@ import {
 	pinWorkContinuation,
 	readContinuationHistory,
 	reconcileWorkContinuations,
-	requestWorkLinks,
 } from "./links.js"
 import * as scope from "./scope.js"
 import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
+
+/** The bridge's link rules, with this harness's rule for when two accounts are the same. */
+const requestWorkLinks = (records: readonly WorkRecord[]) => resolveWorkLinks(records, scope.sameWorkAccount)
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 

@@ -1,12 +1,6 @@
+import type { OutboxBatch, OutboxEvent } from "@getkimchi/kimchi-bridge/work/outbox"
 import type { LogName, Row, WorkHead } from "../../work-attribution/row-log.js"
-import type {
-	JournalCursor,
-	OutboxAccountStatus,
-	OutboxBatch,
-	OutboxEvent,
-	RecordBackend,
-	StoredRecord,
-} from "./records.js"
+import type { JournalCursor, OutboxAccountStatus, RecordBackend, StoredRecord } from "./records.js"
 
 /** The in-memory RecordBackend used by vitest: identical semantics to the SQLite one, over plain Maps. The shared
  * conformance suite runs the same scenario against both, so this double cannot drift from production behavior. */

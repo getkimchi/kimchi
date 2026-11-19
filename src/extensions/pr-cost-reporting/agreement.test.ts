@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs"
+import { decimalNanos, usd } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import { calculatePullRequestCosts, decimalNanos, usd } from "../work-attribution/costs.js"
+import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 import { buildSnapshots } from "./snapshot.js"
 

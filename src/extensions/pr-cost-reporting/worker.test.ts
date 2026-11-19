@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { accountKey } from "@getkimchi/kimchi-bridge/work/kimchi/attribution"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as durableFiles from "../../config/json.js"
 import { createContext } from "../__mocks__/context.js"
@@ -29,7 +30,7 @@ import {
 	setReportingEnabled,
 	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
-import { accountKey, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
+import type { RepositorySnapshot, WireSnapshot } from "./snapshot.js"
 import { statusText } from "./status.js"
 import {
 	deliverEvents,

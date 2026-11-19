@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { PullRequestCostReport } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { afterAll, describe, expect, it } from "vitest"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { runCli } from "./accuracy-cli.js"
 import { compareIndependentAttribution } from "./accuracy-reference.js"
-import { calculatePullRequestCosts, type PullRequestCostReport } from "./costs.js"
+import { calculatePullRequestCosts } from "./costs.js"
 import type { WorkRecord } from "./summary.js"
 
 const root = mkdtempSync(join(tmpdir(), "kimchi-independent-accuracy-"))

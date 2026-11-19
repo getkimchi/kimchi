@@ -1,7 +1,8 @@
+import { decimalNanos, type RequestCostObservation, roundedUsd, usd } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { describe, expect, it } from "vitest"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
-import { calculatePullRequestCosts, decimalNanos, type RequestCostObservation, roundedUsd, usd } from "./costs.js"
+import { calculatePullRequestCosts } from "./costs.js"
 import type { WorkRecord } from "./summary.js"
 
 const time = (minutes: number) => new Date(Date.UTC(2026, 9, 2, 10, minutes)).toISOString()

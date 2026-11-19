@@ -1,7 +1,7 @@
+import { decimalNanos, type RequestCostAllocation } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
 import { describe, expect, it } from "vitest"
 import type { AttributionLabel } from "./accuracy.js"
 import { compareAttributionAccuracy } from "./accuracy.js"
-import { decimalNanos, type RequestCostAllocation } from "./costs.js"
 
 const NANOS_PER_USD = 1_000_000_000n
 const PR1 = "github:acme/api#1"

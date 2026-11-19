@@ -1,3 +1,4 @@
+import { decimalNanos, usd } from "@getkimchi/kimchi-bridge/work/kimchi/costs"
 import {
 	type AttributionAccuracyResult,
 	compareAttributionAccuracy,
@@ -5,7 +6,6 @@ import {
 	isAccuracyPullRequestKey,
 	text,
 } from "./accuracy.js"
-import { decimalNanos, usd } from "./costs.js"
 import { sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 

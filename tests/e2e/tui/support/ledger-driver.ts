@@ -324,10 +324,11 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		const { backendFor, readStoredRecordsAsync } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 		)
-		const { effectiveClaim, observeEvents, pendingBatch } = await import(
+		const { effectiveClaim } = await import("@getkimchi/kimchi-bridge/work/outbox")
+		const { observeEvents, pendingBatch } = await import(
 			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
 		)
-		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+		const { accountKey } = await import("@getkimchi/kimchi-bridge/work/kimchi/attribution")
 		const { readWorkCostReport } = await import("../../../../src/extensions/work-attribution/cost-sync.js")
 		const stored = await readStoredRecordsAsync(agent, () => {})
 		const { report } = readWorkCostReport(
@@ -381,7 +382,7 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
 	const { deliverEvents, reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
 	const { pendingBatch, observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
-	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+	const { accountKey } = await import("@getkimchi/kimchi-bridge/work/kimchi/attribution")
 	const { queueSnapshots, readReportingState, setReportingEnabled } = await import(
 		"../../../../src/extensions/pr-cost-reporting/queue.js"
 	)
@@ -780,7 +781,7 @@ async function producerScenario(agent: string): Promise<void> {
 	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
 	const { observeEvents, pendingBatch } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
 	const { machineFingerprint } = await import("../../../../src/extensions/pr-cost-reporting/machine.js")
-	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+	const { accountKey } = await import("@getkimchi/kimchi-bridge/work/kimchi/attribution")
 	const state = await readReportingState(agent)
 	const entry = Object.values(state.entries)[0]
 	if (!entry?.pending) throw new Error("Missing legacy pending producer fixture")
@@ -825,7 +826,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 	)
 	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
-	const { encodeBatch } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
+	const { encodeBatch } = await import("@getkimchi/kimchi-bridge/work/protocol")
 	const { createHash } = await import("node:crypto")
 	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
 	const backend = backendFor(agent)

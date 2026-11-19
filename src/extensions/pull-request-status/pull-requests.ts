@@ -1,6 +1,8 @@
 /** Discovers the PRs and MRs of recorded commits: lookup scheduling, the check cache and the journal updates. */
+
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 import { backendFor, getNote, readRecords, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { importWorkRecordsAsync, object, workJournalFingerprint } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
@@ -30,29 +32,6 @@ const PROCESS_STARTED = Date.now()
 
 /** When each repository and SHA was last checked, including checks whose unchanged result was not appended. */
 const LOOKUP_CHECKS = "pr-checks.json"
-
-export interface WorkPullRequest {
-	provider?: "github" | "gitlab"
-	/** Provider IDs belong to the target repository, including fork contributions. */
-	id?: string
-	repositoryId?: string
-	url: string
-	number: number
-	/** The provider's title, cut to 1,024 characters. Display metadata for PR cost uploads only; older links omit it. */
-	title?: string
-	/** The author's login: GitHub `user.login`, GitLab `author.username`. Like `title`, uploaded only. */
-	author?: string
-	/** The Jira keys the PR's head branch names, at most 20; the branch name itself is not kept. Uploaded only. */
-	branchIssueKeys?: string[]
-	state: "open" | "closed" | "merged"
-	repository: string
-	host: string
-	headSha: string
-	mergeCommitSha: string | null
-	mergedAt: string | null
-	closedAt: string | null
-	checkedAt: string
-}
 
 export interface WorkPullRequestLookup {
 	status: "pending" | "linked" | "error"

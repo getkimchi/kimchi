@@ -1,4 +1,4 @@
-import type { WorkPullRequest } from "./pull-requests.js"
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/work/kimchi/records"
 
 interface PullRequestObservation {
 	provider?: unknown
