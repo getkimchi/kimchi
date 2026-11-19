@@ -9,7 +9,7 @@ import type {
 } from "@earendil-works/pi-ai"
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
-import type { ModelRuntime, ProviderConfig } from "@earendil-works/pi-coding-agent"
+import { type ModelRuntime, type ProviderConfig, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { resolveRefreshAwareKimchiAuth } from "./auth/refresh-aware-credential.js"
 import { isInvalidGrantError } from "./cli-auth/oauth.js"
 import { resolveEndpoints } from "./config.js"
@@ -166,6 +166,8 @@ export interface DiscoverModelsOptions extends FetchModelsOptions {
 	refreshOAuth?: {
 		authPath: string
 		installOAuth: (runtime: ModelRuntime) => void
+		/** Override provider credential fan-out for deterministic store-failure tests. */
+		syncOAuthCredential?: typeof syncOAuthCredentialToKimchiProviders
 	}
 }
 
@@ -952,6 +954,8 @@ export async function discoverModelsConfig(
 	let fetched: ModelMetadata[]
 	try {
 		if (!apiKey && options.refreshOAuth) {
+			const storedCredential = readStoredCredential(KIMCHI_PROVIDER_ID, options.refreshOAuth.authPath)
+			if (storedCredential?.type === "oauth") discoveryApiKey = storedCredential.access
 			let resolution: Awaited<ReturnType<typeof resolveRefreshAwareKimchiAuth>>
 			try {
 				resolution = await resolveRefreshAwareKimchiAuth(
@@ -964,14 +968,14 @@ export async function discoverModelsConfig(
 			const credential = resolution.credential
 			if (credential?.type !== "oauth") return cachedResult()
 			discoveryApiKey = credential.access
-			const orgId = (credential as typeof credential & { orgId?: unknown }).orgId
 			discoveryOptions = {
 				...options,
-				organizationId: typeof orgId === "string" && orgId.length > 0 ? orgId : undefined,
+				organizationId: credential.orgId || options.organizationId,
 			}
 			if (resolution.refreshed) {
-				await syncOAuthCredentialToKimchiProviders(options.refreshOAuth.authPath, modelsJsonPath, { ...credential })
 				clearRefreshedCredentialStale(resolution.previousAccessToken, credential.access, KIMCHI_PROVIDER_ID)
+				const synchronizeCredential = options.refreshOAuth.syncOAuthCredential ?? syncOAuthCredentialToKimchiProviders
+				await synchronizeCredential(options.refreshOAuth.authPath, modelsJsonPath, { ...credential })
 			}
 		}
 		fetched = await fetchAvailableModels(discoveryApiKey, discoveryOptions)

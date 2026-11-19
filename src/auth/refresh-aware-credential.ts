@@ -10,7 +10,12 @@ export type RefreshAwareCredentialPaths = {
 
 export type RefreshAwareAuth = Awaited<ReturnType<ModelRuntime["getAuth"]>>
 
-type StoredCredential = NonNullable<ReturnType<typeof readStoredCredential>>
+type PiStoredCredential = NonNullable<ReturnType<typeof readStoredCredential>>
+type StoredOAuthCredential = Extract<PiStoredCredential, { type: "oauth" }> & {
+	/** Organization scope stamped by Kimchi login alongside upstream OAuth fields. */
+	orgId?: string
+}
+type StoredCredential = Exclude<PiStoredCredential, { type: "oauth" }> | StoredOAuthCredential
 
 export type RefreshAwareCredentialResolution = {
 	auth: RefreshAwareAuth

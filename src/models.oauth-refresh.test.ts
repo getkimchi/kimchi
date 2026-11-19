@@ -1,10 +1,10 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { isCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
+import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { installKimchiOAuth } from "./extensions/login/flow.js"
 import { updateModelsConfig } from "./models.js"
 import { fakeOAuthDeps } from "./modes/acp/ext-methods/oauth-test-utils.js"
@@ -29,8 +29,6 @@ const ANTHROPIC_MODEL = {
 	limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
 }
 
-const itStorePermissions = process.platform === "win32" || process.geteuid?.() === 0 ? it.skip : it
-
 describe("OAuth-aware model discovery", () => {
 	let dir: string
 	let authPath: string
@@ -50,8 +48,6 @@ describe("OAuth-aware model discovery", () => {
 			server.closeAllConnections()
 			await new Promise<void>((resolve) => server?.close(() => resolve()))
 		}
-		chmodSync(dir, 0o700)
-		if (existsSync(authPath)) chmodSync(authPath, 0o600)
 		vi.unstubAllEnvs()
 		vi.restoreAllMocks()
 		resetCredentialStalenessForTests()
@@ -138,38 +134,42 @@ describe("OAuth-aware model discovery", () => {
 		])
 	})
 
-	itStorePermissions("does not use a refreshed credential when persistence fails", async () => {
-		vi.spyOn(console, "error").mockImplementation(() => {})
+	it("clears prior rejection without using a refreshed credential when sibling persistence fails", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {})
 		writeExpiringAuth()
 		writeCachedModels()
-		const original = readFileSync(authPath, "utf8")
+		markCredentialStale(undefined, "kimchi-dev")
+		markCredentialStale("expiring-fake-access", "kimchi-dev")
 		let metadataRequests = 0
 		server = createServer((_request, response) => {
 			metadataRequests += 1
 			response.writeHead(500).end()
 		})
 		const endpoint = await listen(server)
-		const deps = fakeOAuthDeps((credential) => {
-			chmodSync(authPath, 0o400)
-			chmodSync(dir, 0o500)
-			return { ...credential, access: "unpersisted-fake-access", expires: Date.now() + 3600_000 }
+		const deps = fakeOAuthDeps((credential) => ({
+			...credential,
+			access: "replacement-fake-access",
+			expires: Date.now() + 3600_000,
+		}))
+
+		const result = await updateModelsConfig(modelsPath, "", {
+			endpoint,
+			refreshOAuth: {
+				authPath,
+				installOAuth: deps.installOAuth,
+				syncOAuthCredential: () => Promise.reject(new Error("read-only models.json")),
+			},
 		})
 
-		try {
-			const result = await updateModelsConfig(modelsPath, "", {
-				endpoint,
-				refreshOAuth: { authPath, installOAuth: deps.installOAuth },
-			})
-			expect(result.models.map((model) => model.slug)).toEqual(["cached-model"])
-		} finally {
-			chmodSync(dir, 0o700)
-			chmodSync(authPath, 0o600)
-		}
-
+		expect(result.models.map((model) => model.slug)).toEqual(["cached-model"])
 		expect(deps.refreshCalls).toHaveLength(1)
 		expect(metadataRequests).toBe(0)
-		expect(readFileSync(authPath, "utf8")).toBe(original)
+		const persistedAuth = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, { access: string }>
+		expect(persistedAuth["kimchi-dev"].access).toBe("replacement-fake-access")
+		expect(persistedAuth["kimchi-dev/anthropic"].access).toBe("expiring-fake-access")
+		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+		expect(isCredentialStale("expiring-fake-access", "kimchi-dev")).toBe(false)
+		resetCredentialStalenessForTests()
 		expect(isCredentialStale("expiring-fake-access", "kimchi-dev")).toBe(false)
 	})
 
@@ -203,6 +203,39 @@ describe("OAuth-aware model discovery", () => {
 		expect(result.models.map((model) => model.slug)).toEqual(["cached-model"])
 		expect(refresh.metadataRequests()).toBe(0)
 		expect(isCredentialStale("expiring-fake-access", "kimchi-dev")).toBe(true)
+		resetCredentialStalenessForTests()
+		expect(isCredentialStale("expiring-fake-access", "kimchi-dev")).toBe(true)
+		expect(isCredentialStale("unrelated-fake-access", "kimchi-dev")).toBe(false)
+	})
+
+	it("preserves the caller organization when stored OAuth has no organization", async () => {
+		let metadataUsedOrganization = false
+		server = createServer((request, response) => {
+			metadataUsedOrganization = request.headers["x-castai-organization-id"] === "caller-fake-org"
+			response.writeHead(200, { "content-type": "application/json" })
+			response.end(JSON.stringify({ models: [AI_ENABLER_MODEL] }))
+		})
+		const endpoint = await listen(server)
+		writeFileSync(
+			authPath,
+			JSON.stringify({
+				"kimchi-dev": {
+					type: "oauth",
+					access: "valid-fake-access",
+					refresh: "fake-refresh",
+					expires: Date.now() + 3600_000,
+				},
+			}),
+		)
+
+		const result = await updateModelsConfig(modelsPath, "", {
+			endpoint,
+			organizationId: "caller-fake-org",
+			refreshOAuth: { authPath, installOAuth: installKimchiOAuth },
+		})
+
+		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k3.1-pro"])
+		expect(metadataUsedOrganization).toBe(true)
 	})
 
 	function writeExpiringAuth(tokenUrl = "http://127.0.0.1:1/oauth/token"): void {
