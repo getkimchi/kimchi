@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { BUILTIN_TOOL_NAMES, getToolNamesForType, registerAgents } from "./agent-types.js"
+import { BUILTIN_TOOL_NAMES, getDefaultAgentNames, getToolNamesForType, registerAgents } from "./agent-types.js"
 import type { AgentConfig } from "./types.js"
 
 function agent(overrides: Partial<AgentConfig>): AgentConfig {
@@ -29,5 +29,19 @@ describe("agent type tool resolution", () => {
 		registerAgents(new Map([["NoTools", agent({ name: "NoTools", builtinToolNames: [] })]]))
 
 		expect(getToolNamesForType("NoTools")).toEqual([])
+	})
+})
+
+describe("advertised default agents", () => {
+	afterEach(() => {
+		registerAgents(new Map())
+	})
+
+	it("never lists the disabled, host-only Ferment V2 personas", () => {
+		registerAgents(new Map([["Mine", agent({ name: "Mine" })]]))
+		const names = getDefaultAgentNames()
+		expect(names).toContain("Explore")
+		for (const hidden of ["Verifier"]) expect(names).not.toContain(hidden)
+		expect(names).not.toContain("Mine")
 	})
 })

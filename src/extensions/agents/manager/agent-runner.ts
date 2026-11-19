@@ -259,6 +259,16 @@ export interface ToolActivity {
 	rawOutput?: unknown
 }
 
+/**
+ * Inactivity accounting mode.
+ *
+ * - "any_event" (default): any session event (model or tool) counts as activity.
+ * - "model_only": time spent inside a running tool is not inactivity — a
+ *   silent long-running tool call must not steer or abort the agent, while
+ *   genuine model inactivity (no events and no running tool) still does.
+ */
+export type InactivityMode = "any_event" | "model_only"
+
 export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI
@@ -293,12 +303,18 @@ export interface RunOptions {
 	maxDuration?: number
 	/** Host-bound report capability. Present only for Ferment-linked workers. */
 	workerReport?: WorkerReportCapability
+	/** Ends the session once the named tool completes and this returns true (an accepted terminal report). */
+	shouldTerminateAfterTool?: (toolName: string) => boolean
 	/** Enforce maxTurns as a hard cap instead of allowing ordinary-agent grace turns. */
 	hardTurnLimit?: boolean
 	/** Registers a hard-fallback cleanup for runner-owned resources. */
 	onRuntimeCleanupRegistered?: (cleanup: () => void) => void
 	/** Called with the built system prompt before the session starts. */
 	onSystemPrompt?: (prompt: string) => void
+	/** Inline extensions appended to the child session's loader. They load even when extensions are disabled. */
+	extensionFactories?: readonly InlineExtension[]
+	/** How inactivity is accounted. "model_only" keeps a running tool from counting as inactivity. */
+	inactivityMode?: InactivityMode
 }
 
 export interface RunResult {
@@ -397,6 +413,59 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 	const onAbort = () => hardAbort(session)
 	signal.addEventListener("abort", onAbort, { once: true })
 	return () => signal.removeEventListener("abort", onAbort)
+}
+
+/**
+ * Inactivity accounting for one agent run. "any_event" (default) treats every
+ * session event as activity. "model_only" additionally suspends the watchdog
+ * while a tool is executing and re-arms it when the tool finishes, so a silent
+ * long-running tool call is never mistaken for a stalled model — while genuine
+ * model inactivity (no events, no running tool) still steers and then aborts.
+ */
+interface InactivityTracker {
+	/** Milliseconds since the last activity that counts for this mode. */
+	elapsedMs(): number
+	/** True while a tool is executing in "model_only" mode (watchdog suspended). */
+	suspended(): boolean
+	/** Whether a steer has already been sent and not been answered by activity. */
+	steered: boolean
+	/** Record a steer was sent. */
+	markSteered(): void
+	/** Track one session event. */
+	track(event: AgentSessionEvent): void
+}
+
+function createInactivityTracker(mode: InactivityMode | undefined): InactivityTracker {
+	const modelOnly = mode === "model_only"
+	const state = { lastActivityAt: Date.now(), runningTools: 0, steered: false }
+	return {
+		get steered() {
+			return state.steered
+		},
+		set steered(value: boolean) {
+			state.steered = value
+		},
+		elapsedMs: () => Date.now() - state.lastActivityAt,
+		suspended: () => modelOnly && state.runningTools > 0,
+		markSteered: () => {
+			state.steered = true
+		},
+		track(event: AgentSessionEvent) {
+			if (modelOnly && (event.type === "tool_execution_start" || event.type === "tool_execution_end")) {
+				if (event.type === "tool_execution_start") {
+					state.runningTools++
+				} else {
+					state.runningTools = Math.max(0, state.runningTools - 1)
+					// The model resumes control when the tool finishes — re-arm from now.
+					state.lastActivityAt = Date.now()
+					state.steered = false
+				}
+				return
+			}
+			state.lastActivityAt = Date.now()
+			state.steered = false
+		},
+	}
 }
 
 async function withParentSessionEnv<T>(ctx: ExtensionContext, fn: () => Promise<T>): Promise<T> {
@@ -533,14 +602,15 @@ ${skillLines}`
 	options.onSystemPrompt?.(systemPrompt)
 
 	const debugSession = process.env.KIMCHI_DEBUG_SESSION
-	if (debugSession) {
+	const debugPromptName = `agent-${agentConfig?.name ?? type}-${Date.now()}.md`
+	const captureDebugPrompt = (prompt: string) => {
+		if (!debugSession) return
 		try {
 			const debugDir = join(effectiveCwd, ".kimchi", "debug", debugSession)
 			mkdirSync(debugDir, { recursive: true })
-			const agentLabel = agentConfig?.name ?? type
-			writeFileSync(join(debugDir, `agent-${agentLabel}-${Date.now()}.md`), systemPrompt)
+			writeFileSync(join(debugDir, debugPromptName), prompt)
 		} catch {
-			// best-effort debug logging
+			// Best-effort debug logging; never change the agent's behavior.
 		}
 	}
 
@@ -569,6 +639,12 @@ ${skillLines}`
 	// factories at all (off means off — registration included).
 	if (effectiveExtensions !== false) {
 		extensionFactories.push(...subagentWebToolFactories())
+	}
+	// Caller-provided inline extensions (e.g. the Ferment V2 verifier guard)
+	// load even when extensions are disabled — the resource loader always
+	// processes its inline factories.
+	if (options.extensionFactories) {
+		extensionFactories.push(...options.extensionFactories)
 	}
 	// SubagentResourceLoader reads the system prompt live via the
 	// readSystemPrompt callback (see subagent-resource-loader.ts): after the
@@ -711,6 +787,8 @@ ${skillLines}`
 		session.setActiveToolsByName(activeTools)
 	}
 
+	// Capture after extension binding determines the actual active tools.
+	captureDebugPrompt(systemPrompt)
 	options.onSessionCreated?.(session)
 
 	let turnCount = 0
@@ -723,7 +801,7 @@ ${skillLines}`
 	let budgetAborted = false
 	let reportAccepted = false
 
-	const inactivity = { lastActivityAt: Date.now(), steered: false }
+	const inactivity = createInactivityTracker(options.inactivityMode)
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
 
 	const PROGRESS_STEER_POINTS: { threshold: number; message: string }[] = [
@@ -759,8 +837,7 @@ ${skillLines}`
 
 	let currentMessageText = ""
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
-		inactivity.lastActivityAt = Date.now()
-		if (inactivity.steered) inactivity.steered = false
+		inactivity.track(event)
 
 		if (event.type === "turn_end") {
 			turnCount++
@@ -807,7 +884,10 @@ ${skillLines}`
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ status: "completed", toolName: event.toolName })
-			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
+			if (
+				(event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) ||
+				options.shouldTerminateAfterTool?.(event.toolName)
+			) {
 				reportAccepted = true
 				queueMicrotask(() => hardAbort(session))
 			}
@@ -854,13 +934,14 @@ ${skillLines}`
 	})
 
 	let inactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
-		const elapsed = Date.now() - inactivity.lastActivityAt
+		if (inactivity.suspended()) return
+		const elapsed = inactivity.elapsedMs()
 		if (inactivity.steered && elapsed >= inactivityTimeout) {
 			aborted = true
 			abortReason = "inactivity"
 			hardAbort(session)
 		} else if (!inactivity.steered && elapsed >= inactivityTimeout) {
-			inactivity.steered = true
+			inactivity.markSteered()
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
@@ -1114,6 +1195,7 @@ export async function resumeAgent(
 		tokenBudget?: number
 		minTokenBudget?: number
 		inactivityTimeout?: number
+		inactivityMode?: InactivityMode
 		maxDuration?: number
 		hardTurnLimit?: boolean
 		shouldTerminateAfterTool?: (toolName: string) => boolean
@@ -1131,7 +1213,7 @@ export async function resumeAgent(
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
-	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
+	const resumeInactivity = createInactivityTracker(options.inactivityMode)
 	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
 	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
@@ -1153,8 +1235,7 @@ export async function resumeAgent(
 	let terminationToolCompleted = false
 
 	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
-		resumeInactivity.lastActivityAt = Date.now()
-		if (resumeInactivity.steered) resumeInactivity.steered = false
+		resumeInactivity.track(event)
 
 		if (event.type === "turn_end") {
 			turnCount++
@@ -1231,13 +1312,14 @@ export async function resumeAgent(
 	})
 
 	let resumeInactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
-		const elapsed = Date.now() - resumeInactivity.lastActivityAt
+		if (resumeInactivity.suspended()) return
+		const elapsed = resumeInactivity.elapsedMs()
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			aborted = true
 			abortReason = "inactivity"
 			hardAbort(session)
 		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
-			resumeInactivity.steered = true
+			resumeInactivity.markSteered()
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)

@@ -85,6 +85,7 @@ export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_FIXER = "Fixer"
 export const AGENT_GRADER = "Grader"
 export const AGENT_DEBUGGER = "Debugger"
+export const AGENT_FERMENT_VERIFIER = "Verifier"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -97,6 +98,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_FIXER,
 	AGENT_GRADER,
 	AGENT_DEBUGGER,
+	AGENT_FERMENT_VERIFIER,
 ] as const
 
 /** Isolation mode for agent execution. */
