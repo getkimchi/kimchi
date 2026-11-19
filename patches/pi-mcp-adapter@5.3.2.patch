@@ -19,6 +19,25 @@
 #
 # See docs/mcp-adapter-audit.md for the host contract and verification matrix.
 #
+# Retained-hunk inventory and retirement conditions:
+#   - types/init/state: notify the host of in-memory session catalogs; retire with the live-catalog observer above.
+#   - agent-dir/config and dist mirrors: support piConfig.mcpProjectConfigDir; retire with the project-directory setting above.
+#   - types and dist mirrors: sanitize names and normalize selector matching; retire with the naming change above.
+#   - metadata-cache/server-manager/tool-metadata and dist mirrors: suppress UI capability advertising and persisted UI resources; retire with the UI-disable option above.
+#   - mcp-auth-flow/proxy-modes/mcp-callback-server: capture manual OAuth redirects, serialize exchanges, replay known callbacks, and preserve actionable timeout instructions; retire with the loopback-capture change above.
+#   - mcp-auth-flow/mcp-oauth-provider: retain fixed-client redirect registrations and add the authorize-URL transform; retire with the redirect and authorize-hook changes above.
+#   - mcp-auth-flow: send Accept application/json, text/event-stream and DCR version 5.3.2; retire with those metadata changes above.
+#   - mcp-auth-flow and dist mirror: recover cross-session refresh-token rotation; retire with the rotation change above.
+#   - project-server-trust: honor KIMCHI_MANAGES_MCP_PROJECT_TRUST with no prompts or approval writes; retire when upstream supports host-managed trust.
+#   - config and dist mirrors: keep repointed mcp.json layers adapter-format, authoritative, and field-merged; retire when upstream supports Kimchi's host config topology.
+#   - index.ts: always register /mcp to replace Pi's built-in reader of the same files; retire if those readers stop overlapping.
+#   - pi-builtin-mcp: tolerate Bun's virtual package.json path; retire when upstream makes version discovery bundled-runtime-safe.
+#   - config writeProjectServerDisabledOverride: write through server provenance; retire when upstream preserves source provenance for this override.
+#   - mcp-output-guard and dist mirrors: cap default model-facing MCP output at 12 KiB; retire when upstream provides a suitable host default or option.
+#   - types/index/init/server-manager and dist mirrors: support defaultProtocolVersion without mutating config; retire with the protocol-default option above.
+#   - direct-tools/init/session-recovery: retry needs-auth calls after out-of-band re-auth without competing with a pending flow; retire with the re-auth healing change above.
+#   - commands.ts: expose the non-TUI auth flow and preserve ./commands for its regression coverage; retire with the remote-auth change above.
+#
 # 5.3.2 rebase notes:
 #   - Upstream's dropped-credential warning now replays Kimchi's field-wise
 #     config merge instead of the native Pi global-entry replacement rule.
