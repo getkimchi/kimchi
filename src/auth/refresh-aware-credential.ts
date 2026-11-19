@@ -1,3 +1,4 @@
+import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 
@@ -25,11 +26,20 @@ export async function resolveRefreshAwareKimchiAuth(
 	paths: RefreshAwareCredentialPaths,
 	installOAuth: (runtime: ModelRuntime) => void,
 ): Promise<RefreshAwareAuth> {
-	const modelRuntime = await ModelRuntime.create({
-		authPath: paths.authPath,
-		modelsPath: paths.modelsPath,
-		refreshOnCreate: false,
-	})
-	installOAuth(modelRuntime)
-	return modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
+	try {
+		const modelRuntime = await ModelRuntime.create({
+			authPath: paths.authPath,
+			modelsPath: paths.modelsPath,
+			refreshOnCreate: false,
+		})
+		installOAuth(modelRuntime)
+		return await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
+	} catch (error) {
+		// Token refresh failures are logged with typed categories at the OAuth boundary.
+		// Every other failure belongs to local credential-store/runtime access.
+		if (!(error instanceof ModelsError && error.code === "oauth")) {
+			console.error({ event: "kimchi.oauth.refresh", outcome: "store_failed" })
+		}
+		throw error
+	}
 }

@@ -16,7 +16,7 @@ import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 import { type AuthStatusPaths, type AuthStatusResponse, handleAuthStatus } from "./auth-status.js"
 import { fakeOAuthDeps } from "./oauth-test-utils.js"
 
-type TokenResponder = (params: URLSearchParams) => { status: number; body: Record<string, unknown> }
+type TokenResponder = (params: URLSearchParams) => { status: number; body: Record<string, unknown> } | undefined
 
 const itStorePermissions = process.platform === "win32" || process.geteuid?.() === 0 ? it.skip : it
 
@@ -54,6 +54,7 @@ describe("handleAuthStatus", () => {
 		if (existsSync(paths.authPath)) chmodSync(paths.authPath, 0o600)
 		resetCredentialStalenessForTests()
 		vi.unstubAllEnvs()
+		vi.restoreAllMocks()
 		rmSync(dir, { recursive: true, force: true })
 	})
 
@@ -146,19 +147,48 @@ describe("handleAuthStatus", () => {
 		expect(isCredentialStale("revoked-token", KIMCHI_PROVIDER_ID)).toBe(true)
 	})
 
-	it.each([
-		"offline",
-		"timeout",
-		"issuer returned 500",
-	])("rejects rather than signing out after a transient refresh failure: %s", async (failure) => {
-		writeOAuthCredential("expiring-token", { expires: Date.now() + 60_000 })
-		const deps = fakeOAuthDeps(() => {
-			throw new Error(failure)
+	it("rejects rather than signing out when the issuer is unreachable", async () => {
+		const tokenUrl = await startUnreachableTokenEndpoint()
+		writeOAuthCredential("expiring-token", {
+			expires: Date.now() + 60_000,
+			tokenUrl,
+			clientId: "fake-client",
+			useIdToken: false,
 		})
 
-		await expect(handleAuthStatus(paths, deps)).rejects.toMatchObject({ code: "oauth" })
+		await expect(handleAuthStatus(paths)).rejects.toMatchObject({ code: "oauth" })
 		expect(isCredentialStale("expiring-token", KIMCHI_PROVIDER_ID)).toBe(false)
 	})
+
+	it("rejects rather than signing out after a real issuer 500 response", async () => {
+		const tokenUrl = await startTokenEndpoint(() => ({ status: 500, body: { error: "server_error" } }))
+		writeOAuthCredential("expiring-token", {
+			expires: Date.now() + 60_000,
+			tokenUrl,
+			clientId: "fake-client",
+			useIdToken: false,
+		})
+
+		await expect(handleAuthStatus(paths)).rejects.toMatchObject({ code: "oauth" })
+		expect(tokenRequests).toHaveLength(1)
+		expect(isCredentialStale("expiring-token", KIMCHI_PROVIDER_ID)).toBe(false)
+	})
+
+	it("rejects rather than signing out when the real token request times out", async () => {
+		const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {})
+		const tokenUrl = await startTokenEndpoint(() => undefined)
+		writeOAuthCredential("expiring-token", {
+			expires: Date.now() + 60_000,
+			tokenUrl,
+			clientId: "fake-client",
+			useIdToken: false,
+		})
+
+		await expect(handleAuthStatus(paths)).rejects.toMatchObject({ code: "oauth" })
+		expect(diagnostics).toHaveBeenCalledWith({ event: "kimchi.oauth.refresh", outcome: "failed", category: "timeout" })
+		expect(tokenRequests).toHaveLength(1)
+		expect(isCredentialStale("expiring-token", KIMCHI_PROVIDER_ID)).toBe(false)
+	}, 20_000)
 
 	it("does not treat another credential's stale mark as a transient-refresh sign-out", async () => {
 		writeOAuthCredential("current-token", { expires: Date.now() + 60_000 })
@@ -180,8 +210,11 @@ describe("handleAuthStatus", () => {
 	})
 
 	it("reports credential-store read failures instead of credential presence", async () => {
+		const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {})
 		writeFileSync(paths.authPath, "{corrupt")
+
 		await expect(handleAuthStatus(paths, fakeOAuthDeps())).rejects.toMatchObject({ code: "auth" })
+		expect(diagnostics).toHaveBeenCalledWith({ event: "kimchi.oauth.refresh", outcome: "store_failed" })
 	})
 
 	itStorePermissions("rejects when a refreshed credential cannot be persisted", async () => {
@@ -300,6 +333,7 @@ handleAuthStatus(JSON.parse(process.argv[2])).then((result) => process.stdout.wr
 				const params = new URLSearchParams(body)
 				tokenRequests.push(params)
 				const result = respond(params)
+				if (!result) return
 				response.writeHead(result.status, { "content-type": "application/json" })
 				response.end(JSON.stringify(result.body))
 			})
@@ -311,6 +345,16 @@ handleAuthStatus(JSON.parse(process.argv[2])).then((result) => process.stdout.wr
 		})
 		const address = server.address() as AddressInfo
 		return `http://127.0.0.1:${address.port}/oauth/token`
+	}
+
+	async function startUnreachableTokenEndpoint(): Promise<string> {
+		const tokenUrl = await startTokenEndpoint(() => ({ status: 500, body: {} }))
+		const server = tokenServer
+		if (!server) throw new Error("token endpoint was not started")
+		server.closeAllConnections()
+		await new Promise<void>((resolve) => server.close(() => resolve()))
+		tokenServer = undefined
+		return tokenUrl
 	}
 
 	function writeOAuthCredential(access: string, overrides: Record<string, unknown> = {}): void {
