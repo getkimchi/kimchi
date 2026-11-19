@@ -104,6 +104,7 @@ import {
 	PERMISSION_MODES_WITH_META as MODES,
 	PERMISSIONS_ENV_KEY,
 } from "./constants.js"
+import { createEscalatedTerminalPrompter } from "./escalated-interaction.js"
 import { flagModeFromOptions, resolveMode } from "./mode.js"
 import {
 	getPermissionMode,
@@ -112,6 +113,7 @@ import {
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { sanitizeIdentity, sanitizePermissionOrigin } from "./origin-text.js"
 import {
 	cancelEscalatedRequests,
 	getParentSurface,
@@ -338,7 +340,7 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 		if (options.role === "worker") {
 			const surface = getParentSurface(options.parentSessionId)
 			if (surface) {
-				const prefixed = `[${options.persona}] ${message}`
+				const prefixed = `[${sanitizeIdentity(options.persona) ?? "assistant"}] ${message}`
 				try {
 					surface.notify(prefixed, level)
 					return
@@ -374,11 +376,12 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 		if (options.role !== "worker") return undefined
 		const requestPermission = getParentSurface(options.parentSessionId)?.requestPermission
 		if (!requestPermission) return undefined
-		const origin: PermissionOrigin = {
-			persona: options.persona,
-			agentId: options.agentId,
-			description: options.description,
-		}
+		const origin: PermissionOrigin =
+			sanitizePermissionOrigin({
+				persona: options.persona,
+				agentId: options.agentId,
+				description: options.description,
+			}) ?? {}
 		let releaseHold = () => {}
 		try {
 			releaseHold = holdAgentWorkerInactivity()
@@ -398,12 +401,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 				worker: true,
 				promptQueue,
 				prompter: { request: (request) => requestPermission({ ...request, origin }) },
-				// An approval selector can appear while the user is typing. Keep deny
-				// first so an unrelated Enter cannot accidentally allow a worker call.
-				choices: [
-					...choices.filter((choice) => choice.kind === "deny"),
-					...choices.filter((choice) => choice.kind !== "deny"),
-				],
+				// Keep the main session's option order. The parent TUI waits for
+				// an idle editor instead of relying on deny-first ordering.
+				choices,
 			})
 			return { result }
 		} catch {
@@ -463,6 +463,7 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 	 *  return; entries never survive the tool call's evaluation. */
 	const pendingModeChangeDismissals = new Map<string, ModeChangeReason[]>()
 	let unsubscribeTerminalInput: (() => void) | null = null
+	let lastTerminalInputAt = Number.NEGATIVE_INFINITY
 	let unsubscribePermissionFlagController: (() => void) | undefined
 	let unregisterMainPolicy: (() => void) | undefined
 	let workerMode: PermissionModeState | undefined
@@ -923,6 +924,7 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 		if (unsubscribeTerminalInput) unsubscribeTerminalInput()
 		if (ctx.hasUI) {
 			unsubscribeTerminalInput = ctx.ui.onTerminalInput((data) => {
+				lastTerminalInputAt = Date.now()
 				if (matchesKey(data, "shift+tab")) {
 					// Defer to a foreground UI that is forwarding raw terminal input
 					// (e.g. the teleport overlay), so its consumer sees Shift+Tab.
@@ -1035,7 +1037,10 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 					// queue ownership and withBlocked side effects — not the worker that
 					// happened to invoke this surface through its async chain.
 					runOutsideWorkerContext(async () => {
-						const prompter = resolvePrompter(ctx)
+						const interactive = ctx.mode === "tui" && ctx.hasUI
+						const prompter = interactive
+							? createEscalatedTerminalPrompter(ctx, () => lastTerminalInputAt)
+							: resolvePrompter(ctx)
 						if (!prompter) {
 							return Promise.reject(new Error("permissions: parent session has no prompt surface"))
 						}
@@ -1060,7 +1065,11 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 										ESCALATED_PROMPT_TIMEOUT_MS,
 									)
 									try {
-										const outcome = await prompter.request({ ...req, signal: controller.signal })
+										const outcome = await prompter.request({
+										...req,
+										signal: controller.signal,
+										origin: sanitizePermissionOrigin(req.origin),
+									})
 										// A user- or client-initiated mode change returns through the
 										// worker's outer gate so its policy is evaluated again.
 										if (outcome.kind === "aborted" && controller.signal.reason === MODE_CHANGED_ABORT_ERROR) {
