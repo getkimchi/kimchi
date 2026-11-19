@@ -42,12 +42,15 @@ test("an unparseable agent file collapses to one line that expands via ctrl+o", 
 			await waitForText(terminal, NOTICE, { full: true })
 			await waitForText(terminal, "(ctrl+o to expand)", { full: true })
 			expect(fullText(terminal)).not.toContain("broken-agent.md")
-			// Column 1, flush with pi's own "Warning:" notices.
+			// Column 1, flush with pi's own "Warning:" notices, with the closed
+			// marker trailing the sentence.
 			expect(fullText(terminal)).toMatch(/^ Warning: Skipped 1 agent file/m)
+			await waitForText(terminal, "(not loaded) ▸", { full: true })
 			trace.step("startup collapsed the skipped agent file into one line")
 
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, "(ctrl+o to collapse)", { full: true })
+			await waitForText(terminal, "(not loaded) ▾", { full: true })
 			await waitForText(terminal, "broken-agent.md", { full: true })
 			await waitForText(terminal, "Fix the YAML frontmatter to load them.", { full: true })
 			trace.step("ctrl+o expanded the per-file detail")

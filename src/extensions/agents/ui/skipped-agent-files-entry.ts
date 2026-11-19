@@ -61,20 +61,32 @@ const WRAP_MIN_WIDTH = 20
  */
 const LEFT_PAD = " "
 
-function headerLine(left: string, expanded: boolean, theme: LineTheme, width: number): string {
-	// Reserve the hint's width first so it stays visible on narrow terminals —
-	// only the summary text truncates.
+/**
+ * Disclosure markers. The small triangles are one cell wide in every terminal;
+ * the large `▶` is ambiguous-width, can render as an emoji, and already means
+ * "in progress" in the todos widget. The marker trails the sentence: in front
+ * it would push "Warning:" off column 1, out of line with pi's own "Warning:"
+ * notices right above.
+ */
+const COLLAPSED_MARKER = "▸"
+const EXPANDED_MARKER = "▾"
+
+function headerLine(sentence: string, expanded: boolean, theme: LineTheme, width: number): string {
+	// Reserve the hint's width first, then the marker's, so both stay visible
+	// on narrow terminals — only the sentence truncates.
 	const hint = theme.fg("dim", `(${keyText("app.tools.expand")} to ${expanded ? "collapse" : "expand"})`)
 	const hintWidth = visibleWidth(hint)
+	const marker = ` ${expanded ? EXPANDED_MARKER : COLLAPSED_MARKER}`
 	const maxLeft = width - hintWidth - 2
 	// Warning colour on the header only: the detail rows below stay plain so a
-	// notice can be long and still readable. truncateToWidth is ANSI-aware, so
-	// truncating the painted text keeps the reset.
-	const painted = theme.fg("warning", left)
+	// notice can be long and still readable. truncateToWidth is ANSI-aware and
+	// ends a cut string with a colour reset, so the marker is painted on its
+	// own — appended to the same span it would lose the colour after a cut.
+	const painted = theme.fg("warning", sentence)
 	if (maxLeft < 4) return truncateToWidth(painted, width)
-	const truncated = truncateToWidth(painted, maxLeft)
-	const pad = Math.max(0, width - visibleWidth(truncated) - hintWidth)
-	return truncated + " ".repeat(pad) + hint
+	const left = truncateToWidth(painted, maxLeft - visibleWidth(marker)) + theme.fg("warning", marker)
+	const pad = Math.max(0, width - visibleWidth(left) - hintWidth)
+	return left + " ".repeat(pad) + hint
 }
 
 /**
@@ -111,14 +123,17 @@ class SkippedAgentFilesLine implements Component {
 	) {}
 
 	private get summary(): string {
-		// Same sentence as the plain warning, so the surfaces cannot drift.
+		// Same sentence as the plain warning, so the surfaces cannot drift. The
+		// header adds a marker after it that says the line opens, in every mode
+		// — a "click" hint would be false in regular mode, which has no mouse.
 		return `Warning: ${formatSkippedAgentFilesSummary(this.files.length)}`
 	}
 
 	render(width: number): string[] {
 		const contentWidth = width - LEFT_PAD.length
 		if (contentWidth < 1) return []
-		// The header text does not change when expanded — only the hint does.
+		// The sentence does not change when expanded — only the marker and the
+		// hint do — so the count stays visible while reading the details.
 		const lines = [headerLine(this.summary, this.expanded, this.theme, contentWidth)]
 		if (this.expanded) {
 			for (const { path, reason } of this.files) lines.push(...rowLines(path, reason, contentWidth))

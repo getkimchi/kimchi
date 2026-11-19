@@ -45,6 +45,8 @@ describe("skipped agent files entry", () => {
 		// Column 1, like pi's own "Warning:" notices — a custom entry is
 		// otherwise drawn at column 0 and reads one cell left of them.
 		expect(lines?.[0]?.startsWith(" Warning: Skipped 1 agent file")).toBe(true)
+		// The marker trails the sentence and points right while it is closed.
+		expect(lines?.[0]).toContain("(not loaded) ▸ ")
 		// The hint is right-aligned: it ends at the terminal edge.
 		expect(visibleWidth(lines?.[0] ?? "")).toBe(120)
 		expect(lines?.[0]?.endsWith(EXPAND)).toBe(true)
@@ -58,6 +60,18 @@ describe("skipped agent files entry", () => {
 		expect(visibleWidth(lines[0])).toBe(80)
 		expect(lines[0]).toContain(EXPAND)
 		expect(lines[0]).not.toContain("(not loaded)")
+		// The marker keeps its place: only the sentence gives way.
+		expect(lines[0]).toContain(" ▸ ")
+	})
+
+	it("keeps the marker in the warning colour when the sentence is cut", () => {
+		// A cut string ends with a colour reset; a marker appended to the same
+		// span would fall back to the default colour.
+		const paint = { fg: (colour: string, text: string) => `<${colour}>${text}</${colour}>` } as never
+		const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+		const line = renderer(entry({ token: "start-1", files: one }), { expanded: false }, paint)?.render(80)[0]
+
+		expect(line).toContain("<warning> ▸</warning>")
 	})
 
 	it("pluralizes the count", () => {
@@ -72,9 +86,10 @@ describe("skipped agent files entry", () => {
 	it("expands to the header, one line per file and the fix line", () => {
 		const lines = render({ token: "start-1", files: one }, { expanded: true }) ?? []
 
-		// The header text is the same collapsed or expanded — only the hint
-		// changes, so the count stays visible while reading the details.
+		// The sentence is the same collapsed or expanded — only the marker and
+		// the hint change, so the count stays visible while reading the details.
 		expect(lines[0].startsWith(" Warning: Skipped 1 agent file")).toBe(true)
+		expect(lines[0]).toContain(" ▾ ")
 		expect(lines[0]).toContain(COLLAPSE)
 		expect(lines.slice(1)).toEqual([
 			"   .kimchi/agents/a.md — unexpected end of the stream",
@@ -88,10 +103,12 @@ describe("skipped agent files entry", () => {
 		renderer(entry({ token: "start-1", files: one }), { expanded: true }, { fg } as never)?.render(80)
 
 		const colours = fg.mock.calls.map(([colour]) => colour)
-		expect(colours.filter((colour) => colour === "warning")).toHaveLength(1)
+		// The sentence and its marker, painted separately so a truncated
+		// sentence cannot strip the marker's colour.
+		expect(colours.filter((colour) => colour === "warning")).toHaveLength(2)
 		expect(colours.filter((colour) => colour === "dim")).toHaveLength(1)
 		// Nothing else is painted: the rows and the fix line stay default colour.
-		expect(colours).toHaveLength(2)
+		expect(colours).toHaveLength(3)
 	})
 
 	describe("narrow terminals", () => {
@@ -162,10 +179,12 @@ describe("skipped agent files entry", () => {
 			expect(line?.handleMouse?.(mouse())).toEqual({ handled: true })
 			expect(isExpanded(line?.render(120))).toBe(true)
 			expect(line?.render(120)[0]).toContain(COLLAPSE)
+			expect(line?.render(120)[0]).toContain("(not loaded) ▾")
 
 			expect(line?.handleMouse?.(mouse())).toEqual({ handled: true })
 			expect(isExpanded(line?.render(120))).toBe(false)
 			expect(line?.render(120)[0]).toContain(EXPAND)
+			expect(line?.render(120)[0]).toContain("(not loaded) ▸")
 		})
 
 		it("leaves presses, releases and other buttons to text selection and paste", () => {
