@@ -625,9 +625,18 @@ ${skillLines}`
 
 	const agentDir = getAgentDir()
 
+	// Construct the gate before the resource loader: a failed import or
+	// initialization must prevent the child from running unchecked.
+	const parentSessionId = ctx.sessionManager.getSessionId()
+	const { createWorkerPermissionsExtension } = await import("../../permissions/index.js")
+	const workerPermissionsExtension = createWorkerPermissionsExtension({
+		parentSessionId,
+		persona: agentConfig?.name ?? type,
+	})
 	const extensionFactories = buildInlineExtensionFactories({
 		effectiveMaxDuration,
 		type,
+		workerPermissionsExtension,
 		model,
 		toolNames,
 		workerReport: options.workerReport,
@@ -1056,6 +1065,8 @@ export interface InlineExtensionFactoryDeps {
 	effectiveMaxDuration: number
 	/** Subagent persona type — labels the bash clamp telemetry. */
 	type: SubagentType
+	/** Fully constructed worker gate, appended after every tool provider. */
+	workerPermissionsExtension: InlineExtension
 	/** Resolved run model; an auto-routed model adds the routing + prompt-rebuild factories. */
 	model: Model<Api> | undefined
 	/** Persona tool allowlist; debug_/step_ tool names gate the DAP extension via shouldRegisterDapForTools. */
@@ -1173,6 +1184,9 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 			createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd, suppressWarnings: true, lazyGatewayConnect: true }),
 		)
 	}
+	// The caller constructs this before loader initialization so a load failure
+	// cannot be swallowed into an unchecked child. Isolation never disables the gate.
+	extensionFactories.push(deps.workerPermissionsExtension)
 	return extensionFactories
 }
 
