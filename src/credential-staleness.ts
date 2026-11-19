@@ -175,6 +175,7 @@ function clearPersistentRejection(
 	providerId: string,
 	statePath: string | undefined,
 	retainedFingerprint?: string,
+	clearedFingerprints?: ReadonlySet<string>,
 ): void {
 	const path = rejectionsPath(statePath)
 	if (!path) return
@@ -183,8 +184,17 @@ function clearPersistentRejection(
 			if (!(providerId in state.providers)) return state
 			const rejected = state.providers[providerId]
 			const retained =
-				retainedFingerprint === undefined ? [] : rejected.filter((value) => value === retainedFingerprint)
-			if (retainedFingerprint !== undefined && retained.length === rejected.length) return state
+				retainedFingerprint !== undefined
+					? rejected.filter((value) => value === retainedFingerprint)
+					: clearedFingerprints !== undefined
+						? rejected.filter((value) => !clearedFingerprints.has(value))
+						: []
+			const hasScopedFilter = retainedFingerprint !== undefined || clearedFingerprints !== undefined
+			if (hasScopedFilter && retained.length === rejected.length) {
+				// Filtering only removes values and preserves order. An equal-length
+				// subset therefore has identical contents and needs no disk write.
+				return state
+			}
 			const providers = { ...state.providers }
 			if (retained.length > 0) providers[providerId] = retained
 			else delete providers[providerId]
@@ -199,6 +209,23 @@ function clearPersistentRejection(
 export function clearCredentialStale(providerId: string, statePath?: string): void {
 	stalenessByProvider.delete(providerId)
 	clearPersistentRejection(providerId, statePath)
+}
+
+/** A persisted refresh retires anonymous/provider state and only the rotated OAuth values. */
+export function clearRefreshedCredentialStale(
+	previousApiKey: string | undefined,
+	apiKey: string,
+	providerId: string,
+	statePath?: string,
+): void {
+	const clearedFingerprints = new Set([previousApiKey, apiKey].filter((value) => value !== undefined).map(fingerprint))
+	const entry = stalenessByProvider.get(providerId)
+	if (entry) {
+		entry.providerStale = false
+		for (const value of clearedFingerprints) entry.staleKeys.delete(value)
+		if (entry.staleKeys.size === 0) stalenessByProvider.delete(providerId)
+	}
+	clearPersistentRejection(providerId, statePath, undefined, clearedFingerprints)
 }
 
 /** Start a login without turning an unverified cached refresh into success.

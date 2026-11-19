@@ -572,6 +572,18 @@ function configFromCredential(credential: OAuthCredentials): TokenFlowConfig {
 	}
 }
 
+type KimchiOAuthRefreshFailureCategory = "invalid_grant" | "http_5xx" | "http_error" | "timeout" | "network" | "local"
+
+function refreshFailureCategory(error: unknown, signal: AbortSignal): KimchiOAuthRefreshFailureCategory {
+	if (signal.aborted && signal.reason instanceof Error && signal.reason.name === "TimeoutError") return "timeout"
+	if (!(error instanceof OAuthTokenError)) return "local"
+	if (error.code === "invalid_grant") return "invalid_grant"
+	if (error.status !== undefined && error.status >= 500) return "http_5xx"
+	if (error.status !== undefined) return "http_error"
+	if (error.message.includes("timed out after")) return "timeout"
+	return "network"
+}
+
 /**
  * Renew a stored credential with its refresh token (grant_type=refresh_token).
  * Rotation: a new refresh_token in the response replaces the stored one; when
@@ -583,20 +595,29 @@ function configFromCredential(credential: OAuthCredentials): TokenFlowConfig {
  * credential-store lock and persists the returned credential itself.
  */
 export async function refreshKimchiOauth(credential: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
-	const config = configFromCredential(credential)
-	const previous = credential as OAuthCredentials & Partial<KimchiCredentialExtras>
+	console.info({ event: "kimchi.oauth.refresh", outcome: "started" })
+	try {
+		const config = configFromCredential(credential)
+		const previous = credential as OAuthCredentials & Partial<KimchiCredentialExtras>
 
-	const token = await postTokenRequest(
-		config.tokenUrl,
-		{
-			grant_type: "refresh_token",
-			client_id: config.clientId,
-			refresh_token: requireTokenField(credential.refresh, "refresh_token"),
-			...(config.audience ? { audience: config.audience } : {}),
-		},
-		signal,
-	)
-	return credentialFromTokenResponse(token, config, previous)
+		const token = await postTokenRequest(
+			config.tokenUrl,
+			{
+				grant_type: "refresh_token",
+				client_id: config.clientId,
+				refresh_token: requireTokenField(credential.refresh, "refresh_token"),
+				...(config.audience ? { audience: config.audience } : {}),
+			},
+			signal,
+		)
+		const refreshed = credentialFromTokenResponse(token, config, previous)
+		console.info({ event: "kimchi.oauth.refresh", outcome: "succeeded" })
+		return refreshed
+	} catch (error) {
+		// Fixed categories only: errors may contain endpoint URLs or issuer-provided text.
+		console.error({ event: "kimchi.oauth.refresh", outcome: "failed", category: refreshFailureCategory(error, signal) })
+		throw error
+	}
 }
 
 /** The bearer string requests send — what `credentialFromTokenResponse` selected. */

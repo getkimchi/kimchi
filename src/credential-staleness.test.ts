@@ -9,6 +9,7 @@ import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	clearCredentialStale,
+	clearRefreshedCredentialStale,
 	isAuthRejectedMessage,
 	isCredentialStale,
 	markCredentialStale,
@@ -94,6 +95,34 @@ describe("persistent credential rejections", () => {
 
 		expect(isCredentialStale("dead-key", "kimchi-dev", statePath)).toBe(false)
 		expect(isCredentialStale("other-key", "other-provider", statePath)).toBe(true)
+	})
+
+	it("clears only rotated OAuth values after a persisted refresh", () => {
+		markCredentialStale("old-oauth-token", "kimchi-dev", statePath)
+		markCredentialStale("new-oauth-token", "kimchi-dev", statePath)
+		markCredentialStale("unrelated-api-key", "kimchi-dev", statePath)
+		markCredentialStale(undefined, "kimchi-dev")
+
+		clearRefreshedCredentialStale("old-oauth-token", "new-oauth-token", "kimchi-dev", statePath)
+		resetCredentialStalenessForTests()
+
+		expect(isCredentialStale(undefined, "kimchi-dev", statePath)).toBe(false)
+		expect(isCredentialStale("old-oauth-token", "kimchi-dev", statePath)).toBe(false)
+		expect(isCredentialStale("new-oauth-token", "kimchi-dev", statePath)).toBe(false)
+		expect(isCredentialStale("unrelated-api-key", "kimchi-dev", statePath)).toBe(true)
+	})
+
+	it("does not rewrite the sidecar when refresh-scoped clearing matches nothing", () => {
+		markCredentialStale("rejected-key", "kimchi-dev", statePath)
+		const original = readFileSync(statePath, "utf8")
+		const mtimeNs = statSync(statePath, { bigint: true }).mtimeNs
+
+		clearRefreshedCredentialStale("unknown-old-token", "unknown-new-token", "kimchi-dev", statePath)
+		resetCredentialStalenessForTests()
+
+		expect(readFileSync(statePath, "utf8")).toBe(original)
+		expect(statSync(statePath, { bigint: true }).mtimeNs).toBe(mtimeNs)
+		expect(isCredentialStale("rejected-key", "kimchi-dev", statePath)).toBe(true)
 	})
 
 	it("retains only the presented credential's persisted rejection when preparing a repeated login", () => {
