@@ -206,7 +206,7 @@ import {
 } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { THINKING_LEVEL_DESCRIPTIONS } from "../../thinking-levels.js"
-import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { AVAILABLE_EXT_METHODS, AVAILABLE_EXT_NOTIFICATIONS, CAPABILITIES_KEY } from "./capabilities.js"
 import { COMPACT_COMMAND_ENTRY_TYPE } from "./commands.js"
 import type { SsoFlowManager } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
@@ -8355,9 +8355,10 @@ describe("routed model notifications", () => {
 		}
 
 		await runTurn(agent, "session-routed-7")
-		expect(extNotifications.filter((n) => n.method === "_kimchi.dev/routed_model")).toEqual([
+		const routedModel = AVAILABLE_EXT_NOTIFICATIONS.routed_model
+		expect(extNotifications.filter((n) => n.method === routedModel)).toEqual([
 			{
-				method: "_kimchi.dev/routed_model",
+				method: routedModel,
 				params: {
 					sessionId: "session-routed-7",
 					requestedId: "kimchi-dev/auto",
