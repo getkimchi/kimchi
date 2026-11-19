@@ -319,6 +319,36 @@ Subagents cannot spawn further subagents. The `Agent`, `get_subagent_result`,
 and `steer_subagent` tools are filtered out of any spawned agent's tool set,
 preventing fork-bombs and runaway delegation chains.
 
+## Permissions
+
+In-process subagents, including isolated and resumed agents, follow the spawning
+session's permission mode and rules. Config-file rules, `--allow-tool` and
+`--deny-tool` rules, and rules remembered during the session all apply. Mode
+changes are read live: if the main session enters plan mode, subsequent calls
+from a running subagent are read-only too. `skill`, todo reconciliation, web
+reads, read-only MCP calls, inspection-only debugger results, and the Ferment
+worker-report tool remain available as control-plane or read-only operations.
+
+A subagent cannot open its own approval prompt. In `default` and `auto` modes,
+an otherwise unapproved non-read-only call therefore goes through the classifier;
+it runs only when the classifier returns `safe`. A non-safe verdict or classifier
+failure blocks the call and tells the subagent not to retry it, but to report that
+the main agent needs the user's approval. This adds a classifier request for each
+such call that reaches the permission decision. Plan mode blocks writes and
+non-read-only bash. Debugger launch/continue/step controls are execution, not
+reads, and therefore use the classifier in `default` and `auto`; only stopped
+session inspection such as `debug_locals` and `debug_backtrace` is read-only.
+Yolo mode still enforces deny rules and hard-blocked bash unless the main
+session has the dangerous full bypass enabled. As in a non-promptable main
+session, well-formed `kimchi doc-cli` commands use their deterministic
+first-party shortcut; in `default` mode that includes mutating subcommands.
+
+The same behavior applies on TUI, print mode, and ACP; no ACP permission request
+is sent for a subagent's own call. After `/branch` or `/clone`, a running child
+whose old parent policy has gone away keeps its last policy snapshot rather than
+falling back to allow. Remote sandbox agents are separate: they run in another
+process with that process's permission gate.
+
 ## Remote runs and session replacement
 
 Forking the session (`/branch`, `/clone`) hands running local subagents over

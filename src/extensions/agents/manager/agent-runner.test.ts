@@ -9,6 +9,7 @@ import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
 import codexCorrelationExtension from "../../login/codex-correlation-extension.js"
+import { createWorkerPermissionsExtension } from "../../permissions/index.js"
 import * as diagnostics from "../../work-attribution/diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
 import { createWorkAttributionExtension, type WorkSegment } from "../../work-attribution.js"
@@ -44,6 +45,12 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		getAgentDir: vi.fn(() => process.env.PI_CODING_AGENT_DIR),
 	}
 })
+
+// The gate's behavior is covered by the permissions suite. Stub its module so
+// runner tests do not import the main-session editor and planning UI graph.
+vi.mock("../../permissions/index.js", () => ({
+	createWorkerPermissionsExtension: vi.fn(() => function workerPermissionsStub() {}),
+}))
 
 vi.mock("../../env.js", () => ({
 	detectEnv: vi.fn().mockResolvedValue({ os: "linux", shell: "bash" }),
@@ -225,6 +232,7 @@ const mockGetCurrentPhase = vi.mocked(getCurrentPhase)
 const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
 const mockCreateWorkAttributionExtension = vi.mocked(createWorkAttributionExtension)
 const mockCreateWorkerReportExtension = vi.mocked(createWorkerReportExtension)
+const mockCreateWorkerPermissionsExtension = vi.mocked(createWorkerPermissionsExtension)
 const mockCreateSubagentBashClampExtension = vi.mocked(createSubagentBashClampExtension)
 const mockCreateKimchiMcpAdapterExtension = vi.mocked(createKimchiMcpAdapterExtension)
 
@@ -449,11 +457,15 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(6)
+		expect(ctorArg?.extensionFactories).toHaveLength(7)
 		expect(ctorArg?.extensionFactories).toContain(codexCorrelationExtension)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
+		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith({
+			parentSessionId: ctx.sessionManager.getSessionId(),
+			persona: "General-Purpose",
+		})
 		const childApi = createExtensionApi()
 		await runInlineExtension(ctorArg?.extensionFactories?.[1], childApi.api)
 		const child = createContext({ cwd: attributionDir, sessionManager: { getSessionId: () => "child-segment" } })
@@ -464,6 +476,20 @@ describe("runAgent — telemetry extension", () => {
 		expect(readWorkRecords(attributionDir)).toContainEqual(
 			expect.objectContaining({ type: "request", sessionId: "child-segment", segment }),
 		)
+	})
+
+	it("fails before loader initialization when the worker gate cannot be constructed", async () => {
+		mockCreateWorkerPermissionsExtension.mockImplementationOnce(() => {
+			throw new Error("gate initialization failed")
+		})
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("gate initialization failed")
+		expect(mockDefaultResourceLoader).not.toHaveBeenCalled()
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 
 	describe("subagent telemetry policy", () => {
@@ -535,7 +561,7 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(6)
+		expect(ctorArg?.extensionFactories).toHaveLength(7)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
@@ -593,7 +619,7 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
-		expect(ctorArg?.extensionFactories).toHaveLength(7)
+		expect(ctorArg?.extensionFactories).toHaveLength(8)
 		expect(ctorArg?.extensionFactories).toContain(dapExtension)
 		// The debug tool names must flow into the child session's tool allowlist so the
 		// SDK activates them once the dap extension registers them on session_start.
@@ -671,8 +697,8 @@ describe("runAgent — telemetry extension", () => {
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
 		// Counts include the two bundled web-tool factories appended after the
 		// builder's list (extensions: true → inherited via registration).
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(10)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(9)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(11)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(10)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -2759,6 +2785,7 @@ describe("formatRunResultText", () => {
 })
 
 describe("buildInlineExtensionFactories", () => {
+	const WORKER_PERMISSIONS_EXTENSION: InlineExtension = () => {}
 	const DEBUG_TOOL_NAMES = ["read", "grep", "debug_state_at", "debug_launch", "step_in"]
 	const CONCRETE_MODEL: Model<Api> = { ...AUTO_MODEL, provider: "kimchi-dev", id: "gemini-3-pro" }
 	let agentDir: string
@@ -2767,6 +2794,7 @@ describe("buildInlineExtensionFactories", () => {
 		return {
 			effectiveMaxDuration: 900,
 			type: "General-Purpose",
+			workerPermissionsExtension: WORKER_PERMISSIONS_EXTENSION,
 			model: undefined,
 			toolNames: ["read", "bash"],
 			workerReport: undefined,
@@ -2830,8 +2858,8 @@ describe("buildInlineExtensionFactories", () => {
 			codexCorrelationExtension,
 			dapExtension,
 			workerReportFactory,
-			// MCP adapter — appended last for non-isolated children (LLM-4465).
 			mockCreateKimchiMcpAdapterExtension.mock.results[0].value,
+			WORKER_PERMISSIONS_EXTENSION, // worker permission gate — always last
 		])
 		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
@@ -2845,11 +2873,11 @@ describe("buildInlineExtensionFactories", () => {
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledTimes(1)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith(null, undefined)
 		const attributionFactory = mockCreateWorkAttributionExtension.mock.results[0].value
-		expect(enabled).toHaveLength(7)
+		expect(enabled).toHaveLength(8)
 		expect(enabled).toContain(attributionFactory)
 
 		const disabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: false }))
-		expect(disabled).toHaveLength(6)
+		expect(disabled).toHaveLength(7)
 		expect(disabled).not.toContain(attributionFactory)
 	})
 
@@ -2871,13 +2899,13 @@ describe("buildInlineExtensionFactories", () => {
 		const routed = buildInlineExtensionFactories(makeDeps({ model: AUTO_MODEL }))
 		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
 		expect(routed).toContain(autoRoutingFactory)
-		expect(routed).toHaveLength(8)
+		expect(routed).toHaveLength(9)
 
 		mockCreateAutoModelRoutingExtension.mockClear()
 		const concrete = buildInlineExtensionFactories(makeDeps({ model: CONCRETE_MODEL }))
 		expect(mockCreateAutoModelRoutingExtension).not.toHaveBeenCalled()
 		expect(concrete).not.toContain(autoRoutingFactory)
-		expect(concrete).toHaveLength(6)
+		expect(concrete).toHaveLength(7)
 	})
 
 	it("registers the dap extension exactly when shouldRegisterDapForTools admits the tool names", () => {
@@ -2885,6 +2913,11 @@ describe("buildInlineExtensionFactories", () => {
 		expect(buildInlineExtensionFactories(makeDeps({ toolNames: DEBUG_TOOL_NAMES }))).toContain(dapExtension)
 		expect(shouldRegisterDapForTools(["read", "bash"])).toBe(false)
 		expect(buildInlineExtensionFactories(makeDeps({ toolNames: ["read", "bash"] }))).not.toContain(dapExtension)
+	})
+
+	it.each([true, false])("includes the constructed worker gate (extensions=%s)", (effectiveExtensions) => {
+		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions }))
+		expect(factories.at(-1)).toBe(WORKER_PERMISSIONS_EXTENSION)
 	})
 
 	it("registers the worker-report extension only when a capability is provided", () => {
@@ -2926,7 +2959,7 @@ describe("buildInlineExtensionFactories", () => {
 		const factories = buildInlineExtensionFactories(makeDeps({ mcpAppsEnabled: false }))
 
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(factories).toHaveLength(5)
+		expect(factories).toHaveLength(6)
 	})
 
 	it("omits the MCP adapter factory for allowlists that exclude MCP", () => {
@@ -2934,21 +2967,21 @@ describe("buildInlineExtensionFactories", () => {
 		// servers) only to filter its tool out afterwards.
 		const unrelated = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["unrelated"] }))
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(unrelated).toHaveLength(5) // telemetry, request-timing, bash default timeout, infrastructure breaker, codex correlation
+		expect(unrelated).toHaveLength(6) // core factories + lazy worker permission gate
 
 		// The worker-report edge: workerReport + extensions:false resolves to
 		// [], which no longer registers the adapter either.
 		mockCreateKimchiMcpAdapterExtension.mockClear()
 		const emptyArray = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: [] }))
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(emptyArray).toHaveLength(5)
+		expect(emptyArray).toHaveLength(6)
 	})
 
 	it("omits the MCP adapter factory for isolated children (effectiveExtensions false)", () => {
 		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: false }))
 
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(factories).toHaveLength(5) // telemetry, request-timing, bash default timeout, infrastructure breaker, codex correlation
+		expect(factories).toHaveLength(6) // core factories + lazy worker permission gate
 	})
 
 	it("passes the effective cwd to the MCP adapter factory", () => {
