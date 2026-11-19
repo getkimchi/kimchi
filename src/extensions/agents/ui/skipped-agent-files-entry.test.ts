@@ -1,5 +1,5 @@
 import type { CustomEntry } from "@earendil-works/pi-coding-agent"
-import { visibleWidth } from "@earendil-works/pi-tui"
+import { type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import {
 	createSkippedAgentFilesRenderer,
@@ -13,10 +13,10 @@ const theme = { fg: (_color: string, text: string) => text } as never
 const EXPAND = "to expand)"
 const COLLAPSE = "to collapse)"
 
-function entry(data: unknown): CustomEntry<SkippedAgentFilesEntryData> {
+function entry(data: unknown, id = "entry-1"): CustomEntry<SkippedAgentFilesEntryData> {
 	return {
 		type: "custom",
-		id: "entry-1",
+		id,
 		parentId: null,
 		timestamp: "2026-11-18T00:00:00.000Z",
 		customType: SKIPPED_AGENT_FILES_ENTRY,
@@ -146,6 +146,88 @@ describe("skipped agent files entry", () => {
 
 			// Header, one row, one fix line — no dozens of wrapped fragments.
 			expect(lines).toHaveLength(3)
+		})
+	})
+
+	describe("click to toggle", () => {
+		const data = { token: "start-1", files: one }
+		const mouse = (overrides: Partial<TuiMouseEvent> = {}) =>
+			({ type: "click", button: "left", x: 3, y: 0, ...overrides }) as TuiMouseEvent
+		const isExpanded = (lines: string[] | undefined) => (lines ?? []).some((line) => line.includes("a.md"))
+
+		it("expands on a left click and collapses on the next one", () => {
+			const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+			const line = renderer(entry(data), { expanded: false }, theme)
+
+			expect(line?.handleMouse?.(mouse())).toEqual({ handled: true })
+			expect(isExpanded(line?.render(120))).toBe(true)
+			expect(line?.render(120)[0]).toContain(COLLAPSE)
+
+			expect(line?.handleMouse?.(mouse())).toEqual({ handled: true })
+			expect(isExpanded(line?.render(120))).toBe(false)
+			expect(line?.render(120)[0]).toContain(EXPAND)
+		})
+
+		it("leaves presses, releases and other buttons to text selection and paste", () => {
+			const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+			const line = renderer(entry(data), { expanded: false }, theme)
+
+			expect(line?.handleMouse?.(mouse({ type: "press" }))).toBeUndefined()
+			expect(line?.handleMouse?.(mouse({ type: "release" }))).toBeUndefined()
+			expect(line?.handleMouse?.(mouse({ button: "right" }))).toBeUndefined()
+			expect(isExpanded(line?.render(120))).toBe(false)
+		})
+
+		it("keeps the clicked state when pi rebuilds the component", () => {
+			// pi re-runs the renderer on invalidate (theme change, resize): the
+			// state must come back from the renderer, not the discarded component.
+			const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+			renderer(entry(data), { expanded: false }, theme)?.handleMouse?.(mouse())
+
+			expect(isExpanded(renderer(entry(data), { expanded: false }, theme)?.render(120))).toBe(true)
+		})
+
+		it("toggles only the clicked notice", () => {
+			const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+			renderer(entry(data, "entry-1"), { expanded: false }, theme)?.handleMouse?.(mouse())
+
+			expect(isExpanded(renderer(entry(data, "entry-1"), { expanded: false }, theme)?.render(120))).toBe(true)
+			expect(isExpanded(renderer(entry(data, "entry-2"), { expanded: false }, theme)?.render(120))).toBe(false)
+		})
+
+		// Click and ctrl+o share one state: whichever comes next flips the
+		// notice, so the "(ctrl+o to …)" hint never lies. `expanded` below is
+		// pi's shared toggle, which each ctrl+o press inverts.
+		it("closes with ctrl+o after being clicked open", () => {
+			const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+			renderer(entry(data), { expanded: false }, theme)?.handleMouse?.(mouse())
+
+			const afterCtrlO = renderer(entry(data), { expanded: true }, theme)?.render(120)
+			expect(isExpanded(afterCtrlO)).toBe(false)
+			expect(afterCtrlO?.[0]).toContain(EXPAND)
+			// …and the next press opens it again.
+			expect(isExpanded(renderer(entry(data), { expanded: false }, theme)?.render(120))).toBe(true)
+		})
+
+		it("closes with a click after being opened with ctrl+o", () => {
+			const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+			const opened = renderer(entry(data), { expanded: true }, theme)
+			expect(isExpanded(opened?.render(120))).toBe(true)
+
+			opened?.handleMouse?.(mouse())
+			expect(isExpanded(opened?.render(120))).toBe(false)
+			// The click survives a rebuild, and ctrl+o then reopens the notice.
+			expect(isExpanded(renderer(entry(data), { expanded: true }, theme)?.render(120))).toBe(false)
+			expect(isExpanded(renderer(entry(data), { expanded: false }, theme)?.render(120))).toBe(true)
+		})
+
+		it("falls back in step with ctrl+o after a second click", () => {
+			const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+			renderer(entry(data), { expanded: false }, theme)?.handleMouse?.(mouse())
+			renderer(entry(data), { expanded: false }, theme)?.handleMouse?.(mouse())
+
+			expect(isExpanded(renderer(entry(data), { expanded: false }, theme)?.render(120))).toBe(false)
+			expect(isExpanded(renderer(entry(data), { expanded: true }, theme)?.render(120))).toBe(true)
 		})
 	})
 

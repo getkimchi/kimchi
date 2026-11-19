@@ -7,6 +7,13 @@
  * layout mirrors the loaded-resources "skill issues" line — a one-line summary
  * that makes way for the per-file details only when expanded.
  *
+ * In fullscreen mode a left click toggles this notice alone. Click and ctrl+o
+ * drive one state: either one flips the notice, so the hint on the line is
+ * always what the key will do. pi rebuilds the component (re-running the
+ * renderer) on every ctrl+o and every invalidate, so that state lives in the
+ * renderer, keyed by entry id — not on the component, where the next rebuild
+ * would drop it.
+ *
  * Only the current session start is shown: every entry carries the token of the
  * start that appended it, and the renderer hides entries whose token is not the
  * current one. Entries written by earlier starts stay in the session file and
@@ -15,7 +22,14 @@
 
 import type { EntryRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { keyText } from "@earendil-works/pi-coding-agent"
-import { type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import {
+	type Component,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui"
 import {
 	formatSkippedAgentFileRow,
 	formatSkippedAgentFilesSummary,
@@ -91,8 +105,9 @@ function fixLines(width: number): string[] {
 class SkippedAgentFilesLine implements Component {
 	constructor(
 		private readonly files: { path: string; reason: string }[],
-		private readonly expanded: boolean,
+		private expanded: boolean,
 		private readonly theme: LineTheme,
+		private readonly onClickToggle: () => void,
 	) {}
 
 	private get summary(): string {
@@ -114,6 +129,18 @@ class SkippedAgentFilesLine implements Component {
 		return lines.map((line) => LEFT_PAD + line)
 	}
 
+	/**
+	 * Left click anywhere on the notice toggles it, leaving the rest of the
+	 * transcript as it is. Only fullscreen mode delivers mouse events; in
+	 * regular mode this is never called and ctrl+o is the way in.
+	 */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "click" || event.button !== "left") return undefined
+		this.expanded = !this.expanded
+		this.onClickToggle()
+		return { handled: true }
+	}
+
 	invalidate(): void {}
 }
 
@@ -121,16 +148,27 @@ class SkippedAgentFilesLine implements Component {
  * Build the entry renderer. `currentToken` returns the token of the session
  * start currently being rendered; the renderer hides notices from earlier
  * starts, so resuming a session does not stack one notice per resume.
+ *
+ * `flipped` holds the notices a click has put out of step with the shared
+ * ctrl+o toggle: such a notice shows the opposite of `options.expanded`. A
+ * click moves the entry in or out of the set and ctrl+o flips
+ * `options.expanded`, so both invert what is on screen — one state, two inputs.
+ * The cost is that a clicked notice then runs opposite to the tool blocks
+ * until it is clicked again.
  */
 export function createSkippedAgentFilesRenderer(
 	currentToken: () => string | undefined,
 ): EntryRenderer<SkippedAgentFilesEntryData> {
+	const flipped = new Set<string>()
 	return (entry, options, piTheme) => {
 		const data: unknown = entry.data
 		if (!isNoticeData(data)) return undefined
 		if (data.files.length === 0) return undefined
 		if (data.token !== currentToken()) return undefined
-		return new SkippedAgentFilesLine(data.files, options.expanded, piTheme)
+		const expanded = options.expanded !== flipped.has(entry.id)
+		return new SkippedAgentFilesLine(data.files, expanded, piTheme, () => {
+			if (!flipped.delete(entry.id)) flipped.add(entry.id)
+		})
 	}
 }
 

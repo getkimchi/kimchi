@@ -102,7 +102,8 @@ load, and kimchi reports the file and the YAML error once per session — when
 the session starts, when the `Agent` tool runs, and when `/agents` opens. In
 the TUI that report is a one-line warning in the warning colour
 (`Warning: Skipped N agent files with invalid frontmatter (not loaded)`) that
-lists the files with ctrl+o and collapses again the same way. A file that
+lists the files with ctrl+o and collapses again the same way. In fullscreen
+mode a click on the notice toggles it alone. A file that
 breaks later in the same session adds a second notice for the new file, while
 notices from earlier session starts stay hidden — resuming a session never
 stacks them. ACP and headless sessions get the plain warning text. A skipped

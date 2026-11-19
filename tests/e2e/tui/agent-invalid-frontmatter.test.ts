@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Shell, test } from "@microsoft/tui-test"
-import { fullText, STARTUP_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { fullText, STARTUP_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -54,6 +54,61 @@ test("an unparseable agent file collapses to one line that expands via ctrl+o", 
 
 			terminal.submit("Say hello")
 			await waitForText(terminal, "Still working.")
+			trace.step("session answers a prompt")
+		},
+	)
+})
+
+// Mouse events exist only in fullscreen mode (the binary default; the fixture
+// seeds "regular"), so this test pins it and reads the viewport, not scrollback.
+test("a click toggles only the skipped-files notice in fullscreen mode", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "agent-invalid-frontmatter-click",
+			providerId: "kimchi-dev/openai",
+			models: [{ slug: "ci-model", displayName: "CI model", provider: "openai" }],
+			initialModel: "ci-model",
+			responses: [{ stream: ["Still working."] }],
+			sessionTuiMode: "fullscreen",
+			seedHome(_homeDir, workDir) {
+				seedAgents(workDir, { "broken-agent.md": BROKEN })
+			},
+		},
+		async (_fixture, trace) => {
+			const clickNotice = () => {
+				const lines = viewText(terminal).split("\n")
+				const row = lines.findIndex((line) => line.includes("Warning: Skipped 1 agent file"))
+				expect(row).toBeGreaterThanOrEqual(0)
+				terminal.mousePress(lines[row].indexOf("Warning"), row)
+			}
+
+			await waitForText(terminal, NOTICE, { full: false })
+			await waitForText(terminal, "(ctrl+o to expand)", { full: false })
+			expect(viewText(terminal)).not.toContain("broken-agent.md")
+
+			clickNotice()
+			await waitForText(terminal, "(ctrl+o to collapse)", { full: false })
+			await waitForText(terminal, "broken-agent.md", { full: false })
+			await waitForText(terminal, "Fix the YAML frontmatter to load them.", { full: false })
+			trace.step("a click expanded the notice")
+
+			// Click and ctrl+o drive one state: the key closes what the click
+			// opened, and the click closes what the key opened.
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, (text) => !text.includes("broken-agent.md"), { full: false })
+			await waitForText(terminal, "(ctrl+o to expand)", { full: false })
+			trace.step("ctrl+o collapsed the clicked-open notice")
+
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, "broken-agent.md", { full: false })
+			clickNotice()
+			await waitForText(terminal, (text) => !text.includes("broken-agent.md"), { full: false })
+			await waitForText(terminal, "(ctrl+o to expand)", { full: false })
+			trace.step("a click collapsed the notice ctrl+o had opened")
+
+			terminal.submit("Say hello")
+			await waitForText(terminal, "Still working.", { full: false })
 			trace.step("session answers a prompt")
 		},
 	)
