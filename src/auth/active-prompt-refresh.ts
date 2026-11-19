@@ -31,13 +31,14 @@ import { rememberPreparedOAuthCredential } from "./short-lived-credential-handof
  */
 export async function prepareActivePromptKimchiCredential(
 	paths: RefreshAwareCredentialPaths,
-	installOAuth: (runtime: ModelRuntime) => void,
+	installOAuth: (runtime: ModelRuntime, owner?: object) => void,
 	activeProviderId = KIMCHI_PROVIDER_ID,
+	owner?: object,
 ): Promise<"ready" | "oauth_revoked" | "credential_sync_failed"> {
 	if (activeProviderId !== undefined && !isKimchiProvider(activeProviderId)) return "ready"
 	try {
 		if (readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)?.type !== "oauth") return "ready"
-		const resolution = await resolveRefreshAwareKimchiAuth(paths, installOAuth)
+		const resolution = await resolveRefreshAwareKimchiAuth(paths, installOAuth, owner)
 		const credential = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
 		if (credential?.type !== "oauth" || !resolution.auth?.auth.apiKey) return "ready"
 		const activeCredential =
@@ -50,9 +51,14 @@ export async function prepareActivePromptKimchiCredential(
 			(activeCredential.access !== credential.access || activeCredential.refresh !== credential.refresh) &&
 			Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= activeCredential.expires
 		if (Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= credential.expires) {
-			rememberPreparedOAuthCredential(paths.authPath, credential, {
-				fanoutPending: resolution.refreshed || staleActiveCredential,
-			})
+			rememberPreparedOAuthCredential(
+				paths.authPath,
+				credential,
+				{
+					fanoutPending: resolution.refreshed || staleActiveCredential,
+				},
+				owner,
+			)
 		}
 		if (!resolution.refreshed && !staleActiveCredential) return "ready"
 		try {
@@ -73,7 +79,7 @@ export async function prepareActivePromptKimchiCredential(
 			clearRefreshedCredentialStale(resolution.previousAccessToken, resolution.auth.auth.apiKey, KIMCHI_PROVIDER_ID)
 		}
 		if (Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= credential.expires) {
-			rememberPreparedOAuthCredential(paths.authPath, credential, { fanoutPending: false })
+			rememberPreparedOAuthCredential(paths.authPath, credential, { fanoutPending: false }, owner)
 		}
 		return "ready"
 	} catch (error) {

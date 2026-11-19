@@ -23,7 +23,17 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	// cached (gateway) models.json — without persisting a project-local endpoint into the global
 	// models.json. Only set when explicitly configured so the default gateway keeps flowing.
 	const { customLlmEndpoint } = loadConfig()
-	const kimchiOAuth = createKimchiProviderOAuth(join(agentDir, "auth.json"))
+	const authPath = join(agentDir, "auth.json")
+	const kimchiOAuth = createKimchiProviderOAuth(authPath)
+	const sessionOAuthByRegistry = new WeakMap<object, typeof kimchiOAuth>()
+	const sessionOAuthFor = (owner: object) => {
+		let oauth = sessionOAuthByRegistry.get(owner)
+		if (!oauth) {
+			oauth = createKimchiProviderOAuth(authPath, owner)
+			sessionOAuthByRegistry.set(owner, oauth)
+		}
+		return oauth
+	}
 
 	const kimchiProvider: Parameters<typeof pi.registerProvider>[1] = { oauth: kimchiOAuth }
 	if (customLlmEndpoint) {
@@ -37,11 +47,15 @@ export default function loginExtension(pi: ExtensionAPI): void {
 		// of an extension error. Other sources retain their existing auth path.
 		if (event.source !== "interactive" || ctx.mode !== "tui") return
 		const preparation = await prepareActivePromptKimchiCredential(
-			{ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") },
-			(runtime) => {
-				runtime.registerProvider(KIMCHI_PROVIDER_ID, { oauth: kimchiOAuth })
+			{ authPath, modelsPath: join(agentDir, "models.json") },
+			(runtime, owner) => {
+				runtime.registerProvider(KIMCHI_PROVIDER_ID, {
+					...kimchiProvider,
+					oauth: sessionOAuthFor(owner ?? ctx.modelRegistry),
+				})
 			},
 			ctx.model?.provider,
+			ctx.modelRegistry,
 		)
 		if (preparation === "oauth_revoked") {
 			ctx.ui.notify("OAuth refresh was rejected. Run /login to sign in again.", "error")
@@ -65,7 +79,13 @@ export default function loginExtension(pi: ExtensionAPI): void {
 		if (loadConfig().apiKey) {
 			void refreshBillingStatusFromConfig({ mode: "forced" })
 		}
-
+		if (ctx.mode !== "tui") {
+			// ACP binds callbacks to its session runtime after extension loading.
+			// Do not replace that owner with the TUI registry identity here.
+			return
+		}
+		const sessionOAuth = sessionOAuthFor(ctx.modelRegistry)
+		pi.registerProvider(KIMCHI_PROVIDER_ID, { ...kimchiProvider, oauth: sessionOAuth })
 		const subProviders = new Set(
 			ctx.modelRegistry
 				.getAll()
@@ -73,7 +93,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 				.filter((p) => p !== KIMCHI_PROVIDER_ID && isKimchiProvider(p)),
 		)
 		for (const subProviderId of subProviders) {
-			pi.registerProvider(subProviderId, { oauth: kimchiOAuth })
+			pi.registerProvider(subProviderId, { oauth: sessionOAuth })
 		}
 	})
 }

@@ -58,7 +58,8 @@ function readCanonicalCredential(authPath: string): StoredCredential | undefined
  */
 export async function resolveRefreshAwareKimchiAuth(
 	paths: RefreshAwareCredentialPaths,
-	installOAuth: (runtime: ModelRuntime) => void,
+	installOAuth: (runtime: ModelRuntime, owner?: object) => void,
+	owner?: object,
 ): Promise<RefreshAwareCredentialResolution> {
 	try {
 		const modelRuntime = await ModelRuntime.create({
@@ -67,7 +68,7 @@ export async function resolveRefreshAwareKimchiAuth(
 			credentials: paths.credentials,
 			refreshOnCreate: false,
 		})
-		installOAuth(modelRuntime)
+		installOAuth(modelRuntime, owner)
 		const before = readCanonicalCredential(paths.authPath)
 		const auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
 		const after = readCanonicalCredential(paths.authPath)

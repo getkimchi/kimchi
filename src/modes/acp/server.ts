@@ -1668,8 +1668,9 @@ export class KimchiAcpAgent implements Agent {
 				? "ready"
 				: await prepareActivePromptKimchiCredential(
 						{ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") },
-						(runtime) => installKimchiOAuth(runtime, join(this.agentDir, "auth.json")),
+						(runtime, owner) => installKimchiOAuth(runtime, join(this.agentDir, "auth.json"), owner),
 						activeProviderId,
+						entry.session.modelRuntime,
 					)
 		if (!entry.turn) return result
 		if (entry.turn.cancelled) {
@@ -4516,6 +4517,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				sessionManager,
 				modelRuntime,
 			})
+			bindSessionScopedOAuth(session, options.agentDir)
 			return session
 		}
 		let header: Pick<SessionHeader, "id" | "cwd"> | null
@@ -4569,6 +4571,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			sessionManager,
 			modelRuntime,
 		})
+		bindSessionScopedOAuth(session, options.agentDir)
 		return session
 	}
 }
@@ -4594,6 +4597,15 @@ async function createSsoAwareModelRuntime(agentDir: string) {
 	return modelRuntime
 }
 
+/**
+ * Bind request-time callbacks to the same runtime identity as prompt preflight.
+ * The initial runtime install happens before createAgentSession loads the login
+ * extension's registrations, so bind again after construction completes.
+ */
+function bindSessionScopedOAuth(session: AgentSession, agentDir: string): void {
+	installKimchiOAuth(session.modelRuntime, join(agentDir, "auth.json"), session.modelRuntime)
+}
+
 /** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
 export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
@@ -4607,6 +4619,7 @@ export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory
 			resourceLoader,
 			modelRuntime,
 		})
+		bindSessionScopedOAuth(session, options.agentDir)
 		return session
 	}
 }

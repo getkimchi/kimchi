@@ -106,9 +106,11 @@ export type ExtensionOAuthConfig = NonNullable<Parameters<ExtensionAPI["register
  * `refreshToken`/`getApiKey` are credential-shape driven and shared by every
  * login method: real OAuth refresh against the region's Auth0 token endpoint.
  */
-export function createKimchiProviderOAuth(authPath: string): ExtensionOAuthConfig {
+export function createKimchiProviderOAuth(authPath: string, owner?: object): ExtensionOAuthConfig {
 	const ssoOAuth = kimchiSsoExtensionOAuth(() => loadConfig().region, {
-		shouldReuseCredential: (credential) => shouldReusePreparedOAuthCredential(authPath, credential),
+		shouldReuseCredential: owner
+			? (credential) => shouldReusePreparedOAuthCredential(authPath, credential, owner)
+			: undefined,
 		onInvalidGrant: (credential) => {
 			// The refresh token is dead — requests will start 401ing. Mark the
 			// provider (and the concrete key) stale so auth_status and warnings
@@ -134,8 +136,8 @@ export function createKimchiProviderOAuth(authPath: string): ExtensionOAuthConfi
  * models on a bare runtime. Idempotent; wraps `refresh` so sub-providers
  * created by a catalog refresh (updateModelsConfig) get registered too.
  */
-export function installKimchiOAuth(runtime: ModelRuntime, authPath: string): void {
-	const kimchiOAuth = createKimchiProviderOAuth(authPath)
+export function installKimchiOAuth(runtime: ModelRuntime, authPath: string, owner: object = runtime): void {
+	const kimchiOAuth = createKimchiProviderOAuth(authPath, owner)
 	const registered = new Set<string>()
 	const ensureRegistered = (): void => {
 		const providerIds = new Set(

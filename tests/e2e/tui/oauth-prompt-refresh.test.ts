@@ -44,7 +44,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 						authPath = seedExpiringOAuthCredential(homeDir, oauth.tokenUrl)
 					},
 				},
-				async (fixture) => {
+				async (fixture, trace) => {
 					terminal.submit("Continue with the refreshed credential")
 					await expect(terminal.getByText(REFRESH_CONTINUED_REPLY, { full: true })).toBeVisible()
 
@@ -59,6 +59,8 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 						expect(stored[providerId]?.expires).toBe(stored["kimchi-dev"]?.expires)
 					}
 
+					trace.step("refreshed continuation persisted on canonical and active providers")
+
 					terminal.submit("Continue again with the persisted credential")
 					await expect(terminal.getByText("Refreshed follow-up continued.", { full: true })).toBeVisible()
 
@@ -71,6 +73,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 					}
 					await expect(terminal.getByText("Sign in", { full: false })).not.toBeVisible()
 					await expect(terminal.getByText("auth required", { full: false })).not.toBeVisible()
+					trace.step("persisted follow-up completed without another same-prompt grant or sign-in")
 				},
 			)
 		} finally {
@@ -90,11 +93,12 @@ test("a revoked grant exposes the existing sign-in action without crashing the s
 				responses: [],
 				seedHome: (homeDir) => seedExpiringOAuthCredential(homeDir, oauth.tokenUrl),
 			},
-			async () => {
+			async (_fixture, trace) => {
 				oauth.revokeGrants()
 				terminal.submit("Use the revoked credential")
 				await waitForText(terminal, "Run /login to sign in again", { timeoutMs: STREAM_TIMEOUT_MS })
 				await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
+				trace.step("revoked grant exposed the sign-in action and returned to a ready prompt")
 			},
 		)
 	} finally {

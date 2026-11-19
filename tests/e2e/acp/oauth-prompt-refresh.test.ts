@@ -96,6 +96,23 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 			).toBe(true)
 		})
 
+		it("keeps prepared credentials independent across two sessions using the same auth store", async () => {
+			const sessionA = await newSession(fixture, fixture.workDir)
+			const sessionB = await newSession(fixture, fixture.workDir)
+			const resultA = await prompt(fixture, sessionA, "Continue in the first session")
+			const resultB = await prompt(fixture, sessionB, "Continue in the second session")
+
+			expect(resultA.stopReason).toBe("end_turn")
+			expect(resultB.stopReason).toBe("end_turn")
+			expect(oauth.grants).toHaveLength(replacementExpiresInSeconds === 60 ? 2 : 1)
+			const stored = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, Record<string, unknown>>
+			for (const field of ["access", "refresh", "expires"]) {
+				expect(stored["kimchi-dev/openai"]?.[field]).toBe(stored["kimchi-dev"]?.[field])
+			}
+			const authorizations = fixture.fake.requests.map(chatAuthorization).filter((value) => value !== undefined)
+			expect(authorizations).toEqual([`Bearer ${REPLACEMENT_ACCESS_TOKEN}`, `Bearer ${REPLACEMENT_ACCESS_TOKEN}`])
+		})
+
 		it("returns the ordinary auth-required outcome for a revoked refresh grant", async () => {
 			oauth.revokeGrants()
 			const sessionId = await newSession(fixture, fixture.workDir)

@@ -1,6 +1,8 @@
-import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
+import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import loginExtension from "./index.js"
 
 const { loadConfigMock, prepareActivePromptMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
@@ -35,10 +37,10 @@ type ProviderConfig = Parameters<ModelRegistry["registerProvider"]>[1]
 // Capture the provider config the extension registers for a given customLlmEndpoint.
 function providerConfigFor(customLlmEndpoint: string | undefined): ProviderConfig {
 	loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint })
-	const registerProvider = vi.fn()
-	loginExtension({ on: vi.fn(), registerProvider } as unknown as ExtensionAPI)
+	const { api, registerProvider } = createExtensionApi()
+	loginExtension(api)
 	const [providerId, providerConfig] = registerProvider.mock.calls.find(([provider]) => provider === "kimchi-dev") ?? []
-	expect(providerId).toBe("kimchi-dev")
+	if (providerId !== "kimchi-dev" || !providerConfig) throw new Error("Kimi provider was not registered")
 	return providerConfig
 }
 
@@ -74,12 +76,8 @@ describe("loginExtension", () => {
 
 	it("restores OpenAI Codex subscription login while builtin API-key providers stay disabled", () => {
 		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
-		const registerProvider = vi.fn()
-
-		loginExtension({
-			on: vi.fn(),
-			registerProvider,
-		} as unknown as ExtensionAPI)
+		const { api, registerProvider } = createExtensionApi()
+		loginExtension(api)
 
 		// Stock pi login flow, re-labelled without "(legacy)", with no hardcoded
 		// models (the gateway feed supplies them).
@@ -95,12 +93,11 @@ describe("loginExtension", () => {
 	it("handles a credential-sync failure without submitting or requesting sign-in", async () => {
 		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
 		vi.mocked(prepareActivePromptKimchiCredential).mockResolvedValue("credential_sync_failed")
-		const on = vi.fn()
+		const { api, getHandler } = createExtensionApi()
 		const notify = vi.fn()
-		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
-		const input = on.mock.calls.find(([event]) => event === "input")?.[1]
+		loginExtension(api)
 
-		await expect(input({ source: "interactive" }, { mode: "tui", ui: { notify } })).resolves.toEqual({
+		await expect(getHandler("input")({ source: "interactive" }, createContext({ ui: { notify } }))).resolves.toEqual({
 			action: "handled",
 		})
 		expect(notify).toHaveBeenCalledWith(
@@ -109,15 +106,24 @@ describe("loginExtension", () => {
 		)
 	})
 
+	it("keeps ACP's session-owned provider callbacks on session_start", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const { api, getHandler, registerProvider } = createExtensionApi()
+		loginExtension(api)
+		registerProvider.mockClear()
+
+		getHandler("session_start")({}, createContext({ mode: "rpc", modelRegistry: { getAll: () => [] } }))
+
+		expect(registerProvider).not.toHaveBeenCalled()
+	})
+
 	it("refreshes billing when an authenticated session starts", () => {
 		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
-		const on = vi.fn()
-
-		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
+		const { api, getHandler } = createExtensionApi()
+		loginExtension(api)
 		loadConfigMock.mockReturnValue({ apiKey: "configured-api-key", customLlmEndpoint: undefined })
 
-		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
-		sessionStart({}, { modelRegistry: { getAll: () => [] } })
+		getHandler("session_start")({}, createContext({ modelRegistry: { getAll: () => [] } }))
 
 		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledOnce()
 		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledWith({ mode: "forced" })
