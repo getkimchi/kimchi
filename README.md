@@ -494,7 +494,7 @@ You can provide custom instructions that are injected into the system prompt on 
 ~/.config/kimchi/harness/AGENTS.md
 ```
 
-Place rules that apply everywhere (e.g., your name, code style preferences, or global tool defaults) in these files. They are loaded in the order shown, before any project-level files, so `AGENTS.md` wins when the two disagree.
+Place rules that apply everywhere (e.g., your name, code style preferences, or global tool defaults) in these files. They are loaded in the order shown, before any project-level files.
 
 - `~/.claude/CLAUDE.md` is your Claude Code global file (`$CLAUDE_CONFIG_DIR/CLAUDE.md` if that is set). Turn it off with `kimchi resources disable extensions.claude-code-instructions`.
 - An `AGENTS.local.md` next to `AGENTS.md` is appended to it.

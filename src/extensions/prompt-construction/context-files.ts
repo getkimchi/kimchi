@@ -101,8 +101,8 @@ export interface GlobalContextFileOptions {
 }
 
 /** Matches Claude Code, which honors CLAUDE_CONFIG_DIR. */
-function claudeCodeConfigDir(): string {
-	return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")
+export function claudeCodeInstructionsPath(): string {
+	return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "CLAUDE.md")
 }
 
 function sameRealPath(a: string, b: string): boolean {
@@ -116,7 +116,7 @@ function sameRealPath(a: string, b: string): boolean {
 /**
  * Global context files, in prompt order:
  * 1. `~/.claude/CLAUDE.md` (or `$CLAUDE_CONFIG_DIR`), if enabled. Skipped when it repeats AGENTS.md.
- * 2. Kimchi's AGENTS.md (+ AGENTS.local.md). Last, so it wins on conflict.
+ * 2. Kimchi's AGENTS.md (+ AGENTS.local.md).
  */
 export function loadGlobalContextFiles(options: GlobalContextFileOptions): ContextFile[] {
 	const files: ContextFile[] = []
@@ -125,7 +125,7 @@ export function loadGlobalContextFiles(options: GlobalContextFileOptions): Conte
 	const agentsPrimary = agentsPath ? tryReadFile(agentsPath) : null
 
 	if (options.includeClaudeCodeInstructions) {
-		const claudePath = join(claudeCodeConfigDir(), "CLAUDE.md")
+		const claudePath = claudeCodeInstructionsPath()
 		const claude = tryReadFile(claudePath)
 		const duplicate =
 			claude !== null &&
@@ -145,4 +145,10 @@ export function loadGlobalContextFiles(options: GlobalContextFileOptions): Conte
 		files.push({ path: localPath, content: local })
 	}
 	return files
+}
+
+/** Global files, then project files that do not repeat them. */
+export function loadContextFiles(cwd: string, options: GlobalContextFileOptions): ContextFile[] {
+	const globalFiles = loadGlobalContextFiles(options)
+	return [...globalFiles, ...loadProjectContextFiles(cwd, globalFiles)]
 }

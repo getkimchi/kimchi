@@ -811,6 +811,19 @@ describe("Claude Code global instructions resource", () => {
 		expect(result.systemPrompt.split(MARKER)).toHaveLength(2)
 	})
 
+	it("tells the user at session start that the Claude Code file loads with AGENTS.md", async () => {
+		const project = join(dir, "project")
+		mkdirSync(project)
+		writeFileSync(join(project, "AGENTS.md"), "project rules", "utf-8")
+		const sessionStart = buildPromptExtensionWithHandlers().handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		const ctx = createContext({ cwd: project })
+
+		await sessionStart({}, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Claude Code instructions"), "info")
+	})
+
 	it("leaves the Claude Code CLAUDE.md out when the resource is disabled", async () => {
 		setResourceOverride(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID, false)
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
