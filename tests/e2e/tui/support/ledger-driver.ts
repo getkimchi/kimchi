@@ -2352,6 +2352,12 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"delivery-status": (agent, mode) => deliveryStatusScenario(agent, mode ?? "sqlite"),
 	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),
+	"import-capture": async (agent) => {
+		const { importJournals } = await import("../../../../src/extensions/pr-cost-reporting/ledger/import.js")
+		let result = await importJournals(agent, { verifyCapturePrefix: true })
+		while (result.pending) result = await importJournals(agent, { verifyCapturePrefix: true })
+		out({ imported: result.imported, modes: result.files.map((file) => file.mode) })
+	},
 	"read-history": async (agent) => {
 		const problems: WorkRecordProblem[] = []
 		const records = readWorkRecords(agent, undefined, undefined, (problem) => problems.push(problem))

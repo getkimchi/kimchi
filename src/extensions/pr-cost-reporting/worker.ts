@@ -1128,9 +1128,14 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	check()
 	let historyComplete = true
-	await importWorkRecordsAsync(agentDir, check, () => {
-		historyComplete = false
-	})
+	await importWorkRecordsAsync(
+		agentDir,
+		check,
+		() => {
+			historyComplete = false
+		},
+		true,
+	)
 	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
 	const backend = backendFor(agentDir)
 	const marked = new Map<string, Map<string, string>>()

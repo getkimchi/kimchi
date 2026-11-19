@@ -270,12 +270,18 @@ export async function importWorkRecordsAsync(
 	agentDir: string,
 	checkBudget: () => void,
 	onRecordProblem?: (problem: WorkRecordProblem) => void,
+	/** Background capture verifies consumed prefixes cooperatively before its synchronous slice. */
+	verifyCapturePrefix = false,
 ): Promise<void> {
 	checkBudget()
 	for (;;) {
 		await setImmediate()
 		checkBudget()
-		const imported = await importJournals(agentDir, { checkBudget, until: Date.now() + IMPORT_SLICE_MS })
+		const imported = await importJournals(agentDir, {
+			checkBudget,
+			until: Date.now() + IMPORT_SLICE_MS,
+			verifyCapturePrefix,
+		})
 		if (!imported.pending) break
 	}
 	if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
