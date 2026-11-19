@@ -32,6 +32,10 @@ export type RoutedModelRegistry = Pick<ModelRegistry, "find" | "getAll">
  * Direct and local blocks are excluded on purpose: the routed request travels
  * through the gateway, so their descriptors are not what served the turn.
  *
+ * A slug registered under more than one gateway block is expected to carry the
+ * same limits in each (the rows come from the same catalog model); the first
+ * catalog entry wins, and no cross-block preference is applied.
+ *
  * When the routed id is not present in the catalog (a backend-routed model the
  * harness has not been told about), return an {@link UnknownRoutedModel} so the
  * caller can still display the raw id while declining to attempt capability
