@@ -238,3 +238,61 @@ describe("loadGlobalContextFiles", () => {
 		expect(loadGlobalContextFiles(on)).toEqual([])
 	})
 })
+
+describe("loadProjectContextFiles with already loaded global files", () => {
+	const globalDir = join(tmpdir(), `kimchi-dedup-global-${Date.now()}`)
+	const globalPath = join(globalDir, "CLAUDE.md")
+	const globals = [{ path: globalPath, content: "global rules\n" }]
+	const inTmp = (files: { path: string }[]) => files.filter((f) => f.path.startsWith(tmpBase))
+
+	beforeEach(() => {
+		rmSync(tmpBase, { recursive: true, force: true })
+		rmSync(globalDir, { recursive: true, force: true })
+		mkdirSync(nested, { recursive: true })
+		mkdirSync(globalDir, { recursive: true })
+		writeFileSync(globalPath, "global rules\n")
+	})
+
+	afterEach(() => {
+		rmSync(tmpBase, { recursive: true, force: true })
+		rmSync(globalDir, { recursive: true, force: true })
+	})
+
+	it("skips a project file that is a symlink to a global file", () => {
+		symlinkSync(globalPath, join(nested, "AGENTS.md"))
+		expect(inTmp(loadProjectContextFiles(nested, globals))).toEqual([])
+	})
+
+	it("skips a project file that copies a global file apart from whitespace", () => {
+		writeFileSync(join(nested, "CLAUDE.md"), "global rules")
+		expect(inTmp(loadProjectContextFiles(nested, globals))).toEqual([])
+	})
+
+	it("keeps the .local.md of a skipped duplicate", () => {
+		symlinkSync(globalPath, join(nested, "AGENTS.md"))
+		writeFileSync(join(nested, "AGENTS.local.md"), "my overrides")
+		expect(inTmp(loadProjectContextFiles(nested, globals))).toEqual([
+			{ path: join(nested, "AGENTS.local.md"), content: "my overrides" },
+		])
+	})
+
+	it("does not fall through to CLAUDE.md when AGENTS.md is a duplicate", () => {
+		writeFileSync(join(nested, "AGENTS.md"), "global rules")
+		writeFileSync(join(nested, "CLAUDE.md"), "project claude rules")
+		expect(inTmp(loadProjectContextFiles(nested, globals))).toEqual([])
+	})
+
+	it("keeps project files that differ from the global files", () => {
+		writeFileSync(join(nested, "AGENTS.md"), "project rules")
+		expect(inTmp(loadProjectContextFiles(nested, globals))).toEqual([
+			{ path: join(nested, "AGENTS.md"), content: "project rules" },
+		])
+	})
+
+	it("loads a duplicate when no global files are given", () => {
+		symlinkSync(globalPath, join(nested, "AGENTS.md"))
+		expect(inTmp(loadProjectContextFiles(nested))).toEqual([
+			{ path: join(nested, "AGENTS.md"), content: "global rules\n" },
+		])
+	})
+})

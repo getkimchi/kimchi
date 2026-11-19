@@ -862,12 +862,12 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
-			cachedContextFiles ??= [
-				...loadGlobalContextFiles({
+			if (!cachedContextFiles) {
+				const globalFiles = loadGlobalContextFiles({
 					includeClaudeCodeInstructions: isResourceEnabled(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID),
-				}),
-				...loadProjectContextFiles(ctx.cwd),
-			]
+				})
+				cachedContextFiles = [...globalFiles, ...loadProjectContextFiles(ctx.cwd, globalFiles)]
+			}
 			// Read skills from pi's resolved resource inventory (system prompt
 			// options) so the rebuilt prompt advertises exactly what pi
 			// loaded — honoring settings.json, --skill/--no-skills, trust,

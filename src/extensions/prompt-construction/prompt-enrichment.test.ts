@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-works/pi-ai"
@@ -795,6 +795,20 @@ describe("Claude Code global instructions resource", () => {
 		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain(MARKER)
+	})
+
+	it("puts the Claude Code CLAUDE.md in once when a project file links to it", async () => {
+		const project = join(dir, "project")
+		mkdirSync(project)
+		symlinkSync(join(dir, "claude", "CLAUDE.md"), join(project, "CLAUDE.md"))
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false, cwd: project }))) as {
+			systemPrompt: string
+		}
+
+		expect(result.systemPrompt.split(MARKER)).toHaveLength(2)
 	})
 
 	it("leaves the Claude Code CLAUDE.md out when the resource is disabled", async () => {

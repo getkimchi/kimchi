@@ -1,9 +1,6 @@
 /**
- * Discover context files (AGENTS.md, CLAUDE.md).
- *
- * Global files: Claude Code's user CLAUDE.md, then kimchi's own AGENTS.md
- * (see loadGlobalContextFiles). Project files: discovered by walking up
- * the directory tree from cwd to root.
+ * Discover context files (AGENTS.md, CLAUDE.md): global ones, then project
+ * ones found by walking up from cwd to root.
  *
  * This replicates the discovery logic from Pi's internal
  * `loadProjectContextFiles()` (resource-loader.ts) which is not exported
@@ -45,7 +42,13 @@ function localVariant(filename: string): string {
 	return filename.replace(/\.md$/, ".local.md")
 }
 
-function loadContextFileFromDir(dir: string): ContextFile | null {
+/** Same real path or same trimmed text. */
+function isAlreadyLoaded(filePath: string, content: string, alreadyLoaded: readonly ContextFile[]): boolean {
+	const trimmed = content.trim()
+	return alreadyLoaded.some((file) => sameRealPath(file.path, filePath) || file.content.trim() === trimmed)
+}
+
+function loadContextFileFromDir(dir: string, alreadyLoaded: readonly ContextFile[]): ContextFile | null {
 	for (const filename of CONTEXT_FILE_NAMES) {
 		const filePath = join(dir, filename)
 		const localPath = join(dir, localVariant(filename))
@@ -53,6 +56,10 @@ function loadContextFileFromDir(dir: string): ContextFile | null {
 		const local = tryReadFile(localPath)
 
 		if (primary !== null) {
+			// Check before the merge so .local.md survives. The duplicate still claims the dir.
+			if (isAlreadyLoaded(filePath, primary, alreadyLoaded)) {
+				return local !== null ? { path: localPath, content: local } : null
+			}
 			const content = local !== null ? `${primary}\n\n${local}` : primary
 			return { path: filePath, content }
 		}
@@ -66,15 +73,16 @@ function loadContextFileFromDir(dir: string): ContextFile | null {
 /**
  * Walk from `cwd` up to the filesystem root, collecting one context file
  * per directory. Returns them in ancestor-first order (root → cwd).
+ * Primary files that repeat one of `alreadyLoaded` are skipped.
  */
-export function loadProjectContextFiles(cwd: string): ContextFile[] {
+export function loadProjectContextFiles(cwd: string, alreadyLoaded: readonly ContextFile[] = []): ContextFile[] {
 	const files: ContextFile[] = []
 
 	let dir = resolve(cwd)
 	const root = resolve("/")
 
 	while (true) {
-		const found = loadContextFileFromDir(dir)
+		const found = loadContextFileFromDir(dir, alreadyLoaded)
 		if (found) {
 			files.unshift(found)
 		}
@@ -89,11 +97,10 @@ export function loadProjectContextFiles(cwd: string): ContextFile[] {
 }
 
 export interface GlobalContextFileOptions {
-	/** Read the Claude Code user file ($CLAUDE_CONFIG_DIR or ~/.claude)/CLAUDE.md. */
 	includeClaudeCodeInstructions: boolean
 }
 
-/** Claude Code honors CLAUDE_CONFIG_DIR, so we must too, or we would read a file the user does not use. */
+/** Matches Claude Code, which honors CLAUDE_CONFIG_DIR. */
 function claudeCodeConfigDir(): string {
 	return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")
 }
@@ -107,18 +114,9 @@ function sameRealPath(a: string, b: string): boolean {
 }
 
 /**
- * Discover the global context files, in prompt order:
- *
- * 1. Claude Code's user instructions (`$CLAUDE_CONFIG_DIR/CLAUDE.md`, default
- *    `~/.claude/CLAUDE.md`), when `includeClaudeCodeInstructions` is set.
- *    Only CLAUDE.md is read there; Claude Code has no global `.local.md`.
- * 2. Kimchi's AGENTS.md in the agent configuration directory
- *    (~/.config/kimchi/harness/), with AGENTS.local.md appended if present.
- *
- * Kimchi's own file comes last because later files win on conflict, and it
- * is the more specific one for kimchi. The Claude Code file is dropped when
- * it is the same file as AGENTS.md (symlink) or holds the same text, so the
- * same rules never appear twice.
+ * Global context files, in prompt order:
+ * 1. `~/.claude/CLAUDE.md` (or `$CLAUDE_CONFIG_DIR`), if enabled. Skipped when it repeats AGENTS.md.
+ * 2. Kimchi's AGENTS.md (+ AGENTS.local.md). Last, so it wins on conflict.
  */
 export function loadGlobalContextFiles(options: GlobalContextFileOptions): ContextFile[] {
 	const files: ContextFile[] = []
