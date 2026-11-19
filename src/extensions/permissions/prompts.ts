@@ -211,13 +211,20 @@ export function mirrorApprovalInput(
 }
 
 export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOutcome> {
-	const { ctx, toolName, input, subtitle, riskScore } = opts
+	const { ctx, toolName, input, subtitle, riskScore, origin } = opts
 	if (!ctx.hasUI) return { kind: "deny" }
 
 	const displayInput = mirrorApprovalInput(toolName, input, ctx.sessionManager?.getSessionId?.())
 	const callDescription = await describeCallHighlighted(toolName, displayInput)
 
 	const lines: string[] = []
+	if (origin) {
+		// The call is not this session's own: name the subagent before the call
+		// text so nobody approves something they mistook for their own agent's.
+		const task = origin.description?.trim()
+		const identity = `Subagent ${origin.persona ?? "assistant"}`
+		lines.push(`${identity}${task ? ` — ${task}` : ""} wants to run:`)
+	}
 	const termWidth = process.stdout.columns || 80
 	const badge = riskScore ? formatRiskBadge(riskScore) : ""
 	const wrapWidth = badge ? Math.max(1, termWidth - visibleWidth(badge) - 2) : Math.max(1, termWidth)
