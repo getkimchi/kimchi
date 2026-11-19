@@ -22,6 +22,7 @@ import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution }
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
 const SESSION_NAME_TIMEOUT_MS = 10_000
+const SESSION_NAME_MAX_ATTEMPTS = 3
 
 const SESSION_NAME_MAX_LEN = 50
 const SESSION_NAME_SYSTEM_PROMPT = `Name the user's actual task: lead with the action and name the affected component, bug, or feature. For example: Fix resume menu jumping. Ignore greetings and conversational filler. Avoid generic labels like Coding Help or Greeting and Introduction. Respond ONLY with the title (3-6 words, max ${SESSION_NAME_MAX_LEN} chars). No quotes, explanation, or markdown.`
@@ -29,7 +30,8 @@ const HINT_MAX_LEN = 500
 
 function getSessionNameMaxRetries(cwd: string): number {
 	try {
-		return Math.min(SettingsManager.create(cwd).getRetrySettings().maxRetries, 2)
+		const maxRetries = SettingsManager.create(cwd).getRetrySettings().maxRetries
+		return Number.isFinite(maxRetries) ? Math.min(maxRetries, 2) : Math.min(RETRY_DEFAULTS.maxRetries, 2)
 	} catch {
 		return Math.min(RETRY_DEFAULTS.maxRetries, 2)
 	}
@@ -109,11 +111,29 @@ export function deterministicFallback(input: string): string {
 	return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated).trim()
 }
 
+type SessionNameFailure = {
+	category: "missing_credentials" | "http_error" | "transport_error" | "empty_response"
+	hasCredentials: boolean
+	status?: number
+}
+
+type SessionNameSuggestion =
+	| { generated: true; name: string }
+	| { generated: false; name: string; failure?: SessionNameFailure }
+
 /**
  * Suggest a session name from the first user text.
  * When quiet is true, suppresses naming errors; attribution failures remain visible.
  */
 export async function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): Promise<string> {
+	return (await createSessionNameSuggestion(ctx, hint, quiet)).name
+}
+
+async function createSessionNameSuggestion(
+	ctx: ExtensionContext,
+	hint?: string,
+	quiet = false,
+): Promise<SessionNameSuggestion> {
 	const base = basename(ctx.cwd)
 	const resolvedHint = hint ?? extractFirstUserMessage(ctx)
 
@@ -125,14 +145,20 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 				console.error("[kimchi] auto-naming failed: no user message found")
 			}
 		}
-		return deterministicFallback(base)
+		return { generated: false, name: deterministicFallback(base) }
 	}
 
 	const fallback = deterministicFallback(resolvedHint)
 	const config = loadConfig({ cwd: ctx.cwd })
 	const credentials = resolveGatewayCredentials(config)
 
-	if (!credentials.token) return fallback
+	if (!credentials.token) {
+		return {
+			generated: false,
+			name: fallback,
+			failure: { category: "missing_credentials", hasCredentials: false },
+		}
+	}
 
 	const workContext = pinWorkContext(ctx)
 	let workId: string | undefined
@@ -198,20 +224,33 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 				const message = `Auto-naming: API error ${response.status} ${response.statusText}${errorBody ? ` - ${errorBody.slice(0, 200)}` : ""}`
 				notifyUser(ctx, ctx.hasUI ? message : `[kimchi] ${message}`, "error")
 			}
-			return fallback
+			return {
+				generated: false,
+				name: fallback,
+				failure: { category: "http_error", hasCredentials: true, status: response.status },
+			}
 		}
 
 		const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
 		usage?.onProviderStreamEvent(data, namingModel)
 		usage?.finish()
 		const suggestion = data.choices?.[0]?.message?.content?.trim()
-		return suggestion ? deterministicFallback(suggestion) : fallback
+		if (suggestion) return { generated: true, name: deterministicFallback(suggestion) }
+		return {
+			generated: false,
+			name: fallback,
+			failure: { category: "empty_response", hasCredentials: true },
+		}
 	} catch (err) {
 		if (!quiet) {
 			const message = `Auto-naming: ${err instanceof Error ? err.message : String(err)}`
 			notifyUser(ctx, ctx.hasUI ? message : `[kimchi] ${message}`, "error")
 		}
-		return fallback
+		return {
+			generated: false,
+			name: fallback,
+			failure: { category: "transport_error", hasCredentials: true },
+		}
 	} finally {
 		usage?.finish()
 	}
@@ -219,11 +258,13 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 
 export default function sessionNameExtension() {
 	return (pi: ExtensionAPI) => {
-		let hasAutoNamed = false
+		// Failed or exhausted attempts intentionally leave the session unnamed rather than
+		// publishing prompt text as a completed caption. There is no terminal prompt fallback here.
+		let namingState = { completed: false, inFlight: false, attempts: 0, warnedMissingCredentials: false }
 		let generation = 0
 		const pendingNames = new Set<Promise<void>>()
 		pi.on("session_start", () => {
-			hasAutoNamed = false
+			namingState = { completed: false, inFlight: false, attempts: 0, warnedMissingCredentials: false }
 			generation++
 		})
 
@@ -233,35 +274,57 @@ export default function sessionNameExtension() {
 		// model loop — the only thing that drains the steering queue — has already stopped by then.
 		// Anything typed while a slow listener holds the run open is queued as steering and never sent.
 		pi.on("turn_end", (_event: TurnEndEvent, ctx: ExtensionContext) => {
+			const state = namingState
 			try {
-				if (hasAutoNamed) return
+				if (state.completed || state.inFlight) return
 				if (ctx.sessionManager.getSessionName()) {
-					hasAutoNamed = true
+					state.completed = true
 					return
 				}
+				if (state.attempts >= SESSION_NAME_MAX_ATTEMPTS) return
 				const hint = extractFirstUserMessage(ctx)
 				if (!hint) return
-				hasAutoNamed = true
+				state.inFlight = true
+				const attempt = state.attempts + 1
 				const namingGeneration = generation
-				const pending = suggestSessionName(ctx, hint, true)
+				const pending = createSessionNameSuggestion(ctx, hint, true)
 					// ctx may be stale once this resolves; a throw here would surface as a model error.
-					.then((suggestion) => {
-						if (suggestion && namingGeneration === generation && !ctx.sessionManager.getSessionName()) {
-							pi.setSessionName(suggestion)
+					.then((result) => {
+						if (!result.generated) {
+							const failure = result.failure
+							if (failure) {
+								if (failure.category !== "missing_credentials") state.attempts = attempt
+								if (failure.category !== "missing_credentials" || !state.warnedMissingCredentials) {
+									const status = failure.status === undefined ? "" : ` status=${failure.status}`
+									const credentials = failure.hasCredentials ? "present" : "absent"
+									console.warn(
+										`[session-name] auto-caption failed category=${failure.category}${status} attempt=${attempt} credentials=${credentials}`,
+									)
+								}
+								if (failure.category === "missing_credentials") state.warnedMissingCredentials = true
+							}
+							return
+						}
+						if (namingGeneration === generation && !ctx.sessionManager.getSessionName()) {
+							pi.setSessionName(result.name)
+							state.completed = true
 						}
 					})
-					.catch(() => {})
+					.catch(() => {
+						state.attempts = attempt
+					})
 					.finally(() => {
+						state.inFlight = false
 						pendingNames.delete(pending)
 					})
 				pendingNames.add(pending)
 			} catch {
-				hasAutoNamed = true
+				state.inFlight = false
 			}
 		})
 
 		// One-shot runs exit as soon as the turn ends, which would drop the in-flight request.
-		// Safe to await: suggestSessionName is bounded by SESSION_NAME_TIMEOUT_MS.
+		// Safe to await: createSessionNameSuggestion is bounded by SESSION_NAME_TIMEOUT_MS.
 		pi.on("session_shutdown", async () => {
 			await Promise.all(pendingNames)
 		})

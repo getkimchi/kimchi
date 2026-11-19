@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
+import { latestAgentChatRequest } from "./support/fake-openai-server.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -68,9 +69,7 @@ test("new session drains cancelled Bash work and resuming the old session starts
 			terminal.submit("Read independent.txt")
 			await waitForText(terminal, "New session has no Bash cohort.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
-			expect(
-				fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
-			).toMatchObject({
+			expect(latestAgentChatRequest(fixture.fake.requests)?.body).toMatchObject({
 				tools: expect.arrayContaining([
 					expect.objectContaining({ function: expect.objectContaining({ name: "bash_control" }) }),
 				]),
@@ -82,9 +81,7 @@ test("new session drains cancelled Bash work and resuming the old session starts
 			terminal.submit("Read independent.txt in the resumed session")
 			await waitForText(terminal, "Resumed session has no Bash cohort.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
-			expect(
-				fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
-			).toMatchObject({
+			expect(latestAgentChatRequest(fixture.fake.requests)?.body).toMatchObject({
 				tools: expect.arrayContaining([
 					expect.objectContaining({ function: expect.objectContaining({ name: "bash_control" }) }),
 				]),
