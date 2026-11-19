@@ -45,6 +45,24 @@ describe("acp-prompter cancelled-request mapping", () => {
 		expect(outcome).toEqual({ kind: "denied-by-client" })
 	})
 
+	it("carries the abort signal through feedback input into a plain denial", async () => {
+		const conn = makeConnection({ outcome: "outcome_selected", optionId: "choice-1" })
+		const controller = new AbortController()
+		let resolveFeedback!: () => void
+		const pendingFeedback = new Promise<string>((resolve) => {
+			resolveFeedback = () => resolve("")
+		})
+		const input = vi.fn(() => pendingFeedback)
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", { input } as never, () => "acp-1")
+		const pending = prompter.request({ ...baseReq, signal: controller.signal })
+		await vi.waitFor(() => expect(input).toHaveBeenCalledOnce())
+		controller.abort()
+		resolveFeedback()
+
+		expect(await pending).toEqual({ kind: "deny" })
+		expect(input).toHaveBeenCalledWith(expect.any(String), undefined, { signal: controller.signal })
+	})
+
 	it("keeps a real abort (signal) mapped to aborted", async () => {
 		const conn = makeConnection({ outcome: "cancelled" })
 		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-1")

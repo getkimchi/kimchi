@@ -112,7 +112,9 @@ export function createAcpPermissionPrompter(
 							outcome = { kind: "allow-remember-wildcard", rules: selected.rules }
 							break
 						case "deny": {
-							const feedback = await uiContext.input("Tell the assistant what to do differently:")
+							const feedback = await uiContext.input("Tell the assistant what to do differently:", undefined, {
+								signal: req.signal,
+							})
 							const text = feedback?.trim()
 							outcome = text ? { kind: "deny-with-feedback", feedback: text } : { kind: "deny" }
 							break

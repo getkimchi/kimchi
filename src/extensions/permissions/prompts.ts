@@ -255,7 +255,9 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	}
 
 	if (selectedChoice?.kind === "deny") {
-		const feedback = await withWorkingHidden(ctx, () => ctx.ui.input("Tell the assistant what to do differently:"))
+		const feedback = await withWorkingHidden(ctx, () =>
+			ctx.ui.input("Tell the assistant what to do differently:", undefined, { signal: opts.signal }),
+		)
 		const text = feedback?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }
 		return { kind: "deny" }
@@ -318,7 +320,9 @@ export async function promptForCompoundApproval(opts: {
 	}
 	if (selected === "Pick permissions per subcommand" && scopeable) return { kind: "pick-per-subcommand" }
 	if (selected === "No — tell the assistant what to do differently") {
-		const feedback = await withWorkingHidden(ctx, () => ctx.ui.input("Tell the assistant what to do differently:"))
+		const feedback = await withWorkingHidden(ctx, () =>
+			ctx.ui.input("Tell the assistant what to do differently:", undefined, { signal: opts.signal }),
+		)
 		const text = feedback?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }
 		return { kind: "deny" }
