@@ -20,7 +20,7 @@ import { isResourceEnabled } from "../../../resources/store.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
-import { runAsAgentWorker } from "../../agent-worker-context.js"
+import { runAsAgentWorker, setAgentWorkerInactivityHold } from "../../agent-worker-context.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { getEffectiveModel } from "../../auto-model/state.js"
@@ -283,6 +283,10 @@ export interface RunOptions {
 	/** Called on streaming text deltas from the assistant response. */
 	onTextDelta?: (delta: string, fullText: string) => void
 	onSessionCreated?: (session: AgentSession) => void
+	/** ID of this run as the manager tracks it — passed to the worker permission role. */
+	agentId?: string
+	/** Task description shown in escalated permission prompts. */
+	description?: string
 	/** Called at the end of each agentic turn with the cumulative count. */
 	onTurnEnd?: (turnCount: number) => void
 	/** Called once per assistant message_end with that message's usage delta. */
@@ -424,6 +428,8 @@ export async function runAgent(
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
+	// Per-run watchdog holds ride the async context, not process.env: parallel
+	// runs share the env, so anything a child reads from it can belong to a sibling.
 	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)))
 }
 
@@ -559,6 +565,8 @@ ${skillLines}`
 	const workerPermissionsExtension = createWorkerPermissionsExtension({
 		parentSessionId,
 		persona: agentConfig?.name ?? type,
+		agentId: options.agentId,
+		description: options.description ?? prompt.slice(0, 200),
 	})
 	const extensionFactories = buildInlineExtensionFactories({
 		effectiveMaxDuration,
@@ -745,6 +753,24 @@ ${skillLines}`
 
 	const inactivity = { lastActivityAt: Date.now(), steered: false }
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	// Interactive waits (a permission prompt escalated to the parent) emit no
+	// session events, so the watchdog would steer then abort a worker that is
+	// legitimately waiting for a human. The gate takes this hold for the wait.
+	const inactivityHolds = { count: 0 }
+	setAgentWorkerInactivityHold({
+		acquire: () => {
+			inactivityHolds.count += 1
+			let released = false
+			return () => {
+				if (released) return
+				released = true
+				inactivityHolds.count -= 1
+				// The wait was the activity: restart the clock, clear a pending steer.
+				inactivity.lastActivityAt = Date.now()
+				inactivity.steered = false
+			}
+		},
+	})
 
 	const PROGRESS_STEER_POINTS: { threshold: number; message: string }[] = [
 		{
@@ -874,6 +900,7 @@ ${skillLines}`
 	})
 
 	let inactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+		if (inactivityHolds.count > 0) return // interactive wait (e.g. escalated permission prompt)
 		const elapsed = Date.now() - inactivity.lastActivityAt
 		if (inactivity.steered && elapsed >= inactivityTimeout) {
 			aborted = true
@@ -1165,6 +1192,22 @@ export async function resumeAgent(
 
 	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
 	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	// Same interactive-wait hold as the fresh-run path: resumes also escalate
+	// permission prompts to the parent during a classifier outage.
+	const resumeInactivityHolds = { count: 0 }
+	setAgentWorkerInactivityHold({
+		acquire: () => {
+			resumeInactivityHolds.count += 1
+			let released = false
+			return () => {
+				if (released) return
+				released = true
+				resumeInactivityHolds.count -= 1
+				resumeInactivity.lastActivityAt = Date.now()
+				resumeInactivity.steered = false
+			}
+		},
+	})
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
 	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
 	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined
@@ -1263,6 +1306,7 @@ export async function resumeAgent(
 	})
 
 	let resumeInactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+		if (resumeInactivityHolds.count > 0) return // interactive wait (e.g. escalated permission prompt)
 		const elapsed = Date.now() - resumeInactivity.lastActivityAt
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			aborted = true
