@@ -20,11 +20,16 @@ import { isResourceEnabled } from "../../../resources/store.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
-import { runAsAgentWorker, setAgentWorkerInactivityHold } from "../../agent-worker-context.js"
+import {
+	getRegisteredWorkerParentSession,
+	registerWorkerParentSession,
+	runAsAgentWorker,
+	setAgentWorkerInactivityHold,
+	setAgentWorkerParentSessionId,
+} from "../../agent-worker-context.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { getEffectiveModel } from "../../auto-model/state.js"
-import { createInteractiveTimeBudget, type InteractiveTimeBudgetRef } from "../interactive-time-budget.js"
 import { DAP_ENTRY_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "../../dap/tools.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
@@ -48,6 +53,7 @@ import {
 	type WorkSegment,
 } from "../../work-attribution.js"
 import { detectEnv } from "../env.js"
+import { createInteractiveTimeBudget, type InteractiveTimeBudgetRef } from "../interactive-time-budget.js"
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import {
@@ -508,7 +514,9 @@ export async function runAgent(
 ): Promise<RunResult> {
 	// Per-run watchdog holds ride the async context, not process.env: parallel
 	// runs share the env, so anything a child reads from it can belong to a sibling.
-	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)))
+	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)), {
+		parentSessionId: ctx.sessionManager.getSessionId(),
+	})
 }
 
 async function runAgentInner(
@@ -799,6 +807,7 @@ ${skillLines}`
 	}
 
 	const { session } = await createAgentSession(sessionOpts)
+	registerWorkerParentSession(session, parentSessionId)
 	sessionTimeBudgets.set(session, timeBudget)
 
 	await session.bindExtensions({
@@ -1191,11 +1200,8 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 	// and use the plain default-timeout extension instead.
 	const bashExtension =
 		deps.effectiveMaxDuration > 0
-			? createSubagentBashClampExtension(
-					deps.effectiveMaxDuration,
-					Date.now(),
-					deps.type,
-					() => deps.timeBudget.budget.getRemainingMs(),
+			? createSubagentBashClampExtension(deps.effectiveMaxDuration, Date.now(), deps.type, () =>
+					deps.timeBudget.budget.getRemainingMs(),
 				)
 			: subagentBashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
@@ -1297,6 +1303,8 @@ export async function resumeAgent(
 	// terminally (its lifecycle manager cannot reconnect). A resumed session is
 	// the same AgentSession object, so restart its extensions with a fresh
 	// session_start — reason "resume", matching pi's own resumption event.
+	const ownerSessionId = getRegisteredWorkerParentSession(session)
+	if (ownerSessionId) setAgentWorkerParentSessionId(ownerSessionId)
 	await session.extensionRunner?.emit({ type: "session_start", reason: "resume" })
 
 	const collector = collectResponseText(session)

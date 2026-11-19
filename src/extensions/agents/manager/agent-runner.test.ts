@@ -186,7 +186,6 @@ import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
 import { holdAgentWorkerInactivity, runAsAgentWorker } from "../../agent-worker-context.js"
-import { createInteractiveTimeBudget } from "../interactive-time-budget.js"
 import {
 	createSubagentBashClampExtension,
 	DEFAULT_BASH_TIMEOUT_SECONDS,
@@ -200,6 +199,7 @@ import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/g
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import requestTimingExtension from "../../request-timing.js"
 import telemetryExtension from "../../telemetry/index.js"
+import { createInteractiveTimeBudget } from "../interactive-time-budget.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"

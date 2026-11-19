@@ -1,10 +1,15 @@
+import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+	getAgentWorkerParentSessionId,
+	getRegisteredWorkerParentSession,
 	holdAgentWorkerInactivity,
 	isAgentWorker,
+	registerWorkerParentSession,
 	runAsAgentWorker,
 	runOutsideWorkerContext,
 	setAgentWorkerInactivityHold,
+	setAgentWorkerParentSessionId,
 } from "./agent-worker-context.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
@@ -87,6 +92,37 @@ describe("agent worker context", () => {
 			),
 		)
 		expect(acquired.sort()).toEqual(["worker-a", "worker-b"])
+	})
+
+	it("keeps each worker's explicit parent identity separate from the environment", async () => {
+		process.env.KIMCHI_PARENT_SESSION_ID = "environment-owner"
+		try {
+			const owners = await Promise.all(
+				["parent-a", "parent-b"].map((parentSessionId) =>
+					runAsAgentWorker(
+						async () => {
+							await Promise.resolve()
+							return getAgentWorkerParentSessionId()
+						},
+						{ parentSessionId },
+					),
+				),
+			)
+			expect(owners).toEqual(["parent-a", "parent-b"])
+		} finally {
+			Reflect.deleteProperty(process.env, "KIMCHI_PARENT_SESSION_ID")
+		}
+	})
+
+	it("retains a worker's owner in its session for later resumes", async () => {
+		const session = {} as AgentSession
+		registerWorkerParentSession(session, "original-parent")
+		expect(getRegisteredWorkerParentSession(session)).toBe("original-parent")
+		await runAsAgentWorker(async () => {
+			setAgentWorkerParentSessionId(getRegisteredWorkerParentSession(session))
+			await Promise.resolve()
+			expect(getAgentWorkerParentSessionId()).toBe("original-parent")
+		})
 	})
 
 	it("runs a callback outside the worker context for parent-side work", async () => {
