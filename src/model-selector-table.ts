@@ -1,9 +1,10 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { humanizeContextWindow } from "./extensions/vision-support.js"
 import { getModelLabel, getModelThinkingLevels } from "./models.js"
 import { thinkingColumnValue } from "./thinking-levels.js"
+import { truncateLineToWidth } from "./truncate-lines.js"
 
 export interface ModelTableRow {
 	model: Model<Api>
@@ -35,7 +36,7 @@ export function renderModelTable(
 	rows = rows.map((row) =>
 		row.id === row.model.id ? { ...row, id: getLabel(`${row.model.provider}/${row.model.id}`) ?? row.id } : row,
 	)
-	const clip = (text: string, cells: number) => truncateToWidth(text, Math.max(0, cells), "…")
+	const clip = (text: string, cells: number) => truncateLineToWidth(text, Math.max(0, cells), "…")
 	const pad = (text: string, cells: number) => {
 		const clipped = clip(text, cells)
 		return clipped + " ".repeat(Math.max(0, cells - visibleWidth(clipped)))
@@ -62,7 +63,11 @@ export function renderModelTable(
 			clip(dim(`${" ".repeat(gutter)}MODEL`), width),
 			...rows.map((row) => {
 				const marker = row.warning ? ` ${theme.fg("warning", "⚠")}` : ""
-				return truncateToWidth(cursor(row) + clip(row.id, width - gutter - visibleWidth(marker)) + marker, width, "")
+				return truncateLineToWidth(
+					cursor(row) + clip(row.id, width - gutter - visibleWidth(marker)) + marker,
+					width,
+					"",
+				)
 			}),
 		]
 	}
@@ -120,7 +125,7 @@ export function renderModelTable(
 				description,
 		)
 	}
-	return lines.map((line) => truncateToWidth(line, width, ""))
+	return lines.map((line) => truncateLineToWidth(line, width, ""))
 }
 
 /** The patched dependency cannot import harness source; this adapter is loaded
