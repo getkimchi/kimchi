@@ -12,11 +12,13 @@
 import type { KeybindingsManager, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { listBackgroundWork, stopAllBackgroundWork } from "../../shared/background-work.js"
 import { BASH_BACKGROUND_SETTLE_MESSAGE_TYPE } from "../../shared/bash-background-settle.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
 import { createFakeOps } from "./__mocks__/fake-bash-ops.js"
+import { USER_STOP_REASON } from "./bash-display.js"
 import { CommandsPanel } from "./commands-panel.js"
 import bashBackgroundExtension from "./index.js"
 import { DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
@@ -39,8 +41,9 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 
 		// Swap in a sentinel that records what the accessor returns while the
 		// drain is in progress.
-		const observed: { publishedDuringDrain: unknown } = {
+		const observed: { publishedDuringDrain: unknown; workDuringDrain: unknown } = {
 			publishedDuringDrain: "unset",
+			workDuringDrain: "unset",
 		}
 		const sentinel = {
 			coordinator: {
@@ -51,6 +54,7 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 			registry: {
 				async shutdown(): Promise<void> {
 					observed.publishedDuringDrain = getSessionState(sessionId)?.registry
+					observed.workDuringDrain = listBackgroundWork(sessionId)
 				},
 			},
 		}
@@ -59,7 +63,46 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		await emit("session_shutdown", {}, sessionCtx)
 
 		expect(observed.publishedDuringDrain).toBeUndefined()
+		// The background-work provider is unregistered at the same point.
+		expect(observed.workDuringDrain).toEqual([])
 		expect(getSessionState(sessionId)).toBeUndefined()
+	})
+
+	it("offers running commands to a user stop that kills them with the user-stop reason", async () => {
+		const ctx = createContext({ sessionManager: { getSessionId: () => "session-stop" } })
+		const { api, emit } = createExtensionApi()
+		bashBackgroundExtension(api)
+		await emit("session_start", {}, ctx)
+		const state = getSessionState("session-stop")
+		if (!state) throw new Error("expected session state")
+		try {
+			const ops = createFakeOps()
+			const described = state.registry.spawn(ops, "npm run dev", "/tmp", undefined, {
+				limitSeconds: 60,
+				description: "Dev server",
+			})
+			const multiLine = state.registry.spawn(ops, "npm run watch\n# second line", "/tmp", undefined, {
+				limitSeconds: 60,
+			})
+			const doneOps = createFakeOps(0)
+			const done = state.registry.spawn(doneOps, "true", "/tmp", undefined, { limitSeconds: 60 })
+			await doneOps.exit(0)
+			await state.registry.whenExited(done)
+
+			// Finished entries are not offered: only live work.
+			expect(listBackgroundWork("session-stop")).toEqual([
+				{ kind: "process", id: described, label: "Dev server" },
+				{ kind: "process", id: multiLine, label: "npm run watch" },
+			])
+
+			await expect(stopAllBackgroundWork("session-stop")).resolves.toEqual({ processes: 2, agents: 0 })
+			expect(ops.aborted).toBe(true)
+			expect(state.registry.displaySnapshot(described)?.reason).toBe(USER_STOP_REASON)
+			expect(state.registry.displaySnapshot(multiLine)?.reason).toBe(USER_STOP_REASON)
+			expect(listBackgroundWork("session-stop")).toEqual([])
+		} finally {
+			await emit("session_shutdown", {}, ctx)
+		}
 	})
 
 	it("publishes the running-command count to the footer and clears it at zero", async () => {
@@ -129,6 +172,7 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		stateA.coordinator.handleSpawned(handleA)
 		stateB.coordinator.handleSpawned(handleB)
 		const shutdown = vi.spyOn(stateA.registry, "shutdown")
+		expect(listBackgroundWork("session-a").map((item) => item.id)).toEqual([handleA])
 		try {
 			await a.emit("session_shutdown", {}, ctxA)
 			expect(shutdown).toHaveBeenCalledOnce()
@@ -138,6 +182,8 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 			expect(getSessionState("session-b")).toBe(stateB)
 			expect(stateB.registry.getEntry(handleB)?.state).toBe("running")
 			expect(opsB.aborted).toBe(false)
+			expect(listBackgroundWork("session-a")).toEqual([])
+			expect(listBackgroundWork("session-b").map((item) => item.id)).toEqual([handleB])
 		} finally {
 			await a.emit("session_shutdown", {}, ctxA)
 			await b.emit("session_shutdown", {}, ctxB)

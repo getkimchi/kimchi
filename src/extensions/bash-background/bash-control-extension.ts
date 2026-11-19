@@ -96,6 +96,7 @@ import { readE2eSeam } from "../e2e-seam.js"
 import { classifyTool } from "../permissions/taxonomy.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
+import { USER_STOP_REASON } from "./bash-display.js"
 import { elapsedSecondsSince } from "./process-registry.js"
 import { bashSessionKindFromContext } from "./session-policy.js"
 import { type BashSessionState, getSessionState } from "./session-registry.js"
@@ -591,10 +592,17 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 					}
 				}
 				if (included.length === 0) return
-				// A cancelled/errored run must not be restarted: keep the
-				// payload in the conversation (appended, no inference wake)
-				// instead of triggering a turn.
-				const triggerTurn = runTerminated === undefined
+				// A cancelled/errored run must not be restarted, and a stop the
+				// user asked for must not start a turn either: keep the payload in
+				// the conversation (appended, no inference wake) instead.
+				// Collection already removed the entry, so the reason is read from
+				// the completed snapshot.
+				const userStopped = included.every(
+					(handle) =>
+						(state.registry.displaySnapshot(handle) ?? state.registry.completedSnapshot(handle)?.display)?.reason ===
+						USER_STOP_REASON,
+				)
+				const triggerTurn = runTerminated === undefined && !userStopped
 				if (triggerTurn && sessionId !== undefined) {
 					// Label the run this wake may start (v1 bridge for the v2
 					// Background Work RFD state transition). No-op when the batch

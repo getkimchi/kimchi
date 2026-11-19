@@ -5,7 +5,7 @@ import { safePanelText as safeBashText } from "../../components/input-panel.js"
 import { testTheme as theme } from "../__mocks__/theme.js"
 import { createToolRenderContext } from "../__mocks__/tool-render-context.js"
 import { createFakeOps } from "./__mocks__/fake-bash-ops.js"
-import { bashStatus, bashStatusColor, createBashRenderers } from "./bash-display.js"
+import { bashStatus, bashStatusColor, createBashRenderers, USER_STOP_REASON } from "./bash-display.js"
 import { createProcessRegistry, type ProcessDisplaySnapshot } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import { type BashSessionState, getSessionState, setSessionState } from "./session-registry.js"
@@ -414,5 +414,15 @@ describe("Bash display", () => {
 		expect(bashStatus({ ...display, state: "stopped", reason: "deadline" })).toContain("Deadline reached")
 		expect(bashStatus({ ...display, state: "stopped", reason: "stop" })).toContain("Stopped")
 		expect(bashStatus({ ...display, state: "exited", exitCode: null })).toContain("Outcome unavailable")
+	})
+	it("renders a user stop like a plain stop", () => {
+		const stopped: ProcessDisplaySnapshot = {
+			...display,
+			state: "stopped",
+			reason: USER_STOP_REASON,
+			finishedAt: display.startedAt + 5000,
+		}
+		expect(bashStatus(stopped)).toBe("Stopped · 5s")
+		expect(bashStatusColor(stopped)).toBe("warning")
 	})
 })

@@ -26,6 +26,7 @@ import bashControlExtension, {
 	EXIT_BATCH_WINDOW_MS,
 } from "./bash-control-extension.js"
 import { createBashControlToolDefinition } from "./bash-control-tool.js"
+import { USER_STOP_REASON } from "./bash-display.js"
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
 import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
@@ -348,6 +349,51 @@ describe("unattended exits", () => {
 		// The outcome stays pending (recoverable) until the message_end
 		// acknowledgement retires it.
 		expect(state.delivery.getPending(handle)?.phase).toBe("queued")
+	})
+
+	it("a user-stopped exit is kept in the conversation without waking the model", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("dev-server")
+		await startTrackedSession(harness, handle)
+
+		await registry.kill(handle, USER_STOP_REASON)
+		await flush()
+
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		expect(exits[0]?.options?.triggerTurn).toBe(false)
+		expect(exits[0]?.options?.deliverAs).toBe("steer")
+		expect(exits[0]?.display).toBe(false)
+		expect(textOfMessage(exits[0])).toContain(` handle: ${handle}`)
+		// The exit is delivered after collection removed the entry: the
+		// reason must still be readable then.
+		expect(registry.getEntry(handle)).toBeUndefined()
+		expect(state.delivery.getPending(handle)).toBeUndefined()
+	})
+
+	it("a batch with a user-stopped and a natural exit still wakes the model", async () => {
+		const harness = makePiWithState()
+		const stopped = spawnRunning("stopped-one")
+		const natural = spawnRunning("natural-one")
+		await startTrackedSession(harness, stopped)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: {},
+			content: [],
+			isError: false,
+			details: { handle: natural, handoff: true, exited: false },
+		})
+
+		await registry.kill(stopped, USER_STOP_REASON)
+		await ops.exitMatching("natural-one", 0)
+		await flush()
+
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		expect((exits[0]?.details as { handles?: string[] }).handles).toEqual(expect.arrayContaining([stopped, natural]))
+		expect(exits[0]?.options?.triggerTurn).toBe(true)
 	})
 
 	it("omits remaining-cohort status from exit notices (inspection provides it)", async () => {

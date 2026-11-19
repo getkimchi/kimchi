@@ -31,6 +31,11 @@ import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
+import {
+	type BackgroundAgentItem,
+	backgroundWorkLabel,
+	registerBackgroundWorkProvider,
+} from "../../shared/background-work.js"
 import { notifyUser } from "../../utils/notify-user.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
 import { getRawErrorMessage } from "../error-preservation.js"
@@ -99,6 +104,7 @@ import {
 	type AgentRecord,
 	type AgentTaskRef,
 	type AgentVisibility,
+	isActiveStatus,
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
@@ -1104,7 +1110,7 @@ export default function (pi: ExtensionAPI) {
 					display: true,
 					details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
 				},
-				{ deliverAs: "followUp", triggerTurn: true },
+				{ deliverAs: "followUp", triggerTurn: !record.userStopped },
 			)
 		} catch (err) {
 			if (isStaleCtxError(err)) return
@@ -1153,7 +1159,7 @@ export default function (pi: ExtensionAPI) {
 						display: true,
 						details,
 					},
-					{ deliverAs: "followUp", triggerTurn: true },
+					{ deliverAs: "followUp", triggerTurn: !unconsumed.every((r) => r.userStopped) },
 				)
 			} catch (err) {
 				if (isStaleCtxError(err)) return
@@ -1499,8 +1505,35 @@ export default function (pi: ExtensionAPI) {
 		)
 	}
 
+	// Same set as manager.countAbortableBackground(): queued work plus active
+	// local background agents. Remote runs survive a user stop.
+	const userStoppableAgents = () =>
+		manager
+			.listAgents()
+			.filter((r) => r.status === "queued" || (r.isBackground === true && !r.remote && isActiveStatus(r.status)))
+	const agentItem = (record: AgentRecord): BackgroundAgentItem => ({
+		kind: "agent",
+		id: record.id,
+		label: backgroundWorkLabel(record.description),
+	})
+	let unregisterBackgroundWork: (() => void) | undefined
+
 	pi.on("session_start", async (_event, ctx) => {
 		manager.clearCompleted()
+		unregisterBackgroundWork?.()
+		unregisterBackgroundWork = registerBackgroundWorkProvider(ctx.sessionManager.getSessionId(), "agents", {
+			list: () => userStoppableAgents().map(agentItem),
+			stopAll: async () => {
+				const stopped: BackgroundAgentItem[] = []
+				for (const record of userStoppableAgents()) {
+					// Set before abort: the completion callback runs later and
+					// reads it to keep the notice from starting a turn.
+					record.userStopped = true
+					if (manager.abort(record.id)) stopped.push(agentItem(record))
+				}
+				return stopped
+			},
+		})
 		// Sessions can live in a different project than the process cwd (ACP,
 		// worktrees) — pick up that project's agents and settings.
 		reloadProjectAgentState(ctx.cwd)
@@ -1702,6 +1735,8 @@ export default function (pi: ExtensionAPI) {
 		// reload — keeps the terminal path.
 		const continuing = event.reason === "fork"
 		sessionShuttingDown = true
+		unregisterBackgroundWork?.()
+		unregisterBackgroundWork = undefined
 		manager.detachRemoteRuns()
 		unsubCtrlB?.()
 		unsubCtrlB = undefined
