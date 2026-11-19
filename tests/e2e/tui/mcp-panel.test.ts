@@ -9,7 +9,13 @@ import {
 	TUI_TEST_CONFIG,
 } from "./support/kimchi-fixture.js"
 import { mcpToolResult } from "./support/mcp-fixture.js"
-import { directMcpCall, gatewayMcpCall, modelReply, requireRequestAdvertisingTool, toolResultText } from "./support/mcp-model-script.js"
+import {
+	directMcpCall,
+	gatewayMcpCall,
+	modelReply,
+	requireRequestAdvertisingTool,
+	toolResultText,
+} from "./support/mcp-model-script.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -118,7 +124,11 @@ test("uses this session's private catalog when choosing a direct tool from the M
 			],
 		},
 		async (fixture, trace) => {
-			await sessionTurn(terminal, "Discover the private MCP catalog", "The private catalog is available in this session.")
+			await sessionTurn(
+				terminal,
+				"Discover the private MCP catalog",
+				"The private catalog is available in this session.",
+			)
 			await fixture.mcp.waitForEvent("tools_listed")
 			trace.step("private modern catalog was listed in the current session")
 
@@ -140,7 +150,11 @@ test("uses this session's private catalog when choosing a direct tool from the M
 			const directTools = saved.mcpServers?.fixture?.directTools
 			expect(directTools === true || (Array.isArray(directTools) && directTools.includes("echo"))).toBe(true)
 			const requestCount = fixture.fake.requests.length
-			await sessionTurn(terminal, "Call the private-catalog direct tool", "The private-catalog tool became a direct tool.")
+			await sessionTurn(
+				terminal,
+				"Call the private-catalog direct tool",
+				"The private-catalog tool became a direct tool.",
+			)
 			requireRequestAdvertisingTool(fixture.fake.requests.slice(requestCount), direct.modelToolName)
 			await fixture.mcp.waitForEvent("tool_called", {
 				where: { name: "echo", arguments: { message: "private-catalog-direct" } },

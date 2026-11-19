@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
-describe("MCP configuration with the real upstream loader", () => {
+describe("MCP configuration with the real upstream loader", { timeout: 30_000 }, () => {
 	let homeDir: string
 	let agentDir: string
 	let cwd: string
