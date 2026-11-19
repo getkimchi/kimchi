@@ -122,7 +122,7 @@ test("escalated prompt names the subagent in the main session; approving runs th
 			trace.step(`classifier made ${classifierRequests.length} failing request(s)`)
 
 			// Enter selects "Yes — just this call" first, matching the main session.
-			await new Promise((resolve) => setTimeout(resolve, 250))
+			await new Promise((resolve) => setTimeout(resolve, 500))
 			terminal.submit("")
 			await waitForText(terminal, "The subagent wrote the file.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
@@ -165,7 +165,7 @@ test("requires-confirmation asks with the classifier reason and risk before allo
 			expect(classifierRequests).toHaveLength(1)
 			trace.step("classifier ran once before the escalation")
 
-			await new Promise((resolve) => setTimeout(resolve, 250))
+			await new Promise((resolve) => setTimeout(resolve, 500))
 			terminal.submit("")
 			await waitForText(terminal, "The subagent wrote the file.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
@@ -199,7 +199,7 @@ test("escaping the escalated prompt denies the subagent's call", async ({ termin
 
 			// The opening input guard deliberately consumes in-flight keys,
 			// including Escape. Exercise deliberate cancellation after it expires.
-			await new Promise((resolve) => setTimeout(resolve, 250))
+			await new Promise((resolve) => setTimeout(resolve, 500))
 			terminal.keyEscape()
 			trace.step("escaped after the opening guard — the call is denied")
 

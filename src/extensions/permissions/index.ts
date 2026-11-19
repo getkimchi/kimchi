@@ -64,7 +64,7 @@ import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
-import { withBlocked } from "../herdr-events.js"
+import { createBlockedDialogActivity, withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
@@ -225,6 +225,7 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 export { notifyFermentActive }
 
 const MODE_CHANGED_ABORT_ERROR = new Error("permissions: mode changed")
+const SUBAGENT_PERMISSION_LABEL_PREFIX = "Permission (subagent): "
 
 function canPrompt(ctx: ExtensionContext, worker = false): boolean {
 	if (worker || isAgentWorker()) return false
@@ -458,6 +459,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 	 *  replace the first and orphan its promise. Escalated subagent prompts
 	 *  (requestPermission on the session's registered sink) share the queue. */
 	const promptQueue = new PromptQueue()
+	const dialogActivity = isWorker
+		? undefined
+		: createBlockedDialogActivity(pi.events, (label) => label?.startsWith(SUBAGENT_PERMISSION_LABEL_PREFIX) === true)
 	/** Mode-change reasons queued per tool call whose prompt a mode change
 	 *  dismissed. Consumed when the re-evaluation loop observes the "aborted"
 	 *  return; entries never survive the tool call's evaluation. */
@@ -1037,16 +1041,16 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 					// queue ownership and withBlocked side effects — not the worker that
 					// happened to invoke this surface through its async chain.
 					runOutsideWorkerContext(async () => {
-						const interactive = ctx.mode === "tui" && ctx.hasUI
+						const interactive = ctx.mode === "tui" && ctx.hasUI && dialogActivity
 						const prompter = interactive
-							? createEscalatedTerminalPrompter(ctx, () => lastTerminalInputAt)
+							? createEscalatedTerminalPrompter(ctx, () => lastTerminalInputAt, interactive.hasOtherDialogs)
 							: resolvePrompter(ctx)
 						if (!prompter) {
 							return Promise.reject(new Error("permissions: parent session has no prompt surface"))
 						}
 						const controller = new AbortController()
 						const unlinkWorkerAbort = linkAbortSignal(req.signal, controller)
-						const unregister = registerEscalationAbort(sessionId, req.toolCallId, controller)
+						const unregister = registerEscalationAbort(sessionId, req.toolCallId, controller, req.origin?.agentId)
 						try {
 							return await runQueuedPrompt(
 								promptQueue,
@@ -1059,7 +1063,7 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 										tool_name: req.toolName,
 										tool_use_id: req.toolCallId,
 									})
-									return withBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
+									return withBlocked(pi.events, `${SUBAGENT_PERMISSION_LABEL_PREFIX}${req.toolName}`, async () => {
 										// The answer timeout starts once this request reaches the
 										// interactive prompt instead of while it waits in the queue.
 										const timer = setTimeout(
@@ -1134,6 +1138,7 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 		}
 		parentSurface = undefined
 		parentSurfaceSessionId = undefined
+		dialogActivity?.dispose()
 		currentCtx = undefined
 		appliedPermissionMode = undefined
 		applyingPermissionMode = false
@@ -1839,6 +1844,14 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 			modeChangeSources.push(reasons.shift() as ModeChangeReason)
 			if (reasons.length === 0) pendingModeChangeDismissals.delete(dismissalKey)
 		}
+		// A worker stop is a terminal decision, not a mode change. Return a
+		// real block instead of the legacy bare "aborted" sentinel.
+		const settleWorkerAbort = (result: PromptOutcome): PromptOutcome => {
+			if (options.role === "worker" && result === "aborted" && ctx.signal?.aborted) {
+				return { block: true, reason: "Subagent was stopped before the permission request was answered." }
+			}
+			return result
+		}
 		/** Prompt settlement, shared by all three prompt sites: a prompt
 		 *  dismissed by a mode change resolves "aborted" — consume the recorded
 		 *  dismissal source and report that the loop should re-evaluate under
@@ -2098,8 +2111,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 								CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE,
 							)
 							if (escalated) {
-								if (promptAbortedByModeChange(escalated.result)) continue // mode changed, re-evaluate
-								return escalated.result
+								const settledOutcome = settleWorkerAbort(escalated.result)
+								if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+								return settledOutcome
 							}
 							reportClassifierNotice(ctx, classifierBlockedNotice(toolName, verdict.failureCode), "warning")
 							emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
@@ -2123,8 +2137,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 							permissionMode: mode,
 							promptQueue,
 						})
-						if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
-						return result
+						const settledOutcome = settleWorkerAbort(result)
+						if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+						return settledOutcome
 					}
 					if (verdict.verdict === "safe") {
 						emitToolDecision(pi, event, mode, "accept", "classifier")
@@ -2141,8 +2156,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 							verdict.riskScore,
 						)
 						if (escalated) {
-							if (promptAbortedByModeChange(escalated.result)) continue // mode changed, re-evaluate
-							return escalated.result
+							const settledOutcome = settleWorkerAbort(escalated.result)
+							if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+							return settledOutcome
 						}
 						emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
 						return {
@@ -2167,8 +2183,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 						worker: isWorker,
 						promptQueue,
 					})
-					if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
-					return result
+					const settledOutcome = settleWorkerAbort(result)
+					if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+					return settledOutcome
 				}
 
 				// Prompt site — branch to compound or single-command flow
@@ -2189,8 +2206,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 								worker: isWorker,
 								promptQueue,
 							})
-							if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
-							return result
+							const settledOutcome = settleWorkerAbort(result)
+							if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+							return settledOutcome
 						}
 					}
 				}
@@ -2205,8 +2223,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 					worker: isWorker,
 					promptQueue,
 				})
-				if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
-				return result
+				const settledOutcome = settleWorkerAbort(result)
+				if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+				return settledOutcome
 			}
 
 			// Exhausted re-evaluation attempts — fail closed.

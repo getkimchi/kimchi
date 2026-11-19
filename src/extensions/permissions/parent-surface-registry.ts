@@ -38,33 +38,46 @@ export interface ParentSurface {
 }
 
 const bySessionId = new Map<string, ParentSurface[]>()
-const pendingRequests = new Map<string, Map<string, AbortController>>()
+const pendingRequests = new Map<string, Map<string, Map<string, AbortController>>>()
+const UNKNOWN_AGENT_KEY = "unknown-agent"
 
-/** Keep an abortable parent prompt linked to its request for cancellation and cleanup. */
+/** Keep an abortable parent prompt linked to its worker and call for cancellation and cleanup. */
 export function registerEscalationAbort(
 	sessionId: string,
 	toolCallId: string,
 	controller: AbortController,
+	agentId?: string,
 ): () => void {
-	let requests = pendingRequests.get(sessionId)
+	const agentKey = agentId ?? UNKNOWN_AGENT_KEY
+	let requestsByAgent = pendingRequests.get(sessionId)
+	if (!requestsByAgent) {
+		requestsByAgent = new Map<string, Map<string, AbortController>>()
+		pendingRequests.set(sessionId, requestsByAgent)
+	}
+	let requests = requestsByAgent.get(agentKey)
 	if (!requests) {
 		requests = new Map<string, AbortController>()
-		pendingRequests.set(sessionId, requests)
+		requestsByAgent.set(agentKey, requests)
 	}
 	requests.set(toolCallId, controller)
 	return () => {
-		const current = pendingRequests.get(sessionId)
+		const byAgent = pendingRequests.get(sessionId)
+		if (!byAgent) return
+		const current = byAgent.get(agentKey)
 		if (current?.get(toolCallId) !== controller) return
 		current.delete(toolCallId)
-		if (current.size === 0) pendingRequests.delete(sessionId)
+		if (current.size === 0) byAgent.delete(agentKey)
+		if (byAgent.size === 0) pendingRequests.delete(sessionId)
 	}
 }
 
 /** Withdraw every escalated request currently owned by a parent session. */
 export function cancelEscalatedRequests(sessionId: string, reason: unknown): void {
-	const requests = pendingRequests.get(sessionId)
-	if (!requests) return
-	for (const controller of requests.values()) controller.abort(reason)
+	const requestsByAgent = pendingRequests.get(sessionId)
+	if (!requestsByAgent) return
+	for (const requests of requestsByAgent.values()) {
+		for (const controller of requests.values()) controller.abort(reason)
+	}
 	pendingRequests.delete(sessionId)
 }
 
