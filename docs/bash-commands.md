@@ -26,6 +26,12 @@ The conversation shows one Bash header with its purpose, or the command when no 
 
 Opening and closing the inspector does not stop the command, extend its deadline or ask the model another question. A selected command's final output remains readable if it exits while the inspector is open. Escape closes the inspector; it does not cancel the running command.
 
+## Stopping background commands
+
+Esc ends the turn. It never stops a background command by itself. If commands or background agents are still running when you press Esc, Kimchi asks whether to stop them. During a turn, the question appears after the turn ends; while idle, it appears at once. The dialog lists what is running. **Keep running** is the default: Enter on it, or Esc, keeps everything running. **Stop all** (move down and press Enter, or press `2`) stops every listed command and agent and shows one notice, such as `Stopped 1 command`. Stopping this way does not start a new model turn; the model sees the result on its next turn. If nothing is running, Esc behaves as before.
+
+This is TUI-only. While background work runs, a double Esc no longer opens the session tree, because the first Esc opens this dialog. `/tree` still works.
+
 This view covers managed Bash commands in the current session. Direct `!` shell commands, daemons, commands in worker sessions and unrelated operating-system processes have separate lifecycles. Managed Bash commands stop when the session shuts down.
 
 Compound command approval shows the original script, including quoting. **Allow all for this session** appears only when every required permission can be remembered. Scripts that cannot be safely represented by reusable rules explain that they need approval each time and offer **Run all (once)**.
