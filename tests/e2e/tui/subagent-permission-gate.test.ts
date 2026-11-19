@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { fullText, STREAM_TIMEOUT_MS, waitForRequest, waitForText } from "./support/assertions.js"
+import { fullText, STREAM_TIMEOUT_MS, viewText, waitForRequest, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -22,6 +22,8 @@ const CLASSIFIER_MODEL = {
 }
 const MODELS = [MAIN_MODEL, CLASSIFIER_MODEL]
 const ALLOW_PROMPT = "Allow the assistant to run this?"
+const WAITING_STATUS = "its prompt opens when the input is empty"
+const SUBAGENT_PROMPT_HEADER = "Subagent General-Purpose — write output file wants to run:"
 const WRITE_ARGS = JSON.stringify({ path: "output.txt", content: "hello world" })
 
 function agentCall(background = false) {
@@ -277,6 +279,9 @@ test("a subagent approval waits for the draft instead of accepting typed keys", 
 			if (!releaseChild) throw new Error("child release was not initialized")
 			releaseChild()
 			await waitForText(terminal, "is waiting for permission", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			// The toast fades; the info line above the status line stays while
+			// the prompt is held back.
+			await waitForText(terminal, WAITING_STATUS, { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			expect(fullText(terminal)).toContain(draft)
 			expect(fullText(terminal)).not.toContain(ALLOW_PROMPT)
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
@@ -288,6 +293,7 @@ test("a subagent approval waits for the draft instead of accepting typed keys", 
 			terminal.submit("")
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
 			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(viewText(terminal)).not.toContain(WAITING_STATUS)
 			await new Promise((resolve) => setTimeout(resolve, 500))
 			terminal.submit("")
 			await waitForText(terminal, "CHILD-DRAFT-APPROVED", { timeoutMs: STREAM_TIMEOUT_MS })
@@ -438,6 +444,90 @@ test("a questionnaire opened after the subagent prompt stays answerable", async 
 			await waitForText(terminal, "CHILD-QUESTION-AFTER-PROMPT-APPROVED", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
 			trace.step("the selector returns and its first choice approves the write")
+		},
+	)
+})
+
+test("the session's own prompt waits behind a visible subagent prompt; both are answered", async ({ terminal }) => {
+	let releaseParentWrite: (() => void) | undefined
+	const parentWriteHold = new Promise<void>((resolve) => {
+		releaseParentWrite = resolve
+	})
+	const needsConfirmation = '{"verdict":"requires-confirmation","reason":"Needs a human decision","riskScore":"high"}'
+	const waitForFile = async (name: string, workDir: string) => {
+		const startedAt = Date.now()
+		while (Date.now() - startedAt < STREAM_TIMEOUT_MS) {
+			if (existsSync(join(workDir, name))) return
+			await new Promise((resolve) => setTimeout(resolve, 100))
+		}
+		throw new Error(`Timed out waiting for ${name} to be written`)
+	}
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "subagent-prompt-before-own-prompt",
+			providerId: "kimchi-dev",
+			models: MODELS,
+			extraArgs: ["--auto"],
+			responses: [
+				{ stream: ["Delegating in background."], toolCalls: [agentCall(true)] },
+				{
+					forSubagent: true,
+					stream: ["I'll create the file."],
+					toolCalls: [{ function: { name: "write", arguments: WRITE_ARGS } }],
+				},
+				{
+					holdUntil: parentWriteHold,
+					stream: ["Writing my own file."],
+					toolCalls: [
+						{
+							function: {
+								name: "write",
+								arguments: JSON.stringify({ path: "main.txt", content: "from the main agent" }),
+							},
+						},
+					],
+				},
+				{ match: (request) => isClassifierRequest(request.body), stream: [needsConfirmation] },
+				{ match: (request) => isClassifierRequest(request.body), stream: [needsConfirmation] },
+				{ stream: ["CHILD-BEFORE-OWN-PROMPT-APPROVED"], forSubagent: true },
+				{ stream: ["PARENT-OWN-WRITE-DONE"] },
+				{ stream: ["PARENT-OWN-WRITE-DONE"] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Start a background subagent to create output.txt")
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(viewText(terminal)).toContain(SUBAGENT_PROMPT_HEADER)
+			trace.step("subagent selector is visible")
+
+			if (!releaseParentWrite) throw new Error("parent write release was not initialized")
+			releaseParentWrite()
+			const classifierRequests = () => fixture.fake.requests.filter((request) => isClassifierRequest(request.body))
+			await waitForRequest(
+				fixture.fake.requests,
+				() => classifierRequests().length >= 2,
+				"the classifier request for the main agent's own write",
+			)
+			// Longer than the opening guard and several polls of the dialog watcher:
+			// the queued prompt of the session itself must not withdraw this one.
+			await new Promise((resolve) => setTimeout(resolve, 600))
+			expect(viewText(terminal)).toContain(SUBAGENT_PROMPT_HEADER)
+			expect(existsSync(join(fixture.workDir, "main.txt"))).toBe(false)
+			trace.step("the session's own prompt is queued; the subagent's stays answerable")
+
+			terminal.submit("")
+			await waitForFile("output.txt", fixture.workDir)
+			trace.step("the subagent's write is approved and runs")
+
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).not.toContain(SUBAGENT_PROMPT_HEADER)
+			expect(existsSync(join(fixture.workDir, "main.txt"))).toBe(false)
+			await new Promise((resolve) => setTimeout(resolve, 300))
+			terminal.submit("")
+			await waitForFile("main.txt", fixture.workDir)
+			await waitForText(terminal, "PARENT-OWN-WRITE-DONE", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("the session's own prompt opens next and its write runs")
 		},
 	)
 })

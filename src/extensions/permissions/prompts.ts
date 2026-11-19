@@ -257,10 +257,16 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	let choice: string | undefined
 	try {
 		if (!withdrawn) {
-			const pendingSelect = withWorkingHidden(ctx, () =>
-				ctx.ui.select(lines.join("\n"), choices, { signal: selectionAbort.signal }),
+			// The race sits inside withWorkingHidden: a selector that lost its
+			// slot never settles, and must not keep the working animation paused.
+			choice = await withWorkingHidden(
+				ctx,
+				() => {
+					const pendingSelect = ctx.ui.select(lines.join("\n"), choices, { signal: selectionAbort.signal })
+					return opts.onForeignDialog ? Promise.race([pendingSelect, withdrawal]) : pendingSelect
+				},
+				{ keepHidden: () => withdrawn },
 			)
-			choice = opts.onForeignDialog ? await Promise.race([pendingSelect, withdrawal]) : await pendingSelect
 		}
 	} finally {
 		stopWatching?.()

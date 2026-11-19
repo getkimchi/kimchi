@@ -80,24 +80,64 @@ describe("withBlocked", () => {
 		])
 	})
 
-	it("counts agent-driven nested dialogs but excludes this subagent's own selector", async () => {
+	it("counts nested dialogs and subtracts the caller's own activations", async () => {
 		const { events } = createMiniEventBus()
-		const activity = createBlockedDialogActivity(
-			events,
-			(label) => label?.startsWith("Permission (subagent):") === true,
-		)
-		let resolveDialog!: () => void
-		const waiting = withBlocked(
+		let own = 0
+		const activity = createBlockedDialogActivity(events, () => own)
+		let resolveOwn!: () => void
+		own += 1
+		const ownPrompt = withBlocked(
 			events,
 			"Permission (subagent): bash",
-			() => new Promise<void>((resolve) => (resolveDialog = resolve)),
-		)
+			() => new Promise<void>((resolve) => (resolveOwn = resolve)),
+		).finally(() => {
+			own -= 1
+		})
 		expect(activity.hasOtherDialogs()).toBe(false)
+
+		let resolveInner!: () => void
 		const questionnaire = withBlocked(events, "Questionnaire", () =>
-			withBlocked(events, "Ferment choice", () => waiting),
+			withBlocked(events, "Ferment choice", () => new Promise<void>((resolve) => (resolveInner = resolve))),
 		)
 		expect(activity.hasOtherDialogs()).toBe(true)
-		resolveDialog()
+		resolveInner()
+		await questionnaire
+		expect(activity.hasOtherDialogs()).toBe(false)
+
+		resolveOwn()
+		await ownPrompt
+		expect(activity.hasOtherDialogs()).toBe(false)
+		activity.dispose()
+	})
+
+	it("keeps a foreign dialog counted when one of the caller's own prompts closes", async () => {
+		// A deactivation carries no label. Filtering activations by label would
+		// let the own prompt's deactivation close the questionnaire in the tally.
+		const { events } = createMiniEventBus()
+		let own = 0
+		const activity = createBlockedDialogActivity(events, () => own)
+		let resolveOwn!: () => void
+		own += 1
+		const ownPrompt = withBlocked(
+			events,
+			"Permission: write",
+			() => new Promise<void>((resolve) => (resolveOwn = resolve)),
+		).finally(() => {
+			own -= 1
+		})
+		let resolveQuestionnaire!: () => void
+		const questionnaire = withBlocked(
+			events,
+			"Questionnaire",
+			() => new Promise<void>((resolve) => (resolveQuestionnaire = resolve)),
+		)
+		expect(activity.hasOtherDialogs()).toBe(true)
+
+		resolveOwn()
+		await ownPrompt
+		expect(activity.hasOtherDialogs()).toBe(true)
+
+		resolveQuestionnaire()
 		await questionnaire
 		expect(activity.hasOtherDialogs()).toBe(false)
 		activity.dispose()

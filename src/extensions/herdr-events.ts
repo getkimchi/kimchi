@@ -62,23 +62,24 @@ export interface BlockedDialogActivity {
 }
 
 /**
- * Track agent-driven blocked dialogs on one parent's bus. Callers exclude
- * their own permission selector by label; nested dialogs retain their depth.
+ * Track agent-driven blocked dialogs on one parent's bus; nested dialogs
+ * retain their depth.
+ *
+ * `ownDepth` reports how many of the open activations belong to the caller.
+ * They are subtracted by count, not filtered by label: a deactivation carries
+ * no label, so a label filter would skip an activation and still count its
+ * deactivation, closing someone else's dialog in the tally.
  */
-export function createBlockedDialogActivity(
-	events: EventBus,
-	isOwnLabel: (label: string | undefined) => boolean = () => false,
-): BlockedDialogActivity {
+export function createBlockedDialogActivity(events: EventBus, ownDepth: () => number = () => 0): BlockedDialogActivity {
 	let depth = 0
 	let disposed = false
 	const unsubscribe = events.on(HERDR_EVENTS.BLOCKED, (value) => {
 		const payload = value as HerdrBlockedPayload
-		if (isOwnLabel(payload.label)) return
 		if (payload.active) depth += 1
 		else depth = Math.max(0, depth - 1)
 	})
 	return {
-		hasOtherDialogs: () => !disposed && depth > 0,
+		hasOtherDialogs: () => !disposed && depth - ownDepth() > 0,
 		dispose() {
 			if (disposed) return
 			disposed = true

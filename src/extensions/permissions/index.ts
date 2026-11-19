@@ -225,7 +225,30 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 export { notifyFermentActive }
 
 const MODE_CHANGED_ABORT_ERROR = new Error("permissions: mode changed")
-const SUBAGENT_PERMISSION_LABEL_PREFIX = "Permission (subagent): "
+
+/** Open or queued permission prompts per event bus (a session's own and its
+ *  subagents'). The prompt queue shows them one at a time, so an escalated
+ *  prompt must not count them as foreign dialogs: it would step aside for a
+ *  prompt that is queued behind it, and neither would ever be shown. */
+const permissionPromptDepth = new WeakMap<ExtensionAPI["events"], number>()
+
+/** `withBlocked` for a prompt that goes through the prompt queue. */
+async function withPermissionBlocked<T>(
+	events: ExtensionAPI["events"],
+	label: string,
+	fn: () => Promise<T>,
+): Promise<T> {
+	permissionPromptDepth.set(events, (permissionPromptDepth.get(events) ?? 0) + 1)
+	return withBlocked(events, label, async () => {
+		try {
+			return await fn()
+		} finally {
+			// Before the deactivation is emitted: for a moment the tally is one
+			// too high, never one too low.
+			permissionPromptDepth.set(events, Math.max(0, (permissionPromptDepth.get(events) ?? 1) - 1))
+		}
+	})
+}
 
 function canPrompt(ctx: ExtensionContext, worker = false): boolean {
 	if (worker || isAgentWorker()) return false
@@ -461,7 +484,7 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 	const promptQueue = new PromptQueue()
 	const dialogActivity = isWorker
 		? undefined
-		: createBlockedDialogActivity(pi.events, (label) => label?.startsWith(SUBAGENT_PERMISSION_LABEL_PREFIX) === true)
+		: createBlockedDialogActivity(pi.events, () => permissionPromptDepth.get(pi.events) ?? 0)
 	/** Mode-change reasons queued per tool call whose prompt a mode change
 	 *  dismissed. Consumed when the re-evaluation loop observes the "aborted"
 	 *  return; entries never survive the tool call's evaluation. */
@@ -1063,7 +1086,7 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 										tool_name: req.toolName,
 										tool_use_id: req.toolCallId,
 									})
-									return withBlocked(pi.events, `${SUBAGENT_PERMISSION_LABEL_PREFIX}${req.toolName}`, async () => {
+									return withPermissionBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
 										// The answer timeout starts once this request reaches the
 										// interactive prompt instead of while it waits in the queue.
 										const timer = setTimeout(
@@ -2341,7 +2364,7 @@ async function handleConfirm(
 			})
 		}
 
-		return await withBlocked(opts.pi.events, `Permission: ${event.toolName}`, async () => {
+		return await withPermissionBlocked(opts.pi.events, `Permission: ${event.toolName}`, async () => {
 			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
@@ -2407,7 +2430,7 @@ export async function handleCompoundConfirm(
 			tool_use_id: event.toolCallId,
 		})
 
-		return await withBlocked(opts.pi.events, `Permission: ${event.toolName} (compound)`, async () => {
+		return await withPermissionBlocked(opts.pi.events, `Permission: ${event.toolName} (compound)`, async () => {
 			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,

@@ -61,6 +61,8 @@ export async function waitForEscalatedInput(
 	notice: string,
 	hasOtherDialogs: HasOtherDialogs,
 	timing: EscalatedInteractionTiming = DEFAULT_TIMING,
+	/** Called once, when the request is first held back. */
+	onDeferred?: () => void,
 ): Promise<void> {
 	if (ctx.mode !== "tui" || !ctx.hasUI) return
 	let notified = false
@@ -68,6 +70,7 @@ export async function waitForEscalatedInput(
 		if (signal.aborted) throw signal.reason ?? new Error("Permission prompt aborted")
 		if (!notified) {
 			ctx.ui.notify(notice, "info")
+			onDeferred?.()
 			notified = true
 		}
 		await waitForPoll(signal, timing.pollMs)
@@ -112,6 +115,7 @@ export function watchEscalatedDialog(
 	return stop
 }
 
+/** Rendered by the status line's info row (components/status-line.ts). */
 const WAITING_STATUS_KEY = "permission-subagent-wait"
 
 function originLabel(origin: PermissionOrigin | undefined): string {
@@ -143,14 +147,39 @@ export function createEscalatedTerminalPrompter(
 			const requestSignal = req.signal ?? selectionController.signal
 			const hasForeignDialog = () => isRawInputCaptureActive() || hasOtherDialogs()
 			const notice = `Subagent ${originLabel(req.origin)} is waiting for permission. Its prompt will open when the input editor is empty and no other dialog is active.`
-			ctx.ui.setStatus(WAITING_STATUS_KEY, notice)
+			// The toast above fades; this line stays for as long as the prompt
+			// is held back, and goes away once the selector is on screen.
+			const status = `Subagent ${req.origin?.persona ?? "assistant"} is waiting for permission · its prompt opens when the input is empty and no dialog is open`
+			let statusShown = false
+			const showStatus = () => {
+				statusShown = true
+				ctx.ui.setStatus(WAITING_STATUS_KEY, status)
+			}
+			const clearStatus = () => {
+				if (!statusShown) return
+				statusShown = false
+				ctx.ui.setStatus(WAITING_STATUS_KEY, undefined)
+			}
+			// A selector that gave way to another dialog leaves the working
+			// indicator hidden for that dialog to restore (see promptForApproval).
+			let workingLeftHidden = false
 			try {
 				while (true) {
 					try {
-						await waitForEscalatedInput(ctx, lastInputAt, requestSignal, notice, hasForeignDialog)
+						await waitForEscalatedInput(
+							ctx,
+							lastInputAt,
+							requestSignal,
+							notice,
+							hasForeignDialog,
+							DEFAULT_TIMING,
+							showStatus,
+						)
 					} catch (error) {
 						if (requestSignal.aborted) return { kind: "aborted" }
 						throw error
+					} finally {
+						clearStatus()
 					}
 					attachParentAbort()
 					const outcome = await promptForApproval({
@@ -175,13 +204,20 @@ export function createEscalatedTerminalPrompter(
 								selectionController.signal,
 							),
 					})
-					if (outcome.kind !== "aborted" || requestSignal.aborted) return outcome
+					if (outcome.kind !== "aborted" || requestSignal.aborted) {
+						workingLeftHidden = false
+						return outcome
+					}
 					// A different dialog withdrew this selection. The old selector
 					// is left alone; a fresh one is opened after it finishes.
+					workingLeftHidden = true
 				}
 			} finally {
 				detachParentAbort()
-				ctx.ui.setStatus(WAITING_STATUS_KEY, undefined)
+				clearStatus()
+				// The request ended while held back. If the dialog we gave way to
+				// is gone and did not restore the indicator itself, nobody else will.
+				if (workingLeftHidden && !hasForeignDialog()) ctx.ui.setWorkingVisible?.(true)
 			}
 		},
 	}

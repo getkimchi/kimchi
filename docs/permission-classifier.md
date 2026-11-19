@@ -91,17 +91,19 @@ score. Compound bash commands get one prompt for the whole call.
 
 The TUI selector keeps the same choice order as the main session. It waits for
 an empty editor, a quiet keyboard, and no active tracked dialog instead of
-stealing focus. A persistent status-line entry names the waiting subagent and
-explains when its prompt will open. Input already on its way is ignored for 500
-ms after the selector opens.
+stealing focus. While it is held back, a notice names the waiting subagent and a
+line above the status line stays until the prompt opens. Input already on its
+way is ignored for 500 ms after the selector opens.
 
 Coverage includes the editor, dialogs that claim raw input (including
 questionnaires), and other agent-driven dialogs announced through `withBlocked`.
 When one takes the editor slot, the old selector's wait is withdrawn locally
 without aborting it. The foreground dialog stays usable, and a fresh selector is
-opened after it closes. Menus opened directly by the user, such as `/agents` and
-the model picker, have only the usual one-second quiet-input protection; they do
-not have the same tracked-dialog coverage.
+opened after it closes. Permission prompts are not tracked dialogs for each
+other: they already share one queue, so the main session's own prompt waits
+behind a subagent's prompt that is open or held back. Menus opened directly by
+the user, such as `/agents` and the model picker, have only the usual one-second
+quiet-input protection; they do not have the same tracked-dialog coverage.
 
 The remembered rule is written to the child's own session memory, not the
 parent's, and survives `session_shutdown` and `session_start` when that same
