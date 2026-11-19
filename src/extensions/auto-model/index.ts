@@ -73,10 +73,6 @@ function routedEntry(resolution: RoutedModelResolution, requestedId: string): Pe
 	}
 }
 
-function routedIdOf(resolution: RoutedModelResolution): string {
-	return resolution.kind === "unknown" ? resolution.rawId : resolution.model.id
-}
-
 /** Rendered when the backend routes a request to a concrete model. */
 function formatRoutedPickNotice(requestedId: string, routedId: string): string {
 	return `${requestedId} picked ${routedId}.`
@@ -246,16 +242,14 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 		if (message.provider !== AUTO_MODEL_PROVIDER) return
 		if (!message.responseModel || message.responseModel === message.model) return
 
-		const resolution = resolveRoutedModel(message.provider, message.responseModel, ctx.modelRegistry)
-		const routedId = routedIdOf(resolution)
+		// The reported pick is the dedup key: both resolver branches return a model
+		// whose id equals `responseModel`, so the catalog lookup can sit behind the
+		// guard. `message_update` fires per streamed chunk and the sibling fallback
+		// scans the whole catalog — resolving first would rescan per token.
+		if (lastNotifiedModel.get(sessionId) === message.responseModel) return
+		lastNotifiedModel.set(sessionId, message.responseModel)
 
-		// Announce only when the routed model changed, so a session that keeps
-		// landing on the same concrete model isn't spammed. Grouping the state
-		// write, capability sync, and notice behind this guard is what makes the
-		// (per-token) `message_update` path safe: these run once per pick, not
-		// once per streamed token.
-		if (lastNotifiedModel.get(sessionId) === routedId) return
-		lastNotifiedModel.set(sessionId, routedId)
+		const resolution = resolveRoutedModel(message.provider, message.responseModel, ctx.modelRegistry)
 
 		// Backend-reachable concrete model: record it and re-sync capabilities
 		// to its real window/tokens so compaction and thinking controls match.

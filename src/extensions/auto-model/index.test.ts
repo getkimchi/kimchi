@@ -224,6 +224,24 @@ describe("auto-model extension", () => {
 		expect(setModel).toHaveBeenCalledTimes(1)
 	})
 
+	it("resolves a sibling pick once, not once per streamed update", () => {
+		// The sibling fallback scans the whole catalog, so the dedup guard must
+		// run before resolution: message_update fires per token.
+		const { getHandler, getAppendedEntries } = setup()
+		const target = model("claude-haiku-5-5", { provider: "kimchi-dev/anthropic" })
+		const find = vi.fn(() => undefined)
+		const getAll = vi.fn(() => [target])
+		const c = ctx({ modelRegistry: { find, getAll } })
+		const onMessageUpdate = getHandler<MessageUpdateEvent>("message_update")
+
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+
+		expect(getAll).toHaveBeenCalledTimes(1)
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(1)
+	})
+
 	it("does not re-cap a model selected while the routed request was in flight", () => {
 		// The user switched from auto to a concrete model while the request was
 		// streaming. The routed response still names kimi-k3; syncing it onto
