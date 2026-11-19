@@ -32,6 +32,7 @@ export class PromptEditor extends CustomEditor {
 	private readonly appTheme: Theme
 	private readonly kb: KeybindingsManager
 	private expandHandler?: () => void
+	private afterEscapeHandler?: () => void
 	private _pendingImageIndicator: string | null = null
 	private _sessionIndicator: string | null = null
 	private _ideSelectionIndicator: string | null = null
@@ -68,6 +69,11 @@ export class PromptEditor extends CustomEditor {
 
 	setExpandHandler(handler: () => void) {
 		this.expandHandler = handler
+	}
+
+	/** Called after the editor handled Esc as an interrupt (not when Esc only closed autocomplete). */
+	setAfterEscapeHandler(handler: (() => void) | undefined): void {
+		this.afterEscapeHandler = handler
 	}
 
 	/**
@@ -138,6 +144,8 @@ export class PromptEditor extends CustomEditor {
 			this.expandHandler()
 			return
 		}
+		// Read before dispatch: an Esc that closes autocomplete hides it.
+		const isInterrupt = this.kb.matches(data, "app.interrupt") && !this.isShowingAutocomplete()
 		const markersBefore = this.imageMarkersPresent()
 		this.atomicMarkerDeleteRan = false
 		this.dispatchInput(data)
@@ -145,6 +153,8 @@ export class PromptEditor extends CustomEditor {
 		if (!setsEqual(markersBefore, markersAfter)) {
 			this.onImageMarkersEdited?.(markersAfter, this.atomicMarkerDeleteRan ? "atomic-marker-delete" : undefined)
 		}
+		// Upstream's own Esc handling has run first and unchanged.
+		if (isInterrupt) this.afterEscapeHandler?.()
 	}
 
 	private dispatchInput(data: string): void {

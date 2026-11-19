@@ -60,6 +60,15 @@ test("new session drains cancelled Bash work and resuming the old session starts
 			if (typeof sessionId !== "string") throw new Error("Missing session id")
 			terminal.keyPress(Key.Escape)
 			await waitForText(terminal, /[Oo]peration (?:was )?aborted/, { timeoutMs: STREAM_TIMEOUT_MS })
+			// Esc with background work still running asks whether to stop it
+			// ("Running shell command cannot be cancelled mid-execution").
+			// Esc in that dialog keeps the command running.
+			await waitForText(terminal, "Background work is still running", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.keyPress(Key.Escape)
+			await waitForText(terminal, (text) => !text.includes("Background work is still running"), {
+				timeoutMs: STREAM_TIMEOUT_MS,
+				full: false,
+			})
 			process.kill(pid, 0)
 			trace.step("cancelled wait leaves managed work alive")
 			terminal.submit("/new")

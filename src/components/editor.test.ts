@@ -541,4 +541,46 @@ describe("PromptEditor", () => {
 			expect(lines[1].startsWith("❯ ")).toBe(true)
 		})
 	})
+
+	describe("after-Esc handler", () => {
+		const ESC = "\x1b"
+		const interruptKeybindings = () =>
+			makeKeybindings({ matches: (data, action) => action === "app.interrupt" && data === ESC })
+
+		it("runs upstream's onEscape first, then the after-Esc handler", () => {
+			const { editor } = makeEditor(interruptKeybindings())
+			const calls: string[] = []
+			editor.onEscape = () => calls.push("upstream")
+			editor.setAfterEscapeHandler(() => calls.push("after"))
+			editor.handleInput(ESC)
+			expect(calls).toEqual(["upstream", "after"])
+		})
+
+		it("does not run while autocomplete is showing", () => {
+			const { editor } = makeEditor(interruptKeybindings())
+			const after = vi.fn()
+			editor.setAfterEscapeHandler(after)
+			vi.spyOn(editor, "isShowingAutocomplete").mockReturnValue(true)
+			editor.handleInput(ESC)
+			expect(after).not.toHaveBeenCalled()
+		})
+
+		it("never runs for other keys", () => {
+			const { editor } = makeEditor(interruptKeybindings())
+			const after = vi.fn()
+			editor.setAfterEscapeHandler(after)
+			editor.handleInput("a")
+			editor.handleInput("\r")
+			expect(after).not.toHaveBeenCalled()
+		})
+
+		it("stops running once the handler is cleared", () => {
+			const { editor } = makeEditor(interruptKeybindings())
+			const after = vi.fn()
+			editor.setAfterEscapeHandler(after)
+			editor.setAfterEscapeHandler(undefined)
+			editor.handleInput(ESC)
+			expect(after).not.toHaveBeenCalled()
+		})
+	})
 })

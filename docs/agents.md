@@ -370,6 +370,15 @@ worker. Quitting the process aborts all local agents. In all cases remote
 agents are only detached locally — their work on the worker continues and is
 resumable; explicitly stopping a remote agent still cancels its remote turn.
 
+In the TUI, Esc ends the turn but never stops a background agent by itself.
+If local background agents (or background Bash commands) are still running,
+Esc asks whether to stop them. **Keep running** is the default, and Esc in the
+dialog keeps them running. **Stop all** (or `2`) aborts every queued and
+running local background agent as a user stop: the completion notice is still
+recorded, but it does not start a new parent turn. Cloud agents are not
+listed and keep running. Ctrl+X still stops the most recent background agent.
+See [bash-commands.md](bash-commands.md#stopping-background-commands).
+
 Remote runs belong to their originating session. Resuming that session reattaches
 to work still running on the worker, or restores a saved result and its completion
 menu. Finished output is persisted as `remote_run:state` with `completionPending`
