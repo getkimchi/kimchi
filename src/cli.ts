@@ -9,6 +9,7 @@ import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@eare
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
+	forwardAdditionalSkillPathsToPi,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -1116,6 +1117,10 @@ async function cliMain(): Promise<void> {
 				await runAcpMode({
 					extensionFactories,
 					agentDir,
+					// Process-scoped skill roots from --additionalSkillsPaths. Only the
+					// ACP mode consumes them; the existing --skill behavior stays on
+					// upstream pi and is deliberately not forwarded here.
+					additionalSkillPaths: getParsedCliArgs().options.additionalSkillsPaths,
 					...(mcpAdapterExtensions.length > 0
 						? {
 								mcpExtensionFactory: createKimchiMcpAdapterExtension,
@@ -1125,9 +1130,11 @@ async function cliMain(): Promise<void> {
 					appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
 				})
 			} else {
-				// Delegate to pi-mono's CLI main function, injecting the kimchi extension
+				// Delegate to pi-mono's CLI main function, injecting the kimchi extension.
+				// --additionalSkillsPaths is Kimchi-local: rewrite it into upstream pi's
+				// repeatable --skill contract so non-ACP modes never see the raw flag.
 				const { main } = await import("@earendil-works/pi-coding-agent")
-				await main(rawArgsWithoutMultiModel, { extensionFactories })
+				await main(forwardAdditionalSkillPathsToPi(rawArgsWithoutMultiModel), { extensionFactories })
 			}
 			applyPostMainInfrastructureExitPolicy(
 				infrastructureErrorTracker.getFailure(),

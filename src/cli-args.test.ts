@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
 	CACHEABLE_OPTION_NAMES,
 	CLI_OPTIONS,
+	forwardAdditionalSkillPathsToPi,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -130,6 +131,7 @@ describe("isPreDispatchValueFlag", () => {
 		["--extension"],
 		["-e"],
 		["--skill"],
+		["--additionalSkillsPaths"],
 		["--prompt-template"],
 		["--theme"],
 	])("detects %s as consuming a value during pre-dispatch scans", (arg) => {
@@ -144,6 +146,28 @@ describe("isPreDispatchValueFlag", () => {
 		["fix tests"],
 	])("does not treat %s as a value flag", (arg) => {
 		expect(isPreDispatchValueFlag(arg)).toBe(false)
+	})
+})
+
+describe("additionalSkillsPaths parsing", () => {
+	it("collects repeated flags into an ordered array", () => {
+		populateCliArgs(["--additionalSkillsPaths", "/tmp/first", "--additionalSkillsPaths", "/tmp/second"])
+		expect(getParsedCliArgs().options.additionalSkillsPaths).toEqual(["/tmp/first", "/tmp/second"])
+		populateCliArgs([])
+	})
+
+	it("accepts the --flag=value form and mixes it with the spaced form", () => {
+		populateCliArgs(["--additionalSkillsPaths=/tmp/first", "--additionalSkillsPaths", "/tmp/second"])
+		expect(getParsedCliArgs().options.additionalSkillsPaths).toEqual(["/tmp/first", "/tmp/second"])
+		populateCliArgs([])
+	})
+
+	it("does not split comma-joined values and stays undefined when absent", () => {
+		// No comma-separated parsing: one flag is one path.
+		populateCliArgs(["--additionalSkillsPaths", "/a,/b"])
+		expect(getParsedCliArgs().options.additionalSkillsPaths).toEqual(["/a,/b"])
+		populateCliArgs([])
+		expect(getParsedCliArgs().options.additionalSkillsPaths).toBeUndefined()
 	})
 })
 
@@ -417,6 +441,92 @@ describe("boolean =-form normalization", () => {
 		expect(() => populateCliArgs(["--yolo=1", "fix tests"])).toThrow(
 			/--yolo expects a boolean \(=true or =false\); got --yolo="1"/,
 		)
+	})
+})
+
+describe("forwardAdditionalSkillPathsToPi", () => {
+	it.each([
+		["empty args stay empty", [], []],
+		[
+			"no flag: args pass through unchanged",
+			["--model", "cast/gpt-5", "fix tests"],
+			["--model", "cast/gpt-5", "fix tests"],
+		],
+		["separated form becomes --skill", ["--additionalSkillsPaths", "/tmp/first"], ["--skill", "/tmp/first"]],
+		["equals form becomes --skill", ["--additionalSkillsPaths=/tmp/first"], ["--skill", "/tmp/first"]],
+		[
+			"multiple paths keep their order across forms",
+			[
+				"--additionalSkillsPaths",
+				"/tmp/first",
+				"--additionalSkillsPaths=/tmp/second",
+				"--additionalSkillsPaths",
+				"/tmp/third",
+			],
+			["--skill", "/tmp/first", "--skill", "/tmp/second", "--skill", "/tmp/third"],
+		],
+		[
+			"existing --skill coexists and preserves relative order",
+			["--skill", "/tmp/upstream", "--additionalSkillsPaths", "/tmp/extra"],
+			["--skill", "/tmp/upstream", "--skill", "/tmp/extra"],
+		],
+		[
+			"existing --skill= form coexists",
+			["--additionalSkillsPaths=/tmp/extra", "--skill=/tmp/upstream"],
+			["--skill", "/tmp/extra", "--skill=/tmp/upstream"],
+		],
+		[
+			"unrelated tokens and prompt positionals are preserved",
+			["--provider", "kimchi-dev", "--additionalSkillsPaths", "/tmp/extra", "--print", "fix tests"],
+			["--provider", "kimchi-dev", "--skill", "/tmp/extra", "--print", "fix tests"],
+		],
+		[
+			"bare -- stops conversion of following tokens",
+			["--additionalSkillsPaths", "/tmp/extra", "--", "--additionalSkillsPaths", "literal-positional"],
+			["--skill", "/tmp/extra", "--", "--additionalSkillsPaths", "literal-positional"],
+		],
+		[
+			"equals form before -- converts, after does not",
+			["--additionalSkillsPaths=/tmp/extra", "--", "--additionalSkillsPaths=/tmp/raw"],
+			["--skill", "/tmp/extra", "--", "--additionalSkillsPaths=/tmp/raw"],
+		],
+		[
+			"dangling standalone flag without a value becomes a dangling --skill",
+			["--model", "cast/gpt-5", "--additionalSkillsPaths"],
+			["--model", "cast/gpt-5", "--skill"],
+		],
+		[
+			"dangling standalone flag before -- becomes a dangling --skill",
+			["--additionalSkillsPaths", "--", "literal-positional"],
+			["--skill", "--", "literal-positional"],
+		],
+		[
+			"a dangling flag followed by -- preserves the separator and later flag-shaped positionals",
+			["--additionalSkillsPaths", "--", "--additionalSkillsPaths", "literal-positional"],
+			["--skill", "--", "--additionalSkillsPaths", "literal-positional"],
+		],
+		[
+			"a dangling flag as another option's value stays verbatim",
+			["--system-prompt", "--additionalSkillsPaths"],
+			["--system-prompt", "--additionalSkillsPaths"],
+		],
+		[
+			"a dangling flag as --system-prompt's value does not stop later conversion",
+			["--system-prompt", "--additionalSkillsPaths", "--additionalSkillsPaths=/tmp/x"],
+			["--system-prompt", "--additionalSkillsPaths", "--skill", "/tmp/x"],
+		],
+		[
+			"a dangling flag as an existing --skill's value stays verbatim",
+			["--skill", "--additionalSkillsPaths"],
+			["--skill", "--additionalSkillsPaths"],
+		],
+		[
+			"only the exact flag name converts; prefixes do not",
+			["--additionalSkillsPathsExtra", "/tmp/x"],
+			["--additionalSkillsPathsExtra", "/tmp/x"],
+		],
+	])("%s", (_name, input, expected) => {
+		expect(forwardAdditionalSkillPathsToPi(input)).toEqual(expected)
 	})
 })
 

@@ -46,6 +46,9 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	private readonly discoveryCwd: string
 	private readonly discoveryAgentDir: string
 	private readonly discoverySettingsManager: SettingsManager
+	/** Process-scoped skill roots (--additionalSkillsPaths): handed to every
+	 *  throwaway discovery loader so refreshes never drop them. */
+	private readonly additionalSkillPaths: string[]
 	private readonly baseAppend: () => string[]
 	/**
 	 * Committed skills snapshot — served by `getSkills()` once set. Undefined
@@ -70,6 +73,10 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 		cwd: string
 		agentDir: string
 		settingsManager: SettingsManager
+		/** Process-scoped skill roots from --additionalSkillsPaths — the same
+		 *  array the main loader was constructed with. Required so no future
+		 *  call site can silently drop the paths from the refresh scan. */
+		additionalSkillPaths: string[]
 		/** ACP append base (CLI flag + `_meta["kimchi.dev"].appendSystemPrompt`). */
 		baseAppend: () => string[]
 	}) {
@@ -77,6 +84,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 		this.discoveryCwd = options.cwd
 		this.discoveryAgentDir = options.agentDir
 		this.discoverySettingsManager = options.settingsManager
+		this.additionalSkillPaths = options.additionalSkillPaths
 		this.baseAppend = options.baseAppend
 	}
 
@@ -215,10 +223,13 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 			settingsManager: this.discoverySettingsManager,
 			// Resources-only: no extension loading, no inline factories, no
 			// additional extension paths — the live set stays on the main loader.
+			// The process-scoped additional skill roots ARE scanned: the main
+			// loader sees them, so a refresh without them would drop the skills.
 			noExtensions: true,
 			noPromptTemplates: true,
 			noThemes: true,
 			noContextFiles: true,
+			additionalSkillPaths: this.additionalSkillPaths,
 		})
 		await discovery.reload()
 		// Collect the live runner's extension contributions WITHOUT applying

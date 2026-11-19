@@ -138,4 +138,23 @@ describe("default session factory/loader _meta wiring", () => {
 		expect(capturedLoaderOptions).toHaveLength(1)
 		expect(servedAppend()).toEqual(["Loaded sessions get the same prompt."])
 	})
+
+	it("threads additionalSkillPaths into the main resource loader options", async () => {
+		const factory = defaultSessionFactory(
+			makeOptions({ additionalSkillPaths: ["/tmp/private-skills-a", "/tmp/private-skills-b"] }),
+		)
+		await factory({ cwd, mcpServers: [] })
+		expect(capturedLoaderOptions).toHaveLength(1)
+		// The main loader receives the process-scoped roots exactly as passed.
+		expect(capturedLoaderOptions[0].additionalSkillPaths).toEqual(["/tmp/private-skills-a", "/tmp/private-skills-b"])
+	})
+
+	it("does not invent additional skill paths when the flag is absent", async () => {
+		const factory = defaultSessionFactory(makeOptions())
+		await factory({ cwd, mcpServers: [] })
+		expect(capturedLoaderOptions).toHaveLength(1)
+		// An absent --additionalSkillsPaths yields an effective empty array,
+		// never a fabricated root (e.g. the shared harness skills dir).
+		expect(capturedLoaderOptions[0].additionalSkillPaths).toEqual([])
+	})
 })
