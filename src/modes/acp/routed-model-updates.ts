@@ -27,10 +27,12 @@ import { emitExtNotification } from "./ext-notifications.js"
 export function emitRoutedModelUpdate(conn: AgentSideConnection, sessionId: string, event: AgentSessionEvent): void {
 	if (event.type !== "entry_appended") return
 	if (!isRoutedResolutionEntry(event.entry)) return
-	const { requestedId, provider, modelId } = event.entry.data
+	const { requestedId, provider, modelId, routedProvider } = event.entry.data
 	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.routed_model, {
 		requestedId: refFromParts(provider, requestedId),
-		routedId: refFromParts(provider, modelId),
+		// Known picks record the block that served them; older entries and
+		// unknown picks fall back to the requested provider.
+		routedId: refFromParts(routedProvider ?? provider, modelId),
 		sessionId,
 	})
 }

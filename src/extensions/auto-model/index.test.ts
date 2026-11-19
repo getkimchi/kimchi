@@ -115,14 +115,20 @@ function messageUpdate(message: Partial<Record<string, unknown>>): MessageUpdate
 	} as unknown as MessageUpdateEvent
 }
 
-function routedEntry(requestedId: string, modelId: string): SessionEntry {
+function routedEntry(requestedId: string, modelId: string, routedProvider?: string): SessionEntry {
 	return {
 		type: "custom",
 		id: crypto.randomUUID(),
 		parentId: null,
 		timestamp: new Date().toISOString(),
 		customType: ROUTED_MODEL_RESOLUTION_ENTRY,
-		data: { version: 1, requestedId, provider: "kimchi-dev", modelId },
+		data: {
+			version: 1,
+			requestedId,
+			provider: "kimchi-dev",
+			modelId,
+			...(routedProvider ? { routedProvider } : {}),
+		},
 	}
 }
 
@@ -133,6 +139,15 @@ describe("isRoutedResolutionEntry", () => {
 		if (isRoutedResolutionEntry(entry)) {
 			expect(entry.data).toEqual({ version: 1, requestedId: "auto", provider: "kimchi-dev", modelId: "kimi-k3" })
 		}
+	})
+
+	it("accepts an optional routed provider and rejects a malformed one", () => {
+		const entry = routedEntry("auto", "claude-haiku-5-5", "kimchi-dev/anthropic")
+		expect(isRoutedResolutionEntry(entry)).toBe(true)
+
+		const data = (entry as Extract<SessionEntry, { type: "custom" }>).data as Record<string, unknown>
+		const malformed = { ...(entry as object), data: { ...data, routedProvider: 42 } }
+		expect(isRoutedResolutionEntry(malformed as SessionEntry)).toBe(false)
 	})
 
 	it("rejects other custom types, malformed data, and non-custom entries", () => {
@@ -314,7 +329,13 @@ describe("auto-model extension", () => {
 			expect.objectContaining({ id: "auto-beta", contextWindow: 1_000_000, maxTokens: 128_000 }),
 		)
 		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toEqual([
-			{ version: 1, requestedId: "auto-beta", provider: "kimchi-dev", modelId: "claude-haiku-5-5" },
+			{
+				version: 1,
+				requestedId: "auto-beta",
+				provider: "kimchi-dev",
+				modelId: "claude-haiku-5-5",
+				routedProvider: "kimchi-dev/anthropic",
+			},
 		])
 	})
 
@@ -486,6 +507,33 @@ describe("auto-model extension", () => {
 			model: target,
 			requestedId: "auto-beta",
 		})
+		expect(setModel).toHaveBeenCalledTimes(1)
+	})
+
+	it("hydrates using the persisted routed provider", async () => {
+		const { getHandler, setModel } = setup()
+		const target = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+		})
+		const onSessionStart = getHandler<"session_start">("session_start")
+		const c = ctx({
+			// No fallback candidates: hydration must use the recorded provider.
+			modelRegistry: {
+				find: (provider: string, modelId: string) =>
+					provider === "kimchi-dev/anthropic" && modelId === "claude-haiku-5-5" ? target : undefined,
+				getAll: () => [],
+			},
+			sessionManager: {
+				getSessionId: () => SESSION_ID,
+				getEntries: () => [routedEntry("auto-beta", "claude-haiku-5-5", "kimchi-dev/anthropic")],
+			},
+		})
+
+		await onSessionStart({ type: "session_start" } as never, c as never)
+
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: target })
 		expect(setModel).toHaveBeenCalledTimes(1)
 	})
 
@@ -1047,6 +1095,27 @@ describe("self-heal — persisted default no longer served", () => {
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(successor, { persist: true })
+	})
+
+	it("skips a metadata successor this machine cannot authenticate", async () => {
+		// setModel gates on configured auth: a Codex-block successor without a
+		// ChatGPT login fails silently and would block the policy heirs.
+		seedDeprecations({ [DEAD]: { replacement_model: "codex-model" } })
+		const codex = model("codex-model", { provider: "kimchi-dev/openai-codex", name: "Model codex-model" })
+		const flash = model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" })
+		const { setModel, ctx, start } = runSessionStart({
+			modelRegistry: {
+				find: () => undefined,
+				getAll: () => [codex],
+				getAvailable: () => [flash],
+				hasConfiguredAuth: (candidate) => candidate.provider !== "kimchi-dev/openai-codex",
+			},
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(flash, { persist: true })
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Model deepseek-v4-flash-0731"), "info")
 	})
 
 	it("walks the declared alternatives until one is served", async () => {

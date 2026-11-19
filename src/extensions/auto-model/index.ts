@@ -30,6 +30,8 @@ type PersistedRoutedResolution = {
 	requestedId: string
 	provider: string
 	modelId: string
+	/** Concrete model's provider block when it differs from the requested one. */
+	routedProvider?: string
 }
 
 /** Exported for the ACP routed-model mirror; the persisted shape is shared
@@ -45,7 +47,8 @@ export function isPersistedRoutedResolution(data: unknown): data is PersistedRou
 		"provider" in data &&
 		typeof data.provider === "string" &&
 		"modelId" in data &&
-		typeof data.modelId === "string"
+		typeof data.modelId === "string" &&
+		(!("routedProvider" in data) || typeof data.routedProvider === "string")
 	)
 }
 
@@ -65,11 +68,16 @@ export function isRoutedResolutionEntry(entry: SessionEntry): entry is RoutedRes
 }
 
 function routedEntry(resolution: RoutedModelResolution, requestedId: string): PersistedRoutedResolution {
+	// `provider` stays the requested virtual provider: consumers compose the
+	// requested ref from it. Only a pick served by a sibling block needs the
+	// extra field, so base-block entries keep their existing shape for replay.
+	const routedProvider = resolution.kind === "model" ? resolution.model.provider : undefined
 	return {
 		version: 1,
 		requestedId,
 		provider: AUTO_MODEL_PROVIDER,
 		modelId: resolution.kind === "unknown" ? resolution.rawId : resolution.model.id,
+		...(routedProvider && routedProvider !== AUTO_MODEL_PROVIDER ? { routedProvider } : {}),
 	}
 }
 
@@ -177,7 +185,7 @@ function hasPersistedDefault(): boolean {
  */
 function findMetadataSuccessor(
 	deadId: string,
-	modelRegistry: RoutedModelRegistry,
+	modelRegistry: RoutedModelRegistry & Pick<ExtensionContext["modelRegistry"], "hasConfiguredAuth">,
 ): { model: Model<Api>; note?: string } | undefined {
 	const info = readModelDeprecations(resolve(getAgentConfigDir(), "models.json")).get(deadId)
 	if (!info) return undefined
@@ -185,7 +193,12 @@ function findMetadataSuccessor(
 	for (const slug of slugs) {
 		// Successors can live on a sibling gateway block too, so resolve like a routed pick.
 		const resolution = slug ? resolveRoutedModel(AUTO_MODEL_PROVIDER, slug, modelRegistry) : undefined
-		if (resolution?.kind === "model") return { model: resolution.model, note: info.deprecation_note }
+		if (resolution?.kind !== "model") continue
+		// setModel gates on configured auth: a candidate from a block this machine
+		// cannot authenticate (e.g. Codex without a ChatGPT login) would fail
+		// silently and never reach the policy heirs. Treat it as unserved.
+		if (!modelRegistry.hasConfiguredAuth(resolution.model)) continue
+		return { model: resolution.model, note: info.deprecation_note }
 	}
 	return undefined
 }
@@ -543,7 +556,7 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			}
 
 			lastNotifiedModel.set(sessionId, data.modelId)
-			const resolution = resolveRoutedModel(data.provider, data.modelId, ctx.modelRegistry)
+			const resolution = resolveRoutedModel(data.routedProvider ?? data.provider, data.modelId, ctx.modelRegistry)
 			const concrete = resolution.kind === "model" ? resolution.model : undefined
 			if (concrete && concrete.id !== ctx.model.id) {
 				setAutoRoutingState(sessionId, { status: "resolved", model: concrete, requestedId: data.requestedId })
