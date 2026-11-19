@@ -1075,45 +1075,52 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						const unlinkWorkerAbort = linkAbortSignal(req.signal, controller)
 						const unregister = registerEscalationAbort(sessionId, req.toolCallId, controller)
 						try {
-							return await runQueuedPrompt(promptQueue, async () => {
-								if (controller.signal.aborted) return { kind: "aborted" }
-								// The bell / desktop notification and the blocked-session event
-								// belong to the PARENT's bus — the worker's own bus reaches nobody.
-								pi.events.emit("notification", {
-									notification_type: "permission_prompt",
-									tool_name: req.toolName,
-									tool_use_id: req.toolCallId,
-								})
-								return withBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
-									// The answer timeout starts once this request reaches the
-									// interactive prompt instead of while it waits in the queue.
-									const timer = setTimeout(
-										() => controller.abort(new Error("permissions: subagent permission prompt timed out")),
-										ESCALATED_PROMPT_TIMEOUT_MS,
-									)
-									try {
-										const outcome = await prompter.request({
-										...req,
-										signal: controller.signal,
-										origin: sanitizePermissionOrigin(req.origin),
+							return await runQueuedPrompt(
+								promptQueue,
+								async () => {
+									if (controller.signal.aborted) return { kind: "aborted" }
+									// The bell / desktop notification and the blocked-session event
+									// belong to the PARENT's bus — the worker's own bus reaches nobody.
+									pi.events.emit("notification", {
+										notification_type: "permission_prompt",
+										tool_name: req.toolName,
+										tool_use_id: req.toolCallId,
 									})
-										// A user- or client-initiated mode change returns through the
-										// worker's outer gate so its policy is evaluated again.
-										if (outcome.kind === "aborted" && controller.signal.reason === MODE_CHANGED_ABORT_ERROR) {
+									return withBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
+										// The answer timeout starts once this request reaches the
+										// interactive prompt instead of while it waits in the queue.
+										const timer = setTimeout(
+											() => controller.abort(new Error("permissions: subagent permission prompt timed out")),
+											ESCALATED_PROMPT_TIMEOUT_MS,
+										)
+										try {
+											const outcome = await prompter.request({
+												...req,
+												signal: controller.signal,
+												origin: sanitizePermissionOrigin(req.origin),
+											})
+											// A user- or client-initiated mode change returns through the
+											// worker's outer gate so its policy is evaluated again.
+											if (outcome.kind === "aborted" && controller.signal.reason === MODE_CHANGED_ABORT_ERROR) {
+												return outcome
+											}
+											// A worker stop, a timeout, or a closing client has no
+											// answer to carry: fail the route closed rather than
+											// treating an absent answer as an approval.
+											if (outcome.kind === "aborted" || outcome.kind === "denied-by-client") {
+												throw (
+													controller.signal.reason ??
+													new Error(`permissions: escalated prompt closed without an answer (${outcome.kind})`)
+												)
+											}
 											return outcome
+										} finally {
+											clearTimeout(timer)
 										}
-										// A worker stop, a timeout, or a closing client has no
-										// answer to carry: fail the route closed rather than
-										// treating an absent answer as an approval.
-										if (outcome.kind === "aborted" || outcome.kind === "denied-by-client") {
-											throw controller.signal.reason ?? new Error(`permissions: escalated prompt closed without an answer (${outcome.kind})`)
-										}
-										return outcome
-									} finally {
-										clearTimeout(timer)
-									}
-								})
-							}, req.signal)
+									})
+								},
+								req.signal,
+							)
 						} finally {
 							unlinkWorkerAbort()
 							unregister()

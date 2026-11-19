@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isRawInputCaptureActive } from "../shared-input.js"
-import { promptForApproval } from "./prompts.js"
 import type { PermissionOrigin, ToolPermissionPrompter } from "./prompter.js"
+import { promptForApproval } from "./prompts.js"
 
 const RECENT_INPUT_QUIET_MS = 1000
 const OPENING_INPUT_GUARD_MS = 200
@@ -23,11 +23,7 @@ const DEFAULT_TIMING: EscalatedInteractionTiming = {
 export type LastTerminalInput = () => number
 
 function interactionBlocked(ctx: ExtensionContext, lastInputAt: LastTerminalInput, quietMs: number): boolean {
-	return (
-		isRawInputCaptureActive() ||
-		ctx.ui.getEditorText().length > 0 ||
-		Date.now() - lastInputAt() < quietMs
-	)
+	return isRawInputCaptureActive() || ctx.ui.getEditorText().length > 0 || Date.now() - lastInputAt() < quietMs
 }
 
 function waitForPoll(signal: AbortSignal, ms: number): Promise<void> {

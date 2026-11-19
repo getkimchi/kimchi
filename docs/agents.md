@@ -34,12 +34,21 @@ running or completed agent to view its full conversation in a live overlay.
 
 ## Permissions
 
-Subagent tool calls run through the same permission gate as the main session,
-with the subagent doing the calling (the runner binds `agent-worker` context:
-persona, agent id, and the parent's session id). Workers have no prompt surface
-of their own — when the permission classifier is unavailable and a call would
-need confirmation, the prompt **escalates to the main session** and names the
-asking subagent. See [Subagents during an outage](permission-classifier.md#subagents-during-an-outage).
+Subagent tool calls run through the same permission gate as the main session.
+The worker's immutable permission role supplies its parent session id and task
+identity. Per-run async context isolates interactive holds and ownership state,
+so concurrent workers cannot borrow each other's parent or watchdog state.
+Workers have no prompt surface of their own — when the classifier is unavailable
+or otherwise requires confirmation, the prompt **escalates to the main session**
+and names the asking subagent. See
+[Subagent approval in the main session](permission-classifier.md#subagent-approval-in-the-main-session).
+
+### Branching
+
+After `/branch`, continuing subagents retain their original parent session id
+in their permission role. They cannot route new approval requests to the new
+session: calls that need approval retain the non-UI fail-closed block. Start a
+new worker from the new session when a call needs user approval.
 
 ## Discovery hierarchy
 

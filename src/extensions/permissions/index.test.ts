@@ -75,11 +75,7 @@ import permissionsExtension, {
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from "./mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
-import {
-	getParentSurface,
-	registerParentSurface,
-	unregisterParentSurface,
-} from "./parent-surface-registry.js"
+import { getParentSurface, registerParentSurface, unregisterParentSurface } from "./parent-surface-registry.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
 import { getPermissionPolicySource } from "./policy-source-registry.js"
 import type { PermissionRequest, ToolPermissionPrompter } from "./prompter.js"
@@ -1094,7 +1090,7 @@ describe("classifier outage escalation to the parent session", () => {
 		}
 	})
 
-	it("keeps the PR 1 block for requires-confirmation when no parent can ask", async () => {
+	it("keeps the ordinary worker block for requires-confirmation when no parent can ask", async () => {
 		const worker = createWorkerHarness(["bash"], { parentSessionId: "gone-parent", persona: "explorer" })
 		const workerCtx = createClassifierContext()
 		await worker.fire("session_start", {}, workerCtx)
@@ -1226,8 +1222,8 @@ describe("classifier outage escalation to the parent session", () => {
 		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledOnce())
 		await new Promise((resolve) => setTimeout(resolve, 201))
 		const terminalHandler = vi.mocked(parentCtx.ui.onTerminalInput).mock.calls[0]?.[0]
-		expect(terminalHandler).toBeDefined()
-		terminalHandler!("\x1b[Z")
+		if (!terminalHandler) throw new Error("expected a mode-change listener")
+		terminalHandler("\x1b[Z")
 		await new Promise((resolve) => setTimeout(resolve, 50))
 		const mode = getPermissionMode(TEST_SESSION_ID)
 		const selectionSignal = vi.mocked(parentCtx.ui.select).mock.calls[0]?.[2]?.signal
@@ -1247,9 +1243,9 @@ describe("classifier outage escalation to the parent session", () => {
 		const started = worker.fire("tool_call", event, workerCtx)
 		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledOnce())
 		const terminalHandler = vi.mocked(parentCtx.ui.onTerminalInput).mock.calls[0]?.[0]
-		expect(terminalHandler).toBeDefined()
+		if (!terminalHandler) throw new Error("expected a mode-change listener")
 		await new Promise((resolve) => setTimeout(resolve, 201))
-		for (let i = 0; i < (mode === "yolo" ? 1 : 3); i++) terminalHandler!("\x1b[Z")
+		for (let i = 0; i < (mode === "yolo" ? 1 : 3); i++) terminalHandler("\x1b[Z")
 
 		const result = await started
 		if (expected === undefined) expect(result).toBeUndefined()
@@ -1311,7 +1307,7 @@ describe("classifier outage escalation to the parent session", () => {
 		}
 	})
 
-	it("uses the PR 1 non-safe block when its escalated prompt times out", async () => {
+	it("uses the ordinary non-safe block when its escalated prompt times out", async () => {
 		vi.useFakeTimers()
 		try {
 			const { worker, workerCtx } = await setupEscalation()
@@ -7031,7 +7027,7 @@ describe("inline worker permissions", () => {
 		expect(standard.workerCtx.ui.select).not.toHaveBeenCalled()
 
 		// No parent policy/surface exists in this fallback-only case, so the
-		// non-safe verdict cannot escalate and must keep PR 1's worker block.
+		// non-safe verdict cannot escalate and must keep the ordinary worker block.
 		const automatic = await setup({ auto: true }, { withParent: false })
 		vi.mocked(classifyToolCall).mockResolvedValueOnce({
 			verdict: "requires-confirmation",

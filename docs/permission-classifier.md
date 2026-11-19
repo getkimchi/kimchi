@@ -89,25 +89,35 @@ The prompt identifies the asking subagent and its task (`Subagent <persona> —
 copy; a `requires-confirmation` prompt uses the classifier's reason and risk
 score. Compound bash commands get one prompt for the whole call.
 
-Choices are allow once, allow and remember **for this subagent**, and deny, with
-deny first so an unrelated Enter while the user is typing cannot accidentally
-approve a call. The remembered rule is written to the child's own session memory,
-not the parent's, and survives `session_shutdown` and `session_start` when that
-same child is resumed. It is not shared with other children. Deny-with-feedback
-is returned to the child's model so it can change course.
+The TUI selector keeps the same choice order as the main session. It waits for
+an empty editor, a quiet keyboard, and no active raw-input dialog instead of
+stealing focus. A notice names the waiting subagent and explains when its prompt
+will open. Input already on its way is ignored during a short opening window.
+These protections include the editor and dialogs that claim raw input, including
+questionnaires; the selector is withdrawn and restored around those dialogs.
+
+The remembered rule is written to the child's own session memory, not the
+parent's, and survives `session_shutdown` and `session_start` when that same
+child is resumed. It is not shared with other children. Deny-with-feedback is
+returned to the child's model so it can change course.
 
 Behavioral rules:
 
 - Sequential prompts are serialized behind one queue — the main session's own
   prompts and escalated subagent asks interleave one at a time.
-- If nobody answers within 5 minutes (counted from when the prompt is shown,
-  not when queued), or the parent surface is missing, stale, cancelled, or
-  errors, the route fails closed, never to an allow. Classifier failures retain
-  the fixed outage block; a working non-`safe` verdict retains PR 1's
-  `Classifier: <reason> Do not retry…` worker block.
-- The subagent's inactivity watchdog is paused while it waits for your answer,
-  so a slow click does not get it steered or killed. Its wall-clock cap keeps
-  running.
+- If nobody answers within 5 minutes after the request reaches the front of
+  the queue, including time waiting for an empty editor or another dialog, or
+  the parent surface is missing, stale, cancelled, or errors, the route fails
+  closed, never to an allow. That limit covers the selector and its feedback
+  input. Classifier failures retain the fixed outage block; a working
+  non-`safe` verdict retains the ordinary `Classifier: <reason> Do not retry…`
+  worker block.
+- The subagent's inactivity watchdog, wall-clock cap, and remaining bash
+  timeout are paused while its permission request is queued or visible, so
+  the time you take to decide does not consume its budget.
+- Changing the parent's permission mode withdraws queued and visible prompts
+  and decides each affected call again under the new mode. A worker stop ends
+  the wait directly rather than being recorded as a mode flap.
 - TUI and ACP use the same parent route. ACP sends a normal permission card for
   a parent-allocated tool-call ID, names the subagent in the title and `_meta`,
   and sends a closing `tool_call_update` when the decision settles. Print mode

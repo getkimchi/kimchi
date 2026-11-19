@@ -8,12 +8,13 @@
  * - `notify`: permission-classifier warnings, shown in the parent's surface;
  * - `requestPermission` (present only when the session can prompt): an
  *   escalated permission prompt, shown in the parent on the worker's behalf
- *   when the worker's classifier failed. The caller awaits the user's
- *   outcome; a thrown error means the route failed (stale surface, timeout)
- *   and the caller must fail closed.
+ *   when the worker's classifier is unavailable or another decision requires
+ *   approval. The caller awaits the user's outcome; a thrown error means the
+ *   route failed (stale surface, timeout) and the caller must fail closed.
+ *   A mode change instead withdraws the prompt for fresh policy evaluation.
  *
- * A worker reads its parent's session ID from its async run context
- * (`agent-worker-context.ts`) and looks the surface up here.
+ * A worker reads its parent's session ID from the immutable role supplied
+ * by the runner, then looks the surface up here.
  *
  * Same multi-owner slot reasoning as `mode-controller-registry.ts`:
  * concurrent same-ID attaches (load+resume coalescing) can both register
@@ -40,7 +41,11 @@ const bySessionId = new Map<string, ParentSurface[]>()
 const pendingRequests = new Map<string, Map<string, AbortController>>()
 
 /** Keep an abortable parent prompt linked to its request for cancellation and cleanup. */
-export function registerEscalationAbort(sessionId: string, toolCallId: string, controller: AbortController): () => void {
+export function registerEscalationAbort(
+	sessionId: string,
+	toolCallId: string,
+	controller: AbortController,
+): () => void {
 	let requests = pendingRequests.get(sessionId)
 	if (!requests) {
 		requests = new Map<string, AbortController>()

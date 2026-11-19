@@ -54,9 +54,9 @@ export const DEFAULT_CONFIG: PermissionsConfig = {
 /** How long the classifier breaker stays open after a transport-class failure before probing again. */
 export const CLASSIFIER_BREAKER_WINDOW_MS = 60_000
 
-/** How long an escalated subagent permission prompt may sit in the parent
- *  session unanswered before the call is blocked (fail closed). Starts when
- *  the prompt is shown, not when it is queued (D3 of the escalation plan). */
+/** Answer budget for an escalated subagent permission request, measured
+ *  from the front of the parent's queue. It includes waiting for a quiet
+ *  editor or another dialog, the selector, and its feedback input. */
 export const ESCALATED_PROMPT_TIMEOUT_MS = 5 * 60_000
 
 /**
