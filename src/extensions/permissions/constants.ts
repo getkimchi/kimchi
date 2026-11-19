@@ -51,6 +51,14 @@ export const DEFAULT_CONFIG: PermissionsConfig = {
 	classifierMaxTotalMs: 25_000,
 }
 
+/** How long the classifier breaker stays open after a transport-class failure before probing again. */
+export const CLASSIFIER_BREAKER_WINDOW_MS = 60_000
+
+/** How long an escalated subagent permission prompt may sit in the parent
+ *  session unanswered before the call is blocked (fail closed). Starts when
+ *  the prompt is shown, not when it is queued (D3 of the escalation plan). */
+export const ESCALATED_PROMPT_TIMEOUT_MS = 5 * 60_000
+
 /**
  * Denylist applied as the lowest-precedence rule source. Users can override by
  * adding matching allow rules at a higher-precedence source.
