@@ -20,17 +20,19 @@ import {
  * shared-store readers use the canonical kimchi-dev entry. Refreshing only
  * the concrete entry leaves the other entries presenting the retired grant.
  *
- * Transient refresh and store failures deliberately fall through to the
- * original prompt's existing auth path; they are not proof of rejection and
- * must not mark credentials stale. A definitive invalid_grant returns its own
- * outcome: input-hook rejections do not propagate, so each surface adapter
- * stops the prompt and presents its existing sign-in action.
+ * Transient refresh and store failures before durable rotation deliberately
+ * fall through to the original prompt's existing auth path; they are not proof
+ * of rejection and must not mark credentials stale. A definitive invalid_grant
+ * returns oauth_revoked for the surface's existing sign-in handling. After a
+ * durable canonical rotation, failed fan-out instead returns credential_sync_failed:
+ * submitting with an active provider's retired grant could turn a local store
+ * failure into invalid_grant. The next prompt retries only synchronization.
  */
 export async function prepareActivePromptKimchiCredential(
 	paths: RefreshAwareCredentialPaths,
 	installOAuth: (runtime: ModelRuntime) => void,
 	activeProviderId = KIMCHI_PROVIDER_ID,
-): Promise<"ready" | "oauth_revoked"> {
+): Promise<"ready" | "oauth_revoked" | "credential_sync_failed"> {
 	if (activeProviderId !== undefined && !isKimchiProvider(activeProviderId)) return "ready"
 	try {
 		if (readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)?.type !== "oauth") return "ready"
@@ -53,7 +55,13 @@ export async function prepareActivePromptKimchiCredential(
 			// Canonical refresh is already durable. A sub-provider left with the
 			// retired grant must not consume it because a store write was transient.
 			console.error({ event: "kimchi.oauth.refresh", outcome: "sync_retry" })
-			await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
+			try {
+				await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
+			} catch (error) {
+				const errorType = error instanceof Error ? error.name : typeof error
+				console.error({ event: "kimchi.oauth.refresh", outcome: "sync_failed", errorType })
+				return "credential_sync_failed"
+			}
 		}
 		if (resolution.refreshed) {
 			clearRefreshedCredentialStale(resolution.previousAccessToken, resolution.auth.auth.apiKey, KIMCHI_PROVIDER_ID)

@@ -1659,8 +1659,9 @@ export class KimchiAcpAgent implements Agent {
 		entry.turn = createTurnContext(turnResolve, turnReject)
 		// This is the ACP counterpart of the TUI input preflight. Keep turn creation
 		// in its original position so steering, feedback, and cancellation observe
-		// an active turn during the auth await. Resolve revoked grants through the
-		// ordinary typed failure path without another model-request grant attempt.
+		// an active turn during the auth await. Resolve revoked or incompletely
+		// synchronized credentials through the ordinary typed failure path without
+		// another model-request grant attempt.
 		const activeProviderId = entry.session.model?.provider
 		const preparation =
 			activeProviderId !== undefined && !isKimchiProvider(activeProviderId)
@@ -1681,6 +1682,16 @@ export class KimchiAcpAgent implements Agent {
 				RequestError.authRequired(
 					{ kind: "auth" },
 					"OAuth refresh was rejected: auth required. Call session/authenticate to sign in again, then retry.",
+				),
+			)
+			return result
+		}
+		if (preparation === "credential_sync_failed") {
+			this.failTurn(
+				entry,
+				RequestError.internalError(
+					undefined,
+					"OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
 				),
 			)
 			return result

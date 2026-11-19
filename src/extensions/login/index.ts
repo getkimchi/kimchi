@@ -47,6 +47,13 @@ export default function loginExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("OAuth refresh was rejected. Run /login to sign in again.", "error")
 			return { action: "handled" as const }
 		}
+		if (preparation === "credential_sync_failed") {
+			ctx.ui.notify(
+				"OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
+				"error",
+			)
+			return { action: "handled" as const }
+		}
 	})
 
 	// Register the same OAuth handler for every Kimchi-managed sub-provider

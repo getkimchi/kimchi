@@ -171,26 +171,39 @@ describe("active prompt Kimchi credential preparation", () => {
 		expect(oauth.refreshCalls).toHaveLength(1)
 	})
 
-	it("logs token-free diagnostics when fan-out fails twice", async () => {
+	it("defers a retired active grant until fan-out succeeds, without another token request", async () => {
 		writeOAuthCredential(Date.now() + 60_000)
+		const original = readStore()["kimchi-dev"]
+		writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": original, "kimchi-dev/openai": original }))
 		const oauth = rotatingOAuthDeps()
-		vi.mocked(syncOAuthCredentialToKimchiProviders).mockRejectedValue(
-			new TypeError("unexpected error containing original-refresh"),
-		)
+		const sync = vi.mocked(syncOAuthCredentialToKimchiProviders)
+		const defaultSync = sync.getMockImplementation()
+		expect(defaultSync).toBeDefined()
+		sync.mockRejectedValue(new TypeError("unexpected error containing original-refresh"))
 		const error = vi.spyOn(console, "error").mockImplementation(() => {})
 
 		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
-			"ready",
+			"credential_sync_failed",
 		)
 
 		expect(oauth.refreshCalls).toHaveLength(1)
-		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledTimes(2)
+		expect(sync).toHaveBeenCalledTimes(2)
+		expect(readStore()["kimchi-dev/openai"]).toMatchObject({ refresh: "original-refresh" })
 		expect(error).toHaveBeenCalledWith({
 			event: "kimchi.oauth.refresh",
-			outcome: "preflight_failed",
+			outcome: "sync_failed",
 			errorType: "TypeError",
 		})
 		expect(JSON.stringify(error.mock.calls)).not.toContain("original-refresh")
+
+		if (!defaultSync) throw new Error("missing default fan-out")
+		sync.mockImplementation(defaultSync)
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"ready",
+		)
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(sync).toHaveBeenCalledTimes(3)
+		expect(readStore()["kimchi-dev/openai"]).toMatchObject({ refresh: "rotated-refresh" })
 	})
 
 	function rotatingOAuthDeps(): ReturnType<typeof fakeOAuthDeps> {

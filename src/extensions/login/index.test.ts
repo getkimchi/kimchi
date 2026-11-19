@@ -1,10 +1,16 @@
 import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
 import loginExtension from "./index.js"
 
-const { loadConfigMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
+const { loadConfigMock, prepareActivePromptMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
 	loadConfigMock: vi.fn(),
+	prepareActivePromptMock: vi.fn(),
 	refreshBillingStatusFromConfigMock: vi.fn(),
+}))
+
+vi.mock("../../auth/active-prompt-refresh.js", () => ({
+	prepareActivePromptKimchiCredential: prepareActivePromptMock,
 }))
 
 vi.mock("../../config.js", () => ({
@@ -84,6 +90,23 @@ describe("loginExtension", () => {
 			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
 		})
 		expect(provider.getModels()).toEqual([])
+	})
+
+	it("handles a credential-sync failure without submitting or requesting sign-in", async () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		vi.mocked(prepareActivePromptKimchiCredential).mockResolvedValue("credential_sync_failed")
+		const on = vi.fn()
+		const notify = vi.fn()
+		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
+		const input = on.mock.calls.find(([event]) => event === "input")?.[1]
+
+		await expect(input({ source: "interactive" }, { mode: "tui", ui: { notify } })).resolves.toEqual({
+			action: "handled",
+		})
+		expect(notify).toHaveBeenCalledWith(
+			"OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
+			"error",
+		)
 	})
 
 	it("refreshes billing when an authenticated session starts", () => {
