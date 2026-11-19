@@ -118,7 +118,7 @@ test("control without the deny rule lets the same subagent write", async ({ term
 	)
 })
 
-test("auto mode blocks a subagent write when the classifier says not safe", async ({ terminal }) => {
+test("auto mode asks the parent when the classifier is not safe; approval runs the write", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -145,11 +145,19 @@ test("auto mode blocks a subagent write when the classifier says not safe", asyn
 		},
 		async (fixture, trace) => {
 			terminal.submit("Have a subagent create output.txt")
+			await waitForText(terminal, "Subagent General-Purpose — write output file wants to run:", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
+			const promptView = fullText(terminal)
+			trace.step("escalated non-safe prompt visible in the parent")
+			terminal.keyDown() // deny is first by default; choose Yes — just this call
+			terminal.submit("")
 			await waitForText(terminal, "PARENT-AUTO-DENY-DONE", { timeoutMs: STREAM_TIMEOUT_MS })
-			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
-			expect(fullText(terminal)).not.toContain(ALLOW_PROMPT)
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
+			expect(promptView).toContain(ALLOW_PROMPT)
 			expect(fixture.fake.requests.filter((request) => isClassifierRequest(request.body)).length).toBeGreaterThan(0)
-			trace.step("classifier denial blocked the file without a worker prompt")
+			trace.step("parent approval ran the child write")
 		},
 	)
 })

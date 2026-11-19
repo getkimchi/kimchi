@@ -103,6 +103,26 @@ describe("promptForApproval — withWorkingHidden", () => {
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 	})
 
+	it("names the subagent and task whose escalated call is being approved", async () => {
+		const ctx = fakeCtx()
+		await promptForApproval({
+			toolName: "bash",
+			input: { command: "echo hello" },
+			ctx,
+			subtitle: "the classifier copy",
+			origin: { persona: "Explore", agentId: "agent-1", description: "inspect the tree" },
+		})
+		const rendered = String(ctx.ui.select.mock.calls[0]?.[0])
+		expect(rendered.startsWith("Subagent Explore — inspect the tree wants to run:")).toBe(true)
+		expect(rendered).toContain("the classifier copy")
+	})
+
+	it("omits the subagent line for the session's own prompts", async () => {
+		const ctx = fakeCtx()
+		await promptForApproval({ toolName: "bash", input: { command: "echo hello" }, ctx })
+		expect(String(ctx.ui.select.mock.calls[0]?.[0])).not.toContain("Subagent")
+	})
+
 	it("hides working indicator before feedback input and shows it after", async () => {
 		const ctx = fakeCtx()
 		ctx.ui.select = vi.fn(async () => "No — tell the assistant what to do differently")
