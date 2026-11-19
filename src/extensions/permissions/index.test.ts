@@ -5863,7 +5863,7 @@ describe("inline worker permissions", () => {
 
 	async function setup(
 		flags: Record<string, boolean | string | undefined> = {},
-		options: { persona?: string; cwd?: string; withParent?: boolean } = {},
+		options: { persona?: string; cwd?: string; withParent?: boolean; cliArgs?: string[] } = {},
 	) {
 		const id = `worker-policy-${++sequence}`
 		const parentSessionId = `${id}-parent`
@@ -5900,6 +5900,7 @@ describe("inline worker permissions", () => {
 			cwd: options.cwd ?? "/test",
 			sessionManager: { getSessionId: () => `${id}-child`, getEntries: () => [] },
 		} as unknown as ExtensionContext
+		if (options.cliArgs) populateCliArgs(options.cliArgs)
 		await worker.fire("session_start", {}, workerCtx)
 		return { parent, parentCtx, worker, workerCtx, parentSessionId }
 	}
@@ -6045,6 +6046,38 @@ describe("inline worker permissions", () => {
 		expect(automatic.workerCtx.ui.select).not.toHaveBeenCalled()
 	})
 
+	it("classifies and blocks a compound bash call without awaiting a worker prompt", async () => {
+		const { worker, workerCtx } = await setup()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			reason: "compound contains a deletion",
+			riskScore: "high",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+
+		expect(await call(worker, workerCtx, "bash", { command: "git status && rm file.txt" })).toMatchObject({
+			block: true,
+		})
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(workerCtx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("routes direct MCP tools by plan mode and classifier decision", async () => {
+		const { worker, workerCtx, parent, parentCtx } = await setup({ plan: true })
+		expect(await call(worker, workerCtx, "docs_get_issue", { issue_id: "1" })).toBeUndefined()
+		expect(await call(worker, workerCtx, "docs_create_issue", { title: "blocked" })).toMatchObject({
+			block: true,
+		})
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(workerCtx.ui.select).not.toHaveBeenCalled()
+
+		await parentCommand(parent, parentCtx)("mode default")
+		expect(await call(worker, workerCtx, "docs_create_issue", { title: "classified" })).toBeUndefined()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(workerCtx.ui.select).not.toHaveBeenCalled()
+	})
+
 	it("fails closed when the classifier cannot decide", async () => {
 		const { worker, workerCtx } = await setup({ auto: true })
 		vi.mocked(classifyToolCall).mockResolvedValueOnce({
@@ -6119,8 +6152,12 @@ describe("inline worker permissions", () => {
 				join(tmpDir, ".kimchi", "permissions.json"),
 				JSON.stringify({ defaultMode: "yolo", deny: ["write"] }),
 			)
-			const { worker, workerCtx } = await setup({}, { cwd: tmpDir, withParent: false })
+			const { worker, workerCtx } = await setup({}, { cwd: tmpDir, withParent: false, cliArgs: ["--deny-tool=edit"] })
 			expect(await call(worker, workerCtx, "write", { path: "blocked.txt" })).toMatchObject({ block: true })
+			expect(await call(worker, workerCtx, "edit", { path: "blocked-by-cli.txt" })).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("Denied by rule"),
+			})
 			expect(await call(worker, workerCtx, "bash", { command: "touch allowed.txt" })).toBeUndefined()
 			expect(classifyToolCall).not.toHaveBeenCalled()
 		} finally {
