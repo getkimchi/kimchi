@@ -119,7 +119,8 @@ import {
 	releaseTargetForPlanApproval,
 } from "./policy.js"
 import { getPermissionPolicySource, registerPermissionPolicySource } from "./policy-source-registry.js"
-import type { ToolPermissionPrompter } from "./prompter.js"
+import { PromptQueue } from "./prompt-queue.js"
+import type { PermissionChoice, PermissionOrigin, PermissionRequest, ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
 	type ApprovalOutcome,
@@ -196,6 +197,10 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	// flow — there is nothing for permissions to gate here.
 	SUBMIT_PLAN_TOOL_NAME,
 	BASH_CONTROL_TOOL_NAME,
+/** Fallback for direct `handleConfirm`/`handleCompoundConfirm` callers that do
+ *  not pass a per-session queue (tests): still serializes prompts. */
+const sharedPromptQueue = new PromptQueue()
+
 	...FERMENT_V2_TOOL_NAMES,
 	...TODO_TOOL_NAMES,
 	CONFIRM_TODOS_TOOL_NAME,
@@ -413,6 +418,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 
 	// Plan completion menu state: tracks whether the agent used tools during the
 	// current user-input cycle so we can detect text-only turns (plan output).
+	/** At most one permission prompt at a time in this session: pi keeps a
+	 *  single dialog slot, so a concurrent second prompt would silently
+	 *  replace the first and orphan its promise. Escalated subagent prompts
+	 *  (requestPermission on the session's registered sink) share the queue. */
+	const promptQueue = new PromptQueue()
 
 	function rebuildConfigRules(): void {
 		configRules = [
@@ -983,6 +993,52 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					if (ctx.hasUI) ctx.ui.notify(message, level)
 					else console.error(message)
 				},
+				requestPermission: (req: PermissionRequest): Promise<ApprovalOutcome> =>
+					// The whole handler belongs to the parent, including notification,
+					// queue ownership and withBlocked side effects — not the worker that
+					// happened to invoke this surface through its async chain.
+					runOutsideWorkerContext(() => {
+						const prompter = resolvePrompter(ctx)
+						if (!prompter) {
+							return Promise.reject(new Error("permissions: parent session has no prompt surface"))
+						}
+						return promptQueue.enqueue(async () => {
+							if (req.signal?.aborted) throw req.signal.reason ?? new Error("permissions: escalated prompt aborted")
+							// The bell / desktop notification and the blocked-session event
+							// belong to the PARENT's bus — the worker's own bus reaches nobody.
+							pi.events.emit("notification", {
+								notification_type: "permission_prompt",
+								tool_name: req.toolName,
+								tool_use_id: req.toolCallId,
+							})
+							return withBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
+								// The answer timeout counts from the prompt being shown,
+								// not from queueing (D3): an unanswered escalation fails
+								// closed back in the worker.
+								const timeout = new AbortController()
+								const timer = setTimeout(
+									() => timeout.abort(new Error("permissions: subagent permission prompt timed out")),
+									ESCALATED_PROMPT_TIMEOUT_MS,
+								)
+								const signal = req.signal ? AbortSignal.any([req.signal, timeout.signal]) : timeout.signal
+								try {
+									const outcome = await prompter.request({ ...req, signal })
+									// Nobody answered: the timeout fired, a headless client
+									// cancelled the card, or the dialog was replaced upstream.
+									// Treat the whole route as failed — the worker falls back
+									// to its fail-closed block.
+									if (outcome.kind === "aborted" || outcome.kind === "denied-by-client") {
+										throw timeout.signal.aborted
+											? (timeout.signal.reason as unknown)
+											: new Error(`permissions: escalated prompt closed without an answer (${outcome.kind})`)
+									}
+									return outcome
+								} finally {
+									clearTimeout(timer)
+								}
+							})
+						}, req.signal)
+					}),
 			}
 			parentSurfaceSessionId = sessionId
 			registerParentSurface(sessionId, parentSurface)
@@ -1994,6 +2050,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 							activeAborts: activeAbortControllers,
 							promptToolCalls: activePromptToolCalls,
 							allRules,
+							promptQueue,
 							permissionMode: mode,
 						})
 						if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
@@ -2024,6 +2081,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						const subcommands = splitCompoundCommand(command)
 						if (subcommands && subcommands.length > 0) {
 							const result = await handleCompoundConfirm(event, {
+						promptQueue,
 								ctx,
 								pi,
 								session,
@@ -2045,6 +2103,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					session,
 					activeAborts: activeAbortControllers,
 					promptToolCalls: activePromptToolCalls,
+								promptQueue,
 					allRules,
 					permissionMode: mode,
 					worker: isWorker,
@@ -2060,6 +2119,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				modeChangeSources: [...modeChangeSources],
 			})
 			return {
+					promptQueue,
 				block: true,
 				reason: "Permission mode changed too many times during prompt",
 			}
@@ -2121,17 +2181,50 @@ async function handleConfirm(
 	opts.activeAborts.add(abort)
 	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
 	try {
-		const prompter = resolvePrompter(opts.ctx, opts.worker)
+		const prompter = opts.prompter ?? resolvePrompter(opts.ctx, opts.worker)
+	/** Serializes prompts so only one is shown at a time; defaults to the module-level queue. */
+	promptQueue?: PromptQueue
+	/** Override the resolved prompter — escalated subagent calls forward to the
+	 *  parent session's surface instead of the worker's (nonexistent) UI. */
+	prompter?: ToolPermissionPrompter
+	/** Prebuilt choices for the prompt (escalated prompts carry
+	 *  "for this subagent" remember labels). */
+	choices?: PermissionChoice[]
+}
+
+/**
+ * Run a prompt task through the queue and map a queue-level abort (the entry
+ * was dropped while waiting) to the same `{kind: "aborted"}` outcome a
+ * visible prompt produces when its signal fires — downstream
+ * mode-change-dismissal accounting stays identical.
+ */
+async function runQueuedPrompt<T extends ApprovalOutcome | CompoundApprovalOutcome>(
+	queue: PromptQueue,
+	task: () => Promise<T>,
+	signal: AbortSignal,
+): Promise<T | { kind: "aborted" }> {
+	try {
+		return await queue.enqueue(task, signal)
+	} catch (err) {
+		if (signal.aborted) return { kind: "aborted" }
+		throw err
+	}
 		if (!prompter) {
 			emitToolDecision(opts.pi, event, opts.permissionMode, "reject", "no_ui")
 			return { block: true, reason: "No UI to confirm permission" }
 		}
 
-		opts.pi.events.emit("notification", {
-			notification_type: "permission_prompt",
-			tool_name: event.toolName,
-			tool_use_id: event.toolCallId,
-		})
+		// The escalated route emits the notification and withBlocked on the
+		// PARENT's bus (its handler does so before prompting); re-emitting them
+		// on the worker's bus would reach nobody and double the bell when the
+		// worker does have a prompt surface of its own.
+		if (!opts.prompter) {
+			opts.pi.events.emit("notification", {
+				notification_type: "permission_prompt",
+				tool_name: event.toolName,
+				tool_use_id: event.toolCallId,
+			})
+		}
 
 		return await withBlocked(opts.pi.events, `Permission: ${event.toolName}`, async () => {
 			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
@@ -2143,15 +2236,20 @@ async function handleConfirm(
 			})
 
 			const input = event.input
-			const outcome = await prompter.request({
-				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
-				toolName: event.toolName,
-				input,
-				subtitle: opts.subtitle,
-				riskScore: opts.riskScore,
-				choices: buildPermissionChoices(event.toolName, input),
-				signal: abort.signal,
-			})
+			const outcome = await runQueuedPrompt(
+				opts.promptQueue ?? sharedPromptQueue,
+				() =>
+					prompter.request({
+						toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+						toolName: event.toolName,
+						input,
+						subtitle: opts.subtitle,
+						riskScore: opts.riskScore,
+						choices: opts.choices ?? buildPermissionChoices(event.toolName, input),
+						signal: abort.signal,
+					}),
+				abort.signal,
+			)
 
 			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
 				toolCallId: event.toolCallId,
@@ -2209,14 +2307,19 @@ export async function handleCompoundConfirm(
 				// remembered rules are scoped to the compound call's suggested scope
 				// rather than each segment.
 				const input = event.input
-				const outcome = await prompter.request({
-					toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
-					toolName: event.toolName,
-					input,
-					subtitle: opts.subtitle,
-					choices: buildPermissionChoices(event.toolName, input),
-					signal: abort.signal,
-				})
+				const outcome = await runQueuedPrompt(
+					opts.promptQueue ?? sharedPromptQueue,
+					() =>
+						prompter.request({
+							toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+							toolName: event.toolName,
+							input,
+							subtitle: opts.subtitle,
+							choices: buildPermissionChoices(event.toolName, input),
+							signal: abort.signal,
+						}),
+					abort.signal,
+				)
 				opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
 					toolCallId: event.toolCallId,
 					toolName: event.toolName,
@@ -2230,12 +2333,17 @@ export async function handleCompoundConfirm(
 				return applyApprovalOutcome(outcome, opts.session)
 			}
 
-			const outcome = await promptForCompoundApproval({
-				toolName: event.toolName,
-				command: "command" in event.input ? String(event.input.command) : "",
-				ctx: opts.ctx,
-				signal: abort.signal,
-			})
+			const outcome = await runQueuedPrompt(
+				opts.promptQueue ?? sharedPromptQueue,
+				() =>
+					promptForCompoundApproval({
+						toolName: event.toolName,
+						command: "command" in event.input ? String(event.input.command) : "",
+						ctx: opts.ctx,
+						signal: abort.signal,
+					}),
+				abort.signal,
+			)
 
 			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
 				toolCallId: event.toolCallId,
