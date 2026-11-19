@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+	cancelEscalatedRequests,
 	getParentSurface,
 	type ParentSurface,
+	registerEscalationAbort,
 	registerParentSurface,
 	unregisterParentSurface,
 } from "./parent-surface-registry.js"
@@ -59,6 +61,17 @@ describe("parent surface registry", () => {
 		registerParentSurface("session-e", surface)
 		expect(unregisterParentSurface("session-e")).toBe(true)
 		expect(getParentSurface("session-e")).toBeUndefined()
+	})
+
+	it("cancels requests with one controller and cleans up its own registration", () => {
+		const controller = new AbortController()
+		const unregister = registerEscalationAbort("session-cancel", "tc-1", controller)
+		cancelEscalatedRequests("session-cancel", "mode changed")
+		expect(controller.signal.aborted).toBe(true)
+		unregister()
+		cancelEscalatedRequests("session-cancel", "another change")
+		expect(controller.signal.aborted).toBe(true)
+		unregisterParentSurface("session-cancel")
 	})
 
 	it("forwards the notice level to the surface", () => {

@@ -795,6 +795,13 @@ describe("classifier outage escalation to the parent session", () => {
 		unregisterParentSurface(TEST_SESSION_ID)
 	})
 
+	function createUnansweredSelect(): ExtensionUIContext["select"] {
+		return vi.fn((_title, _choices, opts): Promise<string | undefined> => {
+			if (opts?.signal?.aborted) return Promise.resolve(undefined)
+			return new Promise((resolve) => opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true }))
+		})
+	}
+
 	function createEscalatingParentContext(): ExtensionContext {
 		return { ...createClassifierContext(), mode: "rpc", hasUI: true } as unknown as ExtensionContext
 	}
@@ -1094,6 +1101,45 @@ describe("classifier outage escalation to the parent session", () => {
 			expect(release).toHaveBeenCalledTimes(1)
 		} finally {
 			unregisterParentSurface("hold-failing-parent")
+		}
+	})
+
+	it.each([
+		{ mode: "yolo" as const, expected: undefined },
+		{ mode: "plan" as const, expected: "The permission mode changed too many times during prompt" },
+	])("re-evaluates an escalated prompt after mode change to $mode", async ({ mode, expected }) => {
+		const { parentCtx, worker, workerCtx } = await setupEscalation()
+		parentCtx.mode = "tui"
+		parentCtx.ui.select = createUnansweredSelect()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+		const started = worker.fire("tool_call", event, workerCtx)
+		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledOnce())
+		const terminalHandler = vi.mocked(parentCtx.ui.onTerminalInput).mock.calls.at(-1)?.[0]
+		expect(terminalHandler).toBeDefined()
+		await new Promise((resolve) => setTimeout(resolve, 201))
+		for (let i = 0; i < (mode === "yolo" ? 1 : 3); i++) terminalHandler!("\x1b[Z")
+
+		const result = await started
+		if (expected === undefined) expect(result).toBeUndefined()
+		else expect(result).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
+	})
+
+	it("stops a canceled worker without recording a mode flap", async () => {
+		const { parentCtx, worker, workerCtx } = await setupEscalation()
+		parentCtx.mode = "tui"
+		parentCtx.ui.select = createUnansweredSelect()
+		const stop = new AbortController()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+		const started = worker.fire("tool_call", event, { ...workerCtx, signal: stop.signal })
+		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledOnce())
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			stop.abort(new Error("worker stopped"))
+			expect(await started).toBe("aborted")
+			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledOnce()
+			expect(warning).not.toHaveBeenCalled()
+		} finally {
+			warning.mockRestore()
 		}
 	})
 

@@ -37,6 +37,31 @@ export interface ParentSurface {
 }
 
 const bySessionId = new Map<string, ParentSurface[]>()
+const pendingRequests = new Map<string, Map<string, AbortController>>()
+
+/** Keep an abortable parent prompt linked to its request for cancellation and cleanup. */
+export function registerEscalationAbort(sessionId: string, toolCallId: string, controller: AbortController): () => void {
+	let requests = pendingRequests.get(sessionId)
+	if (!requests) {
+		requests = new Map<string, AbortController>()
+		pendingRequests.set(sessionId, requests)
+	}
+	requests.set(toolCallId, controller)
+	return () => {
+		const current = pendingRequests.get(sessionId)
+		if (current?.get(toolCallId) !== controller) return
+		current.delete(toolCallId)
+		if (current.size === 0) pendingRequests.delete(sessionId)
+	}
+}
+
+/** Withdraw every escalated request currently owned by a parent session. */
+export function cancelEscalatedRequests(sessionId: string, reason: unknown): void {
+	const requests = pendingRequests.get(sessionId)
+	if (!requests) return
+	for (const controller of requests.values()) controller.abort(reason)
+	pendingRequests.delete(sessionId)
+}
 
 /**
  * Register a parent surface for a specific session.
