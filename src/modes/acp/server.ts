@@ -147,6 +147,10 @@ import {
 	substituteTokensDeep,
 	vaultForSession,
 } from "../../extensions/pii-redaction/vault.js"
+import { prWatchCommandArgs, runPRWatchCommand } from "../../extensions/pr-watch/command.js"
+import { getPRWatcher } from "../../extensions/pr-watch/index.js"
+import { formatPRWatchStatus } from "../../extensions/pr-watch/presentation.js"
+import { setPRMonitoringPermitted } from "../../extensions/pr-watch/session-policy.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
@@ -173,7 +177,7 @@ import {
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
-import { CANONICAL_THINKING_LEVELS, thinkingLevelName } from "../../thinking-levels.js"
+import { CANONICAL_THINKING_LEVELS, thinkingLevelDescription, thinkingLevelName } from "../../thinking-levels.js"
 import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -185,8 +189,10 @@ import {
 	AVAILABLE_EXT_METHODS,
 	BACKGROUND_RUNS_CAPABILITY,
 	getClientOptedIntoBackgroundRuns,
+	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
+	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
 import {
 	COMPACT_COMMAND_ENTRY_TYPE,
@@ -684,6 +690,7 @@ export class KimchiAcpAgent implements Agent {
 		// live commands vs. the completion guard) for every session this
 		// server creates.
 		setBackgroundRunsPermitted(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
+		setPRMonitoringPermitted(getClientOptedIntoPRMonitoring(request.clientCapabilities))
 
 		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
@@ -763,6 +770,7 @@ export class KimchiAcpAgent implements Agent {
 					// button. Note the agent NEEDS this flag advertised only so
 					// clients feature-detect the gate; emission is opt-in gated.
 					[BACKGROUND_RUNS_CAPABILITY]: true,
+					[PR_MONITORING_CAPABILITY]: true,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
@@ -1575,6 +1583,34 @@ export class KimchiAcpAgent implements Agent {
 		}
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
+		}
+		const prWatchArgs =
+			getClientOptedIntoPRMonitoring(this.clientCapabilities) && images.length === 0
+				? prWatchCommandArgs(text)
+				: undefined
+		if (prWatchArgs !== undefined) {
+			// Replies go back as agent text; requests that need checkouts continue as an ordinary prompt.
+			let reply: string | undefined
+			try {
+				const watcher = getPRWatcher(entry.session.sessionManager)
+				if (!watcher) throw new Error("PR watch is unavailable in this session.")
+				const result = await runPRWatchCommand(watcher, prWatchArgs)
+				if ("prompt" in result) text = result.prompt
+				else reply = formatPRWatchStatus(result.state)
+			} catch (error) {
+				reply = `PR watch: ${error instanceof Error ? error.message : String(error)}`
+			}
+			if (reply !== undefined) {
+				this.send({
+					sessionId: params.sessionId,
+					update: {
+						sessionUpdate: "agent_message_chunk",
+						messageId: `km.${randomUUID()}`,
+						content: { type: "text", text: `${reply}\n\n` },
+					},
+				})
+				return { stopReason: "end_turn" }
+			}
 		}
 		// An unsolicited run (e.g. a completion-notification wake) may still be
 		// streaming: the client's previous prompt already resolved, so it
@@ -3437,7 +3473,10 @@ export class KimchiAcpAgent implements Agent {
 				sessionId,
 				update: {
 					sessionUpdate: "available_commands_update",
-					availableCommands: composeAvailableCommands(record.skillCommands),
+					availableCommands: composeAvailableCommands(
+						record.skillCommands,
+						getClientOptedIntoPRMonitoring(this.clientCapabilities),
+					),
 				},
 			})
 		})
@@ -4047,6 +4086,7 @@ export function buildThinkingConfigOption(session: AgentSessionThinkingConfig): 
 		options: selection.selectable.map((level) => ({
 			value: level,
 			name: thinkingLevelName(level),
+			description: thinkingLevelDescription(level),
 		})),
 	}
 }

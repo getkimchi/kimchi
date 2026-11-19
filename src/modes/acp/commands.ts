@@ -37,6 +37,11 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 			hint: 'A language name or code (e.g. "ko", "Korean"), or "auto" to reply in the language you write in.',
 		},
 	},
+	{
+		name: "pr-watch",
+		description: SLASH_COMMANDS["pr-watch"].hint,
+		input: { hint: "Optional instructions, or an action: watch, monitor, status, or stop." },
+	},
 ]
 
 /**
@@ -86,8 +91,14 @@ export function tryParseCompactCommand(text: string): { instructions?: string } 
 }
 
 /** Full session palette: static commands first, then skill commands. */
-export function composeAvailableCommands(skillCommands: ReadonlyMap<string, AcpSkillInfo>): AvailableCommand[] {
-	return [...AVAILABLE_COMMANDS, ...buildSkillAvailableCommands(Array.from(skillCommands.values()))]
+export function composeAvailableCommands(
+	skillCommands: ReadonlyMap<string, AcpSkillInfo>,
+	prMonitoring = false,
+): AvailableCommand[] {
+	return [
+		...AVAILABLE_COMMANDS.filter(({ name }) => name !== "pr-watch" || prMonitoring),
+		...buildSkillAvailableCommands(Array.from(skillCommands.values())),
+	]
 }
 
 /** Snapshot the loader's current skills without rescanning (session setup). */

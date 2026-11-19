@@ -643,6 +643,30 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(ToolProfileManager.getCurrentProfile(harness.pi)).toBe("planning-adhoc")
 	})
 
+	it("keeps mcp admitted when its read-only provider registers after the initial plan snapshot", async () => {
+		const harness = createPermissionsHarness(["read", "grep", "write", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools()).not.toContain("mcp")
+		expect(harness.activeTools()).not.toContain("write")
+
+		// The metadata-driven provider arrives after permissions has already
+		// hidden this active gateway, as happens during session replacement.
+		const unregister = registerReadOnlyToolProvider(harness.pi, () => ["mcp"])
+		harness.pi.registerTool({
+			name: "mcp",
+			label: "MCP",
+			description: "MCP gateway",
+			parameters: {},
+			execute: vi.fn(),
+		})
+		ToolProfileManager.reapplyCurrentProfile(harness.pi)
+		await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(harness.activeTools()).toContain("mcp")
+		expect(harness.activeTools()).not.toContain("write")
+		unregister()
+	})
+
 	it("session_start self-heals a stale planning-ferment profile when no ferment is active", async () => {
 		notifyFermentActive(false)
 		const harness = createPermissionsHarness(["read", "bash", "write", "grep"])
@@ -740,18 +764,21 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.pi.setActiveTools).toHaveBeenCalledTimes(initialApplications + 1)
 	})
 
-	it("appends the plan-mode MCP note when the gateway is hidden by plan mode", async () => {
+	it("keeps the gateway visible and appends its plan-mode read-only restriction", async () => {
 		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		expect(harness.activeTools()).not.toContain("mcp")
+		const unregister = registerReadOnlyToolProvider(harness.pi, () => ["mcp"])
+		try {
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(harness.activeTools()).toContain("mcp")
 
-		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+			const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
 
-		expect(result).toEqual({
-			systemPrompt: expect.stringMatching(
-				/^BASE\n\nPlan mode is active: the `mcp` gateway.*are hidden while plan mode is on.*$/,
-			),
-		})
+			expect(result).toEqual({
+				systemPrompt: expect.stringMatching(/^BASE\n\nPlan mode is active: the `mcp` gateway.*read-only operations.*$/),
+			})
+		} finally {
+			unregister()
+		}
 	})
 
 	it("appends — never replaces — so earlier handlers' sections (e.g. the memory digest) survive", async () => {

@@ -137,6 +137,15 @@ export function getClientOptedIntoBackgroundRuns(capabilities: ClientCapabilitie
 	return flags?.[BACKGROUND_RUNS_CAPABILITY] === true
 }
 
+// Kimchi-specific PR controls have no dedicated RFD. Runs reuse the existing
+// v1 backgroundRuns bridge to https://agentclientprotocol.com/rfds/v2/background-work.
+export const PR_MONITORING_CAPABILITY = "prMonitoring"
+
+export function getClientOptedIntoPRMonitoring(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[PR_MONITORING_CAPABILITY] === true && getClientOptedIntoBackgroundRuns(capabilities)
+}
+
 /**
  * A `_meta` payload namespaced under the kimchi.dev capability key — the
  * shape `kimchiDevMetaOf` produces and `_meta` readers consume.

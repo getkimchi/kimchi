@@ -13,7 +13,7 @@ import {
 	MCP_RUNTIME_REGISTER_VERSION,
 	MCP_STATUS_EVENT,
 } from "pi-mcp-adapter"
-import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
+import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
 import {
@@ -41,7 +41,7 @@ import {
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { installOfflineAccessAuthorizationUrlTransform } from "./oauth-offline-access.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
-import { collectReadOnlyMcpWireNames } from "./read-only.js"
+import { collectReadOnlyMcpWireNames, isReadOnlyQualifiedMcpGatewayTool } from "./read-only.js"
 import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
 
 const MCP_PROXY_TOOL = "mcp"
@@ -83,7 +83,10 @@ function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
 }
 
 function blockedPlanningResult(toolName: string) {
-	const reason = `MCP tool "${toolName}" is unavailable in plan mode.`
+	const reason =
+		toolName === MCP_PROXY_TOOL
+			? "This MCP gateway call is unavailable in plan mode. Use status, search, describe, instructions, server list, or a read-only-qualified tool call."
+			: `MCP tool "${toolName}" is unavailable in plan mode.`
 	return {
 		content: [{ type: "text" as const, text: reason }],
 		details: { error: "plan_mode_mcp_blocked", tool: toolName, message: reason },
@@ -91,13 +94,58 @@ function blockedPlanningResult(toolName: string) {
 	}
 }
 
-/**
- * Plan-mode gate: the gateway, script, namespace proxies, and write-capable
- * direct tools stay blocked; read-only-qualified direct tools (spec
- * annotations with a name-convention fallback — see ./read-only.ts) run.
- */
-function isBlockedInPlanning(toolName: string, isReadOnlyTool: (wireName: string) => boolean): boolean {
-	return toolName === MCP_PROXY_TOOL || toolName === MCP_SCRIPT_TOOL || !isReadOnlyTool(toolName)
+/** The gateway stays visible for discovery and argument-checked reads; script and write-capable tools do not. */
+function isHiddenFromPlanning(toolName: string, isReadOnlyTool: (wireName: string) => boolean): boolean {
+	return toolName === MCP_SCRIPT_TOOL || (toolName !== MCP_PROXY_TOOL && !isReadOnlyTool(toolName))
+}
+
+const PLAN_SEARCH_KEYS = new Set(["search", "searchMode", "regex", "includeSchemas", "limit", "offset", "server"])
+
+function hasOnlyKeys(params: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+	return Object.keys(params).every((key) => allowed.has(key))
+}
+
+function hasValidServer(params: Record<string, unknown>): boolean {
+	return params.server === undefined || (typeof params.server === "string" && params.server.length > 0)
+}
+
+/** Positive allowlist for every adapter dispatch shape that is read-only in plan mode. */
+function isAllowlistedGatewayCall(
+	params: unknown,
+	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
+): boolean {
+	if (typeof params !== "object" || params === null || Array.isArray(params)) return false
+	const input = params as Record<string, unknown>
+	const keys = Object.keys(input)
+	if (keys.length === 0) return true
+	if (keys.length === 1 && keys[0] === "instructions") return typeof input.instructions === "string"
+	if (keys.length === 1 && keys[0] === "server") return hasValidServer(input)
+	if (typeof input.describe === "string")
+		return hasOnlyKeys(input, new Set(["describe", "server"])) && hasValidServer(input)
+	if (typeof input.search === "string") return hasOnlyKeys(input, PLAN_SEARCH_KEYS) && hasValidServer(input)
+	if (
+		typeof input.tool === "string" &&
+		input.tool.length > 0 &&
+		hasOnlyKeys(input, new Set(["tool", "args", "server"]))
+	) {
+		return (
+			hasValidServer(input) &&
+			isReadOnlyGatewayTool(input.tool, typeof input.server === "string" ? input.server : undefined)
+		)
+	}
+	return false
+}
+
+/** Planning never uses the file-attribution heuristic to authorize gateway state changes. */
+function isBlockedInPlanning(
+	toolName: string,
+	params: unknown,
+	getReadOnlyToolNames: (server?: string) => readonly string[],
+	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
+): boolean {
+	if (toolName === MCP_SCRIPT_TOOL) return true
+	if (toolName === MCP_PROXY_TOOL) return !isAllowlistedGatewayCall(params, isReadOnlyGatewayTool)
+	return canChangeFiles(toolName, params, getReadOnlyToolNames, isReadOnlyGatewayTool)
 }
 
 /**
@@ -108,11 +156,12 @@ function canChangeFiles(
 	toolName: string,
 	params: unknown,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
+	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): boolean {
 	if (toolName !== MCP_PROXY_TOOL) return !getReadOnlyToolNames().includes(toolName)
 	// The adapter's schema makes these strings.
 	const { action, tool, server } = params as { action?: string; tool?: string; server?: string }
-	return action !== undefined || (tool !== undefined && !getReadOnlyToolNames(server).includes(tool))
+	return action !== undefined || (tool !== undefined && !isReadOnlyGatewayTool(tool, server))
 }
 
 type UpstreamLifecycleHandler = ExtensionHandler<unknown, unknown>
@@ -148,6 +197,7 @@ function createUpstreamApi(
 	policy: McpToolSurfacePolicy,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
+	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
 	const registeredToolNames = new Set<string>()
@@ -159,7 +209,7 @@ function createUpstreamApi(
 			.map(({ name }) => name)
 			.filter(
 				(name) =>
-					registeredToolNames.has(name) && !isBlockedInPlanning(name, (candidate) => readOnlyNames.has(candidate)),
+					registeredToolNames.has(name) && !isHiddenFromPlanning(name, (candidate) => readOnlyNames.has(candidate)),
 			)
 	})
 	return new Proxy(pi, {
@@ -198,11 +248,11 @@ function createUpstreamApi(
 						execute: async (...args: Parameters<typeof execute>) => {
 							if (
 								isPlanningMode(target, args[4]) &&
-								isBlockedInPlanning(brandedTool.name, (name) => getReadOnlyToolNames().includes(name))
+								isBlockedInPlanning(brandedTool.name, args[1], getReadOnlyToolNames, isReadOnlyGatewayTool)
 							) {
 								return blockedPlanningResult(brandedTool.name)
 							}
-							const result = canChangeFiles(brandedTool.name, args[1], getReadOnlyToolNames)
+							const result = canChangeFiles(brandedTool.name, args[1], getReadOnlyToolNames, isReadOnlyGatewayTool)
 								? await observeToolFiles(args[4], args[0], "mcp", () => execute(...args))
 								: await execute(...args)
 							return brandMcpAdapterOwnedToolResult(result)
@@ -271,11 +321,16 @@ function createUpstreamApi(
 				return (toolNames: string[]): void => {
 					const allowedNames = toolNames.filter((name) => !policy.suppressedToolNames.has(name))
 					const allowed = new Set(allowedNames)
+					const profile = getCurrentProfile(target)
+					const preserveGateway =
+						getParsedCliArgs().options.plan === true || profile === "planning-adhoc" || profile === "planning-ferment"
 					const removed: string[] = []
 					adapterActiveNames.clear()
 					for (const name of registeredToolNames) {
 						if (allowed.has(name)) adapterActiveNames.add(name)
-						else removed.push(name)
+						// Omitting the admitted gateway from a planning snapshot must
+						// not create a lasting vote; reconciliation removes other tools normally.
+						else if (!preserveGateway || name !== MCP_PROXY_TOOL) removed.push(name)
 					}
 					// Persist only this adapter's votes so all later profile snapshots
 					// respect removals, without changing other extensions' visibility.
@@ -329,6 +384,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		session_start: [],
 	}
 	let warnings: string[] = []
+	let sessionGeneration = 0
+	// Only the adapter's current authenticated session may authorize private reads.
+	let privateCatalogs = new Map<string, ServerCacheEntry>()
 
 	// MCP status events arrive in bursts; one resnapshot after the burst settles
 	// avoids re-deriving the active set (and re-setting the snapshot flag) on
@@ -354,6 +412,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.on("session_start", async (event, ctx) => {
+		sessionGeneration++
+		privateCatalogs = new Map()
 		// A replacement path (new/fork/switch/resume) just invalidated the old pi;
 		// its pending resnapshot is obsolete.
 		clearStatusResync()
@@ -415,14 +475,22 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			const effectiveConfig =
 				gateway !== undefined
 					? {
-							...selectedResult.config,
-							mcpServers: { ...selectedResult.config.mcpServers, [gateway.name]: gateway.entry },
+							...config,
+							mcpServers: { ...config.mcpServers, [gateway.name]: gateway.entry },
 						}
-					: selectedResult.config
+					: config
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
-			const adapterOptions: McpAdapterOptions =
-				options.callerServers || selectedResult.useProgrammaticConfig
+			const adapterOptions: McpAdapterOptions = {
+				createSessionMetadataObserver: () => {
+					const generation = sessionGeneration
+					return (serverName: string, entry: ServerCacheEntry): void => {
+						if (generation !== sessionGeneration) return
+						if (entry.cacheScope === "private") privateCatalogs.set(serverName, entry)
+						else privateCatalogs.delete(serverName)
+					}
+				},
+				...(options.callerServers || selectedResult.useProgrammaticConfig
 					? { config, defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION }
 					: // Default the adapter's global config to the Studio-shared file so
 						// adapter write flows (compat imports, Jev settings, write-backs)
@@ -434,7 +502,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						{
 							configPath: selectedResult.configPath ?? getSharedMcpConfigPath(),
 							defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION,
-						}
+						}),
+			}
 			// Offline-access request parameters for every OAuth authorize URL; stateless, see
 			// oauth-offline-access.ts.
 			installOfflineAccessAuthorizationUrlTransform()
@@ -445,7 +514,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
-					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server),
+					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server, privateCatalogs),
+					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server, privateCatalogs),
 				),
 			)
 			if (gateway !== undefined) registerGatewayRuntimeServer(pi, gateway)
@@ -480,7 +550,11 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			}
 		}, STATUS_RESYNC_DEBOUNCE_MS)
 	})
-	pi.on("session_shutdown", clearStatusResync)
+	pi.on("session_shutdown", () => {
+		clearStatusResync()
+		sessionGeneration++
+		privateCatalogs.clear()
+	})
 }
 
 export default function mcpAdapterExtension(pi: ExtensionAPI): void {

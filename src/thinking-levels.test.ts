@@ -4,7 +4,9 @@ import {
 	CANONICAL_THINKING_LEVELS,
 	deriveThinkingLevelMap,
 	normalizeThinkingLevels,
+	THINKING_LEVEL_DESCRIPTIONS,
 	thinkingColumnValue,
+	thinkingLevelDescription,
 	thinkingLevelName,
 } from "./thinking-levels.js"
 
@@ -178,5 +180,15 @@ describe("thinkingLevelName", () => {
 
 	it("falls back to the level id for an unknown value", () => {
 		expect(thinkingLevelName("turbo")).toBe("turbo")
+	})
+})
+
+describe("thinkingLevelDescription", () => {
+	it("returns the use-case line for a canonical level", () => {
+		expect(thinkingLevelDescription("high")).toBe(THINKING_LEVEL_DESCRIPTIONS.high)
+	})
+
+	it("returns undefined for an unknown value", () => {
+		expect(thinkingLevelDescription("turbo")).toBeUndefined()
 	})
 })

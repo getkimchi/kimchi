@@ -192,6 +192,8 @@ export interface McpServerFixtureOptions {
 	lifecycle?: "keep-alive" | "lazy" | "eager"
 	idleTimeout?: number
 	toolPrefix?: McpSettings["toolPrefix"]
+	/** Extra environment values for this stdio server definition. */
+	serverEnv?: Record<string, string>
 	autoAuth?: boolean
 	oauthPreauthorized?: boolean
 	/** Spec-strict gateway mode: OAuth metadata/DCR endpoints 406 unless Accept advertises text/event-stream. */
@@ -388,6 +390,7 @@ function seedStdioServer(
 			command: process.execPath,
 			args: [FIXTURE_SERVER_PATH],
 			env: {
+				...options.serverEnv,
 				KIMCHI_MCP_FIXTURE_EVENTS: eventPath,
 				KIMCHI_MCP_FIXTURE_SCENARIO: scenario,
 				...fixtureBehaviorEnv(options.behavior),

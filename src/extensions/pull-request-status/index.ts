@@ -15,6 +15,7 @@ import {
 } from "../work-attribution.js"
 import { currentBranch, lookupBranchPullRequest } from "./branch-status.js"
 import { anchorDirectory, directoryLabel, observedCommandDirectory } from "./command-anchor.js"
+import { BRANCH_PR_OBSERVED_EVENT, type BranchPRObservation, WORK_PR_OBSERVED_EVENT } from "./events.js"
 import { mergePullRequestLinks, pullRequestLabel } from "./links.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { LOOKUP_WINDOW_MS, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
@@ -162,6 +163,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			})
 		}
 		// Commit associations belong in /work; they may refer to another branch sharing the same commit.
+		// PR watch offers to watch the open PRs of a session's own commits, wherever they were made.
+		if (update.pullRequests.some(({ state }) => state === "open")) pi.events.emit(WORK_PR_OBSERVED_EVENT, update)
 	}
 
 	function releaseWork(): void {
@@ -239,7 +242,14 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 						if (!current()) return
 						workTreeStatus(ctx, anchor, branch)
 						// Clear the previous branch's link before waiting for its replacement.
-						if (branch !== branchName) footer(branch)
+						if (branch !== branchName) {
+							footer(branch)
+							pi.events.emit(BRANCH_PR_OBSERVED_EVENT, {
+								sessionId: ctx.sessionManager.getSessionId(),
+								cwd: anchor,
+								branch,
+							} satisfies BranchPRObservation)
+						}
 						if (!branchLookupDue(branch)) return
 						const result = branch ? await lookupBranchPullRequest(anchor, signal) : undefined
 						if (!current()) return
@@ -255,6 +265,12 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 						}
 						const pr = result?.pullRequest
 						footer(pr ? `${branch} · ${pullRequestLabel(pr)}` : branch, pr?.url)
+						pi.events.emit(BRANCH_PR_OBSERVED_EVENT, {
+							sessionId: ctx.sessionManager.getSessionId(),
+							cwd: anchor,
+							branch,
+							pullRequest: pr,
+						} satisfies BranchPRObservation)
 					})
 					.catch((error) => {
 						if (!current()) return

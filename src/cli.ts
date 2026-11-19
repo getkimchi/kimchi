@@ -105,6 +105,7 @@ import helpExtension from "./extensions/help.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
+import imagePayloadBudgetExtension from "./extensions/image-payload-budget.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
 import {
@@ -146,6 +147,7 @@ import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import powershellGateExtension from "./extensions/powershell-gate.js"
 import prCostReportingExtension from "./extensions/pr-cost-reporting/index.js"
+import prWatchExtension from "./extensions/pr-watch/index.js"
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -1049,6 +1051,7 @@ async function cliMain(): Promise<void> {
 				tagsExtension,
 				teleportExtension,
 				remoteRunExtension,
+				prWatchExtension,
 				telemetryExtension(telemetryConfig),
 				sessionMetadataExtension(),
 				surveysExtension(),
@@ -1104,6 +1107,8 @@ async function cliMain(): Promise<void> {
 				infrastructureBreakerExtension,
 				interactiveErrorSurfaceExtension,
 				rateLimitNoticeExtension,
+				// Keep last: the byte budget is measured after every other request transform.
+				imagePayloadBudgetExtension,
 			]
 
 			if (IS_ACP_MODE) {
