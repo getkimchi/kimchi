@@ -112,9 +112,11 @@ import {
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import {
+	cancelEscalatedRequests,
 	getParentSurface,
 	type ParentSurface,
 	type ParentSurfaceLevel,
+	registerEscalationAbort,
 	registerParentSurface,
 	unregisterParentSurface,
 } from "./parent-surface-registry.js"
@@ -217,6 +219,8 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 ]
 
 export { notifyFermentActive }
+
+const MODE_CHANGED_ABORT_ERROR = new Error("permissions: mode changed")
 
 function canPrompt(ctx: ExtensionContext, worker = false): boolean {
 	if (worker || isAgentWorker()) return false
@@ -718,6 +722,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			pendingModeChangeDismissals.set(toolCallId, reasons)
 		}
 		for (const ctrl of activeAbortControllers) ctrl.abort()
+		cancelEscalatedRequests(ctx.sessionManager.getSessionId(), MODE_CHANGED_ABORT_ERROR)
 		activeAbortControllers.clear()
 		activePromptToolCalls.clear()
 		updateStatus(ctx)
@@ -1056,47 +1061,54 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					// The whole handler belongs to the parent, including notification,
 					// queue ownership and withBlocked side effects — not the worker that
 					// happened to invoke this surface through its async chain.
-					runOutsideWorkerContext(() => {
+					runOutsideWorkerContext(async () => {
 						const prompter = resolvePrompter(ctx)
 						if (!prompter) {
 							return Promise.reject(new Error("permissions: parent session has no prompt surface"))
 						}
-						return promptQueue.enqueue(async () => {
-							if (req.signal?.aborted) throw req.signal.reason ?? new Error("permissions: escalated prompt aborted")
-							// The bell / desktop notification and the blocked-session event
-							// belong to the PARENT's bus — the worker's own bus reaches nobody.
-							pi.events.emit("notification", {
-								notification_type: "permission_prompt",
-								tool_name: req.toolName,
-								tool_use_id: req.toolCallId,
-							})
-							return withBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
-								// The answer timeout counts from the prompt being shown,
-								// not from queueing (D3): an unanswered escalation fails
-								// closed back in the worker.
-								const timeout = new AbortController()
-								const timer = setTimeout(
-									() => timeout.abort(new Error("permissions: subagent permission prompt timed out")),
-									ESCALATED_PROMPT_TIMEOUT_MS,
-								)
-								const signal = req.signal ? AbortSignal.any([req.signal, timeout.signal]) : timeout.signal
-								try {
-									const outcome = await prompter.request({ ...req, signal })
-									// Nobody answered: the timeout fired, a headless client
-									// cancelled the card, or the dialog was replaced upstream.
-									// Treat the whole route as failed — the worker falls back
-									// to its fail-closed block.
-									if (outcome.kind === "aborted" || outcome.kind === "denied-by-client") {
-										throw timeout.signal.aborted
-											? (timeout.signal.reason as unknown)
-											: new Error(`permissions: escalated prompt closed without an answer (${outcome.kind})`)
+						const controller = new AbortController()
+						const unlinkWorkerAbort = linkAbortSignal(req.signal, controller)
+						const unregister = registerEscalationAbort(sessionId, req.toolCallId, controller)
+						try {
+							return await runQueuedPrompt(promptQueue, async () => {
+								if (controller.signal.aborted) return { kind: "aborted" }
+								// The bell / desktop notification and the blocked-session event
+								// belong to the PARENT's bus — the worker's own bus reaches nobody.
+								pi.events.emit("notification", {
+									notification_type: "permission_prompt",
+									tool_name: req.toolName,
+									tool_use_id: req.toolCallId,
+								})
+								return withBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
+									// The answer timeout starts once this request reaches the
+									// interactive prompt instead of while it waits in the queue.
+									const timer = setTimeout(
+										() => controller.abort(new Error("permissions: subagent permission prompt timed out")),
+										ESCALATED_PROMPT_TIMEOUT_MS,
+									)
+									try {
+										const outcome = await prompter.request({ ...req, signal: controller.signal })
+										// A user- or client-initiated mode change returns through the
+										// worker's outer gate so its policy is evaluated again.
+										if (outcome.kind === "aborted" && controller.signal.reason === MODE_CHANGED_ABORT_ERROR) {
+											return outcome
+										}
+										// A worker stop, a timeout, or a closing client has no
+										// answer to carry: fail the route closed rather than
+										// treating an absent answer as an approval.
+										if (outcome.kind === "aborted" || outcome.kind === "denied-by-client") {
+											throw controller.signal.reason ?? new Error(`permissions: escalated prompt closed without an answer (${outcome.kind})`)
+										}
+										return outcome
+									} finally {
+										clearTimeout(timer)
 									}
-									return outcome
-								} finally {
-									clearTimeout(timer)
-								}
-							})
-						}, req.signal)
+								})
+							}, req.signal)
+						} finally {
+							unlinkWorkerAbort()
+							unregister()
+						}
 					}),
 			}
 			parentSurfaceSessionId = sessionId
@@ -1850,11 +1862,17 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		 *  not-aborted narrowing the inline checks used to provide. */
 		const promptAbortedByModeChange = (result: PromptOutcome): result is "aborted" => {
 			if (result !== "aborted") return false
+			// A worker's own cancellation is a stop, not a mode flap. Only
+			// cancellation by the parent's mode change is re-evaluated.
+			if (options.role === "worker" && ctx.signal?.aborted) return false
 			consumeModeChangeDismissal()
 			return true
 		}
 		try {
 			for (let attempt = 0; attempt < MODES.length; attempt++) {
+				// A parent mode change cancels escalated prompts. The worker must
+				// refresh the parent's live policy on every pass.
+				refreshWorkerPolicy(ctx)
 				const { mode } = getRuntimePermissionMode()
 
 				// YOLO mode: skip approval prompts and the classifier — but the user's
@@ -2286,12 +2304,12 @@ interface ConfirmOptions {
 async function runQueuedPrompt<T extends ApprovalOutcome | CompoundApprovalOutcome>(
 	queue: PromptQueue,
 	task: () => Promise<T>,
-	signal: AbortSignal,
+	signal?: AbortSignal,
 ): Promise<T | { kind: "aborted" }> {
 	try {
 		return await queue.enqueue(task, signal)
 	} catch (err) {
-		if (signal.aborted) return { kind: "aborted" }
+		if (signal?.aborted) return { kind: "aborted" }
 		throw err
 	}
 }
