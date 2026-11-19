@@ -75,7 +75,11 @@ import permissionsExtension, {
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from "./mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { registerParentSurface, unregisterParentSurface } from "./parent-surface-registry.js"
+import {
+	getParentSurface,
+	registerParentSurface,
+	unregisterParentSurface,
+} from "./parent-surface-registry.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
 import { getPermissionPolicySource } from "./policy-source-registry.js"
 import type { PermissionRequest, ToolPermissionPrompter } from "./prompter.js"
@@ -242,6 +246,8 @@ function createMockContext(
 			notify: vi.fn(),
 			setStatus: vi.fn(),
 			setWorkingVisible: vi.fn(),
+			setEditorText: vi.fn(),
+			getEditorText: vi.fn(() => ""),
 			theme: {
 				fg: vi.fn((_, s) => s),
 				bold: vi.fn((s) => s),
@@ -915,7 +921,8 @@ describe("classifier outage escalation to the parent session", () => {
 			expect(result).toBeUndefined()
 			expect(seen).toHaveLength(1)
 			expect(seen[0]?.subtitle).toBe(CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE)
-			expect(seen[0]?.choices[0]?.kind).toBe("deny")
+			expect(seen[0]?.choices[0]?.kind).toBe("allow-once")
+			expect(seen[0]?.choices.at(-1)?.kind).toBe("deny")
 			expect(seen[0]?.origin).toEqual({
 				persona: "explorer",
 				agentId: "agent-9",
@@ -1061,7 +1068,7 @@ describe("classifier outage escalation to the parent session", () => {
 			expect(await worker.fire("tool_call", event, workerCtx)).toBeUndefined()
 			expect(classifyToolCall).toHaveBeenCalledTimes(1)
 			expect(seen).toHaveLength(1)
-			expect(seen[0]?.choices[0]?.kind).toBe("deny")
+			expect(seen[0]?.choices[0]?.kind).toBe("allow-once")
 			expect(seen[0]).toMatchObject({
 				subtitle: needsApproval.reason,
 				riskScore: needsApproval.riskScore,
@@ -1176,6 +1183,59 @@ describe("classifier outage escalation to the parent session", () => {
 		}
 	})
 
+	it("preserves a draft until the parent can open the escalated prompt", async () => {
+		const { parentCtx, worker, workerCtx } = await setupEscalation()
+		parentCtx.mode = "tui"
+		let draft = "Continue the user's draft"
+		parentCtx.ui.getEditorText = vi.fn(() => draft)
+		parentCtx.ui.select = vi.fn(async (_title, choices) => choices[0])
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+		const started = worker.fire("tool_call", event, workerCtx)
+		await vi.waitFor(() =>
+			expect(parentCtx.ui.notify).toHaveBeenCalledWith(
+				"Subagent explorer — find the config files is waiting for permission. Its prompt will open when the input editor is empty and no other dialog is active.",
+				"info",
+			),
+		)
+		expect(parentCtx.ui.select).not.toHaveBeenCalled()
+		expect(parentCtx.ui.getEditorText()).toBe("Continue the user's draft")
+		expect(parentCtx.ui.setEditorText).not.toHaveBeenCalled()
+
+		draft = ""
+		expect(await started).toBeUndefined()
+		expect(parentCtx.ui.select).toHaveBeenCalledOnce()
+	})
+
+	it("withdraws a parent selector when the permission mode changes", async () => {
+		const { parentCtx } = await setupEscalation()
+		parentCtx.mode = "tui"
+		parentCtx.ui.select = createUnansweredSelect()
+		const surface = getParentSurface(TEST_SESSION_ID)
+		if (!surface?.requestPermission) throw new Error("missing parent surface")
+		const source = new AbortController()
+		const pending = surface.requestPermission({
+			toolCallId: "direct-parent-check",
+			toolName: "bash",
+			input: { command: "pwd" },
+			choices: [
+				{ kind: "allow-once", label: "Yes — just this call" },
+				{ kind: "deny", label: "No" },
+			],
+			signal: source.signal,
+		})
+		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledOnce())
+		await new Promise((resolve) => setTimeout(resolve, 201))
+		const terminalHandler = vi.mocked(parentCtx.ui.onTerminalInput).mock.calls[0]?.[0]
+		expect(terminalHandler).toBeDefined()
+		terminalHandler!("\x1b[Z")
+		await new Promise((resolve) => setTimeout(resolve, 50))
+		const mode = getPermissionMode(TEST_SESSION_ID)
+		const selectionSignal = vi.mocked(parentCtx.ui.select).mock.calls[0]?.[2]?.signal
+		expect(mode?.mode).toBe("yolo")
+		expect(selectionSignal?.aborted).toBe(true)
+		expect(await pending).toEqual({ kind: "aborted" })
+	})
+
 	it.each([
 		{ mode: "yolo" as const, expected: undefined },
 		{ mode: "plan" as const, expected: "The permission mode changed too many times during prompt" },
@@ -1186,7 +1246,7 @@ describe("classifier outage escalation to the parent session", () => {
 		vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
 		const started = worker.fire("tool_call", event, workerCtx)
 		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledOnce())
-		const terminalHandler = vi.mocked(parentCtx.ui.onTerminalInput).mock.calls.at(-1)?.[0]
+		const terminalHandler = vi.mocked(parentCtx.ui.onTerminalInput).mock.calls[0]?.[0]
 		expect(terminalHandler).toBeDefined()
 		await new Promise((resolve) => setTimeout(resolve, 201))
 		for (let i = 0; i < (mode === "yolo" ? 1 : 3); i++) terminalHandler!("\x1b[Z")

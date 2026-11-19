@@ -151,7 +151,9 @@ test("auto mode asks the parent when the classifier is not safe; approval runs t
 			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
 			const promptView = fullText(terminal)
 			trace.step("escalated non-safe prompt visible in the parent")
-			terminal.keyDown() // deny is first by default; choose Yes — just this call
+			// The subagent prompt keeps the main session's order: Enter accepts
+			// the first choice rather than moving off deny-first ordering.
+			await new Promise((resolve) => setTimeout(resolve, 250))
 			terminal.submit("")
 			await waitForText(terminal, "PARENT-AUTO-DENY-DONE", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
@@ -231,6 +233,138 @@ test("a running background subagent follows the parent into plan mode", async ({
 			await waitForText(terminal, "WORKER-BLOCKED-BY-PLAN", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
 			trace.step("next worker call was blocked by the live parent mode")
+		},
+	)
+})
+
+test("a subagent approval waits for the draft instead of accepting typed keys", async ({ terminal }) => {
+	let releaseChild: (() => void) | undefined
+	const childHold = new Promise<void>((resolve) => {
+		releaseChild = resolve
+	})
+	const draft = "unfinished draft with 2 and j"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "subagent-draft-input-protection",
+			providerId: "kimchi-dev",
+			models: MODELS,
+			extraArgs: ["--auto"],
+			responses: [
+				{ stream: ["Delegating in background."], toolCalls: [agentCall(true)] },
+				{ stream: ["BACKGROUND-DRAFT-STARTED"] },
+				{
+					forSubagent: true,
+					holdUntil: childHold,
+					stream: ["I'll create the file."],
+					toolCalls: [{ function: { name: "write", arguments: WRITE_ARGS } }],
+				},
+				{
+					match: (request) => isClassifierRequest(request.body),
+					stream: [
+						'{"verdict":"requires-confirmation","reason":"The worker cannot ask for approval","riskScore":"high"}',
+					],
+				},
+				{ stream: ["DRAFT-ANSWER-HANDLED"] },
+				{ stream: ["CHILD-DRAFT-APPROVED"], forSubagent: true },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Start a background subagent to create output.txt")
+			await waitForText(terminal, "BACKGROUND-DRAFT-STARTED", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForRequest(fixture.fake.requests, isSubagentRequest, "the held background subagent request")
+			terminal.write(draft)
+			if (!releaseChild) throw new Error("child release was not initialized")
+			releaseChild()
+			await waitForText(terminal, "is waiting for permission", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			expect(fullText(terminal)).toContain(draft)
+			expect(fullText(terminal)).not.toContain(ALLOW_PROMPT)
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
+			trace.step("digits and ordinary editing do not approve while a draft is present")
+
+			// This Enter submits the editor's ordinary draft; it must not answer
+			// a subagent's pending selector. The resulting quiet period protects
+			// the following selector's opening keystrokes as well.
+			terminal.submit("")
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
+			await new Promise((resolve) => setTimeout(resolve, 250))
+			terminal.submit("")
+			await waitForText(terminal, "CHILD-DRAFT-APPROVED", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
+			expect(fullText(terminal)).toContain(draft)
+			trace.step("the draft survives, and deliberate first-choice approval runs the write")
+		},
+	)
+})
+
+test("a held subagent waits behind a questionnaire without losing it", async ({ terminal }) => {
+	let releaseChild: (() => void) | undefined
+	const childHold = new Promise<void>((resolve) => {
+		releaseChild = resolve
+	})
+	const questionnaireArgs = JSON.stringify({
+		header: "One question",
+		questions: [
+			{
+				id: "color",
+				type: "single",
+				prompt: "Pick a color",
+				options: [
+					{ id: "alpha", label: "Alpha" },
+					{ id: "beta", label: "Beta" },
+				],
+			},
+		],
+	})
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "subagent-questionnaire-preservation",
+			providerId: "kimchi-dev",
+			models: MODELS,
+			extraArgs: ["--auto"],
+			responses: [
+				{ stream: ["Delegating in background."], toolCalls: [agentCall(true)] },
+				{
+					stream: ["Let me ask first."],
+					toolCalls: [{ function: { name: "questionnaire", arguments: questionnaireArgs } }],
+				},
+				{ stream: ["PARENT-QUESTION-ANSWERED"] },
+				{
+					forSubagent: true,
+					holdUntil: childHold,
+					stream: ["I'll create the file."],
+					toolCalls: [{ function: { name: "write", arguments: WRITE_ARGS } }],
+				},
+				{
+					match: (request) => isClassifierRequest(request.body),
+					stream: [
+						'{"verdict":"requires-confirmation","reason":"The worker cannot ask for approval","riskScore":"high"}',
+					],
+				},
+				{ stream: ["CHILD-QUESTION-APPROVED"], forSubagent: true },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Start a background subagent to create output.txt")
+			await waitForText(terminal, "Pick a color", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			await waitForRequest(fixture.fake.requests, isSubagentRequest, "the held background subagent request")
+			if (!releaseChild) throw new Error("child release was not initialized")
+			releaseChild()
+			await waitForText(terminal, "is waiting for permission", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			expect(fullText(terminal)).not.toContain(ALLOW_PROMPT)
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
+			trace.step("the held worker waits while the questionnaire keeps focus")
+
+			terminal.submit("")
+			await waitForText(terminal, "PARENT-QUESTION-ANSWERED", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
+			await new Promise((resolve) => setTimeout(resolve, 250))
+			terminal.submit("")
+			await waitForText(terminal, "CHILD-QUESTION-APPROVED", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
+			trace.step("the original questionnaire completes and the worker can then be approved")
 		},
 	)
 })
