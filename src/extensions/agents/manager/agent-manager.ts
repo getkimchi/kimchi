@@ -905,8 +905,9 @@ export class AgentManager {
 			purpose === "finalize_report" && record.taskRef
 				? reportFinalizationPrompt(record.taskRef)
 				: withAgentReportProtocol(prompt ?? "", record.taskRef)
-		// Resume gets a fresh async store for its own watchdog hold. Prompt
-		// identity remains in the existing worker permission role, not this store.
+		// Resume gets a fresh async store for its watchdog hold. The worker-session
+		// binding restores the retained parent ID for telemetry; prompt identity
+		// remains in the existing worker permission role.
 		const resumePromise = runAsAgentWorker(() =>
 			resumeAgent(session, attemptPrompt, {
 				onToolActivity: (activity) => {
