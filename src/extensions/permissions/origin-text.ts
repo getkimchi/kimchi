@@ -12,7 +12,10 @@ export function sanitizeIdentity(value: string | undefined): string | undefined 
 	if (!normalized) return undefined
 	const characters = Array.from(normalized)
 	if (characters.length <= MAX_IDENTITY_LENGTH) return normalized
-	return `${characters.slice(0, MAX_IDENTITY_LENGTH - 1).join("").trimEnd()}…`
+	return `${characters
+		.slice(0, MAX_IDENTITY_LENGTH - 1)
+		.join("")
+		.trimEnd()}…`
 }
 
 export function sanitizePermissionOrigin(origin: PermissionOrigin | undefined): PermissionOrigin | undefined {
