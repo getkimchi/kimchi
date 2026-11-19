@@ -618,13 +618,12 @@ describe("prompt enrichment skills", () => {
 			| { skillPaths?: string[] }
 			| undefined
 
-		// Bundled skills not already in the harness dir are contributed via a
-		// filtered temp copy (e.g. dap-debugging). Skills already in the harness
-		// dir (e.g. improve if previously deployed) are silently skipped.
+		// Bundled skills not already in the harness dir are contributed through
+		// their individual directories. Skills already in the harness dir (e.g.
+		// improve if previously deployed) are silently skipped.
 		const paths = result?.skillPaths ?? []
 		expect(paths.length).toBeGreaterThan(0)
-		// At least one contributed path should contain a bundled skill dir.
-		expect(paths.some((p) => existsSync(join(p, "dap-debugging")) || existsSync(join(p, "improve")))).toBe(true)
+		expect(paths.every((path) => existsSync(join(path, "SKILL.md")))).toBe(true)
 		const loaded = paths.map((path) => loadSkillsFromDir({ dir: path, source: "path" }))
 		const creator = loaded.flatMap((result) => result.skills).find((skill) => skill.name === "create-skill")
 		expect(creator).toBeDefined()

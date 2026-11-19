@@ -1,10 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
-import { resolveBundledSkillsDir, resolveHarnessSkillsDir, resolveSkillRoots } from "./resolve-skill-roots.js"
+import {
+	resolveBundledSkillsDir,
+	resolveHarnessSkillsDir,
+	resolveSkillPathsForDiscovery,
+	resolveSkillRoots,
+} from "./resolve-skill-roots.js"
 
 describe("resolveHarnessSkillsDir", () => {
 	it("points at ~/.config/kimchi/harness/skills", () => {
@@ -146,5 +152,31 @@ describe("resolveSkillRoots", () => {
 		expect(trusted.filter((r) => r.kind === "config").map((r) => r.dir)).toEqual(
 			expect.arrayContaining([join(cwd, ".claude", "skills"), join(cwd, ".pi", "agent", "skills")]),
 		)
+	})
+
+	describe("resolveSkillPathsForDiscovery", () => {
+		it("contributes original per-skill directories without per-discovery temp copies", () => {
+			const bundledDir = join(home, "bundled")
+			const harnessDir = resolveHarnessSkillsDir(home)
+			for (const [root, name] of [
+				[bundledDir, "unique"],
+				[bundledDir, "shadowed"],
+				[harnessDir, "shadowed"],
+			]) {
+				mkdirSync(join(root, name), { recursive: true })
+				writeFileSync(join(root, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name} skill\n---\n# ${name}\n`)
+			}
+
+			const options = { homeDir: home, bundledDir, configPaths: [] }
+			const first = resolveSkillPathsForDiscovery(cwd, options)
+			const second = resolveSkillPathsForDiscovery(cwd, options)
+			const expected = [join(bundledDir, "unique")]
+
+			expect(first).toEqual(expected)
+			expect(second).toEqual(expected)
+			const loaded = first.flatMap((path) => loadSkillsFromDir({ dir: path, source: "path" }).skills)
+			expect(loaded.map((skill) => skill.name)).toEqual(["unique"])
+			expect(loaded[0]?.filePath).toBe(join(bundledDir, "unique", "SKILL.md"))
+		})
 	})
 })
