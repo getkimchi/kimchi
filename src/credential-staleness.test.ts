@@ -112,6 +112,19 @@ describe("persistent credential rejections", () => {
 		expect(isCredentialStale("unrelated-api-key", "kimchi-dev", statePath)).toBe(true)
 	})
 
+	it("does not rewrite the sidecar when refresh-scoped clearing matches nothing", () => {
+		markCredentialStale("rejected-key", "kimchi-dev", statePath)
+		const original = readFileSync(statePath, "utf8")
+		const mtimeNs = statSync(statePath, { bigint: true }).mtimeNs
+
+		clearRefreshedCredentialStale("unknown-old-token", "unknown-new-token", "kimchi-dev", statePath)
+		resetCredentialStalenessForTests()
+
+		expect(readFileSync(statePath, "utf8")).toBe(original)
+		expect(statSync(statePath, { bigint: true }).mtimeNs).toBe(mtimeNs)
+		expect(isCredentialStale("rejected-key", "kimchi-dev", statePath)).toBe(true)
+	})
+
 	it("retains only the presented credential's persisted rejection when preparing a repeated login", () => {
 		markCredentialStale("repeated-token", "kimchi-dev", statePath)
 		markCredentialStale("replaced-token", "kimchi-dev", statePath)

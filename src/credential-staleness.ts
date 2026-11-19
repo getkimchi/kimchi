@@ -189,10 +189,10 @@ function clearPersistentRejection(
 					: clearedFingerprints !== undefined
 						? rejected.filter((value) => !clearedFingerprints.has(value))
 						: []
-			if (
-				(retainedFingerprint !== undefined || clearedFingerprints !== undefined) &&
-				retained.length === rejected.length
-			) {
+			const hasScopedFilter = retainedFingerprint !== undefined || clearedFingerprints !== undefined
+			if (hasScopedFilter && retained.length === rejected.length) {
+				// Filtering only removes values and preserves order. An equal-length
+				// subset therefore has identical contents and needs no disk write.
 				return state
 			}
 			const providers = { ...state.providers }
