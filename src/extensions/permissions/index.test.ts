@@ -3649,6 +3649,65 @@ describe("handleCompoundConfirm", () => {
 		expect(session.all()[1].content).toBe("npm test:*")
 	})
 
+	it("keeps a rejected call blocked when the mode changes during feedback", async () => {
+		const harness = createPermissionsHarness(["write"])
+		let resolveFeedback!: () => void
+		const feedbackPending = new Promise<string>((resolve) => {
+			resolveFeedback = () => resolve("not that way")
+		})
+		const ctx = createMockContext(["No — tell the assistant what to do differently"])
+		ctx.ui.input = vi.fn(() => feedbackPending)
+		await harness.fire("session_start", {}, ctx)
+
+		const pending = harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "feedback-mode-change",
+				toolName: "write",
+				input: { path: "rejected.txt", content: "no" },
+			},
+			ctx,
+		)
+		await vi.waitFor(() => expect(ctx.ui.input).toHaveBeenCalledOnce())
+		setPermissionMode(TEST_SESSION_ID, { mode: "yolo", source: "runtime", initiatedBy: "user" })
+		resolveFeedback()
+
+		await expect(pending).resolves.toMatchObject({
+			block: true,
+			reason: "The user declined this action before execution and said: not that way",
+		})
+	})
+
+	it("keeps compound rejection after an abort while feedback is still open", async () => {
+		const abort = new AbortController()
+		const ctx = createMockContext(["No — tell the assistant what to do differently"])
+		ctx.signal = abort.signal
+		let resolveFeedback!: () => void
+		const feedbackPending = new Promise<string>((resolve) => {
+			resolveFeedback = () => resolve("keep it read-only")
+		})
+		ctx.ui.input = vi.fn(() => feedbackPending)
+		const event = createMockEvent()
+		const started = handleCompoundConfirm(event, {
+			ctx,
+			session,
+			pi,
+			activeAborts,
+			promptToolCalls,
+			subcommands: ["echo a", "echo b"],
+			permissionMode: "yolo",
+		})
+		await vi.waitFor(() => expect(ctx.ui.input).toHaveBeenCalledOnce())
+		abort.abort()
+		resolveFeedback()
+
+		await expect(started).resolves.toEqual({
+			block: true,
+			reason: "The user declined this action before execution and said: keep it read-only",
+		})
+	})
+
 	it("inputs feedback for deny-with-feedback", async () => {
 		const ctx = createMockContext(["No — tell the assistant what to do differently"])
 		ctx.ui.input = vi.fn(async () => "Changed my mind")

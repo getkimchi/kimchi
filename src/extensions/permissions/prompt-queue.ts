@@ -26,6 +26,8 @@ interface PromptQueueEntry {
 	reject: (err: unknown) => void
 	signal?: AbortSignal
 	onAbort?: () => void
+	/** Gives an abort-aware task one turn to settle before releasing the queue. */
+	abortTimer?: ReturnType<typeof setTimeout>
 	/** Set once the waiter is settled; an orphaned task's late settle is a no-op. */
 	finished: boolean
 }
@@ -69,13 +71,19 @@ export class PromptQueue {
 						return
 					}
 					if (this.running === entry && !entry.finished) {
-						// Running but the prompt went away (replaced upstream or the
-						// caller gave up waiting): release the queue.
-						entry.finished = true
-						this.detach(entry)
-						this.running = undefined
-						entry.reject(reason)
-						this.pump()
+						// The task gets the first turn to settle its own abort. In
+						// particular, a selected "No" becomes a plain denial, not
+						// an "aborted" result that can be re-approved under a new
+						// mode. If the upstream prompt never settles, the next turn
+						// releases it so the queue cannot hang forever.
+						entry.abortTimer = setTimeout(() => {
+							if (entry.finished) return
+							entry.finished = true
+							this.detach(entry)
+							this.running = undefined
+							entry.reject(reason)
+							this.pump()
+						}, 0)
 					}
 				}
 				signal.addEventListener("abort", entry.onAbort, { once: true })
@@ -94,6 +102,7 @@ export class PromptQueue {
 		try {
 			task = entry.task()
 		} catch (err) {
+			if (entry.finished) return
 			entry.finished = true
 			this.detach(entry)
 			this.running = undefined
@@ -122,6 +131,7 @@ export class PromptQueue {
 	}
 
 	private detach(entry: PromptQueueEntry): void {
+		if (entry.abortTimer) clearTimeout(entry.abortTimer)
 		if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort)
 	}
 }
