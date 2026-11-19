@@ -1,11 +1,13 @@
+import type { CredentialStore } from "@earendil-works/pi-ai"
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 
-/** Store paths needed to resolve the canonical Kimchi credential. */
+/** Store paths and optional persistence override for resolving the canonical Kimchi credential. */
 export type RefreshAwareCredentialPaths = {
 	authPath: string
 	modelsPath: string
+	credentials?: CredentialStore
 }
 
 export type RefreshAwareAuth = Awaited<ReturnType<ModelRuntime["getAuth"]>>
@@ -55,6 +57,7 @@ export async function resolveRefreshAwareKimchiAuth(
 		const modelRuntime = await ModelRuntime.create({
 			authPath: paths.authPath,
 			modelsPath: paths.modelsPath,
+			credentials: paths.credentials,
 			refreshOnCreate: false,
 		})
 		installOAuth(modelRuntime)

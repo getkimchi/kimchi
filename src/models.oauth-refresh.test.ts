@@ -3,6 +3,8 @@ import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai"
+import { readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { installKimchiOAuth } from "./extensions/login/flow.js"
@@ -132,6 +134,42 @@ describe("OAuth-aware model discovery", () => {
 		expect(persistedModels.providers["kimchi-dev/anthropic"].models.map((model: { id: string }) => model.id)).toEqual([
 			"claude-sonnet-4-6",
 		])
+	})
+
+	it("uses cached models without metadata I/O when canonical credential persistence fails", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		writeExpiringAuth()
+		writeCachedModels()
+		const original = readFileSync(authPath, "utf8")
+		const credentials = new InMemoryCredentialStore()
+		const canonical = readStoredCredential("kimchi-dev", authPath)
+		await credentials.modify("kimchi-dev", () => Promise.resolve(canonical))
+		vi.spyOn(credentials, "modify").mockImplementation(async (providerId, update) => {
+			await update(await credentials.read(providerId))
+			throw new Error("injected auth.json write failure")
+		})
+		let metadataRequests = 0
+		server = createServer((_request, response) => {
+			metadataRequests += 1
+			response.writeHead(500).end()
+		})
+		const endpoint = await listen(server)
+		const deps = fakeOAuthDeps((credential) => ({
+			...credential,
+			access: "unpersisted-fake-access",
+			expires: Date.now() + 3600_000,
+		}))
+
+		const result = await updateModelsConfig(modelsPath, "", {
+			endpoint,
+			refreshOAuth: { authPath, installOAuth: deps.installOAuth, credentials },
+		})
+
+		expect(result.models.map((model) => model.slug)).toEqual(["cached-model"])
+		expect(deps.refreshCalls).toHaveLength(1)
+		expect(metadataRequests).toBe(0)
+		expect(readFileSync(authPath, "utf8")).toBe(original)
 	})
 
 	it("clears prior rejection without using a refreshed credential when sibling persistence fails", async () => {

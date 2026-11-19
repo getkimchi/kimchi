@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import type {
 	AnthropicMessagesCompat,
+	CredentialStore,
 	Model,
 	ModelThinkingLevel,
 	OpenAICompletionsCompat,
@@ -166,6 +167,8 @@ export interface DiscoverModelsOptions extends FetchModelsOptions {
 	refreshOAuth?: {
 		authPath: string
 		installOAuth: (runtime: ModelRuntime) => void
+		/** Override canonical credential storage for deterministic persistence-failure tests. */
+		credentials?: CredentialStore
 		/** Override provider credential fan-out for deterministic store-failure tests. */
 		syncOAuthCredential?: typeof syncOAuthCredentialToKimchiProviders
 	}
@@ -959,7 +962,11 @@ export async function discoverModelsConfig(
 			let resolution: Awaited<ReturnType<typeof resolveRefreshAwareKimchiAuth>>
 			try {
 				resolution = await resolveRefreshAwareKimchiAuth(
-					{ authPath: options.refreshOAuth.authPath, modelsPath: modelsJsonPath },
+					{
+						authPath: options.refreshOAuth.authPath,
+						modelsPath: modelsJsonPath,
+						credentials: options.refreshOAuth.credentials,
+					},
 					options.refreshOAuth.installOAuth,
 				)
 			} catch (error) {
