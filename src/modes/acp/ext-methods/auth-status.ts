@@ -8,7 +8,7 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { type RefreshAwareAuth, resolveRefreshAwareKimchiAuth } from "../../../auth/refresh-aware-credential.js"
 import { loadConfig } from "../../../config.js"
-import { clearCredentialStale, isCredentialStale } from "../../../credential-staleness.js"
+import { isCredentialStale } from "../../../credential-staleness.js"
 import { installKimchiOAuth } from "../../../extensions/login/flow.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 
@@ -48,8 +48,9 @@ export type AuthStatusDeps = {
  * state written by authenticate()/unstable_logout() on this connection or by
  * other Kimchi surfaces is reflected immediately on the next call. OAuth
  * credentials inside the five-minute validity window are refreshed and
- * persisted before the response. Only the base kimchi-dev credential is
- * authoritative — unstable_logout() removes exactly it, so it defines
+ * persisted before the response. This can perform token-endpoint network I/O,
+ * bounded by the Kimchi OAuth token-request timeout. Only the base kimchi-dev
+ * credential is authoritative — unstable_logout() removes exactly it, so it defines
  * "logged in".
  */
 export async function handleAuthStatus(
@@ -78,6 +79,7 @@ export async function handleAuthStatus(
 	if (!auth || isCredentialStale(auth.auth.apiKey, KIMCHI_PROVIDER_ID)) {
 		return { authenticated: false }
 	}
-	clearCredentialStale(KIMCHI_PROVIDER_ID)
+	// Resolving a local credential is not an authenticated server response.
+	// Keep observed 401 marks for this and every other credential value.
 	return { authenticated: true }
 }

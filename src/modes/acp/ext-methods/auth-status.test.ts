@@ -160,6 +160,25 @@ describe("handleAuthStatus", () => {
 		expect(isCredentialStale("expiring-token", KIMCHI_PROVIDER_ID)).toBe(false)
 	})
 
+	it("does not treat another credential's stale mark as a transient-refresh sign-out", async () => {
+		writeOAuthCredential("current-token", { expires: Date.now() + 60_000 })
+		markCredentialStale("previously-rejected-token", KIMCHI_PROVIDER_ID)
+		const deps = fakeOAuthDeps(() => {
+			throw new Error("offline")
+		})
+
+		await expect(handleAuthStatus(paths, deps)).rejects.toMatchObject({ code: "oauth" })
+	})
+
+	it("preserves a previously rejected API key across local OAuth resolution", async () => {
+		markCredentialStale("previously-rejected-key", KIMCHI_PROVIDER_ID)
+		writeOAuthCredential("fresh-oauth-token")
+		await expect(handleAuthStatus(paths, fakeOAuthDeps())).resolves.toEqual({ authenticated: true })
+
+		writeApiKey("previously-rejected-key", configPath)
+		await expect(handleAuthStatus(paths, fakeOAuthDeps())).resolves.toEqual({ authenticated: false })
+	})
+
 	it("reports credential-store read failures instead of credential presence", async () => {
 		writeFileSync(paths.authPath, "{corrupt")
 		await expect(handleAuthStatus(paths, fakeOAuthDeps())).rejects.toMatchObject({ code: "auth" })
