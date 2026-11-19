@@ -5,9 +5,11 @@
 // _meta["kimchi.dev"].auth_status. Sessionless on purpose: identity is
 // global, not session-scoped, so the request carries no sessionId.
 
-import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { type RefreshAwareAuth, resolveRefreshAwareKimchiAuth } from "../../../auth/refresh-aware-credential.js"
 import { loadConfig } from "../../../config.js"
-import { isCredentialStale } from "../../../credential-staleness.js"
+import { clearCredentialStale, isCredentialStale } from "../../../credential-staleness.js"
+import { installKimchiOAuth } from "../../../extensions/login/flow.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 
 export type AuthStatusResponse = {
@@ -29,6 +31,11 @@ export type AuthStatusPaths = {
 	configPath?: string
 }
 
+/** Kimchi OAuth registration for the standalone runtime; injectable for local fake-provider tests. */
+export type AuthStatusDeps = {
+	installOAuth: (runtime: ModelRuntime) => void
+}
+
 /**
  * Auth status handler for `_kimchi.dev/auth_status`.
  *
@@ -37,20 +44,18 @@ export type AuthStatusPaths = {
  * live ACP connection without attempting a session.
  *
  * Both halves of the credential store are re-read per call — config.json's
- * apiKey, then a fresh credential listing from auth.json — so state written
- * by authenticate()/unstable_logout() on this connection (which write/clear
- * both halves), or by other Kimchi surfaces sharing the store (terminal
- * `kimchi login`, the VS Code extension), is reflected immediately on the
- * next call.
- *
- * The check is `listCredentials()` rather than `getProviderAuthStatus()` on
- * purpose: ModelRuntime only populates its stored-providers snapshot during
- * an availability refresh (skipped here via refreshOnCreate: false), so the
- * status getter would be stale for freshly written or externally changed
- * credentials. Only the base kimchi-dev credential is authoritative —
- * unstable_logout() removes exactly it, so it defines "logged in".
+ * apiKey, then the canonical auth.json credential through ModelRuntime — so
+ * state written by authenticate()/unstable_logout() on this connection or by
+ * other Kimchi surfaces is reflected immediately on the next call. OAuth
+ * credentials inside the five-minute validity window are refreshed and
+ * persisted before the response. Only the base kimchi-dev credential is
+ * authoritative — unstable_logout() removes exactly it, so it defines
+ * "logged in".
  */
-export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
+export async function handleAuthStatus(
+	paths: AuthStatusPaths,
+	deps: AuthStatusDeps = { installOAuth: installKimchiOAuth },
+): Promise<AuthStatusResponse> {
 	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
 	// A 401 mark (key-level or provider-level — credential-staleness.ts)
 	// means logged-out, even though the key exists on disk.
@@ -60,26 +65,19 @@ export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStat
 	if (apiKey) {
 		return { authenticated: true }
 	}
-	const modelRuntime = await ModelRuntime.create({
-		authPath: paths.authPath,
-		modelsPath: paths.modelsPath,
-		refreshOnCreate: false,
-	})
-	const credentials = await modelRuntime.listCredentials()
-	if (!credentials.some((credential) => credential.providerId === KIMCHI_PROVIDER_ID)) {
+	let auth: RefreshAwareAuth
+	try {
+		auth = await resolveRefreshAwareKimchiAuth(paths, deps.installOAuth)
+	} catch (error) {
+		// Kimchi's OAuth registration marks invalid_grant before rethrowing.
+		// Other refresh and store failures reject the read so clients classify
+		// the result as unknown rather than signing the user out.
+		if (isCredentialStale(undefined, KIMCHI_PROVIDER_ID)) return { authenticated: false }
+		throw error
+	}
+	if (!auth || isCredentialStale(auth.auth.apiKey, KIMCHI_PROVIDER_ID)) {
 		return { authenticated: false }
 	}
-
-	// listCredentials intentionally exposes presence only. Read the already
-	// stored bearer locally to compare its fingerprint with observed 401s;
-	// unlike getAuth(), this cannot refresh OAuth credentials or hit network.
-	try {
-		const stored = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
-		const storedApiKey = stored?.type === "oauth" ? stored.access : stored?.type === "api_key" ? stored.key : undefined
-		return { authenticated: !isCredentialStale(storedApiKey, KIMCHI_PROVIDER_ID) }
-	} catch {
-		// Presence was already confirmed above. If the second local read fails,
-		// degrade to the previous presence-only result rather than an ACP error.
-		return { authenticated: true }
-	}
+	clearCredentialStale(KIMCHI_PROVIDER_ID)
+	return { authenticated: true }
 }

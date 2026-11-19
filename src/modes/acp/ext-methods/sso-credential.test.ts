@@ -9,38 +9,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
-import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
-import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeApiKey } from "../../../config.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
+import { fakeOAuthDeps } from "./oauth-test-utils.js"
 import { handleSsoCredential, type SsoCredentialPaths } from "./sso-credential.js"
-
-/** The oauth-config slice of `registerProvider`'s input (pi-coding-agent does
- * not export `ExtensionOAuthConfig` — derive it the same way flow.ts does). */
-type ExtensionOAuthConfig = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]>["oauth"]
-type ExtensionProviderConfig = Parameters<ExtensionAPI["registerProvider"]>[1]
-
-/** Build the deps with an injectable fake OAuth handler, recording every
- * refresh call so tests can assert on the lazy-refresh discipline. */
-function fakeOAuthDeps(refresh?: (credential: OAuthCredentials) => OAuthCredentials) {
-	const refreshCalls: Array<Record<string, unknown>> = []
-	const oauth: ExtensionOAuthConfig = {
-		name: "test-sso",
-		login: () => Promise.reject(new Error("login is not part of the credential export contract")),
-		refreshToken: (credentials) => {
-			refreshCalls.push(credentials as unknown as Record<string, unknown>)
-			return Promise.resolve(refresh?.(credentials) ?? credentials)
-		},
-		getApiKey: (credentials) => credentials.access,
-	}
-	return {
-		refreshCalls,
-		installOAuth: (runtime: ModelRuntime): void => {
-			runtime.registerProvider(KIMCHI_PROVIDER_ID, { oauth } satisfies ExtensionProviderConfig)
-		},
-	}
-}
 
 describe("handleSsoCredential", () => {
 	let dir: string
