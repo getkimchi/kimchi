@@ -33,6 +33,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		DefaultResourceLoader: vi.fn().mockImplementation(function () {
 			return {
 				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			}
 		}),
 		SessionManager: {
@@ -483,6 +484,26 @@ describe("runAgent — telemetry extension", () => {
 			}),
 		).rejects.toThrow("gate initialization failed")
 		expect(mockDefaultResourceLoader).not.toHaveBeenCalled()
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("fails after reload when the worker gate reports a loader error", async () => {
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		mockDefaultResourceLoader.mockImplementationOnce(function () {
+			return {
+				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({
+					extensions: [],
+					errors: [{ path: "<inline:kimchi-worker-permissions>", error: "worker gate setup failed" }],
+				})),
+			}
+		})
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("<inline:kimchi-worker-permissions>: worker gate setup failed")
 		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 
@@ -2797,6 +2818,7 @@ describe("runAgent — parent session ID env ordering", () => {
 			})
 			return {
 				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			} as unknown as DefaultResourceLoader
 		})
 
@@ -3070,7 +3092,7 @@ describe("formatRunResultText", () => {
 })
 
 describe("buildInlineExtensionFactories", () => {
-	const WORKER_PERMISSIONS_EXTENSION: InlineExtension = () => {}
+	const WORKER_PERMISSIONS_EXTENSION: ExtensionFactory = () => {}
 	const DEBUG_TOOL_NAMES = ["read", "grep", "debug_state_at", "debug_launch", "step_in"]
 	const CONCRETE_MODEL: Model<Api> = { ...AUTO_MODEL, provider: "kimchi-dev", id: "gemini-3-pro" }
 	let agentDir: string
@@ -3080,6 +3102,7 @@ describe("buildInlineExtensionFactories", () => {
 			effectiveMaxDuration: 900,
 			type: "General-Purpose",
 			workerPermissionsExtension: WORKER_PERMISSIONS_EXTENSION,
+			parentSessionId: "parent-session",
 			model: undefined,
 			toolNames: ["read", "bash"],
 			workerReport: undefined,
@@ -3144,7 +3167,7 @@ describe("buildInlineExtensionFactories", () => {
 			dapExtension,
 			workerReportFactory,
 			mockCreateKimchiMcpAdapterExtension.mock.results[0].value,
-			WORKER_PERMISSIONS_EXTENSION, // worker permission gate — always last
+			{ name: "kimchi-worker-permissions", factory: WORKER_PERMISSIONS_EXTENSION }, // always last
 		])
 		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
@@ -3200,9 +3223,12 @@ describe("buildInlineExtensionFactories", () => {
 		expect(buildInlineExtensionFactories(makeDeps({ toolNames: ["read", "bash"] }))).not.toContain(dapExtension)
 	})
 
-	it.each([true, false])("includes the constructed worker gate (extensions=%s)", (effectiveExtensions) => {
+	it.each([true, false])("includes the named worker gate (extensions=%s)", (effectiveExtensions) => {
 		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions }))
-		expect(factories.at(-1)).toBe(WORKER_PERMISSIONS_EXTENSION)
+		expect(factories.at(-1)).toEqual({
+			name: "kimchi-worker-permissions",
+			factory: WORKER_PERMISSIONS_EXTENSION,
+		})
 	})
 
 	it("registers the worker-report extension only when a capability is provided", () => {
@@ -3276,6 +3302,7 @@ describe("buildInlineExtensionFactories", () => {
 			cwd: "/repo-under-test",
 			suppressWarnings: true,
 			lazyGatewayConnect: true,
+			parentSessionId: "parent-session",
 		})
 	})
 

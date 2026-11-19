@@ -29,6 +29,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		DefaultResourceLoader: vi.fn().mockImplementation(function () {
 			return {
 				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			}
 		}),
 		SessionManager: {
