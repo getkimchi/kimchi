@@ -43,7 +43,14 @@ export async function prepareActivePromptKimchiCredential(
 			(activeCredential.access !== credential.access || activeCredential.refresh !== credential.refresh) &&
 			Date.now() + ACTIVE_CREDENTIAL_SYNC_WINDOW_MS >= activeCredential.expires
 		if (!resolution.refreshed && !staleActiveCredential) return
-		await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
+		try {
+			await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
+		} catch {
+			// Canonical refresh is already durable. A sub-provider left with the
+			// retired grant must not consume it because a store write was transient.
+			console.error({ event: "kimchi.oauth.refresh", outcome: "sync_retry" })
+			await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
+		}
 		if (resolution.refreshed) {
 			clearRefreshedCredentialStale(resolution.previousAccessToken, resolution.auth.auth.apiKey, KIMCHI_PROVIDER_ID)
 		}

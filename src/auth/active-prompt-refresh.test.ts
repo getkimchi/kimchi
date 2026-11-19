@@ -1,11 +1,17 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OAuthTokenError } from "../cli-auth/oauth.js"
 import { isCredentialStale, resetCredentialStalenessForTests } from "../credential-staleness.js"
 import { fakeOAuthDeps } from "../modes/acp/ext-methods/oauth-test-utils.js"
+import { syncOAuthCredentialToKimchiProviders } from "../pi-auth.js"
 import { prepareActivePromptKimchiCredential } from "./active-prompt-refresh.js"
+
+vi.mock("../pi-auth.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../pi-auth.js")>()
+	return { ...actual, syncOAuthCredentialToKimchiProviders: vi.fn(actual.syncOAuthCredentialToKimchiProviders) }
+})
 
 describe("active prompt Kimchi credential preparation", () => {
 	let agentDir: string
@@ -13,6 +19,7 @@ describe("active prompt Kimchi credential preparation", () => {
 
 	beforeEach(() => {
 		resetCredentialStalenessForTests()
+		vi.mocked(syncOAuthCredentialToKimchiProviders).mockClear()
 		agentDir = mkdtempSync(join(tmpdir(), "kimchi-active-prompt-refresh-"))
 		paths = { authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") }
 		writeFileSync(paths.modelsPath, JSON.stringify({ providers: { "kimchi-dev/openai": {} } }))
@@ -65,6 +72,26 @@ describe("active prompt Kimchi credential preparation", () => {
 
 		expect(oauth.refreshCalls).toHaveLength(0)
 		expect(readStore()["kimchi-dev/openai"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+	})
+
+	it("retries a transient fan-out write and preserves the rotated grant for the active provider", async () => {
+		writeOAuthCredential(Date.now() + 60_000)
+		const oauth = fakeOAuthDeps((credential) => ({
+			...credential,
+			access: "replacement-access",
+			refresh: "rotated-refresh",
+			expires: Date.now() + 3_600_000,
+		}))
+		vi.mocked(syncOAuthCredentialToKimchiProviders).mockRejectedValueOnce(new Error("fake transient store write"))
+
+		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledTimes(2)
+		const stored = readStore()
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(stored[providerId]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+		}
 	})
 
 	it("leaves API-key credentials untouched", async () => {
