@@ -186,6 +186,7 @@ import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
 import { holdAgentWorkerInactivity, runAsAgentWorker } from "../../agent-worker-context.js"
+import { createInteractiveTimeBudget } from "../interactive-time-budget.js"
 import {
 	createSubagentBashClampExtension,
 	DEFAULT_BASH_TIMEOUT_SECONDS,
@@ -3096,6 +3097,69 @@ describe("runAgent — inactivity watchdog hold", () => {
 		expect(result.aborted).toBe(false)
 		releaseHold?.()
 	})
+
+	it("pauses the fresh wall-clock cap and keeps bash's remaining time while waiting", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				const releaseHold = holdAgentWorkerInactivity()
+				const getRemaining = mockCreateSubagentBashClampExtension.mock.calls.at(-1)?.[3]
+				if (!getRemaining) throw new Error("bash clamp did not receive the shared clock")
+				expect(getRemaining()).toBe(20_000)
+				await vi.advanceTimersByTimeAsync(35_000)
+				expect(getRemaining()).toBe(20_000)
+				releaseHold()
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			maxDuration: 20,
+		})
+
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+	})
+
+	it("uses the resume's paused clock instead of the disposed prior run clock", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({ abortSpy, emitUsage: false })
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			maxDuration: 20,
+		})
+		const getRemaining = mockCreateSubagentBashClampExtension.mock.calls.at(-1)?.[3]
+		if (!getRemaining) throw new Error("bash clamp did not receive the shared clock")
+		vi.mocked(session.prompt).mockImplementation(async () => {
+			const releaseHold = holdAgentWorkerInactivity()
+			expect(getRemaining()).toBe(20_000)
+			await vi.advanceTimersByTimeAsync(35_000)
+			expect(getRemaining()).toBe(20_000)
+			releaseHold()
+		})
+
+		const result = await runAsAgentWorker(
+			() => resumeAgent(session as unknown as AgentSession, "continue", { maxDuration: 20 }),
+			{},
+		)
+
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+	})
 })
 
 describe("resumeAgent — inactivity steering", () => {
@@ -3239,6 +3303,7 @@ describe("buildInlineExtensionFactories", () => {
 	function makeDeps(overrides: Partial<InlineExtensionFactoryDeps> = {}): InlineExtensionFactoryDeps {
 		return {
 			effectiveMaxDuration: 900,
+			timeBudget: { budget: createInteractiveTimeBudget(900, Date.now()) },
 			type: "General-Purpose",
 			workerPermissionsExtension: WORKER_PERMISSIONS_EXTENSION,
 			parentSessionId: "parent-session",
@@ -3311,7 +3376,12 @@ describe("buildInlineExtensionFactories", () => {
 		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith("work-1", segment)
-		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(900, expect.any(Number), "General-Purpose")
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(
+			900,
+			expect.any(Number),
+			"General-Purpose",
+			expect.any(Function),
+		)
 		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
 	})
 
@@ -3330,7 +3400,12 @@ describe("buildInlineExtensionFactories", () => {
 
 	it("uses the bash clamp when effectiveMaxDuration is positive and the default timeout when it is 0", () => {
 		const clamped = buildInlineExtensionFactories(makeDeps({ effectiveMaxDuration: 60 }))
-		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(60, expect.any(Number), "General-Purpose")
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(
+			60,
+			expect.any(Number),
+			"General-Purpose",
+			expect.any(Function),
+		)
 		expect(clamped).not.toContain(subagentBashDefaultTimeoutExtension)
 
 		mockCreateSubagentBashClampExtension.mockClear()

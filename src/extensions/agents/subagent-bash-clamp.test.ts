@@ -150,6 +150,14 @@ describe("createSubagentBashClampExtension", () => {
 		expect(event.input.timeout).toBe(30)
 	})
 
+	it("uses the worker's paused remaining budget for bash timeouts", () => {
+		const { api, getHandler } = createExtensionApi()
+		createSubagentBashClampExtension(60, Date.now(), undefined, () => 5000)(api)
+		const event = bashEvent({ command: "sleep 30" })
+		getHandler("tool_call")(event, ctx)
+		expect(event.input.timeout).toBe(5)
+	})
+
 	it("floors at 1s when the budget is exhausted", () => {
 		const event = bashEvent({ command: "sleep 5" })
 		clampAndFire(60, 120_000, event) // budget (60s) is well past

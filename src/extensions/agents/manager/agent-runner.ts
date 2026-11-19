@@ -24,6 +24,7 @@ import { runAsAgentWorker, setAgentWorkerInactivityHold } from "../../agent-work
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { getEffectiveModel } from "../../auto-model/state.js"
+import { createInteractiveTimeBudget, type InteractiveTimeBudgetRef } from "../interactive-time-budget.js"
 import { DAP_ENTRY_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "../../dap/tools.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
@@ -80,6 +81,9 @@ const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", 
 
 const WORKER_PERMISSIONS_EXTENSION_NAME = "kimchi-worker-permissions"
 const WORKER_PERMISSIONS_EXTENSION_PATH = `<inline:${WORKER_PERMISSIONS_EXTENSION_NAME}>`
+
+/** Per-session clock references stay alive for the session's inline factories across resumes. */
+const sessionTimeBudgets = new WeakMap<AgentSession, InteractiveTimeBudgetRef>()
 
 /** The native skill-loading tool name, appendable to a subagent's tool list
  *  when its skills config entails it. Not part of BUILTIN_TOOL_NAMES (which
@@ -600,6 +604,7 @@ ${skillLines}`
 	// front — without it, a time-based clamp firing later is unexplainable
 	// to the agent (see subagent-bash-clamp.ts).
 	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
+	const timeBudget = { budget: createInteractiveTimeBudget(effectiveMaxDuration, Date.now()) }
 	if (effectiveMaxTurns != null || effectiveTokenBudget != null || effectiveMaxDuration > 0) {
 		extras.budget = {
 			maxTurns: effectiveMaxTurns,
@@ -668,6 +673,7 @@ ${skillLines}`
 	})
 	const extensionFactories = buildInlineExtensionFactories({
 		effectiveMaxDuration,
+		timeBudget,
 		type,
 		parentSessionId,
 		workerPermissionsExtension,
@@ -793,6 +799,7 @@ ${skillLines}`
 	}
 
 	const { session } = await createAgentSession(sessionOpts)
+	sessionTimeBudgets.set(session, timeBudget)
 
 	await session.bindExtensions({
 		onError: (err) => {
@@ -864,12 +871,14 @@ ${skillLines}`
 	const inactivityHolds = { count: 0 }
 	setAgentWorkerInactivityHold({
 		acquire: () => {
+			const releaseTimeBudget = timeBudget.budget.pause()
 			inactivityHolds.count += 1
 			let released = false
 			return () => {
 				if (released) return
 				released = true
 				inactivityHolds.count -= 1
+				releaseTimeBudget()
 				// The wait was the activity: restart the clock, clear a pending steer.
 				inactivity.touch()
 			}
@@ -1025,13 +1034,11 @@ ${skillLines}`
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
 
-	const durationTimer = effectiveMaxDuration
-		? setTimeout(() => {
-				aborted = true
-				abortReason = "max_duration"
-				hardAbort(session)
-			}, effectiveMaxDuration * 1000)
-		: undefined
+	timeBudget.budget.setOnExpire(() => {
+		aborted = true
+		abortReason = "max_duration"
+		hardAbort(session)
+	})
 
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
@@ -1055,7 +1062,7 @@ ${skillLines}`
 		await session.prompt(effectivePrompt)
 	} finally {
 		cleanupInactivityInterval()
-		if (durationTimer) clearTimeout(durationTimer)
+		timeBudget.budget.dispose()
 		unsubTurns()
 		collector.unsubscribe()
 		cleanupAbort()
@@ -1120,6 +1127,8 @@ ${skillLines}`
 export interface InlineExtensionFactoryDeps {
 	/** Resolved wall-clock budget in seconds; 0 = unlimited (default bash timeout instead of the clamp). */
 	effectiveMaxDuration: number
+	/** Shared run/resume clock used by the expiry timer and bash timeout clamp. */
+	timeBudget: InteractiveTimeBudgetRef
 	/** Subagent persona type — labels the bash clamp telemetry. */
 	type: SubagentType
 	/** Fully constructed worker gate, appended after every tool provider. */
@@ -1182,7 +1191,12 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 	// and use the plain default-timeout extension instead.
 	const bashExtension =
 		deps.effectiveMaxDuration > 0
-			? createSubagentBashClampExtension(deps.effectiveMaxDuration, Date.now(), deps.type)
+			? createSubagentBashClampExtension(
+					deps.effectiveMaxDuration,
+					Date.now(),
+					deps.type,
+					() => deps.timeBudget.budget.getRemainingMs(),
+				)
 			: subagentBashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
@@ -1295,12 +1309,14 @@ export async function resumeAgent(
 	const resumeInactivityHolds = { count: 0 }
 	setAgentWorkerInactivityHold({
 		acquire: () => {
+			const releaseTimeBudget = timeBudget.budget.pause()
 			resumeInactivityHolds.count += 1
 			let released = false
 			return () => {
 				if (released) return
 				released = true
 				resumeInactivityHolds.count -= 1
+				releaseTimeBudget()
 				resumeInactivity.touch()
 			}
 		},
@@ -1309,6 +1325,10 @@ export async function resumeAgent(
 	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
 	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined
 	const effectiveMaxDuration = options.maxDuration ?? DEFAULT_MAX_DURATION
+	const resumeTimeBudget = createInteractiveTimeBudget(effectiveMaxDuration, Date.now())
+	const timeBudget = sessionTimeBudgets.get(session) ?? { budget: resumeTimeBudget }
+	timeBudget.budget = resumeTimeBudget
+	sessionTimeBudgets.set(session, timeBudget)
 	const observedUsage: LifetimeUsage = getSessionUsage(session) ?? {
 		input: 0,
 		output: 0,
@@ -1420,19 +1440,17 @@ export async function resumeAgent(
 		resumeInactivityInterval = undefined
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupResumeInactivityInterval)
-	const durationTimer = effectiveMaxDuration
-		? setTimeout(() => {
-				aborted = true
-				abortReason = "max_duration"
-				hardAbort(session)
-			}, effectiveMaxDuration * 1000)
-		: undefined
+	resumeTimeBudget.setOnExpire(() => {
+		aborted = true
+		abortReason = "max_duration"
+		hardAbort(session)
+	})
 
 	try {
 		await session.prompt(prompt)
 	} finally {
 		cleanupResumeInactivityInterval()
-		if (durationTimer) clearTimeout(durationTimer)
+		resumeTimeBudget.dispose()
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()
