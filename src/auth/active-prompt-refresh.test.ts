@@ -43,6 +43,22 @@ describe("active prompt Kimchi credential preparation", () => {
 		}
 	})
 
+	it("fans out refresh-token-only rotation resolved through the canonical ModelRuntime", async () => {
+		const expires = Date.now() + 60_000
+		writeOAuthCredential(expires)
+		const original = readStore()["kimchi-dev"]
+		writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": original, "kimchi-dev/openai": original }))
+		const oauth = fakeOAuthDeps((credential) => ({ ...credential, refresh: "rotated-refresh" }))
+
+		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth)
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		const stored = readStore()
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(stored[providerId]).toMatchObject({ access: "expiring-access", refresh: "rotated-refresh", expires })
+		}
+	})
+
 	it("fans out a coalesced canonical replacement to a stale active provider without another grant", async () => {
 		writeFileSync(
 			paths.authPath,

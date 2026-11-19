@@ -74,7 +74,7 @@ export async function resolveRefreshAwareKimchiAuth(
 		const refreshed =
 			before?.type === "oauth" &&
 			after?.type === "oauth" &&
-			(before.access !== after.access || before.expires !== after.expires)
+			(before.access !== after.access || before.refresh !== after.refresh || before.expires !== after.expires)
 		return {
 			auth,
 			credential: after,
