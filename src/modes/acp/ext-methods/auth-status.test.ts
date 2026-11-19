@@ -122,6 +122,47 @@ describe("handleAuthStatus", () => {
 		expect(persisted[KIMCHI_PROVIDER_ID]?.expires).toBeGreaterThan(Date.now() + 50 * 60_000)
 	})
 
+	it("recovers an expiring OAuth credential after a provider-wide 401 mark", async () => {
+		const tokenUrl = await startTokenEndpoint(() => ({
+			status: 200,
+			body: { access_token: "refreshed-access", expires_in: 3600 },
+		}))
+		writeOAuthCredential("expiring-access", {
+			expires: Date.now() + 60_000,
+			tokenUrl,
+			clientId: "fake-client",
+			useIdToken: false,
+		})
+		markCredentialStale(undefined, KIMCHI_PROVIDER_ID)
+		markCredentialStale("expiring-access", KIMCHI_PROVIDER_ID)
+		markCredentialStale("unrelated-api-key", KIMCHI_PROVIDER_ID)
+
+		await expect(handleAuthStatus(paths)).resolves.toEqual({ authenticated: true })
+
+		expect(tokenRequests).toHaveLength(1)
+		const persisted = JSON.parse(readFileSync(paths.authPath, "utf-8")) as Record<string, Record<string, unknown>>
+		expect(persisted[KIMCHI_PROVIDER_ID]?.access).toBe("refreshed-access")
+		expect(isCredentialStale(undefined, KIMCHI_PROVIDER_ID)).toBe(false)
+		expect(isCredentialStale("expiring-access", KIMCHI_PROVIDER_ID)).toBe(false)
+		expect(isCredentialStale("refreshed-access", KIMCHI_PROVIDER_ID)).toBe(false)
+		expect(isCredentialStale("unrelated-api-key", KIMCHI_PROVIDER_ID)).toBe(true)
+	})
+
+	it("clears a provider-wide 401 mark that arrives during a successful refresh", async () => {
+		writeOAuthCredential("expiring-access", { expires: Date.now() + 60_000 })
+		const deps = fakeOAuthDeps((credential) => {
+			markCredentialStale(undefined, KIMCHI_PROVIDER_ID)
+			return { ...credential, access: "refreshed-access", expires: Date.now() + 3600_000 }
+		})
+
+		await expect(handleAuthStatus(paths, deps)).resolves.toEqual({ authenticated: true })
+
+		expect(deps.refreshCalls).toHaveLength(1)
+		expect(isCredentialStale(undefined, KIMCHI_PROVIDER_ID)).toBe(false)
+		const persisted = JSON.parse(readFileSync(paths.authPath, "utf-8")) as Record<string, Record<string, unknown>>
+		expect(persisted[KIMCHI_PROVIDER_ID]?.access).toBe("refreshed-access")
+	})
+
 	it("does not refresh an OAuth credential outside the five-minute window", async () => {
 		writeOAuthCredential("fresh-token")
 		const deps = fakeOAuthDeps()

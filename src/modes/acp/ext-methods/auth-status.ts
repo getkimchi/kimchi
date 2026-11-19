@@ -5,10 +5,15 @@
 // _meta["kimchi.dev"].auth_status. Sessionless on purpose: identity is
 // global, not session-scoped, so the request carries no sessionId.
 
+import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
-import { type RefreshAwareAuth, resolveRefreshAwareKimchiAuth } from "../../../auth/refresh-aware-credential.js"
+import {
+	type RefreshAwareCredentialResolution,
+	resolveRefreshAwareKimchiAuth,
+} from "../../../auth/refresh-aware-credential.js"
+import { isInvalidGrantError } from "../../../cli-auth/oauth.js"
 import { loadConfig } from "../../../config.js"
-import { isCredentialStale } from "../../../credential-staleness.js"
+import { clearRefreshedCredentialStale, isCredentialStale } from "../../../credential-staleness.js"
 import { installKimchiOAuth } from "../../../extensions/login/flow.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 
@@ -58,28 +63,32 @@ export async function handleAuthStatus(
 	deps: AuthStatusDeps = { installOAuth: installKimchiOAuth },
 ): Promise<AuthStatusResponse> {
 	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
-	// A 401 mark (key-level or provider-level — credential-staleness.ts)
-	// means logged-out, even though the key exists on disk.
-	if (isCredentialStale(apiKey, KIMCHI_PROVIDER_ID)) {
-		return { authenticated: false }
-	}
 	if (apiKey) {
-		return { authenticated: true }
+		// API-key precedence also preserves its observed-rejection behavior.
+		return { authenticated: !isCredentialStale(apiKey, KIMCHI_PROVIDER_ID) }
 	}
-	let auth: RefreshAwareAuth
+	let resolution: RefreshAwareCredentialResolution
 	try {
-		auth = await resolveRefreshAwareKimchiAuth(paths, deps.installOAuth)
+		// An access-token 401 must not block refresh: the grant itself determines
+		// whether this credential can recover. An unchanged stale OAuth credential
+		// is still rejected after resolution below.
+		resolution = await resolveRefreshAwareKimchiAuth(paths, deps.installOAuth)
 	} catch (error) {
-		// Kimchi's OAuth registration marks invalid_grant before rethrowing.
-		// Other refresh and store failures reject the read so clients classify
-		// the result as unknown rather than signing the user out.
-		if (isCredentialStale(undefined, KIMCHI_PROVIDER_ID)) return { authenticated: false }
+		if (error instanceof ModelsError && error.code === "oauth" && isInvalidGrantError(error.cause)) {
+			return { authenticated: false }
+		}
+		// Transient refresh and store failures reject as unknown; an older 401
+		// mark cannot turn this new failed operation into a definitive sign-out.
 		throw error
 	}
-	if (!auth || isCredentialStale(auth.auth.apiKey, KIMCHI_PROVIDER_ID)) {
-		return { authenticated: false }
+	const { auth } = resolution
+	if (!auth) return { authenticated: false }
+	if (resolution.refreshed) {
+		if (!auth.auth.apiKey) return { authenticated: false }
+		// The persisted refresh is an authenticated success. Retire only the
+		// provider and rotated OAuth values, never unrelated API-key marks.
+		clearRefreshedCredentialStale(resolution.previousAccessToken, auth.auth.apiKey, KIMCHI_PROVIDER_ID)
+		return { authenticated: true }
 	}
-	// Resolving a local credential is not an authenticated server response.
-	// Keep observed 401 marks for this and every other credential value.
-	return { authenticated: true }
+	return { authenticated: !isCredentialStale(auth.auth.apiKey, KIMCHI_PROVIDER_ID) }
 }

@@ -1,5 +1,5 @@
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
-import { ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 
 /** Store paths needed to resolve the canonical Kimchi credential. */
@@ -9,6 +9,24 @@ export type RefreshAwareCredentialPaths = {
 }
 
 export type RefreshAwareAuth = Awaited<ReturnType<ModelRuntime["getAuth"]>>
+
+type StoredCredential = NonNullable<ReturnType<typeof readStoredCredential>>
+
+export type RefreshAwareCredentialResolution = {
+	auth: RefreshAwareAuth
+	/** True only when the persisted OAuth credential changed during this resolution. */
+	refreshed: boolean
+	/** Previous bearer used only for in-memory/persistent rejection bookkeeping; never logged. */
+	previousAccessToken?: string
+}
+
+function readCanonicalCredential(authPath: string): StoredCredential | undefined {
+	try {
+		return readStoredCredential(KIMCHI_PROVIDER_ID, authPath)
+	} catch (error) {
+		throw new ModelsError("auth", `Credential store read failed for ${KIMCHI_PROVIDER_ID}`, { cause: error })
+	}
+}
 
 /**
  * Resolve the canonical Kimchi credential through the same lazy-refresh path
@@ -25,7 +43,7 @@ export type RefreshAwareAuth = Awaited<ReturnType<ModelRuntime["getAuth"]>>
 export async function resolveRefreshAwareKimchiAuth(
 	paths: RefreshAwareCredentialPaths,
 	installOAuth: (runtime: ModelRuntime) => void,
-): Promise<RefreshAwareAuth> {
+): Promise<RefreshAwareCredentialResolution> {
 	try {
 		const modelRuntime = await ModelRuntime.create({
 			authPath: paths.authPath,
@@ -33,7 +51,18 @@ export async function resolveRefreshAwareKimchiAuth(
 			refreshOnCreate: false,
 		})
 		installOAuth(modelRuntime)
-		return await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
+		const before = readCanonicalCredential(paths.authPath)
+		const auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
+		const after = readCanonicalCredential(paths.authPath)
+		const refreshed =
+			before?.type === "oauth" &&
+			after?.type === "oauth" &&
+			(before.access !== after.access || before.expires !== after.expires)
+		return {
+			auth,
+			refreshed,
+			previousAccessToken: refreshed && before?.type === "oauth" ? before.access : undefined,
+		}
 	} catch (error) {
 		// Token refresh failures are logged with typed categories at the OAuth boundary.
 		// Every other failure belongs to local credential-store/runtime access.

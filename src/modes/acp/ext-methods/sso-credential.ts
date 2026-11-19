@@ -26,7 +26,10 @@
 import { RequestError } from "@agentclientprotocol/sdk"
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import { type ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
-import { resolveRefreshAwareKimchiAuth } from "../../../auth/refresh-aware-credential.js"
+import {
+	type RefreshAwareCredentialResolution,
+	resolveRefreshAwareKimchiAuth,
+} from "../../../auth/refresh-aware-credential.js"
 import { loadConfig } from "../../../config.js"
 import { isCredentialStale } from "../../../credential-staleness.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
@@ -153,12 +156,12 @@ export async function handleSsoCredential(
 		throw notAuthenticated("The current Kimchi session is API-key based; no SSO credential is available")
 	}
 
-	let auth: Awaited<ReturnType<ModelRuntime["getAuth"]>>
+	let resolution: RefreshAwareCredentialResolution
 	try {
 		// Default minOAuthValidityMs (five minutes): tokens with less validity
 		// remaining are refreshed under the credential-store lock and persisted
 		// before release — the exact discipline every harness request uses.
-		auth = await resolveRefreshAwareKimchiAuth(paths, deps.installOAuth)
+		resolution = await resolveRefreshAwareKimchiAuth(paths, deps.installOAuth)
 	} catch (error) {
 		// Distinguish the failure classes: refreshStoredOAuthCredential wraps
 		// refresh failures in a ModelsError with code "oauth" (invalid_grant =
@@ -174,6 +177,7 @@ export async function handleSsoCredential(
 		}
 		throw storeUnavailable("Resolving the Kimchi credential failed", error)
 	}
+	const { auth } = resolution
 	if (auth?.source !== "OAuth") {
 		throw notAuthenticated("No SSO credential is stored for Kimchi")
 	}
