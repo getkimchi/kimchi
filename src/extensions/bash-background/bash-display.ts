@@ -38,10 +38,13 @@ function hiddenControl(ctx: Parameters<BashCallRenderer>[2], registry: ProcessRe
 	return !ctx.state.bashControlError && !!rowsForSession(registry)?.has(stringArg(ctx.args, "handle"))
 }
 
+/** Kill reason for a stop the user asked for. Its exit must not wake the model. */
+export const USER_STOP_REASON = "user-stop"
+
 export function bashStatus(snapshot: ProcessDisplaySnapshot, now = snapshot.observedAt): string {
 	const elapsed = `${Math.max(0, Math.floor(((snapshot.finishedAt ?? now) - snapshot.startedAt) / 1000))}s`
 	if (snapshot.reason === "deadline") return `Deadline reached · ${elapsed}`
-	if (snapshot.reason === "stop") return `Stopped · ${elapsed}`
+	if (snapshot.reason === "stop" || snapshot.reason === USER_STOP_REASON) return `Stopped · ${elapsed}`
 	if (snapshot.reason === "aborted") return `Aborted · ${elapsed}`
 	if (snapshot.state === "running") return `Running · ${elapsed}`
 	if (snapshot.exitCode === 0) return `Exited 0 · ${elapsed}`
