@@ -70,10 +70,7 @@ test("phase completion replaces open progress with an answerable Continue prompt
 					).trim()
 					const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 					const settings = JSON.parse(readFileSync(settingsPath, "utf8"))
-					writeFileSync(
-						settingsPath,
-						JSON.stringify({ ...settings, compaction: { enabled: false }, modelRoles: { judge: "fake/basic" } }),
-					)
+					writeFileSync(settingsPath, JSON.stringify({ ...settings, compaction: { enabled: false } }))
 					return { env: { KIMCHI_ACTIVE_FERMENT: fermentId, KIMCHI_FERMENTS_DIR: fermentsDir } }
 				},
 			},

@@ -15,7 +15,7 @@ MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(git -C "$BENCH_DIR" rev-parse --show-toplevel)"
 source "$BENCH_DIR/scripts/model_api_key.sh"
-require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai multi-model
+require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai
 
 echo "==> Cross-building kimchi (target=linux-x64)"
 (cd "$REPO_ROOT" && pnpm run build:binary-linux-x64)

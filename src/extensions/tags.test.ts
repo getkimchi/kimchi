@@ -4,7 +4,6 @@ import { dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
 
 vi.mock("node:os", async (importOriginal) => {
 	const { join } = await import("node:path")
@@ -18,7 +17,7 @@ vi.mock("node:os", async (importOriginal) => {
 import * as configTags from "../config/tags.js"
 import { isValidTag, parseTag } from "../config/tags.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
-import tagsExtension, { getCurrentPhase, peekActiveTags, setCurrentPhase, TagManager } from "./tags.js"
+import tagsExtension, { peekActiveTags, TagManager } from "./tags.js"
 import { prepareBillingTag } from "./work-attribution/request-tags.js"
 import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 
@@ -77,20 +76,6 @@ function makeTagManager(sessionId = TEST_SESSION_ID) {
 		sessionManager,
 		appendEntry,
 	}
-}
-
-const testEnv: EnvironmentInfo = {
-	os: "Linux",
-	rawPlatform: "linux",
-	cpuArchitecture: "x64",
-	shell: "/bin/bash",
-	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
-	username: "testuser",
-	homeDir: "/home/testuser",
-	cwd: "/home/testuser/project",
-	documentsDir: "/home/testuser/project/.kimchi/docs",
-	localDate: "2026-01-01",
-	isGitRepo: false,
 }
 
 type Handler = (event: unknown, ctx: unknown) => unknown
@@ -239,66 +224,6 @@ describe("parseTag", () => {
 			expect(parseTag(tag)).toEqual(expected)
 		})
 	}
-})
-
-describe("tags system prompt block", () => {
-	const makeTagsPi = () => {
-		const pi = makePi()
-		tagsExtension(pi)
-		return pi
-	}
-	const setPhase = (pi: ReturnType<typeof makeTagsPi>, phase = "explore") =>
-		pi.tools.get("set_phase")?.execute("call-1", { phase }, undefined, undefined, createContext({ hasUI: false }))
-
-	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
-		const pi = makeTagsPi()
-
-		try {
-			const result = buildSystemPrompt({
-				tools: [
-					{ name: "read", description: "Read file contents" },
-					{ name: "set_phase", description: "Set the current work phase" },
-				],
-				env: testEnv,
-				mode: "orchestrator",
-				sessionId: TEST_SESSION_ID,
-			})
-
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("Call `set_phase` when the work type changes")
-			expect(result).toContain("Subagents set their phase automatically from their persona")
-			expect(result).not.toContain("questionnaire")
-			expect(result.indexOf("## Phase Management")).toBeLessThan(result.indexOf("## Available Tools"))
-		} finally {
-			pi.fireShutdown()
-		}
-	})
-
-	it("set_phase changes the current phase", async () => {
-		const pi = makeTagsPi()
-
-		const result = await setPhase(pi)
-
-		expect(result).toMatchObject({
-			content: [{ type: "text", text: "Phase changed to: explore" }],
-			details: { phase: "explore" },
-		})
-		expect(pi.setThinkingLevel).not.toHaveBeenCalled()
-	})
-
-	it("set_phase ignores a stale thinking argument and never changes the thinking level", async () => {
-		const pi = makeTagsPi()
-
-		const result = await pi.tools
-			.get("set_phase")
-			?.execute("call-1", { phase: "plan", thinking: "high" }, undefined, undefined, createContext({ hasUI: false }))
-
-		expect(result).toMatchObject({
-			content: [{ type: "text", text: "Phase changed to: plan" }],
-			details: { phase: "plan" },
-		})
-		expect(pi.setThinkingLevel).not.toHaveBeenCalled()
-	})
 })
 
 describe("TagManager persistence", () => {
@@ -568,26 +493,25 @@ describe("room for the per-request billing tag", () => {
 		})
 	}
 
-	it.each([7, 8])("leaves room for the billing tag in a Kimchi request only up to seven tags (%i)", async (count) => {
+	it.each([8, 9])("leaves room for the billing tag in a Kimchi request only up to eight tags (%i)", async (count) => {
 		const sessionId = `billing-room-${count}`
 		const pi = makePi()
 		tagsExtension(pi)
 		await pi.runCommand("tags", `add ${configured(count).join(" ")}`, notifyingContext(sessionId, []))
-		setCurrentPhase(sessionId, "build")
 		const payload: Record<string, unknown> = { messages: [] }
 		const request = createContext({
 			model: { provider: "kimchi-dev", id: "glm-5.3" },
 			sessionManager: makeSessionManager(sessionId),
 		})
 		await pi.fire("before_provider_request", { type: "before_provider_request", payload }, request)
-		expect(payload.tags).toEqual(["model:glm-5.3", "phase:build", ...configured(count)])
+		expect(payload.tags).toEqual(["model:glm-5.3", ...configured(count)])
 		const result = prepareBillingTag(
 			new Headers(),
 			payload.tags as string[],
 			"11111111-1111-4111-8111-111111111111",
 			() => false,
 		)
-		expect(result.billingTagSkipped).toBe(count > 7 ? "tag-limit" : undefined)
+		expect(result.billingTagSkipped).toBe(count > 8 ? "tag-limit" : undefined)
 	})
 
 	it("warns when an added tag leaves no room for the billing tag", async () => {
@@ -595,13 +519,13 @@ describe("room for the per-request billing tag", () => {
 		tagsExtension(pi)
 		const messages: { message: string; type?: string }[] = []
 		const ctx = notifyingContext("billing-warning", messages)
-		await pi.runCommand("tags", `add ${configured(7).join(" ")}`, ctx)
+		await pi.runCommand("tags", `add ${configured(8).join(" ")}`, ctx)
 		expect(messages[0]).toMatchObject({ type: "info" })
 		expect(messages[0].message).not.toContain("billing tag")
-		await pi.runCommand("tags", "add team7:value", ctx)
+		await pi.runCommand("tags", "add team8:value", ctx)
 		expect(messages[1]).toMatchObject({ type: "warning" })
 		expect(messages[1].message).toContain(
-			"With 8 tags plus the model and phase tags, Kimchi requests reach the gateway's 10-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most 7 tags to see their costs.",
+			"With 9 tags plus the model tag, Kimchi requests reach the gateway's 10-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most 8 tags to see their costs.",
 		)
 	})
 
@@ -611,68 +535,9 @@ describe("room for the per-request billing tag", () => {
 		const pi = makePi()
 		tagsExtension(pi)
 		const messages: { message: string; type?: string }[] = []
-		await pi.runCommand("tags", `add ${configured(8).join(" ")}`, notifyingContext("billing-disabled", messages))
+		await pi.runCommand("tags", `add ${configured(9).join(" ")}`, notifyingContext("billing-disabled", messages))
 		expect(messages[0]).toMatchObject({ type: "info" })
 		expect(messages[0].message).not.toContain("billing tag")
-	})
-})
-
-describe("getCurrentPhase", () => {
-	beforeEach(() => {
-		rmSync(MOCK_HOME, { recursive: true, force: true })
-		mkdirSync(MOCK_HOME, { recursive: true })
-		vi.stubEnv("KIMCHI_TAGS", "")
-	})
-
-	afterEach(() => {
-		rmSync(MOCK_HOME, { recursive: true, force: true })
-		vi.unstubAllEnvs()
-	})
-
-	it("returns undefined before a phase is set", () => {
-		expect(getCurrentPhase("fresh-session")).toBeUndefined()
-	})
-
-	it("returns the phase set for a specific session", () => {
-		setCurrentPhase("get-phase-session", "plan")
-		expect(getCurrentPhase("get-phase-session")).toBe("plan")
-	})
-
-	it("isolates phases between sessions", () => {
-		setCurrentPhase("get-phase-a", "plan")
-		setCurrentPhase("get-phase-b", "build")
-		expect(getCurrentPhase("get-phase-a")).toBe("plan")
-		expect(getCurrentPhase("get-phase-b")).toBe("build")
-	})
-})
-
-describe("setCurrentPhase", () => {
-	beforeEach(() => {
-		rmSync(MOCK_HOME, { recursive: true, force: true })
-		mkdirSync(MOCK_HOME, { recursive: true })
-		vi.stubEnv("KIMCHI_TAGS", "")
-	})
-
-	afterEach(() => {
-		rmSync(MOCK_HOME, { recursive: true, force: true })
-		vi.unstubAllEnvs()
-	})
-
-	it("sets a valid phase", () => {
-		setCurrentPhase("set-phase-session", "review")
-		expect(getCurrentPhase("set-phase-session")).toBe("review")
-	})
-
-	it("ignores invalid phases", () => {
-		setCurrentPhase("invalid-phase-session", "invalid")
-		expect(getCurrentPhase("invalid-phase-session")).toBeUndefined()
-	})
-
-	it("clears the phase when given undefined", () => {
-		setCurrentPhase("clear-phase-session", "build")
-		expect(getCurrentPhase("clear-phase-session")).toBe("build")
-		setCurrentPhase("clear-phase-session", undefined)
-		expect(getCurrentPhase("clear-phase-session")).toBeUndefined()
 	})
 })
 

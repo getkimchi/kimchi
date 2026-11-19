@@ -85,9 +85,8 @@ id, `responseModel` stores the concrete pick.)
 
 - Every main-session assistant response, any provider — pinned, routed, or a
   backend-redirected pin.
-- Under multi-model, main-session messages come from the orchestrator, so
-  attribution names the orchestrator model; worker responses surface only as
-  tool results and are out of scope.
+- Subagent responses surface in the main session only as tool results and are
+  out of scope.
 - Subagent sessions are separate ACP sessions and carry their own attribution.
 
 ## Relationship to `_kimchi.dev/routed_model`

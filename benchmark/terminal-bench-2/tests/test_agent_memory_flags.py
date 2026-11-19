@@ -16,12 +16,11 @@ def _agent(memory: bool) -> Kimchi:
     """A Kimchi instance with just the state _kimchi_command reads.
 
     object.__new__ skips __init__ (which needs a full harbor job config);
-    _kimchi_command touches _memory_enabled, _multi_model_enabled,
-    model_name, and _extension_paths() (which needs no state).
+    _kimchi_command touches _memory_enabled, model_name, and
+    _extension_paths() (which needs no state).
     """
     agent = object.__new__(Kimchi)
     agent._memory_enabled = memory
-    agent._multi_model_enabled = False
     agent.model_name = "test-model"
     return agent
 

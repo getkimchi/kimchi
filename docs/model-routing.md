@@ -107,8 +107,6 @@ For the main session (not subagents), the auto-model extension additionally:
   explicit launch-time `--model` still wins.
 - **Persists explicit choices** — an explicit launch-time `--model` over an
   auto session is user-initiated and persists.
-- **Unwraps saved defaults** — a persisted default is never wrapped in
-  multi-model.
 
 ## Attribution
 

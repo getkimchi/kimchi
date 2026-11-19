@@ -21,7 +21,6 @@ export function writeKimchiConfig(homeDir: string, fakeBaseUrl: string, models?:
 	writeFileSync(
 		join(harnessDir, "settings.json"),
 		JSON.stringify({
-			multiModel: false,
 			resources: {},
 			retry: { maxRetries: 1, baseDelayMs: 10 },
 		}),

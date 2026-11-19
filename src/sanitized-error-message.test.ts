@@ -226,11 +226,11 @@ describe("model retired surfacing", () => {
 		)
 	})
 
-	it("points subagent failures at /multi-model", () => {
+	it("points subagent failures at the agent's model setting", () => {
 		const raw =
 			'{"error": {"code": 410, "type": "model_gone", "message": "Model deepseek-v4-flash has been retired.", "replacement": "deepseek-v4-flash-0731"}}'
 		expect(formatSanitizedErrorMessage(raw, "subagent", { exhausted: true })).toBe(
-			'The request could not be completed (model retired). Switch the role model to "deepseek-v4-flash-0731" via /multi-model.',
+			"The request could not be completed (model retired). Use \"deepseek-v4-flash-0731\" for this agent (the Agent tool's model or the persona's models).",
 		)
 	})
 

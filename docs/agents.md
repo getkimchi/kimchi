@@ -4,19 +4,19 @@ Kimchi's `agents` extension brings Claude-Code-style subagents to the harness. T
 LLM can spawn specialized agents via the `Agent` tool — each runs as a focused
 child session with its own system prompt, model, and tool restrictions.
 
-## Phase model
+## Permission modes
 
-Kimchi has a separate phase system that gates the **parent session's** autonomy
-(read-only vs full edit, etc.). Phases and agents are independent:
+Kimchi's permission modes (`default`, `plan`, `auto`, `yolo`) gate the **parent
+session's** autonomy (read-only vs full edit, etc.). Permission modes and agents
+are independent:
 
-- **Phases** (managed by kimchi's `behaviours` extension and `set_phase` tool)
-  control what the parent session is allowed to do.
+- **Permission modes** control what the parent session is allowed to do.
 - **Agents** (this extension) handle delegation. Each persona declares its own
-  tool set independently of the parent's phase.
+  tool set independently of the parent's mode.
 
-A `plan`-phase parent (read-only) can still spawn an `expert-coder` agent that
+A parent in `plan` mode (read-only) can still spawn an `expert-coder` agent that
 edits files — that's by design. Agents are isolated child sessions; their
-authority is scoped to the persona's `tools` field, not the parent's phase.
+authority is scoped to the persona's `tools` field, not the parent's mode.
 
 ## How it works
 

@@ -26,6 +26,12 @@ but are only drained by the next fresh run).
 
 ### `@earendil-works/pi-coding-agent`
 
+- **REMOVED (2026-11-19) — the virtual multi-model `/model` row.** The harness
+  dropped legacy multi-model mode, so the picker no longer injects the
+  orchestrator-backed `multi-model` row or its "[Deprecated]" annotation,
+  `/model multi-model` is no longer special-cased, and the selector's
+  `sessionId` constructor argument (only used for that row's state) is gone.
+  Regenerated with `scripts/commit-pi-patch.js`; no other hunk changed.
 - **PORTED + EXTENDED (2026-10-21, post-rebase) — compaction-history display now
   also covers pi 1.3's event-driven `entry_appended` compaction redraw.** 1.3
   added a streaming compaction event that renders via `buildContextEntries()`

@@ -33,7 +33,6 @@ import { fermentPlanFileName } from "../../../shared/planning/plan-markdown.js"
 import { emitPlanReviewRequest } from "../../../shared/planning/plan-review-bus.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
-import { getMultiModelEnabled } from "../../multi-model.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
 import {
@@ -756,7 +755,7 @@ async function confirmCompletionCriteria(
 export async function scopeFerment(
 	runtime: FermentRuntime,
 	params: ScopeArgs,
-	{ ctx }: LifecycleExecutionContext,
+	_context: LifecycleExecutionContext,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const title = normalizeFermentTitle(params.title)
@@ -801,11 +800,9 @@ export async function scopeFerment(
 	}
 	runtime.consumeScopingGate(params.ferment_id)
 
-	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-
 	// FSM validation: ensure the scope transition is allowed before applying it.
 	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
-	if (fsmError) return toolErrWithNextAction(fsmError, fGate, multiModelEnabled)
+	if (fsmError) return toolErrWithNextAction(fsmError, fGate)
 
 	const cmd: Command = {
 		type: "scope",
@@ -826,11 +823,10 @@ export async function scopeFerment(
 				withNextActionHint(
 					`Ferment is already ${outcome.error.actual}. Use update_ferment_scope_field to revise individual fields.`,
 					fGate,
-					multiModelEnabled,
 				),
 			)
 		}
-		return failedToolResult(outcome.error, fGate, multiModelEnabled)
+		return failedToolResult(outcome.error, fGate)
 	}
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
@@ -846,7 +842,6 @@ export async function scopeFerment(
 		withNextActionHint(
 			`**Ferment "${fresh.name}"** scoped and ready.\n\n- **ferment_id:** ${fresh.id}\n- **Goal:** ${params.goal}\n\n**Phases:**\n${phaseList}${advisoryBlock}`,
 			fresh,
-			multiModelEnabled,
 		),
 	)
 }
@@ -1025,7 +1020,6 @@ export async function completeFerment(
 	}
 
 	const gradedBy = describeJudgeModel()
-	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 	// Persist completion and grade together.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
@@ -1045,7 +1039,7 @@ export async function completeFerment(
 				}
 			: undefined,
 	})
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment, multiModelEnabled)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment)
 
 	// Clear the ferment-level block-retry counter — ship succeeded.
 	runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
@@ -1093,8 +1087,6 @@ ${renderGateGuidance("scope_ferment")}`,
 			if (!normalized.ok) return normalized.error
 			const params = normalized.params
 
-			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-
 			// 1. Validate P-gates (same as scopeFerment).
 			const gateError = validateGatesOrErr(params.gates, {
 				turn: "scope_ferment",
@@ -1133,7 +1125,6 @@ ${renderGateGuidance("scope_ferment")}`,
 					withNextActionHint(
 						`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
 						ferment,
-						multiModelEnabled,
 					),
 				)
 			}
@@ -1199,13 +1190,10 @@ ${renderGateGuidance("scope_ferment")}`,
 			if (!ctx.hasUI) {
 				if (questions.length === 0) {
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
-					return planToolOk(
-						withNextActionHint(`Plan saved.${savedPlanNote}`, scopeOutcome.outcome.ferment, multiModelEnabled),
-						{
-							includePlan: true,
-						},
-					)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
+					return planToolOk(withNextActionHint(`Plan saved.${savedPlanNote}`, scopeOutcome.outcome.ferment), {
+						includePlan: true,
+					})
 				}
 				const recSummary = questions
 					.map((q) => {
@@ -1226,12 +1214,11 @@ ${renderGateGuidance("scope_ferment")}`,
 				if (ctx.mode !== "tui") {
 					// Some hosts expose select/input without custom components; keep them on the pre-review confirmation path.
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
 					return planToolOk(
 						withNextActionHint(
 							`Plan saved.${savedPlanNote}\n\nFerment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
 							scopeOutcome.outcome.ferment,
-							multiModelEnabled,
 						),
 						{ includePlan: true },
 					)
@@ -1482,7 +1469,7 @@ ${renderGateGuidance("scope_ferment")}`,
 		description:
 			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",
 		parameters: UpdateScopeFieldParams,
-		async execute(_, params, _signal, _onUpdate, ctx) {
+		async execute(_, params, _signal, _onUpdate, _ctx) {
 			if (
 				params.field !== "goal" &&
 				params.field !== "criteria" &&
@@ -1491,19 +1478,14 @@ ${renderGateGuidance("scope_ferment")}`,
 			) {
 				return toolErr(`Unknown field: ${params.field}. Use goal, criteria, constraints, or assumptions.`)
 			}
-			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "update_scope_field",
 				field: params.field,
 				value: params.value,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, undefined, multiModelEnabled)
+			if (!outcome.ok) return failedToolResult(outcome.error, undefined)
 			return toolOk(
-				withNextActionHint(
-					`Field "${params.field}" updated for "${outcome.ferment.name}".`,
-					outcome.ferment,
-					multiModelEnabled,
-				),
+				withNextActionHint(`Field "${params.field}" updated for "${outcome.ferment.name}".`, outcome.ferment),
 			)
 		},
 	})

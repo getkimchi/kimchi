@@ -1,5 +1,5 @@
 /**
- * Orchestration prompt enrichment extension.
+ * Prompt enrichment extension.
  *
  * Behavior depends on whether this process is the main model or an Agent worker
  * (detected via Agent worker context or the legacy KIMCHI_SUBAGENT env var).
@@ -29,10 +29,8 @@ import { arch, homedir, version as osVersion, platform, userInfo } from "node:os
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
-import { isWithinDeprecationNotifyWindow, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
-import { findModelByRef } from "../../shared/model-ref.js"
+import { isWithinDeprecationNotifyWindow } from "../../model-deprecation.js"
 import {
 	collectBundledDisabledSkillNames,
 	resolveSkillPathsForDiscovery,
@@ -45,8 +43,6 @@ import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
-import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
-import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	ASSISTANT_OUTPUT_WITHHELD,
 	brandUnmarkedSteers,
@@ -61,25 +57,12 @@ import {
 	tagSelfEchoes,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
-import {
-	DEFAULT_MODEL_ROLES,
-	extractCustomConfigs,
-	getModelRoles,
-	getOrchestratorModelId,
-	getOrchestratorModelRef,
-	modelIdFromRef,
-	resetModelRolesCache,
-	saveModelRoles,
-	splitModelRef,
-	validateModelRoles,
-} from "../orchestration/model-roles.js"
-import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { applyLanguageHint } from "./language-hint.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
-import { backgroundNotificationsReachUser, hasUserLoop } from "./session-user-loop.js"
+import { hasUserLoop } from "./session-user-loop.js"
 import { buildSystemPrompt, DELEGATION_TOOL_NAMES, type EnvironmentInfo, type PromptMode } from "./system-prompt.js"
 
 /** watchSteerOutcome classifier for the two continuation-nudge fire sites.
@@ -128,32 +111,6 @@ const deprecatedNotificationFired = new Set<string>()
 
 export function _resetDeprecatedNotificationTracking(): void {
 	deprecatedNotificationFired.clear()
-}
-
-/**
- * Sync multi-model and orchestrator state to the process side-channel
- * and reconcile persistence. Called from both session_start and
- * before_agent_start for consistency.
- *
- * Returns the effective boolean and orchestrator ref. The boolean
- * comes from resolution.value — setAndPersistMultiModelEnabled returns
- * a MultiModelResolution internally, but callers of this helper
- * only need the boolean.
- */
-function syncSessionModelState(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-): { multiModelEnabled: boolean; orchestratorModelRef: string } {
-	const sessionId = ctx.sessionManager.getSessionId()
-
-	const resolution = setAndPersistMultiModelEnabled(sessionId, ctx.sessionManager, pi)
-
-	const orchestratorModelRef = getOrchestratorModelRef(sessionId)
-	if (getProcessOrchestratorRef(sessionId) !== orchestratorModelRef) {
-		setProcessOrchestratorRef(sessionId, orchestratorModelRef)
-	}
-
-	return { multiModelEnabled: resolution.value, orchestratorModelRef }
 }
 
 function isDelegationToolCallName(name: string | undefined): boolean {
@@ -274,10 +231,6 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 		// turn sees the same value without touching the config files.
 		let pinnedLanguage: string | undefined
 
-		if (!subagentMode) {
-			registerModelRolesCommand(pi)
-		}
-
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 
@@ -322,25 +275,6 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 		}
 
 		if (!subagentMode) {
-			// Validate model roles against available API models at startup.
-			// Cached model metadata can exist before auth is configured; in that
-			// state startup auth owns the first-run login path, so role warnings
-			// would be misleading noise before the user has a usable model.
-			const availableIds = new Set(getAvailableModels().map((m) => m.slug))
-			if (resolveGatewayCredentials(loadConfig()).token && availableIds.size > 0) {
-				const replacements = new Map<string, string>()
-				for (const [slug, info] of readModelDeprecations(join(loadConfig().agentConfigDir, "models.json"))) {
-					const replacement = pickReplacementSlug(info)
-					if (replacement) replacements.set(slug, replacement)
-				}
-				const validation = validateModelRoles(getModelRoles(), availableIds, replacements)
-				for (const { role, configuredModel, suggestedReplacement } of validation.unavailable) {
-					const hint = suggestedReplacement ? ` Suggested replacement: "${suggestedReplacement}".` : ""
-					console.warn(
-						`[model-roles] Warning: ${role} model "${configuredModel}" is not available. Subagents for this role will fall back to the parent model.${hint} Update via /multi-model.`,
-					)
-				}
-			}
 			function deprecationMessage(modelId: string): string | undefined {
 				const info = deprecatedWarnings.get(modelId)
 				if (!info) return undefined
@@ -433,34 +367,6 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				ctx.ui?.notify(message, "warning")
 			}
 
-			/**
-			 * If the hardcoded default orchestrator model disappeared from the API,
-			 * auto-remap the role to the curator-provided replacement recorded in the
-			 * deprecations sidecar, persist it via settings.json, and notify. A
-			 * user-configured orchestrator override always wins.
-			 */
-			function maybeRemapUnavailableOrchestratorDefault(ctx: ExtensionContext): void {
-				const config = loadConfig()
-				if (!resolveGatewayCredentials(config).token) return
-				const defaultRef = DEFAULT_MODEL_ROLES.orchestrator
-				if (getModelRoles().orchestrator !== defaultRef) return
-				const defaultId = modelIdFromRef(defaultRef)
-				const available = new Set(getAvailableModels().map((m) => m.slug))
-				if (available.size === 0 || available.has(defaultId)) return
-				const info = readModelDeprecations(join(config.agentConfigDir, "models.json")).get(defaultId)
-				const replacement = info ? pickReplacementSlug(info) : undefined
-				if (!replacement || !available.has(replacement)) return
-				const provider = splitModelRef(defaultRef)?.provider
-				if (!provider) return
-				const newRef = `${provider}/${replacement}`
-				saveModelRoles({ ...getModelRoles(), orchestrator: newRef })
-				resetModelRolesCache()
-				ctx.ui?.notify(
-					`Default orchestrator model "${defaultRef}" is no longer available. Remapped to "${newRef}". Update via /multi-model.`,
-					"warning",
-				)
-			}
-
 			pi.on("session_shutdown", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
 				const prefix = `${sessionId} `
@@ -470,31 +376,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
-				maybeRemapUnavailableOrchestratorDefault(ctx)
-				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
-				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
-
-				// In multi-model mode the orchestrator must always be the configured
-				// orchestrator model. Force-switch if the user has a different model
-				// selected via /models.
-				if (multiModelEnabled && ctx.model?.id !== orchestratorModelId) {
-					const orchestratorModel = ctx.modelRegistry
-						? findModelByRef(ctx.modelRegistry, orchestratorModelRef)
-						: undefined
-					if (orchestratorModel) {
-						try {
-							await pi.setModel(orchestratorModel)
-						} catch (err) {
-							console.warn("failed to force orchestrator model:", err)
-						}
-					}
-				}
-
-				// Deprecation warning against the model the session will actually
-				// run on — in multi-model mode that is the orchestrator role model
-				// (possibly just force-switched above), not the pre-switch ctx.model.
-				const deprecationModelId = multiModelEnabled ? orchestratorModelId : ctx.model?.id
-				notifyIfDeprecated(ctx, deprecationModelId)
+				notifyIfDeprecated(ctx, ctx.model?.id)
 			})
 
 			pi.on("model_select", async (event, ctx) => {
@@ -856,8 +738,6 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 		})
 
 		pi.on("before_agent_start", async (event, ctx) => {
-			syncSessionModelState(pi, ctx)
-
 			const sessionId = ctx.sessionManager.getSessionId()
 			const effectiveModel = getEffectiveModel(ctx)
 
@@ -897,13 +777,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
-			const mode: PromptMode = subagentMode
-				? "subagent"
-				: getMultiModelEnabled(ctx.sessionManager)
-					? "orchestrator"
-					: "single"
-			const roles = mode === "orchestrator" ? getModelRoles() : undefined
-			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
+			const mode: PromptMode = subagentMode ? "subagent" : "single"
 
 			// Re-read per build so `/language` and `kimchi config set language`
 			// take effect on the next turn without a restart. Project config
@@ -915,18 +789,15 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				env,
 				contextFiles: cachedContextFiles,
 				skills: skills,
-				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
+				currentModelId: effectiveModel?.id,
 				registry: registry,
 				// Auto-routed sessions resolve to the concrete pick's descriptor once a
 				// request has been routed; until then the virtual model's advertised
 				// window may not reflect the routed pool, so keep the floor budget.
 				contextWindow: effectiveModel && !isAutoRoutedModel(effectiveModel) ? effectiveModel.contextWindow : undefined,
 				mode,
-				roles,
-				customConfigs,
 				sessionId,
 				hasUserLoop: hasUserLoop(),
-				backgroundNotificationsReachUser: backgroundNotificationsReachUser(ctx.mode),
 				language: pinnedLanguage,
 			})
 

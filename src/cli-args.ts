@@ -42,39 +42,7 @@ export function isPreDispatchValueFlag(arg: string): boolean {
 	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
 }
 
-/**
- * Strip virtual multi-model CLI arguments from the args list before passing
- * them upstream. Upstream pi-mono does not recognize "multi-model" as a model
- * id, so we translate these flags into the multi-model side-channel instead.
- *
- * Recognizes:
- *   --multi-model
- *   --model multi-model
- *   --model=multi-model
- */
-export function stripMultiModelArgs(args: string[]): string[] {
-	const result: string[] = []
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === "--multi-model") {
-			continue
-		}
-		if (arg === "--model" && i + 1 < args.length && args[i + 1] === MULTI_MODEL_ID) {
-			i += 1
-			continue
-		}
-		if (arg === `--model=${MULTI_MODEL_ID}`) {
-			continue
-		}
-		result.push(arg)
-	}
-	return result
-}
-
 export type CliOptionType = "string" | "boolean"
-
-/** Virtual model id that enables multi-model orchestration mode. */
-export const MULTI_MODEL_ID = "multi-model"
 
 export interface CliOptionDef {
 	type: CliOptionType
@@ -104,18 +72,13 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	model: {
 		type: "string",
-		description:
-			"Model id or pattern, optionally `provider/id` and/or `:<thinking>`. Use `multi-model` for orchestrated multi-model mode.",
+		description: "Model id or pattern, optionally `provider/id` and/or `:<thinking>`.",
 		placeholder: "<pattern>",
 	},
 	models: {
 		type: "string",
 		description: "Comma-separated model ids the auto model picks from",
 		placeholder: "<a,b>",
-	},
-	"multi-model": {
-		type: "boolean",
-		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
 	},
 	"enable-experimental-features": {
 		type: "boolean",
@@ -255,7 +218,6 @@ export interface SessionCliArgs {
 		provider?: string
 		model?: string
 		models?: string
-		"multi-model"?: boolean
 		memory?: boolean
 		thinking?: string
 		mode?: string
@@ -337,7 +299,6 @@ export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
 	"models",
-	"multi-model",
 	"thinking",
 	"mode",
 	"print",

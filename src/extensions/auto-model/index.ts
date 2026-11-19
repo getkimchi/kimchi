@@ -10,13 +10,11 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
-import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { writeJson } from "../../config/json.js"
-import { writeConfigSetting } from "../../config/settings.js"
 import { getAgentConfigDir } from "../../config.js"
 import { readModelDeprecations } from "../../model-deprecation.js"
 import { getSettingsManager } from "../../settings-watcher.js"
-import { getGlobalDefault, setMultiModelEnabled } from "../multi-model.js"
 import { syncAutoCapabilities } from "./capabilities.js"
 import { AUTO_MODEL_NAME, AUTO_MODEL_PROVIDER, GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "./constants.js"
 import { type RoutedModelResolution, resolveRoutedModel } from "./routed-model.js"
@@ -141,8 +139,7 @@ function dropRetiredAutoDefaultMarker(): void {
 /**
  * Remove defaultModel/defaultProvider from settings.json. Used when the saved
  * default resolves against nothing in the catalog and there is no catalog
- * model to fall forward to: the dead pointer is dropped and multi-model stays
- * disabled (its removal is planned — it is never re-enabled here). Idempotent;
+ * model to fall forward to: the dead pointer is dropped. Idempotent;
  * a missing or unreadable file is left alone, and the write must never take
  * down session start (same guard as the seeded-default writes).
  */
@@ -162,7 +159,7 @@ function clearPersistedDefault(): void {
 /**
  * Whether a default model is saved in settings.json, concrete or virtual.
  *
- * Used to keep a saved default from being wrapped in multi-model mode. It
+ * Decides whether a gated organization still owes its seeded default. It
  * deliberately does not gate the Auto default: login and Ctrl+P cycling both
  * persist a default too, so most accounts carry one without ever having chosen
  * it.
@@ -320,11 +317,9 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// tracking the previous virtual pick.
 			if (
 				requestedModel &&
-				requestedModel !== MULTI_MODEL_ID &&
 				ctx.model &&
 				(isAutoRoutedModel(ctx.model) || sessionSelectsRoutedAuto(entries) || persistedDefaultIsRoutedAuto())
 			) {
-				setMultiModelEnabled(sessionId, false)
 				await pi.setModel(ctx.model, { persist: true })
 				if (!isAutoRoutedModel(ctx.model)) {
 					clearAutoRoutingState(sessionId)
@@ -346,8 +341,7 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					!hasPersistedSession &&
 					!entries.some((entry) => entry.type === "message"))
 			const explicitLaunchChoice =
-				event.reason === "startup" &&
-				(cliOptions?.model || cliOptions?.provider || cliOptions?.["multi-model"] || cliOptions?.models)
+				event.reason === "startup" && (cliOptions?.model || cliOptions?.provider || cliOptions?.models)
 			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !explicitLaunchChoice
 
 			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
@@ -363,31 +357,20 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			//   a switch to another provider's model (e.g. Anthropic's Claude)
 			//   rolls back too. The rollback is announced: a silent switch away
 			//   from a deliberately chosen model reads as a bug.
-			// - Orgs NOT served `auto` are gated: they get a concrete flash
-			//   model INSTEAD of multi-model as the default — a ONE-TIME
-			//   migration, since their settings.json `multiModel` value is a
-			//   seeded default, not a user choice (overwritten below;
-			//   writeConfigSetting skips unchanged writes, so running this on
-			//   every launch costs nothing). Session-level choices (mid-session
-			//   toggles, /resume of a persisted multi-model session, CLI flags)
-			//   keep their precedence on top of the seeded default, and a
-			//   deliberate default pick afterwards is respected — the migration
-			//   does not run again. When no flash candidate is served either,
-			//   the org stays on multi-model untouched.
-			// - A first run with no current model at all (no persisted default)
-			//   installs the default too — otherwise gated greenfield users
-			//   would get multiModel=false below with nothing installed on top
-			//   of it.
+			// - Orgs NOT served `auto` are gated: a fresh session with no saved
+			//   default gets a concrete flash model as the default, ONCE. A saved
+			//   default (a deliberate pick, login or Ctrl+P) is respected, and
+			//   session-level choices (resume, CLI flags) keep their precedence.
+			//   When no flash candidate is served either, upstream's own initial
+			//   model applies.
 			const autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, DEFAULT_VIRTUAL_MODEL_ID)
 			const gatedDefault = autoModel
 				? undefined
 				: GATED_DEFAULT_MODEL_CANDIDATES.map((id) => ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, id)).find(
 						(candidate) => candidate !== undefined,
 					)
-			// Captured BEFORE the multiModel overwrite below: it decides whether the
-			// gated default is still owed (the configured default is still
-			// multi-model — the factory default — or there is no default at all).
-			const gatedDefaultOwed = !hasPersistedDefault() || getGlobalDefault()
+			// The gated default is owed only while no default is saved.
+			const gatedDefaultOwed = !hasPersistedDefault()
 
 			// Self-heal dead defaults. A persisted default the catalog no longer
 			// serves (sunset, org de-list, rename) never resolves: upstream's
@@ -398,38 +381,23 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// successor (sidecar, validated live) or the same catalog policy as
 			// seeding (heir = Auto when served, else the first served flash
 			// candidate, else the first served catalog model), persist it, and say
-			// why. When not even the catalog can inherit, clear the dead pointer —
-			// multi-model is NEVER re-enabled; once off it stays off (its removal
-			// is planned). Detection runs on catalog membership only, so a
+			// why. When not even the catalog can inherit, clear the dead pointer.
+			// Detection runs on catalog membership only, so a
 			// deprecated-but-served default is never healed away while the proxy
 			// still translates it.
 			const settingsManager = getSettingsManager()
 			const persistedProvider = settingsManager?.getDefaultProvider()
 			const persistedModelId = settingsManager?.getDefaultModel()
-			// Heal candidates are kimchi-dev models, and the multi-model / routed
-			// virtual sentinels are policy states (the migration and the Auto
-			// rollback own them), not dead pointers — only a concrete kimchi-dev
+			// Heal candidates are kimchi-dev models, and routed virtual sentinels
+			// are policy states (the Auto rollback owns them), not dead pointers — only a concrete kimchi-dev
 			// default the catalog no longer serves is dead.
 			const deadDefault =
 				persistedProvider === AUTO_MODEL_PROVIDER &&
 				persistedModelId !== undefined &&
-				persistedModelId !== MULTI_MODEL_ID &&
 				!persistedDefaultIsRoutedAuto() &&
 				ctx.modelRegistry.find(persistedProvider, persistedModelId) === undefined
 					? { provider: persistedProvider, id: persistedModelId }
 					: undefined
-
-			if (options.handleCliModelSelection && gatedDefault) {
-				// Bookkeeping only: readJson throws on a corrupt settings.json and
-				// writeJson throws on a read-only one; a seeded-default write must
-				// never take down session start.
-				try {
-					writeConfigSetting("multiModel", false)
-				} catch {
-					// The in-memory session still gets the gated default below; the
-					// file stays stale until it is writable again.
-				}
-			}
 
 			// Fresh main sessions: enforce the catalog-driven defaults policy
 			// described above — Auto for entitled orgs, the gated flash model
@@ -445,7 +413,6 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 				// pretending this is a first-time install.
 				const installFreshDefault = async (candidate: Model<Api>, displayName: string): Promise<void> => {
 					await pi.setModel(candidate, { persist: true })
-					setMultiModelEnabled(sessionId, false)
 					resetLastNotified(sessionId)
 					// Mode-neutral copy: this notice is also relayed to ACP clients
 					// (Zed, Studio), where /model is not an available interaction.
@@ -467,14 +434,6 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					resetLastNotified(sessionId)
 					if (heir) {
 						await pi.setModel(heir, { persist: true })
-						setMultiModelEnabled(sessionId, false)
-						try {
-							writeConfigSetting("multiModel", false)
-						} catch {
-							// Bookkeeping only, same guard as the seeded write: the
-							// in-memory heal still applies; the file stays stale until
-							// it is writable again.
-						}
 						const displayName = heir === autoModel ? AUTO_MODEL_NAME : heir.name
 						const note = successor?.note ? ` Details: ${successor.note}` : ""
 						// Mode-neutral copy: this notice is also relayed to ACP clients
@@ -486,10 +445,9 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					} else {
 						// Zero catalog models to inherit: drop the dead pointer so
 						// upstream's per-launch fallback stops resolving against it.
-						// multi-model is not re-enabled — the org runs on the client's
-						// own fallback surface until a model is served again.
+						// The org runs on the client's own fallback surface until a
+						// model is served again.
 						clearPersistedDefault()
-						setMultiModelEnabled(sessionId, false)
 						ctx.ui.notify(
 							`Default model "${deadDefault.id}" is no longer served and has been cleared. To pick a model for this session, use your client's model selector (/model in the terminal).`,
 							"info",
@@ -503,17 +461,14 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					// migration policy described above (a completed migration is a
 					// no-op; only Auto rolls back on every fresh session).
 					if (!gatedDefaultOwed) {
-						setMultiModelEnabled(sessionId, false)
 						resetLastNotified(sessionId)
 						return
 					}
-					// A session already on the gated default needs no churn: multi-model
-					// stays disabled for the session and nothing is re-installed or
-					// announced, so return early.
+					// A session already on the gated default needs no churn: nothing is
+					// re-installed or announced, so return early.
 					const alreadyOnDefault =
 						ctx.model !== undefined && ctx.model.provider === AUTO_MODEL_PROVIDER && ctx.model.id === gatedDefault.id
 					if (alreadyOnDefault) {
-						setMultiModelEnabled(sessionId, false)
 						resetLastNotified(sessionId)
 						return
 					}
@@ -529,18 +484,8 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 
 			if (!ctx.model || !isRoutableProvider(ctx.model)) {
 				resetLastNotified(sessionId)
-				// A saved default outranks the global multi-model default, whether it
-				// is concrete or virtual: without this the session comes up as
-				// multi-model wrapping the saved model rather than the model itself.
-				if (mainFreshLaunch && hasPersistedDefault()) setMultiModelEnabled(sessionId, false)
 				return
 			}
-			// A selected model on the `kimchi-dev` provider must not be wrapped by
-			// multi-model. This covers every `kimchi-dev` session model (routed
-			// virtual ids and concrete ones), which is safe because none of them use
-			// multi-model.
-			setMultiModelEnabled(sessionId, false)
-
 			const data = ctx.sessionManager.getEntries().findLast(isRoutedResolutionEntry)?.data
 			if (!data || data.requestedId !== ctx.model.id) {
 				resetLastNotified(sessionId)

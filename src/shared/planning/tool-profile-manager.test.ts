@@ -487,16 +487,13 @@ describe("registry churn resnapshot", () => {
 		"mark_todo",
 		"clear_todos",
 		"Agent",
-		"set_phase",
 		"dispatch_to_cloud_agent",
 		"web_fetch",
 		"web_search",
 		"set_model",
 		"list_models",
 	]
-	const PARTIAL_TOOLS_28 = FULL_TOOLS.filter(
-		(n) => !["skill_view", "list_ferments", "set_phase", "list_models"].includes(n),
-	)
+	const PARTIAL_TOOLS_28 = FULL_TOOLS.filter((n) => !["skill_view", "list_ferments", "list_models"].includes(n))
 	const PARTIAL_TOOLS_14 = PARTIAL_TOOLS_28.filter(
 		(n) =>
 			!["edit", "write", "bash_control", "mcp", "Agent", "dispatch_to_cloud_agent", "set_model"].includes(n) &&
@@ -509,24 +506,24 @@ describe("registry churn resnapshot", () => {
 	it("a reapply against a mid-rebuild registry preserves the previously active tools", () => {
 		const pi = makeMockPi({ allTools: asTools(FULL_TOOLS) })
 		apply("idle", "adhoc", pi)
-		expect(pi.getActiveTools()).toHaveLength(32)
+		expect(pi.getActiveTools()).toHaveLength(31)
 
-		// Registry shows 28 of 32.
+		// Registry shows 28 of 31.
 		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(PARTIAL_TOOLS_28))
 		expect(reapplyCurrentProfile(pi)).toBe(true)
 		expect(lastActiveCall(pi)).toEqual(expect.arrayContaining(FULL_TOOLS))
-		expect(pi.getActiveTools()).toHaveLength(32)
+		expect(pi.getActiveTools()).toHaveLength(31)
 
 		// Registry down to 14: the narrowing must not stack.
 		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(PARTIAL_TOOLS_14))
 		expect(reapplyCurrentProfile(pi)).toBe(true)
 		expect(lastActiveCall(pi)).toEqual(expect.arrayContaining(FULL_TOOLS))
-		expect(pi.getActiveTools()).toHaveLength(32)
+		expect(pi.getActiveTools()).toHaveLength(31)
 
 		// Registry rebuilt; the next reapply converges.
 		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(FULL_TOOLS))
 		expect(reapplyCurrentProfile(pi)).toBe(true)
-		expect(pi.getActiveTools()).toHaveLength(32)
+		expect(pi.getActiveTools()).toHaveLength(31)
 	})
 
 	it("implementation-ferment preserves previously active tools through a partial rebuild", () => {

@@ -192,7 +192,7 @@ it("uses separate calls to the selected model to continue and split Studio work 
 	})
 	const active = await startAcpFixture({
 		artifactName: "work-semantic-continuation",
-		settings: { workSemanticMatching: true, modelRoles: { judge: ["unavailable/unused"] } },
+		settings: { workSemanticMatching: true },
 		account,
 		models: [{ slug: "basic", displayName: "Selected model", contextWindow: 64_000 }],
 		responses: [
