@@ -33,7 +33,9 @@ function makeHandoff(fromSessionFile: string | undefined): AgentHandoff {
 }
 
 function withAbort(handoff: AgentHandoff, abort: () => void): AgentHandoff {
-	handoff.records = [{ ...handoff.records[0]!, abortController: { abort, signal: undefined } as never }]
+	const [record] = handoff.records
+	if (!record) throw new Error("handoff fixture requires a worker record")
+	handoff.records = [{ ...record, abortController: { abort, signal: undefined } as never }]
 	return handoff
 }
 
