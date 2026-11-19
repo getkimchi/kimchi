@@ -65,7 +65,10 @@ export function getAllTypes(): string[] {
 
 /** Get names of default agents currently in the registry. */
 export function getDefaultAgentNames(): string[] {
-	return [...agents.entries()].filter(([_, config]) => config.isDefault === true).map(([name]) => name)
+	// Host-only personas (the Ferment V2 verifier family) are disabled: never advertise what cannot be spawned.
+	return [...agents.entries()]
+		.filter(([_, config]) => config.isDefault === true && config.enabled !== false)
+		.map(([name]) => name)
 }
 
 /** Get names of user-defined agents (non-defaults) currently in the registry. */

@@ -6,4 +6,10 @@ export const FERMENT_V2_COMMAND_NAME = "ferment-v2"
 
 export const GET_FERMENT_V2_TOOL_NAME = "get_ferment_v2"
 export const UPDATE_FERMENT_V2_TOOL_NAME = "update_ferment_v2"
-export const FERMENT_V2_TOOL_NAMES = [GET_FERMENT_V2_TOOL_NAME, UPDATE_FERMENT_V2_TOOL_NAME] as const
+export const RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME = "respond_to_ferment_v2_finding"
+
+export const FERMENT_V2_TOOL_NAMES = [
+	GET_FERMENT_V2_TOOL_NAME,
+	UPDATE_FERMENT_V2_TOOL_NAME,
+	RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME,
+] as const
