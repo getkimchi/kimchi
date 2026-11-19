@@ -765,6 +765,399 @@ describe("classifier health reporting", () => {
 	})
 })
 
+describe("classifier outage escalation to the parent session", () => {
+	const event = {
+		type: "tool_call",
+		toolCallId: "escalated-call",
+		toolName: "bash",
+		input: { command: "touch SENTINEL_SECRET" },
+	}
+	// A static-setup failure keeps the breaker closed, so every test below can
+	// fire repeated calls without tripping across otherwise.
+	const failed = {
+		verdict: "requires-confirmation",
+		ok: false,
+		reason: "SENTINEL_SECRET",
+		failureCode: "no_candidates",
+	} as const
+	const needsApproval = {
+		verdict: "requires-confirmation",
+		ok: true,
+		reason: "needs a human",
+		riskScore: "medium",
+	} as const
+
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+	afterEach(() => {
+		// Surfaces registered by setupEscalation must not leak into later tests.
+		unregisterParentSurface(TEST_SESSION_ID)
+	})
+
+	function createEscalatingParentContext(): ExtensionContext {
+		return { ...createClassifierContext(), mode: "rpc", hasUI: true } as unknown as ExtensionContext
+	}
+
+	// Worker and parent run their own extension instance (separate session
+	// binds in production): the escalated prompt crosses instances through the
+	// surface registry, and each side gets its own prompt queue.
+	async function setupEscalation(overrides: Partial<WorkerPermissionsOptions> = {}) {
+		const parentSessionId = overrides.parentSessionId ?? TEST_SESSION_ID
+		const parent = createPermissionsHarness(["bash"], { auto: true })
+		const parentCtx = createEscalatingParentContext()
+		await parent.fire("session_start", {}, parentCtx)
+		const worker = createWorkerHarness(["bash"], {
+			parentSessionId,
+			persona: "explorer",
+			agentId: "agent-9",
+			description: "find the config files",
+			...overrides,
+		})
+		const workerCtx = createClassifierContext()
+		await worker.fire("session_start", {}, workerCtx)
+		return { parent, worker, parentCtx, workerCtx }
+	}
+
+	it("allows the call when the user approves the subagent's prompt in the parent session", async () => {
+		const { parentCtx, worker, workerCtx } = await setupEscalation()
+		const seen: PermissionRequest[] = []
+		// The prompter is registered AFTER session_start: the surface resolves it
+		// lazily per request, so registration order cannot strand escalations.
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				seen.push(req)
+				return { kind: "allow-once" }
+			},
+		})
+		try {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const result = await runAsAgentWorker(() => worker.fire("tool_call", event, workerCtx))
+			expect(result).toBeUndefined()
+			expect(seen).toHaveLength(1)
+			expect(seen[0]?.subtitle).toBe(CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE)
+			expect(seen[0]?.choices[0]?.kind).toBe("deny")
+			expect(seen[0]?.origin).toEqual({
+				persona: "explorer",
+				agentId: "agent-9",
+				description: "find the config files",
+			})
+			// "Remember" promises the SUBAGENT's memory, not the showing session's.
+			const rememberLabels = (seen[0]?.choices ?? [])
+				.filter((choice) => choice.kind.startsWith("allow-remember"))
+				.map((choice) => choice.label)
+			expect(rememberLabels.length).toBeGreaterThan(0)
+			for (const label of rememberLabels) expect(label).toContain("for this subagent")
+			// The prompt replaces the per-block warning — no classifier notice toast.
+			expect(
+				vi.mocked(parentCtx.ui.notify).mock.calls.filter((call) => String(call[0]).includes("was blocked")),
+			).toHaveLength(0)
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("runs the parent prompter outside the worker's async context", async () => {
+		const { worker, workerCtx } = await setupEscalation()
+		let prompterSawWorker: boolean | undefined
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async () => {
+				prompterSawWorker = isAgentWorker()
+				return { kind: "allow-once" }
+			},
+		})
+		try {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			expect(await runAsAgentWorker(() => worker.fire("tool_call", event, workerCtx))).toBeUndefined()
+			expect(prompterSawWorker).toBe(false)
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("hands deny-with-feedback to the subagent's model", async () => {
+		const { worker, workerCtx } = await setupEscalation()
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async () => ({ kind: "deny-with-feedback", feedback: "use the config dir instead" }),
+		})
+		try {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const result = await worker.fire("tool_call", event, workerCtx)
+			expect(result).toMatchObject({ block: true })
+			expect(String((result as { reason?: unknown }).reason)).toContain("use the config dir instead")
+			expect(JSON.stringify(result)).not.toContain("SENTINEL_SECRET")
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("remembers approvals in the worker's session memory, not the parent's", async () => {
+		const parentHarness = createPermissionsHarness(["bash"], { auto: true })
+		const parentCtx = createEscalatingParentContext()
+		await parentHarness.fire("session_start", {}, parentCtx)
+		const workerHarness = createWorkerHarness(["bash"], { parentSessionId: TEST_SESSION_ID, persona: "explorer" })
+		const workerCtx = createClassifierContext()
+		await workerHarness.fire("session_start", {}, workerCtx)
+		const subtitles: Array<string | undefined> = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				subtitles.push(req.subtitle)
+				if (subtitles.length === 1)
+					return {
+						kind: "allow-remember" as const,
+						rules: [{ toolName: "bash", content: "touch *", behavior: "allow" as const, source: "session" as const }],
+					}
+				return { kind: "allow-once" as const }
+			},
+		})
+		try {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const first = await workerHarness.fire("tool_call", event, workerCtx)
+			expect(first).toBeUndefined()
+			// Per-run shutdown/start is a resume, not a new subagent. The remembered
+			// rule still matches before the classifier — no second prompt or request.
+			await workerHarness.fire("session_shutdown", {}, workerCtx)
+			await workerHarness.fire("session_start", {}, workerCtx)
+			const second = await workerHarness.fire("tool_call", event, workerCtx)
+			expect(second).toBeUndefined()
+			// The parent session itself has no such rule: its own call still goes
+			// through the classifier and prompts under the parent's subtitle.
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const parentResult = await parentHarness.fire("tool_call", event, parentCtx)
+			expect(parentResult).toBeUndefined()
+			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledTimes(2)
+			expect(subtitles).toEqual([
+				CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE,
+				CLASSIFIER_UNAVAILABLE_PROMPT_SUBTITLE,
+			])
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("falls back to the fail-closed block when the parent route errors", async () => {
+		const harness = createWorkerHarness(["bash"], {
+			parentSessionId: "parent-escalation-unstable",
+			persona: "explorer",
+		})
+		const ctx = createClassifierContext()
+		const parentNotify = vi.fn()
+		registerParentSurface("parent-escalation-unstable", {
+			notify: parentNotify,
+			requestPermission: () => Promise.reject(new Error("simulated stale surface")),
+		})
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			await harness.fire("session_start", {}, ctx)
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const result = await harness.fire("tool_call", event, ctx)
+			expect(result).toMatchObject({ block: true })
+			expect(result).toHaveProperty(
+				"reason",
+				classifierBlockReason("no_candidates", true) + classifierBlockReasonCodeTail("no_candidates"),
+			)
+			// The usual warning and decision event still land on the parent.
+			expect(parentNotify).toHaveBeenCalledWith(
+				`[explorer] ${classifierBlockedNotice("bash", "no_candidates")}`,
+				"warning",
+			)
+			expect(JSON.stringify([result, parentNotify.mock.calls])).not.toContain("SENTINEL_SECRET-provider")
+		} finally {
+			errorSpy.mockRestore()
+			unregisterParentSurface("parent-escalation-unstable")
+		}
+	})
+
+	it("asks for requires-confirmation with the classifier's reason and risk after classifying first", async () => {
+		const { worker, workerCtx } = await setupEscalation()
+		const seen: PermissionRequest[] = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				seen.push(req)
+				return { kind: "allow-once" }
+			},
+		})
+		try {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(needsApproval)
+			expect(await worker.fire("tool_call", event, workerCtx)).toBeUndefined()
+			expect(classifyToolCall).toHaveBeenCalledTimes(1)
+			expect(seen).toHaveLength(1)
+			expect(seen[0]?.choices[0]?.kind).toBe("deny")
+			expect(seen[0]).toMatchObject({
+				subtitle: needsApproval.reason,
+				riskScore: needsApproval.riskScore,
+				origin: { persona: "explorer", agentId: "agent-9", description: "find the config files" },
+			})
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("returns deny-with-feedback for a requires-confirmation verdict", async () => {
+		const { worker, workerCtx } = await setupEscalation()
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async () => ({ kind: "deny-with-feedback", feedback: "leave the settings unchanged" }),
+		})
+		try {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(needsApproval)
+			const result = await worker.fire("tool_call", event, workerCtx)
+			expect(result).toMatchObject({ block: true })
+			expect(String((result as { reason?: unknown }).reason)).toContain("leave the settings unchanged")
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("keeps the PR 1 block for requires-confirmation when no parent can ask", async () => {
+		const worker = createWorkerHarness(["bash"], { parentSessionId: "gone-parent", persona: "explorer" })
+		const workerCtx = createClassifierContext()
+		await worker.fire("session_start", {}, workerCtx)
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(needsApproval)
+		expect(await worker.fire("tool_call", event, workerCtx)).toMatchObject({
+			block: true,
+			reason:
+				"Classifier: needs a human Do not retry; report to the main agent that the call needs the user's approval. (no UI to confirm)",
+		})
+	})
+
+	it("routes parallel workers' escalations with their own identity", async () => {
+		// Each worker binds its own session (and queue) in production, so the
+		// two escalations arrive at the parent's surface concurrently.
+		const workerA = await setupEscalation({ parentSessionId: "parallel-parent", persona: "explorer" })
+		const workerB = await setupEscalation({ parentSessionId: "parallel-parent", persona: "builder" })
+		const seen: PermissionRequest[] = []
+		let release: (() => void) | undefined
+		const bothArrived = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		registerParentSurface("parallel-parent", {
+			notify: vi.fn(),
+			requestPermission: async (req) => {
+				seen.push(req)
+				if (seen.length === 1) await bothArrived
+				else release?.()
+				return { kind: "allow-once" }
+			},
+		})
+		try {
+			// Two one-shot failures: a persistent mockResolvedValue would leak
+			// past this test and rewrite classification for later describes.
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+			const [first, second] = await Promise.all([
+				workerA.worker.fire("tool_call", event, workerA.workerCtx),
+				workerB.worker.fire("tool_call", { ...event, toolCallId: "escalated-call-2" }, workerB.workerCtx),
+			])
+			expect(first).toBeUndefined()
+			expect(second).toBeUndefined()
+			expect(seen.map((req) => req.origin?.persona).sort()).toEqual(["builder", "explorer"])
+		} finally {
+			unregisterParentSurface("parallel-parent")
+			unregisterParentSurface(TEST_SESSION_ID)
+		}
+	})
+
+	it("holds the inactivity watchdog while the escalated prompt is open", async () => {
+		const { worker, workerCtx } = await setupEscalation()
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async () => ({ kind: "allow-once" }),
+		})
+		try {
+			const release = vi.fn()
+			const acquire = vi.fn((): (() => void) => release)
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const result = await runAsAgentWorker(() => worker.fire("tool_call", event, workerCtx), {
+				inactivityHold: { acquire },
+			})
+			expect(result).toBeUndefined()
+			expect(acquire).toHaveBeenCalledTimes(1)
+			expect(release).toHaveBeenCalledTimes(1)
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("releases the watchdog hold when the escalation route fails", async () => {
+		const { worker, workerCtx } = await setupEscalation({ parentSessionId: "hold-failing-parent" })
+		const release = vi.fn()
+		const acquire = vi.fn((): (() => void) => release)
+		registerParentSurface("hold-failing-parent", {
+			notify: vi.fn(),
+			requestPermission: () => Promise.reject(new Error("simulated stale surface")),
+		})
+		try {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const result = await runAsAgentWorker(() => worker.fire("tool_call", event, workerCtx), {
+				inactivityHold: { acquire },
+			})
+			expect(result).toMatchObject({ block: true })
+			expect(acquire).toHaveBeenCalledTimes(1)
+			expect(release).toHaveBeenCalledTimes(1)
+		} finally {
+			unregisterParentSurface("hold-failing-parent")
+		}
+	})
+
+	it("blocks the call when the parent's prompt is not answered in time", async () => {
+		vi.useFakeTimers()
+		try {
+			const { parent, parentCtx, worker, workerCtx } = await setupEscalation()
+			const notificationEvents: Array<{ notification_type?: string }> = []
+			parent.pi.events.on("notification", (payload: unknown) =>
+				notificationEvents.push(payload as { notification_type?: string }),
+			)
+			registerAcpPrompter(TEST_SESSION_ID, {
+				// The user never answers; the prompt settles only when its signal aborts.
+				request: (req) =>
+					new Promise((resolve) => {
+						req.signal?.addEventListener("abort", () => resolve({ kind: "aborted" }), { once: true })
+					}),
+			})
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const pending = worker.fire("tool_call", event, workerCtx)
+			await vi.advanceTimersByTimeAsync(ESCALATED_PROMPT_TIMEOUT_MS)
+			const result = await pending
+			expect(result).toMatchObject({ block: true })
+			expect(result).toHaveProperty(
+				"reason",
+				classifierBlockReason("no_candidates", true) + classifierBlockReasonCodeTail("no_candidates"),
+			)
+			// The parent rung its bell for the escalated prompt, and the fall-back
+			// block warned the parent once.
+			expect(notificationEvents.some((n) => n.notification_type === "permission_prompt")).toBe(true)
+			expect(
+				vi.mocked(parentCtx.ui.notify).mock.calls.filter((call) => String(call[0]).includes("was blocked")),
+			).toHaveLength(1)
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+			vi.useRealTimers()
+		}
+	})
+
+	it("uses the PR 1 non-safe block when its escalated prompt times out", async () => {
+		vi.useFakeTimers()
+		try {
+			const { worker, workerCtx } = await setupEscalation()
+			registerAcpPrompter(TEST_SESSION_ID, {
+				request: (req) =>
+					new Promise((resolve) => {
+						req.signal?.addEventListener("abort", () => resolve({ kind: "aborted" }), { once: true })
+					}),
+			})
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(needsApproval)
+			const pending = worker.fire("tool_call", event, workerCtx)
+			await vi.advanceTimersByTimeAsync(ESCALATED_PROMPT_TIMEOUT_MS)
+			expect(await pending).toMatchObject({
+				block: true,
+				reason:
+					"Classifier: needs a human Do not retry; report to the main agent that the call needs the user's approval. (no UI to confirm)",
+			})
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+			vi.useRealTimers()
+		}
+	})
+})
+
 describe("permission mode CLI booleans", () => {
 	it.each([
 		"plan",
@@ -6281,7 +6674,9 @@ describe("inline worker permissions", () => {
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
 		expect(standard.workerCtx.ui.select).not.toHaveBeenCalled()
 
-		const automatic = await setup({ auto: true })
+		// No parent policy/surface exists in this fallback-only case, so the
+		// non-safe verdict cannot escalate and must keep PR 1's worker block.
+		const automatic = await setup({ auto: true }, { withParent: false })
 		vi.mocked(classifyToolCall).mockResolvedValueOnce({
 			verdict: "requires-confirmation",
 			reason: "needs review",
