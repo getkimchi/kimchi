@@ -421,6 +421,8 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		// the ordinary config/mode resolution chain rather than allowing the call.
 		if (workerMode) return
 		doLoadConfig(ctx)
+		session.addMany(parseRules(loaded.allowBySource.cli, "allow", "cli"))
+		session.addMany(parseRules(loaded.denyBySource.cli, "deny", "cli"))
 		workerRules = [...configRules, ...builtinRules]
 		workerMode = resolveInitialPermissionModeDetailed(ctx.sessionManager, permissionsEnvFlag, undefined, loaded).state
 		workerDangerBypass = isInSandboxCluster()
@@ -695,11 +697,17 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		})
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
+		const cliOptions = isWorker ? getParsedCliArgs().options : undefined
+		const readCliFlag = (name: "permissions-config" | "allow-tool" | "deny-tool"): string | boolean | undefined => {
+			if (!isWorker) return pi.getFlag(name)
+			const value = cliOptions?.[name]
+			return Array.isArray(value) ? value.join(",") : value
+		}
 		const { loaded: lc, errors } = loadConfig({
 			cwd: ctx.cwd,
-			cliConfigPath: pi.getFlag("permissions-config") as string | undefined,
-			cliAllow: splitFlag(pi.getFlag("allow-tool")),
-			cliDeny: splitFlag(pi.getFlag("deny-tool")),
+			cliConfigPath: readCliFlag("permissions-config") as string | undefined,
+			cliAllow: splitFlag(readCliFlag("allow-tool")),
+			cliDeny: splitFlag(readCliFlag("deny-tool")),
 		})
 		loaded = lc
 		rebuildConfigRules()
@@ -765,9 +773,8 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	pi.on("session_start", async (_event, ctx) => {
 		bundledSkillCliRoot = resolveBundledSkillsDir()
 		if (isWorker) {
-			session.clear()
-			// Keep the last parent snapshot across runs of the same child. Resume
-			// may follow fork adoption, when the old parent source no longer exists.
+			// Keep the last parent snapshot and worker-owned CLI rules across runs.
+			// Resume may follow fork adoption, when the old parent source is gone.
 			refreshWorkerPolicy(ctx)
 			return
 		}
@@ -905,8 +912,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	pi.on("session_shutdown", () => {
 		if (isWorker) {
 			// session_shutdown fires after every run, not only final disposal.
-			// Retain policy for resume; the next session_start refreshes live state.
-			session.clear()
+			// Retain policy and worker-owned rules; the next start refreshes live state.
 			return
 		}
 		unregisterMainPolicy?.()
