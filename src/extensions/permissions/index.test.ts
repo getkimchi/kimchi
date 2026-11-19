@@ -1202,6 +1202,28 @@ describe("classifier outage escalation to the parent session", () => {
 		expect(parentCtx.ui.select).toHaveBeenCalledOnce()
 	})
 
+	it("re-evaluates while a draft blocks the selector after a mode change to yolo", async () => {
+		const { parentCtx, worker, workerCtx } = await setupEscalation()
+		parentCtx.mode = "tui"
+		parentCtx.ui.getEditorText = vi.fn(() => "unfinished editor draft")
+		parentCtx.ui.select = createUnansweredSelect()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+		const started = worker.fire("tool_call", event, workerCtx)
+		await vi.waitFor(() =>
+			expect(parentCtx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("waiting for permission"), "info"),
+		)
+		expect(parentCtx.ui.select).not.toHaveBeenCalled()
+		expect(parentCtx.ui.setStatus).toHaveBeenCalledWith(
+			"permission-subagent-wait",
+			expect.stringContaining("waiting for permission"),
+		)
+
+		setPermissionMode(TEST_SESSION_ID, { mode: "yolo", source: "runtime", initiatedBy: "user" })
+		expect(await started).toBeUndefined()
+		expect(parentCtx.ui.select).not.toHaveBeenCalled()
+		expect(parentCtx.ui.setStatus).toHaveBeenCalledWith("permission-subagent-wait", undefined)
+	})
+
 	it("withdraws a parent selector when the permission mode changes", async () => {
 		const { parentCtx } = await setupEscalation()
 		parentCtx.mode = "tui"
@@ -1234,7 +1256,7 @@ describe("classifier outage escalation to the parent session", () => {
 
 	it.each([
 		{ mode: "yolo" as const, expected: undefined },
-		{ mode: "plan" as const, expected: "The permission mode changed too many times during prompt" },
+		{ mode: "plan" as const, expected: "plan mode" },
 	])("re-evaluates an escalated prompt after mode change to $mode", async ({ mode, expected }) => {
 		const { parentCtx, worker, workerCtx } = await setupEscalation()
 		parentCtx.mode = "tui"
@@ -1263,7 +1285,10 @@ describe("classifier outage escalation to the parent session", () => {
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
 			stop.abort(new Error("worker stopped"))
-			expect(await started).toBe("aborted")
+			expect(await started).toMatchObject({
+				block: true,
+				reason: "Subagent was stopped before the permission request was answered.",
+			})
 			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledOnce()
 			expect(warning).not.toHaveBeenCalled()
 		} finally {
@@ -3753,12 +3778,13 @@ describe("handleCompoundConfirm", () => {
 
 	it("keeps a rejected call blocked when the mode changes during feedback", async () => {
 		const harness = createPermissionsHarness(["write"])
-		let resolveFeedback!: () => void
-		const feedbackPending = new Promise<string>((resolve) => {
-			resolveFeedback = () => resolve("not that way")
-		})
 		const ctx = createMockContext(["No — tell the assistant what to do differently"])
-		ctx.ui.input = vi.fn(() => feedbackPending)
+		ctx.ui.input = vi.fn(
+			(_title: string, _placeholder: string | undefined, opts?: { signal?: AbortSignal }) =>
+				new Promise<string | undefined>((resolve) => {
+					opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true })
+				}),
+		)
 		await harness.fire("session_start", {}, ctx)
 
 		const pending = harness.fire(
@@ -3773,11 +3799,10 @@ describe("handleCompoundConfirm", () => {
 		)
 		await vi.waitFor(() => expect(ctx.ui.input).toHaveBeenCalledOnce())
 		setPermissionMode(TEST_SESSION_ID, { mode: "yolo", source: "runtime", initiatedBy: "user" })
-		resolveFeedback()
 
 		await expect(pending).resolves.toMatchObject({
 			block: true,
-			reason: "The user declined this action before execution and said: not that way",
+			reason: "Declined by user",
 		})
 	})
 

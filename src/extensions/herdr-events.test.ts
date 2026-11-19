@@ -1,6 +1,7 @@
 import type { EventBus } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { HERDR_EVENTS, HERDR_LABEL_MAX_LENGTH, withBlocked } from "./herdr-events.js"
+import { createMiniEventBus } from "./__mocks__/mini-event-bus.js"
+import { createBlockedDialogActivity, HERDR_EVENTS, HERDR_LABEL_MAX_LENGTH, withBlocked } from "./herdr-events.js"
 
 function makeBus(): EventBus & { emit: ReturnType<typeof vi.fn> } {
 	return { emit: vi.fn() } as unknown as EventBus & { emit: ReturnType<typeof vi.fn> }
@@ -77,5 +78,45 @@ describe("withBlocked", () => {
 			[HERDR_EVENTS.BLOCKED, { active: false }],
 			[HERDR_EVENTS.BLOCKED, { active: false }],
 		])
+	})
+
+	it("counts agent-driven nested dialogs but excludes this subagent's own selector", async () => {
+		const { events } = createMiniEventBus()
+		const activity = createBlockedDialogActivity(
+			events,
+			(label) => label?.startsWith("Permission (subagent):") === true,
+		)
+		let resolveDialog!: () => void
+		const waiting = withBlocked(
+			events,
+			"Permission (subagent): bash",
+			() => new Promise<void>((resolve) => (resolveDialog = resolve)),
+		)
+		expect(activity.hasOtherDialogs()).toBe(false)
+		const questionnaire = withBlocked(events, "Questionnaire", () =>
+			withBlocked(events, "Ferment choice", () => waiting),
+		)
+		expect(activity.hasOtherDialogs()).toBe(true)
+		resolveDialog()
+		await questionnaire
+		expect(activity.hasOtherDialogs()).toBe(false)
+		activity.dispose()
+	})
+
+	it("stops reporting blocked dialogs after disposal", async () => {
+		const { events } = createMiniEventBus()
+		const activity = createBlockedDialogActivity(events)
+		let resolveDialog!: () => void
+		const waiting = withBlocked(
+			events,
+			"Questionnaire",
+			() => new Promise<void>((resolve) => (resolveDialog = resolve)),
+		)
+		expect(activity.hasOtherDialogs()).toBe(true)
+		activity.dispose()
+		expect(activity.hasOtherDialogs()).toBe(false)
+		activity.dispose()
+		resolveDialog()
+		await waiting
 	})
 })

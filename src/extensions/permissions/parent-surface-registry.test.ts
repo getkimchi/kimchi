@@ -74,6 +74,18 @@ describe("parent surface registry", () => {
 		unregisterParentSurface("session-cancel")
 	})
 
+	it("keeps same-call prompts from different workers independently cancellable", () => {
+		const first = new AbortController()
+		const second = new AbortController()
+		const unregisterFirst = registerEscalationAbort("session-shared-call", "shared-call", first, "worker-a")
+		const unregisterSecond = registerEscalationAbort("session-shared-call", "shared-call", second, "worker-b")
+		unregisterFirst()
+		cancelEscalatedRequests("session-shared-call", "mode changed")
+		expect(first.signal.aborted).toBe(false)
+		expect(second.signal.aborted).toBe(true)
+		unregisterSecond()
+	})
+
 	it("forwards the notice level to the surface", () => {
 		const surface = makeSurface()
 		const notifySpy = vi.spyOn(surface, "notify")

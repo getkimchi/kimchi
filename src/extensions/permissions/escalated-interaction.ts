@@ -4,7 +4,7 @@ import type { PermissionOrigin, ToolPermissionPrompter } from "./prompter.js"
 import { promptForApproval } from "./prompts.js"
 
 const RECENT_INPUT_QUIET_MS = 1000
-const OPENING_INPUT_GUARD_MS = 200
+const OPENING_INPUT_GUARD_MS = 500
 const INTERACTION_POLL_MS = 25
 
 interface EscalatedInteractionTiming {
@@ -22,8 +22,20 @@ const DEFAULT_TIMING: EscalatedInteractionTiming = {
 /** The parent session's time of its most recent raw terminal input. */
 export type LastTerminalInput = () => number
 
-function interactionBlocked(ctx: ExtensionContext, lastInputAt: LastTerminalInput, quietMs: number): boolean {
-	return isRawInputCaptureActive() || ctx.ui.getEditorText().length > 0 || Date.now() - lastInputAt() < quietMs
+export type HasOtherDialogs = () => boolean
+
+function interactionBlocked(
+	ctx: ExtensionContext,
+	lastInputAt: LastTerminalInput,
+	quietMs: number,
+	hasOtherDialogs: HasOtherDialogs,
+): boolean {
+	return (
+		isRawInputCaptureActive() ||
+		ctx.ui.getEditorText().length > 0 ||
+		Date.now() - lastInputAt() < quietMs ||
+		hasOtherDialogs()
+	)
 }
 
 function waitForPoll(signal: AbortSignal, ms: number): Promise<void> {
@@ -47,11 +59,12 @@ export async function waitForEscalatedInput(
 	lastInputAt: LastTerminalInput,
 	signal: AbortSignal,
 	notice: string,
+	hasOtherDialogs: HasOtherDialogs,
 	timing: EscalatedInteractionTiming = DEFAULT_TIMING,
 ): Promise<void> {
 	if (ctx.mode !== "tui" || !ctx.hasUI) return
 	let notified = false
-	while (interactionBlocked(ctx, lastInputAt, timing.quietMs)) {
+	while (interactionBlocked(ctx, lastInputAt, timing.quietMs, hasOtherDialogs)) {
 		if (signal.aborted) throw signal.reason ?? new Error("Permission prompt aborted")
 		if (!notified) {
 			ctx.ui.notify(notice, "info")
@@ -63,14 +76,14 @@ export async function waitForEscalatedInput(
 }
 
 /**
- * Protect the selector, but not the feedback input that follows it. A
- * raw-input dialog withdraws the selector so the foreground dialog survives.
- * During the short opening window terminal input is consumed before the
- * selector can answer through its number/navigation shortcuts.
+ * Treat a selector as withdrawn without aborting or hiding it. A later mode
+ * change must not make that stale selector clear the new dialog's slot.
  */
 export function watchEscalatedDialog(
 	ctx: ExtensionContext,
-	controller: AbortController,
+	onWithdraw: () => void,
+	hasOtherDialogs: HasOtherDialogs,
+	signal?: AbortSignal,
 	timing: EscalatedInteractionTiming = DEFAULT_TIMING,
 ): () => void {
 	if (ctx.mode !== "tui" || !ctx.hasUI) return () => {}
@@ -80,11 +93,11 @@ export function watchEscalatedDialog(
 		stopped = true
 		clearInterval(interval)
 		unsubscribeInput()
-		controller.signal.removeEventListener("abort", stop)
+		signal?.removeEventListener("abort", stop)
 	}
 	const check = () => {
-		if (isRawInputCaptureActive()) {
-			controller.abort()
+		if (hasOtherDialogs()) {
+			onWithdraw()
 			stop()
 		}
 	}
@@ -95,9 +108,11 @@ export function watchEscalatedDialog(
 		return undefined
 	})
 	check()
-	controller.signal.addEventListener("abort", stop, { once: true })
+	signal?.addEventListener("abort", stop, { once: true })
 	return stop
 }
+
+const WAITING_STATUS_KEY = "permission-subagent-wait"
 
 function originLabel(origin: PermissionOrigin | undefined): string {
 	const persona = origin?.persona ?? "assistant"
@@ -111,17 +126,33 @@ function originLabel(origin: PermissionOrigin | undefined): string {
 export function createEscalatedTerminalPrompter(
 	ctx: ExtensionContext,
 	lastInputAt: LastTerminalInput,
+	hasOtherDialogs: HasOtherDialogs,
 ): ToolPermissionPrompter {
 	return {
 		request: async (req) => {
 			const selectionController = new AbortController()
 			const forwardAbort = () => selectionController.abort(req.signal?.reason)
-			if (req.signal?.aborted) forwardAbort()
-			else req.signal?.addEventListener("abort", forwardAbort, { once: true })
+			const detachParentAbort = () => req.signal?.removeEventListener("abort", forwardAbort)
+			const attachParentAbort = () => {
+				if (!req.signal) return
+				if (req.signal.aborted) forwardAbort()
+				else req.signal.addEventListener("abort", forwardAbort, { once: true })
+			}
+			// Unlike selector cancellation, waiting always follows the parent
+			// controller, so losing a slot does not lose the mode-change signal.
+			const requestSignal = req.signal ?? selectionController.signal
+			const hasForeignDialog = () => isRawInputCaptureActive() || hasOtherDialogs()
 			const notice = `Subagent ${originLabel(req.origin)} is waiting for permission. Its prompt will open when the input editor is empty and no other dialog is active.`
+			ctx.ui.setStatus(WAITING_STATUS_KEY, notice)
 			try {
 				while (true) {
-					await waitForEscalatedInput(ctx, lastInputAt, selectionController.signal, notice)
+					try {
+						await waitForEscalatedInput(ctx, lastInputAt, requestSignal, notice, hasForeignDialog)
+					} catch (error) {
+						if (requestSignal.aborted) return { kind: "aborted" }
+						throw error
+					}
+					attachParentAbort()
 					const outcome = await promptForApproval({
 						toolName: req.toolName,
 						input: req.input,
@@ -131,14 +162,26 @@ export function createEscalatedTerminalPrompter(
 						choices: req.choices,
 						origin: req.origin,
 						signal: selectionController.signal,
-						onForeignDialog: (controller) => watchEscalatedDialog(ctx, controller),
+						onForeignDialog: (onWithdraw) =>
+							watchEscalatedDialog(
+								ctx,
+								() => {
+									// Never forward later aborts into a selector whose slot
+									// was already taken by another dialog.
+									detachParentAbort()
+									onWithdraw()
+								},
+								hasForeignDialog,
+								selectionController.signal,
+							),
 					})
-					if (outcome.kind !== "aborted" || req.signal?.aborted) return outcome
-					// A foreign dialog or an in-flight key withdrew this selection.
-					// Wait for a quiet input state before restoring the selector.
+					if (outcome.kind !== "aborted" || requestSignal.aborted) return outcome
+					// A different dialog withdrew this selection. The old selector
+					// is left alone; a fresh one is opened after it finishes.
 				}
 			} finally {
-				req.signal?.removeEventListener("abort", forwardAbort)
+				detachParentAbort()
+				ctx.ui.setStatus(WAITING_STATUS_KEY, undefined)
 			}
 		},
 	}

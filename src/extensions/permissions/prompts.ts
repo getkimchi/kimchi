@@ -44,8 +44,8 @@ interface PromptOptions {
 	signal?: AbortSignal
 	/** When a subagent's call was escalated to this session, the prompt names it. */
 	origin?: PermissionOrigin
-	/** Withdraw only the selector when another dialog takes raw input. */
-	onForeignDialog?: (controller: AbortController) => () => void
+	/** Notify on a foreign dialog without aborting the old selector. */
+	onForeignDialog?: (onWithdraw: () => void) => () => void
 }
 
 export function terminalPrompter(ctx: ExtensionContext): ToolPermissionPrompter {
@@ -245,18 +245,29 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	const forwardAbort = () => selectionAbort.abort(opts.signal?.reason)
 	if (opts.signal?.aborted) forwardAbort()
 	else opts.signal?.addEventListener("abort", forwardAbort, { once: true })
-	const stopWatching = opts.onForeignDialog?.(selectionAbort)
+	let withdrawn = false
+	let onWithdraw = () => {}
+	const withdrawal = new Promise<undefined>((resolve) => {
+		onWithdraw = () => {
+			withdrawn = true
+			resolve(undefined)
+		}
+	})
+	const stopWatching = opts.onForeignDialog?.(onWithdraw)
 	let choice: string | undefined
 	try {
-		choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select(lines.join("\n"), choices, { signal: selectionAbort.signal }),
-		)
+		if (!withdrawn) {
+			const pendingSelect = withWorkingHidden(ctx, () =>
+				ctx.ui.select(lines.join("\n"), choices, { signal: selectionAbort.signal }),
+			)
+			choice = opts.onForeignDialog ? await Promise.race([pendingSelect, withdrawal]) : await pendingSelect
+		}
 	} finally {
 		stopWatching?.()
 		opts.signal?.removeEventListener("abort", forwardAbort)
 	}
 
-	if (choice === undefined && selectionAbort.signal.aborted) return { kind: "aborted" }
+	if (choice === undefined && (selectionAbort.signal.aborted || withdrawn)) return { kind: "aborted" }
 
 	const selected = choice ? stripChoiceNumber(choice) : undefined
 	const selectedChoice = permissionChoices.find((candidate) => candidate.label === selected)

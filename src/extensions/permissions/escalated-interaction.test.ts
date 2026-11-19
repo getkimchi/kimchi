@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 import { createContext, sendTerminalInput } from "../__mocks__/context.js"
-import { claimRawInputCapture } from "../shared-input.js"
+import { claimRawInputCapture, isRawInputCaptureActive } from "../shared-input.js"
 import { waitForEscalatedInput, watchEscalatedDialog } from "./escalated-interaction.js"
 
 const timing = { quietMs: 20, openingGuardMs: 40, pollMs: 5 }
+const noOtherDialogs = () => false
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms))
@@ -19,6 +20,7 @@ describe("escalated TUI input coordination", () => {
 			() => Number.NEGATIVE_INFINITY,
 			controller.signal,
 			"Subagent waiting",
+			noOtherDialogs,
 			timing,
 		)
 		await vi.waitFor(() => expect(ctx.ui.notify).toHaveBeenCalledOnce())
@@ -34,11 +36,16 @@ describe("escalated TUI input coordination", () => {
 		const controller = new AbortController()
 		let lastInputAt = Date.now()
 		let settled = false
-		const waiting = waitForEscalatedInput(ctx, () => lastInputAt, controller.signal, "Subagent waiting", timing).then(
-			() => {
-				settled = true
-			},
-		)
+		const waiting = waitForEscalatedInput(
+			ctx,
+			() => lastInputAt,
+			controller.signal,
+			"Subagent waiting",
+			noOtherDialogs,
+			timing,
+		).then(() => {
+			settled = true
+		})
 		await delay(8)
 		expect(settled).toBe(false)
 		lastInputAt = Date.now() - timing.quietMs
@@ -57,6 +64,7 @@ describe("escalated TUI input coordination", () => {
 				() => Number.NEGATIVE_INFINITY,
 				controller.signal,
 				"Subagent waiting",
+				noOtherDialogs,
 				timing,
 			).then(() => {
 				settled = true
@@ -72,37 +80,81 @@ describe("escalated TUI input coordination", () => {
 		}
 	})
 
-	it("consumes an in-flight key at opening and withdraws for a raw-input dialog", async () => {
+	it("consumes an in-flight key and withdraws without aborting the selector", async () => {
 		const ctx = createContext({ hasUI: true, mode: "tui" })
 		const controller = new AbortController()
-		const stop = watchEscalatedDialog(ctx, controller, timing)
+		const withdraw = vi.fn()
+		const stop = watchEscalatedDialog(ctx, withdraw, isRawInputCaptureActive, controller.signal, timing)
 		const inputHandler = vi.mocked(ctx.ui.onTerminalInput).mock.calls[0]?.[0]
 		if (!inputHandler) throw new Error("expected an input guard listener")
 		expect(inputHandler("2")).toEqual({ consume: true })
 		await delay(50)
 		expect(inputHandler("2")).toBeUndefined()
 		sendTerminalInput(ctx, "2")
-		expect(controller.signal.aborted).toBe(false)
+		expect(withdraw).not.toHaveBeenCalled()
 		const release = claimRawInputCapture()
 		try {
-			await vi.waitFor(() => expect(controller.signal.aborted).toBe(true))
-			expect(ctx.ui.getEditorText()).toBe("")
+			await vi.waitFor(() => expect(withdraw).toHaveBeenCalledOnce())
+			expect(controller.signal.aborted).toBe(false)
 		} finally {
 			release()
 			stop()
 		}
 	})
 
-	it("aborts a selector immediately if a raw-input dialog already owns the keyboard", () => {
+	it("withdraws immediately when a raw-input dialog already owns the keyboard, without aborting", () => {
 		const ctx = createContext({ hasUI: true, mode: "tui" })
 		const controller = new AbortController()
+		const withdraw = vi.fn()
 		const release = claimRawInputCapture()
 		try {
-			const stop = watchEscalatedDialog(ctx, controller, timing)
-			expect(controller.signal.aborted).toBe(true)
+			const stop = watchEscalatedDialog(ctx, withdraw, isRawInputCaptureActive, controller.signal, timing)
+			expect(withdraw).toHaveBeenCalledOnce()
+			expect(controller.signal.aborted).toBe(false)
 			stop()
 		} finally {
 			release()
+		}
+	})
+
+	it("waits for an agent-driven blocked dialog", async () => {
+		const ctx = createContext({ hasUI: true, mode: "tui" })
+		const controller = new AbortController()
+		let dialogActive = true
+		let settled = false
+		const waiting = waitForEscalatedInput(
+			ctx,
+			() => Number.NEGATIVE_INFINITY,
+			controller.signal,
+			"Subagent waiting",
+			() => dialogActive,
+			timing,
+		).then(() => {
+			settled = true
+		})
+		await delay(12)
+		expect(settled).toBe(false)
+		expect(ctx.ui.notify).toHaveBeenCalledOnce()
+		dialogActive = false
+		await waiting
+		expect(settled).toBe(true)
+	})
+
+	it("uses a 500 ms opening guard", () => {
+		const ctx = createContext({ hasUI: true, mode: "tui" })
+		let now = 0
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now)
+		const stop = watchEscalatedDialog(ctx, () => {}, noOtherDialogs)
+		try {
+			const handler = vi.mocked(ctx.ui.onTerminalInput).mock.calls[0]?.[0]
+			if (!handler) throw new Error("expected an input guard listener")
+			now = 499
+			expect(handler("2")).toEqual({ consume: true })
+			now = 500
+			expect(handler("2")).toBeUndefined()
+		} finally {
+			stop()
+			clock.mockRestore()
 		}
 	})
 })

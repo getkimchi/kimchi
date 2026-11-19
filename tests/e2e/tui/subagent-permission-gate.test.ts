@@ -153,7 +153,7 @@ test("auto mode asks the parent when the classifier is not safe; approval runs t
 			trace.step("escalated non-safe prompt visible in the parent")
 			// The subagent prompt keeps the main session's order: Enter accepts
 			// the first choice rather than using a subagent-only order.
-			await new Promise((resolve) => setTimeout(resolve, 250))
+			await new Promise((resolve) => setTimeout(resolve, 500))
 			terminal.submit("")
 			await waitForText(terminal, "PARENT-AUTO-DENY-DONE", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
@@ -288,7 +288,7 @@ test("a subagent approval waits for the draft instead of accepting typed keys", 
 			terminal.submit("")
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
 			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
-			await new Promise((resolve) => setTimeout(resolve, 250))
+			await new Promise((resolve) => setTimeout(resolve, 500))
 			terminal.submit("")
 			await waitForText(terminal, "CHILD-DRAFT-APPROVED", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
@@ -360,11 +360,84 @@ test("a held subagent waits behind a questionnaire without losing it", async ({ 
 			terminal.submit("")
 			await waitForText(terminal, "PARENT-QUESTION-ANSWERED", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
-			await new Promise((resolve) => setTimeout(resolve, 250))
+			await new Promise((resolve) => setTimeout(resolve, 500))
 			terminal.submit("")
 			await waitForText(terminal, "CHILD-QUESTION-APPROVED", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
 			trace.step("the original questionnaire completes and the worker can then be approved")
+		},
+	)
+})
+
+test("a questionnaire opened after the subagent prompt stays answerable", async ({ terminal }) => {
+	let releaseParentQuestion: (() => void) | undefined
+	const parentQuestionHold = new Promise<void>((resolve) => {
+		releaseParentQuestion = resolve
+	})
+	const questionnaireArgs = JSON.stringify({
+		header: "One question",
+		questions: [
+			{
+				id: "color",
+				type: "single",
+				prompt: "Pick a color",
+				options: [
+					{ id: "alpha", label: "Alpha" },
+					{ id: "beta", label: "Beta" },
+				],
+			},
+		],
+	})
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "subagent-questionnaire-after-prompt",
+			providerId: "kimchi-dev",
+			models: MODELS,
+			extraArgs: ["--auto"],
+			responses: [
+				{ stream: ["Delegating in background."], toolCalls: [agentCall(true)] },
+				{
+					forSubagent: true,
+					stream: ["I'll create the file."],
+					toolCalls: [{ function: { name: "write", arguments: WRITE_ARGS } }],
+				},
+				{
+					holdUntil: parentQuestionHold,
+					toolCalls: [{ function: { name: "questionnaire", arguments: questionnaireArgs } }],
+				},
+				{
+					match: (request) => isClassifierRequest(request.body),
+					stream: [
+						'{"verdict":"requires-confirmation","reason":"The worker cannot ask for approval","riskScore":"high"}',
+					],
+				},
+				{ stream: ["CHILD-QUESTION-AFTER-PROMPT-APPROVED"], forSubagent: true },
+				{ stream: ["PARENT-QUESTION-AFTER-PROMPT-ANSWERED"] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Start a background subagent to create output.txt")
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("subagent selector is already visible")
+			if (!releaseParentQuestion) throw new Error("parent question release was not initialized")
+			releaseParentQuestion()
+			await waitForText(terminal, "Pick a color", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			await new Promise((resolve) => setTimeout(resolve, 250))
+			expect(fullText(terminal)).toContain("Pick a color")
+			trace.step("questionnaire remains visible after the old selector yields")
+
+			terminal.submit("")
+			await waitForText(terminal, "PARENT-QUESTION-AFTER-PROMPT-ANSWERED", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
+			trace.step("the foreground questionnaire is answered")
+
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
+			await new Promise((resolve) => setTimeout(resolve, 500))
+			terminal.submit("")
+			await waitForText(terminal, "CHILD-QUESTION-AFTER-PROMPT-APPROVED", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
+			trace.step("the selector returns and its first choice approves the write")
 		},
 	)
 })
