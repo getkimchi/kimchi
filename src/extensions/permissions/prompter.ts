@@ -7,6 +7,14 @@ export type PermissionChoice =
 	| { kind: "allow-remember-wildcard"; label: string; rules: Rule[] }
 	| { kind: "deny"; label: string }
 
+/** The subagent a permission prompt is shown on behalf of, when a worker's
+ *  call was escalated to its parent session's surface. */
+export interface PermissionOrigin {
+	persona?: string
+	agentId?: string
+	description?: string
+}
+
 export interface PermissionRequest {
 	toolCallId: string
 	toolName: string
@@ -16,6 +24,9 @@ export interface PermissionRequest {
 	riskScore?: RiskScore
 	choices: PermissionChoice[]
 	signal?: AbortSignal
+	/** Set when a worker escalated this request to the parent session — the
+	 *  prompt names the subagent so the user knows whose call it is. */
+	origin?: PermissionOrigin
 
 	// NOTE: remember choices carry multiple rules because compound bash
 	// commands produce one rule per segment (the compound gate evaluates

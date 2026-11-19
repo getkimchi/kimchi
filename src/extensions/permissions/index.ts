@@ -33,7 +33,7 @@ import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { notifyUser } from "../../utils/notify-user.js"
 import { isInSandboxCluster } from "../../utils/sandbox.js"
-import { isAgentWorker } from "../agent-worker-context.js"
+import { holdAgentWorkerInactivity, isAgentWorker, runOutsideWorkerContext } from "../agent-worker-context.js"
 import { WORKER_REPORT_TOOL_NAME } from "../agents/worker-report.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -77,6 +77,7 @@ import {
 import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { CONFIRM_TODOS_TOOL_NAME, TODO_TOOL_NAMES } from "../todos/tool.js"
 import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
@@ -98,6 +99,7 @@ import {
 	BUILTIN_DENY,
 	DANGEROUS_BYPASS_FLAG,
 	DEFAULT_CONFIG,
+	ESCALATED_PROMPT_TIMEOUT_MS,
 	PERMISSION_MODES_WITH_META as MODES,
 	PERMISSIONS_ENV_KEY,
 } from "./constants.js"
@@ -109,6 +111,13 @@ import {
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
+import {
+	getParentSurface,
+	type ParentSurface,
+	type ParentSurfaceLevel,
+	registerParentSurface,
+	unregisterParentSurface,
+} from "./parent-surface-registry.js"
 import { PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
 import {
 	getAllowedModes,
@@ -189,6 +198,10 @@ const PLAN_MODE_MCP_NOTE =
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
 
+/** Fallback for direct `handleConfirm`/`handleCompoundConfirm` callers that do
+ *  not pass a per-session queue (tests): still serializes prompts. */
+const sharedPromptQueue = new PromptQueue()
+
 const BUILTIN_ALLOW_TOOL_NAMES = [
 	"agent",
 	"get_subagent_result",
@@ -197,10 +210,6 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	// flow — there is nothing for permissions to gate here.
 	SUBMIT_PLAN_TOOL_NAME,
 	BASH_CONTROL_TOOL_NAME,
-/** Fallback for direct `handleConfirm`/`handleCompoundConfirm` callers that do
- *  not pass a per-session queue (tests): still serializes prompts. */
-const sharedPromptQueue = new PromptQueue()
-
 	...FERMENT_V2_TOOL_NAMES,
 	...TODO_TOOL_NAMES,
 	CONFIRM_TODOS_TOOL_NAME,
@@ -258,6 +267,10 @@ export interface PermissionsExtensionOptions {
 export interface WorkerPermissionsOptions extends PermissionsExtensionOptions {
 	parentSessionId: string
 	persona: string
+	/** Manager-owned agent ID used for prompt identity and ACP call-ID namespacing. */
+	agentId?: string
+	/** User-facing task summary that distinguishes parallel workers of one persona. */
+	description?: string
 }
 
 type GateOptions = ({ role: "main" } & PermissionsExtensionOptions) | ({ role: "worker" } & WorkerPermissionsOptions)
@@ -329,19 +342,6 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 
 	const session = new SessionMemory()
 	const classifierWarnings = new Set<string>()
-	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
-	// Base KIMCHI_PERMISSIONS env var used as a launch-time default. Subagent
-	// inheritance is handled separately in session_start via the parent session's
-	// per-session env key.
-	const permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
-	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
-	let configRules: Rule[] = []
-	let currentCtx: ExtensionContext | undefined
-	// The bundled skills dir the binary ships — the dir the doc-cli route loads
-	// its staged CLI bundles from. Resolved per session; process-constant in
-	// practice. The doc-cli allow itself needs no anchor (the binary resolves
-	// the script, not the model); this root backs the write/edit denial that
-	// keeps the load path unplantable.
 	// This session's parent surface, registered while it can reach its user so
 	// subagents can hand it their classifier warnings and escalate permission
 	// prompts when their classifier fails or requires confirmation.
@@ -380,6 +380,77 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		}
 	}
 
+	/**
+	 * Try the parent surface for a worker's unapproved call. A wrapped result
+	 * distinguishes an allow (`result === undefined`) from an unavailable or
+	 * failed route (`undefined`), which must fall back to the existing block.
+	 */
+	async function requestWorkerApproval(
+		event: ToolCallEvent,
+		ctx: ExtensionContext,
+		permissionMode: PermissionMode,
+		toolName: string,
+		input: Record<string, unknown>,
+		subtitle: string,
+		riskScore?: RiskScore,
+	): Promise<{ result: PromptOutcome } | undefined> {
+		if (options.role !== "worker") return undefined
+		const requestPermission = getParentSurface(options.parentSessionId)?.requestPermission
+		if (!requestPermission) return undefined
+		const origin: PermissionOrigin = {
+			persona: options.persona,
+			agentId: options.agentId,
+			description: options.description,
+		}
+		let releaseHold = () => {}
+		try {
+			releaseHold = holdAgentWorkerInactivity()
+			// One prompt for the whole call, including compounds. Remembered rules
+			// land in this worker's own session memory and survive its resume cycle.
+			const choices = buildPermissionChoices(toolName, input, "for this subagent")
+			const result = await handleConfirm(event, {
+				ctx,
+				pi,
+				subtitle,
+				riskScore,
+				session,
+				activeAborts: activeAbortControllers,
+				promptToolCalls: activePromptToolCalls,
+				allRules,
+				permissionMode,
+				worker: true,
+				promptQueue,
+				prompter: { request: (request) => requestPermission({ ...request, origin }) },
+				// An approval selector can appear while the user is typing. Keep deny
+				// first so an unrelated Enter cannot accidentally allow a worker call.
+				choices: [
+					...choices.filter((choice) => choice.kind === "deny"),
+					...choices.filter((choice) => choice.kind !== "deny"),
+				],
+			})
+			return { result }
+		} catch {
+			// No parent, a stale surface, an unanswered prompt, an abort, or any
+			// other route error fails closed through the caller's existing block.
+			return undefined
+		} finally {
+			releaseHold()
+		}
+	}
+
+	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
+	// Base KIMCHI_PERMISSIONS env var used as a launch-time default. Subagent
+	// inheritance is handled separately in session_start via the parent session's
+	// per-session env key.
+	const permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
+	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
+	let configRules: Rule[] = []
+	let currentCtx: ExtensionContext | undefined
+	// The bundled skills dir the binary ships — the dir the doc-cli route loads
+	// its staged CLI bundles from. Resolved per session; process-constant in
+	// practice. The doc-cli allow itself needs no anchor (the binary resolves
+	// the script, not the model); this root backs the write/edit denial that
+	// keeps the load path unplantable.
 	let bundledSkillCliRoot: string | null = null
 	let appliedPermissionMode: PermissionModeState | undefined
 	let applyingPermissionMode = false
@@ -405,6 +476,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	/** Associates each open permission prompt's abort controller with its tool
 	 *  call, so mode changes that dismiss prompts can be attributed per call. */
 	const activePromptToolCalls = new Map<AbortController, string>()
+	/** At most one permission prompt at a time in this session: pi keeps a
+	 *  single dialog slot, so a concurrent second prompt would silently
+	 *  replace the first and orphan its promise. Escalated subagent prompts
+	 *  (requestPermission on the session's registered sink) share the queue. */
+	const promptQueue = new PromptQueue()
 	/** Mode-change reasons queued per tool call whose prompt a mode change
 	 *  dismissed. Consumed when the re-evaluation loop observes the "aborted"
 	 *  return; entries never survive the tool call's evaluation. */
@@ -418,11 +494,6 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 
 	// Plan completion menu state: tracks whether the agent used tools during the
 	// current user-input cycle so we can detect text-only turns (plan output).
-	/** At most one permission prompt at a time in this session: pi keeps a
-	 *  single dialog slot, so a concurrent second prompt would silently
-	 *  replace the first and orphan its promise. Escalated subagent prompts
-	 *  (requestPermission on the session's registered sink) share the queue. */
-	const promptQueue = new PromptQueue()
 
 	function rebuildConfigRules(): void {
 		configRules = [
@@ -843,8 +914,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	pi.on("session_start", async (_event, ctx) => {
 		bundledSkillCliRoot = resolveBundledSkillsDir()
 		if (isWorker) {
-			// Keep the last parent snapshot and worker-owned CLI rules across runs.
-			// Resume may follow fork adoption, when the old parent source is gone.
+			// Keep child approvals and the last parent snapshot across runs of the
+			// same child. Resume may follow fork adoption, when the old parent
+			// source no longer exists; the next tool call refreshes live policy.
 			refreshWorkerPolicy(ctx)
 			return
 		}
@@ -963,19 +1035,6 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			getConfig: () => loaded,
 			isDangerBypass,
 		})
-		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
-			if (!next || applyingPermissionMode) return
-
-			const current = appliedPermissionMode
-			if (!current || current.mode === next.mode) {
-				appliedPermissionMode = next
-				if (next.initiatedBy === "user") maybePersistPermissionMode(ctx)
-				return
-			}
-
-			// ACP already emitted the config update from controller.setMode().
-			// This call is only for local transition side effects.
-			changeMode(ctx, current.mode, next, "controller", true)
 
 		// Parent surface: a session that can reach its user accepts its
 		// subagents' classifier warnings and their escalated permission prompts.
@@ -1043,19 +1102,37 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			parentSurfaceSessionId = sessionId
 			registerParentSurface(sessionId, parentSurface)
 		}
+		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
+			if (!next || applyingPermissionMode) return
+
+			const current = appliedPermissionMode
+			if (!current || current.mode === next.mode) {
+				appliedPermissionMode = next
+				if (next.initiatedBy === "user") maybePersistPermissionMode(ctx)
+				return
+			}
+
+			// ACP already emitted the config update from controller.setMode().
+			// This call is only for local transition side effects.
+			changeMode(ctx, current.mode, next, "controller", true)
 		})
 	})
 
 	pi.on("session_shutdown", () => {
 		if (isWorker) {
-			// session_shutdown fires after every run, not only final disposal.
-			// Retain policy and worker-owned rules; the next start refreshes live state.
+			// Per-run shutdown is not disposal: the label "for this subagent"
+			// promises that approvals and the policy snapshot survive resume.
 			return
 		}
 		unregisterMainPolicy?.()
 		unregisterMainPolicy = undefined
 		unsubscribePermissionFlagController?.()
 		unsubscribePermissionFlagController = undefined
+		if (parentSurface && parentSurfaceSessionId) {
+			unregisterParentSurface(parentSurfaceSessionId, parentSurface)
+		}
+		parentSurface = undefined
+		parentSurfaceSessionId = undefined
 		currentCtx = undefined
 		appliedPermissionMode = undefined
 		applyingPermissionMode = false
@@ -1069,11 +1146,6 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		// alive (it still owns the `pi` binding for session-shutdown cleanup); the
 		// registry entry below is the canonical lookup path.
 		const planModeSupplementBlock = buildPlanModeSupplementBlock(getRuntimePermissionMode)
-		if (parentSurface && parentSurfaceSessionId) {
-			unregisterParentSurface(parentSurfaceSessionId, parentSurface)
-		}
-		parentSurface = undefined
-		parentSurfaceSessionId = undefined
 		PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
 			modes: ["adhoc"],
 		})
@@ -2005,24 +2077,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 							}
 						}
 					}
-
-					if (verdict.verdict === "safe") {
-						emitToolDecision(pi, event, mode, "accept", "classifier")
-						return undefined
-					}
-					if (!promptAvailable) {
-						emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
-						return {
-							block: true,
-							reason: `Classifier: ${verdict.reason}${
-								isWorker
-									? " Do not retry; report to the main agent that the call needs the user's approval. (no UI to confirm)"
-									: " (no UI to confirm)"
 					if (recovered) {
 						// A probe succeeded and closed the breaker — say so once.
 						reportClassifierNotice(ctx, CLASSIFIER_RECOVERED_NOTICE, "info")
 					}
-							}`,
+
 					// A failed classification (timeout, provider error, bad output) is not
 					// a verdict: it never confirms the call. With a prompt the user is
 					// asked under fixed outage copy (no provider diagnostics); without
@@ -2031,6 +2090,18 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					// not an outage.
 					if (!verdict.ok && verdict.failureCode !== "aborted") {
 						if (!promptAvailable) {
+							const escalated = await requestWorkerApproval(
+								event,
+								ctx,
+								mode,
+								toolName,
+								input,
+								CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE,
+							)
+							if (escalated) {
+								if (promptAbortedByModeChange(escalated.result)) continue // mode changed, re-evaluate
+								return escalated.result
+							}
 							reportClassifierNotice(ctx, classifierBlockedNotice(toolName, verdict.failureCode), "warning")
 							emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
 							return {
@@ -2050,12 +2121,38 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 							activeAborts: activeAbortControllers,
 							promptToolCalls: activePromptToolCalls,
 							allRules,
-							promptQueue,
 							permissionMode: mode,
+							promptQueue,
 						})
 						if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
 						return result
 					}
+					if (verdict.verdict === "safe") {
+						emitToolDecision(pi, event, mode, "accept", "classifier")
+						return undefined
+					}
+					if (!promptAvailable) {
+						const escalated = await requestWorkerApproval(
+							event,
+							ctx,
+							mode,
+							toolName,
+							input,
+							verdict.reason,
+							verdict.riskScore,
+						)
+						if (escalated) {
+							if (promptAbortedByModeChange(escalated.result)) continue // mode changed, re-evaluate
+							return escalated.result
+						}
+						emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
+						return {
+							block: true,
+							reason: `Classifier: ${verdict.reason}${
+								isWorker
+									? " Do not retry; report to the main agent that the call needs the user's approval. (no UI to confirm)"
+									: " (no UI to confirm)"
+							}`,
 						}
 					}
 					const result = await handleConfirm(event, {
@@ -2069,6 +2166,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						allRules,
 						permissionMode: mode,
 						worker: isWorker,
+						promptQueue,
 					})
 					if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
 					return result
@@ -2081,7 +2179,6 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						const subcommands = splitCompoundCommand(command)
 						if (subcommands && subcommands.length > 0) {
 							const result = await handleCompoundConfirm(event, {
-						promptQueue,
 								ctx,
 								pi,
 								session,
@@ -2091,6 +2188,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 								allRules,
 								permissionMode: mode,
 								worker: isWorker,
+								promptQueue,
 							})
 							if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
 							return result
@@ -2103,10 +2201,10 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					session,
 					activeAborts: activeAbortControllers,
 					promptToolCalls: activePromptToolCalls,
-								promptQueue,
 					allRules,
 					permissionMode: mode,
 					worker: isWorker,
+					promptQueue,
 				})
 				if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
 				return result
@@ -2119,7 +2217,6 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				modeChangeSources: [...modeChangeSources],
 			})
 			return {
-					promptQueue,
 				block: true,
 				reason: "Permission mode changed too many times during prompt",
 			}
@@ -2168,20 +2265,8 @@ interface ConfirmOptions {
 	pi: ExtensionAPI
 	/** Permission mode the prompt is opened under (reported with the decision). */
 	permissionMode: PermissionMode
-	/** Inline workers never resolve a prompt, including on resumed sessions. */
+	/** Inline workers never resolve a prompt directly; escalations supply a parent prompter. */
 	worker?: boolean
-}
-
-async function handleConfirm(
-	event: ToolCallEvent,
-	opts: ConfirmOptions,
-): Promise<{ block: true; reason: string } | "aborted" | undefined> {
-	const abort = new AbortController()
-	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
-	opts.activeAborts.add(abort)
-	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
-	try {
-		const prompter = opts.prompter ?? resolvePrompter(opts.ctx, opts.worker)
 	/** Serializes prompts so only one is shown at a time; defaults to the module-level queue. */
 	promptQueue?: PromptQueue
 	/** Override the resolved prompter — escalated subagent calls forward to the
@@ -2209,6 +2294,18 @@ async function runQueuedPrompt<T extends ApprovalOutcome | CompoundApprovalOutco
 		if (signal.aborted) return { kind: "aborted" }
 		throw err
 	}
+}
+
+async function handleConfirm(
+	event: ToolCallEvent,
+	opts: ConfirmOptions,
+): Promise<{ block: true; reason: string } | "aborted" | undefined> {
+	const abort = new AbortController()
+	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
+	opts.activeAborts.add(abort)
+	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
+	try {
+		const prompter = opts.prompter ?? resolvePrompter(opts.ctx, opts.worker)
 		if (!prompter) {
 			emitToolDecision(opts.pi, event, opts.permissionMode, "reject", "no_ui")
 			return { block: true, reason: "No UI to confirm permission" }

@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { isAgentWorker, runAsAgentWorker } from "./agent-worker-context.js"
+import {
+	holdAgentWorkerInactivity,
+	isAgentWorker,
+	runAsAgentWorker,
+	runOutsideWorkerContext,
+	setAgentWorkerInactivityHold,
+} from "./agent-worker-context.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
 describe("agent worker context", () => {
@@ -27,5 +33,68 @@ describe("agent worker context", () => {
 		process.env.KIMCHI_SUBAGENT = "1"
 		expect(isAgentWorker()).toBe(true)
 		expect(isSubagent()).toBe(true)
+	})
+
+	it("marks a worker started without any installed hold", async () => {
+		await runAsAgentWorker(async () => {
+			expect(isAgentWorker()).toBe(true)
+			expect(holdAgentWorkerInactivity()).toBeTypeOf("function")
+		})
+	})
+
+	it("takes and releases the inactivity hold only inside a worker", async () => {
+		// Outside a worker the hold is a no-op that stays callable.
+		holdAgentWorkerInactivity()()
+
+		let holds = 0
+		const releases: string[] = []
+		await runAsAgentWorker(async () => {
+			let released = false
+			setAgentWorkerInactivityHold({
+				acquire: () => {
+					holds += 1
+					return () => {
+						if (released) return
+						released = true
+						holds -= 1
+						releases.push("released")
+					}
+				},
+			})
+			const release = holdAgentWorkerInactivity()
+			expect(holds).toBe(1)
+			release()
+			release()
+			expect(holds).toBe(0)
+			expect(releases).toEqual(["released"])
+		})
+	})
+
+	it("keeps parallel workers' hold implementations isolated", async () => {
+		const acquired: string[] = []
+		await Promise.all(
+			["worker-a", "worker-b"].map((id) =>
+				runAsAgentWorker(async () => {
+					setAgentWorkerInactivityHold({
+						acquire: () => {
+							acquired.push(id)
+							return () => {}
+						},
+					})
+					await new Promise((resolve) => setTimeout(resolve, 1))
+					holdAgentWorkerInactivity()
+				}),
+			),
+		)
+		expect(acquired.sort()).toEqual(["worker-a", "worker-b"])
+	})
+
+	it("runs a callback outside the worker context for parent-side work", async () => {
+		await runAsAgentWorker(async () => {
+			expect(isAgentWorker()).toBe(true)
+			expect(runOutsideWorkerContext(() => isAgentWorker())).toBe(false)
+			expect(await runOutsideWorkerContext(async () => isAgentWorker())).toBe(false)
+			expect(isAgentWorker()).toBe(true)
+		})
 	})
 })

@@ -4,7 +4,7 @@ import { ERROR_FG, ORANGE_FG, RST, RST_FG, SUCCESS_FG } from "../../ansi.js"
 import { EXEC_DEREF_TOOLS, substituteTokensDeep, vaultForSession } from "../pii-redaction/vault.js"
 import { highlightCode } from "../tool-rendering.js"
 import { withWorkingHidden } from "../ui.js"
-import type { PermissionChoice, ToolPermissionPrompter } from "./prompter.js"
+import type { PermissionChoice, PermissionOrigin, ToolPermissionPrompter } from "./prompter.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import { bashSegmentScope, suggestBashCommandScopes, suggestScope } from "./session-memory.js"
 import { isCompoundCommand, isReadOnlyBashCommand } from "./taxonomy.js"
@@ -42,6 +42,8 @@ interface PromptOptions {
 	choices?: PermissionChoice[]
 	/** Signal to programmatically dismiss the prompt (e.g. when permission mode changes). */
 	signal?: AbortSignal
+	/** When a subagent's call was escalated to this session, the prompt names it. */
+	origin?: PermissionOrigin
 }
 
 export function terminalPrompter(ctx: ExtensionContext): ToolPermissionPrompter {
@@ -55,15 +57,26 @@ export function terminalPrompter(ctx: ExtensionContext): ToolPermissionPrompter 
 				riskScore: req.riskScore,
 				choices: req.choices,
 				signal: req.signal,
+				origin: req.origin,
 			}),
 	}
 }
 
-export function buildPermissionChoices(toolName: string, input: Record<string, unknown>): PermissionChoice[] {
+/**
+ * `rememberSuffix` ends the "don't ask again" labels — "this session" for the
+ * session's own prompts, "for this subagent" when a worker escalated the
+ * prompt to its parent (the remembered rules land in the worker's session
+ * memory, so the label must not promise "this session").
+ */
+export function buildPermissionChoices(
+	toolName: string,
+	input: Record<string, unknown>,
+	rememberSuffix = "this session",
+): PermissionChoice[] {
 	const lower = toolName.toLowerCase()
 	if (lower === "bash") {
 		const command = typeof input.command === "string" ? input.command : ""
-		if (isCompoundCommand(command)) return buildCompoundBashChoices(command)
+		if (isCompoundCommand(command)) return buildCompoundBashChoices(command, rememberSuffix)
 		// Single-command bash still can't be remembered when its scope can
 		// never match again (pipe to a non-filter program like `cat x | sh`):
 		// omit remember choices rather than storing a silently-dead rule.
@@ -73,23 +86,26 @@ export function buildPermissionChoices(toolName: string, input: Record<string, u
 				{ kind: "allow-once", label: "Yes — just this call" },
 				{ kind: "deny", label: "No — tell the assistant what to do differently" },
 			]
-		return buildChoicesForScope(scope)
+		return buildChoicesForScope(scope, rememberSuffix)
 	}
 
-	return buildChoicesForScope(suggestScope(toolName, input))
+	return buildChoicesForScope(suggestScope(toolName, input), rememberSuffix)
 }
 
-function buildChoicesForScope(scope: {
-	toolName: string
-	content?: string
-	wildcardContent?: string
-	label: string
-}): PermissionChoice[] {
+function buildChoicesForScope(
+	scope: {
+		toolName: string
+		content?: string
+		wildcardContent?: string
+		label: string
+	},
+	rememberSuffix: string,
+): PermissionChoice[] {
 	const choices: PermissionChoice[] = [
 		{ kind: "allow-once", label: "Yes — just this call" },
 		{
 			kind: "allow-remember",
-			label: `Yes — don't ask again for ${scope.label} this session`,
+			label: `Yes — don't ask again for ${scope.label} ${rememberSuffix}`,
 			rules: [
 				{
 					toolName: scope.toolName,
@@ -104,7 +120,7 @@ function buildChoicesForScope(scope: {
 	if (scope.wildcardContent) {
 		choices.push({
 			kind: "allow-remember-wildcard",
-			label: `Yes — don't ask again for ${scope.wildcardContent} this session`,
+			label: `Yes — don't ask again for ${scope.wildcardContent} ${rememberSuffix}`,
 			rules: [
 				{
 					toolName: scope.toolName,
@@ -129,14 +145,14 @@ function buildChoicesForScope(scope: {
 // whitelisted output filters like `| tail -20` DO scope, normalizing to the
 // head) get no "don't ask again" choice: we never promise remembering we
 // cannot honor.
-function buildCompoundBashChoices(command: string): PermissionChoice[] {
+function buildCompoundBashChoices(command: string, rememberSuffix: string): PermissionChoice[] {
 	const { scopes, scopeable } = suggestBashCommandScopes(command)
 	const choices: PermissionChoice[] = [{ kind: "allow-once", label: "Yes — just this call" }]
 
 	if (scopeable && scopes.length > 0) {
 		choices.push({
 			kind: "allow-remember",
-			label: `Yes — don't ask again for ${joinScopeLabels(scopes.map((s) => s.label))} this session`,
+			label: `Yes — don't ask again for ${joinScopeLabels(scopes.map((s) => s.label))} ${rememberSuffix}`,
 			rules: scopes.map((s) => ({
 				toolName: s.toolName,
 				content: s.content,
@@ -153,7 +169,7 @@ function buildCompoundBashChoices(command: string): PermissionChoice[] {
 		if (wildcards.length === scopes.length) {
 			choices.push({
 				kind: "allow-remember-wildcard",
-				label: `Yes — don't ask again for ${joinScopeLabels(wildcards)} this session`,
+				label: `Yes — don't ask again for ${joinScopeLabels(wildcards)} ${rememberSuffix}`,
 				rules: wildcards.map((content) => ({
 					toolName: "bash",
 					content,
