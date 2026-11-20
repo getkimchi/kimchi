@@ -171,30 +171,12 @@ describe("apply", () => {
 			allTools: [
 				{ name: "read" },
 				{ name: "bash" },
+				{ name: "write" },
 				{ name: "codemode" },
 				{ name: "tool_search" },
 				{ name: "propose_ferment_scoping" },
 			],
-			activeTools: ["read", "bash", "codemode", "propose_ferment_scoping"],
-		})
-
-		apply("idle", "ferment", pi)
-
-		const calledWith = vi.mocked(pi.setActiveTools).mock.calls[0][0]
-		expect(calledWith).toContain("read")
-		expect(calledWith).toContain("bash")
-		expect(calledWith).toContain("codemode")
-		expect(calledWith).not.toContain("tool_search")
-		expect(calledWith).not.toContain("propose_ferment_scoping")
-	})
-
-	it("idle leaves upstream-inactive registry tools out of the active set", () => {
-		// Pre-fix regression: an idle snapshot based on getAllTools() activated
-		// default-off tool_search even without user opt-in. The new default-on
-		// codemode baseline must nevertheless be preserved by the idle apply.
-		const pi = makeMockPi({
-			allTools: [{ name: "read" }, { name: "bash" }, { name: "write" }, { name: "codemode" }, { name: "tool_search" }],
-			activeTools: ["read", "bash", "write", "codemode"],
+			activeTools: ["read", "bash", "write", "codemode", "propose_ferment_scoping"],
 		})
 
 		apply("idle", "ferment", pi)
@@ -205,6 +187,7 @@ describe("apply", () => {
 		expect(calledWith).toContain("write")
 		expect(calledWith).toContain("codemode")
 		expect(calledWith).not.toContain("tool_search")
+		expect(calledWith).not.toContain("propose_ferment_scoping")
 	})
 
 	it("idle restores the pre-implementation baseline, not the implementation-widened surface", () => {
@@ -231,24 +214,6 @@ describe("apply", () => {
 		const restored = vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] as string[]
 		expect(restored).toEqual(expect.arrayContaining(["read", "bash", "codemode"]))
 		expect(restored).not.toContain("tool_search")
-	})
-
-	it("idle keeps tools activated since the last snapshot", () => {
-		// Upstream auto-activates late registrations (and adapters/users toggle
-		// tools on) between snapshots; the next idle apply must honor those
-		// admissions rather than reverting to a stale snapshot.
-		const pi = makeMockPi({
-			allTools: [{ name: "read" }, { name: "bash" }, { name: "codemode" }],
-			activeTools: ["read", "bash"],
-		})
-
-		apply("idle", "ferment", pi)
-		pi.setActiveTools(["read", "bash", "codemode"]) // upstream activation of a late registration
-
-		apply("idle", "ferment", pi)
-
-		const restored = vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] as string[]
-		expect(restored).toContain("codemode")
 	})
 
 	it("a deactivation outlives later idle applies and resnapshots", () => {
@@ -627,6 +592,11 @@ describe("reapplyCurrentProfile", () => {
 		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("server_get_record")
 		expect(calledWith).not.toContain("tool_search")
+
+		// The admission also survives a later deliberate idle restore, not just
+		// the resnapshot that first observed it.
+		apply("idle", "ferment", pi)
+		expect(pi.getActiveTools()).toContain("server_get_record")
 	})
 })
 
