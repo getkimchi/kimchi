@@ -445,7 +445,7 @@ describe("Bash display live tick", () => {
 		return { ctx, invalidate, text }
 	}
 
-	it("advances a silent running card once per second and stops after exit", async () => {
+	it("advances a silent running card every 10 seconds and stops after exit", async () => {
 		const registry = createProcessRegistry()
 		const ops = createFakeOps()
 		const handle = registry.spawn(ops, "sleep 60", "/tmp", undefined, { limitSeconds: 60 })
@@ -454,16 +454,22 @@ describe("Bash display live tick", () => {
 			const card = liveCard(registry, handle)
 			expect(card.text()).toContain("Running · 0s")
 			expect(card.text()).toContain("Last output 0s ago")
-			await vi.advanceTimersByTimeAsync(3000)
+			await vi.advanceTimersByTimeAsync(9_999)
+			expect(card.invalidate).not.toHaveBeenCalled()
+			expect(card.text()).toContain("Running · 0s")
+			await vi.advanceTimersByTimeAsync(1)
+			expect(card.invalidate).toHaveBeenCalledTimes(1)
+			expect(card.text()).toContain("Running · 10s")
+			expect(card.text()).toContain("Last output 10s ago")
+			await vi.advanceTimersByTimeAsync(20_000)
 			expect(card.invalidate).toHaveBeenCalledTimes(3)
-			expect(card.text()).toContain("Running · 3s")
-			expect(card.text()).toContain("Last output 3s ago")
+			expect(card.text()).toContain("Running · 30s")
 			await ops.exit(0)
 			await registry.whenExited(handle)
 			const settled = card.invalidate.mock.calls.length
-			await vi.advanceTimersByTimeAsync(5000)
+			await vi.advanceTimersByTimeAsync(50_000)
 			expect(card.invalidate).toHaveBeenCalledTimes(settled)
-			expect(card.text()).toContain("Exited 0 · 3s")
+			expect(card.text()).toContain("Exited 0 · 30s")
 		} finally {
 			await registry.shutdown()
 		}
@@ -475,10 +481,10 @@ describe("Bash display live tick", () => {
 		try {
 			const card = liveCard(registry, handle)
 			card.text()
-			await vi.advanceTimersByTimeAsync(1000)
+			await vi.advanceTimersByTimeAsync(10_000)
 			expect(card.invalidate).toHaveBeenCalledTimes(1)
 			card.ctx.state.bashRow.unsubscribe()
-			await vi.advanceTimersByTimeAsync(5000)
+			await vi.advanceTimersByTimeAsync(50_000)
 			expect(card.invalidate).toHaveBeenCalledTimes(1)
 		} finally {
 			await registry.shutdown()
@@ -493,7 +499,7 @@ describe("Bash display live tick", () => {
 			first.text()
 			const second = liveCard(registry, handle)
 			second.text()
-			await vi.advanceTimersByTimeAsync(2000)
+			await vi.advanceTimersByTimeAsync(20_000)
 			expect(first.invalidate).not.toHaveBeenCalled()
 			expect(second.invalidate).toHaveBeenCalledTimes(2)
 		} finally {
@@ -514,7 +520,7 @@ describe("Bash display live tick", () => {
 				.join("\n")
 		try {
 			expect(render()).toContain("Still running at check-in · 42s")
-			await vi.advanceTimersByTimeAsync(5000)
+			await vi.advanceTimersByTimeAsync(50_000)
 			expect(invalidate).not.toHaveBeenCalled()
 			expect(render()).toContain("Still running at check-in · 42s")
 		} finally {

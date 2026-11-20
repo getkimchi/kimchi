@@ -41,6 +41,8 @@ function hiddenControl(ctx: Parameters<BashCallRenderer>[2], registry: ProcessRe
 /** Kill reason for a stop the user asked for. Its exit must not wake the model. */
 export const USER_STOP_REASON = "user-stop"
 
+const LIVE_TICK_MS = 10_000
+
 export function bashStatus(snapshot: ProcessDisplaySnapshot, now = snapshot.observedAt): string {
 	const elapsed = `${Math.max(0, Math.floor(((snapshot.finishedAt ?? now) - snapshot.startedAt) / 1000))}s`
 	if (snapshot.reason === "deadline") return `Deadline reached · ${elapsed}`
@@ -144,7 +146,8 @@ const renderBashResult: (
 			})
 			subscribed = true
 			// The registry only notifies on output and exit, so a silent command needs
-			// a clock to keep its elapsed time and output age moving.
+			// a clock to keep its elapsed time and output age moving. The clock is slow
+			// because a changed card above the viewport makes the TUI repaint everything.
 			if (running) {
 				tick = setInterval(() => {
 					const snapshot = registry.displaySnapshot(handle)
@@ -154,7 +157,7 @@ const renderBashResult: (
 						details: Object.assign({}, target.result.details, { display: snapshot }),
 					}
 					target.invalidate()
-				}, 1000)
+				}, LIVE_TICK_MS)
 				tick.unref()
 			}
 			target.unsubscribe = () => {
