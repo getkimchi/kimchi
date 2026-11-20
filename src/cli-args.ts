@@ -28,6 +28,7 @@ const PRE_DISPATCH_VALUE_FLAG_SHORTS: Record<string, string | undefined> = {
 	export: undefined,
 	extension: "e",
 	skill: undefined,
+	additionalSkillsPaths: undefined,
 	"prompt-template": undefined,
 	theme: undefined,
 }
@@ -224,6 +225,12 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		description: "Use a specific MCP configuration file",
 		placeholder: "<path>",
 	},
+	additionalSkillsPaths: {
+		type: "string",
+		multiple: true,
+		description: "Additional skill root directories (repeatable)",
+		placeholder: "<path>",
+	},
 	verbose: {
 		type: "boolean",
 		description: "Force verbose startup (overrides quietStartup)",
@@ -273,6 +280,7 @@ export interface SessionCliArgs {
 		"permissions-config"?: string
 		"bash-process-limit"?: string
 		"mcp-config"?: string
+		additionalSkillsPaths?: string[]
 		verbose?: boolean
 		"no-auto-update"?: boolean
 	}
@@ -332,6 +340,16 @@ for (const [name, short] of Object.entries(PRE_DISPATCH_VALUE_FLAG_SHORTS)) {
 	PARSE_ARGS_OPTIONS[name] ??= { type: "string", ...(short ? { short } : {}) }
 }
 
+/** Tokens that consume the following token as their value, per the derived
+ * parseArgs schema (long and short forms). Used to tell a value-position token
+ * (e.g. the `--additionalSkillsPaths` in `--system-prompt
+ * --additionalSkillsPaths`) apart from a standalone flag occurrence. */
+const VALUE_FLAG_TOKENS = new Set<string>(
+	Object.entries(PARSE_ARGS_OPTIONS).flatMap(([name, opt]) =>
+		opt.type === "string" ? [`--${name}`, ...(opt.short ? [`-${opt.short}`] : [])] : [],
+	),
+)
+
 /** Option names that affect the running session and are cached in `SessionCliArgs`. */
 export const CACHEABLE_OPTION_NAMES = [
 	"provider",
@@ -354,6 +372,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"permissions-config",
 	"bash-process-limit",
 	"mcp-config",
+	"additionalSkillsPaths",
 	"verbose",
 	"no-auto-update",
 ] as const satisfies ReadonlyArray<keyof SessionCliArgs["options"]>
@@ -468,4 +487,65 @@ export function hasFermentOneshotArg(args: readonly string[]): boolean {
 
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
 	return args.filter((a) => a !== "--enable-experimental-features")
+}
+
+/**
+ * Rewrite Kimchi-local `--additionalSkillsPaths` flags into upstream pi's
+ * repeatable `--skill` option, in place, preserving the relative order of all
+ * other tokens.
+ *
+ * Recognizes the separated (`--additionalSkillsPaths <path>`) and equals
+ * (`--additionalSkillsPaths=<path>`) forms. Everything else — including
+ * existing `--skill` flags, prompt positionals, and unrelated options — passes
+ * through untouched. A `--additionalSkillsPaths` token that is itself the value
+ * of another option (as in `--system-prompt --additionalSkillsPaths`) is left
+ * verbatim: it is not a standalone flag occurrence. A dangling standalone
+ * `--additionalSkillsPaths` (no following value) is translated to a dangling
+ * `--skill` so upstream's own parser reports the missing value and the
+ * Kimchi-local flag never reaches pi. The first bare `--` ends option parsing:
+ * every token after it is a positional and is copied verbatim.
+ */
+export function forwardAdditionalSkillPathsToPi(args: string[]): string[] {
+	const result: string[] = []
+	// True while the current token is the value of the preceding value-taking
+	// option. Such a token is positional data for that option, never a
+	// standalone flag, even when it is flag-shaped.
+	let inValuePosition = false
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (inValuePosition) {
+			result.push(arg)
+			inValuePosition = false
+			continue
+		}
+		if (arg === "--") {
+			// Bare separator: everything after it is positional and must not be
+			// rewritten.
+			result.push(...args.slice(i))
+			return result
+		}
+		if (arg.startsWith("--additionalSkillsPaths=")) {
+			result.push("--skill", arg.slice("--additionalSkillsPaths=".length))
+			continue
+		}
+		if (arg === "--additionalSkillsPaths") {
+			// Separated form: the following token is the path (if present). A
+			// following bare `--` is the option-terminator, not a value: leave it
+			// for the separator branch above so it and everything after it stay
+			// verbatim.
+			if (i + 1 < args.length && args[i + 1] !== "--") {
+				result.push("--skill", args[i + 1])
+				i += 1
+			} else {
+				// Dangling flag with no value: translate to a dangling upstream
+				// `--skill` so pi's own parser reports the missing value. The
+				// Kimchi-local flag must never be forwarded.
+				result.push("--skill")
+			}
+			continue
+		}
+		inValuePosition = VALUE_FLAG_TOKENS.has(arg)
+		result.push(arg)
+	}
+	return result
 }
