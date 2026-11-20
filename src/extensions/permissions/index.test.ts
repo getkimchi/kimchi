@@ -61,7 +61,7 @@ import {
 	classifierBlockReasonCodeTail,
 } from "./classifier-health.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
-import { ESCALATED_PROMPT_TIMEOUT_MS, PERMISSIONS_ENV_KEY } from "./constants.js"
+import { ESCALATED_PROMPT_TIMEOUT_MS, MODE_SETTLE_MS, PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, {
 	checkCompoundCommand,
 	createPermissionsExtension,
@@ -883,9 +883,12 @@ describe("classifier outage escalation to the parent session", () => {
 	// Worker and parent run their own extension instance (separate session
 	// binds in production): the escalated prompt crosses instances through the
 	// surface registry, and each side gets its own prompt queue.
-	async function setupEscalation(overrides: Partial<WorkerPermissionsOptions> = {}) {
+	async function setupEscalation(
+		overrides: Partial<WorkerPermissionsOptions> = {},
+		parentFlags: Record<string, boolean | string | undefined> = { auto: true },
+	) {
 		const parentSessionId = overrides.parentSessionId ?? TEST_SESSION_ID
-		const parent = createPermissionsHarness(["bash"], { auto: true })
+		const parent = createPermissionsHarness(["bash"], parentFlags)
 		const parentCtx = createEscalatingParentContext()
 		await parent.fire("session_start", {}, parentCtx)
 		const worker = createWorkerHarness(["bash"], {
@@ -1287,24 +1290,237 @@ describe("classifier outage escalation to the parent session", () => {
 		expect(await pending).toEqual({ kind: "aborted" })
 	})
 
-	it.each([
-		{ mode: "yolo" as const, expected: undefined },
-		{ mode: "plan" as const, expected: "plan mode" },
-	])("re-evaluates an escalated prompt after mode change to $mode", async ({ mode, expected }) => {
-		const { parentCtx, worker, workerCtx } = await setupEscalation()
-		parentCtx.mode = "tui"
-		parentCtx.ui.select = createUnansweredSelect()
-		vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
-		const started = worker.fire("tool_call", event, workerCtx)
-		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledOnce())
-		const terminalHandler = vi.mocked(parentCtx.ui.onTerminalInput).mock.calls[0]?.[0]
-		if (!terminalHandler) throw new Error("expected a mode-change listener")
-		await new Promise((resolve) => setTimeout(resolve, 201))
-		for (let i = 0; i < (mode === "yolo" ? 1 : 3); i++) terminalHandler("\x1b[Z")
+	// Shift+Tab cycles default → plan → auto → yolo. A call whose prompt a mode
+	// change withdrew is decided only after the mode has stayed unchanged for
+	// MODE_SETTLE_MS, so a mode that was only passed through decides nothing.
+	describe("mode changes while a prompt is pending", () => {
+		/** Between two presses: longer than any microtask chain, shorter than the settle time. */
+		const BETWEEN_PRESSES_MS = 100
+		/** A new subagent selector also waits a second after the last key. */
+		const QUIET_KEYBOARD_MS = 1100
+		const ownEvent = { ...event, toolCallId: "own-call" }
 
-		const result = await started
-		if (expected === undefined) expect(result).toBeUndefined()
-		else expect(result).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
+		beforeEach(() => {
+			vi.useFakeTimers()
+		})
+		afterEach(() => {
+			vi.useRealTimers()
+		})
+
+		function createAnswerableSelect() {
+			const prompts: Array<{ choices: string[]; answer: (choice: string | undefined) => void }> = []
+			const select = vi.fn(
+				(_title: string, choices: string[], opts?: { signal?: AbortSignal }) =>
+					new Promise<string | undefined>((resolve) => {
+						if (opts?.signal?.aborted) return resolve(undefined)
+						opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true })
+						prompts.push({ choices, answer: resolve })
+					}),
+			)
+			return { select: select as unknown as ExtensionUIContext["select"], calls: select, prompts }
+		}
+
+		function pressShiftTab(parentCtx: ExtensionContext): void {
+			const terminalHandler = vi.mocked(parentCtx.ui.onTerminalInput).mock.calls[0]?.[0]
+			if (!terminalHandler) throw new Error("expected a mode-change listener")
+			terminalHandler("\x1b[Z")
+		}
+
+		function track(pending: Promise<unknown>): { settled: boolean } {
+			const state = { settled: false }
+			const done = () => {
+				state.settled = true
+			}
+			void pending.then(done, done)
+			return state
+		}
+
+		async function pendingSubagentPrompt(parentFlags?: Record<string, boolean | string | undefined>) {
+			const setup = await setupEscalation({}, parentFlags)
+			setup.parentCtx.mode = "tui"
+			const ui = createAnswerableSelect()
+			setup.parentCtx.ui.select = ui.select
+			return { ...setup, ui }
+		}
+
+		it("does not approve a pending subagent request when Shift+Tab only passes through yolo", async () => {
+			const { parentCtx, worker, workerCtx, ui } = await pendingSubagentPrompt()
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+			const started = worker.fire("tool_call", event, workerCtx)
+			const state = track(started)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+
+			pressShiftTab(parentCtx) // auto → yolo
+			await vi.advanceTimersByTimeAsync(BETWEEN_PRESSES_MS)
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("yolo")
+			expect(state.settled).toBe(false)
+			pressShiftTab(parentCtx) // yolo → default
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS + QUIET_KEYBOARD_MS)
+
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("default")
+			// Not approved by the yolo it passed through: it is asked again.
+			expect(state.settled).toBe(false)
+			expect(ui.calls).toHaveBeenCalledTimes(2)
+			ui.prompts[1]?.answer(ui.prompts[1].choices.at(-1))
+			expect(await started).toMatchObject({ block: true, reason: "Declined by user" })
+		})
+
+		it("does not block a pending subagent request when Shift+Tab only passes through plan", async () => {
+			const { parentCtx, worker, workerCtx, ui } = await pendingSubagentPrompt({})
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+			const started = worker.fire("tool_call", event, workerCtx)
+			const state = track(started)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+
+			pressShiftTab(parentCtx) // default → plan
+			await vi.advanceTimersByTimeAsync(BETWEEN_PRESSES_MS)
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+			expect(state.settled).toBe(false)
+			pressShiftTab(parentCtx) // plan → auto
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS + QUIET_KEYBOARD_MS)
+
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("auto")
+			// Not blocked by the plan it passed through: it is asked again.
+			expect(state.settled).toBe(false)
+			expect(ui.calls).toHaveBeenCalledTimes(2)
+			ui.prompts[1]?.answer(ui.prompts[1].choices[0])
+			expect(await started).toBeUndefined()
+		})
+
+		it("approves a pending subagent request once a switch to yolo has settled", async () => {
+			const { parentCtx, worker, workerCtx, ui } = await pendingSubagentPrompt()
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const started = worker.fire("tool_call", event, workerCtx)
+			const state = track(started)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+
+			pressShiftTab(parentCtx) // auto → yolo
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS - 1)
+			expect(state.settled).toBe(false)
+			await vi.advanceTimersByTimeAsync(10)
+
+			expect(await started).toBeUndefined()
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledTimes(1)
+		})
+
+		it("blocks a pending subagent request under the plan mode the user stops on", async () => {
+			const { parentCtx, worker, workerCtx, ui } = await pendingSubagentPrompt()
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const started = worker.fire("tool_call", event, workerCtx)
+			const state = track(started)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+
+			// auto → yolo → default → plan, one press at a time.
+			for (let press = 0; press < 3; press++) {
+				pressShiftTab(parentCtx)
+				await vi.advanceTimersByTimeAsync(BETWEEN_PRESSES_MS)
+				expect(state.settled).toBe(false)
+			}
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS)
+
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+			expect(await started).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+		})
+
+		it("keeps hard-blocked bash blocked when a pending subagent request settles under yolo", async () => {
+			const { parentCtx, worker, workerCtx, ui } = await pendingSubagentPrompt()
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const started = worker.fire("tool_call", { ...event, input: { command: "shutdown now" } }, workerCtx)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+
+			pressShiftTab(parentCtx) // auto → yolo
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS + 10)
+
+			expect(await started).toMatchObject({
+				block: true,
+				reason: "Blocked in yolo mode (hard-blocked command): shutdown now",
+			})
+		})
+
+		it("keeps a deny rule added meanwhile when a pending subagent request settles under yolo", async () => {
+			const { parent, parentCtx, worker, workerCtx, ui } = await pendingSubagentPrompt()
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const started = worker.fire("tool_call", event, workerCtx)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+
+			await parent.commands.get("permissions")?.handler("deny bash(touch *)", parentCtx)
+			pressShiftTab(parentCtx) // auto → yolo
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS + 10)
+
+			expect(await started).toMatchObject({ block: true, reason: expect.stringContaining("Denied by rule") })
+		})
+
+		it("does not approve the session's own prompt when Shift+Tab only passes through yolo", async () => {
+			const { parent, parentCtx, ui } = await pendingSubagentPrompt()
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const own = parent.fire("tool_call", ownEvent, parentCtx)
+			const state = track(own)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+
+			pressShiftTab(parentCtx) // auto → yolo
+			await vi.advanceTimersByTimeAsync(BETWEEN_PRESSES_MS)
+			expect(state.settled).toBe(false)
+			pressShiftTab(parentCtx) // yolo → default
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS - 1)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+			await vi.advanceTimersByTimeAsync(10)
+
+			// `default` asks directly, without the classifier.
+			expect(state.settled).toBe(false)
+			expect(ui.calls).toHaveBeenCalledTimes(2)
+			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledTimes(1)
+			ui.prompts[1]?.answer(ui.prompts[1].choices.at(-1))
+			expect(await own).toMatchObject({ block: true, reason: "Declined by user" })
+		})
+
+		it("does not block the session's own prompt when Shift+Tab only passes through plan", async () => {
+			const { parent, parentCtx, ui } = await pendingSubagentPrompt({})
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const own = parent.fire("tool_call", ownEvent, parentCtx)
+			const state = track(own)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+			expect(vi.mocked(classifyToolCall)).not.toHaveBeenCalled()
+
+			pressShiftTab(parentCtx) // default → plan
+			await vi.advanceTimersByTimeAsync(BETWEEN_PRESSES_MS)
+			expect(state.settled).toBe(false)
+			pressShiftTab(parentCtx) // plan → auto
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS + 10)
+
+			// `auto` classifies; the failed classification asks again.
+			expect(state.settled).toBe(false)
+			expect(ui.calls).toHaveBeenCalledTimes(2)
+			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledTimes(1)
+			ui.prompts[1]?.answer(ui.prompts[1].choices[0])
+			expect(await own).toBeUndefined()
+		})
+
+		it("approves the session's own prompt once a switch to yolo has settled", async () => {
+			const { parent, parentCtx, ui } = await pendingSubagentPrompt()
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const own = parent.fire("tool_call", ownEvent, parentCtx)
+			const state = track(own)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+
+			pressShiftTab(parentCtx) // auto → yolo
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS - 1)
+			expect(state.settled).toBe(false)
+			await vi.advanceTimersByTimeAsync(10)
+
+			expect(await own).toBeUndefined()
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+		})
 	})
 
 	it("stops a canceled worker without recording a mode flap", async () => {
