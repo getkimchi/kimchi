@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { redactText } from "../pii-redaction/redactor.js"
+import { MEMORY_TELEMETRY_CHANNEL } from "./telemetry-events.js"
 import {
 	AUTHORED_PREFIX,
 	authoredEnabled,
@@ -7,6 +9,11 @@ import {
 	type MemorySaveDeps,
 	type MemorySearchDeps,
 } from "./tools.js"
+
+vi.mock("../pii-redaction/redactor.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../pii-redaction/redactor.js")>()
+	return { ...actual, redactText: vi.fn(actual.redactText) }
+})
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content.map((c) => c.text ?? "").join("\n")
@@ -163,5 +170,124 @@ describe("save_memory tool", () => {
 		const tool = createMemorySaveTool(saveDeps({}).deps)
 		expect(tool.promptSnippet).toBeTruthy()
 		expect(tool.promptGuidelines?.length).toBeGreaterThan(0)
+	})
+})
+
+describe("memory tool telemetry", () => {
+	const call = (tool: ReturnType<typeof createMemorySaveTool>, fact: string) =>
+		tool.execute("call-1", { fact }, undefined, undefined, {} as never)
+
+	beforeEach(() => vi.mocked(redactText).mockClear())
+	afterEach(() => vi.restoreAllMocks())
+
+	it("reports search hits with retrieved and returned counts", async () => {
+		const reportTelemetry = vi.fn()
+		const tool = createMemorySearchTool({
+			search: async () => [
+				{ memory: "canary preference", score: 0.55 },
+				{ memory: "another durable fact", score: 0.5 },
+			],
+			isEnabled: () => true,
+			reportTelemetry,
+		})
+		await tool.execute("call-1", { query: "private query" }, undefined, undefined, {} as never)
+		expect(reportTelemetry).toHaveBeenCalledExactlyOnceWith({
+			event: "tool.completed",
+			tool: "memory_search",
+			outcome: "hits",
+			durationMs: expect.any(Number),
+			retrievedCount: 2,
+			returnedCount: 2,
+		})
+		expect(JSON.stringify(reportTelemetry.mock.calls)).not.toContain("private query")
+		expect(JSON.stringify(reportTelemetry.mock.calls)).not.toContain("canary preference")
+	})
+
+	it("reports no hits, disabled, and store-failure outcomes", async () => {
+		for (const [outcome, deps] of [
+			["no_hits", { search: async () => [], isEnabled: () => true }],
+			["disabled", { search: async () => [], isEnabled: () => false }],
+			[
+				"failed",
+				{
+					search: async () => {
+						throw new Error("store unavailable")
+					},
+					isEnabled: () => true,
+				},
+			],
+		] as const) {
+			const reportTelemetry = vi.fn()
+			const tool = createMemorySearchTool({ ...deps, reportTelemetry })
+			const result = await tool.execute("call-1", { query: "anything" }, undefined, undefined, {} as never)
+			expect(result.content.length).toBeGreaterThan(0)
+			expect(reportTelemetry).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ event: "tool.completed", tool: "memory_search", outcome }),
+			)
+		}
+	})
+
+	it("reports saved, duplicate, short, long, and disabled save outcomes", async () => {
+		const { deps, saved } = saveDeps()
+		const reportTelemetry = vi.fn()
+		const tool = createMemorySaveTool({ ...deps, reportTelemetry })
+		const fact = "a durable fact worth keeping for later"
+		await call(tool, fact)
+		await call(tool, fact)
+		await call(tool, "short")
+		await call(tool, "x".repeat(301))
+		expect(saved).toHaveLength(1)
+		expect(reportTelemetry.mock.calls.map(([event]) => event.outcome)).toEqual([
+			"saved",
+			"duplicate",
+			"too_short",
+			"too_long",
+		])
+
+		const disabledReporter = vi.fn()
+		const disabled = createMemorySaveTool({
+			...saveDeps({ isEnabled: () => false }).deps,
+			reportTelemetry: disabledReporter,
+		})
+		await call(disabled, fact)
+		expect(disabledReporter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "disabled" }))
+	})
+
+	it("reports redaction and write failures without changing thrown errors", async () => {
+		const redactionReporter = vi.fn()
+		vi.mocked(redactText).mockRejectedValueOnce(new Error("redactor down"))
+		await expect(
+			call(
+				createMemorySaveTool({ ...saveDeps().deps, reportTelemetry: redactionReporter }),
+				"a durable fact worth keeping",
+			),
+		).rejects.toThrow("redactor down")
+		expect(redactionReporter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "failed" }))
+
+		const writeReporter = vi.fn()
+		const { deps } = saveDeps({
+			write: async () => {
+				throw new Error("store write failed")
+			},
+		})
+		await expect(
+			call(createMemorySaveTool({ ...deps, reportTelemetry: writeReporter }), "a durable fact worth keeping"),
+		).rejects.toThrow("store write failed")
+		expect(writeReporter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "failed" }))
+	})
+
+	it("keeps tool output when the reporter itself fails", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const reportTelemetry = vi.fn(() => {
+			throw new Error("telemetry down")
+		})
+		const { deps, saved } = saveDeps()
+		const result = await call(createMemorySaveTool({ ...deps, reportTelemetry }), "a durable fact worth keeping")
+		expect(textOf(result)).toContain("Saved to memory")
+		expect(saved).toHaveLength(1)
+	})
+
+	it("uses the shared memory channel for wired extension events", () => {
+		expect(MEMORY_TELEMETRY_CHANNEL).toBe("memory:telemetry")
 	})
 })

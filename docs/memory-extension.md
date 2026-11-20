@@ -235,6 +235,21 @@ For exact-ID get/update, omitting `scope` searches all stores rather than guessi
 
 `memory_reset` takes `scope` and `project` but no `cwd` — its target is fully determined by scope and project. The session toggle is keyed by the session's manager (`src/extensions/memory/session-toggle.ts`) — the same identity the extension reads — so `set_memory_enabled` lands exactly in the session the client named.
 
+## Remote usage and outcome telemetry
+
+When telemetry is enabled, memory emits content-free operational events through the harness's existing OTLP logs pipeline. This is separate from the local traces above and `usage.jsonl`: traces support debugging, the ledger answers local model-spend questions, and remote events measure adoption, queue health, capture yield, recall reach, explicit-tool usage, latency, and bounded failures.
+
+- **Adoption:** `harness_launched` includes `config.memory_enabled`; live `memory.session_state` records initial/toggle active state and the authored-lane flag. The launch denominator is necessarily limited to users who consented to telemetry at launch — enabling telemetry later cannot reconstruct older launches.
+- **Capture:** `memory.capture.schedule` and `memory.capture.spawn` distinguish durable enqueue/coalescing/backpressure/already-captured outcomes from asynchronous worker startup. Every bounded drain wave produces `memory.capture.wave` with duration, job/stored/filter/discard/quarantine counts, and queue depth/age; a fatal worker error produces `memory.capture.failed` with a bounded failure class. Worker summaries use pre-session device identity and `event.`-prefixed fields, with bounded pre-session drain before process exit and no originating pi session correlation.
+- **Recall:** `memory.recall.completed` has one terminal record per digest/progressive evaluation, including empty, covered, no-searcher, failed, cancelled, timed-out, and stale outcomes, gate degradation, delivery kind/counts, composition, and duration. `selected_count` is not accepted delivery; cached digest reattachments do not inflate `delivered_count`, and digest search failure is not reported as `no_hits`.
+- **Explicit tools:** `memory.tool.completed` records `memory_search` hits/no-hits/disabled/failure and `save_memory` saved/duplicate/length/disabled/failure outcomes, duration, and retrieval counts. Unexpected save errors still throw; memory search still degrades to its explicit unreachable-store result. Generic `claude_code.tool.*` accounting continues unchanged.
+
+Producer domains publish only curated enums, booleans, durations, and counts, and the telemetry handler validates/allowlists each field. No fact or query text, fact IDs, project names, paths, PID, job names, raw errors, or tool arguments/results leave the process. Telemetry failures warn but never break capture, recall, tools, or the agent turn; ACP adds no client-facing events or replay entries.
+
+Ai-optimizer stores every typed record in its dedicated `memory_events` ClickHouse family for Grafana. `session_id` identifies live sessions, `device_id` identifies worker/pre-session records, nullable event-variant columns distinguish absence from zero, and deterministic IDs deduplicate retried ingestion (use `FINAL` or ID-aware aggregation). PostHog receives reduced product summaries only: launch/memory state, scheduling outcome/message count, capture outcome/job/stored counts, fatal failure class, recall kind/trigger/outcome/delivered count, and tool/outcome/returned count. Spawn-only and detailed queue/gate/filter/discard diagnostics stay out of PostHog and are not forwarded at all.
+
+The complete record schema and representative Grafana queries live in `src/extensions/telemetry/README.md`. Roll out ai-optimizer's migration and receiver before new producers; a ClickHouse insert failure follows the receiver's bounded detached-insert/retry contract. Dashboard JSON/provisioning is a human/ops follow-up once representative data exists. Model cost/token attribution remains on the existing gateway tags and local ledger, never this event path.
+
 ## Verification
 
 - `pnpm run test` — unit tests (co-located `*.test.ts` next to each module).

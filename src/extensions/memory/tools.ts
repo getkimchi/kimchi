@@ -9,6 +9,12 @@ import { Type } from "typebox"
 import { redactText } from "../pii-redaction/redactor.js"
 import { selectDiverseFacts } from "./diversity.js"
 import { type MemoryMetadata, memoryEvidencePrefix } from "./metadata.js"
+import type {
+	MemorySaveOutcome,
+	MemorySearchOutcome,
+	MemoryTelemetryReporter,
+	MemoryToolTelemetry,
+} from "./telemetry-events.js"
 import { createRecallRecorder } from "./trace.js"
 
 export { authoredEnabled } from "./flags.js"
@@ -21,6 +27,7 @@ export interface MemorySearchDeps {
 	>
 	/** Session-toggle gate — when false, the tool reports the disabled state instead of searching. */
 	isEnabled: () => boolean
+	reportTelemetry?: MemoryTelemetryReporter
 }
 
 const MemorySearchSchema = Type.Object({
@@ -55,6 +62,15 @@ export interface MemorySaveDeps {
 	existing: () => Promise<string[]>
 	/** Session-toggle gate — when false, the tool reports the disabled state instead of saving. */
 	isEnabled: () => boolean
+	reportTelemetry?: MemoryTelemetryReporter
+}
+
+function reportToolTelemetry(reporter: MemoryTelemetryReporter | undefined, event: MemoryToolTelemetry): void {
+	try {
+		reporter?.(event)
+	} catch (err) {
+		console.error("[memory] tool telemetry failed (continuing):", err instanceof Error ? err.message : err)
+	}
 }
 
 const MemorySaveSchema = Type.Object({
@@ -77,30 +93,53 @@ export function createMemorySaveTool(deps: MemorySaveDeps): ToolDefinition<typeo
 		],
 		parameters: MemorySaveSchema,
 		execute: async (_toolCallId, params) => {
-			if (!deps.isEnabled()) {
-				return textResult(
-					"Memory is currently disabled for this session — the user can turn it back on with /memory enable.",
-				)
+			const startedAt = Date.now()
+			const report = (outcome: MemorySaveOutcome): void => {
+				reportToolTelemetry(deps.reportTelemetry, {
+					event: "tool.completed",
+					tool: "save_memory",
+					outcome,
+					durationMs: Date.now() - startedAt,
+					retrievedCount: 0,
+					returnedCount: 0,
+				})
 			}
-			const fact = params.fact.replace(/\s+/g, " ").trim()
-			if (fact.length < MEMORY_SAVE_MIN_CHARS) {
-				return textResult("Not saved: the fact is too short to be durable signal (write a full sentence).")
+			try {
+				if (!deps.isEnabled()) {
+					report("disabled")
+					return textResult(
+						"Memory is currently disabled for this session — the user can turn it back on with /memory enable.",
+					)
+				}
+				const fact = params.fact.replace(/\s+/g, " ").trim()
+				if (fact.length < MEMORY_SAVE_MIN_CHARS) {
+					report("too_short")
+					return textResult("Not saved: the fact is too short to be durable signal (write a full sentence).")
+				}
+				if (fact.length > MEMORY_SAVE_MAX_CHARS) {
+					report("too_long")
+					return textResult(
+						"Not saved: keep memory entries under 300 characters — split into separate saves if needed.",
+					)
+				}
+				// Same PII-redaction invariant as the extraction lane: an authored
+				// fact never lands in the store with a credential in plaintext. Done
+				// before the dup check so both sides compare redacted text.
+				const cleaned = await redactText(fact)
+				const text = `${AUTHORED_PREFIX}${cleaned}`
+				const existingTexts = await deps.existing()
+				const wanted = normalizeAuthored(cleaned)
+				if (existingTexts.some((t) => normalizeAuthored(t.replace(AUTHORED_PREFIX, "")) === wanted)) {
+					report("duplicate")
+					return textResult("Already stored — unchanged.")
+				}
+				await deps.write(text)
+				report("saved")
+				return textResult(`Saved to memory: ${fact}`)
+			} catch (err) {
+				report("failed")
+				throw err
 			}
-			if (fact.length > MEMORY_SAVE_MAX_CHARS) {
-				return textResult("Not saved: keep memory entries under 300 characters — split into separate saves if needed.")
-			}
-			// Same PII-redaction invariant as the extraction lane: an authored
-			// fact never lands in the store with a credential in plaintext. Done
-			// before the dup check so both sides compare redacted text.
-			const cleaned = await redactText(fact)
-			const text = `${AUTHORED_PREFIX}${cleaned}`
-			const existingTexts = await deps.existing()
-			const wanted = normalizeAuthored(cleaned)
-			if (existingTexts.some((t) => normalizeAuthored(t.replace(AUTHORED_PREFIX, "")) === wanted)) {
-				return textResult("Already stored — unchanged.")
-			}
-			await deps.write(text)
-			return textResult(`Saved to memory: ${fact}`)
 		},
 	}
 }
@@ -119,12 +158,23 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 		],
 		parameters: MemorySearchSchema,
 		execute: async (_toolCallId, params) => {
+			const startedAt = Date.now()
+			const report = (outcome: MemorySearchOutcome, retrievedCount: number, returnedCount: number): void => {
+				reportToolTelemetry(deps.reportTelemetry, {
+					event: "tool.completed",
+					tool: "memory_search",
+					outcome,
+					durationMs: Date.now() - startedAt,
+					retrievedCount,
+					returnedCount,
+				})
+			}
 			if (!deps.isEnabled()) {
+				report("disabled", 0, 0)
 				return textResult(
 					"Memory is currently disabled for this session — the user can turn it back on with /memory enable.",
 				)
 			}
-			const startedAt = Date.now()
 			const recallId = randomUUID()
 			// Distinguish infrastructure failure from an empty result: an
 			// embedder/cluster outage silhouettes the whole part and otherwise
@@ -135,6 +185,7 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 			try {
 				hits = await deps.search(params.query)
 			} catch (err) {
+				report("failed", 0, 0)
 				return textResult(
 					`Memory search failed while reaching the memory store: ${err instanceof Error ? err.message : String(err)}. Treat the store as UNREACHABLE, not empty — retry later instead of assuming there is nothing stored.`,
 				)
@@ -159,8 +210,10 @@ export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<t
 			})
 			await recorder?.flush?.()
 			if (selected.length === 0) {
+				report("no_hits", hits.length, 0)
 				return textResult("No memories matched that query.")
 			}
+			report("hits", hits.length, selected.length)
 			const lines = selected.map((hit) => {
 				const score = hit.score === undefined ? "?" : hit.score.toFixed(3)
 				const scope = hit.scope === "project" ? "[project] " : ""

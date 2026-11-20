@@ -23,8 +23,11 @@ import {
 	recallCancellationReason,
 	withRecallDeadline,
 } from "./deadline.js"
-import { buildTurnRecall, factKey, isCovered, type MemorySearchHit } from "./inject.js"
+import { buildTurnRecall, type DigestComposition, factKey, isCovered, type MemorySearchHit } from "./inject.js"
 import { createRecallNeed, type RecallNeed, recallNeedFacets } from "./recall-need.js"
+import type { MemoryGateStatus, MemoryRecallDelivery } from "./telemetry-events.js"
+
+export type RecallTrigger = "user-turn" | "step-budget" | "state-revisit" | "step-budget-turnend"
 
 export type RecallOutcome =
 	| "injected"
@@ -47,9 +50,31 @@ export function selectedFactIds(
 	]
 }
 
+export interface RecallCompletion {
+	trigger: RecallTrigger
+	outcome: RecallOutcome
+	delivery: MemoryRecallDelivery
+	gateStatus: MemoryGateStatus
+	durationMs: number
+	searchCount: number
+	consideredCount: number
+	selectedCount: number
+	deliveredCount: number
+	composition?: DigestComposition
+}
+
+interface RecallRunDetails {
+	gateStatus: MemoryGateStatus
+	searchCount: number
+	consideredCount: number
+	selectedCount: number
+	deliveredCount: number
+	composition?: DigestComposition
+}
+
 export interface RecallRunArgs {
-	/** What fired this evaluation: "user-turn" | "step-budget" | "state-revisit" | "step-budget-turnend" (fallback). */
-	trigger: string
+	/** What fired this evaluation. */
+	trigger: RecallTrigger
 	/** The drift signal to embed: prompt+tail for user turns; reasoning head + env receipts for loop triggers. */
 	query: string
 	/**
@@ -81,6 +106,8 @@ export interface RecallRunArgs {
 	/** Created and owned by the session scheduler. Tests without a deadline
 	 * retain the same 10s bounded behavior through a local fallback. */
 	deadline?: RecallDeadline
+	/** Exactly one content-free completion summary per evaluation. */
+	onComplete?: (completion: RecallCompletion) => void
 }
 
 async function finishRecallFailure(
@@ -115,21 +142,60 @@ const RECALL_STEER_PREFIX =
  * reported as "failed" — the caller flips its own session valve on that
  * outcome instead of duplicating the classification.
  */
+function completeRecall(
+	args: RecallRunArgs,
+	details: RecallRunDetails,
+	outcome: RecallOutcome,
+	startedAt: number,
+): RecallOutcome {
+	try {
+		args.onComplete?.({
+			trigger: args.trigger,
+			outcome,
+			delivery: details.deliveredCount > 0 ? "steered" : "none",
+			gateStatus: details.gateStatus,
+			durationMs: Date.now() - startedAt,
+			searchCount: details.searchCount,
+			consideredCount: details.consideredCount,
+			selectedCount: details.selectedCount,
+			deliveredCount: details.deliveredCount,
+			composition: details.composition,
+		})
+	} catch (err) {
+		console.error("[memory] recall telemetry failed (continuing):", err instanceof Error ? err.message : err)
+	}
+	return outcome
+}
+
 export async function runRecall(args: RecallRunArgs): Promise<RecallOutcome> {
+	const startedAt = Date.now()
+	const details: RecallRunDetails = {
+		gateStatus: "not_run",
+		searchCount: 0,
+		consideredCount: 0,
+		selectedCount: 0,
+		deliveredCount: 0,
+	}
 	const ownDeadline = args.deadline
 		? undefined
 		: new RecallDeadline({ scheduledStep: args.trigger, generation: 0, timeoutMs: 10_000 })
 	const deadline = args.deadline ?? (ownDeadline as RecallDeadline)
+	let outcome: RecallOutcome
 	try {
-		return await withRecallDeadline(deadline, () => runRecallAttempt(args, deadline))
+		outcome = await withRecallDeadline(deadline, () => runRecallAttempt(args, deadline, details))
 	} catch (err) {
-		return finishRecallFailure(args, deadline, err, deadline.createdAt, deadline.cancellationReason)
+		outcome = await finishRecallFailure(args, deadline, err, deadline.createdAt, deadline.cancellationReason)
 	} finally {
 		ownDeadline?.dispose()
 	}
+	return completeRecall(args, details, outcome, startedAt)
 }
 
-async function runRecallAttempt(args: RecallRunArgs, deadline: RecallDeadline): Promise<RecallOutcome> {
+async function runRecallAttempt(
+	args: RecallRunArgs,
+	deadline: RecallDeadline,
+	details: RecallRunDetails,
+): Promise<RecallOutcome> {
 	const { trigger, query, queries, pi, search, decideGate, deliveredFacts, deliveredKeys, emit, ctx } = args
 	void ctx // kept in the signature: triggered callers wrap `search` with the indicator themselves
 	const startedAt = Date.now()
@@ -142,8 +208,10 @@ async function runRecallAttempt(args: RecallRunArgs, deadline: RecallDeadline): 
 	if (decideGate) {
 		try {
 			skip = await decideGate()
+			details.gateStatus = skip ? "skipped" : "passed"
 		} catch (err) {
 			if (deadline.signal.aborted) throw err
+			details.gateStatus = "degraded"
 			// A gate failure keeps pre-gate behavior within the OWNING deadline.
 			const failure = recallCancellationReason(err) === "timed-out" ? "timed out" : "failed"
 			console.error(`[memory] recall gating ${failure}, searching anyway:`, err instanceof Error ? err.message : err)
@@ -166,6 +234,7 @@ async function runRecallAttempt(args: RecallRunArgs, deadline: RecallDeadline): 
 	// traced-empty-hits contract; undefined from any facet = no backend →
 	// silent skip overall.
 	const facets = queries && queries.length > 0 ? [...queries] : [query]
+	details.searchCount = facets.length
 	/** Per-facet outcome for the trace: which of the embedded lookups
 	 * actually retrieved (the dashboard shows them as separate cells). */
 	const facetBreakdown: Array<{ text: string; hits: number }> = []
@@ -202,6 +271,7 @@ async function runRecallAttempt(args: RecallRunArgs, deadline: RecallDeadline): 
 	}
 	if (hits === undefined) return "no-searcher"
 	const list = hits ?? []
+	details.consideredCount = list.length
 	// Selection, delivery, and trace remain under one containment, matching
 	// the inline path's single try/catch: a malformed hit or a sendMessage
 	// failure flips the caller's session valve instead of crashing the
@@ -212,6 +282,8 @@ async function runRecallAttempt(args: RecallRunArgs, deadline: RecallDeadline): 
 		if (args.mayDeliver && !args.mayDeliver()) deadline.cancel("droppedStale")
 		deadline.assertActive()
 		recall = list.length > 0 ? buildTurnRecall(list, deliveredKeys, query) : undefined
+		details.selectedCount = recall?.facts.length ?? 0
+		details.composition = recall?.composition
 		const base = {
 			trigger,
 			...(facetBreakdown.length > 1 ? { facets: facetBreakdown } : {}),
@@ -249,6 +321,7 @@ async function runRecallAttempt(args: RecallRunArgs, deadline: RecallDeadline): 
 				deliveredKeys.add(factKey(fact))
 				deliveredFacts.push(fact)
 			}
+			details.deliveredCount = recall.facts.length
 			console.info(`[memory] recall delivered: ${JSON.stringify(recall.composition)}`)
 			await emit({
 				...base,

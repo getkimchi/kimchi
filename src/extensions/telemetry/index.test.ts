@@ -2512,6 +2512,33 @@ describe("session isolation (concurrent instances)", () => {
 		expect(block?.attrs["session.id"]).toBe("parent-session")
 	})
 
+	it("keeps interleaved memory events on their originating sessions", async () => {
+		const { MEMORY_TELEMETRY_CHANNEL } = await import("../memory/telemetry-events.js")
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		parent.events.emit(MEMORY_TELEMETRY_CHANNEL, {
+			event: "session_state",
+			active: true,
+			authoredEnabled: false,
+			reason: "initial",
+		})
+		child.events.emit(MEMORY_TELEMETRY_CHANNEL, {
+			event: "session_state",
+			active: false,
+			authoredEnabled: false,
+			reason: "toggle",
+		})
+
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+
+		const records = allRecords().filter((record) => record.eventName === "memory.session_state")
+		expect(records).toHaveLength(2)
+		expect(records.find((record) => record.attrs["session.id"] === "parent-session")?.attrs.active).toBe("true")
+		expect(records.find((record) => record.attrs["session.id"] === "child-session")?.attrs.active).toBe("false")
+	})
+
 	it("keeps interleaved ferment phase tracking and token deltas per session", async () => {
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
 		const { _getTelemetryCtx } = await import("./index.js")

@@ -12,6 +12,7 @@ import type { MemorySearchHit } from "./inject.js"
 import {
 	buildLoopRecallQueries,
 	buildLoopRecallQuery,
+	type RecallCompletion,
 	type RecallRunArgs,
 	runRecall,
 	stateFingerprint,
@@ -26,6 +27,7 @@ interface Rig {
 	emitted: Array<Record<string, unknown>>
 	deliveredFacts: string[]
 	deliveredKeys: Set<string>
+	completions: RecallCompletion[]
 }
 
 function makeRig(): Rig {
@@ -33,7 +35,7 @@ function makeRig(): Rig {
 	const emitted: Array<Record<string, unknown>> = []
 	const pi = { sendMessage: (m: unknown) => sent.push(m) } as unknown as ExtensionAPI
 	const ctx = { hasUI: false } as unknown as ExtensionContext
-	return { pi, ctx, sent, emitted, deliveredFacts: [], deliveredKeys: new Set() }
+	return { pi, ctx, sent, emitted, deliveredFacts: [], deliveredKeys: new Set(), completions: [] }
 }
 
 function baseArgs(rig: Rig, overrides: Partial<RecallRunArgs> = {}): RecallRunArgs {
@@ -51,6 +53,7 @@ function baseArgs(rig: Rig, overrides: Partial<RecallRunArgs> = {}): RecallRunAr
 		emit: (partial) => {
 			rig.emitted.push(partial)
 		},
+		onComplete: (completion) => rig.completions.push(completion),
 		...overrides,
 	}
 }
@@ -382,6 +385,117 @@ describe("runRecall", () => {
 		expect(rig.emitted.at(-1)).toMatchObject({ conclusion: "cancelled", injected: [], steered: false })
 		expect(rig.deliveredFacts).toEqual([])
 		deadline.dispose()
+	})
+})
+
+describe("runRecall completion telemetry", () => {
+	beforeEach(() => vi.spyOn(console, "info").mockImplementation(() => {}))
+	afterEach(() => vi.restoreAllMocks())
+
+	it("reports covered and gate outcomes without searches or hidden text", () => {
+		return (async () => {
+			const coveredRig = makeRig()
+			coveredRig.deliveredFacts.push("a distinctly uncovered topic")
+			await runRecall(baseArgs(coveredRig))
+			expect(coveredRig.completions).toEqual([
+				expect.objectContaining({
+					outcome: "covered",
+					delivery: "none",
+					gateStatus: "not_run",
+					searchCount: 0,
+					selectedCount: 0,
+					deliveredCount: 0,
+				}),
+			])
+
+			const skippedRig = makeRig()
+			await runRecall(baseArgs(skippedRig, { decideGate: async () => true }))
+			expect(skippedRig.completions[0]).toMatchObject({ outcome: "gate-skip", gateStatus: "skipped", searchCount: 0 })
+			for (const completion of [...coveredRig.completions, ...skippedRig.completions]) {
+				expect(completion).not.toHaveProperty("query")
+				expect(completion).not.toHaveProperty("hits")
+				expect(completion).not.toHaveProperty("selected")
+			}
+		})()
+	})
+
+	it("records a degraded gate and all multi-facet selection/delivery counts", async () => {
+		const rig = makeRig()
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		await expect(
+			runRecall(
+				baseArgs(rig, {
+					trigger: "step-budget",
+					queries: ["facet-plan", "facet-state"],
+					decideGate: async () => {
+						throw new Error("gate down")
+					},
+					search: async (query) =>
+						query === "facet-plan" ? [hit("plan one", 0.8), hit("plan two", 0.7)] : [hit("state three", 0.6)],
+				}),
+			),
+		).resolves.toBe("injected")
+		expect(rig.completions).toEqual([
+			expect.objectContaining({
+				outcome: "injected",
+				delivery: "steered",
+				gateStatus: "degraded",
+				searchCount: 2,
+				consideredCount: 3,
+				selectedCount: 3,
+				deliveredCount: 3,
+				durationMs: expect.any(Number),
+			}),
+		])
+		expect(rig.completions[0]?.composition).toMatchObject({ considered: 3, facts: 3 })
+	})
+
+	it("reports no-searcher explicitly without inventing candidate counts", async () => {
+		const rig = makeRig()
+		await expect(runRecall(baseArgs(rig, { queries: ["a", "b"], search: async () => undefined }))).resolves.toBe(
+			"no-searcher",
+		)
+		expect(rig.completions[0]).toMatchObject({
+			outcome: "no-searcher",
+			searchCount: 2,
+			consideredCount: 0,
+			selectedCount: 0,
+			deliveredCount: 0,
+		})
+	})
+
+	it("keeps selected and accepted delivery distinct on a send failure", async () => {
+		const rig = makeRig()
+		const pi = {
+			sendMessage: () => {
+				throw new Error("replaced session")
+			},
+		} as unknown as ExtensionAPI
+		await expect(runRecall(baseArgs(rig, { pi, search: async () => [hit("a durable preference")] }))).resolves.toBe(
+			"failed",
+		)
+		expect(rig.completions[0]).toMatchObject({
+			outcome: "failed",
+			delivery: "none",
+			selectedCount: 1,
+			deliveredCount: 0,
+		})
+	})
+
+	it("fails open when the completion reporter throws", async () => {
+		const rig = makeRig()
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		await expect(
+			runRecall(
+				baseArgs(rig, {
+					search: async () => [hit("still delivered")],
+					onComplete: () => {
+						throw new Error("telemetry unavailable")
+					},
+				}),
+			),
+		).resolves.toBe("injected")
+		expect(rig.deliveredFacts).toEqual(["still delivered"])
 	})
 })
 

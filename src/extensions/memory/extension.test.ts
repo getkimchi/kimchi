@@ -270,6 +270,86 @@ describe("memory extension", () => {
 		expect(turn3?.systemPrompt).toBe(turn1?.systemPrompt)
 	})
 
+	it("emits initial digest delivery once despite cached reattachments", async () => {
+		const { api, start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => hits({ memory: "stable fact", score: 0.9 }),
+			}),
+		)
+		const initial = () =>
+			vi
+				.mocked(api.events.emit)
+				.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+				.filter((payload) => payload.event === "recall.completed" && payload.kind === "digest_init")
+		await start(startEvent("initial request"), fakeCtx)
+		expect(initial()).toEqual([
+			expect.objectContaining({
+				outcome: "delivered",
+				delivery: "attached",
+				selectedCount: 1,
+				deliveredCount: 1,
+				searchCount: 1,
+				trigger: "before_agent_start",
+			}),
+		])
+
+		await start(startEvent("next request"), fakeCtx)
+		await start(startEvent("third request"), fakeCtx)
+		expect(initial()).toHaveLength(1)
+	})
+
+	it("distinguishes empty digest results from failed digest searches", async () => {
+		const empty = await setup(
+			createMemoryExtension({ createSearcher: async () => hits({ memory: "weak", score: 0.1 }) }),
+		)
+		await empty.start(startEvent("nothing relevant"), fakeCtx)
+		const emptyOutcome = vi
+			.mocked(empty.api.events.emit)
+			.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+			.find((payload) => payload.event === "recall.completed")
+		expect(emptyOutcome).toMatchObject({ outcome: "no_hits", deliveredCount: 0 })
+
+		const failure = await setup(
+			createMemoryExtension({
+				createSearcher: async () => ({
+					search: async () => {
+						throw new Error("store down")
+					},
+				}),
+			}),
+		)
+		await failure.start(startEvent("search failure"), fakeCtx)
+		const failureOutcome = vi
+			.mocked(failure.api.events.emit)
+			.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+			.find((payload) => payload.event === "recall.completed")
+		expect(failureOutcome).toMatchObject({ outcome: "failed", deliveredCount: 0 })
+	})
+
+	it("maps progressive recall delivery to the shared telemetry contract", async () => {
+		let n = 0
+		const search = vi.fn(async () => [{ memory: `distinct recalled fact ${++n}`, score: 0.7 }])
+		const { api, start } = await setup(createMemoryExtension({ createSearcher: async () => ({ search }) }))
+		const ctx = createContext()
+		await start(startEvent("set up the project"), ctx)
+		await start(startEvent("bake a completely unrelated cake"), ctx)
+		const progressive = () =>
+			vi
+				.mocked(api.events.emit)
+				.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+				.filter((payload) => payload.event === "recall.completed" && payload.kind === "digest_progressive")
+		await flushRecall(() => expect(progressive()).toHaveLength(1))
+		expect(progressive()[0]).toMatchObject({
+			trigger: "user_turn",
+			outcome: "delivered",
+			delivery: "steered",
+			selectedCount: 1,
+			deliveredCount: 1,
+			searchCount: 1,
+		})
+	})
+
 	it("traces selection once and attachment only when digest bytes are returned", async () => {
 		const events: Array<Record<string, unknown>> = []
 		vi.mocked(createRecallRecorder).mockReturnValue({ file: "recall-test.jsonl", emit: (event) => events.push(event) })
@@ -995,6 +1075,32 @@ describe("memory extension", () => {
 		expect(search).toHaveBeenCalledTimes(2)
 	})
 
+	it("reports initial and toggle session state exactly once per transition", async () => {
+		const { api, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() }),
+		)
+		const ctx = createContext()
+		const states = () =>
+			vi
+				.mocked(api.events.emit)
+				.mock.calls.filter(([, payload]) => (payload as { event?: string }).event === "session_state")
+				.map(([, payload]) => payload)
+
+		await start(startEvent("turn 1"), ctx)
+		await start(startEvent("turn 2 - same state"), ctx)
+		expect(states()).toEqual([{ event: "session_state", active: true, authoredEnabled: false, reason: "initial" }])
+
+		setSessionMemoryOverride(ctx.sessionManager, false)
+		await start(startEvent("turn 3"), ctx)
+		setSessionMemoryOverride(ctx.sessionManager, true)
+		await start(startEvent("turn 4"), ctx)
+		expect(states()).toEqual([
+			{ event: "session_state", active: true, authoredEnabled: false, reason: "initial" },
+			{ event: "session_state", active: false, authoredEnabled: false, reason: "toggle" },
+			{ event: "session_state", active: true, authoredEnabled: false, reason: "toggle" },
+		])
+	})
+
 	it("the session toggle is scoped per session", async () => {
 		// Two runtimes — one per session, matching how pi binds extensions
 		// (a fresh factory invocation per session runtime).
@@ -1055,6 +1161,13 @@ describe("memory extension", () => {
 		expect(result.content[0]?.text).toContain("/memory enable")
 		// Only the turn-1 digest ran — the tool did not search.
 		expect(search).toHaveBeenCalledTimes(1)
+		const toolTelemetry = vi
+			.mocked(api.events.emit)
+			.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+			.filter((payload) => payload.event === "tool.completed")
+		expect(toolTelemetry).toEqual([
+			expect.objectContaining({ tool: "memory_search", outcome: "disabled", retrievedCount: 0, returnedCount: 0 }),
+		])
 	})
 
 	it("the /memory command's toggle gates the very next agent start (identity seam)", async () => {
@@ -1152,7 +1265,7 @@ describe("memory extension — digest selection gate", () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
 			const down = async () => new Response(JSON.stringify({ error: "quota" }), { status: 401 })
-			const { start } = await setup(
+			const { api, start } = await setup(
 				createMemoryExtension({
 					isEnabled: () => true,
 					createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
@@ -1172,6 +1285,11 @@ describe("memory extension — digest selection gate", () => {
 			expect(turn1?.systemPrompt).toContain("greplier")
 			expect(turn1?.systemPrompt).toContain("Freya")
 			expect(consoleError.mock.calls.some((call) => String(call[0]).includes("digest selection failed"))).toBe(true)
+			const recall = vi
+				.mocked(api.events.emit)
+				.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+				.find((payload) => payload.event === "recall.completed")
+			expect(recall).toMatchObject({ outcome: "delivered", gateStatus: "degraded", delivery: "attached" })
 		} finally {
 			consoleError.mockRestore()
 		}

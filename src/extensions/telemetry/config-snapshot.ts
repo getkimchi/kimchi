@@ -2,6 +2,7 @@ import { resolve } from "node:path"
 import { AGENT_DEFINITIONS, discoverAgent } from "../../agent-discovery/index.js"
 import { readJsonCached } from "../../config/json.js"
 import type { KimchiConfig } from "../../config.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import type { RoleModelAssignment } from "../orchestration/model-roles.js"
 import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
@@ -24,6 +25,7 @@ export interface ConfigSnapshot {
 	"config.permission_mode": string
 	"config.agents_enabled": boolean
 	"config.mcp_server_count": number
+	"config.memory_enabled": boolean
 	"config.multi_model_enabled": boolean
 	"config.model_roles.orchestrator": string
 	"config.model_roles.planner": string
@@ -126,6 +128,7 @@ function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
 		"config.permission_mode": "default",
 		"config.agents_enabled": false,
 		"config.mcp_server_count": 0,
+		"config.memory_enabled": false,
 		"config.multi_model_enabled": false,
 		"config.model_roles.orchestrator": "unknown",
 		"config.model_roles.planner": "unknown",
@@ -159,6 +162,7 @@ export function buildConfigSnapshot(_config: KimchiConfig, telemetryEnabled: boo
 			"config.permission_mode": getDefaultPermissionMode(),
 			"config.agents_enabled": getMultiModelEnabled(null),
 			"config.mcp_server_count": countMcpServers(),
+			"config.memory_enabled": isResourceEnabled("extensions.memory"),
 			"config.multi_model_enabled": getMultiModelEnabled(null),
 			"config.model_roles.orchestrator": serializeRole(roles.orchestrator),
 			"config.model_roles.planner": serializeRole(roles.planner),

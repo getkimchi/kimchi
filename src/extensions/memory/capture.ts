@@ -30,6 +30,7 @@ import {
 } from "./config.js"
 import { parseBooleanFlag } from "./flags.js"
 import { resolveProjectScope } from "./scope.js"
+import type { MemoryCaptureScheduleOutcome, MemoryTelemetryReporter } from "./telemetry-events.js"
 
 /**
  * The accessors the session-turn handler needs from the capture wiring:
@@ -80,6 +81,7 @@ export function wireMemoryCapture(
 	/** Persistent session identity for dedupe, resolved lazily from each owning
 	 * session's context. Kept separate from the per-runtime completion id. */
 	dedupeSessionId?: (ctx: ExtensionContext) => string | undefined,
+	reportTelemetry: MemoryTelemetryReporter = () => undefined,
 ): MemoryCaptureWiring {
 	if (captureDisabled()) {
 		if (onLoopStep) {
@@ -96,7 +98,15 @@ export function wireMemoryCapture(
 	const incremented: IncrementalCaptureState = createIncrementalCaptureState()
 	pi.on("session_before_compact", (event, ctx) => {
 		if (!isActive()) return
-		captureMessages(extractMessages(event.branchEntries), ctx.cwd, session, dedupeSessionId?.(ctx), true)
+		captureMessages(
+			extractMessages(event.branchEntries),
+			ctx.cwd,
+			session,
+			dedupeSessionId?.(ctx),
+			true,
+			false,
+			reportTelemetry,
+		)
 	})
 	// Mid-loop producers: evaluate the same non-overlapping increment at turn
 	// end (human-paced sessions) and after every tool step (agentic loops) —
@@ -113,6 +123,8 @@ export function wireMemoryCapture(
 			session,
 			incrementalThreshold,
 			dedupeSessionId?.(ctx),
+			undefined,
+			reportTelemetry,
 		)
 	}
 	pi.on("turn_end", (_event, ctx) => {
@@ -133,7 +145,15 @@ export function wireMemoryCapture(
 		// what the queue already holds — and bounded jobs: a poisoned window
 		// costs its own span, not the session backlog.
 		const tail = extractMessages(ctx.sessionManager.getEntries()).slice(incremented.spawnedCount)
-		captureMessagesTail(tail, ctx.cwd, MEMORY_CAPTURE_JOB_MAX_MESSAGES, session, dedupeSessionId?.(ctx), true)
+		captureMessagesTail(
+			tail,
+			ctx.cwd,
+			MEMORY_CAPTURE_JOB_MAX_MESSAGES,
+			session,
+			dedupeSessionId?.(ctx),
+			true,
+			reportTelemetry,
+		)
 	})
 	return { fireIncrement, resetIncrement }
 }
@@ -147,8 +167,12 @@ export function captureMessagesTail(
 	session?: string,
 	dedupeSessionId?: string,
 	allowBacklog = false,
+	reportTelemetry: MemoryTelemetryReporter = () => undefined,
 ): boolean {
 	const freshTail = filterCapturedMessages(tail, cwd, dedupeSessionId ?? session)
+	if (tail.length > 0 && freshTail.length === 0) {
+		reportCaptureSchedule(reportTelemetry, "already_captured", tail.length)
+	}
 	let ok = true
 	for (let i = 0; i < freshTail.length; i += perJobMax) {
 		ok =
@@ -159,6 +183,7 @@ export function captureMessagesTail(
 				dedupeSessionId ?? session,
 				false,
 				allowBacklog,
+				reportTelemetry,
 			) && ok
 	}
 	return ok
@@ -255,6 +280,7 @@ export function incrementalCapture(
 	increment: number = captureIncrementalMessages(),
 	dedupeSessionId?: string,
 	allowBacklog = false,
+	reportTelemetry: MemoryTelemetryReporter = () => undefined,
 ): void {
 	const extractedMessages = extractMessages(entries)
 	// The incremental mark indexes the FULL extraction, not the dedupe-filtered
@@ -275,7 +301,15 @@ export function incrementalCapture(
 	// so the worker's completion record can attribute saved counts.
 	if (spawn === captureMessagesTail) {
 		if (
-			captureMessagesTail(batch, cwd, MEMORY_CAPTURE_JOB_MAX_MESSAGES, session, dedupeSessionId, allowBacklog) === false
+			captureMessagesTail(
+				batch,
+				cwd,
+				MEMORY_CAPTURE_JOB_MAX_MESSAGES,
+				session,
+				dedupeSessionId,
+				allowBacklog,
+				reportTelemetry,
+			) === false
 		)
 			return
 	} else if (spawn(batch, cwd) === false) return
@@ -535,6 +569,25 @@ function filterCapturedMessages(messages: CaptureMessage[], cwd: string, session
 	})
 }
 
+function reportCaptureSchedule(
+	reporter: MemoryTelemetryReporter,
+	outcome: MemoryCaptureScheduleOutcome,
+	messageCount: number,
+): void {
+	try {
+		const store = getCaptureJobStore()
+		reporter({
+			event: "capture.schedule",
+			outcome,
+			messageCount,
+			pendingCount: store.count("pending"),
+			oldestPendingMs: store.oldestPendingAgeMs(Date.now()),
+		})
+	} catch (err) {
+		console.error("[memory] capture queue telemetry unavailable:", err instanceof Error ? err.message : err)
+	}
+}
+
 function captureMessages(
 	messages: CaptureMessage[],
 	cwd: string,
@@ -542,11 +595,15 @@ function captureMessages(
 	dedupeSessionId?: string,
 	filterCaptured = true,
 	allowBacklog = false,
+	reportTelemetry: MemoryTelemetryReporter = () => undefined,
 ): boolean {
 	if (captureDisabled() || messages.length === 0) return true
 	try {
 		const freshMessages = filterCaptured ? filterCapturedMessages(messages, cwd, dedupeSessionId ?? session) : messages
-		if (freshMessages.length === 0) return true
+		if (freshMessages.length === 0) {
+			reportCaptureSchedule(reportTelemetry, "already_captured", messages.length)
+			return true
+		}
 		const dbPath = digestDbPath()
 		const pendingDir = join(defaultMemoryDir(), "pending")
 		mkdirSync(pendingDir, { recursive: true })
@@ -565,10 +622,12 @@ function captureMessages(
 		// instead of clobbering it with a fresh runtime's metadata.
 		if (existsSync(jobFile)) {
 			// Existing staged jobs always take priority over new production.
-			spawnCaptureWorker(jobFile, dbPath)
+			reportCaptureSchedule(reportTelemetry, "coalesced", freshMessages.length)
+			spawnCaptureWorker(jobFile, dbPath, reportTelemetry)
 			return true
 		}
 		if (!allowBacklog && currentQueuePolicy(getCaptureJobStore(), captureIncrementalMessages()).deferNewJobs) {
+			reportCaptureSchedule(reportTelemetry, "deferred", freshMessages.length)
 			return false
 		}
 		const tmp = `${jobFile}.${process.pid}.tmp`
@@ -590,15 +649,21 @@ function captureMessages(
 			session,
 			dedupeSession: dedupeSessionId ?? session,
 		})
-		spawnCaptureWorker(jobFile, dbPath)
+		reportCaptureSchedule(reportTelemetry, "enqueued", freshMessages.length)
+		spawnCaptureWorker(jobFile, dbPath, reportTelemetry)
 		return true
 	} catch (err) {
 		console.error("[memory] capture scheduling failed:", err instanceof Error ? err.message : err)
+		reportCaptureSchedule(reportTelemetry, "failed", messages.length)
 		return false
 	}
 }
 
-export function spawnCaptureWorker(jobFile: string, dbPath: string): void {
+export function spawnCaptureWorker(
+	jobFile: string,
+	dbPath: string,
+	reportTelemetry: MemoryTelemetryReporter = () => undefined,
+): void {
 	const args = ["--job", jobFile, "--db", dbPath]
 	let cmd: string[]
 	if (basename(process.execPath) === "bun") {
@@ -645,9 +710,11 @@ export function spawnCaptureWorker(jobFile: string, dbPath: string): void {
 	// never starts leaves zero evidence in the session's own attempt log.
 	const spawnTag = `[memory] capture worker spawn pid=${child.pid ?? "?"} cmd=${cmd.length}`
 	child.on("error", (err) => {
+		reportTelemetry({ event: "capture.spawn", outcome: "failed" })
 		console.error(`${spawnTag} failed:`, err instanceof Error ? err.message : err)
 	})
 	child.on("spawn", () => {
+		reportTelemetry({ event: "capture.spawn", outcome: "started" })
 		console.error(spawnTag)
 	})
 	child.unref()

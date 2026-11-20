@@ -160,6 +160,7 @@ describe("decision outage persistence and deferral", () => {
 		const file = join(pendingDir, "deferred.json")
 		const message: CaptureMessage = { role: "user", content: "durable observation" }
 		writeFileSync(file, JSON.stringify({ session: "capture-id", dedupeSession: "persistent", messages: [message] }))
+		const telemetry = { report: vi.fn(), drain: vi.fn() }
 		const captured = await runCaptureWorker(["--job", file, "--db", join(defaultMemoryDir(), "personal/memory.db")], {
 			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m" },
 			createBackend: async () => fakeBackend(),
@@ -167,8 +168,13 @@ describe("decision outage persistence and deferral", () => {
 				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", breaker: performer },
 				enabled: new Set(["triage"]),
 			},
+			telemetry,
 		})
 		expect(captured).toBe(0)
+		expect(telemetry.report).toHaveBeenCalledOnce()
+		expect(telemetry.report).toHaveBeenCalledWith(
+			expect.objectContaining({ event: "capture.wave", outcome: "deferred" }),
+		)
 		expect(readFileSync(file, "utf-8")).toContain("durable observation")
 	})
 

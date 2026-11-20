@@ -70,6 +70,7 @@ function mockMetadata(): SessionStartMetadata {
 			"config.permission_mode": "default",
 			"config.agents_enabled": true,
 			"config.mcp_server_count": 2,
+			"config.memory_enabled": true,
 			"config.multi_model_enabled": true,
 			"config.model_roles.orchestrator": "test/orch",
 			"config.model_roles.planner": "test/p1,test/p2",
@@ -276,7 +277,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(header["config.model_roles.researcher"]).toBe("test/research")
 		expect(header["config.model_roles.judge"]).toBe("test/judge")
 		const configKeys = Object.keys(header).filter((k) => k.startsWith("config."))
-		expect(configKeys.length).toBe(15)
+		expect(configKeys.length).toBe(16)
 	})
 
 	it("appends config-change entries as custom entries", async () => {

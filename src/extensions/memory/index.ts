@@ -95,10 +95,27 @@ import {
 } from "./inject.js"
 import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 import { migrateAgentMemory } from "./migrate-agent-memory.js"
-import { buildLoopRecallNeed, buildLoopRecallQuery, runRecall, selectedFactIds, stateFingerprint } from "./recall.js"
+import {
+	buildLoopRecallNeed,
+	buildLoopRecallQuery,
+	type RecallCompletion,
+	type RecallOutcome,
+	type RecallTrigger,
+	runRecall,
+	selectedFactIds,
+	stateFingerprint,
+} from "./recall.js"
 import { recallNeedFacets, recallNeedFingerprint, shouldEvaluateRecallNeed } from "./recall-need.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
+import {
+	createMemoryTelemetryReporter,
+	type MemoryGateStatus,
+	type MemoryRecallCompositionTelemetry,
+	type MemoryRecallOutcome,
+	type MemoryRecallTrigger,
+	type MemoryTelemetryReporter,
+} from "./telemetry-events.js"
 import { authoredEnabled, createMemorySaveTool, createMemorySearchTool } from "./tools.js"
 import { createRecallRecorder, type TraceRecorder } from "./trace.js"
 
@@ -113,6 +130,85 @@ interface DigestState {
 	recallId: string
 	generation: number
 	recorder: TraceRecorder | null
+}
+
+interface DigestComputationTelemetry {
+	gateStatus: MemoryGateStatus
+	searchCount: number
+	noSearcher: boolean
+	failed: boolean
+	composition?: DigestComposition
+}
+
+const RECALL_OUTCOME_MAP: Record<RecallOutcome, MemoryRecallOutcome> = {
+	injected: "delivered",
+	covered: "covered",
+	"gate-skip": "gate_skip",
+	"no-hits": "no_hits",
+	"no-searcher": "no_searcher",
+	failed: "failed",
+	cancelled: "cancelled",
+	"timed-out": "timed_out",
+	droppedStale: "dropped_stale",
+}
+
+const RECALL_TRIGGER_MAP: Record<RecallTrigger, MemoryRecallTrigger> = {
+	"user-turn": "user_turn",
+	"step-budget": "step_budget",
+	"step-budget-turnend": "step_budget",
+	"state-revisit": "state_revisit",
+}
+
+function compositionTelemetry(composition: DigestComposition | undefined): MemoryRecallCompositionTelemetry {
+	return {
+		consideredCount: composition?.considered ?? 0,
+		belowThresholdCount: composition?.belowThreshold ?? 0,
+		selectorSkippedCount: composition?.selectorSkipped ?? 0,
+		overCapCount: composition?.overCap ?? 0,
+		overBudgetCount: composition?.overBudget ?? 0,
+		estimatedTokens: composition?.tokensEstimated ?? 0,
+	}
+}
+
+function reportProgressiveRecallTelemetry(reporter: MemoryTelemetryReporter, completion: RecallCompletion): void {
+	reporter({
+		event: "recall.completed",
+		kind: "digest_progressive",
+		trigger: RECALL_TRIGGER_MAP[completion.trigger],
+		outcome: RECALL_OUTCOME_MAP[completion.outcome],
+		delivery: completion.delivery,
+		gateStatus: completion.gateStatus,
+		durationMs: completion.durationMs,
+		searchCount: completion.searchCount,
+		selectedCount: completion.selectedCount,
+		deliveredCount: completion.deliveredCount,
+		...compositionTelemetry(completion.composition),
+	})
+}
+
+function reportInitialDigestTelemetry(
+	reporter: MemoryTelemetryReporter,
+	params: {
+		outcome: MemoryRecallOutcome
+		delivery: "attached" | "none"
+		durationMs: number
+		state: DigestState | null | undefined
+		details: DigestComputationTelemetry
+	},
+): void {
+	reporter({
+		event: "recall.completed",
+		kind: "digest_init",
+		trigger: "before_agent_start",
+		outcome: params.outcome,
+		delivery: params.delivery,
+		gateStatus: params.details.gateStatus,
+		durationMs: params.durationMs,
+		searchCount: params.details.searchCount,
+		selectedCount: params.state?.facts.length ?? params.details.composition?.facts ?? 0,
+		deliveredCount: params.delivery === "attached" ? (params.state?.facts.length ?? 0) : 0,
+		...compositionTelemetry(params.details.composition),
+	})
 }
 
 export interface MemorySearcher {
@@ -458,6 +554,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 							decideGate: makeRecallGate(query, MEMORY_SEARCH_TIMEOUT_MS, deadline),
 							deliveredFacts,
 							deliveredKeys,
+							onComplete: (completion) => reportProgressiveRecallTelemetry(reportTelemetry, completion),
 							emit: async (partial) => {
 								const recorder = createRecallRecorder()
 								recorder?.emit({
@@ -502,8 +599,14 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		// an ACP server hosts concurrent sessions in one process, and their
 		// captures must not merge into one record entry.
 		const captureId = deps.captureId ?? randomUUID()
-		const captureWiring = wireMemoryCapture(pi, memoryActive, handleLoopStep, captureId, (ctx) =>
-			ctx.sessionManager.getSessionId(),
+		const reportTelemetry = createMemoryTelemetryReporter((channel, event) => pi.events.emit(channel, event))
+		const captureWiring = wireMemoryCapture(
+			pi,
+			memoryActive,
+			handleLoopStep,
+			captureId,
+			(ctx) => ctx.sessionManager.getSessionId(),
+			reportTelemetry,
 		)
 
 		// Timing marks are stamped with this session's id — per instance for
@@ -761,6 +864,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			query: string,
 			deadline: RecallDeadline,
 			recorder: TraceRecorder | null,
+			telemetry: DigestComputationTelemetry,
 		): Promise<DigestState | null | undefined> => {
 			const startedAt = Date.now()
 			const traceRecall = (partial: Record<string, unknown>): void =>
@@ -768,6 +872,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			try {
 				const s = await getSearcher()
 				if (!s) {
+					telemetry.noSearcher = true
 					traceRecall({
 						error: "no-searcher",
 						injected: [],
@@ -782,6 +887,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// widened cap tops out at floor+1 — bounded work, and a store
 				// smaller than the floor provably returns at most floor candidates.
 				const floor = digestSelectionFloor(process.env)
+				telemetry.searchCount = 1
 				const hits = await s.search(query, floor > 0 ? floor + 1 : undefined)
 				// Digest selection (spike E3/E6/E8): the decision model picks which
 				// retrieved candidates earn an injection slot — embedding rank is a
@@ -822,7 +928,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 								if (answer?.choice === "inject") kept.add(candidates[i] as string)
 							}
 							selected = kept
+							telemetry.gateStatus = "passed"
 						} catch (err) {
+							telemetry.gateStatus = "degraded"
 							console.error(
 								`[memory] digest selection failed, falling back to the threshold rule:`,
 								err instanceof Error ? err.message : err,
@@ -845,6 +953,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						overBudget: 0,
 						tokensEstimated: 0,
 					}
+					telemetry.composition = composition
 					console.info(
 						`[memory] no digest for this session (belowThreshold=${composition.belowThreshold} of threshold ${DIGEST_SCORE_THRESHOLD})`,
 					)
@@ -857,6 +966,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					})
 					return null
 				}
+				telemetry.composition = result.composition
 				console.info(`[memory] digest selected: ${JSON.stringify(result.composition)}`)
 				deadline.markDelivered("selected")
 				const selectedIds = selectedFactIds(hits, result.facts)
@@ -880,6 +990,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					recorder,
 				}
 			} catch (err) {
+				telemetry.failed = true
 				await traceRecall({
 					error: err instanceof Error ? err.message : String(err),
 					durationMs: Date.now() - startedAt,
@@ -976,6 +1087,12 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			sessionKey ??= ctx.sessionManager
 			const active = memoryActive()
 			if (active !== lastActive) {
+				reportTelemetry({
+					event: "session_state",
+					active,
+					authoredEnabled: authoredEnabled(),
+					reason: lastActive === undefined ? "initial" : "toggle",
+				})
 				if (lastActive !== undefined) {
 					digest = undefined
 					deliveredKeys.clear()
@@ -1019,11 +1136,18 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				const generation = recallGeneration
 				const deadline = beginRecallDeadline("before-agent-start", MEMORY_PRE_REQUEST_TIMEOUT_MS)
 				const recorder = createRecallRecorder()
+				const digestStartedAt = Date.now()
+				const digestTelemetry: DigestComputationTelemetry = {
+					gateStatus: "not_run",
+					searchCount: 0,
+					noSearcher: false,
+					failed: false,
+				}
 				let outcome: DigestState | null | undefined
 				try {
 					outcome = await withRecallIndicator(ctx, event.prompt, () =>
 						withRecallDeadline(deadline, () =>
-							awaitRecallDeadline(computeDigest(event.prompt, deadline, recorder), deadline),
+							awaitRecallDeadline(computeDigest(event.prompt, deadline, recorder, digestTelemetry), deadline),
 						),
 					)
 					if (generation !== recallGeneration || !memoryActive()) outcome = undefined
@@ -1045,6 +1169,25 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				}
 				mark("memory.digest.end", outcome === undefined ? { conclusion: deadline.conclusion } : undefined)
 				if (outcome === undefined) {
+					const stale = generation !== recallGeneration || !memoryActive()
+					const outcomeName: MemoryRecallOutcome = stale
+						? "dropped_stale"
+						: deadline.cancellationReason === "timed-out"
+							? "timed_out"
+							: deadline.cancellationReason === "droppedStale"
+								? "dropped_stale"
+								: deadline.cancellationReason === "cancelled"
+									? "cancelled"
+									: digestTelemetry.noSearcher
+										? "no_searcher"
+										: "failed"
+					reportInitialDigestTelemetry(reportTelemetry, {
+						outcome: outcomeName,
+						delivery: "none",
+						durationMs: Date.now() - digestStartedAt,
+						state: undefined,
+						details: digestTelemetry,
+					})
 					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
 				}
 				digest = outcome
@@ -1056,9 +1199,24 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				}
 				updateMemoryStatus(ctx)
 				if (digest === null) {
+					reportInitialDigestTelemetry(reportTelemetry, {
+						outcome: digestTelemetry.failed ? "failed" : "no_hits",
+						delivery: "none",
+						durationMs: Date.now() - digestStartedAt,
+						state: null,
+						details: digestTelemetry,
+					})
 					return { systemPrompt: `${event.systemPrompt}${memoryEnabledNotice()}` }
 				}
-				return attachDigest(digest, `${event.systemPrompt}${digest.text}${memoryEnabledNotice()}`)
+				const response = await attachDigest(digest, `${event.systemPrompt}${digest.text}${memoryEnabledNotice()}`)
+				reportInitialDigestTelemetry(reportTelemetry, {
+					outcome: "delivered",
+					delivery: "attached",
+					durationMs: Date.now() - digestStartedAt,
+					state: digest,
+					details: digestTelemetry,
+				})
+				return response
 			}
 
 			if (!recallFailed) {
@@ -1108,6 +1266,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 								decideGate: makeRecallGate(query, MEMORY_PRE_REQUEST_TIMEOUT_MS, deadline),
 								deliveredFacts,
 								deliveredKeys,
+								onComplete: (completion) => reportProgressiveRecallTelemetry(reportTelemetry, completion),
 								emit: async (partial) => {
 									const recorder = createRecallRecorder()
 									recorder?.emit({
@@ -1192,6 +1351,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// The session toggle gates the tool too — a disabled memory reports
 				// its state instead of a misleading "no memories" result.
 				isEnabled: memoryActive,
+				reportTelemetry,
 			}),
 		)
 
@@ -1232,6 +1392,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						return existingCache
 					},
 					isEnabled: memoryActive,
+					reportTelemetry,
 				}),
 			)
 		}

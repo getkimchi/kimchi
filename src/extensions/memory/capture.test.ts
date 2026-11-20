@@ -54,6 +54,7 @@ import {
 	routeTaskFacts,
 	runBatchedSupersede,
 	runCaptureWorker,
+	runCaptureWorkerMain,
 	STRICT_NOISE_FACT_PATTERNS,
 	SUPERSEDE_SYSTEM_PROMPT,
 	splitDerivedTag,
@@ -124,8 +125,9 @@ describe("spawnCaptureWorker (error listener)", () => {
 		child.unref = unref
 		vi.mocked(spawn).mockReturnValueOnce(child)
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		const reportTelemetry = vi.fn()
 		try {
-			spawnCaptureWorker("/tmp/job.json", "/tmp/memory.db")
+			spawnCaptureWorker("/tmp/job.json", "/tmp/memory.db", reportTelemetry)
 			// An async spawn failure: emitting 'error' with no listener throws
 			// (EventEmitter semantics) and would crash the harness process.
 			expect(() => child.emit("error", new Error("spawn ENOENT"))).not.toThrow()
@@ -137,6 +139,10 @@ describe("spawnCaptureWorker (error listener)", () => {
 			// logs): a worker that never starts leaves exactly one evidence line.
 			child.emit("spawn")
 			expect(consoleError).toHaveBeenCalledWith(expect.stringMatching(/^\[memory\] capture worker spawn pid=\? cmd=6$/))
+			expect(reportTelemetry.mock.calls).toEqual([
+				[{ event: "capture.spawn", outcome: "failed" }],
+				[{ event: "capture.spawn", outcome: "started" }],
+			])
 			expect(unref).toHaveBeenCalled()
 		} finally {
 			consoleError.mockRestore()
@@ -1594,6 +1600,79 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		})
 	})
 
+	it("reports a complete drain wave with queue and yield counts", async () => {
+		const fake = makeFakeBackend()
+		const telemetry = { report: vi.fn(), drain: vi.fn() }
+		const jobFile = writeJob("wave-complete", [msg("user", "my dog's name is Fred")])
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(fake.backend),
+				telemetry,
+			}),
+		).resolves.toBe(1)
+		expect(telemetry.report).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				event: "capture.wave",
+				outcome: "completed",
+				jobCount: 1,
+				storedCount: 1,
+				failedJobCount: 0,
+				pendingCount: 1,
+				durationMs: expect.any(Number),
+			}),
+		)
+		expect(telemetry.drain).not.toHaveBeenCalled()
+	})
+
+	it("reports each wave independently when one worker drains multiple batches", async () => {
+		const previousBatch = process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH
+		process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH = "1"
+		const fake = makeFakeBackend()
+		const telemetry = { report: vi.fn(), drain: vi.fn() }
+		const first = writeJob("wave-1", [msg("user", "first fact")])
+		writeJob("wave-2", [msg("user", "second fact")])
+		try {
+			await expect(
+				runCaptureWorker(["--job", first, "--db", dbPath()], {
+					llm: makeFakeLlm([]),
+					createBackend: () => Promise.resolve(fake.backend),
+					telemetry,
+				}),
+			).resolves.toBe(2)
+			expect(telemetry.report).toHaveBeenCalledTimes(2)
+			expect(telemetry.report.mock.calls.map(([event]) => event.pendingCount)).toEqual([2, 1])
+			expect(telemetry.report.mock.calls.map(([event]) => event.storedCount)).toEqual([1, 1])
+		} finally {
+			if (previousBatch === undefined) delete process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH
+			else process.env.KIMCHI_MEMORY_DRAIN_JOB_BATCH = previousBatch
+		}
+	})
+
+	it("reports partial waves and fatal worker outcomes without changing exit behavior", async () => {
+		const telemetry = { report: vi.fn(), drain: vi.fn().mockResolvedValue(undefined) }
+		const jobFile = writeJob("wave-partial", [msg("user", "unavailable fact")])
+		await expect(
+			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: makeFakeLlm([]),
+				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
+				telemetry,
+			}),
+		).rejects.toThrow("1 capture job(s) failed")
+		expect(telemetry.report).toHaveBeenCalledWith(
+			expect.objectContaining({ event: "capture.wave", outcome: "partial", storedCount: 0, failedJobCount: 1 }),
+		)
+
+		const fatal = { report: vi.fn(), drain: vi.fn().mockResolvedValue(undefined) }
+		await expect(runCaptureWorkerMain([], { telemetry: fatal })).resolves.toBe(1)
+		expect(fatal.report).toHaveBeenCalledExactlyOnceWith({
+			event: "capture.failed",
+			failureClass: "drain",
+			durationMs: expect.any(Number),
+		})
+		expect(fatal.drain).toHaveBeenCalledOnce()
+	})
+
 	it("a re-spawned duplicate job is a no-op (ledger idempotence)", async () => {
 		const fake = makeFakeBackend()
 		const transcripts: string[] = []
@@ -2734,7 +2813,8 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 
 	it("session_shutdown writes a deterministic job file and spawns the worker", () => {
 		const { api, getHandler } = createExtensionApi()
-		wireMemoryCapture(api, () => true, undefined, "capture-sess")
+		const reportTelemetry = vi.fn()
+		wireMemoryCapture(api, () => true, undefined, "capture-sess", undefined, reportTelemetry)
 		const shutdown = getHandler("session_shutdown")
 		const child = new EventEmitter() as unknown as ChildProcess
 		child.unref = vi.fn()
@@ -2765,6 +2845,14 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		expect(job.project).toBeNull()
 		expect(spawn).toHaveBeenCalledTimes(1)
 
+		expect(reportTelemetry).toHaveBeenCalledWith({
+			event: "capture.schedule",
+			outcome: "enqueued",
+			messageCount: 1,
+			pendingCount: 1,
+			oldestPendingMs: expect.any(Number),
+		})
+
 		// The deterministic id preserves the existing in-flight payload rather
 		// than clobbering its staged/runtime state on resume.
 		const original = readFileSync(join(home, ".config", "kimchi", "memory", "pending", pending[0] as string), "utf-8")
@@ -2773,6 +2861,39 @@ describe("wireMemoryCapture — session shutdown job files", () => {
 		expect(readFileSync(join(home, ".config", "kimchi", "memory", "pending", pending[0] as string), "utf-8")).toBe(
 			original,
 		)
+		expect(reportTelemetry).toHaveBeenCalledWith({
+			event: "capture.schedule",
+			outcome: "coalesced",
+			messageCount: 1,
+			pendingCount: 1,
+			oldestPendingMs: expect.any(Number),
+		})
+	})
+
+	it("reports an already-captured tail without re-enqueueing it", () => {
+		const root = join(home, ".config", "kimchi", "memory")
+		mkdirSync(root, { recursive: true })
+		const message = msg("user", "remember this")
+		writeFileSync(
+			join(root, "captured-hashes.json"),
+			JSON.stringify([messageHash(message, { session: "capture-sess", project: null })]),
+		)
+		const reportTelemetry = vi.fn()
+		const { api, getHandler } = createExtensionApi()
+		wireMemoryCapture(api, () => true, undefined, "capture-sess", undefined, reportTelemetry)
+		const entry = { type: "message", message: { role: "user", content: "remember this" } } as unknown as SessionEntry
+		const ctx = createContext({ sessionManager: { getEntries: () => [entry] } })
+
+		getHandler("session_shutdown")({ type: "session_shutdown" }, ctx)
+
+		expect(reportTelemetry).toHaveBeenCalledExactlyOnceWith({
+			event: "capture.schedule",
+			outcome: "already_captured",
+			messageCount: 1,
+			pendingCount: 0,
+			oldestPendingMs: undefined,
+		})
+		expect(spawn).not.toHaveBeenCalled()
 	})
 
 	it("an isActive gate of false skips capture entirely", () => {
@@ -4031,13 +4152,36 @@ describe("capture admission and resource backpressure", () => {
 				queueMicrotask(() => child.emit("spawn"))
 				return child
 			})
-			incrementalCapture(entries, state, "/tmp", captureMessagesTail, "backlog-test", 1, "backlog-test")
+			const reportTelemetry = vi.fn()
+			incrementalCapture(
+				entries,
+				state,
+				"/tmp",
+				captureMessagesTail,
+				"backlog-test",
+				1,
+				"backlog-test",
+				false,
+				reportTelemetry,
+			)
 			expect(store.pending(10)).toHaveLength(0)
 			expect(state.spawnedCount).toBe(0)
 
-			incrementalCapture(entries, state, "/tmp", captureMessagesTail, "backlog-test", 1, "backlog-test", true)
+			incrementalCapture(
+				entries,
+				state,
+				"/tmp",
+				captureMessagesTail,
+				"backlog-test",
+				1,
+				"backlog-test",
+				true,
+				reportTelemetry,
+			)
 			expect(spawn).toHaveBeenCalledTimes(1)
 			expect(state.spawnedCount).toBe(6)
+			expect(reportTelemetry).toHaveBeenCalledWith(expect.objectContaining({ outcome: "deferred" }))
+			expect(reportTelemetry).toHaveBeenCalledWith(expect.objectContaining({ outcome: "enqueued" }))
 		} finally {
 			getCaptureJobStore().close()
 			process.env.HOME = previousHome

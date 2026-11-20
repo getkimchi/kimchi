@@ -128,9 +128,16 @@ import {
 import { acquireCaptureLock } from "./lock.js"
 import { memoryMetadataForText } from "./metadata.js"
 import { createDecisionSupersedeJudge, findSupersededIds, type SupersedeJudge } from "./supersede.js"
+import type { MemoryCaptureFailureClass } from "./telemetry-events.js"
 import { elapsedRequestMs, requestCancellationMetadata, timedStoreCall } from "./timing.js"
 import { createTraceRecorder, type OnExchange, pruneTraceBudget, pruneTraces, type TraceRecorder } from "./trace.js"
 import { recordUsage, type UsageKind } from "./usage-ledger.js"
+import {
+	drainMemoryWorkerTelemetry,
+	type MemoryWorkerTelemetrySink,
+	reportMemoryWorkerTelemetry,
+	resolveMemoryWorkerTelemetrySink,
+} from "./worker-telemetry.js"
 
 export interface CaptureMessage {
 	/**
@@ -1289,6 +1296,9 @@ export interface RunCaptureWorkerOptions {
 	trace?: TraceRecorder | null
 	/** Sustained-open d3 circuit: hold remaining work for a later recovery. */
 	deferred?: boolean
+	/** Injectable worker-local aggregate telemetry. Production resolves this at
+	 * the CLI entrypoint; direct unit calls stay offline unless supplied. */
+	telemetry?: MemoryWorkerTelemetrySink
 }
 
 /** The d3 gate context for this drain: flagged-on gates get a live endpoint;
@@ -1532,7 +1542,10 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// Reconcile manual requeues (failed/*.json moved back to pending) and
 	// compatibility files without rereading every pending payload per wave.
 	reconcilePendingFiles(pendingDir)
-	const jobFiles = getCaptureJobStore().pending(Number.MAX_SAFE_INTEGER, options.processed)
+	const jobStore = getCaptureJobStore()
+	const jobFiles = jobStore.pending(Number.MAX_SAFE_INTEGER, options.processed)
+	const pendingCount = jobStore.count("pending")
+	const oldestPendingMs = jobStore.oldestPendingAgeMs(tStart)
 
 	// Wave cap: a monolithic wave scales its commit-latency lineely with
 	// backlog size while inflow keeps arriving — the backlog CAN'T be
@@ -2130,6 +2143,24 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		failed,
 		addQuarantined,
 		poisonQuarantined: quarantined,
+	})
+
+	reportMemoryWorkerTelemetry(options.telemetry, {
+		event: "capture.wave",
+		outcome: failed > 0 ? "partial" : options.deferred ? "deferred" : "completed",
+		durationMs: Date.now() - drainStarted,
+		jobCount: plans.length,
+		storedCount: captured,
+		triagedWindowCount: triagedOut,
+		nonDurableCount: skippedNonDurable,
+		valuationDiscardCount: skippedByValuation,
+		redactedCount: redacted,
+		oversizedCount: skippedOversized,
+		failedJobCount: failed,
+		addQuarantinedCount: addQuarantined,
+		poisonQuarantinedCount: quarantined,
+		pendingCount,
+		oldestPendingMs,
 	})
 
 	// Watchdog re-check: the later phases (derived classification, valuation,
@@ -2848,7 +2879,10 @@ async function executeBatchedSupersede(
  * in cli.ts. The routing deliberately sits pre-registry and pre-telemetry
  * so worker invocations are invisible to app_started instrumentation.
  */
-export async function runCaptureWorkerMain(argv: string[]): Promise<number> {
+export async function runCaptureWorkerMain(argv: string[], options: RunCaptureWorkerOptions = {}): Promise<number> {
+	const startedAt = Date.now()
+	const telemetry = options.telemetry ?? resolveMemoryWorkerTelemetrySink()
+	let failureClass: MemoryCaptureFailureClass = "startup"
 	try {
 		// Boot marker BEFORE any heavy work: runtime-spawned workers run with
 		// stdio ignored (capture.ts), so a crash before this line is invisible
@@ -2863,12 +2897,21 @@ export async function runCaptureWorkerMain(argv: string[]): Promise<number> {
 		} catch {
 			// visibility must never break the worker
 		}
-		const captured = await runCaptureWorker(argv)
+		failureClass = "drain"
+		const captured = await runCaptureWorker(argv, { ...options, telemetry })
 		console.log(`[memory-capture] captured ${captured} facts`)
 		return 0
 	} catch (err: unknown) {
+		if (err instanceof DrainWatchdogError) failureClass = "watchdog"
+		reportMemoryWorkerTelemetry(telemetry, {
+			event: "capture.failed",
+			failureClass,
+			durationMs: Date.now() - startedAt,
+		})
 		console.error("[memory-capture] failed:", err instanceof Error ? err.message : err)
 		return 1
+	} finally {
+		await drainMemoryWorkerTelemetry(telemetry)
 	}
 }
 
