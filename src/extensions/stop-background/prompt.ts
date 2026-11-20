@@ -56,6 +56,8 @@ export function formatStopped(processes: number, agents: number): string {
 
 export interface StopBackgroundPrompt {
 	onEscape(): void
+	/** Call from `agent_start`. */
+	onRunStart(): void
 	/** Call from `agent_settled`: an Esc during the run asks once the run has ended. */
 	onRunSettled(ctx: ExtensionContext): void
 	dispose(): void
@@ -63,6 +65,8 @@ export interface StopBackgroundPrompt {
 
 export function createStopBackgroundPrompt(getCtx: () => ExtensionContext | null): StopBackgroundPrompt {
 	let busy = false
+	// Compaction is not idle either, but it emits no agent_settled.
+	let runActive = false
 	// Esc came during a run. The run is still aborting, so ask when it has settled.
 	let askAfterRun = false
 	let dialogAbort: AbortController | undefined
@@ -109,7 +113,7 @@ export function createStopBackgroundPrompt(getCtx: () => ExtensionContext | null
 			try {
 				if (!ctx.hasUI) return
 				if (!ctx.isIdle()) {
-					askAfterRun = true
+					if (runActive) askAfterRun = true
 					return
 				}
 				if (listBackgroundWork(ctx.sessionManager.getSessionId()).length === 0) return
@@ -118,7 +122,11 @@ export function createStopBackgroundPrompt(getCtx: () => ExtensionContext | null
 				if (!isStaleCtxError(err)) throw err
 			}
 		},
+		onRunStart() {
+			runActive = true
+		},
 		onRunSettled(ctx) {
+			runActive = false
 			if (!askAfterRun) return
 			askAfterRun = false
 			if (busy || !ctx.hasUI) return
@@ -126,6 +134,7 @@ export function createStopBackgroundPrompt(getCtx: () => ExtensionContext | null
 		},
 		dispose() {
 			generation++
+			runActive = false
 			askAfterRun = false
 			dialogAbort?.abort()
 			dialogAbort = undefined

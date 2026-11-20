@@ -177,6 +177,7 @@ describe("createStopBackgroundPrompt", () => {
 		cleanups.push(registerWork("bash", [processItem("sleep 300")]).unregister)
 		const { ctx, select, setIdle } = makeCtx({ idle: false, choice: KEEP_RUNNING })
 		const prompt = setup(ctx)
+		prompt.onRunStart()
 		prompt.onEscape()
 		prompt.onEscape()
 		await flush()
@@ -187,11 +188,26 @@ describe("createStopBackgroundPrompt", () => {
 		expect(select).toHaveBeenCalledTimes(1)
 	})
 
+	it("Esc while busy outside a run does not ask after a later run", async () => {
+		cleanups.push(registerWork("bash", [processItem("npm run dev")]).unregister)
+		// Compaction or a branch summary: busy, but no run and no agent_settled.
+		const { ctx, select, setIdle } = makeCtx({ idle: false })
+		const prompt = setup(ctx)
+		prompt.onEscape()
+		setIdle(true)
+		await flush()
+		prompt.onRunStart()
+		prompt.onRunSettled(ctx)
+		await flush()
+		expect(select).not.toHaveBeenCalled()
+	})
+
 	it("opens no dialog when the work ended with the run", async () => {
 		const bash = registerWork("bash", [processItem("sleep 300")])
 		cleanups.push(bash.unregister)
 		const { ctx, select, setIdle } = makeCtx({ idle: false })
 		const prompt = setup(ctx)
+		prompt.onRunStart()
 		prompt.onEscape()
 		bash.state.items = []
 		setIdle(true)
@@ -213,6 +229,7 @@ describe("createStopBackgroundPrompt", () => {
 		cleanups.push(registerWork("bash", [processItem("sleep 300")]).unregister)
 		const { ctx, select, setIdle } = makeCtx({ idle: false, choice: KEEP_RUNNING })
 		const prompt = setup(ctx)
+		prompt.onRunStart()
 		prompt.onEscape()
 		setIdle(true)
 		prompt.onRunSettled(ctx)
@@ -270,6 +287,7 @@ describe("createStopBackgroundPrompt", () => {
 		cleanups.push(registerWork("bash", [processItem("sleep 300")]).unregister)
 		const { ctx, select, setIdle } = makeCtx({ idle: false })
 		const prompt = setup(ctx)
+		prompt.onRunStart()
 		prompt.onEscape()
 		prompt.dispose()
 		setIdle(true)
