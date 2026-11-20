@@ -172,6 +172,126 @@ describe("promptForApproval — withWorkingHidden", () => {
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(3, false)
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(4, true)
 	})
+
+	// After "No" the decision is made. The text box is still watched: a dialog
+	// that takes its place would otherwise leave the prompt pending for good.
+	describe("feedback text box of a watched prompt", () => {
+		const DENY = "No — tell the assistant what to do differently"
+
+		function watch() {
+			const phases: string[] = []
+			const withdraw: Record<string, () => void> = {}
+			const stops = { selector: vi.fn(), feedback: vi.fn() }
+			const onForeignDialog = (onWithdraw: () => void, phase: "selector" | "feedback") => {
+				phases.push(phase)
+				withdraw[phase] = onWithdraw
+				return stops[phase]
+			}
+			return { phases, withdraw, stops, onForeignDialog }
+		}
+
+		it("settles as a plain denial when another dialog takes its place", async () => {
+			const ctx = fakeCtx()
+			ctx.ui.select = vi.fn(async () => DENY)
+			// The displaced text box never settles.
+			ctx.ui.input = vi.fn(() => new Promise<string | undefined>(() => {}))
+			const controller = { pause: vi.fn(), resume: vi.fn(), stop: vi.fn() }
+			__setWorkingAnimatorForTest(controller)
+			const request = new AbortController()
+			const watcher = watch()
+			try {
+				const pending = promptForApproval({
+					toolName: "bash",
+					input: { command: "echo hello" },
+					ctx,
+					signal: request.signal,
+					onForeignDialog: watcher.onForeignDialog,
+				})
+				await vi.waitFor(() => expect(ctx.ui.input).toHaveBeenCalledOnce())
+				expect(watcher.phases).toEqual(["selector", "feedback"])
+				expect(watcher.stops.selector).toHaveBeenCalledOnce()
+				watcher.withdraw.feedback?.()
+
+				expect(await pending).toEqual({ kind: "deny" })
+				expect(watcher.stops.feedback).toHaveBeenCalledOnce()
+				// The animation pause is released; the indicator stays hidden for
+				// the dialog that took over.
+				expect(controller.pause).toHaveBeenCalledTimes(2)
+				expect(controller.resume).toHaveBeenCalledTimes(2)
+				expect(ctx.ui.setWorkingVisible).toHaveBeenLastCalledWith(false)
+
+				// A later abort of the request must not reach the text box: by now
+				// another dialog is on screen in its place.
+				request.abort()
+				expect(ctx.ui.input.mock.calls[0]?.[2]?.signal?.aborted).toBe(false)
+			} finally {
+				__setWorkingAnimatorForTest(undefined)
+			}
+		})
+
+		it("is skipped when another dialog is already open", async () => {
+			const ctx = fakeCtx()
+			ctx.ui.select = vi.fn(async () => DENY)
+			const result = await promptForApproval({
+				toolName: "bash",
+				input: { command: "echo hello" },
+				ctx,
+				onForeignDialog: (onWithdraw, phase) => {
+					if (phase === "feedback") onWithdraw()
+					return () => {}
+				},
+			})
+			expect(result).toEqual({ kind: "deny" })
+			expect(ctx.ui.input).not.toHaveBeenCalled()
+		})
+
+		it("still follows an abort of the request while it is on screen", async () => {
+			const ctx = fakeCtx()
+			ctx.ui.select = vi.fn(async () => DENY)
+			ctx.ui.input = vi.fn(
+				(_title: string, _placeholder: string | undefined, opts?: { signal?: AbortSignal }) =>
+					new Promise<string | undefined>((resolve) => {
+						opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true })
+					}),
+			)
+			const request = new AbortController()
+			const watcher = watch()
+			const pending = promptForApproval({
+				toolName: "bash",
+				input: { command: "echo hello" },
+				ctx,
+				signal: request.signal,
+				onForeignDialog: watcher.onForeignDialog,
+			})
+			await vi.waitFor(() => expect(ctx.ui.input).toHaveBeenCalledOnce())
+			request.abort()
+
+			// The "No" was already chosen: an abort does not turn it into "aborted".
+			expect(await pending).toEqual({ kind: "deny" })
+			expect(ctx.ui.input.mock.calls[0]?.[2]?.signal?.aborted).toBe(true)
+			expect(watcher.stops.feedback).toHaveBeenCalledOnce()
+		})
+
+		it.each([
+			{ name: "returns the text that was submitted", typed: "use the config dir", expected: "deny-with-feedback" },
+			{ name: "returns a plain denial on Esc", typed: undefined, expected: "deny" },
+		])("$name", async ({ typed, expected }) => {
+			const ctx = fakeCtx()
+			ctx.ui.select = vi.fn(async () => DENY)
+			ctx.ui.input = vi.fn(async () => typed)
+			const watcher = watch()
+			const result = await promptForApproval({
+				toolName: "bash",
+				input: { command: "echo hello" },
+				ctx,
+				onForeignDialog: watcher.onForeignDialog,
+			})
+			expect(result.kind).toBe(expected)
+			if (typed) expect(result).toEqual({ kind: "deny-with-feedback", feedback: typed })
+			expect(watcher.stops.feedback).toHaveBeenCalledOnce()
+			expect(ctx.ui.setWorkingVisible).toHaveBeenLastCalledWith(true)
+		})
+	})
 })
 
 describe("formatRiskBadge", () => {

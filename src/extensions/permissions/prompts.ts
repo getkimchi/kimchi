@@ -44,9 +44,19 @@ interface PromptOptions {
 	signal?: AbortSignal
 	/** When a subagent's call was escalated to this session, the prompt names it. */
 	origin?: PermissionOrigin
-	/** Notify on a foreign dialog without aborting the old selector. */
-	onForeignDialog?: (onWithdraw: () => void) => () => void
+	/**
+	 * Watch for another dialog taking this prompt's place, without aborting
+	 * the part of the prompt that is on screen. Called once for the selector
+	 * and, after "No", once for the feedback text box; returns the function
+	 * that stops watching.
+	 */
+	onForeignDialog?: (onWithdraw: () => void, phase: PromptPhase) => () => void
 }
+
+/** The part of the approval prompt that is on screen. */
+export type PromptPhase = "selector" | "feedback"
+
+const FEEDBACK_PROMPT = "Tell the assistant what to do differently:"
 
 export function terminalPrompter(ctx: ExtensionContext): ToolPermissionPrompter {
 	return {
@@ -239,8 +249,8 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	const permissionChoices = opts.choices ?? buildPermissionChoices(toolName, input)
 	const choices = numberedChoices(permissionChoices.map((choice) => choice.label))
 
-	// Monitor only the choices. Once a decision is made, feedback belongs to
-	// this prompt and retains its own abort handling.
+	// This watch covers the choices. The feedback text box after "No" has its
+	// own (askForFeedback): there the decision is already made.
 	const selectionAbort = new AbortController()
 	const forwardAbort = () => selectionAbort.abort(opts.signal?.reason)
 	if (opts.signal?.aborted) forwardAbort()
@@ -253,7 +263,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 			resolve(undefined)
 		}
 	})
-	const stopWatching = opts.onForeignDialog?.(onWithdraw)
+	const stopWatching = opts.onForeignDialog?.(onWithdraw, "selector")
 	let choice: string | undefined
 	try {
 		if (!withdrawn) {
@@ -289,15 +299,57 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	}
 
 	if (selectedChoice?.kind === "deny") {
-		const feedback = await withWorkingHidden(ctx, () =>
-			ctx.ui.input("Tell the assistant what to do differently:", undefined, { signal: opts.signal }),
-		)
-		const text = feedback?.trim()
+		const text = (await askForFeedback(opts))?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }
 		return { kind: "deny" }
 	}
 
 	return { kind: "deny" }
+}
+
+/**
+ * The optional text after "No". The decision is already made, so every way
+ * out of the text box is a denial; only the text can be missing.
+ *
+ * A prompt that watches for other dialogs keeps watching here. A dialog that
+ * takes the text box's place leaves its promise pending for good, and with
+ * it the caller's place in the prompt queue. A later abort would then reach
+ * the text box and clear whatever dialog is on screen in its place. So a
+ * displaced text box settles at once, with no text, and no abort is
+ * forwarded to it afterwards.
+ */
+async function askForFeedback(opts: PromptOptions): Promise<string | undefined> {
+	const { ctx } = opts
+	if (!opts.onForeignDialog) {
+		return withWorkingHidden(ctx, () => ctx.ui.input(FEEDBACK_PROMPT, undefined, { signal: opts.signal }))
+	}
+
+	const inputAbort = new AbortController()
+	const forwardAbort = () => inputAbort.abort(opts.signal?.reason)
+	if (opts.signal?.aborted) forwardAbort()
+	else opts.signal?.addEventListener("abort", forwardAbort, { once: true })
+	let displaced = false
+	let onDisplaced = () => {}
+	const displacement = new Promise<undefined>((resolve) => {
+		onDisplaced = () => {
+			displaced = true
+			opts.signal?.removeEventListener("abort", forwardAbort)
+			resolve(undefined)
+		}
+	})
+	const stopWatching = opts.onForeignDialog(onDisplaced, "feedback")
+	try {
+		if (displaced) return undefined
+		return await withWorkingHidden(
+			ctx,
+			() => Promise.race([ctx.ui.input(FEEDBACK_PROMPT, undefined, { signal: inputAbort.signal }), displacement]),
+			// The dialog that took over owns the indicator's visibility now.
+			{ keepHidden: () => displaced },
+		)
+	} finally {
+		stopWatching()
+		opts.signal?.removeEventListener("abort", forwardAbort)
+	}
 }
 
 /**
@@ -355,7 +407,7 @@ export async function promptForCompoundApproval(opts: {
 	if (selected === "Pick permissions per subcommand" && scopeable) return { kind: "pick-per-subcommand" }
 	if (selected === "No — tell the assistant what to do differently") {
 		const feedback = await withWorkingHidden(ctx, () =>
-			ctx.ui.input("Tell the assistant what to do differently:", undefined, { signal: opts.signal }),
+			ctx.ui.input(FEEDBACK_PROMPT, undefined, { signal: opts.signal }),
 		)
 		const text = feedback?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }

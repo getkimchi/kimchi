@@ -99,7 +99,9 @@ Coverage includes the editor, dialogs that claim raw input (including
 questionnaires), and other agent-driven dialogs announced through `withBlocked`.
 When one takes the editor slot, the old selector's wait is withdrawn locally
 without aborting it. The foreground dialog stays usable, and a fresh selector is
-opened after it closes. Permission prompts are not tracked dialogs for each
+opened after it closes. If such a dialog arrives while the feedback text box
+after "No" is open, the decision is already made: the request settles at once as
+a denial without text. Permission prompts are not tracked dialogs for each
 other: they share one queue, so the main session's own prompt waits behind a
 subagent's prompt that is on screen. A subagent's prompt that is held back is
 not in the queue: the main session's own prompt opens at once, and the held-back
