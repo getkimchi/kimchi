@@ -225,6 +225,91 @@ describe("active prompt Kimchi credential preparation", () => {
 		expect(readStore()["kimchi-dev/openai"]).toEqual(apiKey)
 	})
 
+	it.each([
+		{
+			description: "an API-key after canonical revocation",
+			activeCredential: { type: "api_key", key: "independent-active-key" },
+			expectedAccessToken: "independent-active-key",
+			failure: "revoked",
+		},
+		{
+			description: "an API-key after transient canonical failure",
+			activeCredential: { type: "api_key", key: "independent-active-key" },
+			expectedAccessToken: "independent-active-key",
+			failure: "transient",
+		},
+		{
+			description: "fresh independent OAuth after canonical revocation",
+			activeCredential: {
+				type: "oauth",
+				access: "independent-active-access",
+				refresh: "independent-active-refresh",
+				expires: Date.now() + 10 * 60_000,
+			},
+			expectedAccessToken: "independent-active-access",
+			failure: "revoked",
+		},
+		{
+			description: "fresh independent OAuth after transient canonical failure",
+			activeCredential: {
+				type: "oauth",
+				access: "independent-active-access",
+				refresh: "independent-active-refresh",
+				expires: Date.now() + 10 * 60_000,
+			},
+			expectedAccessToken: "independent-active-access",
+			failure: "transient",
+		},
+	])("continues with $description", async ({ activeCredential, expectedAccessToken, failure }) => {
+		writeOAuthCredential(Date.now() + 60_000)
+		const canonical = readStore()["kimchi-dev"]
+		writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": canonical, "kimchi-dev/openai": activeCredential }))
+		const oauth = fakeOAuthDeps(() => {
+			if (failure === "revoked") {
+				throw new OAuthTokenError("fake refresh grant revoked", { code: "invalid_grant", status: 400 })
+			}
+			throw new Error("fake refresh transport temporarily unavailable")
+		})
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"ready",
+		)
+
+		if (activeCredential.type === "api_key") {
+			vi.stubEnv("KIMCHI_API_KEY", undefined)
+			writeFileSync(
+				paths.modelsPath,
+				JSON.stringify({
+					providers: {
+						"kimchi-dev/openai": {
+							baseUrl: "https://example.invalid/openai/v1",
+							apiKey: "$KIMCHI_API_KEY",
+							api: "openai-completions",
+							models: [],
+						},
+					},
+				}),
+			)
+		}
+		const runtime = await ModelRuntime.create({
+			authPath: paths.authPath,
+			modelsPath: activeCredential.type === "api_key" ? paths.modelsPath : null,
+			allowModelNetwork: false,
+			refreshOnCreate: false,
+		})
+		oauth.installOAuth(runtime)
+		const canonicalOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+		if (!canonicalOAuth) throw new Error("expected canonical test OAuth")
+		runtime.registerProvider("kimchi-dev/openai", { oauth: canonicalOAuth })
+		await expect(runtime.getAuth("kimchi-dev/openai")).resolves.toMatchObject({
+			auth: { apiKey: expectedAccessToken },
+		})
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+		expect(readStore()["kimchi-dev"]).toEqual(canonical)
+		expect(readStore()["kimchi-dev/openai"]).toEqual(activeCredential)
+	})
+
 	it("does not refresh Kimchi credentials for an unrelated active provider", async () => {
 		writeOAuthCredential(Date.now() + 60_000)
 		const oauth = fakeOAuthDeps()

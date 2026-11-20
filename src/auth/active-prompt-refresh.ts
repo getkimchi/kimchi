@@ -61,7 +61,21 @@ export async function prepareActivePromptKimchiCredential(
 		) {
 			return "ready"
 		}
-		const resolution = await resolveRefreshAwareKimchiAuth(paths, installOAuth, owner)
+		const activeCredentialBeforeCanonical =
+			activeProviderId === KIMCHI_PROVIDER_ID ? undefined : readStoredCredential(activeProviderId, paths.authPath)
+		const resolution = await resolveRefreshAwareKimchiAuth(paths, installOAuth, owner).catch((error) => {
+			// An inaccessible canonical grant must not block an independently
+			// authenticated active provider that needs no refresh itself.
+			if (
+				activeCredentialBeforeCanonical?.type === "api_key" ||
+				(activeCredentialBeforeCanonical?.type === "oauth" &&
+					Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS < activeCredentialBeforeCanonical.expires)
+			) {
+				return undefined
+			}
+			throw error
+		})
+		if (resolution === undefined) return "ready"
 		const credential = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
 		if (credential?.type !== "oauth" || !resolution.auth?.auth.apiKey) return "ready"
 		const activeCredential =
