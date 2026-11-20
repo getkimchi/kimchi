@@ -2,6 +2,7 @@ import { join } from "node:path"
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
+import { releasePreparedOAuthCredential } from "../../auth/short-lived-credential-handoff.js"
 import { loadConfig } from "../../config.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { chatCompletionsApi } from "../../models.js"
@@ -58,6 +59,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 			ctx.model?.provider,
 			ctx.modelRegistry,
 		)
+		if (preparation !== "ready") releasePreparedOAuthCredential(authPath, ctx.modelRegistry)
 		if (preparation === "oauth_revoked") {
 			ctx.ui.notify("OAuth refresh was rejected. Run /login to sign in again.", "error")
 			return { action: "handled" as const }
@@ -73,6 +75,15 @@ export default function loginExtension(pi: ExtensionAPI): void {
 			)
 			return { action: "handled" as const }
 		}
+	})
+
+	pi.on("agent_settled", (_event, ctx) => {
+		// ACP releases at its own run boundary, after retries and held plan-review
+		// continuations. Native RPC and ACP-spawned workers retain this cleanup.
+		if (IS_ACP_MODE) return
+		// Preserve the short-lived replacement through every model request and tool
+		// continuation in this prompt, then allow the next prompt to rotate normally.
+		releasePreparedOAuthCredential(authPath, ctx.modelRegistry)
 	})
 
 	// Register the same OAuth handler for every Kimchi-managed sub-provider

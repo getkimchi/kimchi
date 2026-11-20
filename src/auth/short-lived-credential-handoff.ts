@@ -1,26 +1,22 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 
 type CredentialIdentity = Pick<OAuthCredentials, "access" | "refresh" | "expires">
-type PreparedCredential = CredentialIdentity & { fanoutPending: boolean }
-
 // One short-lived canonical replacement per session owner and credential store.
 // Preflight marks it after ModelRuntime persists it; the ordinary request-time
-// refresh callback can then reuse the already-fanned credential without issuing
+// refresh callbacks can then reuse the already-fanned credential without issuing
 // another grant. A weak session key prevents a concurrent same-store session
-// from consuming this prompt's one-shot result and lets closed sessions release
-// their entries.
+// from consuming this prompt's result and lets closed sessions release entries.
 //
 // The harness subtracts a safety margin from the issuer lifetime, so a short
-// replacement can reach its effective expiry immediately. Upstream permits that
-// just-refreshed result in the corresponding getAuth call. This handoff preserves
-// that result for the following request-time lookup; it never extends its expiry
-// or suppresses a subsequent, different grant.
-let preparedByOwner = new WeakMap<object, Map<string, PreparedCredential>>()
+// replacement can reach its effective expiry immediately. Preserve that exact
+// result for every lookup in the originating prompt, including tool continuations.
+// The surface releases it only at prompt completion; expiry is never falsified and
+// a subsequent prompt refreshes normally.
+let preparedByOwner = new WeakMap<object, Map<string, CredentialIdentity>>()
 
 export function rememberPreparedOAuthCredential(
 	authPath: string,
 	credential: CredentialIdentity,
-	options: { fanoutPending: boolean },
 	owner?: object,
 ): void {
 	if (!owner) return
@@ -29,7 +25,7 @@ export function rememberPreparedOAuthCredential(
 		preparedByAuthPath = new Map()
 		preparedByOwner.set(owner, preparedByAuthPath)
 	}
-	preparedByAuthPath.set(authPath, { ...credential, fanoutPending: options.fanoutPending })
+	preparedByAuthPath.set(authPath, { ...credential })
 }
 
 /** Return true for this session's exactly matching result that request-time auth would recheck. */
@@ -49,10 +45,14 @@ export function shouldReusePreparedOAuthCredential(
 	) {
 		return false
 	}
-	// A retry after failed fan-out may resolve canonical first. Leave the
-	// handoff in place until fan-out completes and the active provider uses it.
-	if (!prepared.fanoutPending) preparedByAuthPath.delete(authPath)
 	return true
+}
+
+export function releasePreparedOAuthCredential(authPath: string, owner?: object): void {
+	const preparedByAuthPath = owner ? preparedByOwner.get(owner) : undefined
+	if (!owner || !preparedByAuthPath) return
+	preparedByAuthPath.delete(authPath)
+	if (preparedByAuthPath.size === 0) preparedByOwner.delete(owner)
 }
 
 export function resetPreparedOAuthCredentialsForTests(): void {

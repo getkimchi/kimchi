@@ -66,6 +66,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import open from "open"
 import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
+import { releasePreparedOAuthCredential } from "../../auth/short-lived-credential-handoff.js"
 import { getParsedCliArgs } from "../../cli-args.js"
 import {
 	authMethodRegion,
@@ -3898,6 +3899,9 @@ export class KimchiAcpAgent implements Agent {
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
+		// This is the original prompt's full run boundary, including tool calls,
+		// retries, cancellation, and held plan-review continuations.
+		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
 		entry.turn = undefined
 		// Non-end_turn terminal outcomes (cancelled, refusal, …) never produce a
 		// rated settled response — clear the rating window armed at settle time.
@@ -3955,6 +3959,7 @@ export class KimchiAcpAgent implements Agent {
 	private failTurn(entry: SessionRecord, err: unknown): void {
 		const turn = entry.turn
 		if (!turn) return
+		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
 		// A terminally errored run is not a settled response — the armed rating
 		// window (agent_settled fires before prompt() resolves) must not survive
 		// into a rate call for an error the client saw as a JSON-RPC failure.

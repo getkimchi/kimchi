@@ -84,6 +84,69 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 	})
 }
 
+test("reuses a short-lived replacement through a tool continuation within one prompt", async ({ terminal }) => {
+	const oauth = await startFakeOAuthRefreshServer({ expiresInSeconds: 60 })
+	let authPath = ""
+	const command = "printf 'oauth-continuation-done\\n'"
+	try {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: "oauth-prompt-refresh-tool-continuation",
+				providerId: "kimchi-dev/openai",
+				responses: [
+					{
+						match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+						toolCalls: [
+							{
+								function: {
+									name: "bash",
+									arguments: JSON.stringify({ command, description: "Check OAuth tool continuation" }),
+								},
+							},
+						],
+					},
+					{
+						match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+						stream: [REFRESH_CONTINUED_REPLY],
+					},
+					{
+						match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+						stream: ["Refreshed follow-up continued."],
+					},
+				],
+				seedHome: (homeDir) => {
+					authPath = seedExpiringOAuthCredential(homeDir, oauth.tokenUrl)
+				},
+			},
+			async (fixture, trace) => {
+				expireSeededOAuthCredential(authPath)
+				terminal.submit("Use a tool, then continue with the refreshed credential")
+				await expect(terminal.getByText(REFRESH_CONTINUED_REPLY, { full: true })).toBeVisible()
+				await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
+
+				expect(oauth.grants).toHaveLength(1)
+				expect(fixture.fake.requests.map(chatAuthorization).filter((value) => value !== undefined)).toEqual([
+					`Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+					`Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+				])
+				trace.step("tool call and continuation shared one prompt-scoped refreshed credential")
+
+				terminal.submit("Continue in a separate prompt")
+				await expect(terminal.getByText("Refreshed follow-up continued.", { full: true })).toBeVisible()
+				expect(oauth.grants).toHaveLength(2)
+				const stored = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, Record<string, unknown>>
+				for (const field of ["access", "refresh", "expires"]) {
+					expect(stored["kimchi-dev/openai"]?.[field]).toBe(stored["kimchi-dev"]?.[field])
+				}
+				trace.step("prompt cleanup allowed the next prompt to rotate normally")
+			},
+		)
+	} finally {
+		await oauth.close()
+	}
+})
+
 test("a revoked grant exposes the existing sign-in action without crashing the session", async ({ terminal }) => {
 	const oauth = await startFakeOAuthRefreshServer()
 	let authPath = ""

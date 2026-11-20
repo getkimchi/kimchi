@@ -1,6 +1,10 @@
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
+import {
+	rememberPreparedOAuthCredential,
+	shouldReusePreparedOAuthCredential,
+} from "../../auth/short-lived-credential-handoff.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel } from "../__mocks__/model-registry.js"
@@ -127,6 +131,36 @@ describe("loginExtension", () => {
 			"OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
 			"error",
 		)
+	})
+
+	it("releases a short-lived credential when the TUI prompt is fully settled", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const { api, getHandler } = createExtensionApi()
+		loginExtension(api)
+		const ctx = createContext({ modelRegistry: { getAll: () => [] } })
+		const authPath = "/tmp/kimchi-login-extension-test/auth.json"
+		const credential = { access: "short-replacement", refresh: "short-grant", expires: 1 }
+		rememberPreparedOAuthCredential(authPath, credential, ctx.modelRegistry)
+		expect(shouldReusePreparedOAuthCredential(authPath, credential, ctx.modelRegistry)).toBe(true)
+
+		getHandler("agent_settled")({ aborted: false }, ctx)
+
+		expect(shouldReusePreparedOAuthCredential(authPath, credential, ctx.modelRegistry)).toBe(false)
+	})
+
+	it("leaves ACP handoff release to its own prompt boundary", () => {
+		acpMode.current = true
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const { api, getHandler } = createExtensionApi()
+		loginExtension(api)
+		const ctx = createContext({ modelRegistry: { getAll: () => [] } })
+		const authPath = "/tmp/kimchi-login-extension-test/auth.json"
+		const credential = { access: "short-replacement", refresh: "short-grant", expires: 1 }
+		rememberPreparedOAuthCredential(authPath, credential, ctx.modelRegistry)
+
+		getHandler("agent_settled")({ aborted: false }, ctx)
+
+		expect(shouldReusePreparedOAuthCredential(authPath, credential, ctx.modelRegistry)).toBe(true)
 	})
 
 	it("keeps ACP's session-owned provider callbacks on session_start", () => {

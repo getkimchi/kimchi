@@ -82,7 +82,7 @@ export async function prepareActivePromptKimchiCredential(
 			staleActiveCredential ||
 			(activeProviderId !== KIMCHI_PROVIDER_ID && activeCredential === undefined)
 		if (Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= credential.expires) {
-			rememberPreparedOAuthCredential(paths.authPath, credential, { fanoutPending: synchronizationNeeded }, owner)
+			rememberPreparedOAuthCredential(paths.authPath, credential, owner)
 		}
 		if (!synchronizationNeeded) return "ready"
 		try {
@@ -103,7 +103,7 @@ export async function prepareActivePromptKimchiCredential(
 			clearRefreshedCredentialStale(resolution.previousAccessToken, resolution.auth.auth.apiKey, KIMCHI_PROVIDER_ID)
 		}
 		if (Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= credential.expires) {
-			rememberPreparedOAuthCredential(paths.authPath, credential, { fanoutPending: false }, owner)
+			rememberPreparedOAuthCredential(paths.authPath, credential, owner)
 		}
 		return "ready"
 	} catch (error) {

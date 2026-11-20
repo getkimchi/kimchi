@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OAuthTokenError } from "../cli-auth/oauth.js"
 import { isCredentialStale, resetCredentialStalenessForTests } from "../credential-staleness.js"
@@ -9,6 +9,7 @@ import { installKimchiOAuth } from "../extensions/login/flow.js"
 import { fakeOAuthDeps } from "../modes/acp/ext-methods/oauth-test-utils.js"
 import { syncOAuthCredentialToKimchiProviders } from "../pi-auth.js"
 import { prepareActivePromptKimchiCredential } from "./active-prompt-refresh.js"
+import { shouldReusePreparedOAuthCredential } from "./short-lived-credential-handoff.js"
 
 vi.mock("../pi-auth.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../pi-auth.js")>()
@@ -123,6 +124,57 @@ describe("active prompt Kimchi credential preparation", () => {
 		const stored = readStore()
 		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
 			expect(stored[providerId]).toMatchObject({ ...sharedCredential, expires: canonicalExpires })
+		}
+	})
+
+	it("reuses a short-lived replacement across two request-time lookups in one prompt", async () => {
+		writeOAuthCredential(Date.now() + 60_000)
+		let grantCount = 0
+		const oauth = fakeOAuthDeps((credential) => {
+			grantCount++
+			return {
+				...credential,
+				access: `replacement-access-${grantCount}`,
+				refresh: `rotated-refresh-${grantCount}`,
+				expires: Date.now() + 60_000,
+			}
+		})
+		const owner: object = {}
+		const installOwnerScopedOAuth = (runtime: ModelRuntime): void => {
+			oauth.installOAuth(runtime)
+			const providerOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+			const refreshTransport = providerOAuth?.refreshToken
+			if (!providerOAuth || !refreshTransport) throw new Error("expected fake refresh transport")
+			const refreshToken: typeof refreshTransport = (credential, signal) =>
+				shouldReusePreparedOAuthCredential(paths.authPath, credential, owner)
+					? Promise.resolve(credential)
+					: refreshTransport(credential, signal)
+			runtime.registerProvider("kimchi-dev", {
+				oauth: Object.assign({}, providerOAuth, { refreshToken }),
+			})
+		}
+		await expect(
+			prepareActivePromptKimchiCredential(paths, installOwnerScopedOAuth, "kimchi-dev/openai", owner),
+		).resolves.toBe("ready")
+		const persistedCanonical = readStoredCredential("kimchi-dev", paths.authPath)
+		if (persistedCanonical?.type !== "oauth") throw new Error("expected the canonical replacement")
+		expect(shouldReusePreparedOAuthCredential(paths.authPath, persistedCanonical, owner)).toBe(true)
+		const runtime = await ModelRuntime.create({ authPath: paths.authPath, modelsPath: null })
+		installOwnerScopedOAuth(runtime)
+		const canonicalOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+		if (!canonicalOAuth) throw new Error("expected canonical test OAuth")
+		runtime.registerProvider("kimchi-dev/openai", { oauth: canonicalOAuth })
+
+		for (let request = 0; request < 2; request++) {
+			await expect(runtime.getAuth("kimchi-dev/openai")).resolves.toMatchObject({
+				auth: { apiKey: "replacement-access-1" },
+			})
+		}
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		const stored = readStore()
+		for (const field of ["access", "refresh", "expires"]) {
+			expect(stored["kimchi-dev/openai"]?.[field]).toBe(stored["kimchi-dev"]?.[field])
 		}
 	})
 

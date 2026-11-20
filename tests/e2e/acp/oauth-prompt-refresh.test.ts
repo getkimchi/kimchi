@@ -134,6 +134,84 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 	})
 }
 
+describe("ACP integration — short-lived replacement through a tool continuation", () => {
+	let fixture: AcpFixture
+	let oauth: FakeOAuthRefreshServer
+	let authPath = ""
+	const command = "printf 'oauth-continuation-done\\n'"
+
+	beforeEach(async () => {
+		oauth = await startFakeOAuthRefreshServer({ expiresInSeconds: 60 })
+		fixture = await startAcpFixture({
+			artifactName: "oauth-prompt-refresh-tool-continuation",
+			providerId: "kimchi-dev/openai",
+			defaultModel: "basic",
+			responses: [
+				{
+					match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+					toolCalls: [
+						{
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command, description: "Check OAuth tool continuation" }),
+							},
+						},
+					],
+				},
+				{
+					match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+					stream: [REFRESH_CONTINUED_REPLY],
+				},
+				{
+					match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+					stream: ["Refreshed follow-up continued."],
+				},
+			],
+			seedHome: (homeDir) => {
+				authPath = seedExpiringOAuthCredential(homeDir, oauth.tokenUrl)
+			},
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		await fixture.stop()
+		await oauth.close()
+	})
+
+	it("shares one grant across both model requests and clears reuse for the next prompt", async () => {
+		const sessionId = await newSession(fixture, fixture.workDir)
+		expireSeededOAuthCredential(authPath)
+
+		const result = await prompt(fixture, sessionId, "Use a tool with the refreshed credential")
+
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.chunks).toBe(REFRESH_CONTINUED_REPLY)
+		expect(oauth.grants).toHaveLength(1)
+		expect(fixture.fake.requests.map(chatAuthorization).filter((value) => value !== undefined)).toEqual([
+			`Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+			`Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+		])
+		const toolCalls = fixture.client.sessionUpdates
+			.map(({ update }) => update)
+			.filter((update) => update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		expect(toolCalls[0]).toMatchObject({ rawInput: { command, description: "Check OAuth tool continuation" } })
+		const stored = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, Record<string, unknown>>
+		for (const field of ["access", "refresh", "expires"]) {
+			expect(stored["kimchi-dev/openai"]?.[field]).toBe(stored["kimchi-dev"]?.[field])
+		}
+
+		const followUp = await prompt(fixture, sessionId, "Continue in a separate prompt")
+		expect(followUp.stopReason).toBe("end_turn")
+		expect(followUp.chunks).toBe(`${REFRESH_CONTINUED_REPLY}Refreshed follow-up continued.`)
+		expect(oauth.grants).toHaveLength(2)
+		const afterFollowUp = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, Record<string, unknown>>
+		for (const field of ["access", "refresh", "expires"]) {
+			expect(afterFollowUp["kimchi-dev/openai"]?.[field]).toBe(afterFollowUp["kimchi-dev"]?.[field])
+		}
+	})
+})
+
 describe("ACP integration — transient canonical refresh failure", () => {
 	let fixture: AcpFixture
 	let oauth: FakeOAuthRefreshServer

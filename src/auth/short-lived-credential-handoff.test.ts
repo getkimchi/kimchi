@@ -1,6 +1,7 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	releasePreparedOAuthCredential,
 	rememberPreparedOAuthCredential,
 	resetPreparedOAuthCredentialsForTests,
 	shouldReusePreparedOAuthCredential,
@@ -16,31 +17,35 @@ beforeEach(() => {
 })
 
 describe("short-lived OAuth credential handoff", () => {
-	it("keeps same-store one-shot handoffs independent for concurrent sessions", () => {
+	it("keeps same-store prompt handoffs independent for concurrent sessions", () => {
 		const sessionA: object = {}
 		const sessionB: object = {}
-		rememberPreparedOAuthCredential(authPath, credential, { fanoutPending: false }, sessionA)
-		rememberPreparedOAuthCredential(authPath, credential, { fanoutPending: false }, sessionB)
-		// Each session's refreshed grant is used once by its own prompt. B's
-		// canonical preflight must not delete A's pending request-time lookup.
-		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionB)).toBe(true)
-		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionA)).toBe(true)
+		rememberPreparedOAuthCredential(authPath, credential, sessionA)
+		rememberPreparedOAuthCredential(authPath, credential, sessionB)
+
+		for (const owner of [sessionA, sessionB]) {
+			expect(shouldReusePreparedOAuthCredential(authPath, credential, owner)).toBe(true)
+			expect(shouldReusePreparedOAuthCredential(authPath, credential, owner)).toBe(true)
+		}
+		releasePreparedOAuthCredential(authPath, sessionA)
 		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionA)).toBe(false)
+		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionB)).toBe(true)
+		releasePreparedOAuthCredential(authPath, sessionB)
 		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionB)).toBe(false)
 	})
 
-	it("preserves an unsynchronized replacement across canonical recovery and consumes it once ready", () => {
-		rememberPreparedOAuthCredential(authPath, credential, { fanoutPending: true }, sessionOwner)
+	it("reuses the exact replacement until the originating prompt is released", () => {
+		rememberPreparedOAuthCredential(authPath, credential, sessionOwner)
 		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(true)
 		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(true)
 
-		rememberPreparedOAuthCredential(authPath, credential, { fanoutPending: false }, sessionOwner)
-		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(true)
+		releasePreparedOAuthCredential(authPath, sessionOwner)
+
 		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(false)
 	})
 
 	it("never reuses a different or retired grant", () => {
-		rememberPreparedOAuthCredential(authPath, credential, { fanoutPending: false }, sessionOwner)
+		rememberPreparedOAuthCredential(authPath, credential, sessionOwner)
 		expect(
 			shouldReusePreparedOAuthCredential(authPath, { ...credential, refresh: "original-refresh" }, sessionOwner),
 		).toBe(false)
@@ -48,14 +53,15 @@ describe("short-lived OAuth credential handoff", () => {
 		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(true)
 	})
 
-	it("allows a margin-expired replacement for its immediate auth use, then refreshes normally", () => {
+	it("allows a margin-expired replacement for its prompt until explicit release", () => {
 		const now = Date.now()
 		vi.useFakeTimers()
 		try {
 			vi.setSystemTime(now)
-			rememberPreparedOAuthCredential(authPath, credential, { fanoutPending: false }, sessionOwner)
+			rememberPreparedOAuthCredential(authPath, credential, sessionOwner)
 			vi.setSystemTime(credential.expires)
 			expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(true)
+			releasePreparedOAuthCredential(authPath, sessionOwner)
 			expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(false)
 		} finally {
 			vi.useRealTimers()
@@ -70,7 +76,7 @@ describe("short-lived OAuth credential handoff", () => {
 			tokenUrl: "http://127.0.0.1/token",
 			accessToken: credential.access,
 		}
-		rememberPreparedOAuthCredential(authPath, stored, { fanoutPending: false }, sessionOwner)
+		rememberPreparedOAuthCredential(authPath, stored, sessionOwner)
 		expect(shouldReusePreparedOAuthCredential(authPath, stored, sessionOwner)).toBe(true)
 	})
 })
