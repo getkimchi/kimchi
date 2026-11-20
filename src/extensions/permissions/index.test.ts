@@ -1193,7 +1193,7 @@ describe("classifier outage escalation to the parent session", () => {
 		const started = worker.fire("tool_call", event, workerCtx)
 		await vi.waitFor(() =>
 			expect(parentCtx.ui.notify).toHaveBeenCalledWith(
-				"Subagent explorer — find the config files is waiting for permission. Its prompt will open when the input editor is empty and no other dialog is active.",
+				"Subagent explorer — find the config files is waiting for permission. Its prompt will open when the input is empty and no question is open.",
 				"info",
 			),
 		)
