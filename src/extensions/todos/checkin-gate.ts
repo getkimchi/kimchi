@@ -80,6 +80,13 @@ interface SessionGateState {
 	 *  kept for the session (their transcript rows stay collapsed) and
 	 *  disposed with it. */
 	blockedToolCalls: Set<string>
+	/** One-line descriptions of work calls blocked while checks were
+	 *  pending, drained into the re-issue reminder when the gate closes
+	 *  (all checks resolved). Kept separate from blockedToolCalls: that set
+	 *  serves transcript rendering for the session's lifetime, while this
+	 *  ledger exists only until a closing surface has reminded the model —
+	 *  a blocked call the model never re-issues is lost work otherwise. */
+	blockedWork: string[]
 }
 
 const gateStates = new Map<string, SessionGateState>()
@@ -95,6 +102,7 @@ function sessionState(sessionId: string): SessionGateState {
 			stalenessOpeningsRevision: 0,
 			enforcementActive: true,
 			blockedToolCalls: new Set(),
+			blockedWork: [],
 		}
 		gateStates.set(sessionId, state)
 	}
@@ -340,9 +348,26 @@ export function recordStalenessOpening(sessionId: string, inputRevision: number)
 // ── Gate-blocked tool call registry ──────────────────────────────────────────
 
 /** Record a tool call the gate blocked. Written only from the gate's
- *  tool_call hook — harness knowledge the transcript renderer can trust. */
-export function recordGateBlockedToolCall(sessionId: string, toolCallId: string): void {
-	sessionState(sessionId).blockedToolCalls.add(toolCallId)
+ *  tool_call hook — harness knowledge the transcript renderer can trust.
+ *  `description` is the one-line summary of the swallowed work call for
+ *  the closing surface's re-issue reminder (see claimGateBlockedWork). */
+export function recordGateBlockedToolCall(sessionId: string, toolCallId: string, description?: string): void {
+	const state = sessionState(sessionId)
+	state.blockedToolCalls.add(toolCallId)
+	if (description !== undefined) state.blockedWork.push(description)
+}
+
+/** Take the work calls blocked while checks were pending, for the closing
+ *  surface's re-issue reminder. Returns nothing while any check is still
+ *  pending (work remains gated; the reminder belongs to the close that
+ *  admits work again) and drains only once, so each swallowed call is
+ *  named exactly one time. */
+export function claimGateBlockedWork(sessionId: string): string[] {
+	const state = gateStates.get(sessionId)
+	if (!state || state.pendingByScope.size > 0) return []
+	const blocked = state.blockedWork
+	state.blockedWork = []
+	return blocked
 }
 
 /** True when the gate blocked this tool call in any live session. Tool call
