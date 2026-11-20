@@ -1451,6 +1451,93 @@ describe("classifier outage escalation to the parent session", () => {
 		})
 	})
 
+	// The classifier can run for many seconds. A mode change in that time has
+	// no prompt of this call to withdraw, so the gate checks the mode again
+	// before it acts on the verdict.
+	describe("mode changes while a call is being classified", () => {
+		const safeVerdict = { verdict: "safe", ok: true, reason: "routine", riskScore: "low" } as const
+		type Verdict = Awaited<ReturnType<typeof classifyToolCall>>
+
+		beforeEach(() => {
+			vi.useFakeTimers()
+		})
+		afterEach(() => {
+			vi.useRealTimers()
+		})
+
+		/** A classification that stays pending until the test releases it. */
+		function holdClassifier(): (verdict: Verdict) => void {
+			let release: (verdict: Verdict) => void = () => {}
+			vi.mocked(classifyToolCall).mockImplementationOnce(
+				() =>
+					new Promise<Verdict>((resolve) => {
+						release = resolve
+					}),
+			)
+			return (verdict) => release(verdict)
+		}
+
+		const enterPlanMode = () =>
+			setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" })
+
+		it.each([
+			{ name: "a safe verdict", verdict: safeVerdict },
+			{ name: "a verdict that needs approval", verdict: needsApproval },
+		])("blocks a subagent's call under plan mode entered before $name arrived", async ({ verdict }) => {
+			const { parentCtx, worker, workerCtx } = await setupEscalation()
+			parentCtx.mode = "tui"
+			// "Yes" to anything that is asked: no prompt may open at all.
+			parentCtx.ui.select = vi.fn(async (_title: string, choices: string[]) => choices[0])
+			const release = holdClassifier()
+			const started = worker.fire("tool_call", event, workerCtx)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledTimes(1)
+
+			enterPlanMode()
+			release(verdict as Verdict)
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS + 10)
+
+			expect(await started).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
+			expect(parentCtx.ui.select).not.toHaveBeenCalled()
+		})
+
+		it.each([
+			{ name: "a safe verdict", verdict: safeVerdict },
+			{ name: "a verdict that needs approval", verdict: needsApproval },
+		])("blocks the session's own call under plan mode entered before $name arrived", async ({ verdict }) => {
+			const { parent, parentCtx } = await setupEscalation()
+			parentCtx.mode = "tui"
+			parentCtx.ui.select = vi.fn(async (_title: string, choices: string[]) => choices[0])
+			const release = holdClassifier()
+			const own = parent.fire("tool_call", { ...event, toolCallId: "own-call" }, parentCtx)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledTimes(1)
+
+			enterPlanMode()
+			release(verdict as Verdict)
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS + 10)
+
+			expect(await own).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
+			expect(parentCtx.ui.select).not.toHaveBeenCalled()
+		})
+
+		it("acts on the verdict when the mode did not change", async () => {
+			const { parent, parentCtx } = await setupEscalation()
+			parentCtx.mode = "tui"
+			parentCtx.ui.select = vi.fn(async (_title: string, choices: string[]) => choices[0])
+			const release = holdClassifier()
+			const own = parent.fire("tool_call", { ...event, toolCallId: "own-call" }, parentCtx)
+			await vi.advanceTimersByTimeAsync(50)
+
+			release(needsApproval as Verdict)
+			await vi.advanceTimersByTimeAsync(10)
+
+			expect(await own).toBeUndefined()
+			expect(parentCtx.ui.select).toHaveBeenCalledOnce()
+			expect(vi.mocked(classifyToolCall)).toHaveBeenCalledTimes(1)
+		})
+	})
+
 	it("stops a canceled worker without recording a mode flap", async () => {
 		const { parentCtx, worker, workerCtx } = await setupEscalation()
 		parentCtx.mode = "tui"

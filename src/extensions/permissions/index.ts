@@ -2149,6 +2149,14 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 						reportClassifierNotice(ctx, CLASSIFIER_RECOVERED_NOTICE, "info")
 					}
 
+					// The classifier can take many seconds, and a mode change in that
+					// time found no prompt of this call to withdraw. Acting on the
+					// verdict now would use a mode the session has left: a "safe"
+					// would run a write in plan mode, and a prompt would let "Yes" do
+					// the same. Decide again under the current mode instead.
+					refreshWorkerPolicy(ctx)
+					if (getRuntimePermissionMode().mode !== mode) continue
+
 					// A failed classification (timeout, provider error, bad output) is not
 					// a verdict: it never confirms the call. With a prompt the user is
 					// asked under fixed outage copy (no provider diagnostics); without
