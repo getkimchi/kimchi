@@ -69,6 +69,8 @@ export interface PendingTerminal {
 	deliveryId: string
 	/** Immutable formatted terminal-result block. */
 	readonly payload: string
+	/** Stored here because the registry may evict the stop reason before delivery. */
+	readonly userStopped: boolean
 	phase: TerminalDeliveryPhase
 	owner: TerminalOwner
 }
@@ -90,7 +92,7 @@ export interface TerminalDelivery {
 	 * Record a freshly collected terminal outcome. The payload is retained
 	 * here until an authoritative acknowledgement retires it.
 	 */
-	record(handle: string, payload: string, owner: TerminalOwner): PendingTerminal
+	record(handle: string, payload: string, owner: TerminalOwner, userStopped?: boolean): PendingTerminal
 	/**
 	 * Atomically claim `handle` for a `bash_control` call. Succeeds only
 	 * while the outcome is `available`; returns undefined when it is already
@@ -153,11 +155,12 @@ export function createTerminalDelivery(): TerminalDelivery {
 	const queuedListeners = new Set<() => void>()
 	const sessionId = randomUUID()
 
-	function record(handle: string, payload: string, owner: TerminalOwner): PendingTerminal {
+	function record(handle: string, payload: string, owner: TerminalOwner, userStopped = false): PendingTerminal {
 		const pending: PendingTerminal = {
 			handle,
 			deliveryId: randomUUID(),
 			payload,
+			userStopped,
 			phase: "available",
 			owner,
 		}

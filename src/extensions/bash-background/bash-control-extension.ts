@@ -499,7 +499,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 						fullOutputPath: final.fullOutputPath,
 					})
 				: undefined
-			if (payload) delivery.record(handle, payload, owner)
+			if (payload) delivery.record(handle, payload, owner, final?.reason === USER_STOP_REASON)
 			coordinator.handleRemoved(handle)
 			await registry.remove(handle).catch(() => {})
 			return payload
@@ -595,13 +595,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 				// A cancelled/errored run must not be restarted, and a stop the
 				// user asked for must not start a turn either: keep the payload in
 				// the conversation (appended, no inference wake) instead.
-				// Collection already removed the entry, so the reason is read from
-				// the completed snapshot.
-				const userStopped = included.every(
-					(handle) =>
-						(state.registry.displaySnapshot(handle) ?? state.registry.completedSnapshot(handle)?.display)?.reason ===
-						USER_STOP_REASON,
-				)
+				const userStopped = included.every((handle) => state.delivery.getPending(handle)?.userStopped === true)
 				const triggerTurn = runTerminated === undefined && !userStopped
 				if (triggerTurn && sessionId !== undefined) {
 					// Label the run this wake may start (v1 bridge for the v2
