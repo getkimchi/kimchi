@@ -234,6 +234,56 @@ describe("isVerifierWritablePath", () => {
 		expect(isVerifierWritablePath("  ", { cwd: "/repo" })).toBe(false)
 		expect(isVerifierWritablePath("a.ts", {})).toBe(false)
 	})
+
+	it("blocks new files through a repository symlink that escapes the repository", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-verifier-symlink-"))
+		try {
+			const repo = join(dir, "repo")
+			const outside = join(dir, "outside")
+			mkdirSync(repo)
+			mkdirSync(outside)
+			symlinkSync(outside, join(repo, "link"))
+			const path = join(repo, "link", "probe.test.ts")
+			expect(isVerifierWritablePath(path, { cwd: repo })).toBe(false)
+			const ext = bindGuard(createVerifierGuard({ cwd: repo }))
+			expect(await blocks(ext, toolCall({ path, content: "probe" }, "write"))).toMatchObject([{ block: true }])
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("allows a new probe through a symlink that stays inside the repository", () => {
+		const repo = mkdtempSync(join(tmpdir(), "kimchi-verifier-internal-link-"))
+		try {
+			mkdirSync(join(repo, "tests"))
+			symlinkSync(join(repo, "tests"), join(repo, "alias"))
+			expect(isVerifierWritablePath("alias/probe.test.ts", { cwd: repo })).toBe(true)
+		} finally {
+			rmSync(repo, { recursive: true, force: true })
+		}
+	})
+
+	it("blocks baseline worktree writes through linked node_modules", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-verifier-linked-deps-"))
+		try {
+			const repo = join(dir, "repo")
+			const worktree = join(dir, "worktree")
+			mkdirSync(repo)
+			mkdirSync(worktree)
+			mkdirSync(join(repo, "node_modules"))
+			symlinkSync(join(repo, "node_modules"), join(worktree, "node_modules"))
+			const path = join(worktree, "node_modules", "probe.js")
+			const roots = { cwd: repo, worktree }
+			expect(isVerifierWritablePath(path, roots)).toBe(false)
+			const ext = bindGuard(
+				createVerifierGuard({ cwd: repo, baselineWorktree: { path: worktree, ensure: async () => true } }),
+			)
+			expect(await blocks(ext, toolCall({ path, content: "probe" }, "write"))).toMatchObject([{ block: true }])
+			expect(await blocks(ext, toolCall({ path, oldText: "a", newText: "b" }, "edit"))).toMatchObject([{ block: true }])
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
 })
 
 describe("createVerifierGuard usage accumulation", () => {

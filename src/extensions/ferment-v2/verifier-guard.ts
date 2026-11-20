@@ -29,7 +29,7 @@
  */
 
 import { lstatSync, realpathSync } from "node:fs"
-import { isAbsolute, relative, resolve } from "node:path"
+import { dirname, isAbsolute, relative, resolve } from "node:path"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent"
 import { isRecord } from "./reducer.js"
@@ -141,23 +141,6 @@ function inputMentions(value: unknown, paths: readonly string[]): boolean {
 	return false
 }
 
-/** A path and its symlink-resolved form (macOS keeps the temp dir under /private). */
-function pathForms(path: string): string[] {
-	try {
-		const resolved = realpathSync(path)
-		return resolved === path ? [path] : [path, resolved]
-	} catch {
-		return [path]
-	}
-}
-
-function isInsideAny(path: string, roots: readonly string[]): boolean {
-	return roots.some((root) => {
-		const rel = relative(root, path)
-		return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
-	})
-}
-
 function pathExists(path: string): boolean {
 	try {
 		lstatSync(path)
@@ -165,6 +148,35 @@ function pathExists(path: string): boolean {
 	} catch {
 		return false
 	}
+}
+
+/** Resolve symlinked parents even when the target file does not exist yet. */
+function resolvedDestination(path: string): string | undefined {
+	let ancestor = path
+	while (!pathExists(ancestor)) {
+		const parent = dirname(ancestor)
+		if (parent === ancestor) return undefined
+		ancestor = parent
+	}
+	try {
+		return resolve(realpathSync(ancestor), relative(ancestor, path))
+	} catch {
+		// A dangling or looping symlink is not a safe write destination.
+		return undefined
+	}
+}
+
+/** A path and its symlink-resolved form (macOS keeps the temp dir under /private). */
+function pathForms(path: string): string[] {
+	const resolved = resolvedDestination(path)
+	return resolved && resolved !== path ? [path, resolved] : [path]
+}
+
+function isInsideAny(path: string, roots: readonly string[]): boolean {
+	return roots.some((root) => {
+		const rel = relative(root, path)
+		return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+	})
 }
 
 /**
@@ -179,8 +191,17 @@ export function isVerifierWritablePath(rawPath: unknown, roots: { cwd?: string; 
 	const base = roots.cwd ?? roots.worktree
 	if (!base) return false
 	const target = resolve(base, rawPath)
-	if (roots.worktree && isInsideAny(target, pathForms(roots.worktree))) return true
-	return roots.cwd !== undefined && isInsideAny(target, pathForms(roots.cwd)) && !pathExists(target)
+	const destination = resolvedDestination(target)
+	if (!destination) return false
+	if (roots.worktree && isInsideAny(target, pathForms(roots.worktree))) {
+		const worktree = resolvedDestination(roots.worktree)
+		return worktree !== undefined && isInsideAny(destination, [worktree])
+	}
+	if (roots.cwd && isInsideAny(target, pathForms(roots.cwd))) {
+		const cwd = resolvedDestination(roots.cwd)
+		return cwd !== undefined && isInsideAny(destination, [cwd]) && !pathExists(target)
+	}
+	return false
 }
 
 /**
