@@ -31,7 +31,12 @@ test.use(TUI_TEST_CONFIG)
 function patchHarnessSettings(homeDir: string, patch: Record<string, unknown>): void {
 	const path = harnessSettingsPath(homeDir)
 	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
-	Object.assign(settings, patch)
+	const { resources, ...root } = patch
+	Object.assign(settings, root)
+	if (resources) {
+		const current = (settings.resources ?? {}) as Record<string, unknown>
+		settings.resources = { ...current, ...(resources as Record<string, unknown>) }
+	}
 	writeFileSync(path, JSON.stringify(settings, null, "\t"))
 }
 
@@ -59,7 +64,7 @@ for (const fermentEnabled of [true, false]) {
 				artifactName: `tool-surface-ferment-${fermentEnabled ? "on" : "off"}-no-defaulttools`,
 				responses: [{ stream: ["Hello."] }],
 				seedHome(homeDir) {
-					patchHarnessSettings(homeDir, { "extensions.ferment": fermentEnabled })
+					patchHarnessSettings(homeDir, { resources: { "extensions.ferment": fermentEnabled } })
 				},
 			},
 			async (fixture, trace) => {
@@ -74,6 +79,7 @@ for (const fermentEnabled of [true, false]) {
 				expect(tools).toContain("write")
 				expect(tools).toContain("codemode")
 				expect(tools).not.toContain("tool_search")
+				expect(tools.includes("list_ferments")).toBe(fermentEnabled)
 				trace.step("wire surface checked")
 			},
 		)
@@ -89,7 +95,7 @@ for (const fermentEnabled of [true, false]) {
 				responses: [{ stream: ["Hello."] }],
 				seedHome(homeDir) {
 					patchHarnessSettings(homeDir, {
-						"extensions.ferment": fermentEnabled,
+						resources: { "extensions.ferment": fermentEnabled },
 						defaultTools: ["+codemode"],
 					})
 				},
