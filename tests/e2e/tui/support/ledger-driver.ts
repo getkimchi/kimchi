@@ -1510,6 +1510,118 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 	closeBackends()
 }
 
+/** Delivery-status read parity: the optimized read must agree with the full status read's
+ * delivery-relevant projection across every account shape (pending, acknowledged, blocked,
+ * mixed, batched, batch-only), on first open and after a cold reopen. SQLite mode also
+ * asserts the probe queries stay bounded by the covering indexes. */
+async function deliveryStatusScenario(agent: string, mode: string): Promise<void> {
+	const { outboxDeliveryStatus, readOutboxStatus } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+	)
+	const { backendFor, closeBackends, useBackendFactory } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
+	)
+	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
+	const { createHash } = await import("node:crypto")
+	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
+	const backend = backendFor(agent)
+	const event = (accountKey: string, index: number) => {
+		const id = `ev-${accountKey}-${index}`
+		const body = Buffer.from(JSON.stringify({ id, entityId: id }))
+		return {
+			id,
+			accountKey,
+			entityId: id,
+			kind: "work",
+			body,
+			hash: createHash("sha256").update(body).digest("hex"),
+			createdAt: index,
+			ackedAt: null,
+			blocked: "",
+		}
+	}
+	const must = (ok: boolean, what: string) => {
+		if (!ok) throw new Error(`delivery-status seed: ${what}`)
+	}
+	backend.tx(() => {
+		for (let index = 0; index < 3; index++) backend.insertOutboxEvent(event("account-pending", index))
+		for (let index = 0; index < 2; index++) {
+			const acked = event("account-acked", index)
+			backend.insertOutboxEvent(acked)
+			must(backend.ackOutboxEvent("account-acked", acked.id, acked.hash, index), "acknowledge failed")
+		}
+		for (let index = 0; index < 2; index++) {
+			const blocked = event("account-blocked", index)
+			backend.insertOutboxEvent(blocked)
+			must(backend.blockOutboxEvent("account-blocked", blocked.id, blocked.hash, "driver"), "block failed")
+		}
+		for (let index = 0; index < 3; index++) {
+			const mixed = event("account-mixed", index)
+			backend.insertOutboxEvent(mixed)
+			if (index === 0) must(backend.ackOutboxEvent("account-mixed", mixed.id, mixed.hash, index), "ack failed")
+			if (index === 1) must(backend.blockOutboxEvent("account-mixed", mixed.id, mixed.hash, "driver"), "block failed")
+		}
+		for (let index = 0; index < 2; index++) backend.insertOutboxEvent(event("account-batched", index))
+		for (let index = 0; index < 3; index++)
+			backend.insertOutboxBatch({
+				id: `batch-${index}`,
+				accountKey: "account-batched",
+				body: Buffer.alloc(0),
+				eventIds: [],
+				createdAt: index,
+				orderKey: "",
+			})
+		backend.insertOutboxBatch({
+			id: "batch-only",
+			accountKey: "account-batchonly",
+			body: Buffer.alloc(0),
+			eventIds: [],
+			createdAt: 0,
+			orderKey: "",
+		})
+	})
+	const projection = (
+		rows: { accountKey: string; sendable: boolean; hasBatch: boolean; firstBatchId: string | null }[],
+	) => JSON.stringify([...rows].sort((a, b) => a.accountKey.localeCompare(b.accountKey)))
+	const full = readOutboxStatus(agent).map((status) => ({
+		accountKey: status.accountKey,
+		sendable: status.sendable > 0,
+		hasBatch: status.batches > 0,
+		firstBatchId: status.firstBatchId,
+	}))
+	const delivery = outboxDeliveryStatus(agent)
+	const same = projection(full) === projection(delivery)
+	// A cold reopen is only meaningful where state persists: the memory backend is
+	// in-process, so closeBackends() leaves nothing behind to reopen.
+	let reopenedSame: boolean | undefined
+	if (mode !== "memory") {
+		closeBackends()
+		const reopened = outboxDeliveryStatus(agent)
+		reopenedSame = projection(reopened) === projection(delivery)
+	}
+	let plans: { sendable: string[]; firstBatch: string[] } | undefined
+	if (mode !== "memory") {
+		const db = new Database(join(reportingDirectory(agent), "ledger.db"), { readonly: true })
+		const explain = (sql: string) =>
+			db
+				.prepare(`EXPLAIN QUERY PLAN ${sql}`)
+				.all()
+				.map((row) => String(row.detail))
+		plans = {
+			sendable: explain(
+				"SELECT 1 FROM outbox_events WHERE account_key = 'account-pending' AND acked_at IS NULL AND blocked = '' LIMIT 1",
+			),
+			firstBatch: explain(
+				"SELECT id FROM outbox_batches WHERE account_key = 'account-batched' ORDER BY order_key, created_at, rowid LIMIT 1",
+			),
+		}
+		db.close()
+	}
+	out({ same, reopenedSame, accounts: delivery.length, delivery, plans })
+	if (!same) throw new Error("delivery status disagrees with the full status projection")
+	if (reopenedSame === false) throw new Error("delivery status changed across a cold reopen")
+}
+
 async function outboxTransport(agent: string): Promise<void> {
 	const { observeEvents, pendingBatch, acknowledgeBatch } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
@@ -2237,8 +2349,15 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	producer: (agent) => producerScenario(agent),
 	"legacy-freeze": (agent) => legacyFreezeScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),
+	"delivery-status": (agent, mode) => deliveryStatusScenario(agent, mode ?? "sqlite"),
 	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),
+	"import-capture": async (agent) => {
+		const { importJournals } = await import("../../../../src/extensions/pr-cost-reporting/ledger/import.js")
+		let result = await importJournals(agent, { verifyCapturePrefix: true })
+		while (result.pending) result = await importJournals(agent, { verifyCapturePrefix: true })
+		out({ imported: result.imported, modes: result.files.map((file) => file.mode) })
+	},
 	"read-history": async (agent) => {
 		const problems: WorkRecordProblem[] = []
 		const records = readWorkRecords(agent, undefined, undefined, (problem) => problems.push(problem))

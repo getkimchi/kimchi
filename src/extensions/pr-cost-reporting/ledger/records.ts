@@ -83,6 +83,16 @@ export interface OutboxAccountStatus {
 	firstBatchId: string | null
 }
 
+/** Delivery-relevant account status: what the worker's delivery loop needs — the account, sendable
+ * presence, batch presence and first batch — without the full read's aggregation over all event
+ * history. */
+export interface DeliveryAccountStatus {
+	accountKey: string
+	sendable: boolean
+	hasBatch: boolean
+	firstBatchId: string | null
+}
+
 /** Primitive storage contract; see schema.ts for the SQL tables and memory-records.ts for the test double. */
 export interface RecordBackend {
 	/** Runs `fn` atomically; no await may happen inside. */
@@ -115,6 +125,8 @@ export interface RecordBackend {
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
 	outboxStatus(): OutboxAccountStatus[]
+	/** Delivery-relevant account status for the worker's delivery loop; see DeliveryAccountStatus. */
+	outboxDeliveryStatus(): DeliveryAccountStatus[]
 	getOutboxBatch(accountKey: string): OutboxBatch | undefined
 	insertOutboxBatch(batch: OutboxBatch): void
 	ackOutboxEvent(accountKey: string, id: string, hash: string, at: number): boolean
@@ -771,6 +783,22 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			USING (account_key)
 		ORDER BY a.account_key
 	`)
+	// The sendable probe is fully covered by outbox_pending_cover (account_key, acked_at, blocked) and
+	// the first-batch lookup by outbox_batches_by_account (account_key, order_key, created_at): no
+	// aggregation over event history, no new index.
+	const outboxDeliveryRows = db.query<
+		{ accountKey: string; sendable: number; hasBatch: number; firstBatchId: string | null },
+		[]
+	>(`
+		SELECT a.account_key AS accountKey,
+			EXISTS(SELECT 1 FROM outbox_events e
+				WHERE e.account_key = a.account_key AND e.acked_at IS NULL AND e.blocked = '') AS sendable,
+			EXISTS(SELECT 1 FROM outbox_batches b WHERE b.account_key = a.account_key) AS hasBatch,
+			(SELECT id FROM outbox_batches WHERE account_key = a.account_key
+				ORDER BY order_key, created_at, rowid LIMIT 1) AS firstBatchId
+		FROM (SELECT account_key FROM outbox_events UNION SELECT account_key FROM outbox_batches) a
+		ORDER BY a.account_key
+	`)
 	const getRow = db.query<{ body: string }, [string, string, string]>(
 		"SELECT body FROM work_projection_rows WHERE work_id = ? AND log = ? AND key = ?",
 	)
@@ -903,6 +931,13 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			),
 		pendingOutboxEvents: (accountKey, limit) => pendingEvents.all(accountKey, limit),
 		outboxStatus: () => outboxStatus.all(),
+		outboxDeliveryStatus: () =>
+			outboxDeliveryRows.all().map((row) => ({
+				accountKey: row.accountKey,
+				sendable: row.sendable === 1,
+				hasBatch: row.hasBatch === 1,
+				firstBatchId: row.firstBatchId,
+			})),
 		getOutboxBatch: (accountKey) => {
 			const batch = pendingBatch.get(accountKey)
 			return batch ? { ...batch, eventIds: JSON.parse(Buffer.from(batch.eventIds).toString("utf8")) } : undefined

@@ -2356,7 +2356,10 @@ describe("AgentManager session hand-off", () => {
 		const b = new AgentManager()
 		b.adoptRecords(records, queued, midResumeIds, fakePi(), fakeCtx())
 
-		const res = workerReport!.submit({
+		if (!workerReport) {
+			throw new Error("expected a worker report handle after session replacement")
+		}
+		const res = workerReport.submit({
 			status: "completed",
 			summary: "step finished",
 			steps_completed: ["one"],
@@ -2364,7 +2367,7 @@ describe("AgentManager session hand-off", () => {
 		})
 		expect(res.accepted).toBe(true) // the pre-fix blocker: false (record gone from old manager)
 		expect(b.getRecord(id)?.agentReport).toMatchObject({ attempt_id: 0, submitted_at: expect.any(Number) })
-		expect(workerReport!.isAccepted()).toBe(true)
+		expect(workerReport.isAccepted()).toBe(true)
 		runResult.resolve({
 			responseText: "done",
 			session: { dispose: vi.fn() } as unknown as AgentSession,

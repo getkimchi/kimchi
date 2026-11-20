@@ -6,7 +6,8 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, it } from "vitest"
 import { createMemoryRecords } from "./memory-records.js"
-import { effectiveClaims, effectiveClaimsAsync } from "./outbox.js"
+import { effectiveClaims, effectiveClaimsAsync, outboxDeliveryStatus } from "./outbox.js"
+import { useBackendFactory } from "./records.js"
 
 /** Seed entities x revisions of claim-shaped events, with blocked rows interleaved. */
 function seedClaims(backend: ReturnType<typeof createMemoryRecords>, entities: string[]): void {
@@ -117,6 +118,153 @@ it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and ato
 			acknowledgedHistoryRetained: true,
 			reopened: mode === "sqlite",
 		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
+/** Seed every account shape the delivery-status projection must distinguish. */
+function seedDeliveryShapes(backend: ReturnType<typeof createMemoryRecords>): void {
+	const event = (accountKey: string, index: number) => {
+		const id = `ev-${accountKey}-${index}`
+		const body = Buffer.from(JSON.stringify({ id, entityId: id }))
+		return {
+			id,
+			accountKey,
+			entityId: id,
+			kind: "work",
+			body,
+			hash: createHash("sha256").update(body).digest("hex"),
+			createdAt: index,
+			ackedAt: null as number | null,
+			blocked: "",
+		}
+	}
+	backend.tx(() => {
+		for (let index = 0; index < 3; index++) backend.insertOutboxEvent(event("account-pending", index))
+		for (let index = 0; index < 2; index++) {
+			const acked = event("account-acked", index)
+			backend.insertOutboxEvent(acked)
+			if (!backend.ackOutboxEvent("account-acked", acked.id, acked.hash, index)) throw new Error("ack failed")
+		}
+		for (let index = 0; index < 2; index++) {
+			const blocked = event("account-blocked", index)
+			backend.insertOutboxEvent(blocked)
+			if (!backend.blockOutboxEvent("account-blocked", blocked.id, blocked.hash, "test"))
+				throw new Error("block failed")
+		}
+		for (let index = 0; index < 3; index++) {
+			const mixed = event("account-mixed", index)
+			backend.insertOutboxEvent(mixed)
+			if (index === 0 && !backend.ackOutboxEvent("account-mixed", mixed.id, mixed.hash, index))
+				throw new Error("ack failed")
+			if (index === 1 && !backend.blockOutboxEvent("account-mixed", mixed.id, mixed.hash, "test"))
+				throw new Error("block failed")
+		}
+		for (let index = 0; index < 2; index++) backend.insertOutboxEvent(event("account-batched", index))
+		for (let index = 0; index < 3; index++)
+			backend.insertOutboxBatch({
+				id: `batch-${index}`,
+				accountKey: "account-batched",
+				body: Buffer.alloc(0),
+				eventIds: [],
+				createdAt: index,
+				orderKey: "",
+			})
+		backend.insertOutboxBatch({
+			id: "batch-only",
+			accountKey: "account-batchonly",
+			body: Buffer.alloc(0),
+			eventIds: [],
+			createdAt: 0,
+			orderKey: "",
+		})
+	})
+}
+
+it("the delivery-only status is the full status projection across every account shape", () => {
+	const backend = createMemoryRecords()
+	seedDeliveryShapes(backend)
+	const full = backend.outboxStatus().map((status) => ({
+		accountKey: status.accountKey,
+		sendable: status.sendable > 0,
+		hasBatch: status.batches > 0,
+		firstBatchId: status.firstBatchId,
+	}))
+	const delivery = backend.outboxDeliveryStatus()
+	// The parity guard: the optimized read may drop no account and flip no field.
+	expect(delivery).toEqual(full)
+	// The shapes that make the guard load-bearing, pinned explicitly.
+	expect(new Map(delivery.map((status) => [status.accountKey, status]))).toEqual(
+		new Map([
+			["account-pending", { accountKey: "account-pending", sendable: true, hasBatch: false, firstBatchId: null }],
+			["account-acked", { accountKey: "account-acked", sendable: false, hasBatch: false, firstBatchId: null }],
+			["account-blocked", { accountKey: "account-blocked", sendable: false, hasBatch: false, firstBatchId: null }],
+			["account-mixed", { accountKey: "account-mixed", sendable: true, hasBatch: false, firstBatchId: null }],
+			["account-batched", { accountKey: "account-batched", sendable: true, hasBatch: true, firstBatchId: "batch-0" }],
+			[
+				"account-batchonly",
+				{ accountKey: "account-batchonly", sendable: false, hasBatch: true, firstBatchId: "batch-only" },
+			],
+		]),
+	)
+})
+
+it("delivery status reads and enriches retry state in one backend transaction", () => {
+	const backend = createMemoryRecords()
+	seedDeliveryShapes(backend)
+	const batchId = "11111111-1111-4111-8111-111111111111"
+	backend.insertOutboxBatch({
+		id: batchId,
+		accountKey: "account-retry",
+		body: Buffer.alloc(0),
+		eventIds: [],
+		createdAt: 0,
+		orderKey: "",
+	})
+	backend.putNote(
+		"pr-cost-delivery",
+		"account-retry",
+		JSON.stringify({ batchId, attempts: 4, retryAt: 12345, error: "temporary" }),
+	)
+	const transact = backend.tx.bind(backend)
+	let transactions = 0
+	backend.tx = (fn) => {
+		transactions++
+		return transact(fn)
+	}
+	useBackendFactory(() => backend)
+	try {
+		const batched = outboxDeliveryStatus("unused").find((status) => status.accountKey === "account-retry")
+		expect(batched).toMatchObject({
+			firstBatchId: batchId,
+			retry: { batchId, attempts: 4, retryAt: 12345, error: "temporary" },
+		})
+		expect(transactions).toBe(1)
+	} finally {
+		useBackendFactory(null)
+	}
+})
+
+it.each([
+	"memory",
+	"sqlite",
+])("the delivery-only status survives a cold reopen and its probes stay index-bounded (%s)", {
+	timeout: 30_000,
+}, (mode) => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-delivery-status-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "delivery-status", dir, mode], { encoding: "utf8", timeout: 60_000 }),
+		)
+		expect(result).toMatchObject({ same: true, accounts: 6 })
+		expect(result.reopenedSame).toBe(mode === "sqlite" ? true : undefined)
+		if (mode === "sqlite") {
+			// The probes must run on the covering indexes, never a table scan.
+			expect(result.plans.sendable.join("\n")).toContain("outbox_pending_cover")
+			expect(result.plans.firstBatch.join("\n")).toContain("outbox_batches_by_account")
+		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true })
 	}
