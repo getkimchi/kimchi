@@ -1,5 +1,6 @@
 import type { LogName, Row, WorkHead } from "../../work-attribution/row-log.js"
 import type {
+	DeliveryAccountStatus,
 	JournalCursor,
 	OutboxAccountStatus,
 	OutboxBatch,
@@ -225,6 +226,29 @@ export function createMemoryRecords(): RecordBackend {
 			)) {
 				const status = account(batch.accountKey)
 				status.batches++
+				status.firstBatchId ??= batch.id
+			}
+			return [...accounts.values()].sort((a, b) => Buffer.compare(Buffer.from(a.accountKey), Buffer.from(b.accountKey)))
+		},
+		outboxDeliveryStatus: () => {
+			const accounts = new Map<string, DeliveryAccountStatus>()
+			const account = (accountKey: string) => {
+				let status = accounts.get(accountKey)
+				if (!status) {
+					status = { accountKey, sendable: false, hasBatch: false, firstBatchId: null }
+					accounts.set(accountKey, status)
+				}
+				return status
+			}
+			for (const event of events.values()) {
+				const status = account(event.accountKey)
+				if (event.ackedAt === null && event.blocked === "") status.sendable = true
+			}
+			for (const batch of [...batches.values()].sort(
+				(a, b) => Buffer.compare(Buffer.from(a.orderKey), Buffer.from(b.orderKey)) || a.createdAt - b.createdAt,
+			)) {
+				const status = account(batch.accountKey)
+				status.hasBatch = true
 				status.firstBatchId ??= batch.id
 			}
 			return [...accounts.values()].sort((a, b) => Buffer.compare(Buffer.from(a.accountKey), Buffer.from(b.accountKey)))

@@ -17,7 +17,13 @@ import {
 	validateIngestBatch,
 	validateIngestEvent,
 } from "../protocol.js"
-import { backendFor, type OutboxBatch, type OutboxEvent, type RecordBackend } from "./records.js"
+import {
+	backendFor,
+	type DeliveryAccountStatus,
+	type OutboxBatch,
+	type OutboxEvent,
+	type RecordBackend,
+} from "./records.js"
 
 const BATCH_EVENTS = 100
 const BATCH_BYTES = 1 << 20
@@ -61,6 +67,19 @@ export function readOutboxStatus(agentDir: string) {
 	const backend = backendFor(agentDir)
 	return backend.tx(() =>
 		backend.outboxStatus().map((status) => ({
+			...status,
+			retry: deliveryRetry(backend, status.accountKey, status.firstBatchId),
+		})),
+	)
+}
+
+/** Delivery-relevant account status: the account, sendable presence, batch presence and first
+ * batch the worker's delivery loop needs, without the full read's aggregation over all event
+ * history. Consumers that need per-account historical totals keep readOutboxStatus. */
+export function outboxDeliveryStatus(agentDir: string): Array<DeliveryAccountStatus & { retry?: DeliveryRetry }> {
+	const backend = backendFor(agentDir)
+	return backend.tx(() =>
+		backend.outboxDeliveryStatus().map((status) => ({
 			...status,
 			retry: deliveryRetry(backend, status.accountKey, status.firstBatchId),
 		})),
