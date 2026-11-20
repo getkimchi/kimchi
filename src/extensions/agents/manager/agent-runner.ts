@@ -936,6 +936,12 @@ ${skillLines}`
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
 
+	// The worker's clock starts here. The budget object was created earlier
+	// because the prompt and the bash clamp need a reference to it, but
+	// building the loader and the session takes time that must not be charged
+	// to max_duration. No tool call has run yet, so nothing holds the old one.
+	timeBudget.budget.dispose()
+	timeBudget.budget = createInteractiveTimeBudget(effectiveMaxDuration, Date.now())
 	timeBudget.budget.setOnExpire(() => {
 		aborted = true
 		abortReason = "max_duration"

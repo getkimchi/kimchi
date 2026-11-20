@@ -2033,6 +2033,64 @@ describe("runAgent — maxDuration enforcement", () => {
 		})
 	}
 
+	it("does not charge the time spent setting the session up", async () => {
+		const SETUP_MS = 20_000
+		const abortSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const session = {
+			subscribe: vi.fn(() => () => {}),
+			abort: abortSpy.mockImplementation(() => {
+				resolvePrompt?.()
+			}),
+			steer: vi.fn(),
+			getActiveToolNames: vi.fn().mockReturnValue([]),
+			setActiveToolsByName: vi.fn(),
+			bindExtensions: vi.fn().mockResolvedValue(undefined),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+		// A slow session setup: most of max_duration passes before the worker
+		// can do anything.
+		mockCreateAgentSession.mockImplementation(async () => {
+			await new Promise((resolve) => setTimeout(resolve, SETUP_MS))
+			return {
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			}
+		})
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				maxDuration: 30,
+			},
+		)
+
+		await vi.advanceTimersByTimeAsync(SETUP_MS)
+		expect(session.prompt).toHaveBeenCalledOnce()
+		// 40 s after the start, but only 20 s into the worker's own time.
+		await vi.advanceTimersByTimeAsync(20_000)
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		await vi.advanceTimersByTimeAsync(11_000)
+		const result = await resultPromise
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.abortReason).toBe("max_duration")
+	})
+
 	it("uses agentConfig.maxDuration when no param override", async () => {
 		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxDuration: 20 }))
 		const abortSpy = vi.fn()
