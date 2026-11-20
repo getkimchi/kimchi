@@ -178,10 +178,11 @@ export function createEscalatedTerminalInteraction(
 	// change, stopped subagent, answer timeout).
 	const requestSignal = req.signal ?? new AbortController().signal
 	const hasForeignDialog = () => isRawInputCaptureActive() || options.hasOtherDialogs()
-	const notice = `Subagent ${originLabel(req.origin)} is waiting for permission. Its prompt will open when the input editor is empty and no other dialog is active.`
+	const notice = `Subagent ${originLabel(req.origin)} is waiting for permission. Its prompt will open when the input is empty and no question is open.`
 	// The toast above fades; this line stays for as long as the prompt
-	// is held back, and goes away once the selector is on screen.
-	const status = `Subagent ${req.origin?.persona ?? "assistant"} is waiting for permission · its prompt opens when the input is empty and no dialog is open`
+	// is held back, and goes away once the selector is on screen. Both name
+	// only what is checked: menus the user opens are not tracked yet.
+	const status = `Subagent ${req.origin?.persona ?? "assistant"} is waiting for permission · its prompt opens when the input is empty and no question is open`
 	let statusShown = false
 	const showStatus = () => {
 		statusShown = true
