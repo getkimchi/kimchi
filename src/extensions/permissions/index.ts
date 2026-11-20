@@ -101,6 +101,7 @@ import {
 	DANGEROUS_BYPASS_FLAG,
 	DEFAULT_CONFIG,
 	ESCALATED_PROMPT_TIMEOUT_MS,
+	MODE_SETTLE_MS,
 	PERMISSION_MODES_WITH_META as MODES,
 	PERMISSIONS_ENV_KEY,
 } from "./constants.js"
@@ -491,6 +492,8 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 	const pendingModeChangeDismissals = new Map<string, ModeChangeReason[]>()
 	let unsubscribeTerminalInput: (() => void) | null = null
 	let lastTerminalInputAt = Number.NEGATIVE_INFINITY
+	/** When this session's mode last changed; see `whenModeSettled`. */
+	let lastModeChangeAt = Number.NEGATIVE_INFINITY
 	let unsubscribePermissionFlagController: (() => void) | undefined
 	let unregisterMainPolicy: (() => void) | undefined
 	let workerMode: PermissionModeState | undefined
@@ -572,6 +575,26 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 		workerRules = [...configRules, ...builtinRules]
 		workerMode = resolveInitialPermissionModeDetailed(ctx.sessionManager, permissionsEnvFlag, undefined, loaded).state
 		workerDangerBypass = isInSandboxCluster()
+	}
+
+	/**
+	 * Wait until the mode has stayed unchanged for MODE_SETTLE_MS. Shift+Tab
+	 * cycles default → plan → auto → yolo, so reaching a mode means passing
+	 * through others. A call whose prompt was withdrawn by a mode change is
+	 * decided after this wait, under the mode the user stopped on: a passing
+	 * yolo must not approve it and a passing plan must not block it. A worker
+	 * waits on its parent's clock; with no parent there is nothing to wait for.
+	 */
+	async function whenModeSettled(signal?: AbortSignal): Promise<void> {
+		if (options.role === "worker") {
+			await getPermissionPolicySource(options.parentSessionId)?.whenModeSettled(signal)
+			return
+		}
+		while (!signal?.aborted) {
+			const remaining = lastModeChangeAt + MODE_SETTLE_MS - Date.now()
+			if (remaining <= 0) return
+			await abortableDelay(remaining, signal)
+		}
 	}
 
 	function isPlanModeTool(name: string): boolean {
@@ -722,6 +745,9 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 			reasons.push(reason)
 			pendingModeChangeDismissals.set(toolCallId, reasons)
 		}
+		// The prompts go away at once; the calls behind them are decided again
+		// only after the mode has settled (whenModeSettled).
+		lastModeChangeAt = Date.now()
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		cancelEscalatedRequests(ctx.sessionManager.getSessionId(), MODE_CHANGED_ABORT_ERROR)
 		activeAbortControllers.clear()
@@ -1041,6 +1067,7 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 			getRules: allRules,
 			getConfig: () => loaded,
 			isDangerBypass,
+			whenModeSettled,
 		})
 
 		// Parent surface: a session that can reach its user accepts its
@@ -1891,6 +1918,11 @@ function createPermissionsExtension(pi: ExtensionAPI, options: PermissionsExtens
 		}
 		try {
 			for (let attempt = 0; attempt < MODES.length; attempt++) {
+				// Every pass after the first follows a mode change (each `continue`
+				// below). The withdrawn prompt is already gone; the decision waits
+				// until the mode has settled, so it is taken under the mode the
+				// user stopped on and not one Shift+Tab only passed through.
+				if (attempt > 0) await whenModeSettled(ctx.signal)
 				// A parent mode change cancels escalated prompts. The worker must
 				// refresh the parent's live policy on every pass.
 				refreshWorkerPolicy(ctx)
@@ -2592,6 +2624,19 @@ function applyApprovalOutcome(
 		}
 	}
 	return { block: true, reason: "Declined by user" }
+}
+
+/** Resolves after `ms`, or at once when `signal` aborts. Never rejects. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		const done = () => {
+			clearTimeout(timer)
+			signal?.removeEventListener("abort", done)
+			resolve()
+		}
+		const timer = setTimeout(done, ms)
+		signal?.addEventListener("abort", done, { once: true })
+	})
 }
 
 function linkAbortSignal(signal: AbortSignal | undefined, controller: AbortController): () => void {
