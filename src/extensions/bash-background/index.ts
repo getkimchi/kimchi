@@ -157,8 +157,9 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 			sessionId,
 			registerBackgroundWorkProvider(sessionId, "bash", {
 				list: () => runningSnapshots(registry).map(processItem),
-				stopAll: async () => {
-					const running = runningSnapshots(registry)
+				stop: async (ids) => {
+					const wanted = new Set(ids)
+					const running = runningSnapshots(registry).filter((snapshot) => wanted.has(snapshot.handle))
 					await Promise.all(running.map((snapshot) => registry.kill(snapshot.handle, USER_STOP_REASON)))
 					return running.map(processItem)
 				},

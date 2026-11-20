@@ -5,14 +5,14 @@ import {
 	backgroundWorkLabel,
 	listBackgroundWork,
 	registerBackgroundWorkProvider,
-	stopAllBackgroundWork,
+	stopBackgroundWork,
 } from "./background-work.js"
 
 const proc = (id: string): BackgroundWorkItem => ({ kind: "process", id, label: id })
 const agent = (id: string): BackgroundWorkItem => ({ kind: "agent", id, label: id })
 
 function provider(items: BackgroundWorkItem[]): BackgroundWorkProvider {
-	return { list: () => items, stopAll: vi.fn(async () => items) }
+	return { list: () => items, stop: vi.fn(async (ids) => items.filter((item) => ids.includes(item.id))) }
 }
 
 describe("background-work", () => {
@@ -30,7 +30,7 @@ describe("background-work", () => {
 
 	it("is empty and a no-op stop for an unknown session", async () => {
 		expect(listBackgroundWork("missing")).toEqual([])
-		await expect(stopAllBackgroundWork("missing")).resolves.toEqual({ processes: 0, agents: 0 })
+		await expect(stopBackgroundWork("missing", [proc("p1")])).resolves.toEqual({ processes: 0, agents: 0 })
 	})
 
 	it("lists bash work before agent work, whatever the registration order", () => {
@@ -40,14 +40,31 @@ describe("background-work", () => {
 		expect(listBackgroundWork("s2")).toEqual([])
 	})
 
-	it("stops every provider and counts per kind", async () => {
+	it("sends each provider the ids of its kind and counts per kind", async () => {
 		const bash = provider([proc("p1"), proc("p2")])
 		const agents = provider([agent("a1")])
 		register("s1", "bash", bash)
 		register("s1", "agents", agents)
-		await expect(stopAllBackgroundWork("s1")).resolves.toEqual({ processes: 2, agents: 1 })
-		expect(bash.stopAll).toHaveBeenCalledOnce()
-		expect(agents.stopAll).toHaveBeenCalledOnce()
+		const items = [proc("p1"), proc("p2"), agent("a1")]
+		await expect(stopBackgroundWork("s1", items)).resolves.toEqual({ processes: 2, agents: 1 })
+		expect(bash.stop).toHaveBeenCalledWith(["p1", "p2"])
+		expect(agents.stop).toHaveBeenCalledWith(["a1"])
+	})
+
+	it("stops only the given items, not work that started later", async () => {
+		const bash = provider([proc("p1"), proc("later")])
+		register("s1", "bash", bash)
+		await expect(stopBackgroundWork("s1", [proc("p1")])).resolves.toEqual({ processes: 1, agents: 0 })
+		expect(bash.stop).toHaveBeenCalledWith(["p1"])
+	})
+
+	it("does not call a provider with no items of its kind", async () => {
+		const bash = provider([proc("p1")])
+		const agents = provider([agent("a1")])
+		register("s1", "bash", bash)
+		register("s1", "agents", agents)
+		await expect(stopBackgroundWork("s1", [agent("a1")])).resolves.toEqual({ processes: 0, agents: 1 })
+		expect(bash.stop).not.toHaveBeenCalled()
 	})
 
 	it("keeps going when one provider throws and logs the error", async () => {
@@ -57,24 +74,27 @@ describe("background-work", () => {
 			list: () => {
 				throw new Error("list boom")
 			},
-			stopAll: () => {
+			stop: () => {
 				throw new Error("stop boom")
 			},
 		})
 		register("s1", "agents", agents)
 
 		expect(listBackgroundWork("s1")).toEqual([agent("a1")])
-		await expect(stopAllBackgroundWork("s1")).resolves.toEqual({ processes: 0, agents: 1 })
-		expect(agents.stopAll).toHaveBeenCalledOnce()
+		await expect(stopBackgroundWork("s1", [proc("p1"), agent("a1")])).resolves.toEqual({ processes: 0, agents: 1 })
+		expect(agents.stop).toHaveBeenCalledOnce()
 		expect(error).toHaveBeenCalledTimes(2)
 		expect(String(error.mock.calls[1][1])).toContain("stop boom")
 	})
 
 	it("counts a rejected stop as nothing stopped", async () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
-		register("s1", "bash", { list: () => [], stopAll: () => Promise.reject(new Error("nope")) })
+		register("s1", "bash", { list: () => [], stop: () => Promise.reject(new Error("nope")) })
 		register("s1", "agents", provider([agent("a1"), agent("a2")]))
-		await expect(stopAllBackgroundWork("s1")).resolves.toEqual({ processes: 0, agents: 2 })
+		await expect(stopBackgroundWork("s1", [proc("p1"), agent("a1"), agent("a2")])).resolves.toEqual({
+			processes: 0,
+			agents: 2,
+		})
 	})
 
 	it("replaces a provider registered again under the same key", () => {

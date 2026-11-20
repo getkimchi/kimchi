@@ -2,7 +2,7 @@
 // running, this asks the user whether to stop it. "Stop all" needs a
 // deliberate choice, so pressing Esc many times can never kill work.
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { type BackgroundWorkItem, listBackgroundWork, stopAllBackgroundWork } from "../../shared/background-work.js"
+import { type BackgroundWorkItem, listBackgroundWork, stopBackgroundWork } from "../../shared/background-work.js"
 import { withRawInputCapture } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 
@@ -80,7 +80,9 @@ export function createStopBackgroundPrompt(getCtx: () => ExtensionContext | null
 			ctx.ui.select(formatTitle(items), [KEEP_RUNNING, STOP_ALL], { signal: abort.signal }),
 		)
 		if (choice !== STOP_ALL || gen !== generation) return
-		const { processes, agents } = await stopAllBackgroundWork(sessionId)
+		// Stop only what the dialog showed. A turn may have started while it was
+		// open, and its foreground commands must not be killed.
+		const { processes, agents } = await stopBackgroundWork(sessionId, items)
 		if (gen !== generation) return
 		if (ctx.hasUI) ctx.ui.notify(formatStopped(processes, agents), "info")
 	}
