@@ -36,7 +36,14 @@ describe("handleSsoCredential", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
-		rmSync(dir, { recursive: true, force: true })
+		// Temp-dir cleanup is best-effort: a concurrent writer can keep recreating
+		// entries past the retry budget (ENOTEMPTY on CI runners). A leftover /tmp
+		// directory is harmless; failing the test on cleanup is not.
+		try {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+		} catch {
+			/* best-effort */
+		}
 	})
 
 	function writeSsoEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
