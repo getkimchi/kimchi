@@ -10,6 +10,12 @@
  * snapshot and correctly kept them out. The idle profile now derives from the
  * active surface upstream maintains, so both toggles behave identically.
  *
+ * Baseline update (#1756): the guided codemode extension is now default-active
+ * by design, so `codemode` belongs on the wire in every chat session; the idle
+ * profile must additionally NOT cause its default-off state to flip back.
+ * `tool_search` remains default-inactive upstream and must stay out in all
+ * four scenarios (it is the name that still witnesses the registry-union bug).
+ *
  * The test asserts the real wire surface: the `tools` array of the requests
  * the harness sends the provider.
  */
@@ -66,7 +72,7 @@ for (const fermentEnabled of [true, false]) {
 				expect(tools).toContain("bash")
 				expect(tools).toContain("read")
 				expect(tools).toContain("write")
-				expect(tools).not.toContain("codemode")
+				expect(tools).toContain("codemode")
 				expect(tools).not.toContain("tool_search")
 				trace.step("wire surface checked")
 			},
