@@ -5,7 +5,7 @@
 // refresh handler (no network): an expiring stored token must be refreshed
 // under the store lock and the refreshed credential persisted to auth.json.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
@@ -36,7 +36,16 @@ describe("handleSsoCredential", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
-		rmSync(dir, { recursive: true, force: true })
+		try {
+			rmSync(dir, { recursive: true, force: true })
+		} catch (error) {
+			try {
+				console.error("[DEBUG-ci44681964390] cleanup residue", { files: readdirSync(dir, { recursive: true }) })
+			} catch {
+				console.error("[DEBUG-ci44681964390] cleanup directory already removed")
+			}
+			throw error
+		}
 	})
 
 	function writeSsoEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
