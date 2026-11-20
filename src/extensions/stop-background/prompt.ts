@@ -2,7 +2,13 @@
 // running, this asks the user whether to stop it. "Stop all" needs a
 // deliberate choice, so pressing Esc many times can never kill work.
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { type BackgroundWorkItem, listBackgroundWork, stopBackgroundWork } from "../../shared/background-work.js"
+import { visibleWidth } from "@earendil-works/pi-tui"
+import {
+	type BackgroundWorkItem,
+	fitToWidth,
+	listBackgroundWork,
+	stopBackgroundWork,
+} from "../../shared/background-work.js"
 import { withRawInputCapture } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 
@@ -11,7 +17,7 @@ export const KEEP_RUNNING = "Keep running"
 export const STOP_ALL = "Stop all"
 
 const MAX_LABELS = 3
-const MAX_LINE_CHARS = 100
+const MAX_LINE_WIDTH = 100
 
 function plural(count: number, noun: string): string {
 	return `${count} ${noun}${count === 1 ? "" : "s"}`
@@ -23,10 +29,8 @@ function kindLine(items: BackgroundWorkItem[], noun: string): string | null {
 	const labels = items.slice(0, MAX_LABELS).map((item) => item.label)
 	const rest = items.length - labels.length
 	const tail = rest > 0 ? ` +${rest} more` : ""
-	let body = labels.join(" · ")
-	const room = MAX_LINE_CHARS - head.length - tail.length
-	if (body.length > room) body = `${body.slice(0, Math.max(0, room - 1))}…`
-	return `${head}${body}${tail}`
+	const room = MAX_LINE_WIDTH - visibleWidth(head) - visibleWidth(tail)
+	return `${head}${fitToWidth(labels.join(" · "), room)}${tail}`
 }
 
 /** Dialog title: a heading, then one line per kind of work. */
