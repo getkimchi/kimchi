@@ -25,6 +25,7 @@ export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as 
 
 /** Prompt shown once the TUI is ready for input. */
 export const PROMPT_READY = "ask anything or type / for commands"
+export const PROMPT_PREFIX = "❯ "
 
 // Env from run-tui-e2e.js, else derive from file location (stable regardless of cwd).
 export const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
