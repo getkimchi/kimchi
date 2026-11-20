@@ -1060,6 +1060,9 @@ export class AgentManager {
 			this.queue = this.queue.filter((q) => q.id !== id)
 			record.status = "stopped"
 			record.completedAt = Date.now()
+			// No run will settle for this record, so report it here. Otherwise its
+			// completion notice is lost and a join group waits on it forever.
+			if (!this.disposed) this.onComplete?.(record)
 			return true
 		}
 
