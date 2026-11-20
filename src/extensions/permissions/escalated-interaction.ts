@@ -107,10 +107,14 @@ export function watchEscalatedDialog(
 	}
 	const interval = setInterval(check, timing.pollMs)
 	const openedAt = Date.now()
-	const unsubscribeInput = ctx.ui.onTerminalInput(() => {
-		if (Date.now() - openedAt < timing.openingGuardMs) return { consume: true }
-		return undefined
-	})
+	// No guard at all for a text box: its opening keys are the user's typing.
+	const unsubscribeInput =
+		timing.openingGuardMs > 0
+			? ctx.ui.onTerminalInput(() => {
+					if (Date.now() - openedAt < timing.openingGuardMs) return { consume: true }
+					return undefined
+				})
+			: () => {}
 	check()
 	signal?.addEventListener("abort", stop, { once: true })
 	return stop
@@ -237,18 +241,21 @@ export function createEscalatedTerminalInteraction(
 					choices: req.choices,
 					origin: req.origin,
 					signal: selectionController.signal,
-					onForeignDialog: (onWithdraw) =>
+					onForeignDialog: (onWithdraw, phase) =>
 						watchEscalatedDialog(
 							ctx,
 							() => {
-								// Never forward later aborts into a selector whose slot
-								// was already taken by another dialog.
+								// Never forward later aborts into a selector or text box
+								// whose slot was already taken by another dialog.
 								detachParentAbort()
 								onWithdraw()
 							},
 							hasForeignDialog,
 							selectionController.signal,
-							timing,
+							// The selector ignores keys that were already on their way
+							// when it opened. The feedback text box must not: the
+							// user is typing into it.
+							phase === "feedback" ? { ...timing, openingGuardMs: 0 } : timing,
 						),
 				})
 				if (outcome.kind !== "aborted" || requestSignal.aborted) {

@@ -1325,6 +1325,47 @@ describe("classifier outage escalation to the parent session", () => {
 		})
 	})
 
+	it("settles a chosen 'No' at once when another dialog takes the feedback box's place", async () => {
+		const { parent, parentCtx, worker, workerCtx } = await setupEscalation()
+		parentCtx.mode = "tui"
+		// "No" on the selector. The text box that follows is replaced by the
+		// question below and would never settle by itself.
+		parentCtx.ui.select = vi.fn(async (_title: string, choices: string[]) => choices.at(-1))
+		let boxAborted = false
+		parentCtx.ui.input = vi.fn(
+			(_title: string, _placeholder?: string, opts?: { signal?: AbortSignal }) =>
+				new Promise<string | undefined>((resolve) => {
+					opts?.signal?.addEventListener(
+						"abort",
+						() => {
+							boxAborted = true
+							resolve(undefined)
+						},
+						{ once: true },
+					)
+				}),
+		) as unknown as ExtensionUIContext["input"]
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+		const subagentCall = worker.fire("tool_call", event, workerCtx)
+		await vi.waitFor(() => expect(parentCtx.ui.input).toHaveBeenCalledOnce())
+
+		let closeQuestion: () => void = () => {}
+		const question = withBlocked(
+			parent.pi.events,
+			"Questionnaire",
+			() =>
+				new Promise<void>((resolve) => {
+					closeQuestion = resolve
+				}),
+		)
+		// Not at the answer timeout: the decision was already made.
+		expect(await subagentCall).toMatchObject({ block: true, reason: "Declined by user" })
+		closeQuestion()
+		await question
+		// Nothing was sent to the text box: the question was on screen in its place.
+		expect(boxAborted).toBe(false)
+	})
+
 	it("re-evaluates while a draft blocks the selector after a mode change to yolo", async () => {
 		const { parentCtx, worker, workerCtx } = await setupEscalation()
 		parentCtx.mode = "tui"

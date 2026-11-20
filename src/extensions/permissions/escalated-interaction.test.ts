@@ -140,6 +140,22 @@ describe("escalated TUI input coordination", () => {
 		expect(settled).toBe(true)
 	})
 
+	it("does not guard the opening keys of a text box", async () => {
+		// The feedback text box is watched with a guard time of zero: the keys
+		// that arrive right after it opens are the user's typing.
+		const ctx = createContext({ hasUI: true, mode: "tui" })
+		const withdraw = vi.fn()
+		let dialogActive = false
+		const stop = watchEscalatedDialog(ctx, withdraw, () => dialogActive, undefined, { ...timing, openingGuardMs: 0 })
+		try {
+			expect(ctx.ui.onTerminalInput).not.toHaveBeenCalled()
+			dialogActive = true
+			await vi.waitFor(() => expect(withdraw).toHaveBeenCalledOnce())
+		} finally {
+			stop()
+		}
+	})
+
 	it("uses a 500 ms opening guard", () => {
 		const ctx = createContext({ hasUI: true, mode: "tui" })
 		let now = 0
