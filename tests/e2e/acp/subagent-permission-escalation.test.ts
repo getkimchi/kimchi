@@ -146,7 +146,14 @@ describe("ACP integration — subagent escalated permission card", () => {
 			)
 			expect(closing, "card closed with completed status").toBeDefined()
 
-			// The outage never leaks provider text onto the wire.
+			// The outage never leaks provider text onto the wire. This path sends
+			// no pi_notify, so the permission request and the session updates are
+			// what has to be read; the notification check stays for the day it does.
+			expect(
+				JSON.stringify(fixture.client.permissionRequests),
+				"no provider diagnostic in permission requests",
+			).not.toContain(CLASSIFIER_ERROR)
+			expect(JSON.stringify(updates), "no provider diagnostic in session updates").not.toContain(CLASSIFIER_ERROR)
 			const notifyMessages = fixture.client.extNotifications
 				.filter((n) => n.method === "_kimchi.dev/pi_notify")
 				.map((n) => (n.params as { message?: string }).message ?? "")

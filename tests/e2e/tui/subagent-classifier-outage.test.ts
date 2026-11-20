@@ -44,6 +44,8 @@ const CLASSIFIER_ERROR = "upstream unavailable"
 const ORIGIN_LINE = "Subagent General-Purpose — write the file wants to run:"
 const ESCALATED_SUBTITLE = "this subagent's call needs your approval"
 const ALLOW_PROMPT = "Allow the assistant to run this?"
+/** What the subagent's model reads in its tool result after Escape. */
+const DECLINED_RESULT = "Declined by user"
 
 /** Only the classifier's requests carry this system prompt opening. */
 function isClassifierRequest(body: unknown): boolean {
@@ -78,6 +80,10 @@ const AGENT_CALL = {
 
 /** Tool-call arguments for a `write` to output.txt — a non-read-only file write. */
 const WRITE_ARGS = JSON.stringify({ path: "output.txt", content: "hello world" })
+
+function bodyIncludes(needle: string) {
+	return (request: { body: unknown }) => JSON.stringify(request.body ?? {}).includes(needle)
+}
 
 function bufferText(terminal: { getBuffer: () => string[][] }): string {
 	return terminal
@@ -186,11 +192,14 @@ test("escaping the escalated prompt denies the subagent's call", async ({ termin
 				{ stream: ["Let me delegate that."], toolCalls: [AGENT_CALL] },
 				{ stream: ["I'll create the file."], toolCalls: [{ function: { name: "write", arguments: WRITE_ARGS } }] },
 				...CLASSIFIER_ERROR_SCRIPTS,
-				{ stream: ["I could not write the file — the call was declined."] },
-				{ stream: ["The subagent reported it was denied."] },
+				// Served only for the denial: the subagent's next request must carry
+				// the declined tool result, and the parent's the subagent's report.
+				// Had the write run, neither would match and the test would time out.
+				{ match: bodyIncludes(DECLINED_RESULT), stream: ["I could not write the file — the call was declined."] },
+				{ match: bodyIncludes("I could not write the file"), stream: ["The subagent reported it was denied."] },
 			],
 		},
-		async (_fixture, trace) => {
+		async (fixture, trace) => {
 			terminal.submit("Have a subagent write a file called output.txt")
 			trace.step("submitted user prompt")
 
@@ -204,6 +213,7 @@ test("escaping the escalated prompt denies the subagent's call", async ({ termin
 			trace.step("escaped after the opening guard — the call is denied")
 
 			await waitForText(terminal, "The subagent reported it was denied.", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
 			expect(bufferText(terminal)).not.toContain(CLASSIFIER_ERROR)
 			trace.step("subagent's model read the denial and the parent continued")
 		},

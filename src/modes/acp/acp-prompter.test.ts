@@ -47,7 +47,7 @@ describe("acp-prompter cancelled-request mapping", () => {
 	})
 
 	it("carries the abort signal through feedback input into a plain denial", async () => {
-		const conn = makeConnection({ outcome: "outcome_selected", optionId: "choice-1" })
+		const conn = makeConnection({ outcome: "selected", optionId: "choice-1" })
 		const controller = new AbortController()
 		let resolveFeedback!: () => void
 		const pendingFeedback = new Promise<string>((resolve) => {
@@ -74,7 +74,7 @@ describe("acp-prompter cancelled-request mapping", () => {
 	})
 
 	it("still maps selected options to their choices", async () => {
-		const conn = makeConnection({ outcome: "outcome_selected", optionId: "choice-0" })
+		const conn = makeConnection({ outcome: "selected", optionId: "choice-0" })
 		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-1")
 		const outcome = await prompter.request(baseReq)
 		expect(outcome).toEqual({ kind: "allow-once" })
@@ -252,7 +252,7 @@ describe("escalated subagent requests", () => {
 
 	it("names the subagent in the title and _meta, keys the card id by agent, and closes completed", async () => {
 		const { conn, permissionPayloads, updates } = makeRecordingConnection({
-			outcome: "outcome_selected",
+			outcome: "selected",
 			optionId: "choice-0",
 		})
 		const resolver = vi.fn(() => "acp-escalated")
@@ -287,7 +287,7 @@ describe("escalated subagent requests", () => {
 
 	it("keeps the main session's own cards unchanged (no title prefix, no closing update)", async () => {
 		const { conn, permissionPayloads, updates } = makeRecordingConnection({
-			outcome: "outcome_selected",
+			outcome: "selected",
 			optionId: "choice-0",
 		})
 		const resolver = vi.fn(() => "acp-1")
@@ -300,7 +300,7 @@ describe("escalated subagent requests", () => {
 	})
 
 	it("preserves an allow and releases the id when the closing update fails", async () => {
-		const { conn } = makeRecordingConnection({ outcome: "outcome_selected", optionId: "choice-0" })
+		const { conn } = makeRecordingConnection({ outcome: "selected", optionId: "choice-0" })
 		vi.mocked(conn.sessionUpdate).mockRejectedValue(new Error("client disconnected"))
 		const release = vi.fn()
 		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated", undefined, release)
@@ -310,7 +310,7 @@ describe("escalated subagent requests", () => {
 	})
 
 	it.each([
-		{ name: "deny", outcome: { outcome: "outcome_selected", optionId: "choice-1" } },
+		{ name: "deny", outcome: { outcome: "selected", optionId: "choice-1" } },
 		{ name: "cancel", outcome: { outcome: "cancelled" } },
 	])("releases the id after $name", async ({ outcome }) => {
 		const { conn } = makeRecordingConnection(outcome)
