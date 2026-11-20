@@ -1,7 +1,11 @@
 import type { AgentSideConnection, PermissionOption, ToolCall } from "@agentclientprotocol/sdk"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
-import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
+import {
+	isModeChangeAbort,
+	type PermissionChoice,
+	type ToolPermissionPrompter,
+} from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
 import { EXEC_DEREF_TOOLS, substituteTokensDeep, vaultForSession } from "../../extensions/pii-redaction/vault.js"
 import { buildToolCallShape, buildToolCallUpdate } from "./tool-calls/utils.js"
@@ -9,6 +13,14 @@ import { requestWithAbort } from "./utils.js"
 
 export type AcpToolCallIdResolver = (piToolCallId: string, toolName: string, agentId?: string) => string
 export type AcpToolCallIdReleaser = (piToolCallId: string, agentId: string) => void
+
+/**
+ * Added to the title of a subagent's card that a mode change withdrew. ACP has
+ * no "cancelled" tool-call status, so the card closes as failed; the title is
+ * the only place to say that nobody refused the call and that it is decided
+ * again under the new mode.
+ */
+export const WITHDRAWN_BY_MODE_CHANGE_SUFFIX = " — withdrawn: permission mode changed"
 
 export function createAcpPermissionPrompter(
 	conn: AgentSideConnection,
@@ -75,76 +87,84 @@ export function createAcpPermissionPrompter(
 					},
 				}
 			}
-			const response = await requestWithAbort(
-				conn.requestPermission({ sessionId, toolCall, options }),
-				req.signal,
-			).finally(() => {
-				// A permission request owns its composite ID only until it settles.
-				if (req.origin?.agentId) releaseAcpToolCallId?.(req.toolCallId, req.origin.agentId)
-			})
+			// The client never gets a tool_call stream for an escalated subagent
+			// call, so its permission card would stay "pending" unless it is closed
+			// here. That has to happen on EVERY way out, also when the request
+			// rejects or the client answers with something unreadable.
+			let outcome: ApprovalOutcome | undefined
+			try {
+				const response = await requestWithAbort(
+					conn.requestPermission({ sessionId, toolCall, options }),
+					req.signal,
+				).finally(() => {
+					// A permission request owns its composite ID only until it settles.
+					if (req.origin?.agentId) releaseAcpToolCallId?.(req.toolCallId, req.origin.agentId)
+				})
 
-			// A cancelled response means the CLIENT denied without a human
-			// choice — headless ACP hosts fail permission requests
-			// fail-safe. This must NOT report "aborted": the caller's
-			// re-evaluation loop treats aborted as "permission mode changed,
-			// retry under the new mode", so a deterministic denial would
-			// loop to its cap and surface the misleading "Permission mode
-			// changed too many times during prompt" error. Report a clean
-			// denial so the model gets one actionable rejection.
-			let outcome: ApprovalOutcome
-			if (response === "aborted") {
-				outcome = { kind: "aborted" }
-			} else if (response.outcome.outcome === "cancelled") {
-				outcome = { kind: "denied-by-client" }
-			} else {
-				const selected = optionById.get(response.outcome.optionId)
-				if (!selected) {
-					outcome = { kind: "deny" }
+				// A cancelled response means the CLIENT denied without a human
+				// choice — headless ACP hosts fail permission requests
+				// fail-safe. This must NOT report "aborted": the caller's
+				// re-evaluation loop treats aborted as "permission mode changed,
+				// retry under the new mode", so a deterministic denial would
+				// loop to its cap and surface the misleading "Permission mode
+				// changed too many times during prompt" error. Report a clean
+				// denial so the model gets one actionable rejection.
+				if (response === "aborted") {
+					outcome = { kind: "aborted" }
+				} else if (response.outcome.outcome === "cancelled") {
+					outcome = { kind: "denied-by-client" }
 				} else {
-					switch (selected.kind) {
-						case "allow-once":
-							outcome = { kind: "allow-once" }
-							break
-						case "allow-remember":
-							outcome = { kind: "allow-remember", rules: selected.rules }
-							break
-						case "allow-remember-wildcard":
-							outcome = { kind: "allow-remember-wildcard", rules: selected.rules }
-							break
-						case "deny": {
-							const feedback = await uiContext.input("Tell the assistant what to do differently:", undefined, {
-								signal: req.signal,
-							})
-							const text = feedback?.trim()
-							outcome = text ? { kind: "deny-with-feedback", feedback: text } : { kind: "deny" }
-							break
+					const selected = optionById.get(response.outcome.optionId)
+					if (!selected) {
+						outcome = { kind: "deny" }
+					} else {
+						switch (selected.kind) {
+							case "allow-once":
+								outcome = { kind: "allow-once" }
+								break
+							case "allow-remember":
+								outcome = { kind: "allow-remember", rules: selected.rules }
+								break
+							case "allow-remember-wildcard":
+								outcome = { kind: "allow-remember-wildcard", rules: selected.rules }
+								break
+							case "deny": {
+								const feedback = await uiContext.input("Tell the assistant what to do differently:", undefined, {
+									signal: req.signal,
+								})
+								const text = feedback?.trim()
+								outcome = text ? { kind: "deny-with-feedback", feedback: text } : { kind: "deny" }
+								break
+							}
 						}
 					}
 				}
-			}
-
-			// The client never gets a tool_call stream for an escalated subagent
-			// call, so without this update its permission card would stay "pending"
-			// after the answer. Close it explicitly: completed on allow, failed on
-			// deny / cancel / abort. Closing is best effort: the user's decision is
-			// already settled and must never be changed by a failed update.
-			if (req.origin) {
-				try {
-					await conn.sessionUpdate({
-						sessionId,
-						update: buildToolCallUpdate({
-							toolCallId: acpToolCallId,
-							piToolCallId: req.toolCallId,
-							status: outcome.kind.startsWith("allow") ? "completed" : "failed",
-							title: toolCall.title,
-							kind: toolCall.kind,
-						}),
-					})
-				} catch {
-					// The parent route still receives the actual approval outcome.
+				return outcome
+			} finally {
+				if (req.origin) {
+					// Completed on allow, failed on everything else: deny, cancel,
+					// abort, or an error (no outcome). A card withdrawn by a mode
+					// change is not a refusal — the call is decided again under the
+					// new mode and may well run — so its title says what happened.
+					const withdrawn = outcome?.kind === "aborted" && isModeChangeAbort(req.signal)
+					// Closing is best effort: the decision is already settled and must
+					// never be changed by a failed update.
+					try {
+						await conn.sessionUpdate({
+							sessionId,
+							update: buildToolCallUpdate({
+								toolCallId: acpToolCallId,
+								piToolCallId: req.toolCallId,
+								status: outcome?.kind.startsWith("allow") ? "completed" : "failed",
+								title: withdrawn ? `${toolCall.title}${WITHDRAWN_BY_MODE_CHANGE_SUFFIX}` : toolCall.title,
+								kind: toolCall.kind,
+							}),
+						})
+					} catch {
+						// The parent route still receives the actual approval outcome.
+					}
 				}
 			}
-			return outcome
 		},
 	}
 }
