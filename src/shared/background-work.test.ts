@@ -119,4 +119,13 @@ describe("background-work", () => {
 		expect(long.endsWith("…")).toBe(true)
 		expect(backgroundWorkLabel("")).toBe("")
 	})
+
+	it("strips terminal sequences and control characters from labels", () => {
+		expect(backgroundWorkLabel("\x1b[2Jnpm\x1b[31m run\x1b[0m dev")).toBe("npm run dev")
+		expect(backgroundWorkLabel("\x1b]52;c;aGVsbG8=\x07copy")).toBe("copy")
+		expect(backgroundWorkLabel("\x1b]8;;https://x.test\x07link\x1b]8;;\x07")).toBe("link")
+		expect(backgroundWorkLabel("a\tb\x00c")).toBe("a    bc")
+		// A lone CR would move the cursor back over the label; treat it as a line break.
+		expect(backgroundWorkLabel("  \rnpm run dev\rhidden")).toBe("npm run dev")
+	})
 })
