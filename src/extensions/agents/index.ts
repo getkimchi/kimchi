@@ -1410,11 +1410,17 @@ export default function (pi: ExtensionAPI) {
 	// Queued work plus active local background agents. Remote runs survive a
 	// user stop, even while queued: the session lives on and starts them later.
 	// countAbortableBackground() differs on purpose, because at shutdown a
-	// queued remote run dies with the process.
+	// queued remote run dies with the process. System agents are internal work
+	// the user never sees, so they are not offered for a stop either.
 	const userStoppableAgents = () =>
 		manager
 			.listAgents()
-			.filter((r) => !r.remote && (r.status === "queued" || (r.isBackground === true && isActiveStatus(r.status))))
+			.filter(
+				(r) =>
+					!r.remote &&
+					r.visibility !== "system" &&
+					(r.status === "queued" || (r.isBackground === true && isActiveStatus(r.status))),
+			)
 	const agentItem = (record: AgentRecord): BackgroundAgentItem => ({
 		kind: "agent",
 		id: record.id,
