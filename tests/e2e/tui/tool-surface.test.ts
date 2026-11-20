@@ -85,31 +85,38 @@ for (const fermentEnabled of [true, false]) {
 		)
 	})
 
-	test(`ferment ${fermentEnabled ? "enabled" : "disabled"}: defaultTools +codemode surfaces codemode`, async ({
-		terminal,
-	}) => {
-		await runKimchiSession(
+	for (const { setting, tool, expected } of [
+		{ setting: "-codemode", tool: "codemode", expected: false },
+		{ setting: "+tool_search", tool: "tool_search", expected: true },
+	] as const) {
+		test(`ferment ${fermentEnabled ? "enabled" : "disabled"}: defaultTools ${setting} survives`, async ({
 			terminal,
-			{
-				artifactName: `tool-surface-ferment-${fermentEnabled ? "on" : "off"}-plus-codemode`,
-				responses: [{ stream: ["Hello."] }],
-				seedHome(homeDir) {
-					patchHarnessSettings(homeDir, {
-						resources: { "extensions.ferment": fermentEnabled },
-						defaultTools: ["+codemode"],
-					})
+		}) => {
+			await runKimchiSession(
+				terminal,
+				{
+					artifactName: `tool-surface-ferment-${fermentEnabled ? "on" : "off"}-${setting === "-codemode" ? "minus-codemode" : "plus-tool-search"}`,
+					responses: [{ stream: ["Hello."] }],
+					seedHome(homeDir) {
+						patchHarnessSettings(homeDir, {
+							resources: { "extensions.ferment": fermentEnabled },
+							defaultTools: [setting],
+						})
+					},
 				},
-			},
-			async (fixture, trace) => {
-				terminal.submit("Hello, just say hi.")
-				trace.step("prompt submitted")
-				await waitForText(terminal, "Hello.", { timeoutMs: STREAM_TIMEOUT_MS })
-				trace.step("answer streamed")
+				async (fixture, trace) => {
+					terminal.submit("Hello, just say hi.")
+					trace.step("prompt submitted")
+					await waitForText(terminal, "Hello.", { timeoutMs: STREAM_TIMEOUT_MS })
+					trace.step("answer streamed")
 
-				const tools = recordedToolNames(fixture.fake.requests)
-				expect(tools).toContain("codemode")
-				trace.step("wire surface checked")
-			},
-		)
-	})
+					const tools = recordedToolNames(fixture.fake.requests)
+					const counterparty = tool === "codemode" ? "tool_search" : "codemode"
+					expect(tools.includes(tool)).toBe(expected)
+					if (tool === "codemode") expect(tools).not.toContain(counterparty)
+					trace.step("wire surface checked")
+				},
+			)
+		})
+	}
 }
