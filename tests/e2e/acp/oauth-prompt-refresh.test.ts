@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	chatAuthorization,
 	EXPIRING_ACCESS_TOKEN,
+	expireSeededOAuthCredential,
 	type FakeOAuthRefreshServer,
 	REFRESH_CONTINUED_REPLY,
 	REPLACEMENT_ACCESS_TOKEN,
@@ -52,6 +53,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 
 		it("refreshes and persists OAuth while preserving the prompt and ordinary session updates", async () => {
 			const sessionId = await newSession(fixture, fixture.workDir)
+			expireSeededOAuthCredential(authPath)
 
 			const result = await prompt(fixture, sessionId, "Continue with the refreshed credential")
 
@@ -99,6 +101,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 		it("keeps prepared credentials independent across two sessions using the same auth store", async () => {
 			const sessionA = await newSession(fixture, fixture.workDir)
 			const sessionB = await newSession(fixture, fixture.workDir)
+			expireSeededOAuthCredential(authPath)
 			const resultA = await prompt(fixture, sessionA, "Continue in the first session")
 			const resultB = await prompt(fixture, sessionB, "Continue in the second session")
 
@@ -116,6 +119,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 		it("returns the ordinary auth-required outcome for a revoked refresh grant", async () => {
 			oauth.revokeGrants()
 			const sessionId = await newSession(fixture, fixture.workDir)
+			expireSeededOAuthCredential(authPath)
 
 			const error = await fixture.conn
 				.prompt({ sessionId, prompt: [{ type: "text", text: "Use the revoked credential" }] })
@@ -129,3 +133,70 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 		})
 	})
 }
+
+describe("ACP integration — transient canonical refresh failure", () => {
+	let fixture: AcpFixture
+	let oauth: FakeOAuthRefreshServer
+	let authPath = ""
+
+	beforeEach(async () => {
+		oauth = await startFakeOAuthRefreshServer({ failFirstGrant: true })
+		fixture = await startAcpFixture({
+			artifactName: "oauth-prompt-refresh-transient",
+			providerId: "kimchi-dev/openai",
+			defaultModel: "basic",
+			responses: [
+				{
+					match: (request) => request.headers.authorization === `Bearer ${EXPIRING_ACCESS_TOKEN}`,
+					status: 401,
+					body: { error: "Expired fake token" },
+				},
+				{
+					match: (request) => request.headers.authorization === `Bearer ${REPLACEMENT_ACCESS_TOKEN}`,
+					stream: [REFRESH_CONTINUED_REPLY],
+				},
+			],
+			seedHome: (homeDir) => {
+				authPath = seedExpiringOAuthCredential(homeDir, oauth.tokenUrl)
+			},
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		await fixture.stop()
+		await oauth.close()
+	})
+
+	it("rejects unsafe active-only fallback and synchronizes on the next prompt", async () => {
+		const sessionId = await newSession(fixture, fixture.workDir)
+		expireSeededOAuthCredential(authPath)
+
+		const error = await fixture.conn
+			.prompt({ sessionId, prompt: [{ type: "text", text: "Request before a transient refresh failure" }] })
+			.then(
+				() => undefined,
+				(failure: unknown) => failure,
+			)
+
+		expect(error).toMatchObject({ code: -32603, message: expect.stringContaining("Retry this prompt") })
+		expect(oauth.grants).toHaveLength(1)
+		const beforeRetry = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, { access?: string }>
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(beforeRetry[providerId]?.access).toBe(EXPIRING_ACCESS_TOKEN)
+		}
+
+		const result = await prompt(fixture, sessionId, "Retry after transient refresh failure")
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.chunks).toBe(REFRESH_CONTINUED_REPLY)
+		expect(oauth.grants).toEqual([
+			{ grantType: "refresh_token", refreshToken: "e2e-original-refresh" },
+			{ grantType: "refresh_token", refreshToken: "e2e-original-refresh" },
+		])
+		const stored = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, Record<string, unknown>>
+		for (const field of ["access", "refresh", "expires"]) {
+			expect(stored["kimchi-dev/openai"]?.[field]).toBe(stored["kimchi-dev"]?.[field])
+		}
+		const authorizations = fixture.fake.requests.map(chatAuthorization).filter((value) => value !== undefined)
+		expect(authorizations).toEqual([`Bearer ${REPLACEMENT_ACCESS_TOKEN}`])
+	})
+})

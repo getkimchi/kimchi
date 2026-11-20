@@ -1,4 +1,4 @@
-import type { CredentialStore } from "@earendil-works/pi-ai"
+import { type CredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
@@ -51,10 +51,12 @@ function readCanonicalCredential(authPath: string): StoredCredential | undefined
  * refresh window, operation coalescing, store lock, and persist-before-release
  * discipline.
  *
- * No explicit cleanup is required after this promise settles: ModelRuntime
- * exposes no dispose/close API, refreshOnCreate prevents startup work, model
- * networking remains disabled by default, and getAuth releases its
- * credential-store lock before settling.
+ * Provider registration queues asynchronous availability/catalog refreshes.
+ * This temporary runtime needs the provider configuration in models.json, but
+ * not the persistent dynamic model catalog. Keep that unrelated cache in
+ * memory so callers do not have to wait for background model-store locks after
+ * credential resolution settles. Authentication still uses the supplied
+ * credential store or the file-backed auth path.
  */
 export async function resolveRefreshAwareKimchiAuth(
 	paths: RefreshAwareCredentialPaths,
@@ -65,6 +67,7 @@ export async function resolveRefreshAwareKimchiAuth(
 		const modelRuntime = await ModelRuntime.create({
 			authPath: paths.authPath,
 			modelsPath: paths.modelsPath,
+			modelsStore: new InMemoryModelsStore(),
 			credentials: paths.credentials,
 			refreshOnCreate: false,
 		})

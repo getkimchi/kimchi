@@ -100,6 +100,19 @@ describe("loginExtension", () => {
 		expect(provider.getModels()).toEqual([])
 	})
 
+	it("stops the prompt after transient canonical failure and requests a retry, not sign-in", async () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		vi.mocked(prepareActivePromptKimchiCredential).mockResolvedValue("oauth_refresh_failed")
+		const { api, getHandler } = createExtensionApi()
+		const notify = vi.fn()
+		loginExtension(api)
+
+		await expect(getHandler("input")({ source: "interactive" }, createContext({ ui: { notify } }))).resolves.toEqual({
+			action: "handled",
+		})
+		expect(notify).toHaveBeenCalledWith("OAuth refresh failed. Retry this prompt; sign-in is not required.", "error")
+	})
+
 	it("handles a credential-sync failure without submitting or requesting sign-in", async () => {
 		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
 		vi.mocked(prepareActivePromptKimchiCredential).mockResolvedValue("credential_sync_failed")

@@ -21,11 +21,12 @@ export interface FakeOAuthRefreshServer {
 
 /** A loopback-only OAuth token endpoint that rotates fake credentials. It never logs request bodies or headers. */
 export async function startFakeOAuthRefreshServer(
-	options: { expiresInSeconds?: number } = {},
+	options: { expiresInSeconds?: number; failFirstGrant?: boolean } = {},
 ): Promise<FakeOAuthRefreshServer> {
-	const { expiresInSeconds = 3600 } = options
+	const { expiresInSeconds = 3600, failFirstGrant = false } = options
 	const grants: RefreshGrant[] = []
 	let revoked = false
+	let transientFailurePending = failFirstGrant
 	const server: Server = createServer((req, res) => {
 		if (req.method !== "POST" || req.url !== "/token") {
 			res.writeHead(404).end()
@@ -45,6 +46,12 @@ export async function startFakeOAuthRefreshServer(
 			if (revoked) {
 				res.writeHead(400, { "content-type": "application/json" })
 				res.end(JSON.stringify({ error: "invalid_grant", error_description: "E2E refresh grant revoked" }))
+				return
+			}
+			if (transientFailurePending) {
+				transientFailurePending = false
+				res.writeHead(500, { "content-type": "application/json" })
+				res.end(JSON.stringify({ error: "server_error", error_description: "E2E transient refresh failure" }))
 				return
 			}
 			res.writeHead(200, { "content-type": "application/json" })
@@ -77,7 +84,7 @@ export async function startFakeOAuthRefreshServer(
 	}
 }
 
-/** Convert the standard isolated fixture from API-key auth to an expiring fake OAuth credential. */
+/** Seed valid fake OAuth credentials before model discovery and session startup. */
 export function seedExpiringOAuthCredential(homeDir: string, tokenUrl: string): string {
 	const configDir = join(homeDir, ".config", "kimchi")
 	const agentDir = join(configDir, "harness")
@@ -95,7 +102,7 @@ export function seedExpiringOAuthCredential(homeDir: string, tokenUrl: string): 
 		type: "oauth",
 		access: EXPIRING_ACCESS_TOKEN,
 		refresh: "e2e-original-refresh",
-		expires: Date.now() + 60_000,
+		expires: Date.now() + 3_600_000,
 		region: "us",
 		tokenUrl,
 		clientId: "e2e-client",
@@ -107,6 +114,16 @@ export function seedExpiringOAuthCredential(homeDir: string, tokenUrl: string): 
 		mode: 0o600,
 	})
 	return authPath
+}
+
+/** Enter the refresh window only for the active prompt, without changing the seed grant's identity. */
+export function expireSeededOAuthCredential(authPath: string): void {
+	const stored = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, { type?: string; expires?: number }>
+	const expires = Date.now() + 60_000
+	for (const credential of Object.values(stored)) {
+		if (credential.type === "oauth") credential.expires = expires
+	}
+	writeFileSync(authPath, JSON.stringify(stored), { mode: 0o600 })
 }
 
 export function chatAuthorization(request: {

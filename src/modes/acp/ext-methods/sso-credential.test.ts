@@ -5,10 +5,11 @@
 // refresh handler (no network): an expiring stored token must be refreshed
 // under the store lock and the refreshed credential persisted to auth.json.
 
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
+import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeApiKey } from "../../../config.js"
@@ -36,16 +37,8 @@ describe("handleSsoCredential", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
-		try {
-			rmSync(dir, { recursive: true, force: true })
-		} catch (error) {
-			try {
-				console.error("[DEBUG-ci44681964390] cleanup residue", { files: readdirSync(dir, { recursive: true }) })
-			} catch {
-				console.error("[DEBUG-ci44681964390] cleanup directory already removed")
-			}
-			throw error
-		}
+		vi.restoreAllMocks()
+		rmSync(dir, { recursive: true, force: true })
 	})
 
 	function writeSsoEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -74,6 +67,13 @@ describe("handleSsoCredential", () => {
 		}
 		throw new Error("expected the handler to throw")
 	}
+
+	it("uses an in-memory dynamic model cache for credential-only resolution", async () => {
+		const create = vi.spyOn(ModelRuntime, "create")
+		writeSsoEntry()
+		await handleSsoCredential(fakeOAuthDeps(), paths)
+		expect(create.mock.calls[0]?.[0]?.modelsStore).toBeInstanceOf(InMemoryModelsStore)
+	})
 
 	it("returns the org-scoped credential for a fresh SSO entry", async () => {
 		const entry = writeSsoEntry()
@@ -162,15 +162,11 @@ describe("handleSsoCredential", () => {
 	// as ModelsError("auth") ("Credential store read failed"), which maps to
 	// SSO_STORE_UNAVAILABLE — NOT SSO_REFRESH_FAILED, which would send the
 	// client into a refresh-retry loop against an unreadable store.
-	// Temporary CI sampling: preserve the real handler/store path while
-	// increasing the chance of capturing the intermittent cleanup race.
-	for (let iteration = 1; iteration <= 100; iteration += 1) {
-		it(`maps a corrupt auth.json to SSO_STORE_UNAVAILABLE (sample ${iteration})`, async () => {
-			writeFileSync(paths.authPath, "{corrupt")
-			const error = await errorFrom(() => handleSsoCredential(fakeOAuthDeps(), paths))
-			expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE" })
-		})
-	}
+	it("maps a corrupt auth.json to SSO_STORE_UNAVAILABLE", async () => {
+		writeFileSync(paths.authPath, "{corrupt")
+		const error = await errorFrom(() => handleSsoCredential(fakeOAuthDeps(), paths))
+		expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE" })
+	})
 
 	it("maps ModelRuntime.create failures to SSO_STORE_UNAVAILABLE", async () => {
 		const create = vi.spyOn(ModelRuntime, "create").mockRejectedValueOnce(new Error("runtime construction failed"))

@@ -5,6 +5,7 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 import {
 	chatAuthorization,
 	EXPIRING_ACCESS_TOKEN,
+	expireSeededOAuthCredential,
 	REFRESH_CONTINUED_REPLY,
 	REPLACEMENT_ACCESS_TOKEN,
 	seedExpiringOAuthCredential,
@@ -45,6 +46,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 					},
 				},
 				async (fixture, trace) => {
+					expireSeededOAuthCredential(authPath)
 					terminal.submit("Continue with the refreshed credential")
 					await expect(terminal.getByText(REFRESH_CONTINUED_REPLY, { full: true })).toBeVisible()
 
@@ -84,6 +86,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 
 test("a revoked grant exposes the existing sign-in action without crashing the session", async ({ terminal }) => {
 	const oauth = await startFakeOAuthRefreshServer()
+	let authPath = ""
 	try {
 		await runKimchiSession(
 			terminal,
@@ -91,9 +94,12 @@ test("a revoked grant exposes the existing sign-in action without crashing the s
 				artifactName: "oauth-prompt-refresh-revoked",
 				providerId: "kimchi-dev/openai",
 				responses: [],
-				seedHome: (homeDir) => seedExpiringOAuthCredential(homeDir, oauth.tokenUrl),
+				seedHome: (homeDir) => {
+					authPath = seedExpiringOAuthCredential(homeDir, oauth.tokenUrl)
+				},
 			},
 			async (_fixture, trace) => {
+				expireSeededOAuthCredential(authPath)
 				oauth.revokeGrants()
 				terminal.submit("Use the revoked credential")
 				await waitForText(terminal, "Run /login to sign in again", { timeoutMs: STREAM_TIMEOUT_MS })

@@ -1687,6 +1687,13 @@ export class KimchiAcpAgent implements Agent {
 			)
 			return result
 		}
+		if (preparation === "oauth_refresh_failed") {
+			this.failTurn(
+				entry,
+				RequestError.internalError(undefined, "OAuth refresh failed. Retry this prompt; sign-in is not required."),
+			)
+			return result
+		}
 		if (preparation === "credential_sync_failed") {
 			this.failTurn(
 				entry,

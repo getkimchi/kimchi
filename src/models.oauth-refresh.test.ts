@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai"
-import { readStoredCredential } from "@earendil-works/pi-coding-agent"
+import { type ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { installKimchiOAuth } from "./extensions/login/flow.js"
@@ -108,7 +108,7 @@ describe("OAuth-aware model discovery", () => {
 
 		const result = await updateModelsConfig(modelsPath, "", {
 			endpoint,
-			refreshOAuth: { authPath, installOAuth: installKimchiOAuth },
+			refreshOAuth: { authPath, installOAuth: installTestOAuth },
 		})
 
 		expect(requestOrder).toEqual(["refresh", "metadata"])
@@ -219,7 +219,7 @@ describe("OAuth-aware model discovery", () => {
 
 		const result = await updateModelsConfig(modelsPath, "", {
 			endpoint: refresh.endpoint,
-			refreshOAuth: { authPath, installOAuth: installKimchiOAuth },
+			refreshOAuth: { authPath, installOAuth: installTestOAuth },
 		})
 
 		expect(result.models.map((model) => model.slug)).toEqual(["cached-model"])
@@ -235,7 +235,7 @@ describe("OAuth-aware model discovery", () => {
 
 		const result = await updateModelsConfig(modelsPath, "", {
 			endpoint: refresh.endpoint,
-			refreshOAuth: { authPath, installOAuth: installKimchiOAuth },
+			refreshOAuth: { authPath, installOAuth: installTestOAuth },
 		})
 
 		expect(result.models.map((model) => model.slug)).toEqual(["cached-model"])
@@ -269,12 +269,16 @@ describe("OAuth-aware model discovery", () => {
 		const result = await updateModelsConfig(modelsPath, "", {
 			endpoint,
 			organizationId: "caller-fake-org",
-			refreshOAuth: { authPath, installOAuth: installKimchiOAuth },
+			refreshOAuth: { authPath, installOAuth: installTestOAuth },
 		})
 
 		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k3.1-pro"])
 		expect(metadataUsedOrganization).toBe(true)
 	})
+
+	function installTestOAuth(runtime: ModelRuntime): void {
+		installKimchiOAuth(runtime, authPath)
+	}
 
 	function writeExpiringAuth(tokenUrl = "http://127.0.0.1:1/oauth/token"): void {
 		const credential = {
