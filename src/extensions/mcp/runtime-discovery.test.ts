@@ -310,6 +310,19 @@ describe("built-in gateway discovery", () => {
 		expect(fixture.counts.initialize).toBe(2)
 	})
 
+	it("rediscovers the lazy child's gateway despite a valid but empty cached catalog", async () => {
+		await startHost()
+		expect(await search()).toContain("atlassian_get_issue")
+		const cachePath = join(rootDir, "agent", "mcp-cache.json")
+		const cache = JSON.parse(readFileSync(cachePath, "utf8"))
+		expect(cache.servers?.gateway?.tools?.length).toBeGreaterThan(0)
+		cache.servers.gateway.tools = []
+		writeFileSync(cachePath, JSON.stringify(cache))
+		host = createExtensionApi()
+		await startHost(true)
+		expect(await search()).toContain("atlassian_get_issue")
+	})
+
 	it("contains a deferred discovery timeout inside the first-input wait", async () => {
 		fixture.blockLists()
 		await startHost(true, { requestTimeoutMs: 25 })

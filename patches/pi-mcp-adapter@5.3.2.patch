@@ -79,7 +79,9 @@
 #     later tool calls on normal per-server/global request timeouts. Resident
 #     connections also reset the task channel's captured default (mcp-tasks
 #     setDefaultTimeoutMs) so tasks/* polls keep the normal timeout instead of
-#     the discovery one.
+#     the discovery one. Runtime-scoped servers always join startup
+#     discovery: a valid-but-empty or private-scoped cached catalog never
+#     suppresses the live listing the host asked for.
 #   - types/init/state (+dist type mirror): notify an optional host observer of
 #     newly captured in-memory server catalogs for session-bound policy; this
 #     does not bypass private-cache validation or persist private metadata.
@@ -1328,7 +1330,7 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..3fd39c7bc9e5ff25fad20e4fece1ed9c
    };
  }
 diff --git a/init.ts b/init.ts
-index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..50fdaa2db294122312254c7a8150cf1b922192ae 100644
+index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..f7bd0baac9109cc732510caaffb7444779bfb1cd 100644
 --- a/init.ts
 +++ b/init.ts
 @@ -150,12 +150,18 @@ export async function initializeMcp(
@@ -1358,7 +1360,34 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..50fdaa2db294122312254c7a8150cf1b
      manager,
      lifecycle,
      toolMetadata,
-@@ -357,14 +364,27 @@ export async function initializeMcp(
+@@ -315,7 +322,12 @@ export async function initializeMcp(
+     }
+ 
+     const cachedEntry = cache?.servers?.[name];
+-    if (cachedEntry && isServerCacheValid(cachedEntry, definition)) {
++    // Runtime-scoped servers (initialRuntimeServers) join every initialization's
++    // startup discovery regardless of cache state: a valid-looking but empty
++    // or private-scoped cached catalog must not suppress the live listing the
++    // host asked for.
++    const runtimeDiscoveryServer = options.initialRuntimeServers?.[name] !== undefined;
++    if (cachedEntry && isServerCacheValid(cachedEntry, definition) && !runtimeDiscoveryServer) {
+       const hasToolFilters =
+         (Array.isArray(definition.includeTools) && definition.includeTools.length > 0) ||
+         (Array.isArray(definition.excludeTools) && definition.excludeTools.length > 0);
+@@ -334,10 +346,10 @@ export async function initializeMcp(
+         serverInstructions.set(name, cachedEntry.instructions);
+       }
+       seedObservedOutputs(state, name, cachedEntry);
+-    } else if (cachedEntry?.discoveryFailed && cachedEntry.configHash === tryComputeServerHash(definition)) {
++    } else if (cachedEntry?.discoveryFailed && cachedEntry.configHash === tryComputeServerHash(definition) && !runtimeDiscoveryServer) {
+       // Startup tries a config once; a server that failed is tried again on first use.
+       failedDiscovery.add(name);
+-    } else if (cachedEntry?.cacheScope !== "private") {
++    } else if (runtimeDiscoveryServer || cachedEntry?.cacheScope !== "private") {
+       needsDiscovery.add(name);
+     }
+   }
+@@ -357,14 +369,27 @@ export async function initializeMcp(
  
    const results = await parallelLimit(startupServers, 10, async ([name, definition]) => {
      const resident = (definition.lifecycle ?? "lazy") !== "lazy" || getEffectiveIdleTimeoutMinutes(state, name) === 0;
@@ -1387,7 +1416,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..50fdaa2db294122312254c7a8150cf1b
        // Capture before closing; the closed connection keeps its catalog for publication below.
        captureMetadata(state, name, connection, () => cache);
        if (!resident) await manager.close(name);
-@@ -670,6 +690,12 @@ function captureMetadata(
+@@ -670,6 +695,12 @@ function captureMetadata(
    };
  
    (state.sessionMetadata ??= new Map()).set(serverName, entry);
@@ -1400,7 +1429,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..50fdaa2db294122312254c7a8150cf1b
    seedObservedOutputs(state, serverName, entry);
    return entry;
  }
-@@ -726,9 +752,15 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+@@ -726,9 +757,15 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
    const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
    throwIfAborted(ownedSignal);
    const connection = state.manager.getConnection(serverName);
@@ -1417,7 +1446,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..50fdaa2db294122312254c7a8150cf1b
    if (connection?.status === "connected") {
      await state.manager.ensureListen?.(serverName, connection);
      updateServerMetadata(state, serverName);
-@@ -737,7 +769,7 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+@@ -737,7 +774,7 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
    }
  
    const failedAgo = getFailureAgeSeconds(state, serverName);
@@ -1426,7 +1455,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..50fdaa2db294122312254c7a8150cf1b
  
    const definition = state.config.mcpServers[serverName];
    if (!definition || isServerDisabled(definition)) return false;
-@@ -747,7 +779,9 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+@@ -747,7 +784,9 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
        const status = formatMcpStatus(state.config, `connecting to ${serverName}...`);
        state.ui.setStatus("mcp", status);
      }
