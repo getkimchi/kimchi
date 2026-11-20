@@ -248,7 +248,7 @@ vi.mock("./personas/custom-agents.js", async (importOriginal) => {
 	return { ...actual, loadCustomAgents: loadCustomAgentsMock }
 })
 
-import type { EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
+import type { CustomEntry, EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { listBackgroundWork, stopBackgroundWork } from "../../shared/background-work.js"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
@@ -1155,8 +1155,8 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		status: "running",
 	}
 
-	function entry(data: RemoteRunState): Record<string, unknown> {
-		return { type: "custom", customType: "remote_run:state", data }
+	function entry(data: RemoteRunState): CustomEntry<RemoteRunState> {
+		return { type: "custom", customType: "remote_run:state", data, id: "e1", parentId: null, timestamp: "" }
 	}
 
 	it("reports a bare outcome line on explicit continuation with no resumable runs", async () => {
@@ -1164,13 +1164,7 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
-		const ctx = {
-			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
-			ui: { notify },
-			sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
-		}
+		const ctx = createContext({ cwd: "/work/myrepo", ui: { notify } })
 		await fireSessionStart(pi, ctx, { type: "session_start", reason: "resume" })
 
 		expect(notify).toHaveBeenCalledWith("Continued session — no in-progress remote runs to resume")
@@ -1191,13 +1185,11 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
-		const ctx = {
+		const ctx = createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
 			ui: { notify },
-			sessionManager: { getSessionId: () => "test-session", getBranch: () => [entry(RUNNING)] },
-		}
+			sessionManager: { getBranch: () => [entry(RUNNING)] },
+		})
 		await fireSessionStart(pi, ctx)
 
 		expect(currentManager().resumeRemoteRecord).toHaveBeenCalledTimes(1)
@@ -1217,13 +1209,11 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		// The mocked manager reports the ownership guard's skip outcome.
 		currentManager().resumeRemoteRecord.mockResolvedValue("already-watched")
 
-		const ctx = {
+		const ctx = createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
 			ui: { notify, setStatus },
-			sessionManager: { getSessionId: () => "test-session", getBranch: () => [entry(RUNNING)] },
-		}
+			sessionManager: { getBranch: () => [entry(RUNNING)] },
+		})
 		await fireSessionStart(pi, ctx)
 
 		// The notice is appended as the newest conversation entry (rendered
@@ -1248,16 +1238,10 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
-		const ctx = {
+		const ctx = createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
-			ui: { notify: vi.fn() },
-			sessionManager: {
-				getSessionId: () => "test-session",
-				getBranch: () => [entry({ ...RUNNING, status: "completed" })],
-			},
-		}
+			sessionManager: { getBranch: () => [entry({ ...RUNNING, status: "completed" })] },
+		})
 		await fireSessionStart(pi, ctx)
 
 		expect(currentManager().resumeRemoteRecord).not.toHaveBeenCalled()
@@ -1273,13 +1257,7 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
-		const ctx = {
-			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
-			ui: { notify },
-			sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
-		}
+		const ctx = createContext({ cwd: "/work/myrepo", ui: { notify } })
 		await expect(fireSessionStart(pi, ctx)).resolves.toBeUndefined()
 		expect(notify).not.toHaveBeenCalled()
 	})
@@ -2443,7 +2421,7 @@ describe("Agent tool session-cwd agent resolution", () => {
 		agentsExtension(pi)
 		const sessionCwd = "/tmp/issue1677-session-project"
 
-		const ctx = { cwd: sessionCwd, sessionManager: { getSessionId: () => "test-session", getBranch: () => [] } }
+		const ctx = createContext({ cwd: sessionCwd })
 		for (const handler of pi._handlers.get("session_start") ?? [])
 			await handler({ type: "session_start", reason: "startup" } as never, ctx)
 
