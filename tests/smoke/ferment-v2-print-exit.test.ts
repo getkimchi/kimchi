@@ -491,10 +491,7 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string, models = resolv
 		join(configDir, "config.json"),
 		JSON.stringify({ apiKey: "fake", llmEndpoint: fakeBaseUrl, skillPaths: [], migrationState: "done" }),
 	)
-	writeFileSync(
-		join(harnessDir, "settings.json"),
-		JSON.stringify({ multiModel: false, resources: { "extensions.ferment-v2": true } }),
-	)
+	writeFileSync(join(harnessDir, "settings.json"), JSON.stringify({ resources: { "extensions.ferment-v2": true } }))
 	writeFileSync(
 		join(harnessDir, "models.json"),
 		JSON.stringify({

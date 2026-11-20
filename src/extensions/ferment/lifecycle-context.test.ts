@@ -10,14 +10,6 @@ import { FERMENT_LIFECYCLE_CUSTOM_TYPE, registerFermentLifecycleContext } from "
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
 
-const getMultiModelEnabledMock = vi.fn(() => true)
-vi.mock("../multi-model.js", (importOriginal) => {
-	return importOriginal<typeof import("../multi-model.js")>().then((mod) => ({
-		...mod,
-		getMultiModelEnabled: () => getMultiModelEnabledMock(),
-	}))
-})
-
 type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
 
 const TEST_SESSION_ID = "test-session"
@@ -136,9 +128,7 @@ async function startSession(harness: ReturnType<typeof createHarness>): Promise<
 }
 
 describe("registerFermentLifecycleContext", () => {
-	beforeEach(() => {
-		getMultiModelEnabledMock.mockReturnValue(true)
-	})
+	beforeEach(() => {})
 
 	it("defers transitions while the agent is busy and flushes once on agent_settled, not agent_end", async () => {
 		const harness = createHarness()
@@ -506,16 +496,15 @@ describe("registerFermentLifecycleContext", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("uses the multi-model flag to shape delegation hints", async () => {
+	it("tells the planner it may execute steps directly", async () => {
 		const harness = createHarness()
-		getMultiModelEnabledMock.mockReturnValue(false)
 		registerFermentLifecycleContext(harness.pi, makeRuntime())
 		await startSession(harness)
 
 		harness.bus.emit(FERMENT_EVENTS.STEP_STARTED, { fermentId: "ferment-1" })
 		const content = harness.persistedBlocks()[0]?.content as string
-		// In single-model mode, the next-action suffix tells the planner it should
-		// execute the step directly instead of always spawning a subagent.
+		// The next-action suffix tells the planner it should execute the step
+		// directly instead of always spawning a subagent.
 		expect(content).toContain("Then execute the step directly")
 	})
 })

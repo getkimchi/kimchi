@@ -92,9 +92,9 @@
 #     over-wide lines, killing the process on ctrl+o. (Upstream candidate.)
 #   - Extension setModel accepts { persist } and threads it to AgentSession's
 #     ModelMutationOptions, restoring the persistence channel upstream made
-#     opt-in. setThinkingLevel is deliberately NOT threaded: Kimchi's only
-#     caller (src/extensions/tags.ts, set_phase) is tool-driven and must stay
-#     session-only, so the plumbing would have no caller. (Upstream candidate.)
+#     opt-in. setThinkingLevel is deliberately NOT threaded: no Kimchi caller
+#     needs a persisted thinking change, so the plumbing would have no
+#     caller. (Upstream candidate.)
 #   - /model selector renders a capability table: MODEL | PROVIDER | CONTEXT |
 #     VISION | DESCRIPTION columns, all left-aligned (content starts under its
 #     column name; the ✓/✗ VISION cell pads to the 6-wide header so
@@ -103,13 +103,7 @@
 #     process.__kimchiModelDescriptions, populated by src/models.ts from
 #     /v1/models/metadata, persisted through models.json) with the
 #     "Default for new sessions." annotation, replacing the old `· default`
-#     badge. The virtual multi-model row inherits its orchestrator model's
-#     stats/description and is annotated "[Deprecated]" —
-#     a literal mirroring MULTI_MODEL_DEPRECATION_LABEL in
-#     src/extensions/auto-model/constants.ts, which the patched dist cannot
-#     import (ACP sources the constant; rendered-text tests in
-#     src/model-selector-table.test.ts and tests/e2e/tui pin both sides to
-#     the same string). Layout width reads tui.terminal.columns (pi-tui's
+#     badge. Layout width reads tui.terminal.columns (pi-tui's
 #     Terminal exposes `columns`, not `cols`); the last column is clipped,
 #     never padded, so the header cannot wrap onto a phantom blank line, and
 #     rows total exactly the terminal width. On narrow terminals the
@@ -1571,30 +1565,10 @@ index 6015ae42db8b0a3571ac4c7748caa2f715b2ff44..9faf53ae9dd617925e105fbea5912d6e
              .lexer(markdown)
              .map((token) => {
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a30352548b8f55dd 100644
+index bd8894046f77385541fd9bd7b88268866a34a526..f282aa15d91ca08a3e5518567ef1e7fb9979fa2f 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
-@@ -34,6 +34,7 @@ export class ModelSelectorComponent extends Container {
-     refreshStatusMessage = "Refreshing model catalogs…";
-     refreshStatusSuccess = false;
-     tui;
-+    sessionId;
-     scopedModels;
-     defaultModel;
-     scope = "all";
-@@ -42,9 +43,10 @@ export class ModelSelectorComponent extends Container {
-     refreshAbortController = new AbortController();
-     refreshTimeout;
-     closed = false;
--    constructor(tui, currentModel, modelRuntime, scopedModels, onSelect, onCancel, initialSearchInput, onSelectAsDefault, defaultModel) {
-+    constructor(tui, currentModel, modelRuntime, scopedModels, onSelect, onCancel, initialSearchInput, onSelectAsDefault, defaultModel, sessionId) {
-         super();
-         this.tui = tui;
-+        this.sessionId = sessionId;
-         this.currentModel = currentModel;
-         this.modelRuntime = modelRuntime;
-         this.scopedModels = scopedModels;
-@@ -87,7 +89,9 @@ export class ModelSelectorComponent extends Container {
+@@ -87,7 +87,9 @@ export class ModelSelectorComponent extends Container {
          this.addChild(new Spacer(1));
          // Hint
          if (this.onSelectAsDefaultCallback) {
@@ -1605,36 +1579,7 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
          }
          // Add bottom border
          this.addChild(new DynamicBorder());
-@@ -107,6 +111,14 @@ export class ModelSelectorComponent extends Container {
-             model,
-         }));
-         this.allModels = this.sortModels(models);
-+        const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(this.sessionId) : undefined;
-+        if (orchRef) {
-+            const orchId = orchRef.split('/').pop();
-+            const orchEntry = this.allModels.find(m => m.id === orchId);
-+            if (orchEntry) {
-+                this.allModels.unshift({ provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
-+            }
-+        }
-         this.scopedModels = this.scopedModels.map((scoped) => {
-             const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
-             return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -116,6 +128,13 @@ export class ModelSelectorComponent extends Container {
-             id: scoped.model.id,
-             model: scoped.model,
-         }));
-+        if (orchRef) {
-+            const orchIdScoped = orchRef.split('/').pop();
-+            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
-+            if (orchScopedEntry) {
-+                this.scopedModelItems.unshift({ provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
-+            }
-+        }
-         this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-         this.filteredModels = this.activeModels;
-         const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -256,21 +275,34 @@ export class ModelSelectorComponent extends Container {
+@@ -256,21 +258,33 @@ export class ModelSelectorComponent extends Container {
          const maxVisible = 10;
          const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible));
          const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
@@ -1655,16 +1600,15 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
 -            this.listContainer.addChild(new Text(line, 0, 0));
 +        // Kimchi owns the shared /model and vision-switch table renderer.
 +        // Keep a native list fallback for SDK consumers without that adapter.
-+        const enabled = process.__kimchiMultiModelEnabled instanceof Map && !!process.__kimchiMultiModelEnabled.get(this.sessionId);
 +        const descriptions = process.__kimchiModelDescriptions instanceof Map ? process.__kimchiModelDescriptions : undefined;
 +        const rows = this.filteredModels.map((item, index) => ({
 +            model: item.model,
-+            id: item._isMultiModel ? "multi-model" : item.id,
++            id: item.id,
 +            provider: item.provider,
 +            selected: index === this.selectedIndex,
-+            current: item._isMultiModel ? enabled : !enabled && modelsAreEqual(this.currentModel, item.model),
++            current: modelsAreEqual(this.currentModel, item.model),
 +            description: descriptions?.get(`${item.model.provider}/${item.model.id}`) ?? "",
-+            annotation: item._isMultiModel ? "[Deprecated]" : this.isDefaultModel(item.model) ? "Default for new sessions." : "",
++            annotation: this.isDefaultModel(item.model) ? "Default for new sessions." : "",
 +        }));
 +        const renderTable = process.__kimchiRenderModelTable;
 +        if (typeof renderTable === "function") {
@@ -1684,18 +1628,6 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
          }
          // Add scroll indicator if needed
          if (startIndex > 0 || endIndex < this.filteredModels.length) {
-@@ -352,6 +384,11 @@ export class ModelSelectorComponent extends Container {
-     }
-     handleSelect(model) {
-         this.dispose();
-+        const selectedItem = this.filteredModels[this.selectedIndex];
-+        if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
-+            process.__kimchiMultiModelEnabled = new Map();
-+        }
-+        process.__kimchiMultiModelEnabled.set(this.sessionId, !!selectedItem?._isMultiModel);
-         this.onSelectCallback(model);
-     }
-     getSearchInput() {
 diff --git a/dist/modes/interactive/components/settings-selector.js b/dist/modes/interactive/components/settings-selector.js
 index f7929f1dfb9dcdd1e80e71e1c4e6fc05578d8a49..1220678a5b098eb7b6b806a92d3253d9f2a48136 100644
 --- a/dist/modes/interactive/components/settings-selector.js
@@ -1969,7 +1901,7 @@ index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..5b2f4a997704520331dcaa44960265e41b30c303 100644
+index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..136a1904a56f10ef01d6ce37e4ab2084ab620ef1 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -494,7 +494,11 @@ export class InteractiveMode {
@@ -2352,51 +2284,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..5b2f4a997704520331dcaa44960265e4
              return { component: selector, focus: selector };
          });
      }
-@@ -4322,6 +4529,34 @@ export class InteractiveMode {
-             this.showModelSelector();
-             return;
-         }
-+        // Handle "multi-model" as a virtual model selection
-+        if (searchTerm === 'multi-model') {
-+            const sessionId = this.sessionManager.getSessionId();
-+            const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(sessionId) : undefined;
-+            const orchParts = orchRef ? orchRef.split('/') : [];
-+            const orchProvider = orchParts.length >= 2 ? orchParts.slice(0, -1).join('/') : undefined;
-+            const orchModelId = orchParts.length >= 2 ? orchParts[orchParts.length - 1] : undefined;
-+            const orchestratorModel = orchProvider && orchModelId ? this.session.modelRegistry.find(orchProvider, orchModelId) : undefined;
-+            if (orchestratorModel) {
-+                if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
-+                    process.__kimchiMultiModelEnabled = new Map();
-+                }
-+                process.__kimchiMultiModelEnabled.set(sessionId, true);
-+                try {
-+                    // kimchi-dev: user-initiated selection persists (0.84.1 semantics)
-+                    await this.session.setModel(orchestratorModel, { persist: true });
-+                    this.footer.invalidate();
-+                    this.updateEditorBorderColor();
-+                    this.showStatus('Model: multi-model');
-+                } catch (error) {
-+                    process.__kimchiMultiModelEnabled.set(sessionId, false);
-+                    this.showError(error instanceof Error ? error.message : String(error));
-+                }
-+            } else {
-+                this.showError('Multi-model orchestrator is not available.');
-+            }
-+            return;
-+        }
-         const model = await this.findExactModelMatch(searchTerm);
-         if (model) {
-             try {
-@@ -4453,6 +4688,8 @@ export class InteractiveMode {
-     }
-     showModelSelector(initialSearchInput) {
-         this.showSelector((done) => {
-+            // kimchi-dev: sessionId tracks per-session multi-model selection state.
-+            const sessionId = this.sessionManager.getSessionId();
-             const selectModel = async (model, persist) => {
-                 try {
-                     await this.session.setModel(model, { persist });
-@@ -4470,10 +4707,13 @@ export class InteractiveMode {
+@@ -4470,7 +4677,10 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -2407,12 +2295,8 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..5b2f4a997704520331dcaa44960265e4
 +            const selector = new ModelSelectorComponent(this.ui, this.session.model, this.session.modelRuntime, this.session.scopedModels, (model) => selectModel(model, true), () => {
                  done();
                  this.ui.requestRender();
--            }, initialSearchInput, (model) => selectModel(model, true), defaultProvider && defaultModel ? { provider: defaultProvider, id: defaultModel } : undefined);
-+            }, initialSearchInput, (model) => selectModel(model, true), defaultProvider && defaultModel ? { provider: defaultProvider, id: defaultModel } : undefined, sessionId);
-             return { component: selector, focus: selector, dispose: () => selector.dispose() };
-         });
-     }
-@@ -5446,7 +5686,12 @@ export class InteractiveMode {
+             }, initialSearchInput, (model) => selectModel(model, true), defaultProvider && defaultModel ? { provider: defaultProvider, id: defaultModel } : undefined);
+@@ -5446,7 +5656,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {

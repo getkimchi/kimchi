@@ -10,7 +10,6 @@ export type StatusLineElementId =
 	| "agents"
 	| "context"
 	| "usage"
-	| "phase"
 	| "tags"
 	| "team"
 	| "credits"
@@ -53,7 +52,7 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 	{
 		id: "model",
 		label: "Model",
-		description: "Active model or multi-model  → ctrl+p",
+		description: "Active model  → ctrl+p",
 		canPin: false,
 	},
 	{
@@ -81,11 +80,6 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		id: "usage",
 		label: "Token I/O",
 		description: "Token input (↑) and output (↓)",
-	},
-	{
-		id: "phase",
-		label: "Phase",
-		description: "Current work phase",
 	},
 	{
 		id: "tags",

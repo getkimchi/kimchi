@@ -7,8 +7,6 @@ import { type AgentEndEvent, SessionManager } from "@earendil-works/pi-coding-ag
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { createContext } from "../__mocks__/context.js"
-import { getMultiModelEnabled } from "../multi-model.js"
-import { getModelRoles } from "../orchestration/model-roles.js"
 import * as redactor from "../pii-redaction/redactor.js"
 import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
@@ -18,28 +16,19 @@ import {
 	MAX_TODO_STATE_CHARS,
 	MAX_TRANSCRIPT_CHARS,
 	parseFermentV2EvaluatorOutput,
-	resolveFermentV2EvaluatorModel,
 } from "./evaluator.js"
 import { MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
 
 vi.mock("@earendil-works/pi-ai/compat", () => ({ completeSimple: vi.fn() }))
-vi.mock("../multi-model.js", () => ({ getMultiModelEnabled: vi.fn() }))
-vi.mock("../orchestration/model-roles.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../orchestration/model-roles.js")>()
-	return { ...actual, getModelRoles: vi.fn() }
-})
 vi.mock("./settings.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./settings.js")>()
 	return { ...actual, getFermentV2Settings: vi.fn() }
 })
 
 const completeMock = vi.mocked(completeSimple)
-const multiModelMock = vi.mocked(getMultiModelEnabled)
-const modelRolesMock = vi.mocked(getModelRoles)
 const fermentV2SettingsMock = vi.mocked(getFermentV2Settings)
 const sessionModel = model("session", "main")
-const judgeModel = model("judge", "independent")
 const rawUsage = {
 	input: 10,
 	output: 5,
@@ -79,17 +68,7 @@ describe("Ferment V2 evaluator", () => {
 		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
 		redactor.resetRedactorEngine()
 		completeMock.mockReset()
-		multiModelMock.mockReturnValue(false)
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
-		modelRolesMock.mockReturnValue({
-			orchestrator: "session/main",
-			planner: "session/main",
-			builder: "session/main",
-			reviewer: "session/main",
-			explorer: "session/main",
-			researcher: "session/main",
-			judge: "judge/independent",
-		})
 	})
 
 	afterEach(() => {
@@ -113,11 +92,6 @@ describe("Ferment V2 evaluator", () => {
 		expect(result).toMatchObject({ verdict: "continue", reason: "more work" })
 		expect(completeMock).toHaveBeenCalledOnce()
 		expect(warning).toHaveBeenCalled()
-	})
-	it("uses the session model in single-model mode", () => {
-		const ctx = evaluatorContext()
-		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
-		expect(ctx.modelRegistry.find).not.toHaveBeenCalled()
 	})
 
 	it("evaluates managed file requirements without restoring the full text into the objective", async () => {
@@ -157,16 +131,6 @@ describe("Ferment V2 evaluator", () => {
 		} finally {
 			rmSync(cwd, { recursive: true, force: true })
 		}
-	})
-
-	it("uses the judge role in multi-model mode and falls back to the session model", () => {
-		multiModelMock.mockReturnValue(true)
-		const ctx = evaluatorContext(judgeModel)
-		expect(resolveFermentV2EvaluatorModel(ctx)).toBe(judgeModel)
-		expect(ctx.modelRegistry.getAvailable).toHaveBeenCalled()
-
-		vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue([])
-		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
 	})
 
 	it("fails closed when evaluator authentication rejects", async () => {

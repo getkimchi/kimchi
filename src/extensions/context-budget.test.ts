@@ -42,13 +42,8 @@ vi.mock("./mcp/config.js", async (importOriginal) => {
 	}
 })
 
-import { withPrintGate } from "./print-mode.js"
+import { setPrintGate, withPrintGate } from "./print-mode.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
-
-vi.mock("./multi-model.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("./multi-model.js")>()
-	return { ...actual, resolveMultiModelEnabled: () => ({ value: false, source: "cli" }) }
-})
 
 const CHARS_PER_TOKEN = 4
 
@@ -56,10 +51,13 @@ const CHARS_PER_TOKEN = 4
 const BUDGET = {
 	/** buildSystemPrompt, interactive variant (hasUserLoop: true — TUI/ACP).
 	 *  Measures the full user-presence prompt (Consent, Harness Notes,
-	 *  orient-the-user). Raised from 1530 for the #1474 product-identity
-	 *  intro after trimming it to the bone; measured 1544 — near-cap by
+	 *  orient-the-user) plus ## Working Practices (role guidelines). Real
+	 *  interactive sessions always carried that payload: before phases were
+	 *  removed it rode the set_phase-gated Phase Management section, which
+	 *  this fixture (no set_phase tool) never measured — the same fixture
+	 *  with set_phase measured 3493 then. Measured 3361 — near-cap by
 	 *  design, trim before growing further. */
-	systemPromptInteractive: 1550,
+	systemPromptInteractive: 3400,
 	/** buildSystemPrompt, headless variant (hasUserLoop: false — --print, json,
 	 *  piped IO; what TB2.1 exercises). Raised from 1120 for the #1474
 	 *  product-identity intro; measured 1132
@@ -74,11 +72,11 @@ const BUDGET = {
 	 * product-identity intro, and the bundled docx skill raised the catalog
 	 * to ~233, budgeted at 240. */
 	skillsCatalog: 300,
-	/** Total canonical system-prompt + skills surface (measured ~1831 after
-	 *  the #1474 intro plus the bundled pptx, pdf, docx, and xlsx skills —
-	 *  includes the ## Language section). */
-	total: 1860,
-	/** Total canonical tool surface (18 tools after the DAP entry/session and
+	/** Total canonical system-prompt + skills surface (measured 3648: the
+	 *  interactive prompt above plus the bundled skills catalog — includes
+	 *  the ## Language section and ## Working Practices). */
+	total: 3700,
+	/** Total canonical tool surface (17 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
 	 *  Includes the redesigned bash_control schema WITH its interactive
@@ -91,8 +89,8 @@ const BUDGET = {
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */
 	toolSurface: 6350,
-	/** Print-mode slice (17 tools — the canonical surface minus questionnaire
-	 *  and set_phase, which the registration gates drop in headless --print
+	/** Print-mode slice (17 tools — the canonical surface minus questionnaire,
+	 *  which the registration gates drop in headless --print
 	 *  runs; includes the redesigned bash_control schema, the confirm_todos
 	 *  check-in tool, and the document-support growth in the checks tool; ~2%
 	 *  headroom over measured 5582 after pi 1.3.0). */
@@ -149,14 +147,21 @@ function canonicalSurfaces() {
 		mode: "single",
 		hasUserLoop: true,
 	})
-	const systemPromptHeadless = buildSystemPrompt({
-		tools: CANONICAL_TOOLS,
-		env: FIXED_ENV,
-		contextFiles: CANONICAL_CONTEXT_FILES,
-		skills: [],
-		mode: "single",
-		hasUserLoop: false,
-	})
+	// Headless means --print here, which skips the ## Working Practices payload.
+	setPrintGate(true, false)
+	let systemPromptHeadless: string
+	try {
+		systemPromptHeadless = buildSystemPrompt({
+			tools: CANONICAL_TOOLS,
+			env: FIXED_ENV,
+			contextFiles: CANONICAL_CONTEXT_FILES,
+			skills: [],
+			mode: "single",
+			hasUserLoop: false,
+		})
+	} finally {
+		setPrintGate(false, false)
+	}
 	const skillsRoot = join(repoRoot(), "resources", "skills")
 	const skills = readdirSync(skillsRoot, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
@@ -274,7 +279,6 @@ describe("context budget", () => {
 				"bash_control",
 				// The 3 Agent continuation tools are omitted: deferred until the
 				// first Agent result.
-				"set_phase",
 				// Skill is omitted: it registers at session_start only when a
 				// .claude skills dir exists — a resource gate, not part of the
 				// canonical default surface (mirrors the mcp zero-server state).
@@ -309,10 +313,9 @@ describe("context budget", () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))
-		// The interactive surface is the canonical 18-tool set above; in print
-		// mode the registration gates must remove exactly these two.
+		// The interactive surface is the canonical tool set above; in print mode
+		// the registration gate must remove questionnaire.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
-		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
 		expect(tools.length).toBe(17)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)

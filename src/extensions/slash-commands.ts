@@ -23,7 +23,6 @@ export const SLASH_COMMANDS = {
 	btw: { hint: "Side chat branched from this session" },
 	agents: { hint: "Manage background agents" },
 	permissions: { hint: "View or change permission mode and rules" },
-	phase: { hint: "Show or change the current work phase" },
 	language: { hint: "Show or pin the language Kimchi replies in" },
 	hooks: { hint: "View or change Kimchi hooks" },
 	resources: { hint: "View or change Kimchi hooks, tools, extensions, and plugins" },

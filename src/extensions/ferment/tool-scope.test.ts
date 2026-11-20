@@ -129,7 +129,6 @@ describe("planning profile", () => {
 			"ls",
 			"web_fetch",
 			"web_search",
-			"set_phase",
 			"propose_ferment_scoping",
 			"scope_ferment",
 			"update_ferment_scope_field",
@@ -198,7 +197,6 @@ describe("implementation profile", () => {
 			"write",
 			"Agent",
 			"get_subagent_result",
-			"set_phase",
 			...FERMENT_TOOL_NAMES,
 		]
 		const pi = createPi([], allTools)

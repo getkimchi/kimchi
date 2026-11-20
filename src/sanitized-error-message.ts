@@ -80,7 +80,7 @@ const BILLING_RE =
  * User-facing hint composed from a retired-model verdict's replacement
  * fields. The recovery affordance names the command that fixes the state:
  * interactive and ferment sessions switch the effective model via /model,
- * role-assigned (subagent) models via /multi-model, and one-shot runs just
+ * subagents via the Agent tool's model or the persona's models, and one-shot runs just
  * name the replacement since there is no interactive surface to act with.
  */
 function retiredModelHint(info: ModelRetiredInfo, context: ErrorSurfaceContext): string {
@@ -88,13 +88,14 @@ function retiredModelHint(info: ModelRetiredInfo, context: ErrorSurfaceContext):
 	if (info.replacement)
 		parts.push(
 			context === "subagent"
-				? `Switch the role model to "${info.replacement}" via /multi-model.`
+				? `Use "${info.replacement}" for this agent (the Agent tool's model or the persona's models).`
 				: `Switch to "${info.replacement}"${context === "oneshot" ? "" : " via /model"}.`,
 		)
 	else if (info.alternatives.length > 0) {
 		const rendered = info.alternatives.map((a) => (a.reason ? `"${a.slug}" (${a.reason})` : `"${a.slug}"`)).join(", ")
 		parts.push(`Alternatives: ${rendered}.`)
-		if (context === "subagent") parts.push("Switch the role model via /multi-model.")
+		if (context === "subagent")
+			parts.push("Use one of them for this agent (the Agent tool's model or the persona's models).")
 		else if (context !== "oneshot") parts.push("Switch via /model.")
 	}
 	if (info.docs) parts.push(`Details: ${info.docs}.`)

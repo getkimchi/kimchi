@@ -65,7 +65,6 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
@@ -168,9 +167,9 @@ const PLAN_MODE_MCP_NOTE =
 	"\n\nPlan mode is active: the `mcp` gateway is restricted to read-only operations (status, search, describe, server instructions, and read-only-qualified tool calls). All non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Install/auth actions, explicit reconnects, and write-capable gateway calls are blocked. Hidden tools and mutating operations work again after the user leaves plan mode. If the user's request needs a mutating MCP operation, say it is unavailable in plan mode instead of reporting a connection or login problem."
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
-// `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
-// are the agents-extension surface — `agent` is the canonical delegation tool,
-// the other two are read-only/control-plane operations on already-approved spawns.
+// `agent`/`get_subagent_result`/`steer_subagent` are the agents-extension
+// surface — `agent` is the canonical delegation tool, the other two are
+// read-only/control-plane operations on already-approved spawns.
 // `bash_control` is the control-plane companion of a background `bash` call: the
 // originating command already passed the permission gate (prompt/classifier), so
 // checking its state or stopping it needs no second approval.
@@ -179,7 +178,6 @@ const PLAN_MODE_MCP_NOTE =
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
 
 const BUILTIN_ALLOW_TOOL_NAMES = [
-	"set_phase",
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
@@ -926,7 +924,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// For ferment, the model should call propose_ferment_scoping first (to
 	// populate the structured scope), then submit_plan to trigger the review.
 	// The review is a TUI flow, so the tool is dead surface in plain --print
-	// runs — suppress it there like the ferment-mode gate does for set_phase.
+	// runs — suppress it there like the ferment-mode gate does for the ferment suite.
 	// ferment-oneshot print runs keep it (submit_plan is part of their
 	// planning catalog).
 	if (!shouldSuppressFermentModeTools()) {
@@ -1245,7 +1243,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			//   - ask_user               (interactive routing — TUI in interactive mode,
 			//                              judge model in oneshot via ferment/ask-user.ts)
 			//   - confirm_ferment_completion_criteria (interactive routing, planning)
-			//   - set_phase              (planning — phase tracker)
 			//   - propose_ferment_scoping / scope_ferment / update_ferment_scope_field
 			//                            (planning — scoping surface)
 			//   - list_ferments          (always-both discovery)
@@ -1382,7 +1379,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// already scoped/active and what the immediate next action is, so "Start
 				// as ferment" goes straight to execution.
 				const activePhase = activated.ferment.phases.find((p) => p.status === "active")
-				const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
+				const nextActionHint = formatNextActionHint(activated.ferment)
 				safeSendMessage(
 					pi,
 					{

@@ -6,7 +6,7 @@
 # Usage examples:
 #   ./scripts/run-release.sh -i terminal-bench/fix-git
 #   MODEL=kimchi-dev/minimax-m3 ./scripts/run-release.sh -i terminal-bench/fix-git
-#   MODEL=multi-model ./scripts/run-release.sh -i terminal-bench/fix-git -k 3
+#   MODEL=kimchi-dev/auto ./scripts/run-release.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
 DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
@@ -14,7 +14,7 @@ MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$BENCH_DIR/scripts/model_api_key.sh"
-require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai multi-model
+require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai
 cd "$BENCH_DIR"
 
 # Force the release path: ignore any host-side binary.

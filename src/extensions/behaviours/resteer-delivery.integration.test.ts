@@ -294,7 +294,7 @@ describe("behaviour resteer delivery (request-level)", () => {
 		// Block render: the habit body must never appear in the system prompt
 		// (that late-render block is the cache invalidation this design removes);
 		// the standing body does render its block on a tool load.
-		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "orchestrator" })
+		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
 		expect(blocksText(blocks)).not.toContain(HABIT_BODY)
 		expect(blocksText(blocks)).toContain(POLICY_BODY)
 	})
@@ -343,7 +343,7 @@ describe("behaviour resteer delivery (request-level)", () => {
 		// Block render across the compaction boundary is unchanged: the habit
 		// body still never renders a block (cache-stable prompt), the standing
 		// block still renders its policy body.
-		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "orchestrator" })
+		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
 		expect(blocksText(blocks)).not.toContain(HABIT_BODY)
 		expect(blocksText(blocks)).toContain(POLICY_BODY)
 	})
@@ -361,7 +361,7 @@ describe("behaviour resteer delivery (request-level)", () => {
 		expect(messagesContaining(body, HABIT_BODY)).toHaveLength(2)
 		expect(messagesContaining(body, POLICY_BODY)).toHaveLength(2)
 
-		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "orchestrator" })
+		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
 		expect(blocksText(blocks)).toContain(POLICY_BODY)
 		expect(blocksText(blocks)).not.toContain(HABIT_BODY)
 	})

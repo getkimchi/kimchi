@@ -120,8 +120,8 @@ describe("getConfigSetting", () => {
 
 describe("readConfigSetting", () => {
 	it("reads a setting from the store", () => {
-		seed({ multiModel: true })
-		expect(readConfigSetting("multiModel", isBoolean)).toBe(true)
+		seed({ quietStartup: true })
+		expect(readConfigSetting("quietStartup", isBoolean)).toBe(true)
 	})
 
 	it("returns undefined or fallback when key is absent", () => {
@@ -137,8 +137,8 @@ describe("readConfigSetting", () => {
 	})
 
 	it("returns object values when type guard matches", () => {
-		seed({ modelRoles: { orchestrator: "some/model" } })
-		expect(readConfigSetting("modelRoles", isObject)).toEqual({ orchestrator: "some/model" })
+		seed({ statusLine: { pinned: "some/model" } })
+		expect(readConfigSetting("statusLine", isObject)).toEqual({ pinned: "some/model" })
 	})
 })
 
@@ -236,14 +236,14 @@ describe("writeConfigSetting", () => {
 
 	it("handles object values", () => {
 		seed({})
-		writeConfigSetting("modelRoles", { orchestrator: "a/b" })
-		expect(readBack().modelRoles).toEqual({ orchestrator: "a/b" })
+		writeConfigSetting("statusLine", { pinned: "a/b" })
+		expect(readBack().statusLine).toEqual({ pinned: "a/b" })
 	})
 
 	it("replaces object value when content changes", () => {
-		seed({ modelRoles: { orchestrator: "a/b" } })
-		writeConfigSetting("modelRoles", { orchestrator: "c/d" })
-		expect(readBack().modelRoles).toEqual({ orchestrator: "c/d" })
+		seed({ statusLine: { pinned: "a/b" } })
+		writeConfigSetting("statusLine", { pinned: "c/d" })
+		expect(readBack().statusLine).toEqual({ pinned: "c/d" })
 	})
 
 	it("throws when writeJson throws (filesystem error)", () => {

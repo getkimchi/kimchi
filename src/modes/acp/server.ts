@@ -97,7 +97,6 @@ import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
 	isAutoRoutedModel,
-	MULTI_MODEL_DEPRECATION_LABEL,
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
@@ -114,8 +113,6 @@ import { installKimchiOAuth } from "../../extensions/login/flow.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
-import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import {
 	PERMISSION_MODES,
@@ -1028,12 +1025,6 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionModelHasAuth(session)
 
 			const sessionId = session.sessionId
-			// A fresh ACP session has neither a process entry nor a session log, so
-			// multi-model would otherwise resolve to the global default (true) and
-			// report "multi-model" no matter which model the session actually
-			// resolved to. Anchor the flag to that resolved model instead, the same
-			// way setSessionModel does for an explicit client change.
-			setMultiModelEnabled(sessionId, isMultiModelOrchestrator(session))
 			const uiContext = this.createUiContext(session)
 			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
@@ -1241,58 +1232,24 @@ export class KimchiAcpAgent implements Agent {
 		const { session } = record
 		const sessionId = session.sessionId
 		const modelRegistry = getSessionModelRegistry(session)
-		if (value === "multi-model") {
-			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, modelRegistry)
-			if (!orchestrator) {
-				// Orchestrator unresolvable: unknown ref → invalidParams; no
-				// credentials → authRequired (-32000 → client login UI).
-				// ModelRegistry.hasConfiguredAuth(model) delegates to
-				// ModelRuntime.hasConfiguredAuth(providerId) (model-registry.js).
-				const parsed = splitModelRef(orchRef)
-				if (parsed && !session.modelRuntime.hasConfiguredAuth(parsed.provider)) {
-					throw RequestError.authRequired(
-						undefined,
-						`multi-model orchestrator (${orchRef}) is not available: auth required. ${AUTH_REQUIRED_HINT}`,
-					)
-				}
-				throw RequestError.invalidParams(undefined, `multi-model orchestrator (${orchRef}) is not available`)
-			}
-			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
-			setMultiModelEnabled(sessionId, true)
-			try {
-				// An explicit client request to change the model, so save it as the default.
-				await session.setModel(orchestrator, { persist: true })
-			} catch {
-				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
-				// Pi's setModel only throws "if no auth is configured for the model"
-				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
-			}
-		} else {
-			const parsed = splitModelRef(value)
-			if (!parsed) {
-				throw RequestError.invalidParams(
-					undefined,
-					`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
-				)
-			}
-			const target = findModelByRef(modelRegistry, value)
-			if (!target) {
-				throw RequestError.invalidParams(
-					undefined,
-					`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
-				)
-			}
+		const parsed = splitModelRef(value)
+		if (!parsed) {
+			throw RequestError.invalidParams(undefined, `invalid model format: "${value}". expected "provider/modelId".`)
+		}
+		const target = findModelByRef(modelRegistry, value)
+		if (!target) {
+			throw RequestError.invalidParams(
+				undefined,
+				`model not found: "${value}". available models: ${availableModelRefs(modelRegistry).join(", ")}`,
+			)
+		}
 
-			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
-			setMultiModelEnabled(sessionId, false)
-			try {
-				// An explicit client request to change the model, so save it as the default.
-				await session.setModel(target, { persist: true })
-			} catch {
-				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
-				// Pi's setModel only throws "if no auth is configured for the model"
-				throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
-			}
+		try {
+			// An explicit client request to change the model, so save it as the default.
+			await session.setModel(target, { persist: true })
+		} catch {
+			// Pi's setModel only throws "if no auth is configured for the model"
+			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
 		}
 		// Both entry points advertise refreshed options here: the model-dependent
 		// reasoning_effort set changes with the model, and unstable_setSessionModel's
@@ -3946,24 +3903,10 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 
 /**
  * Builds a SessionConfigOption for the model setting.
- * Combines the orchestrator model with multi-model support into a single select UI.
  * Exported for testing.
  */
 type AgentSessionModelConfig = Pick<AgentSession, "model" | "modelRuntime" | "sessionId" | "sessionManager"> & {
 	modelRegistry?: ModelRegistry
-}
-
-/**
- * Whether a session's resolved model is the multi-model orchestrator.
- *
- * Compares the session's model against the configured orchestrator rather than
- * reading the multi-model flag, which is exactly what is unset for a fresh
- * session.
- */
-function isMultiModelOrchestrator(session: AgentSessionModelConfig): boolean {
-	if (!session.model) return false
-	const { model: orchestrator } = getOrchestratorModel(session.sessionId, getSessionModelRegistry(session))
-	return !!orchestrator && refFromModel(session.model) === refFromModel(orchestrator)
 }
 
 function getSessionModelRegistry(
@@ -4000,54 +3943,29 @@ function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSel
 }
 
 export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
-	const multiModelEnabled = getMultiModelEnabled(session.sessionManager)
 	const modelRegistry = getSessionModelRegistry(session)
-	const {
-		model: orchestrator,
-		modelRef: orchRef,
-		modelId: orchId,
-	} = getOrchestratorModel(session.sessionId, modelRegistry)
-	const orchName = orchestrator?.name ?? orchId ?? orchRef
-	// Multi-model's deprecation label is harness-side: the virtual selection has
-	// no platform-catalog entry to carry a backend marker.
-	// Ordering mirrors sortModels() in src/models.ts: active entries sorted by
-	// ref first, deprecated entries last — deprecated lands at the bottom by
-	// flag, not by pinning a specific value.
 	// Regular models carry no description today; deprecated ones get the
 	// picker marker (same gating as the session-start toast) so ACP clients
 	// see the deprecation before selecting, mirroring the TUI's /model column.
 	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
-	const options: Array<{ value: string; name: string; description?: string | null; deprecated?: boolean }> = [
-		...modelRegistry.getAvailable().map((m) => {
-			if (isAutoRoutedModel(m)) return autoModelOption(m, session.sessionId)
-			const marker = deprecationMarkers.get(m.id)
-			return marker
-				? { value: refFromModel(m), name: m.name, description: marker }
-				: { value: refFromModel(m), name: m.name }
-		}),
-		{
-			value: "multi-model",
-			name: `Multi-model (${orchName})`,
-			description: `${MULTI_MODEL_DEPRECATION_LABEL} Routes each task to the best model, with an orchestrator and workers.`,
-			deprecated: true,
-		},
-	]
-	options.sort(
-		(a, b) => Number(a.deprecated ?? false) - Number(b.deprecated ?? false) || a.value.localeCompare(b.value),
-	)
-	// `deprecated` is an internal ordering key — not part of SessionConfigSelectOption
-	// — so strip it before the list goes on the wire.
-	const wireOptions = options.map(({ deprecated: _, ...opt }) => opt)
+	const options: SessionConfigSelectOption[] = modelRegistry.getAvailable().map((m) => {
+		if (isAutoRoutedModel(m)) return autoModelOption(m, session.sessionId)
+		const marker = deprecationMarkers.get(m.id)
+		return marker
+			? { value: refFromModel(m), name: m.name, description: marker }
+			: { value: refFromModel(m), name: m.name }
+	})
+	options.sort((a, b) => a.value.localeCompare(b.value))
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
-	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
+	const currentValue = refFromModel(session.model!)
 	return {
 		id: "model",
 		name: "Model",
 		type: "select",
 		category: "model",
-		description: "Select the active AI model: single-model or multi-model (orchestrator + workers).",
+		description: "Select the active AI model.",
 		currentValue,
-		options: wireOptions,
+		options,
 	}
 }
 

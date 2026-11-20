@@ -45,11 +45,6 @@ vi.mock("./scope.js", async (original) => ({
 		isCurrent: () => true,
 	})),
 }))
-vi.mock("../orchestration/model-roles.js", () => ({
-	getModelRoles: () => ({ judge: ["local/qwen"] }),
-	normalizeRoleModels: (value: string[]) => value,
-}))
-
 const servers: Server[] = []
 const roots: string[] = []
 beforeEach(() => {

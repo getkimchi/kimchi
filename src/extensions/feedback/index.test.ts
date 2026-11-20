@@ -834,22 +834,6 @@ describe("feedbackExtension state machine", () => {
 		expect(modelSwitchDialogMock.show).not.toHaveBeenCalled()
 	})
 
-	it("model_select from auto to multi-model does not set the invitation", async () => {
-		const { api, ctx, getHandler } = makeApi()
-		feedbackExtension(api)
-		const handler = getHandler("model_select")
-		await handler(
-			{
-				previousModel: { provider: "kimchi-dev", id: "auto", name: "Auto" },
-				model: { provider: "kimchi-dev", id: "multi-model", name: "Multi" },
-			},
-			ctx,
-		)
-		const invitationState = await import("./invitation-state.js")
-		expect(invitationState.getModelSwitchInvitation()).toBeNull()
-		expect(modelSwitchDialogMock.show).not.toHaveBeenCalled()
-	})
-
 	it("turn_start clears the model-switch invitation", async () => {
 		const { api, ctx, getHandler } = makeApi()
 		feedbackExtension(api)

@@ -108,15 +108,6 @@ function renderAllPromptBlocks(): string | undefined {
 	return parts.join("\n\n")
 }
 
-// Mock getCurrentPhase so we can control the phase per test for visibility checks.
-const phaseState = vi.hoisted(() => ({
-	current: undefined as string | undefined,
-}))
-
-vi.mock("../tags.js", () => ({
-	getCurrentPhase: vi.fn(() => phaseState.current),
-}))
-
 // Import the default export AFTER mocks are set up.
 const dapExtension = (await import("../dap.js")).default
 
@@ -233,7 +224,6 @@ describe("DAP extension entry point", () => {
 		clientState.toolObjects = new Map()
 		clientState.sessionAfterCreate = undefined
 		clientState.removedSessionId = undefined
-		phaseState.current = undefined
 		promptBlocks.blocks = []
 		dapExtension(mock.pi)
 	})

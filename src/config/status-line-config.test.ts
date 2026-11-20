@@ -54,8 +54,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 17 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(17)
+	it("has 16 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(16)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -76,7 +76,6 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"agents",
 			"context",
 			"usage",
-			"phase",
 			"tags",
 			"team",
 			"credits",
@@ -183,10 +182,10 @@ describe("writeStatusLineConfig", () => {
 	})
 
 	it("merge-safety: does not clobber sibling top-level keys", () => {
-		seed(JSON.stringify({ modelRoles: { orchestrator: "kimi" }, other: "value" }, null, 2))
+		seed(JSON.stringify({ theme: { name: "kimi" }, other: "value" }, null, 2))
 		writeStatusLineConfig({ pinned: ["permissions"], hidden: [] })
 		const stored = JSON.parse(readFileSync(testPath, "utf-8"))
-		expect(stored.modelRoles).toEqual({ orchestrator: "kimi" })
+		expect(stored.theme).toEqual({ name: "kimi" })
 		expect(stored.other).toBe("value")
 		expect(stored.statusLine).toEqual({ pinned: ["permissions"], hidden: [] })
 	})
@@ -303,8 +302,8 @@ describe("status line hidden config", () => {
 
 	it("pin and hidden writes preserve each other", () => {
 		setStatusLineElementHidden("shells", true)
-		setStatusLineElementPinned("phase", true)
-		expect(readStatusLineConfig().pinned).toContain("phase")
+		setStatusLineElementPinned("tags", true)
+		expect(readStatusLineConfig().pinned).toContain("tags")
 		expect(readStatusLineConfig().hidden).toContain("shells")
 	})
 })
@@ -326,7 +325,7 @@ describe("readStatusLineConfig (stat cache)", () => {
 	it("writeStatusLineConfig is visible to the next read without explicit invalidation", () => {
 		seed("{}")
 		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
-		writeStatusLineConfig({ pinned: ["phase"], hidden: [] })
-		expect(readStatusLineConfig().pinned).toEqual(["phase"])
+		writeStatusLineConfig({ pinned: ["tags"], hidden: [] })
+		expect(readStatusLineConfig().pinned).toEqual(["tags"])
 	})
 })
