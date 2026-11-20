@@ -178,32 +178,51 @@ describe("active prompt Kimchi credential preparation", () => {
 		}
 	})
 
-	it("does not overwrite a distinct active credential outside the refresh window", async () => {
+	it("preserves fresh active OAuth through canonical refresh while updating a stale sibling", async () => {
 		const activeCredential = {
 			type: "oauth",
 			access: "independent-active-access",
 			refresh: "independent-active-refresh",
 			expires: Date.now() + 10 * 60_000,
 		}
+		writeOAuthCredential(Date.now() + 60_000)
+		const originalCanonical = readStore()["kimchi-dev"]
 		writeFileSync(
 			paths.authPath,
 			JSON.stringify({
-				"kimchi-dev": {
-					type: "oauth",
-					access: "replacement-access",
-					refresh: "rotated-refresh",
-					expires: Date.now() + 20 * 60_000,
-				},
+				"kimchi-dev": originalCanonical,
 				"kimchi-dev/openai": activeCredential,
+				"kimchi-dev/other": originalCanonical,
 			}),
 		)
-		const oauth = fakeOAuthDeps()
+		writeFileSync(paths.modelsPath, JSON.stringify({ providers: { "kimchi-dev/openai": {}, "kimchi-dev/other": {} } }))
+		const oauth = rotatingOAuthDeps()
 
 		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")
 
-		expect(oauth.refreshCalls).toHaveLength(0)
-		expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
-		expect(readStore()["kimchi-dev/openai"]).toEqual(activeCredential)
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledTimes(1)
+		const stored = readStore()
+		expect(stored["kimchi-dev"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+		expect(stored["kimchi-dev/other"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+		expect(stored["kimchi-dev/openai"]).toEqual(activeCredential)
+	})
+
+	it("preserves an active API-key entry through canonical refresh", async () => {
+		writeOAuthCredential(Date.now() + 60_000)
+		const apiKey = { type: "api_key", key: "active-api-key" }
+		writeFileSync(
+			paths.authPath,
+			JSON.stringify({ "kimchi-dev": readStore()["kimchi-dev"], "kimchi-dev/openai": apiKey }),
+		)
+		const oauth = rotatingOAuthDeps()
+
+		await prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledTimes(1)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+		expect(readStore()["kimchi-dev/openai"]).toEqual(apiKey)
 	})
 
 	it("does not refresh Kimchi credentials for an unrelated active provider", async () => {

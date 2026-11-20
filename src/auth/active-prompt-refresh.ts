@@ -85,14 +85,30 @@ export async function prepareActivePromptKimchiCredential(
 			rememberPreparedOAuthCredential(paths.authPath, credential, owner)
 		}
 		if (!synchronizationNeeded) return "ready"
+		// Canonical rotation must not replace an independent active identity.
+		// Missing or stale active entries still receive the replacement.
+		const protectedProviderId =
+			activeProviderId !== KIMCHI_PROVIDER_ID && activeCredential !== undefined && !staleActiveCredential
+				? activeProviderId
+				: undefined
 		try {
-			await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
+			await syncOAuthCredentialToKimchiProviders(
+				paths.authPath,
+				paths.modelsPath,
+				{ ...credential },
+				protectedProviderId,
+			)
 		} catch {
 			// Canonical refresh is already durable. A sub-provider left with the
 			// retired grant must not consume it because a store write was transient.
 			console.error({ event: "kimchi.oauth.refresh", outcome: "sync_retry" })
 			try {
-				await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...credential })
+				await syncOAuthCredentialToKimchiProviders(
+					paths.authPath,
+					paths.modelsPath,
+					{ ...credential },
+					protectedProviderId,
+				)
 			} catch (error) {
 				const errorType = error instanceof Error ? error.name : typeof error
 				console.error({ event: "kimchi.oauth.refresh", outcome: "sync_failed", errorType })
