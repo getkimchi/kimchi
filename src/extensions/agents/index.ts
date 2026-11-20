@@ -2268,7 +2268,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						spinnerFrame: spinnerFrame % SPINNER.length,
 					}
 					onUpdate?.({
-						content: [{ type: "text", text: `${fgState.toolUses} tool uses...` }],
+						content: [{ type: "text", text: describeActivity(fgState.activeTools, fgState.responseText) }],
 						details: details as unknown,
 					})
 				}
