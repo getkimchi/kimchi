@@ -24,9 +24,17 @@ type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 function createPi() {
 	const handlers = new Map<string, EventHandler>()
 	// Mirror upstream: every registered default-active tool is active at load —
-	// including ferment's workflow tools — and codemode/tool_search register
-	// defaultActive: false upstream, so they stay out unless opted in.
-	let activeTools = ["read", "bash", "list_ferments", "scope_ferment", "activate_ferment_phase", "start_ferment_step"]
+	// including ferment's workflow tools and the intentionally default-on
+	// guided codemode. tool_search remains inactive unless explicitly enabled.
+	let activeTools = [
+		"read",
+		"bash",
+		"codemode",
+		"list_ferments",
+		"scope_ferment",
+		"activate_ferment_phase",
+		"start_ferment_step",
+	]
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			handlers.set(event, handler)
@@ -177,6 +185,7 @@ describe("registerFermentEvents", () => {
 		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
 			{ name: "bash" },
 			{ name: "read" },
+			{ name: "codemode" },
 			{ name: "Agent" },
 			{ name: "get_subagent_result" },
 			{ name: "list_ferments" },
@@ -212,17 +221,17 @@ describe("registerFermentEvents", () => {
 
 		// With no active ferment, before_agent_start applies the idle profile:
 		// normal tools remain available and ferment workflow tools stay hidden.
-		// Registered default-off extension tools (codemode, tool_search) are NOT
-		// activated — ferment switching on/off must never widen the chat surface
-		// with tools the user never opted into.
+		// Guided codemode preserves its intentional default-active state. The
+		// default-off tool_search is NOT activated: switching ferment on/off
+		// must never widen the chat surface with tools the user never enabled.
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		expect(lastCall).toContain("bash")
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("list_ferments")
+		expect(lastCall).toContain("codemode")
 		expect(lastCall).not.toContain("scope_ferment")
 		expect(lastCall).not.toContain("activate_ferment_phase")
 		expect(lastCall).not.toContain("start_ferment_step")
-		expect(lastCall).not.toContain("codemode")
 		expect(lastCall).not.toContain("tool_search")
 	})
 

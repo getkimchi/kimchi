@@ -258,15 +258,16 @@ describe("idle profile", () => {
 			"bash",
 			"edit",
 			"write",
+			"codemode", // intentionally default-active upstream
 			"list_ferments", // ferment-mode but not planner-only; remains visible
 			"propose_ferment_scoping", // ferment-only: filtered out
 			"start_ferment_step", // ferment-only: filtered out
 			"activate_ferment_phase", // ferment-only: filtered out
 		]
-		// active ⊂ registered: codemode registers defaultActive: false upstream,
-		// so it is registered but never active — exactly the class of tool the
-		// idle profile must not surface merely because ferment applied.
-		const allTools = [...activeTools, "codemode"]
+		// active ⊂ registered: tool_search registers defaultActive: false
+		// upstream, so it is registered but never active — exactly the class of
+		// tool the idle profile must not surface merely because ferment applied.
+		const allTools = [...activeTools, "tool_search"]
 		const pi = createPi([...activeTools], allTools)
 
 		applyFermentToolProfile(pi, "idle")
@@ -282,8 +283,9 @@ describe("idle profile", () => {
 		expect(lastCall).not.toContain("propose_ferment_scoping")
 		expect(lastCall).not.toContain("start_ferment_step")
 		expect(lastCall).not.toContain("activate_ferment_phase")
-		// Registered-but-never-active tools are not activated by idling.
-		expect(lastCall).not.toContain("codemode")
+		// Default-active codemode remains; never-active tool_search stays out.
+		expect(lastCall).toContain("codemode")
+		expect(lastCall).not.toContain("tool_search")
 	})
 })
 

@@ -162,12 +162,11 @@ describe("apply", () => {
 	})
 
 	it("idle preserves the active surface without unioning the whole registry", () => {
-		// Upstream registers codemode/tool_search inactive (defaultActive: false).
-		// The idle profile restores normal chat from the ACTIVE set upstream
-		// maintains — it must not read the registry as its base, or registered
-		// default-off extension tools become active just because Ferment applied
-		// an idle snapshot. User-activated tools survive; ferment-only tools and
-		// never-activated registry entries do not.
+		// Guided codemode is intentionally default-active; tool_search remains
+		// default-inactive upstream. The idle profile restores the ACTIVE set
+		// upstream maintains — reading the registry as its base would activate
+		// tool_search just because Ferment applied an idle snapshot. Default-on
+		// and user-enabled tools survive; never-activated registry entries do not.
 		const pi = makeMockPi({
 			allTools: [
 				{ name: "read" },
@@ -190,12 +189,12 @@ describe("apply", () => {
 	})
 
 	it("idle leaves upstream-inactive registry tools out of the active set", () => {
-		// Pre-fix regression: with an active surface of only the default builtins,
-		// an idle snapshot based on getAllTools() activated codemode/tool_search
-		// even though the user never opted in and Ferment had no work to restore.
+		// Pre-fix regression: an idle snapshot based on getAllTools() activated
+		// default-off tool_search even without user opt-in. The new default-on
+		// codemode baseline must nevertheless be preserved by the idle apply.
 		const pi = makeMockPi({
 			allTools: [{ name: "read" }, { name: "bash" }, { name: "write" }, { name: "codemode" }, { name: "tool_search" }],
-			activeTools: ["read", "bash", "write"],
+			activeTools: ["read", "bash", "write", "codemode"],
 		})
 
 		apply("idle", "ferment", pi)
@@ -204,16 +203,14 @@ describe("apply", () => {
 		expect(calledWith).toContain("read")
 		expect(calledWith).toContain("bash")
 		expect(calledWith).toContain("write")
-		expect(calledWith).not.toContain("codemode")
+		expect(calledWith).toContain("codemode")
 		expect(calledWith).not.toContain("tool_search")
 	})
 
 	it("idle restores the pre-implementation baseline, not the implementation-widened surface", () => {
-		// implementation-ferment legitimately unions the full registry (thus
-		// activating codemode/tool_search) while a ferment implements. Exiting
-		// back to chat must forget that widening: the restore surface is the
-		// pre-ferment baseline, so completed ferments never leave unrelated
-		// default-off tools model-visible.
+		// implementation-ferment legitimately activates tool_search through its
+		// registry union. Exiting back to chat must forget that widening while
+		// keeping intentionally default-active codemode in the baseline.
 		const pi = makeMockPi({
 			allTools: [
 				{ name: "read" },
@@ -222,7 +219,7 @@ describe("apply", () => {
 				{ name: "tool_search" },
 				{ name: "activate_ferment_phase" },
 			],
-			activeTools: ["read", "bash"],
+			activeTools: ["read", "bash", "codemode"],
 		})
 
 		apply("implementation-ferment", "ferment", pi)
@@ -232,8 +229,7 @@ describe("apply", () => {
 		apply("idle", "ferment", pi)
 
 		const restored = vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] as string[]
-		expect(restored).toEqual(expect.arrayContaining(["read", "bash"]))
-		expect(restored).not.toContain("codemode")
+		expect(restored).toEqual(expect.arrayContaining(["read", "bash", "codemode"]))
 		expect(restored).not.toContain("tool_search")
 	})
 

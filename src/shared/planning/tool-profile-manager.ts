@@ -168,10 +168,11 @@ export function debugToolSurface(line: () => string): void {
  *   restore the captured pre-profile baseline plus names the session gained
  *   since the last snapshot, minus names it lost; resnapshots carry the live
  *   surface. Minus ferment-only tools. Registered is not active — extension
- *   tools such as `codemode` and `tool_search` register `defaultActive:
- *   false`, and an idle snapshot must not activate them merely because the
- *   profile manager ran. Exiting a ferment restores the surface the user had
- *   before the ferment, not the implementation-widened one.
+ *   tools such as `tool_search` register `defaultActive: false`, and an idle
+ *   snapshot must not activate them merely because the profile manager ran.
+ *   Intentionally default-active tools such as codemode belong to the
+ *   captured surface instead. Exiting a ferment restores the surface the user
+ *   had before the ferment, not the implementation-widened one.
  *
  * - `"implementation-ferment"`: full registered toolset plus the required
  *   ferment lifecycle tools added defensively (so they are always present
@@ -224,10 +225,11 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 	if (profile === "idle") {
 		// Idle = no active ferment, no plan mode. The restore surface is
 		// baseline + admissions − removals, never the raw registry: registered
-		// is not active, and extension tools like `codemode` / `tool_search`
-		// register `defaultActive: false`, so a registry union would activate
-		// them without any user opt-in. Minus ferment-only tools so exiting a
-		// ferment never leaks its lifecycle surface.
+		// is not active, and `tool_search` registers `defaultActive: false`,
+		// so a registry union would activate it without any user opt-in. Default-
+		// active tools such as codemode come from the captured baseline. Minus
+		// ferment-only tools so exiting a ferment never leaks its lifecycle
+		// surface.
 		if (trigger === "resnapshot") {
 			// Stale-registry guard: carry the mid-turn surface exactly, without
 			// sampling the registry, so a mid-rebuild can't shrink it.
