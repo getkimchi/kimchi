@@ -40,7 +40,8 @@ jobs:
     # are calibrated per runner class and record their class in _meta;
     # recalibrate via the calibrate dispatch when this label moves.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
+    # Heavy ledger fixtures and all lane repetitions exceed the former 15m budget.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,6 +101,8 @@ jobs:
         env:
           # Never interpolate workflow inputs directly into run: blocks.
           CALIBRATE: ${{ github.event.inputs.calibrate }}
+          KIMCHI_PERF_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          KIMCHI_PERF_HARNESS_SHA: ${{ github.sha }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           if [ "$CALIBRATE" = "true" ]; then

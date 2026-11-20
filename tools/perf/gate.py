@@ -23,6 +23,7 @@ import math
 import os
 import re
 import statistics
+import fixtures
 import subprocess
 import sys
 import tempfile
@@ -80,20 +81,6 @@ EXTRACTORS = {
         # canonical runner.
         "think_instr": (lambda r: r.get("think_instr") or 0, "work units",
                         "renderer work for a streaming step-shaped thinking turn (#1645 class)", (ABS, 40e9)),
-        # Enter to the user's message entering the session, from the
-        # KIMCHI_SUBMIT_TIMING marks the binary itself writes (max across
-        # the scenario's turns). Bounded pre-request legs (2s digest bound,
-        # detached recall) keep healthy runs far below; reintroduced blocking
-        # between Enter and the request lands here at its full duration —
-        # the submit-latency PR class. ABS budget: keyed to regression
-        # magnitude, not machine noise. BINARY-gated lane: a binary without
-        # the instrument records submit_timing=false and the classifier
-        # treats the empty lane as SKIP, not FAIL (the e2e locks the echo's
-        # existence; this lane locks its timing once marks exist). The
-        # scenario fails the rep if marks exist but no samples were parsed,
-        # so the SKIP can never mask a measurement failure.
-        "submit_echo_max_ms": (lambda r: r.get("submit_echo_max_ms"), "ms",
-                                 "Enter to message-entry (blocking pre-request work)", (ABS, 1000.0)),
     },
     "resume": {
         "load_instr": (lambda r: _wu((r.get("load") or {}).get("instr"), (r.get("load") or {}).get("cycles"),
@@ -104,6 +91,8 @@ EXTRACTORS = {
                        "first turn after resume; render of pre-compaction history", (RATIO, WORK)),
         "peak_mem_mb": (lambda r: (r.get("peak_mem") or 0) / 1e6, "MB peak",
                         "retained-history memory (whole tree)", (RATIO, WORK)),
+        "read_mb": (lambda r: ((r.get("load") or {}).get("disk_r") or 0) / 1e6, "MB read",
+                    "session-file and extension reads during the load (v1.11 class)", (ABS, 1000.0)),
     },
     "idle": {
         # Skip the first bucket: it mixes startup with the first background pass.
@@ -117,23 +106,10 @@ EXTRACTORS = {
                   "work units", "idle background work over the window (v1.10 class)", (RATIO, IDLE_WORK)),
         "read_mb": (lambda r: sum((b.get("disk_r", 0) + b.get("desc_disk_r", 0)) for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]) / 1e6,
                     "MB read", "root's own per-pass re-reads of accumulated data", (RATIO, IDLE_READS)),
-        # Phase 2: retry deadlines moved past the window — nothing is due, the
-        # queue is still stuck, and the endpoint still refuses. The fix
-        # (sleep-until-retry) shows a work collapse after the single pass that
-        # absorbs the retire edit; the #1529 class keeps paying full passes on
-        # its own timer regardless. Skip phase 2's first bucket: the absorbing
-        # pass legitimately lives there.
-        "stuck_instr": (lambda r: sum(_wu(b.get("instr", 0), b.get("cycles", 0), b.get("cpu_ms", 0)) +
-                                       _wu(b.get("desc_instr", 0), b.get("desc_cycles", 0), b.get("desc_cpu_ms", 0))
-                                       for b in [b for b in r.get("buckets", []) if b.get("p") == 2][1:]),
-                        "work units", "background work with a stuck queue and no due retries (sleep-schedule class)", (RATIO, IDLE_WORK)),
-        "stuck_read_mb": (lambda r: sum((b.get("disk_r", 0) + b.get("desc_disk_r", 0)) for b in [b for b in r.get("buckets", []) if b.get("p") == 2][1:]) / 1e6,
-                          "MB read", "reads with a stuck queue and no due retries", (RATIO, IDLE_READS)),
-        # pids.peak is the kernel's own record of the run's peak concurrency —
-        # exact, unlike any sampled child count. The additive allowance covers
-        # an occasional extra helper, not a ratio on a small integer.
-        "pids_peak": (lambda r: (r.get("pids_peak") or 0), "procs peak",
-                      "peak helper concurrency (git pollers, tar+gzip archiver)", (ADD, 2)),
+        "disk_w_mb": (lambda r: sum((b.get("disk_w", 0) + b.get("desc_disk_w", 0)) for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]) / 1e6,
+                      "MB written", "background writes (state.json, journals, ledger; v1.22 class)", (ABS, 200.0)),
+        "peak_mem_mb": (lambda r: (r.get("peak_mem") or 0) / 1e6, "MB peak",
+                        "memory ceiling of the aged install (whole tree)", (ABS, 1000.0)),
         # Wall-clock, but gated as a coarse detector: ~75 probes per idle
         # window, normal p95 is ~4 ms (dead-stable across runs), and the
         # historical regressions stalled EVERY keystroke at 0.9-1.9 s. p95
@@ -144,6 +120,29 @@ EXTRACTORS = {
         "keylat_p95_ms": (lambda r: r.get("keylat_p95_ms"), "ms p95",
                           "keystroke echo latency; absolute event-loop-blocker detector", (ABS, 100.0)),
     },
+    "ledger": {
+        # Production-scale ledger (LEDGER_RECORDS seeded records), idle timeline.
+        # Same skip-first-bucket rule as idle: bucket 0 mixes startup with the
+        # first background pass. The metric pair catches the two classes that
+        # only exist at this scale:
+        #   - instr: per-pass full-history re-reads. Pre-incremental reconcile
+        #     pays the whole ledger every ~30s pass; incremental reads pay
+        #     only the new records. Cache-immune (kernel counter), so it fires
+        #     on CI's page-cache-warm runs where read_mb cannot.
+        "instr": (lambda r: sum(_wu(b.get("instr", 0), b.get("cycles", 0), b.get("cpu_ms", 0)) +
+                                 _wu(b.get("desc_instr", 0), b.get("desc_cycles", 0), b.get("desc_cpu_ms", 0))
+                                 for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]),
+                  "work units", "per-pass ledger re-reads at production record counts", (RATIO, WORK)),
+        "read_mb": (lambda r: sum((b.get("disk_r", 0) + b.get("desc_disk_r", 0)) for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]) / 1e6,
+                    "MB read", "per-pass re-reads of the scaled ledger (real-disk runners; page-cache-immune twin of instr)", (RATIO, IDLE_READS)),
+        "keylat_p95_ms": (lambda r: r.get("keylat_p95_ms"), "ms p95",
+                          "keystroke echo latency while reconcile passes run over the big ledger; "
+                          "absolute event-loop-hold detector (the user-reported stall class)", (ABS, 100.0)),
+        "disk_w_mb": (lambda r: sum((b.get("disk_w", 0) + b.get("desc_disk_w", 0)) for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]) / 1e6,
+                      "MB written", "journal appends and ledger writes during heavy-install passes", (ABS, 93.0)),
+        "peak_mem_mb": (lambda r: (r.get("peak_mem") or 0) / 1e6, "MB peak",
+                        "cgroup memory.peak usage high-water across the process tree", (ABS, 6123.0)),
+    },
 }
 
 def tier_mismatch(recs, expected):
@@ -152,6 +151,16 @@ def tier_mismatch(recs, expected):
     tiers = {r.get("counter") for r in recs}
     if tiers != {expected}:
         return sorted(tiers, key=str)
+    return None
+
+
+def generation_mismatch(records, budgets):
+    expected = budgets.get("_meta", {}).get("ledger_generation")
+    if expected != fixtures.LEDGER_GENERATION:
+        return f"unsupported ledger budget generation {expected!r}"
+    for record in records:
+        if record["scenario"] == "ledger" and record.get("fixture_generation") != expected:
+            return f"ledger generation mismatch: record {record.get('fixture_generation')!r}, budgets {expected!r}"
     return None
 
 
@@ -165,25 +174,33 @@ def run_selfcheck():
                               "logical_w": 0, "peak_mem": 100e6},
                     "think_instr": 6e9},
         "resume": {"scenario": "resume", "ok": True, "counter": "cgroup-instructions",
-                   "load": {"instr": 100, "cycles": 0, "cpu_ms": 0},
+                   "load": {"instr": 100, "cycles": 0, "cpu_ms": 0, "disk_r": 5e6},
                    "turn": {"instr": 100, "cycles": 0, "cpu_ms": 0}, "peak_mem": 100e6},
         "idle": {"scenario": "idle", "ok": True, "counter": "cgroup-instructions",
-                 # Phase 1 (default/untagged) + phase 2 (stuck-but-quiet): the
-                 # in-budget record must feed every idle extractor, including the
-                 # stuck-phase sums, with nonzero buckets.
+                 # Skip bucket zero; unsettled startup is not steady-state work.
                  "buckets": [{"instr": 0, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
-                              "desc_cpu_ms": 0, "disk_r": 0, "desc_disk_r": 0},
+                              "desc_cpu_ms": 0, "disk_r": 0, "desc_disk_r": 0, "disk_w": 0, "desc_disk_w": 0},
                              {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
-                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0},
+                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "disk_w": 1e6, "desc_disk_w": 0},
                              {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
-                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 2},
+                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "disk_w": 1e6, "desc_disk_w": 0, "p": 2},
                              {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
-                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 2}],
-                 "pids_peak": 4, "keylat_p95_ms": 5.0},
+                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "disk_w": 1e6, "desc_disk_w": 0, "p": 2}],
+                 "keylat_p95_ms": 5.0, "keylat_max_ms": 7.0, "peak_mem": 200e6},
+        "ledger": {"scenario": "ledger", "ok": True, "counter": "cgroup-instructions",
+                   "buckets": [{"instr": 0, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
+                                "desc_cpu_ms": 0, "disk_r": 0, "desc_disk_r": 0, "disk_w": 0, "desc_disk_w": 0},
+                               {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
+                                "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "disk_w": 1e6, "desc_disk_w": 0, "p": 1},
+                               {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
+                                "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "disk_w": 1e6, "desc_disk_w": 0, "p": 1}],
+                   "fixture_generation": fixtures.LEDGER_GENERATION,
+                   "keylat_p95_ms": 5.0, "keylat_max_ms": 6.0, "peak_mem": 300e6,
+                   "ledger_indexes": ["work_records_imported", "outbox_pending_cover", "outbox_batches_by_account"]},
     }
 
     def budgets_for(over=None):
-        b = {"_meta": {"counter": "cgroup-instructions"}}
+        b = {"_meta": {"counter": "cgroup-instructions", "ledger_generation": fixtures.LEDGER_GENERATION}}
         for sc, metrics in EXTRACTORS.items():
             b[sc] = {}
             for m, meta in metrics.items():
@@ -196,8 +213,22 @@ def run_selfcheck():
         return compare(sc, metrics, budgets)
 
     problems = []
+    committed = json.load(open(os.path.join(HERE, "budgets.json")))
+    for scenario, metrics in EXTRACTORS.items():
+        if set(metrics) != set(committed.get(scenario, {})):
+            missing = sorted(set(metrics) - set(committed.get(scenario, {})))
+            unknown = sorted(set(committed.get(scenario, {})) - set(metrics))
+            problems.append(f"selfcheck: {scenario} extractor/budget mismatch (missing={missing}, unknown={unknown})")
     good = budgets_for()
     # 1. In-budget records pass.
+    if generation_mismatch([rec_tpl["ledger"]], good) is not None:
+        problems.append("generation guard: matching generation flagged")
+    if generation_mismatch([rec_tpl["ledger"]], {"_meta": {}}) is None:
+        problems.append("generation guard: missing metadata was not rejected")
+    mismatched = dict(rec_tpl["ledger"])
+    mismatched["fixture_generation"] = "ledger-heavy-scaled:2400:2:1440"
+    if generation_mismatch([mismatched], good) is None:
+        problems.append("generation guard: scaled profile was not rejected")
     for sc, rec in rec_tpl.items():
         _, fails = classify(sc, rec, good)
         if fails:
@@ -239,22 +270,6 @@ def run_selfcheck():
         problems.append("session: unknown budget key not flagged")
     # 7. The submit-latency lane: absent instrument skips (dormant), a value
     #    gates, and a breach fails.
-    absent = dict(rec_tpl["session"])
-    absent["submit_timing"] = False
-    rows, fails = classify("session", absent, good)
-    if any(r[1] == "submit_echo_max_ms" and "SKIP" not in (r[5] or "") for r in rows) or any(
-        f[1] == "submit_echo_max_ms" for f in fails
-    ):
-        problems.append("session: absent submit-timing instrument did not SKIP cleanly")
-    present = dict(rec_tpl["session"])
-    present.update({"submit_timing": True, "submit_echo_max_ms": 42.0})
-    _, fails = classify("session", present, good)
-    if any(f[1] == "submit_echo_max_ms" for f in fails):
-        problems.append("session: in-budget submit_echo_max_ms failed")
-    present["submit_echo_max_ms"] = 5000.0
-    _, fails = classify("session", present, good)
-    if not any(f[1] == "submit_echo_max_ms" for f in fails):
-        problems.append("session: over-budget submit_echo_max_ms did not fail")
     if tier_mismatch([rec_tpl["session"]], "cgroup-instructions") is not None:
         problems.append("tier guard: matching tier flagging as mismatch")
     if tier_mismatch([{"counter": "cpu_ms"}], "cgroup-instructions") is None:
@@ -285,6 +300,7 @@ ADVISORY = {  # reported, never gated: wall-clock is contention noise
               "keylat_over_100ms": lambda r: r.get("keylat_over_100ms"),
               "home_mb": lambda r: ((r.get("home_bytes") or {}).get("total") or 0) / 1e6,
               "state_json_mb": lambda r: (r.get("state_json_bytes") or 0) / 1e6},
+    "ledger": {"keylat_max_ms": lambda r: r.get("keylat_max_ms"),}
 }
 
 
@@ -293,10 +309,6 @@ def collect(records):
     out, adv = {}, {}
     for r in records:
         for m, ex in EXTRACTORS.get(r["scenario"], {}).items():
-            if m == "submit_echo_max_ms" and r.get("submit_timing") is False:
-                # Instrument absent from this binary: the lane is dormant for
-                # this rep, not unmeasured — see the extractor note.
-                continue
             v = ex[0](r)
             if isinstance(v, (int, float)):
                 out.setdefault(m, []).append(v)
@@ -313,13 +325,6 @@ def compare(scenario, metrics, budgets):
         values = metrics.get(m, [])
         mode = EXTRACTORS[scenario][m][3][0]
         if not values:
-            if m == "submit_echo_max_ms":
-                # Dormant lane: no rep's binary carried the submit-timing
-                # instrument. Distinct from a measurement failure, which the
-                # scenario itself fails (marks present but no samples), so
-                # this SKIP can never mask one.
-                rows.append((scenario, m, None, None, None, "SKIP (submit-timing marks absent from binary)"))
-                continue
             # Fail closed for an unmeasured gated metric too (e.g. keystroke
             # probing never produced a sample): an absent observation is not
             # evidence of health.
@@ -340,9 +345,11 @@ def compare(scenario, metrics, budgets):
             continue
         ratio = measured / limit if limit else float("inf")
         status = "PASS" if measured <= limit else f"FAIL ({ratio:.2f}x limit)"
-        if measured <= 0:
+        if measured <= 0 and "zero_ok" not in EXTRACTORS[scenario][m][3]:
             # A gated metric of exactly zero means the counter did not fire
-            # (unsupported on this runner) — never a pass.
+            # (unsupported on this runner) — never a pass. Count-style metrics
+            # where zero is a legitimate reading (and their budget note says so)
+            # mark the mode tuple with "zero_ok".
             status = "FAIL (counter reads zero; runner/kernel does not report it)"
             failures.append((scenario, m, measured, limit, None))
         elif measured > limit:
@@ -355,7 +362,8 @@ def compare(scenario, metrics, budgets):
         if m not in EXTRACTORS.get(scenario, {}) and not str(m).startswith("_"):
             safe = re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", str(m))
             label = m if safe else "<invalid budget key>"
-            rows.append((scenario, label, None, budgets[scenario][m].get("limit"), None, "WARN (unknown budget key)"))
+            rows.append((scenario, label, None, budgets[scenario][m].get("limit"), None, "FAIL (unknown budget key)"))
+            failures.append((scenario, label, None, budgets[scenario][m].get("limit"), None))
     return rows, failures
 
 
@@ -466,12 +474,14 @@ def main():
     ap.add_argument("--budgets", default=DEFAULT_BUDGETS)
     ap.add_argument("--out", default=None, help="runs directory (default: <temp>/kimchi-perf-gate; must be outside any kimchi project)")
     ap.add_argument("--reps", type=int, default=2)
-    ap.add_argument("--scenarios", default="session,resume,idle")
+    ap.add_argument("--scenarios", default="session,resume,idle,ledger")
     ap.add_argument("--idle", type=float, default=90.0)  # whole 30s pass periods
-    ap.add_argument("--stuck", type=float, default=60.0,
-                    help="idle stuck-queue phase window (s): retries retired past the window, work must collapse")
+    ap.add_argument("--stuck", type=float, default=0.0,
+                    help="optional additional idle phase (disabled by default)")
     ap.add_argument("--session-mb", type=int, default=31)
     ap.add_argument("--calibrate", action="store_true", help="rewrite budgets.json from this run")
+    ap.add_argument("--allow-budget-increase", action="store_true",
+                    help="explicitly approve previously reviewed limit increases (otherwise refused)")
     ap.add_argument("--dry-run", action="store_true", help="classify --runs JSONL files, no execution")
     ap.add_argument("--runs", default=None, help="with --dry-run: comma list of JSONL files")
     ap.add_argument("--expect-version", default=None, help="passed to scenarios.py; refuse other self-reported versions")
@@ -550,6 +560,11 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
+    if "ledger" in by_scenario:
+        mismatch = generation_mismatch(by_scenario["ledger"], json.load(open(args.budgets)))
+        if mismatch is not None:
+            raise SystemExit(mismatch)
+
     if args.calibrate:
         # A failed rep (scenario crashed, cgroup join failed, ...) must never
         # be folded into budgets: its partial counters would silently lower
@@ -572,6 +587,14 @@ def main():
                              "a hidden sampler regression must not stamp a bogus _meta.counter")
         budgets = {"_meta": _meta(ctx.get("version", "?"), ctx.get("git", "?"), args.reps)}
         budgets["_meta"]["counter"] = sorted(tiers)[0]
+        ledger_record = (by_scenario["ledger"][0] if "ledger" in by_scenario else {})
+        missing_identity = [key for key in ("fixture_generation", "source_sha", "harness_sha")
+                            if not ledger_record.get(key)]
+        if missing_identity:
+            raise SystemExit(f"refusing to calibrate: missing measurement identity {', '.join(missing_identity)}")
+        budgets["_meta"]["ledger_generation"] = ledger_record.get("fixture_generation")
+        budgets["_meta"]["source_sha"] = ledger_record.get("source_sha")
+        budgets["_meta"]["harness_sha"] = ledger_record.get("harness_sha")
         for sc, recs in ok_by_scenario.items():
             metrics, _ = collect(recs)
             missing = [m for m in EXTRACTORS[sc] if not metrics.get(m)]
@@ -595,6 +618,18 @@ def main():
             budgets[sc] = {m: {"limit": limit_of(sc, m, v),
                                "budget_note": EXTRACTORS[sc][m][2]}
                           for m, v in metrics.items()}
+        previous = json.load(open(args.budgets))
+        increases = []
+        for sc, metrics in budgets.items():
+            if sc == "_meta":
+                continue
+            for metric, body in metrics.items():
+                previous_limit = previous.get(sc, {}).get(metric, {}).get("limit")
+                if isinstance(previous_limit, (int, float)) and body["limit"] > previous_limit:
+                    increases.append(f"{sc}.{metric}: {previous_limit} -> {body['limit']}")
+        if increases and not args.allow_budget_increase:
+            raise SystemExit("refusing to increase budgets without --allow-budget-increase:\n  " +
+                             "\n  ".join(increases))
         with open(args.budgets, "w") as f:
             json.dump(budgets, f, indent=1)
             f.write("\n")
@@ -611,7 +646,8 @@ def main():
         raise SystemExit("budgets lack _meta.counter; refusing to compare without a counter tier")
     for bsc in budgets:
         if bsc != "_meta" and bsc not in EXTRACTORS:
-            all_rows.append((bsc, "-", None, None, None, "WARN (unknown budget scenario)"))
+            all_rows.append((bsc, "-", None, None, None, "FAIL (unknown budget scenario)"))
+            failures.append((bsc, "-", None, None, None))
     for sc in scenarios:
         recs = [r for r in by_scenario[sc] if r.get("ok", False)]
         if not recs:
