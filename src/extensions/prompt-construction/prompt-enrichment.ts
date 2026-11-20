@@ -32,6 +32,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isWithinDeprecationNotifyWindow, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import { findModelByRef } from "../../shared/model-ref.js"
 import {
 	collectBundledDisabledSkillNames,
@@ -76,7 +77,9 @@ import {
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { watchSteerOutcome } from "../steer-outcome-watcher.js"
-import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { notifyClaudeCodeInstructionsOnce } from "./claude-code-instructions-notice.js"
+import { CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID } from "./claude-code-instructions-resource.js"
+import { type ContextFile, loadContextFiles } from "./context-files.js"
 import { applyLanguageHint } from "./language-hint.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import { backgroundNotificationsReachUser, hasUserLoop } from "./session-user-loop.js"
@@ -495,6 +498,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				// (possibly just force-switched above), not the pre-switch ctx.model.
 				const deprecationModelId = multiModelEnabled ? orchestratorModelId : ctx.model?.id
 				notifyIfDeprecated(ctx, deprecationModelId)
+				notifyClaudeCodeInstructionsOnce(ctx)
 			})
 
 			pi.on("model_select", async (event, ctx) => {
@@ -863,7 +867,9 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
-			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
+			cachedContextFiles ??= loadContextFiles(ctx.cwd, {
+				includeClaudeCodeInstructions: isResourceEnabled(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID),
+			})
 			// Read skills from pi's resolved resource inventory (system prompt
 			// options) so the rebuilt prompt advertises exactly what pi
 			// loaded — honoring settings.json, --skill/--no-skills, trust,

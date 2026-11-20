@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-works/pi-ai"
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { resetResourceOverride, setResourceOverride } from "../../resources/store.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
 import {
@@ -24,6 +25,7 @@ import type { OrchestratorMessages } from "../orchestration/continuation-nudge.j
 import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
 import * as modelRolesModule from "../orchestration/model-roles.js"
 import { isHarnessSteer } from "../steer-marker.js"
+import { CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID } from "./claude-code-instructions-resource.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
@@ -748,6 +750,87 @@ describe("append system prompt", () => {
 
 		// Whitespace-only should be skipped — prompt unchanged
 		expect(resultBaseline.systemPrompt).toBe(resultWhitespace.systemPrompt)
+	})
+})
+
+describe("Claude Code global instructions resource", () => {
+	const MARKER = "CLAUDE-CODE-GLOBAL-MARKER"
+	let dir: string
+	let oldAgentDir: string | undefined
+	let oldClaudeConfigDir: string | undefined
+
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-instructions-"))
+		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		oldClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent")
+		process.env.CLAUDE_CONFIG_DIR = join(dir, "claude")
+		mkdirSync(join(dir, "claude"), { recursive: true })
+		writeFileSync(join(dir, "claude", "CLAUDE.md"), `# Global\n\n${MARKER}\n`, "utf-8")
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	afterEach(() => {
+		resetResourceOverride(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID)
+		if (oldAgentDir === undefined) {
+			delete process.env.KIMCHI_CODING_AGENT_DIR
+		} else {
+			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
+		}
+		if (oldClaudeConfigDir === undefined) {
+			delete process.env.CLAUDE_CONFIG_DIR
+		} else {
+			process.env.CLAUDE_CONFIG_DIR = oldClaudeConfigDir
+		}
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("puts the Claude Code CLAUDE.md into the system prompt by default", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain(MARKER)
+	})
+
+	it("puts the Claude Code CLAUDE.md in once when a project file links to it", async () => {
+		const project = join(dir, "project")
+		mkdirSync(project)
+		symlinkSync(join(dir, "claude", "CLAUDE.md"), join(project, "CLAUDE.md"))
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false, cwd: project }))) as {
+			systemPrompt: string
+		}
+
+		expect(result.systemPrompt.split(MARKER)).toHaveLength(2)
+	})
+
+	it("tells the user at session start that the Claude Code file loads with AGENTS.md", async () => {
+		const project = join(dir, "project")
+		mkdirSync(project)
+		writeFileSync(join(project, "AGENTS.md"), "project rules", "utf-8")
+		const sessionStart = buildPromptExtensionWithHandlers().handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		const ctx = createContext({ cwd: project })
+
+		await sessionStart({}, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Claude Code instructions"), "info")
+	})
+
+	it("leaves the Claude Code CLAUDE.md out when the resource is disabled", async () => {
+		setResourceOverride(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID, false)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
+
+		expect(result.systemPrompt).not.toContain(MARKER)
 	})
 })
 
