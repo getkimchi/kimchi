@@ -8,12 +8,11 @@
  *
  * The gate casts a visibility vote whenever powershell is REGISTERED on a
  * non-Windows host. Voting on registration (not activation) is required:
- * the tool-profile snapshot layer (tool-profile-manager.ts) rebuilds the
- * active set from the full *registered* list, so a registered-but-inactive
- * powershell would otherwise be resurrected into the API payload on every
- * turn. A visibility vote is exactly what filters it out of that snapshot
- * (getDisabledToolNames), and it is harmless when powershell never becomes
- * active — hiding an inactive tool changes nothing.
+ * where powershell is default-active (a builtin upstream activates at
+ * registration), the tool-profile snapshot layer (tool-profile-manager.ts)
+ * would keep it in every profile's active surface unless a vote filters it
+ * in each snapshot (getDisabledToolNames). The vote is harmless when
+ * powershell never becomes active — hiding an inactive tool changes nothing.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { createToolVisibility } from "./prompt-construction/tool-visibility.js"

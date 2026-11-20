@@ -249,21 +249,28 @@ describe("worker profile", () => {
 describe("idle profile", () => {
 	it("restores the user's full base toolset minus ferment-only tools", () => {
 		// The idle profile is a special case: rather than returning the catalog's
-		// fixed SHARED_CORE_TOOLS list, it derives from the registered toolset so
-		// users keep access to bash, edit, write, third-party tools, etc. when
-		// they exit a ferment back to normal chat. Only ferment-only tools are
-		// filtered out. See PR #683 review feedback for the rationale.
-		const allTools = [
+		// fixed SHARED_CORE_TOOLS list, it restores the user's previously active
+		// surface (what upstream kept active — defaults, `defaultTools`, tools
+		// activated at registration) so users keep access to bash, edit, write,
+		// third-party tools, etc. when they exit a ferment back to normal chat.
+		// Only ferment-only tools are filtered out. See PR #683 review feedback
+		// for the rationale.
+		const activeTools = [
 			"read",
 			"bash",
 			"edit",
 			"write",
+			"codemode", // intentionally default-active upstream
 			"list_ferments", // ferment-mode but not planner-only; remains visible
 			"propose_ferment_scoping", // ferment-only: filtered out
 			"start_ferment_step", // ferment-only: filtered out
 			"activate_ferment_phase", // ferment-only: filtered out
 		]
-		const pi = createPi([], allTools)
+		// active ⊂ registered: tool_search registers defaultActive: false
+		// upstream, so it is registered but never active — exactly the class of
+		// tool the idle profile must not surface merely because ferment applied.
+		const allTools = [...activeTools, "tool_search"]
+		const pi = createPi([...activeTools], allTools)
 
 		applyFermentToolProfile(pi, "idle")
 
@@ -278,6 +285,9 @@ describe("idle profile", () => {
 		expect(lastCall).not.toContain("propose_ferment_scoping")
 		expect(lastCall).not.toContain("start_ferment_step")
 		expect(lastCall).not.toContain("activate_ferment_phase")
+		// Default-active codemode remains; never-active tool_search stays out.
+		expect(lastCall).toContain("codemode")
+		expect(lastCall).not.toContain("tool_search")
 	})
 })
 
