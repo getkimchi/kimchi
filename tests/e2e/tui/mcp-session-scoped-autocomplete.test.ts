@@ -133,3 +133,31 @@ test("in-panel reconnect shows a private catalog through the upstream session ov
 		},
 	)
 })
+
+test("accepting a live MCP autocomplete suggestion executes the prompt", async ({ terminal }) => {
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-session-scoped-autocomplete-accept",
+			mcp: { scenario: "cache-private-scope", serverName: "fixture-srv", lifecycle: "lazy" },
+			responses: [],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp reconnect fixture-srv")
+			await waitForText(terminal, "MCP: Reconnected to fixture-srv", { timeoutMs: STREAM_TIMEOUT_MS })
+			await fixture.mcp.waitForEvent("prompts_listed")
+
+			const prefix = "/mcp__fixture_srv__hello-"
+			terminal.write(prefix)
+			await waitForText(terminal, `❯ ${prefix}`, { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "hello-world", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("partial-prefix command and live suggestion are visible")
+
+			const checkpoint = fixture.mcp.checkpoint()
+			// Select-confirm applies the slash-command row, then submits it.
+			terminal.submit("")
+			await fixture.mcp.waitForEvent("prompts_get", { after: checkpoint, timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("accepted live suggestion executed prompts/get")
+		},
+	)
+})
