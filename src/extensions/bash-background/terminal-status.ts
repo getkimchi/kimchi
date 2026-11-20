@@ -1,4 +1,4 @@
-import { SAFETY_LIMIT_REASON, type TailSnapshot } from "./process-registry.js"
+import { SAFETY_LIMIT_REASON, type TailSnapshot, USER_STOP_REASON } from "./process-registry.js"
 
 /**
  * Append a status line to the output, separated by a blank line.
@@ -15,6 +15,7 @@ export const SAFETY_LIMIT_MESSAGE_PATTERN = /Process killed by the harness safet
  * Inspect a tail snapshot and throw an error if the process reached a
  * terminal state that upstream bash would surface as an error:
  *  - aborted (ESC / tool-turn abort) → "Command aborted"
+ *  - user stop (stop-background dialog) → "Command stopped by user"
  *  - harness safety limit → "Process killed by the harness safety limit (Ns)"
  *  - non-zero exit code → "Command exited with code N"
  *
@@ -30,6 +31,10 @@ export function throwIfTerminal(
 ): void {
 	if (snapshot.reason === "aborted") {
 		throw new Error(appendStatus(output, "Command aborted"))
+	}
+	// A killed command often has a null exit code, which would read as success.
+	if (snapshot.reason === USER_STOP_REASON) {
+		throw new Error(appendStatus(output, "Command stopped by user"))
 	}
 	if (snapshot.reason === SAFETY_LIMIT_REASON) {
 		throw new Error(appendStatus(output, `Process killed by the harness safety limit (${deadlineSeconds}s)`))

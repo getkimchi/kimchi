@@ -528,6 +528,14 @@
 		}
 	},
 	{
+		"tool": "bash",
+		"message": "some output\n\nCommand stopped by user",
+		"expect": {
+			"kind": "aborted",
+			"message": "Command aborted"
+		}
+	},
+	{
 		"tool": "start_ferment_step",
 		"message": "Event \"start_step\" is not valid in state \"PHASE_ACTIVE\". No step is currently running.",
 		"expect": {

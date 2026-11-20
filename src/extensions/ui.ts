@@ -36,6 +36,7 @@ import {
 	setSessionModeOnboardingStatusLineSuppressed,
 } from "./shared-status-line.js"
 import { createWorkingAnimator, type WorkingAnimator } from "./spinner.js"
+import { createStopBackgroundPrompt } from "./stop-background/prompt.js"
 import { createBranchPoller } from "./ui-branch-poll.js"
 
 export { requestSharedStatusLineRender, setSessionModeOnboardingStatusLineSuppressed } from "./shared-status-line.js"
@@ -398,6 +399,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let scriptPending = false
 	let scriptGeneration = 0
 	let currentCtx: ExtensionContext | null = null
+	const stopPrompt = createStopBackgroundPrompt(() => currentCtx)
 	let sessionStartMs = 0
 	let turnStartMs = 0
 	let linesAdded = 0
@@ -507,6 +509,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 					collapseAll()
 				}
 			})
+			editor.setAfterEscapeHandler(() => stopPrompt.onEscape())
 			currentEditor = editor
 			if (pasteImageHandler) {
 				editor.onPasteImage = pasteImageHandler
@@ -680,6 +683,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		workedForMessageHolds.clear()
 		workingAnimator?.stop()
 		workingAnimator = undefined
+		stopPrompt.dispose()
 		currentCtx = null
 		branchPoller.stop()
 	})
@@ -776,6 +780,12 @@ export default function uiExtension(pi: ExtensionAPI) {
 				ctx.ui.setWorkingVisible(false)
 			}, 2500)
 		}
+	})
+	pi.on("agent_start", () => {
+		stopPrompt.onRunStart()
+	})
+	pi.on("agent_settled", (_event, ctx) => {
+		stopPrompt.onRunSettled(ctx)
 	})
 	pi.on("agent_end", (_, ctx) => {
 		clearTimeout(workedForTimer)

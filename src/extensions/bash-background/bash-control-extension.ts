@@ -96,7 +96,7 @@ import { readE2eSeam } from "../e2e-seam.js"
 import { classifyTool } from "../permissions/taxonomy.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
-import { elapsedSecondsSince } from "./process-registry.js"
+import { elapsedSecondsSince, USER_STOP_REASON } from "./process-registry.js"
 import { bashSessionKindFromContext } from "./session-policy.js"
 import { type BashSessionState, getSessionState } from "./session-registry.js"
 import { terminalResultText } from "./status-text.js"
@@ -498,7 +498,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 						fullOutputPath: final.fullOutputPath,
 					})
 				: undefined
-			if (payload) delivery.record(handle, payload, owner)
+			if (payload) delivery.record(handle, payload, owner, final?.reason === USER_STOP_REASON)
 			coordinator.handleRemoved(handle)
 			await registry.remove(handle).catch(() => {})
 			return payload
@@ -591,10 +591,11 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 					}
 				}
 				if (included.length === 0) return
-				// A cancelled/errored run must not be restarted: keep the
-				// payload in the conversation (appended, no inference wake)
-				// instead of triggering a turn.
-				const triggerTurn = runTerminated === undefined
+				// A cancelled/errored run must not be restarted, and a stop the
+				// user asked for must not start a turn either: keep the payload in
+				// the conversation (appended, no inference wake) instead.
+				const userStopped = included.every((handle) => state.delivery.getPending(handle)?.userStopped === true)
+				const triggerTurn = runTerminated === undefined && !userStopped
 				if (triggerTurn && sessionId !== undefined) {
 					// Label the run this wake may start (v1 bridge for the v2
 					// Background Work RFD state transition). No-op when the batch

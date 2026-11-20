@@ -12,6 +12,7 @@ import { Container, ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { testTheme } from "./__mocks__/theme.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import { installVaultLifecycle, resetTokenVaults, tokenFor, vaultForSession } from "./pii-redaction/vault.js"
@@ -1358,6 +1359,84 @@ describe("tool-rendering check-in gate collapse", () => {
 		// Best-effort invocation, our component returned.
 		expect(upstream).toHaveBeenCalledTimes(1)
 		expect(text).not.toContain("upstream")
+	})
+})
+
+describe("cancelled wait cards", () => {
+	beforeAll(() => {
+		initTheme("default")
+		toolRenderingExtension(createExtensionApi().api)
+	})
+
+	async function renderRow(toolName: string, details: unknown, text: string, expanded = false) {
+		const self = { toolName, builtInToolDefinition: undefined, toolDefinition: { name: toolName } }
+		// biome-ignore lint/suspicious/noExplicitAny: invoking patched prototype methods with a minimal `this`
+		const proto = ToolExecutionComponent.prototype as any
+		const invalidate = vi.fn()
+		const ctx = createToolRenderContext({ args: { agent_id: "a1" }, invalidate, expanded })
+		const result = { content: [{ type: "text", text }], details }
+		const render = (component: { render(width: number): string[] }) => component.render(120).map(stripSgr).join("\n")
+		const resultText = render(
+			proto.getResultRenderer.call(self)(result, { expanded, isPartial: false }, testTheme, ctx),
+		)
+		const header = proto.getCallRenderer.call(self)(ctx.args, testTheme, ctx).render(120).join("\n")
+		// A second render must not redraw the row again.
+		proto.getResultRenderer.call(self)(result, { expanded, isPartial: false }, testTheme, ctx)
+		await Promise.resolve()
+		return { header, resultText, invalidate }
+	}
+
+	it.each([
+		["bash_control", { aborted: true, event: "aborted" }],
+		["get_subagent_result", { status: "running", waitCancelled: true }],
+	])("%s shows a warning dot and Wait cancelled", async (toolName, details) => {
+		const row = await renderRow(toolName, details, "Wait cancelled after 2s.\nStill running.")
+		expect(row.resultText).toContain("Wait cancelled")
+		expect(row.resultText).not.toContain("lines returned")
+		expect(row.header).toContain(testTheme.fg("warning", "●"))
+		expect(row.header).not.toContain(testTheme.fg("success", "●"))
+		expect(row.invalidate).toHaveBeenCalledTimes(1)
+	})
+
+	it("redraws a real tool row once with the warning state and no duplicate result", async () => {
+		const tui = new TuiMainScreen(new ProcessTerminal())
+		vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		const component = new ToolExecutionComponent(
+			"bash_control",
+			"wait-1",
+			{ handle: "c1", wait: true },
+			{},
+			undefined,
+			tui,
+			"/tmp",
+		)
+		component.updateResult(
+			{ content: [{ type: "text", text: "Wait cancelled after 2s." }], details: { aborted: true }, isError: false },
+			false,
+		)
+		await Promise.resolve()
+		const text = component.render(120).map(stripSgr).join("\n")
+		expect(text.match(/Wait cancelled/g)).toHaveLength(1)
+		expect(text).not.toContain("line returned")
+	})
+
+	it("keeps the full wait text when expanded", async () => {
+		const row = await renderRow("bash_control", { aborted: true }, "Wait cancelled after 2s.\nStill running.", true)
+		expect(row.resultText).toContain("Wait cancelled")
+		expect(row.resultText).toContain("Still running.")
+	})
+
+	it("keeps the success card for a normal bash_control result", async () => {
+		const row = await renderRow("bash_control", { event: "exited" }, "c1 exited 0")
+		expect(row.resultText).toContain("1 line returned")
+		expect(row.header).toContain(testTheme.fg("success", "●"))
+		expect(row.invalidate).not.toHaveBeenCalled()
+	})
+
+	it("ignores the flag on other tools", async () => {
+		const row = await renderRow("get_subagent_result", { aborted: true }, "done")
+		expect(row.resultText).toContain("1 line returned")
+		expect(row.header).toContain(testTheme.fg("success", "●"))
 	})
 })
 

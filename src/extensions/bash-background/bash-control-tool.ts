@@ -44,7 +44,7 @@
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
-import { elapsedSecondsSince } from "./process-registry.js"
+import { elapsedSecondsSince, USER_STOP_REASON } from "./process-registry.js"
 import { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "./review-coordinator.js"
 import type { BashSessionKind } from "./session-policy.js"
 import { type BashSessionState, getSessionState } from "./session-registry.js"
@@ -290,7 +290,12 @@ async function collectTerminalResult(
 		// execution resources, so it stays recoverable until acknowledged.
 		coordinator.handleRemoved(handle)
 		if (final) {
-			delivery.record(handle, text, toolCallId ? { controlCallId: toolCallId } : "automatic")
+			delivery.record(
+				handle,
+				text,
+				toolCallId ? { controlCallId: toolCallId } : "automatic",
+				final.reason === USER_STOP_REASON,
+			)
 		}
 		await registry.remove(handle).catch(() => {})
 		if (!final) {

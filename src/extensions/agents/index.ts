@@ -29,6 +29,11 @@ import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
+import {
+	type BackgroundAgentItem,
+	backgroundWorkLabel,
+	registerBackgroundWorkProvider,
+} from "../../shared/background-work.js"
 import { notifyUser } from "../../utils/notify-user.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -101,6 +106,7 @@ import {
 	type AgentRecord,
 	type AgentTaskRef,
 	type AgentVisibility,
+	isActiveStatus,
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
@@ -306,6 +312,7 @@ interface GetSubagentResultDetails {
 	error?: string
 	bodyText: string
 	agentOutcome?: AgentOutcome
+	waitCancelled?: boolean
 }
 
 function formatAgentOutcomeBlock(outcome: AgentOutcome | undefined): string {
@@ -1005,7 +1012,7 @@ export default function (pi: ExtensionAPI) {
 					display: true,
 					details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
 				},
-				{ deliverAs: "followUp", triggerTurn: true },
+				{ deliverAs: "followUp", triggerTurn: !record.userStopped },
 			)
 		} catch (err) {
 			if (isStaleCtxError(err)) return
@@ -1054,7 +1061,7 @@ export default function (pi: ExtensionAPI) {
 						display: true,
 						details,
 					},
-					{ deliverAs: "followUp", triggerTurn: true },
+					{ deliverAs: "followUp", triggerTurn: !unconsumed.every((r) => r.userStopped) },
 				)
 			} catch (err) {
 				if (isStaleCtxError(err)) return
@@ -1400,8 +1407,45 @@ export default function (pi: ExtensionAPI) {
 		)
 	}
 
+	// Queued work plus active local background agents. Remote runs survive a
+	// user stop, even while queued: the session lives on and starts them later.
+	// countAbortableBackground() differs on purpose, because at shutdown a
+	// queued remote run dies with the process. System agents are internal work
+	// the user never sees, so they are not offered for a stop either.
+	const userStoppableAgents = () =>
+		manager
+			.listAgents()
+			.filter(
+				(r) =>
+					!r.remote &&
+					r.visibility !== "system" &&
+					(r.status === "queued" || (r.isBackground === true && isActiveStatus(r.status))),
+			)
+	const agentItem = (record: AgentRecord): BackgroundAgentItem => ({
+		kind: "agent",
+		id: record.id,
+		label: backgroundWorkLabel(record.description),
+	})
+	let unregisterBackgroundWork: (() => void) | undefined
+
 	pi.on("session_start", async (_event, ctx) => {
 		manager.clearCompleted()
+		unregisterBackgroundWork?.()
+		unregisterBackgroundWork = registerBackgroundWorkProvider(ctx.sessionManager.getSessionId(), "agents", {
+			list: () => userStoppableAgents().map(agentItem),
+			stop: async (ids) => {
+				const wanted = new Set(ids)
+				const stopped: BackgroundAgentItem[] = []
+				for (const record of userStoppableAgents()) {
+					if (!wanted.has(record.id)) continue
+					// Set before abort: the completion callback runs later and
+					// reads it to keep the notice from starting a turn.
+					record.userStopped = true
+					if (manager.abort(record.id)) stopped.push(agentItem(record))
+				}
+				return stopped
+			},
+		})
 		// Sessions can live in a different project than the process cwd (ACP,
 		// worktrees) — pick up that project's agents and settings.
 		reloadProjectAgentState(ctx.cwd)
@@ -1603,6 +1647,8 @@ export default function (pi: ExtensionAPI) {
 		// reload — keeps the terminal path.
 		const continuing = event.reason === "fork"
 		sessionShuttingDown = true
+		unregisterBackgroundWork?.()
+		unregisterBackgroundWork = undefined
 		manager.detachRemoteRuns()
 		unsubCtrlB?.()
 		unsubCtrlB = undefined
@@ -2641,6 +2687,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 				const texts = backgroundText(backgroundNotificationsReachUser(surfaceMode))
 				let bodyForDisplay: string
+				let waitCancelled: true | undefined
 				if (record.status === "queued") {
 					bodyForDisplay = texts.queuedBody(manager.getMaxConcurrent())
 					output += bodyForDisplay
@@ -2649,6 +2696,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						bodyForDisplay = texts.timedOutBody(GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000)
 					} else if (waitOutcome === "aborted") {
 						bodyForDisplay = texts.abortedBody
+						waitCancelled = true
 					} else {
 						bodyForDisplay = texts.runningBody
 					}
@@ -2698,6 +2746,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					error: record.error,
 					bodyText: formatAgentBodyForDisplay(bodyForDisplay),
 					agentOutcome: record.latestOutcome,
+					...(waitCancelled && { waitCancelled }),
 				}
 
 				return textResult(output, details)

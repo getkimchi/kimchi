@@ -7,7 +7,7 @@ import {
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { safePanelText as safeBashText } from "../../components/input-panel.js"
 import { ToolText, toolHeader, withBranch } from "../tool-rendering.js"
-import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
+import { type ProcessDisplaySnapshot, type ProcessRegistry, USER_STOP_REASON } from "./process-registry.js"
 
 type BashCallRenderer = NonNullable<ToolDefinition["renderCall"]>
 type BashResultRenderer = NonNullable<ToolDefinition["renderResult"]>
@@ -38,10 +38,12 @@ function hiddenControl(ctx: Parameters<BashCallRenderer>[2], registry: ProcessRe
 	return !ctx.state.bashControlError && !!rowsForSession(registry)?.has(stringArg(ctx.args, "handle"))
 }
 
+const LIVE_TICK_MS = 10_000
+
 export function bashStatus(snapshot: ProcessDisplaySnapshot, now = snapshot.observedAt): string {
 	const elapsed = `${Math.max(0, Math.floor(((snapshot.finishedAt ?? now) - snapshot.startedAt) / 1000))}s`
 	if (snapshot.reason === "deadline") return `Deadline reached · ${elapsed}`
-	if (snapshot.reason === "stop") return `Stopped · ${elapsed}`
+	if (snapshot.reason === "stop" || snapshot.reason === USER_STOP_REASON) return `Stopped · ${elapsed}`
 	if (snapshot.reason === "aborted") return `Aborted · ${elapsed}`
 	if (snapshot.state === "running") return `Running · ${elapsed}`
 	if (snapshot.exitCode === 0) return `Exited 0 · ${elapsed}`
@@ -120,17 +122,45 @@ const renderBashResult: (
 			rows.get(display.handle)?.unsubscribe?.()
 			rows.set(display.handle, row)
 			const target = row
+			const handle = display.handle
 			let subscribed = false
-			target.unsubscribe = registry.observeDisplay(display.handle, (snapshot) => {
+			let running = false
+			let tick: ReturnType<typeof setInterval> | undefined
+			const stopTick = () => {
+				clearInterval(tick)
+				tick = undefined
+			}
+			const stopObserving = registry.observeDisplay(handle, (snapshot) => {
 				const final = snapshot.state !== "running" ? registry.finalSnapshot(snapshot.handle, true) : undefined
 				target.result = {
 					content: [{ type: "text", text: final?.content ?? snapshot.output }],
 					details: { ...final, display: snapshot },
 				}
-				target.isPartial = snapshot.state === "running"
+				running = snapshot.state === "running"
+				target.isPartial = running
+				if (!running) stopTick()
 				if (subscribed) target.invalidate()
 			})
 			subscribed = true
+			// The registry only notifies on output and exit, so a silent command needs
+			// a clock to keep its elapsed time and output age moving. The clock is slow
+			// because a changed card above the viewport makes the TUI repaint everything.
+			if (running) {
+				tick = setInterval(() => {
+					const snapshot = registry.displaySnapshot(handle)
+					if (snapshot?.state !== "running") return stopTick()
+					target.result = {
+						content: target.result.content,
+						details: Object.assign({}, target.result.details, { display: snapshot }),
+					}
+					target.invalidate()
+				}, LIVE_TICK_MS)
+				tick.unref()
+			}
+			target.unsubscribe = () => {
+				stopTick()
+				stopObserving()
+			}
 		} else if (row.source.content !== result.content || row.source.details !== result.details) {
 			// Pi recreates the result wrapper on invalidation; only a new payload is an update.
 			row.source = result

@@ -18,6 +18,7 @@ import {
 	INLINE_OUTPUT_MAX_BYTES,
 	INLINE_OUTPUT_MAX_LINES,
 	SAFETY_LIMIT_REASON,
+	USER_STOP_REASON,
 } from "./process-registry.js"
 import type { BashSessionKind } from "./session-policy.js"
 
@@ -207,6 +208,7 @@ export function userInputGuidanceText(): string {
 export function terminalReasonText(state: ProcessState, exitCode: number | null, reason: string | null): string {
 	if (reason === SAFETY_LIMIT_REASON) return "killed by the harness safety limit"
 	if (reason === "stop") return "stopped on request"
+	if (reason === USER_STOP_REASON) return "stopped by the user"
 	if (reason === "aborted") return "aborted"
 	if (reason) return `killed (${reason})`
 	if (state === "exited") return `exited (exit code ${exitCode ?? "unknown"})`

@@ -253,8 +253,9 @@ vi.mock("../orchestration/model-roles.js", () => ({
 	}),
 }))
 
-import type { EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
+import type { CustomEntry, EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
+import { listBackgroundWork, stopBackgroundWork } from "../../shared/background-work.js"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../auto-model/constants.js"
@@ -1248,8 +1249,8 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		status: "running",
 	}
 
-	function entry(data: RemoteRunState): Record<string, unknown> {
-		return { type: "custom", customType: "remote_run:state", data }
+	function entry(data: RemoteRunState): CustomEntry<RemoteRunState> {
+		return { type: "custom", customType: "remote_run:state", data, id: "e1", parentId: null, timestamp: "" }
 	}
 
 	it("reports a bare outcome line on explicit continuation with no resumable runs", async () => {
@@ -1257,13 +1258,7 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
-		const ctx = {
-			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
-			ui: { notify },
-			sessionManager: { getBranch: () => [] },
-		}
+		const ctx = createContext({ cwd: "/work/myrepo", ui: { notify } })
 		await fireSessionStart(pi, ctx, { type: "session_start", reason: "resume" })
 
 		expect(notify).toHaveBeenCalledWith("Continued session — no in-progress remote runs to resume")
@@ -1284,13 +1279,11 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
-		const ctx = {
+		const ctx = createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
 			ui: { notify },
 			sessionManager: { getBranch: () => [entry(RUNNING)] },
-		}
+		})
 		await fireSessionStart(pi, ctx)
 
 		expect(currentManager().resumeRemoteRecord).toHaveBeenCalledTimes(1)
@@ -1310,13 +1303,11 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		// The mocked manager reports the ownership guard's skip outcome.
 		currentManager().resumeRemoteRecord.mockResolvedValue("already-watched")
 
-		const ctx = {
+		const ctx = createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
 			ui: { notify, setStatus },
 			sessionManager: { getBranch: () => [entry(RUNNING)] },
-		}
+		})
 		await fireSessionStart(pi, ctx)
 
 		// The notice is appended as the newest conversation entry (rendered
@@ -1341,13 +1332,10 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
-		const ctx = {
+		const ctx = createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
-			ui: { notify: vi.fn() },
 			sessionManager: { getBranch: () => [entry({ ...RUNNING, status: "completed" })] },
-		}
+		})
 		await fireSessionStart(pi, ctx)
 
 		expect(currentManager().resumeRemoteRecord).not.toHaveBeenCalled()
@@ -1363,13 +1351,7 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
-		const ctx = {
-			cwd: "/work/myrepo",
-			mode: "tui",
-			hasUI: true,
-			ui: { notify },
-			sessionManager: { getBranch: () => [] },
-		}
+		const ctx = createContext({ cwd: "/work/myrepo", ui: { notify } })
 		await expect(fireSessionStart(pi, ctx)).resolves.toBeUndefined()
 		expect(notify).not.toHaveBeenCalled()
 	})
@@ -1528,6 +1510,7 @@ type MockManagerInstance = {
 	getRecord: (id: string) => Record<string, unknown> | undefined
 	adoptRecords: ReturnType<typeof vi.fn>
 	countAbortableBackground: ReturnType<typeof vi.fn>
+	abort: ReturnType<typeof vi.fn>
 	abortAll: ReturnType<typeof vi.fn>
 	dispose: ReturnType<typeof vi.fn>
 }
@@ -1679,6 +1662,7 @@ describe("get_subagent_result wait contract", () => {
 		expect(text).toContain("Wait cancelled")
 		expect(text).not.toContain("still running")
 		expect(record.resultConsumed).not.toBe(true)
+		expect(result).toMatchObject({ details: { waitCancelled: true } })
 	})
 
 	it("wait: true returns the result and consumes it when the agent completes during the wait", async () => {
@@ -1702,6 +1686,7 @@ describe("get_subagent_result wait contract", () => {
 		const text = result.content[0]?.text ?? ""
 		expect(text).toContain("all done")
 		expect(record.resultConsumed).toBe(true)
+		expect(result).not.toHaveProperty("details.waitCancelled")
 	})
 
 	it("still-running report points at the completion notification instead of wait/poll", async () => {
@@ -2533,7 +2518,7 @@ describe("Agent tool session-cwd agent resolution", () => {
 		agentsExtension(pi)
 		const sessionCwd = "/tmp/issue1677-session-project"
 
-		const ctx = { cwd: sessionCwd, sessionManager: { getBranch: () => [] } }
+		const ctx = createContext({ cwd: sessionCwd })
 		for (const handler of pi._handlers.get("session_start") ?? [])
 			await handler({ type: "session_start", reason: "startup" } as never, ctx)
 
@@ -2737,5 +2722,129 @@ describe("unparseable agent files", () => {
 		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("late-broken.md"))
 		expect(renderNotice(pi, entries[0])).toBeDefined()
 		expect(renderNotice(pi, entries[1])).toBeDefined()
+	})
+})
+
+describe("user stop of background agents", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	async function startSession(sessionId: string) {
+		const harness = createExtensionApi()
+		const ctx = createContext({ sessionManager: { getSessionId: () => sessionId } })
+		agentsExtension(harness.api)
+		const manager = latestManagerInstance()
+		await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
+		return { harness, ctx, manager }
+	}
+
+	it("lists running background agents and queued work, never foreground or remote runs", async () => {
+		const { harness, ctx, manager } = await startSession("agents-list")
+		manager._records.set("bg", makeRunningRecord({ id: "bg", description: "Index repo\nmore", isBackground: true }))
+		manager._records.set("fg", makeRunningRecord({ id: "fg", description: "foreground" }))
+		manager._records.set("remote", makeRunningRecord({ id: "remote", isBackground: true, remote: true }))
+		manager._records.set("q", makeRunningRecord({ id: "q", description: "queued one", status: "queued" }))
+		manager._records.set("done", makeRunningRecord({ id: "done", isBackground: true, status: "completed" }))
+
+		expect(listBackgroundWork("agents-list")).toEqual([
+			{ kind: "agent", id: "bg", label: "Index repo" },
+			{ kind: "agent", id: "q", label: "queued one" },
+		])
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
+		expect(listBackgroundWork("agents-list")).toEqual([])
+	})
+
+	it("never lists or stops a queued cloud agent", async () => {
+		const { ctx, harness, manager } = await startSession("agents-queued-remote")
+		const queuedRemote = makeRunningRecord({ id: "qr", status: "queued", remote: true })
+		manager._records.set("qr", queuedRemote)
+		manager._records.set("bg", makeRunningRecord({ id: "bg", description: "local", isBackground: true }))
+		manager.abort.mockReturnValue(true)
+
+		expect(listBackgroundWork("agents-queued-remote")).toEqual([{ kind: "agent", id: "bg", label: "local" }])
+
+		await stopBackgroundWork("agents-queued-remote", [{ kind: "agent", id: "qr", label: "qr" }])
+		expect(manager.abort).not.toHaveBeenCalledWith("qr")
+		expect(queuedRemote.status).toBe("queued")
+		expect(queuedRemote.userStopped).toBeUndefined()
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
+	})
+
+	it("never lists or stops a system agent", async () => {
+		const { ctx, harness, manager } = await startSession("agents-system")
+		const running = makeRunningRecord({ id: "sr", visibility: "system", isBackground: true })
+		const queued = makeRunningRecord({ id: "sq", visibility: "system", status: "queued" })
+		manager._records.set("sr", running)
+		manager._records.set("sq", queued)
+		manager.abort.mockReturnValue(true)
+
+		expect(listBackgroundWork("agents-system")).toEqual([])
+
+		await stopBackgroundWork("agents-system", [
+			{ kind: "agent", id: "sr", label: "sr" },
+			{ kind: "agent", id: "sq", label: "sq" },
+		])
+		expect(manager.abort).not.toHaveBeenCalled()
+		expect(running.userStopped).toBeUndefined()
+		expect(queued.userStopped).toBeUndefined()
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
+	})
+
+	it("stops a background agent and its completion notice does not start a turn", async () => {
+		const { harness, ctx, manager } = await startSession("agents-stop")
+		const record = makeRunningRecord({ id: "bg", isBackground: true })
+		manager._records.set("bg", record)
+		manager.abort.mockImplementation((id: string) => {
+			const target = manager._records.get(id)
+			if (!target) return false
+			// The flag must already be set when the run is aborted.
+			expect(target.userStopped).toBe(true)
+			target.status = "stopped"
+			return true
+		})
+
+		const listed = listBackgroundWork("agents-stop")
+		// Started after the list was taken: a user stop must not reach it.
+		const later = makeRunningRecord({ id: "later", isBackground: true })
+		manager._records.set("later", later)
+
+		await expect(stopBackgroundWork("agents-stop", listed)).resolves.toEqual({ processes: 0, agents: 1 })
+		expect(manager.abort).toHaveBeenCalledWith("bg")
+		expect(manager.abort).not.toHaveBeenCalledWith("later")
+		expect(later.userStopped).toBeUndefined()
+
+		record.completedAt = Date.now()
+		manager.onComplete(record)
+		await vi.waitFor(() =>
+			expect(harness.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "subagent-notification", display: true }),
+				expect.objectContaining({ deliverAs: "followUp", triggerTurn: false }),
+			),
+		)
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
+	})
+
+	it("a normal background completion still starts a turn", async () => {
+		const { harness, ctx, manager } = await startSession("agents-normal")
+		const record = makeRunningRecord({ id: "bg", isBackground: true })
+		manager._records.set("bg", record)
+
+		Object.assign(record, { status: "completed", result: "done", completedAt: Date.now() })
+		manager.onComplete(record)
+		const [, options] = await vi.waitFor(() => {
+			const found = harness.sendMessage.mock.calls.find(([msg]) => msg.customType === "subagent-notification")
+			if (!found) throw new Error("subagent-notification not sent yet")
+			return found
+		})
+		expect(options?.deliverAs).toBe("followUp")
+		expect(options?.triggerTurn).toBe(true)
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
 	})
 })

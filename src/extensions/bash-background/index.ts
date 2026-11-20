@@ -24,6 +24,11 @@ import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@ear
 import { resolveBashProcessLimitSeconds } from "../../cli-args.js"
 import { SHELLS_STATUS_KEY } from "../../components/status-line.js"
 import {
+	type BackgroundProcessItem,
+	backgroundWorkLabel,
+	registerBackgroundWorkProvider,
+} from "../../shared/background-work.js"
+import {
 	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
 	type BashBackgroundSettleData,
 } from "../../shared/bash-background-settle.js"
@@ -32,7 +37,13 @@ import { readE2eSeam } from "../e2e-seam.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { BASH_CONTROL_TOOL_NAME } from "./bash-control-tool.js"
 import { CommandsPanel } from "./commands-panel.js"
-import { createProcessRegistry, DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
+import {
+	createProcessRegistry,
+	DEFAULT_BASH_PROCESS_LIMIT_SECONDS,
+	type ProcessDisplaySnapshot,
+	type ProcessRegistry,
+	USER_STOP_REASON,
+} from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import { bashSessionKindFromContext } from "./session-policy.js"
 import { getSessionState, setSessionState } from "./session-registry.js"
@@ -50,6 +61,14 @@ function e2eHandoffSeconds(): number | undefined {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
+function processItem(snapshot: ProcessDisplaySnapshot): BackgroundProcessItem {
+	return { kind: "process", id: snapshot.handle, label: backgroundWorkLabel(snapshot.description || snapshot.command) }
+}
+
+function runningSnapshots(registry: ProcessRegistry): ProcessDisplaySnapshot[] {
+	return registry.listDisplaySnapshots().filter((snapshot) => snapshot.state === "running")
+}
+
 /**
  * Create a background-bash extension. Registers the background `bash` tool
  * on `session_start` (carrying the bash-tool-guard steering description so
@@ -62,6 +81,7 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	// repeated start could misread an earlier cohort's still-running
 	// process as an unsettled handoff; cleared on session_shutdown.
 	const liveHandlesBySession = new Map<string, Set<string>>()
+	const unregisterBackgroundWorkBySession = new Map<string, () => void>()
 	pi.registerCommand("processes", {
 		description: "Inspect this session's managed Bash commands and live output",
 		async handler(_args, ctx) {
@@ -132,6 +152,19 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		const sessionKind = bashSessionKindFromContext(sessionCtx)
 		const state = { registry, coordinator, delivery, limitSeconds, sessionKind, cwd: sessionCtx.cwd }
 		setSessionState(sessionId, state)
+		unregisterBackgroundWorkBySession.get(sessionId)?.()
+		unregisterBackgroundWorkBySession.set(
+			sessionId,
+			registerBackgroundWorkProvider(sessionId, "bash", {
+				list: () => runningSnapshots(registry).map(processItem),
+				stop: async (ids) => {
+					const wanted = new Set(ids)
+					const running = runningSnapshots(registry).filter((snapshot) => wanted.has(snapshot.handle))
+					await Promise.all(running.map((snapshot) => registry.kill(snapshot.handle, USER_STOP_REASON)))
+					return running.map(processItem)
+				},
+			}),
+		)
 
 		// Footer indicator: publish the running-command count while any run,
 		// cleared at zero (the footer hides the segment then). Reset first so a
@@ -170,6 +203,10 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		panel?.close()
 		panel = undefined
 		const sessionId = ctx.sessionManager.getSessionId()
+		// Same point as the unpublish below: a user stop must not reach a
+		// registry that is being drained.
+		unregisterBackgroundWorkBySession.get(sessionId)?.()
+		unregisterBackgroundWorkBySession.delete(sessionId)
 		const state = getSessionState(sessionId)
 		if (state) {
 			// Unpublish BEFORE draining: shutdown() kills pending processes,

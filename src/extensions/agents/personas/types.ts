@@ -187,6 +187,8 @@ export interface AgentRecord {
 	joinMode?: JoinMode
 	/** Set when result was already consumed via get_subagent_result — suppresses completion notification. */
 	resultConsumed?: boolean
+	/** Set when a user stop ended the run; its completion notice must not start a turn. */
+	userStopped?: boolean
 	/** Steering messages queued before the session was ready. */
 	pendingSteers?: string[]
 	/** The tool_use_id from the original Agent tool call. */
