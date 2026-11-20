@@ -41,6 +41,7 @@ const EXPECTED_OS_KEYS = ["telemetry.arch", "telemetry.host_os", "telemetry.is_w
 const EXPECTED_CONFIG_KEYS = [
 	"config.agents_enabled",
 	"config.mcp_server_count",
+	"config.memory_enabled",
 	"config.model",
 	"config.model_roles.builder",
 	"config.model_roles.explorer",

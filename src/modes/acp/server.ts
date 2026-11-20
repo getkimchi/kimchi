@@ -213,10 +213,12 @@ import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import {
 	handleMemoryDelete,
+	handleMemoryGet,
 	handleMemoryList,
 	handleMemoryReset,
 	handleMemorySearch,
 	handleMemoryStatus,
+	handleMemoryUpdate,
 	handleSetMemoryEnabled,
 } from "./ext-methods/memory.js"
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
@@ -1981,6 +1983,10 @@ export class KimchiAcpAgent implements Agent {
 				// Session-scoped: flip the session's runtime memory toggle — the
 				// memory extension reads it at its next agent start.
 				return handleSetMemoryEnabled((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.memory_get:
+				return handleMemoryGet({}, params)
+			case AVAILABLE_EXT_METHODS.memory_update:
+				return handleMemoryUpdate({}, params)
 			case AVAILABLE_EXT_METHODS.memory_list:
 				// Sessionless store op: paginated facts across the selected scopes.
 				return handleMemoryList({}, params)

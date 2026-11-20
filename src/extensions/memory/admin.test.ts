@@ -7,14 +7,22 @@ import {
 	type AdminBackend,
 	type AdminMemoryItem,
 	type AdminRunOptions,
+	adminCorrectFact,
+	adminEditFact,
+	adminExplainFact,
+	adminInspectFact,
 	adminOverview,
 	adminResetScope,
+	formatMemoryExplanation,
 	listStores,
 	parseAdminArgs,
 	runAdminCommand,
 	scopeFilterFromParams,
 } from "./admin.js"
 import { UNKNOWN_CAPTURE_SESSION_ID } from "./config.js"
+import { deferSupersede } from "./decision-outage.js"
+import type { SnapshotStore } from "./maintenance.js"
+import { readMemoryMetadata } from "./metadata.js"
 
 // --- fixtures -------------------------------------------------------------------
 
@@ -48,9 +56,22 @@ function makeFakeBackend(items: AdminMemoryItem[]) {
 				.map((i, n) => ({ ...i, score: 0.9 - n * 0.1 })),
 		delete: async (id) => {
 			deleted.push(id)
+			const index = items.findIndex((item) => item.id === id)
+			if (index >= 0) items.splice(index, 1)
 		},
 		deleteAll: async () => {
 			deletedAll = true
+		},
+		update: async (id, options) => {
+			const index = items.findIndex((item) => item.id === id)
+			if (index >= 0)
+				items[index] = {
+					...items[index],
+					memory: options.text ?? items[index].memory,
+					metadata: options.metadata
+						? readMemoryMetadata(options.metadata, options.text ?? items[index].memory)
+						: items[index].metadata,
+				}
 		},
 	}
 	return { backend, deleted, isDeletedAll: () => deletedAll }
@@ -60,6 +81,12 @@ function makeFakeBackend(items: AdminMemoryItem[]) {
 function harness(stores: Record<string, AdminMemoryItem[]>, cwd = NO_REPO_CWD) {
 	const root = mkdtempSync(join(tmpdir(), "kimchi-memory-admin-"))
 	const backends = new Map<string, ReturnType<typeof makeFakeBackend>>()
+	const rowsByStore = new Map(
+		Object.entries(stores).map(([scopeId, items]) => [
+			join(root, scopeId === "personal" ? "personal" : join("projects", scopeId), "memory.db"),
+			items,
+		]),
+	)
 	for (const [scopeId, items] of Object.entries(stores)) {
 		const dir = scopeId === "personal" ? join(root, "personal") : join(root, "projects", scopeId)
 		mkdirSync(dir, { recursive: true })
@@ -77,6 +104,26 @@ function harness(stores: Record<string, AdminMemoryItem[]>, cwd = NO_REPO_CWD) {
 		memoryRoot: root,
 		createBackend: (dbPath: string) => Promise.resolve(backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
 		acquireLock: () => Promise.resolve(() => Promise.resolve()),
+		snapshotStore: (dbPath: string): SnapshotStore => ({
+			readRows: () =>
+				(rowsByStore.get(dbPath) ?? []).map((row) => ({
+					id: row.id,
+					vector: [1, 0, 0, 0],
+					payload: { data: row.memory, user_id: "kimchi", metadata: row.metadata },
+				})),
+			restoreRows: (_path, rows) => {
+				const target = rowsByStore.get(dbPath) ?? []
+				target.splice(
+					0,
+					target.length,
+					...rows.map((row) => ({
+						id: row.id,
+						memory: String(row.payload.data),
+						metadata: readMemoryMetadata(row.payload.metadata, String(row.payload.data)),
+					})),
+				)
+			},
+		}),
 	}
 	return { root, backends, deps, run }
 }
@@ -96,6 +143,288 @@ afterEach(() => {
 })
 
 // --- parseAdminArgs (pure grammar) ----------------------------------------------
+
+describe("provenance inspection and precise correction", () => {
+	it("inspects metadata and corrects exactly one id", async () => {
+		const selected = fact("fact-1", "favorite tool")
+		selected.metadata = {
+			version: 1,
+			kind: "hypothesis",
+			derived: true,
+			canonical: false,
+			source: "unknown",
+			supportIds: ["proof-1"],
+		}
+		const h = trackedHarness({ personal: [selected, fact("fact-2", "other preference")] })
+		const inspected = await adminInspectFact("fact-1", h.deps)
+		expect(inspected?.metadata).toMatchObject({ kind: "hypothesis", canonical: false, supportIds: ["proof-1"] })
+
+		const result = await adminCorrectFact("fact-1", "use pnpm", h.deps)
+		expect(result.corrected.memory).toBe("use pnpm")
+		expect(result.corrected.metadata).toMatchObject({
+			source: "authored",
+			// A text edit alone never turns a tentative fact into an observation.
+			canonical: false,
+			kind: "hypothesis",
+			supportIds: ["proof-1"],
+		})
+		const facts = await adminInspectFact("fact-2", h.deps)
+		expect(facts?.memory).toBe("other preference")
+	})
+
+	it("rejects unknown and ambiguous ids", async () => {
+		const h = trackedHarness({
+			personal: [{ id: "same", memory: "first" }],
+			"owner/example": [{ id: "same", memory: "second" }],
+		})
+		expect(await adminInspectFact("same", h.deps)).toBeNull()
+		await expect(adminCorrectFact("same", "overwrite", h.deps)).rejects.toThrow("ambiguous")
+		await expect(adminCorrectFact("missing", "overwrite", h.deps)).rejects.toThrow("not found or ambiguous")
+	})
+})
+
+describe("guarded metadata edits and explanations", () => {
+	it("edits only the requested scoped id and supports demote and pin/unpin", async () => {
+		const selected = fact("fact-1", "Use npm")
+		selected.metadata = readMemoryMetadata(
+			{
+				kind: "semantic",
+				source: "extracted",
+				confidence: 0.3,
+				supportIds: ["proof-1"],
+				validOrder: 4,
+				attributes: { note: "old note" },
+			},
+			selected.memory,
+		)
+		const h = trackedHarness({ personal: [selected], "a/b": [fact("fact-1", "another copy")] })
+		await expect(adminEditFact("fact-1", { text: "Use pnpm", confirmed: true }, h.deps)).rejects.toThrow("ambiguous")
+
+		const changed = await adminEditFact(
+			"fact-1",
+			{
+				text: "Use pnpm",
+				kind: "procedural",
+				confidence: 0,
+				note: "user verified this",
+				canonical: true,
+				scope: { kind: "personal" },
+				confirmed: true,
+			},
+			h.deps,
+		)
+		expect(changed.corrected).toMatchObject({ id: "fact-1", memory: "Use pnpm", scopeId: "personal" })
+		expect(changed.corrected.metadata).toMatchObject({
+			kind: "procedural",
+			source: "authored",
+			confidence: 0,
+			canonical: true,
+			supportIds: ["proof-1"],
+			validOrder: 4,
+			attributes: { note: "user verified this" },
+		})
+		expect(changed.deleted).toEqual([])
+
+		const unpinned = await adminEditFact(
+			"fact-1",
+			{ canonical: false, scope: { kind: "personal" }, confirmed: true },
+			h.deps,
+		)
+		expect(unpinned.corrected.metadata).toMatchObject({ canonical: false, source: "authored", confidence: 0 })
+		const demoted = await adminEditFact(
+			"fact-1",
+			{ kind: "hypothesis", scope: { kind: "personal" }, confirmed: true },
+			h.deps,
+		)
+		expect(demoted.corrected.metadata).toMatchObject({ kind: "hypothesis", canonical: false, source: "authored" })
+	})
+
+	it("describes lifecycle, support and recent recall without exposing raw trace prompts", async () => {
+		const selected = fact("fact-1", "Use pnpm")
+		selected.metadata = readMemoryMetadata(
+			{ kind: "procedural", source: "extracted", supportIds: ["proof-1"], validOrder: 4 },
+			selected.memory,
+		)
+		const h = trackedHarness({ personal: [selected] })
+		const explanation = await adminExplainFact("fact-1", undefined, {
+			...h.deps,
+			recallEvidence: () => [
+				{
+					recallId: "r1",
+					sourceFile: "recall-test.jsonl",
+					timestamp: "2026-11-17T10:00:00.000Z",
+					kind: "tool-search",
+					selected: true,
+					delivered: true,
+					identity: "fact-id",
+				},
+			],
+		})
+		expect(explanation).toMatchObject({
+			memory: "Use pnpm",
+			supportCount: 1,
+			recentRecalls: [{ recallId: "r1", identity: "fact-id" }],
+		})
+		if (!explanation) throw new Error("expected the selected fact's explanation")
+		expect(formatMemoryExplanation(explanation).join("\n")).toContain("Support references: 1")
+		expect(formatMemoryExplanation(explanation).join("\n")).toContain("validOrder=4")
+		expect(formatMemoryExplanation(explanation).join("\n")).toContain("fact-id")
+	})
+})
+
+describe("maintenance and correction commands", () => {
+	it("parses all three maintenance actions, inspect, and correct", () => {
+		expect(parseAdminArgs(["maintain", "audit", "--scope", "personal"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "maintain",
+			action: "audit",
+			scope: { kind: "personal" },
+			yes: false,
+		})
+		expect(parseAdminArgs(["maintain", "dedupe", "--scope", "personal", "--yes"], { cwd: NO_REPO_CWD })).toMatchObject({
+			action: "dedupe",
+			yes: true,
+		})
+		expect(
+			parseAdminArgs(["maintain", "rollback", "checkpoint.json", "--scope", "personal", "--yes"], { cwd: NO_REPO_CWD }),
+		).toMatchObject({
+			action: "rollback",
+			manifest: "checkpoint.json",
+			yes: true,
+		})
+		expect(parseAdminArgs(["inspect", "fact-1"], { cwd: NO_REPO_CWD })).toEqual({ op: "inspect", id: "fact-1" })
+		expect(parseAdminArgs(["correct", "fact-1", "use", "pnpm", "--yes"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "correct",
+			id: "fact-1",
+			text: "use pnpm",
+			yes: true,
+		})
+	})
+
+	it("parses explain aliases and complete lifecycle edit flags", () => {
+		expect(parseAdminArgs(["explain", "fact-1"], { cwd: NO_REPO_CWD })).toEqual({ op: "inspect", id: "fact-1" })
+		expect(
+			parseAdminArgs(
+				[
+					"edit",
+					"fact-1",
+					"--kind",
+					"procedural",
+					"--confidence",
+					"0",
+					"--note",
+					"confirmed",
+					"pin",
+					"--scope",
+					"personal",
+					"--yes",
+				],
+				{ cwd: NO_REPO_CWD },
+			),
+		).toEqual({
+			op: "edit",
+			id: "fact-1",
+			kind: "procedural",
+			confidence: 0,
+			note: "confirmed",
+			canonical: true,
+			scope: { kind: "personal" },
+			yes: true,
+		})
+		for (const args of [
+			["edit", "fact-1", "--kind", "arbitrary", "--yes"],
+			["edit", "fact-1", "--confidence", "2", "--yes"],
+			["edit", "fact-1", "--text", "replacement"],
+			["list", "--text", "ignored"],
+		]) {
+			expect(parseAdminArgs(args, { cwd: NO_REPO_CWD }), JSON.stringify(args)).toMatchObject({ op: "usage-error" })
+		}
+	})
+
+	it("requires one target, explicit mutation confirmation, and supported flags", () => {
+		for (const args of [
+			["maintain", "dedupe", "--scope", "personal"],
+			["maintain", "audit", "--scope", "all"],
+			["maintain", "rollback", "checkpoint.json", "--scope", "personal"],
+			["maintain", "audit", "extra", "--scope", "personal"],
+			["maintain", "audit", "--scope", "personal", "--json"],
+			["inspect", "fact-1", "--scope", "personal"],
+			["correct", "fact-1", "use pnpm"],
+		]) {
+			expect(parseAdminArgs(args, { cwd: NO_REPO_CWD }), JSON.stringify(args)).toMatchObject({ op: "usage-error" })
+		}
+	})
+
+	it("audits without --yes, dedupes only with it, and rolls back its checkpoint", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "duplicated fact"), fact("p2", "DUPLICATED fact")] })
+		const audit = await h.run(["maintain", "audit", "--scope", "personal"])
+		expect(audit.code).toBe(0)
+		expect(JSON.parse(audit.text).audit).toMatchObject({ raw: 2, normalizedDuplicates: 1 })
+		expect(JSON.parse(audit.text).queue).toMatchObject({
+			jobs: 0,
+			duplicateJobs: 0,
+			invalidJobs: 0,
+			duplicateGroupSizes: {},
+		})
+		expect(await h.run(["maintain", "dedupe", "--scope", "personal"])).toMatchObject({ code: 1 })
+
+		const deduped = await h.run(["maintain", "dedupe", "--scope", "personal", "--yes"])
+		expect(deduped.code).toBe(0)
+		const { checkpoint } = JSON.parse(deduped.text) as { checkpoint: string }
+		expect(
+			await (await h.deps.createBackend(join(h.root, "personal", "memory.db"))).getAll({ metadata: true }),
+		).toHaveLength(1)
+
+		const restored = await h.run(["maintain", "rollback", checkpoint, "--scope", "personal", "--yes"])
+		expect(restored.code).toBe(0)
+		expect(
+			await (await h.deps.createBackend(join(h.root, "personal", "memory.db"))).getAll({ metadata: true }),
+		).toHaveLength(2)
+	})
+
+	it("dispatches inspection and precise correction", async () => {
+		const selected = fact("fact-1", "favorite tool")
+		selected.metadata = readMemoryMetadata(
+			{ kind: "working", source: "authored", supportIds: ["proof-1"] },
+			selected.memory,
+		)
+		const h = trackedHarness({ personal: [selected] })
+		const inspected = await h.run(["inspect", "fact-1"])
+		expect(inspected.code).toBe(0)
+		expect(inspected.text).toContain("favorite tool")
+
+		const corrected = await h.run(["correct", "fact-1", "use", "pnpm", "--yes"])
+		expect(corrected.code).toBe(0)
+		expect(JSON.parse(corrected.json).corrected.memory).toBe("use pnpm")
+		expect(JSON.parse(corrected.json).corrected.metadata).toMatchObject({
+			source: "authored",
+			canonical: true,
+			supportIds: ["proof-1"],
+		})
+
+		const explained = await h.run(["explain", "fact-1"])
+		expect(explained.text).toContain("use pnpm")
+		expect(explained.text).toContain("Support references: 1")
+		const edited = await h.run([
+			"edit",
+			"fact-1",
+			"--confidence",
+			"0",
+			"--note",
+			"reviewed",
+			"unpin",
+			"--scope",
+			"personal",
+			"--yes",
+		])
+		expect(edited.code).toBe(0)
+		expect(JSON.parse(edited.json).corrected.metadata).toMatchObject({
+			source: "authored",
+			canonical: false,
+			confidence: 0,
+			attributes: { note: "reviewed" },
+		})
+	})
+})
 
 describe("parseAdminArgs", () => {
 	it("bare invocation and --json parse as the overview", () => {
@@ -609,6 +938,13 @@ describe("runAdminCommand — overview and usage errors", () => {
 		expect(result.text).toContain("usage: memory")
 	})
 
+	it("the overview surfaces deferred supersession state", async () => {
+		const h = trackedHarness({})
+		deferSupersede("personal", ["fact-1"], h.root)
+		const result = await h.run([])
+		expect(result.text).toContain("d3 degradation: 1 deferred supersede fact(s) across 1 store(s)")
+	})
+
 	it("the overview shows the last session's stored count from the completion record", async () => {
 		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
 		const other = "99999999-8888-7777-6666-555555555555"
@@ -935,5 +1271,49 @@ describe("runAdminCommand — consolidate", () => {
 			yes: true,
 		})
 		expect(parseAdminArgs(["consolidate", "x"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
+	})
+})
+
+describe("dashboard subcommand", () => {
+	it("grammar: defaults, --port, --no-open; positionals and bad ports are usage errors", () => {
+		expect(parseAdminArgs(["dashboard"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "dashboard",
+			port: undefined,
+			noOpen: false,
+		})
+		expect(parseAdminArgs(["dashboard", "--port", "19432"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "dashboard",
+			port: 19432,
+			noOpen: false,
+		})
+		expect(parseAdminArgs(["dashboard", "--no-open"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "dashboard",
+			port: undefined,
+			noOpen: true,
+		})
+		expect(parseAdminArgs(["dashboard", "--port", "abc"], { cwd: NO_REPO_CWD })).toMatchObject({
+			op: "usage-error",
+		})
+		expect(parseAdminArgs(["dashboard", "extra"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
+	})
+
+	it("without a launcher (the in-session surface) the op answers with the terminal-only hint", async () => {
+		const result = await runAdminCommand(["dashboard"], { cwd: NO_REPO_CWD })
+		expect(result.code).toBe(1)
+		expect(result.text).toContain("terminal-only")
+	})
+
+	it("the CLI launcher receives parsed port/openBrowser and its result surfaces", async () => {
+		const calls: Array<{ port?: number; openBrowser: boolean }> = []
+		const result = await runAdminCommand(["dashboard", "--port", "4000", "--no-open"], {
+			cwd: NO_REPO_CWD,
+			launchDashboard: (options) => {
+				calls.push(options)
+				return Promise.resolve({ text: "Running.", json: "{}", code: 0 })
+			},
+		})
+		expect(calls).toEqual([{ port: 4000, openBrowser: false }])
+		expect(result.code).toBe(0)
+		expect(result.text).toBe("Running.")
 	})
 })

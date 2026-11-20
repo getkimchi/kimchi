@@ -82,6 +82,8 @@ export const AVAILABLE_EXT_METHODS = {
 	// Sessionless inbound, resources and memory store ops.
 	list_resources: `_${CAPABILITIES_KEY}/list_resources`,
 	set_resource_enabled: `_${CAPABILITIES_KEY}/set_resource_enabled`,
+	memory_get: `_${CAPABILITIES_KEY}/memory_get`,
+	memory_update: `_${CAPABILITIES_KEY}/memory_update`,
 	memory_list: `_${CAPABILITIES_KEY}/memory_list`,
 	memory_search: `_${CAPABILITIES_KEY}/memory_search`,
 	memory_delete: `_${CAPABILITIES_KEY}/memory_delete`,

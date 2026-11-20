@@ -15,6 +15,11 @@
 #   transcripts). An upstream issue/PR carrying the cheap `includes`
 #   pre-check is planned; Removal: delete the hunk once upstream ships an
 #   equivalent early-exit (or a memoized lex) in the transformer.
+# Embedded extension loading: oven-sh/bun#41151 (deferred Error.prepareStackTrace
+#   wrappers break follow-redirects' captureStackTrace when jiti enables Babel).
+#   Upstream PR plan: submit native-first loading with virtual modules to earendil-works/pi.
+#   Removal: when upstream ships equivalent native-first loading or Babel is
+#   not required for packaged extensions and no longer installs the trigger.
 # Changes:
 #   - Root-index re-exports of getQuickJSWasmPath/setEmbeddedQuickJSWasmPath
 #     (and getThemesDir) from dist/config, so a host's compiled binary entry
@@ -488,6 +493,21 @@ index f9292e82120e4afbc3702b11d684867ae0ff7033..d44374d5d5847597086b6b592d663aa2
          },
          getThinkingLevel() {
              assertActive();
+@@ -472,10 +472,13 @@ async function loadExtensionModule(extensionPath, cacheToken)
+     const resolutionOptions = usesEmbeddedModules
+-        ? { virtualModules: await getVirtualModules(), tryNative: false }
++        // Native loading avoids Babel's Error.prepareStackTrace wrapper. Its
++        // interaction with follow-redirects breaks memory backends on Bun
++        // (oven-sh/bun#41151), and it changes unrelated third-party stacks.
++        ? { virtualModules: await getVirtualModules(), tryNative: true }
+         : isTypeScriptSourceRuntime
+             ? { virtualModules: await getVirtualModules(), tsconfigPaths: true }
+             : { alias: getAliases() };
+     const jiti = createJitiImpl(import.meta.url, {
+         moduleCache: false,
+         ...resolutionOptions,
+     });
+     const module = await jiti.import(extensionPath, { default: true });
 diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
 index 43c7ad43b394c7a9266dbcac0bee1e675b721713..8c409793fa625eeb193c04f6bf5142a58dc4b0f5 100644
 --- a/dist/core/extensions/types.d.ts

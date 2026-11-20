@@ -70,6 +70,8 @@ export interface AcpFixtureOptions {
 	/** Seed expiring canonical OAuth credentials and serve their fake replacement. */
 	oauth?: { refreshedAccessToken: string }
 	responses: FakeResponseScript[]
+	/** Enable deterministic local embeddings for memory-edit tests. */
+	enableMemoryEmbeddings?: boolean
 	models?: FakeModel[]
 	providerId?: string
 	defaultProvider?: string
@@ -304,6 +306,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	const keepHomeDir = options.homeDirOverride !== undefined || options.keepDirsOnStop
 	const keepWorkDir = options.workDirOverride !== undefined || options.keepDirsOnStop
 	const fake = await startFakeOpenAiServer({
+		enableMemoryEmbeddings: options.enableMemoryEmbeddings,
 		responses,
 		models: configuredModels,
 		refreshedOAuthAccessToken: options.oauth?.refreshedAccessToken,
@@ -377,6 +380,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				{
 					...(options.oauth ? {} : { apiKey: "fake" }),
 					llmEndpoint: fake.baseUrl,
+					...(options.enableMemoryEmbeddings ? { memoryEmbedding: { model: "fake-embedding" } } : {}),
 					telemetry: { endpoint: `${fake.baseUrl}/logs`, metricsEndpoint: `${fake.baseUrl}/metrics` },
 					skillPaths: [],
 					migrationState: "done",

@@ -38,7 +38,8 @@ describe("handleSsoCredential", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs()
 		vi.restoreAllMocks()
-		rmSync(dir, { recursive: true, force: true })
+		// Credential-store initialization can leave asynchronous file cleanup pending on CI.
+		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 	})
 
 	function writeSsoEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
