@@ -1,5 +1,4 @@
 import { expect, test } from "@microsoft/tui-test"
-import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import {
 	fullText,
 	INPUT_TIMEOUT_MS,
@@ -7,17 +6,21 @@ import {
 	waitForText,
 	waitForTurnToSettle,
 } from "./support/assertions.js"
-import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { PROMPT_PREFIX, PROMPT_READY, runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-const EMPTY_EDITOR = "❯  ask anything or type / for commands"
+type EditorTerminal = Parameters<typeof waitForText>[0]
 
-async function clearEditor(terminal: Terminal, autocompleteText?: string): Promise<void> {
+const EMPTY_EDITOR = `${PROMPT_PREFIX} ${PROMPT_READY}`
+const MCP_EDITOR_LINE = new RegExp(`^${PROMPT_PREFIX}/mcp$`, "m")
+
+/** Clear the editor. Pass visible popup text whenever autocomplete may be open. */
+async function clearEditor(terminal: EditorTerminal, autocompleteText?: string): Promise<void> {
 	if (autocompleteText) {
 		terminal.keyEscape()
-		// Do not let Escape share a stdin chunk with the clear key: Escape +
-		// Backspace is Alt+Backspace, which leaves autocomplete active.
+		// Wait for dismissal before sending Ctrl+U: coalesced input can decode
+		// Escape as a modifier instead of a standalone key.
 		await waitForText(terminal, (text) => !text.includes(autocompleteText), { timeoutMs: INPUT_TIMEOUT_MS })
 	}
 	terminal.keyPress("u", { ctrl: true })
@@ -100,7 +103,7 @@ test("reconnect surfaces session-scoped prompt commands in autocomplete and the 
 			// Same open pattern as mcp-panel.test.ts: type, let autocomplete settle,
 			// then submit; Enter accepts the completed /mcp line and runs it.
 			terminal.write("/mcp")
-			await waitForText(terminal, /^❯ \/mcp$/m, { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, MCP_EDITOR_LINE, { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "MCP Servers", { timeoutMs: STREAM_TIMEOUT_MS })
 			// Session-scoped listings must not render as a cache miss. 5.3.2's
@@ -126,7 +129,7 @@ test("in-panel reconnect shows a private catalog through the upstream session ov
 		},
 		async (fixture, trace) => {
 			terminal.write("/mcp")
-			await waitForText(terminal, /^❯ \/mcp$/m, { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, MCP_EDITOR_LINE, { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "MCP Servers", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("MCP panel opened for a private-scoped lazy server")
