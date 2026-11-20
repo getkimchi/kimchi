@@ -146,7 +146,7 @@ function nativeRecord(workId: string, sessionId = "native", requestId: string = 
 		recordedAt: "2026-10-01T00:00:00.000Z",
 	}
 }
-function startNativeProcess(command: "summary-writer" | "summary-reader", argument: string, watchdogMs = 10_000) {
+function startNativeProcess(command: "summary-writer" | "summary-reader", argument: string) {
 	const child = spawn("bun", [NATIVE_DRIVER, command, dir, argument])
 	const label = command === "summary-writer" ? "Native writer" : "Native reader"
 	const lines = createInterface({ input: child.stdout })
@@ -159,10 +159,10 @@ function startNativeProcess(command: "summary-writer" | "summary-reader", argume
 		child.once("error", reject)
 		child.once("close", (code) => (code === 0 ? resolve() : reject(new Error(`${label} exited ${code}: ${errors}`))))
 	})
-	let timeout = setTimeout(() => child.kill("SIGKILL"), watchdogMs)
+	let timeout = setTimeout(() => child.kill("SIGKILL"), 10_000)
 	const resetWatchdog = () => {
 		clearTimeout(timeout)
-		timeout = setTimeout(() => child.kill("SIGKILL"), watchdogMs)
+		timeout = setTimeout(() => child.kill("SIGKILL"), 10_000)
 	}
 	void done.finally(() => clearTimeout(timeout)).catch(() => {})
 	return {
@@ -1255,14 +1255,15 @@ describe("readable work summaries", () => {
 	}, 15000)
 
 	it("keeps a responding reader beyond its cumulative watchdog deadline", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] })
 		const workId = randomUUID()
 		expect(native<WorkRecord[]>("records", workId)).toEqual([])
-		const reader = startNativeProcess("summary-reader", workId, 500)
+		const reader = startNativeProcess("summary-reader", workId)
 		try {
 			expect((await reader.next()).phase).toBe("ready")
-			for (let index = 0; index < 8; index++) {
-				// Each pause is below the watchdog interval, but their sum exceeds it.
-				await new Promise<void>((resolve) => setTimeout(resolve, 100))
+			for (let index = 0; index < 12; index++) {
+				// Each fake pause is below the real 10-second stall budget, but their sum exceeds it.
+				vi.advanceTimersByTime(1000)
 				reader.child.stdin.write("read\n")
 				expect((await reader.next()).phase).toBe("snapshot")
 			}
