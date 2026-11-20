@@ -72,6 +72,7 @@ import type { AgentRecord } from "../personas/types.js"
 import type { PersistedGitWorkflow, RemoteRunState } from "../remote-run-persistence.js"
 import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
 import { resumeAgent, runAgent } from "./agent-runner.js"
+import { GroupJoinManager } from "./group-join.js"
 import {
 	attachRemoteAgent,
 	continueRemoteAgent,
@@ -1028,6 +1029,71 @@ async function expectStillPending(promise: Promise<unknown>): Promise<void> {
 	await Promise.resolve()
 	expect(settled).toBe(false)
 }
+
+describe("AgentManager abort of queued work", () => {
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	const runUntilAborted = () =>
+		mockRunAgent.mockImplementation(async (_ctx, _type, _prompt, options) => {
+			const signal = options?.signal
+			if (!signal) throw new Error("expected abort signal")
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+			return {
+				responseText: "stopped",
+				session: { dispose: vi.fn() } as unknown as AgentSession,
+				aborted: false,
+				steered: false,
+			}
+		})
+
+	it("reports completion once for a stopped queued agent", async () => {
+		runUntilAborted()
+		const onComplete = vi.fn()
+		const manager = new AgentManager(onComplete, 1)
+		try {
+			const running = manager.spawn(fakePi(), fakeCtx(), "Explore", "one", { description: "one", isBackground: true })
+			const queued = manager.spawn(fakePi(), fakeCtx(), "Explore", "two", { description: "two", isBackground: true })
+			expect(manager.getRecord(queued)?.status).toBe("queued")
+
+			expect(manager.abort(queued)).toBe(true)
+			expect(onComplete).toHaveBeenCalledTimes(1)
+			expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ id: queued, status: "stopped" }))
+
+			// Freeing the slot must not start the stopped record or report it again.
+			manager.abort(running)
+			await vi.waitFor(() => expect(onComplete).toHaveBeenCalledTimes(2))
+			expect(mockRunAgent).toHaveBeenCalledTimes(1)
+			expect(onComplete.mock.calls.map(([r]) => r.id)).toEqual([queued, running])
+		} finally {
+			manager.dispose()
+		}
+	})
+
+	it("closes a smart-join group with a full notice when its queued member is stopped", async () => {
+		runUntilAborted()
+		const deliver = vi.fn()
+		const groupJoin = new GroupJoinManager(deliver, 30_000)
+		const manager = new AgentManager((record) => groupJoin.onAgentComplete(record), 2)
+		try {
+			const ids = ["a", "b", "c"].map((d) =>
+				manager.spawn(fakePi(), fakeCtx(), "Explore", d, { description: d, isBackground: true }),
+			)
+			expect(manager.getRecord(ids[2])?.status).toBe("queued")
+			groupJoin.registerGroup("batch-1", ids)
+
+			for (const id of ids) manager.abort(id)
+
+			await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1))
+			const [records, partial] = deliver.mock.calls[0]
+			expect(partial).toBe(false)
+			expect(records.map((r: AgentRecord) => r.id).sort()).toEqual([...ids].sort())
+		} finally {
+			manager.dispose()
+		}
+	})
+})
 
 describe("AgentManager detachToBackground", () => {
 	it("returns true and marks agent as background when detachResolver is set", () => {
