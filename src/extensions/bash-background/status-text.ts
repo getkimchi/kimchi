@@ -12,6 +12,7 @@
  * observation, never a claim like "no progress".
  */
 import { relative } from "node:path"
+import { USER_STOP_REASON } from "./bash-display.js"
 import type { IncrementalSnapshot, ProcessEntry, ProcessState } from "./process-registry.js"
 import {
 	elapsedSecondsSince,
@@ -207,6 +208,7 @@ export function userInputGuidanceText(): string {
 export function terminalReasonText(state: ProcessState, exitCode: number | null, reason: string | null): string {
 	if (reason === SAFETY_LIMIT_REASON) return "killed by the harness safety limit"
 	if (reason === "stop") return "stopped on request"
+	if (reason === USER_STOP_REASON) return "stopped by the user"
 	if (reason === "aborted") return "aborted"
 	if (reason) return `killed (${reason})`
 	if (state === "exited") return `exited (exit code ${exitCode ?? "unknown"})`

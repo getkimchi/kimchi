@@ -4,6 +4,7 @@
  * wording, clamped remaining budget, and omission/truncation formatting.
  */
 import { describe, expect, it } from "vitest"
+import { USER_STOP_REASON } from "./bash-display.js"
 import type { IncrementalSnapshot } from "./process-registry.js"
 import {
 	checkpointGuidanceText,
@@ -12,6 +13,7 @@ import {
 	inspectionHeaderText,
 	outputLogNoticeText,
 	processEvidenceText,
+	terminalReasonText,
 	terminalResultText,
 	unseenOutputText,
 	userInputGuidanceText,
@@ -180,6 +182,12 @@ describe("terminalResultText", () => {
 		})
 		expect(text).toContain("[Full log: /tmp/kimchi-bash-1.log]")
 		expect(text).not.toContain("truncated")
+	})
+})
+
+describe("terminalReasonText", () => {
+	it("tells the model the user stopped the command", () => {
+		expect(terminalReasonText("stopped", null, USER_STOP_REASON)).toBe("stopped by the user")
 	})
 })
 
