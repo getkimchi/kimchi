@@ -162,11 +162,15 @@ describe("handleSsoCredential", () => {
 	// as ModelsError("auth") ("Credential store read failed"), which maps to
 	// SSO_STORE_UNAVAILABLE — NOT SSO_REFRESH_FAILED, which would send the
 	// client into a refresh-retry loop against an unreadable store.
-	it("maps a corrupt auth.json to SSO_STORE_UNAVAILABLE", async () => {
-		writeFileSync(paths.authPath, "{corrupt")
-		const error = await errorFrom(() => handleSsoCredential(fakeOAuthDeps(), paths))
-		expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE" })
-	})
+	// Temporary CI sampling: preserve the real handler/store path while
+	// increasing the chance of capturing the intermittent cleanup race.
+	for (let iteration = 1; iteration <= 100; iteration += 1) {
+		it(`maps a corrupt auth.json to SSO_STORE_UNAVAILABLE (sample ${iteration})`, async () => {
+			writeFileSync(paths.authPath, "{corrupt")
+			const error = await errorFrom(() => handleSsoCredential(fakeOAuthDeps(), paths))
+			expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE" })
+		})
+	}
 
 	it("maps ModelRuntime.create failures to SSO_STORE_UNAVAILABLE", async () => {
 		const create = vi.spyOn(ModelRuntime, "create").mockRejectedValueOnce(new Error("runtime construction failed"))
