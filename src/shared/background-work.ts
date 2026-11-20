@@ -9,6 +9,8 @@
 // This module must stay free of imports from src/extensions/** so that shared
 // code never depends on a feature.
 
+import { safePanelText } from "../components/input-panel.js"
+
 export interface BackgroundProcessItem {
 	kind: "process"
 	id: string
@@ -120,11 +122,12 @@ export async function stopBackgroundWork(
 	return { processes, agents }
 }
 
-/** One-line label for a dialog row: first non-empty line, capped in length. */
+/** One-line label for a dialog row: first non-empty line, capped in length.
+ *  TEXT is model-written, so it is cleaned before it reaches the terminal. */
 export function backgroundWorkLabel(text: string): string {
 	const line =
-		text
-			.split(/\r?\n/)
+		safePanelText(text)
+			.split("\n")
 			.map((part) => part.trim())
 			.find((part) => part.length > 0) ?? ""
 	return line.length > LABEL_MAX_CHARS ? `${line.slice(0, LABEL_MAX_CHARS - 1)}…` : line
