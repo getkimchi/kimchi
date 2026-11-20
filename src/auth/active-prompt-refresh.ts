@@ -48,7 +48,9 @@ export async function prepareActivePromptKimchiCredential(
 		// without another grant. Never replace a fresh, distinct active entry.
 		const staleActiveCredential =
 			activeCredential?.type === "oauth" &&
-			(activeCredential.access !== credential.access || activeCredential.refresh !== credential.refresh) &&
+			(activeCredential.access !== credential.access ||
+				activeCredential.refresh !== credential.refresh ||
+				activeCredential.expires !== credential.expires) &&
 			Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= activeCredential.expires
 		if (Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= credential.expires) {
 			rememberPreparedOAuthCredential(

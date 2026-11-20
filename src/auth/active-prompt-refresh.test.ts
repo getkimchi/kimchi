@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OAuthTokenError } from "../cli-auth/oauth.js"
 import { isCredentialStale, resetCredentialStalenessForTests } from "../credential-staleness.js"
@@ -83,6 +84,44 @@ describe("active prompt Kimchi credential preparation", () => {
 
 		expect(oauth.refreshCalls).toHaveLength(0)
 		expect(readStore()["kimchi-dev/openai"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+	})
+
+	it("fans out expiry-only active drift before request-time auth without an isolated grant", async () => {
+		const canonicalExpires = Date.now() + 3_600_000
+		const sharedCredential = { access: "fresh-shared-access", refresh: "shared-refresh" }
+		writeFileSync(
+			paths.authPath,
+			JSON.stringify({
+				"kimchi-dev": { type: "oauth", ...sharedCredential, expires: canonicalExpires },
+				"kimchi-dev/openai": {
+					type: "oauth",
+					...sharedCredential,
+					expires: Date.now() + 60_000,
+				},
+			}),
+		)
+		const oauth = rotatingOAuthDeps()
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"ready",
+		)
+
+		const runtime = await ModelRuntime.create({ authPath: paths.authPath, modelsPath: null })
+		oauth.installOAuth(runtime)
+		const canonicalOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+		if (!canonicalOAuth) throw new Error("expected canonical test OAuth")
+		runtime.registerProvider("kimchi-dev/openai", {
+			oauth: canonicalOAuth,
+			baseUrl: "https://example.invalid/openai/v1",
+		})
+		await expect(runtime.getAuth("kimchi-dev/openai")).resolves.toMatchObject({
+			auth: { apiKey: sharedCredential.access },
+		})
+		expect(oauth.refreshCalls).toHaveLength(0)
+		const stored = readStore()
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(stored[providerId]).toMatchObject({ ...sharedCredential, expires: canonicalExpires })
+		}
 	})
 
 	it("does not overwrite a distinct active credential outside the refresh window", async () => {

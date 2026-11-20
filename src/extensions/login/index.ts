@@ -5,6 +5,7 @@ import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-re
 import { loadConfig } from "../../config.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { chatCompletionsApi } from "../../models.js"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 import { createGatewayCodexProvider, registerGatewayCodexApi } from "./codex-gateway.js"
 import { createKimchiProviderOAuth } from "./flow.js"
@@ -79,9 +80,10 @@ export default function loginExtension(pi: ExtensionAPI): void {
 		if (loadConfig().apiKey) {
 			void refreshBillingStatusFromConfig({ mode: "forced" })
 		}
-		if (ctx.mode !== "tui") {
-			// ACP binds callbacks to its session runtime after extension loading.
-			// Do not replace that owner with the TUI registry identity here.
+		if (IS_ACP_MODE) {
+			// ACP rebinds parent-session callbacks after extension loading
+			// (acp-compat rule 10). Native RPC and ACP-spawned subagents still
+			// need these registrations and do not run that ACP rebinding.
 			return
 		}
 		const sessionOAuth = sessionOAuthFor(ctx.modelRegistry)

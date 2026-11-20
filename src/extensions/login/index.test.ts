@@ -3,12 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { createModel } from "../__mocks__/model-registry.js"
 import loginExtension from "./index.js"
 
-const { loadConfigMock, prepareActivePromptMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
+const { acpMode, loadConfigMock, prepareActivePromptMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
+	acpMode: { current: false },
 	loadConfigMock: vi.fn(),
 	prepareActivePromptMock: vi.fn(),
 	refreshBillingStatusFromConfigMock: vi.fn(),
+}))
+
+vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
+	...(await importOriginal()),
+	get IS_ACP_MODE() {
+		return acpMode.current
+	},
 }))
 
 vi.mock("../../auth/active-prompt-refresh.js", () => ({
@@ -47,6 +56,7 @@ function providerConfigFor(customLlmEndpoint: string | undefined): ProviderConfi
 describe("loginExtension", () => {
 	beforeEach(() => {
 		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-extension-test")
+		acpMode.current = false
 		loadConfigMock.mockReset()
 	})
 
@@ -107,6 +117,7 @@ describe("loginExtension", () => {
 	})
 
 	it("keeps ACP's session-owned provider callbacks on session_start", () => {
+		acpMode.current = true
 		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
 		const { api, getHandler, registerProvider } = createExtensionApi()
 		loginExtension(api)
@@ -115,6 +126,35 @@ describe("loginExtension", () => {
 		getHandler("session_start")({}, createContext({ mode: "rpc", modelRegistry: { getAll: () => [] } }))
 
 		expect(registerProvider).not.toHaveBeenCalled()
+	})
+
+	it("registers canonical and child OAuth handlers for native RPC session_start", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const { api, getHandler, registerProvider } = createExtensionApi()
+		loginExtension(api)
+		registerProvider.mockClear()
+
+		getHandler("session_start")(
+			{},
+			createContext({
+				mode: "rpc",
+				modelRegistry: { getAll: () => [createModel("child-model", "kimchi-dev/openai")] },
+			}),
+		)
+
+		expect(registerProvider).toHaveBeenCalledTimes(2)
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(registerProvider).toHaveBeenCalledWith(
+				providerId,
+				expect.objectContaining({
+					oauth: expect.objectContaining({
+						name: "Sign in with SSO",
+						refreshToken: expect.any(Function),
+						getApiKey: expect.any(Function),
+					}),
+				}),
+			)
+		}
 	})
 
 	it("refreshes billing when an authenticated session starts", () => {
