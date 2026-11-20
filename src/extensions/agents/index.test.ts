@@ -2739,12 +2739,13 @@ describe("user stop of background agents", () => {
 
 		Object.assign(record, { status: "completed", result: "done", completedAt: Date.now() })
 		manager.onComplete(record)
-		await vi.waitFor(() =>
-			expect(harness.sendMessage).toHaveBeenCalledWith(
-				expect.objectContaining({ customType: "subagent-notification" }),
-				expect.objectContaining({ deliverAs: "followUp", triggerTurn: true }),
-			),
-		)
+		const [, options] = await vi.waitFor(() => {
+			const found = harness.sendMessage.mock.calls.find(([msg]) => msg.customType === "subagent-notification")
+			if (!found) throw new Error("subagent-notification not sent yet")
+			return found
+		})
+		expect(options?.deliverAs).toBe("followUp")
+		expect(options?.triggerTurn).toBe(true)
 
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
 	})
