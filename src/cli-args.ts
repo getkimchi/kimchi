@@ -430,3 +430,21 @@ export function hasFermentOneshotArg(args: readonly string[]): boolean {
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
 	return args.filter((a) => a !== "--enable-experimental-features")
 }
+
+/** Kimchi Studio still starts new terminal sessions with `--model multi-model`.
+ *  Dropping that pair lets those launches start on the default model instead
+ *  of failing with "model not found".
+ *  ponytail: one-release bridge; remove once Studio stops passing it
+ *  (kimchi-studio `ptyHandlers.ts` `buildModelArgs`). */
+export function dropRetiredMultiModelArg(args: string[]): string[] {
+	const kept: string[] = []
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--model" && args[i + 1] === "multi-model") {
+			i += 1
+			continue
+		}
+		if (args[i] === "--model=multi-model") continue
+		kept.push(args[i])
+	}
+	return kept
+}

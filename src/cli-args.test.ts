@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
 	CACHEABLE_OPTION_NAMES,
 	CLI_OPTIONS,
+	dropRetiredMultiModelArg,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -15,6 +16,7 @@ import {
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
+	parseCliArgs,
 	populateCliArgs,
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
@@ -286,6 +288,26 @@ describe("stripExperimentalFeaturesArg", () => {
 
 	it("returns empty array for empty input", () => {
 		expect(stripExperimentalFeaturesArg([])).toEqual([])
+	})
+})
+
+describe("dropRetiredMultiModelArg", () => {
+	// Kimchi Studio launches new terminal sessions this way; they must start
+	// on the default model instead of failing with "model not found".
+	it.each([
+		[
+			["--model", "multi-model", "--plan", "fix it"],
+			["--plan", "fix it"],
+		],
+		[["--model=multi-model", "--plan"], ["--plan"]],
+	])("drops %j", (args, expected) => {
+		expect(dropRetiredMultiModelArg(args)).toEqual(expected)
+		expect(parseCliArgs(dropRetiredMultiModelArg(args)).options.model).toBeUndefined()
+	})
+
+	it("keeps real model selections", () => {
+		const args = ["--model", "kimchi-dev/deepseek-v4.1-flash", "multi-model"]
+		expect(dropRetiredMultiModelArg(args)).toEqual(args)
 	})
 })
 

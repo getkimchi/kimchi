@@ -9,6 +9,7 @@ import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@eare
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
+	dropRetiredMultiModelArg,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -780,8 +781,12 @@ async function cliMain(): Promise<void> {
 				: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 			mkdirSync(themesDir, { recursive: true })
 
+			const supportedArgs = dropRetiredMultiModelArg(originalArgs)
+			if (supportedArgs.length !== originalArgs.length) {
+				console.warn("Warning: --model multi-model is no longer supported; using your default model.")
+			}
 			const atFileArgs = normalizeAtFileArgs(
-				normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
+				normalizeResumeIdArgs(stripExperimentalFeaturesArg(supportedArgs)),
 				process.cwd(),
 				isCliAtFileArg,
 			)
