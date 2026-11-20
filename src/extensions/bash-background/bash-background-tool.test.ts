@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../__mocks__/context.js"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
+import { USER_STOP_REASON } from "./bash-display.js"
 import { createProcessRegistry } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
@@ -307,6 +308,19 @@ describe("createBackgroundBashToolDefinition — handoff", () => {
 		expect(ops.aborted).toBe(true)
 		expect(state.coordinator.size).toBe(0)
 		expect(state.registry.size).toBe(0)
+	})
+
+	it("a user stop of a foreground command throws instead of looking like a clean exit", async () => {
+		vi.useFakeTimers()
+		const state = makeState(60)
+		const ops = createFakeOps()
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "npm test" })
+		await Promise.resolve()
+		const assertion = expect(execPromise).rejects.toThrow("Command stopped by user")
+		const [snapshot] = state.registry.listDisplaySnapshots()
+		await state.registry.kill(snapshot.handle, USER_STOP_REASON)
+		await assertion
 	})
 
 	it("safety-limit kill before the handoff surfaces the distinct reason", async () => {

@@ -18,9 +18,9 @@ function registerWork(key: "bash" | "agents", items: BackgroundWorkItem[]) {
 	const state = { items: [...items] }
 	const provider: BackgroundWorkProvider = {
 		list: () => state.items,
-		stopAll: vi.fn(async () => {
-			const stopped = state.items
-			state.items = []
+		stop: vi.fn(async (ids: readonly string[]) => {
+			const stopped = state.items.filter((item) => ids.includes(item.id))
+			state.items = state.items.filter((item) => !ids.includes(item.id))
 			return stopped
 		}),
 	}
@@ -133,10 +133,30 @@ describe("createStopBackgroundPrompt", () => {
 			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		)
 		expect(capturedDuringDialog).toBe(true)
-		expect(bash.provider.stopAll).toHaveBeenCalledTimes(1)
-		expect(agents.provider.stopAll).toHaveBeenCalledTimes(1)
+		expect(bash.provider.stop).toHaveBeenCalledTimes(1)
+		expect(agents.provider.stop).toHaveBeenCalledTimes(1)
 		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Stopped 2 commands and 1 agent", "info")
+	})
+
+	it("Stop all stops only the work the dialog listed", async () => {
+		const bash = registerWork("bash", [processItem("npm run dev", "p1")])
+		const agents = registerWork("agents", [])
+		cleanups.push(bash.unregister, agents.unregister)
+		const { ctx, select } = makeCtx()
+		select.mockImplementation(async () => {
+			// A new turn starts while the dialog is open and runs more work.
+			bash.state.items.push(processItem("npm test", "p2"))
+			agents.state.items.push(agentItem("new agent", "a1"))
+			return STOP_ALL
+		})
+		setup(ctx).onEscape()
+		await flush()
+		expect(bash.provider.stop).toHaveBeenCalledWith(["p1"])
+		expect(agents.provider.stop).not.toHaveBeenCalled()
+		expect(bash.state.items.map((item) => item.id)).toEqual(["p2"])
+		expect(agents.state.items.map((item) => item.id)).toEqual(["a1"])
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Stopped 1 command", "info")
 	})
 
 	it.each([
@@ -149,7 +169,7 @@ describe("createStopBackgroundPrompt", () => {
 		setup(ctx).onEscape()
 		await flush()
 		expect(select).toHaveBeenCalledTimes(1)
-		expect(bash.provider.stopAll).not.toHaveBeenCalled()
+		expect(bash.provider.stop).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 
@@ -243,7 +263,7 @@ describe("createStopBackgroundPrompt", () => {
 		expect(signal?.aborted).toBe(true)
 		resolve(STOP_ALL)
 		await flush()
-		expect(bash.provider.stopAll).not.toHaveBeenCalled()
+		expect(bash.provider.stop).not.toHaveBeenCalled()
 	})
 
 	it("dispose drops an Esc that waits for the run to settle", async () => {

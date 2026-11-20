@@ -1425,9 +1425,11 @@ export default function (pi: ExtensionAPI) {
 		unregisterBackgroundWork?.()
 		unregisterBackgroundWork = registerBackgroundWorkProvider(ctx.sessionManager.getSessionId(), "agents", {
 			list: () => userStoppableAgents().map(agentItem),
-			stopAll: async () => {
+			stop: async (ids) => {
+				const wanted = new Set(ids)
 				const stopped: BackgroundAgentItem[] = []
 				for (const record of userStoppableAgents()) {
+					if (!wanted.has(record.id)) continue
 					// Set before abort: the completion callback runs later and
 					// reads it to keep the notice from starting a turn.
 					record.userStopped = true

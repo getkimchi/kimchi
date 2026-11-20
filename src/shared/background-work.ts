@@ -1,6 +1,6 @@
 // Session-scoped view of background work that a user may stop: managed bash
 // processes and background subagents. Feature extensions register providers;
-// the TUI asks "what still runs?" and "stop all of it" through this module.
+// the TUI asks "what still runs?" and "stop these items" through this module.
 //
 // A stop through this module is a user stop. The work ends and its card shows
 // a final state. The model learns about it on its next turn, but the stop
@@ -24,8 +24,10 @@ export type BackgroundWorkItem = BackgroundProcessItem | BackgroundAgentItem
 export interface BackgroundWorkProvider {
 	/** Work that is still running and that a user stop would end. */
 	list(): BackgroundWorkItem[]
-	/** Stop all listed work as a user stop: no model wake-up. Resolves with what was stopped. */
-	stopAll(): Promise<BackgroundWorkItem[]>
+	/** Stop the work with these ids as a user stop: no model wake-up. Ids that
+	 *  no longer run are skipped, and work not named is never touched. Resolves
+	 *  with what was stopped. */
+	stop(ids: readonly string[]): Promise<BackgroundWorkItem[]>
 }
 
 export type BackgroundWorkProviderKey = "bash" | "agents"
@@ -82,19 +84,32 @@ export function listBackgroundWork(sessionId: string): BackgroundWorkItem[] {
 	})
 }
 
-/** Stop all background work of SESSIONID as a user stop. A failing provider
- *  does not keep the others from stopping; counts cover only what stopped. */
-export async function stopAllBackgroundWork(sessionId: string): Promise<{ processes: number; agents: number }> {
-	const providers = orderedProviders(sessionId)
+const PROVIDER_KIND: Record<BackgroundWorkProviderKey, BackgroundWorkItem["kind"]> = {
+	bash: "process",
+	agents: "agent",
+}
+
+/** Stop ITEMS of SESSIONID as a user stop. Only these items are stopped: work
+ *  that started after ITEMS was listed may be a foreground call of a new turn.
+ *  A failing provider does not keep the others from stopping; counts cover
+ *  only what stopped. */
+export async function stopBackgroundWork(
+	sessionId: string,
+	items: readonly BackgroundWorkItem[],
+): Promise<{ processes: number; agents: number }> {
+	const providers = orderedProviders(sessionId).flatMap(([key, provider]) => {
+		const ids = items.filter((item) => item.kind === PROVIDER_KIND[key]).map((item) => item.id)
+		return ids.length > 0 ? [{ key, provider, ids }] : []
+	})
 	// The extra then() turns a synchronous throw into a rejection, so it is settled too.
 	const results = await Promise.allSettled(
-		providers.map(([, provider]) => Promise.resolve().then(() => provider.stopAll())),
+		providers.map(({ provider, ids }) => Promise.resolve().then(() => provider.stop(ids))),
 	)
 	let processes = 0
 	let agents = 0
 	results.forEach((result, index) => {
 		if (result.status === "rejected") {
-			console.error(`background-work: ${providers[index][0]} provider failed to stop:`, result.reason)
+			console.error(`background-work: ${providers[index].key} provider failed to stop:`, result.reason)
 			return
 		}
 		for (const item of result.value) {

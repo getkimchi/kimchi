@@ -12,7 +12,7 @@
 import type { KeybindingsManager, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { listBackgroundWork, stopAllBackgroundWork } from "../../shared/background-work.js"
+import { listBackgroundWork, stopBackgroundWork } from "../../shared/background-work.js"
 import { BASH_BACKGROUND_SETTLE_MESSAGE_TYPE } from "../../shared/bash-background-settle.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -95,11 +95,17 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 				{ kind: "process", id: multiLine, label: "npm run watch" },
 			])
 
-			await expect(stopAllBackgroundWork("session-stop")).resolves.toEqual({ processes: 2, agents: 0 })
+			const listed = listBackgroundWork("session-stop")
+			// Started after the list was taken: a user stop must not reach it.
+			const laterOps = createFakeOps()
+			const later = state.registry.spawn(laterOps, "npm test", "/tmp", undefined, { limitSeconds: 60 })
+
+			await expect(stopBackgroundWork("session-stop", listed)).resolves.toEqual({ processes: 2, agents: 0 })
 			expect(ops.aborted).toBe(true)
 			expect(state.registry.displaySnapshot(described)?.reason).toBe(USER_STOP_REASON)
 			expect(state.registry.displaySnapshot(multiLine)?.reason).toBe(USER_STOP_REASON)
-			expect(listBackgroundWork("session-stop")).toEqual([])
+			expect(laterOps.aborted).toBe(false)
+			expect(listBackgroundWork("session-stop")).toEqual([{ kind: "process", id: later, label: "npm test" }])
 		} finally {
 			await emit("session_shutdown", {}, ctx)
 		}

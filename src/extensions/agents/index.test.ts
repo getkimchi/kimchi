@@ -255,7 +255,7 @@ vi.mock("../orchestration/model-roles.js", () => ({
 
 import type { EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { listBackgroundWork, stopAllBackgroundWork } from "../../shared/background-work.js"
+import { listBackgroundWork, stopBackgroundWork } from "../../shared/background-work.js"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../auto-model/constants.js"
@@ -2792,8 +2792,15 @@ describe("user stop of background agents", () => {
 			return true
 		})
 
-		await expect(stopAllBackgroundWork("agents-stop")).resolves.toEqual({ processes: 0, agents: 1 })
+		const listed = listBackgroundWork("agents-stop")
+		// Started after the list was taken: a user stop must not reach it.
+		const later = makeRunningRecord({ id: "later", isBackground: true })
+		manager._records.set("later", later)
+
+		await expect(stopBackgroundWork("agents-stop", listed)).resolves.toEqual({ processes: 0, agents: 1 })
 		expect(manager.abort).toHaveBeenCalledWith("bg")
+		expect(manager.abort).not.toHaveBeenCalledWith("later")
+		expect(later.userStopped).toBeUndefined()
 
 		record.completedAt = Date.now()
 		manager.onComplete(record)
