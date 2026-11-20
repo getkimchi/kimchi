@@ -100,8 +100,10 @@ questionnaires), and other agent-driven dialogs announced through `withBlocked`.
 When one takes the editor slot, the old selector's wait is withdrawn locally
 without aborting it. The foreground dialog stays usable, and a fresh selector is
 opened after it closes. Permission prompts are not tracked dialogs for each
-other: they already share one queue, so the main session's own prompt waits
-behind a subagent's prompt that is open or held back. Menus opened directly by
+other: they share one queue, so the main session's own prompt waits behind a
+subagent's prompt that is on screen. A subagent's prompt that is held back is
+not in the queue: the main session's own prompt opens at once, and the held-back
+prompt opens later, when the input is free again. Menus opened directly by
 the user, such as `/agents` and the model picker, have only the usual one-second
 quiet-input protection; they do not have the same tracked-dialog coverage.
 
@@ -114,11 +116,13 @@ Behavioral rules:
 
 - Sequential prompts are serialized behind one queue — the main session's own
   prompts and escalated subagent asks interleave one at a time.
-- If nobody answers within 5 minutes after the request reaches the front of
-  the queue, including time waiting for an empty editor or another dialog, or
-  the parent surface is missing, stale, cancelled, or errors, the route fails
-  closed, never to an allow. That limit covers the selector and its feedback
-  input. Classifier failures retain the fixed outage block; a working
+- If nobody answers within 5 minutes after the prompt is shown, or the parent
+  surface is missing, stale, cancelled, or errors, the route fails closed,
+  never to an allow. That limit covers the selector and its feedback input, and
+  it starts again when a selector is reopened after giving way to another
+  dialog. Time spent held back does not count: a prompt that waits for an
+  empty input stays pending until it can be shown, the mode changes, or its
+  subagent is stopped. Classifier failures retain the fixed outage block; a working
   non-`safe` verdict retains the ordinary `Classifier: <reason> Do not retry…`
   worker block.
 - The subagent's inactivity watchdog, wall-clock cap, and remaining bash

@@ -63,8 +63,9 @@ export const CLASSIFIER_BREAKER_WINDOW_MS = 60_000
 export const MODE_SETTLE_MS = 400
 
 /** Answer budget for an escalated subagent permission request, measured
- *  from the front of the parent's queue. It includes waiting for a quiet
- *  editor or another dialog, the selector, and its feedback input. */
+ *  from the moment the prompt is shown (or sent to the client). It covers
+ *  the selector and its feedback input, and starts again when a selector is
+ *  reopened. Time spent held back or queued does not count. */
 export const ESCALATED_PROMPT_TIMEOUT_MS = 5 * 60_000
 
 /**

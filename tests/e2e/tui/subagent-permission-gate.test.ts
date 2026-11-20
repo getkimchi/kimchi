@@ -531,3 +531,95 @@ test("the session's own prompt waits behind a visible subagent prompt; both are 
 		},
 	)
 })
+
+test("a draft holds the subagent prompt back; the session's own prompt still opens", async ({ terminal }) => {
+	let releaseChild: (() => void) | undefined
+	const childHold = new Promise<void>((resolve) => {
+		releaseChild = resolve
+	})
+	let releaseParentWrite: (() => void) | undefined
+	const parentWriteHold = new Promise<void>((resolve) => {
+		releaseParentWrite = resolve
+	})
+	const draft = "unfinished draft"
+	const needsConfirmation = '{"verdict":"requires-confirmation","reason":"Needs a human decision","riskScore":"high"}'
+	const waitForFile = async (name: string, workDir: string) => {
+		const startedAt = Date.now()
+		while (Date.now() - startedAt < STREAM_TIMEOUT_MS) {
+			if (existsSync(join(workDir, name))) return
+			await new Promise((resolve) => setTimeout(resolve, 100))
+		}
+		throw new Error(`Timed out waiting for ${name} to be written`)
+	}
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "subagent-held-back-own-prompt-opens",
+			providerId: "kimchi-dev",
+			models: MODELS,
+			extraArgs: ["--auto"],
+			responses: [
+				{ stream: ["Delegating in background."], toolCalls: [agentCall(true)] },
+				{
+					forSubagent: true,
+					holdUntil: childHold,
+					stream: ["I'll create the file."],
+					toolCalls: [{ function: { name: "write", arguments: WRITE_ARGS } }],
+				},
+				{
+					holdUntil: parentWriteHold,
+					stream: ["Writing my own file."],
+					toolCalls: [
+						{
+							function: {
+								name: "write",
+								arguments: JSON.stringify({ path: "main.txt", content: "from the main agent" }),
+							},
+						},
+					],
+				},
+				{ match: (request) => isClassifierRequest(request.body), stream: [needsConfirmation] },
+				{ match: (request) => isClassifierRequest(request.body), stream: [needsConfirmation] },
+				{ stream: ["CHILD-HELD-BACK-APPROVED"], forSubagent: true },
+				{ stream: ["PARENT-OWN-WRITE-DONE"] },
+				{ stream: ["PARENT-OWN-WRITE-DONE"] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Start a background subagent to create output.txt")
+			await waitForRequest(fixture.fake.requests, isSubagentRequest, "the held background subagent request")
+			terminal.write(draft)
+			if (!releaseChild) throw new Error("child release was not initialized")
+			releaseChild()
+			await waitForText(terminal, WAITING_STATUS, { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).not.toContain(ALLOW_PROMPT)
+			trace.step("the draft holds the subagent's prompt back")
+
+			if (!releaseParentWrite) throw new Error("parent write release was not initialized")
+			releaseParentWrite()
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).not.toContain(SUBAGENT_PROMPT_HEADER)
+			expect(viewText(terminal)).toContain("main.txt")
+			trace.step("the session's own prompt opens although a subagent request is held back")
+
+			await new Promise((resolve) => setTimeout(resolve, 300))
+			terminal.submit("")
+			await waitForFile("main.txt", fixture.workDir)
+			await waitForText(terminal, "PARENT-OWN-WRITE-DONE", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
+			expect(viewText(terminal)).toContain(draft)
+			trace.step("the session's own write runs; the draft and the held-back request are untouched")
+
+			terminal.keyBackspace(draft.length)
+			await waitForText(terminal, SUBAGENT_PROMPT_HEADER, { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).not.toContain(WAITING_STATUS)
+			// Longer than the opening guard that ignores keys already on their way.
+			await new Promise((resolve) => setTimeout(resolve, 600))
+			terminal.submit("")
+			await waitForFile("output.txt", fixture.workDir)
+			await waitForText(terminal, "CHILD-HELD-BACK-APPROVED", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("with the input empty again the subagent's prompt opens and its write runs")
+		},
+	)
+})

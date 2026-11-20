@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isRawInputCaptureActive } from "../shared-input.js"
-import type { PermissionOrigin, ToolPermissionPrompter } from "./prompter.js"
-import { promptForApproval } from "./prompts.js"
+import type { PermissionOrigin, PermissionRequest } from "./prompter.js"
+import { type ApprovalOutcome, promptForApproval } from "./prompts.js"
 
 const RECENT_INPUT_QUIET_MS = 1000
 const OPENING_INPUT_GUARD_MS = 500
@@ -58,7 +58,8 @@ export async function waitForEscalatedInput(
 	ctx: ExtensionContext,
 	lastInputAt: LastTerminalInput,
 	signal: AbortSignal,
-	notice: string,
+	/** Toast shown once when the request is held back; omit to stay silent. */
+	notice: string | undefined,
 	hasOtherDialogs: HasOtherDialogs,
 	timing: EscalatedInteractionTiming = DEFAULT_TIMING,
 	/** Called once, when the request is first held back. */
@@ -69,7 +70,7 @@ export async function waitForEscalatedInput(
 	while (interactionBlocked(ctx, lastInputAt, timing.quietMs, hasOtherDialogs)) {
 		if (signal.aborted) throw signal.reason ?? new Error("Permission prompt aborted")
 		if (!notified) {
-			ctx.ui.notify(notice, "info")
+			if (notice) ctx.ui.notify(notice, "info")
 			onDeferred?.()
 			notified = true
 		}
@@ -124,101 +125,150 @@ function originLabel(origin: PermissionOrigin | undefined): string {
 }
 
 /**
+ * What asking produced: the user's answer, or `deferred` when the selector
+ * could not open or gave way to another dialog before an answer was given.
+ * A deferred request goes back to waiting and is asked again.
+ */
+export type EscalatedPromptResult = ApprovalOutcome | { kind: "deferred" }
+
+export interface EscalatedTerminalOptions {
+	lastInputAt: LastTerminalInput
+	hasOtherDialogs: HasOtherDialogs
+	/** Called once per request, the first time it is held back. */
+	onFirstHold?: () => void
+	timing?: EscalatedInteractionTiming
+}
+
+/**
+ * One escalated request in the terminal, in two steps so that the caller can
+ * keep the first one out of the prompt queue: a request that is held back is
+ * not on screen and must not make the session's own prompts wait behind it.
+ */
+export interface EscalatedTerminalInteraction {
+	/** Whether the selector may open right now. */
+	isPromptable(): boolean
+	/**
+	 * Hold the request back until the selector may open, without touching the
+	 * editor. The toast is shown once per request; the status line stays for
+	 * as long as the request is held back. Resolves `false` when the request's
+	 * signal fires first.
+	 */
+	waitUntilPromptable(): Promise<boolean>
+	/** Open the selector now. */
+	prompt(): Promise<EscalatedPromptResult>
+	/** The request is over: clear the waiting line and repair the working indicator. */
+	dispose(): void
+}
+
+/**
  * Interactive escalation only. Connected clients keep their ordinary card
  * lifecycle: cards do not capture the terminal keyboard.
  */
-export function createEscalatedTerminalPrompter(
+export function createEscalatedTerminalInteraction(
 	ctx: ExtensionContext,
-	lastInputAt: LastTerminalInput,
-	hasOtherDialogs: HasOtherDialogs,
-): ToolPermissionPrompter {
+	req: PermissionRequest,
+	options: EscalatedTerminalOptions,
+): EscalatedTerminalInteraction {
+	const timing = options.timing ?? DEFAULT_TIMING
+	// Waiting and the selector both follow the request's own signal (mode
+	// change, stopped subagent, answer timeout).
+	const requestSignal = req.signal ?? new AbortController().signal
+	const hasForeignDialog = () => isRawInputCaptureActive() || options.hasOtherDialogs()
+	const notice = `Subagent ${originLabel(req.origin)} is waiting for permission. Its prompt will open when the input editor is empty and no other dialog is active.`
+	// The toast above fades; this line stays for as long as the prompt
+	// is held back, and goes away once the selector is on screen.
+	const status = `Subagent ${req.origin?.persona ?? "assistant"} is waiting for permission · its prompt opens when the input is empty and no dialog is open`
+	let statusShown = false
+	const showStatus = () => {
+		statusShown = true
+		ctx.ui.setStatus(WAITING_STATUS_KEY, status)
+	}
+	const clearStatus = () => {
+		if (!statusShown) return
+		statusShown = false
+		ctx.ui.setStatus(WAITING_STATUS_KEY, undefined)
+	}
+	let heldBefore = false
+	// A selector that gave way to another dialog leaves the working
+	// indicator hidden for that dialog to restore (see promptForApproval).
+	let workingLeftHidden = false
+
 	return {
-		request: async (req) => {
-			const selectionController = new AbortController()
-			const forwardAbort = () => selectionController.abort(req.signal?.reason)
-			const detachParentAbort = () => req.signal?.removeEventListener("abort", forwardAbort)
-			const attachParentAbort = () => {
-				if (!req.signal) return
-				if (req.signal.aborted) forwardAbort()
-				else req.signal.addEventListener("abort", forwardAbort, { once: true })
-			}
-			// Unlike selector cancellation, waiting always follows the parent
-			// controller, so losing a slot does not lose the mode-change signal.
-			const requestSignal = req.signal ?? selectionController.signal
-			const hasForeignDialog = () => isRawInputCaptureActive() || hasOtherDialogs()
-			const notice = `Subagent ${originLabel(req.origin)} is waiting for permission. Its prompt will open when the input editor is empty and no other dialog is active.`
-			// The toast above fades; this line stays for as long as the prompt
-			// is held back, and goes away once the selector is on screen.
-			const status = `Subagent ${req.origin?.persona ?? "assistant"} is waiting for permission · its prompt opens when the input is empty and no dialog is open`
-			let statusShown = false
-			const showStatus = () => {
-				statusShown = true
-				ctx.ui.setStatus(WAITING_STATUS_KEY, status)
-			}
-			const clearStatus = () => {
-				if (!statusShown) return
-				statusShown = false
-				ctx.ui.setStatus(WAITING_STATUS_KEY, undefined)
-			}
-			// A selector that gave way to another dialog leaves the working
-			// indicator hidden for that dialog to restore (see promptForApproval).
-			let workingLeftHidden = false
+		isPromptable: () => !interactionBlocked(ctx, options.lastInputAt, timing.quietMs, hasForeignDialog),
+
+		async waitUntilPromptable() {
 			try {
-				while (true) {
-					try {
-						await waitForEscalatedInput(
+				await waitForEscalatedInput(
+					ctx,
+					options.lastInputAt,
+					requestSignal,
+					heldBefore ? undefined : notice,
+					hasForeignDialog,
+					timing,
+					() => {
+						showStatus()
+						if (heldBefore) return
+						heldBefore = true
+						options.onFirstHold?.()
+					},
+				)
+				return true
+			} catch (error) {
+				if (requestSignal.aborted) return false
+				throw error
+			} finally {
+				clearStatus()
+			}
+		},
+
+		async prompt() {
+			const selectionController = new AbortController()
+			const forwardAbort = () => selectionController.abort(requestSignal.reason)
+			const detachParentAbort = () => requestSignal.removeEventListener("abort", forwardAbort)
+			if (requestSignal.aborted) forwardAbort()
+			else requestSignal.addEventListener("abort", forwardAbort, { once: true })
+			try {
+				const outcome = await promptForApproval({
+					toolName: req.toolName,
+					input: req.input,
+					ctx,
+					subtitle: req.subtitle,
+					riskScore: req.riskScore,
+					choices: req.choices,
+					origin: req.origin,
+					signal: selectionController.signal,
+					onForeignDialog: (onWithdraw) =>
+						watchEscalatedDialog(
 							ctx,
-							lastInputAt,
-							requestSignal,
-							notice,
+							() => {
+								// Never forward later aborts into a selector whose slot
+								// was already taken by another dialog.
+								detachParentAbort()
+								onWithdraw()
+							},
 							hasForeignDialog,
-							DEFAULT_TIMING,
-							showStatus,
-						)
-					} catch (error) {
-						if (requestSignal.aborted) return { kind: "aborted" }
-						throw error
-					} finally {
-						clearStatus()
-					}
-					attachParentAbort()
-					const outcome = await promptForApproval({
-						toolName: req.toolName,
-						input: req.input,
-						ctx,
-						subtitle: req.subtitle,
-						riskScore: req.riskScore,
-						choices: req.choices,
-						origin: req.origin,
-						signal: selectionController.signal,
-						onForeignDialog: (onWithdraw) =>
-							watchEscalatedDialog(
-								ctx,
-								() => {
-									// Never forward later aborts into a selector whose slot
-									// was already taken by another dialog.
-									detachParentAbort()
-									onWithdraw()
-								},
-								hasForeignDialog,
-								selectionController.signal,
-							),
-					})
-					if (outcome.kind !== "aborted" || requestSignal.aborted) {
-						workingLeftHidden = false
-						return outcome
-					}
-					// A different dialog withdrew this selection. The old selector
-					// is left alone; a fresh one is opened after it finishes.
-					workingLeftHidden = true
+							selectionController.signal,
+							timing,
+						),
+				})
+				if (outcome.kind !== "aborted" || requestSignal.aborted) {
+					workingLeftHidden = false
+					return outcome
 				}
+				// A different dialog withdrew this selection. The old selector is
+				// left alone; the request waits again and a fresh one is opened.
+				workingLeftHidden = true
+				return { kind: "deferred" }
 			} finally {
 				detachParentAbort()
-				clearStatus()
-				// The request ended while held back. If the dialog we gave way to
-				// is gone and did not restore the indicator itself, nobody else will.
-				if (workingLeftHidden && !hasForeignDialog()) ctx.ui.setWorkingVisible?.(true)
 			}
+		},
+
+		dispose() {
+			clearStatus()
+			// The request ended while held back. If the dialog we gave way to
+			// is gone and did not restore the indicator itself, nobody else will.
+			if (workingLeftHidden && !hasForeignDialog()) ctx.ui.setWorkingVisible?.(true)
 		},
 	}
 }

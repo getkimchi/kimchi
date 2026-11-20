@@ -104,7 +104,7 @@ import {
 	PERMISSION_MODES_WITH_META as MODES,
 	PERMISSIONS_ENV_KEY,
 } from "./constants.js"
-import { createEscalatedTerminalPrompter } from "./escalated-interaction.js"
+import { createEscalatedTerminalInteraction, type EscalatedPromptResult } from "./escalated-interaction.js"
 import { flagModeFromOptions, resolveMode } from "./mode.js"
 import {
 	getPermissionMode,
@@ -1118,64 +1118,100 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					// queue ownership and withBlocked side effects — not the worker that
 					// happened to invoke this surface through its async chain.
 					runOutsideWorkerContext(async () => {
-						const interactive = ctx.mode === "tui" && ctx.hasUI && dialogActivity
-						const prompter = interactive
-							? createEscalatedTerminalPrompter(ctx, () => lastTerminalInputAt, interactive.hasOtherDialogs)
-							: resolvePrompter(ctx)
-						if (!prompter) {
+						const controller = new AbortController()
+						const request: PermissionRequest = {
+							...req,
+							signal: controller.signal,
+							origin: sanitizePermissionOrigin(req.origin),
+						}
+						// One bell / desktop notification per request, when it is first
+						// held back or first shown, whichever comes first. It belongs to
+						// the PARENT's bus — the worker's own bus reaches nobody.
+						let bellRung = false
+						const ringOnce = () => {
+							if (bellRung) return
+							bellRung = true
+							pi.events.emit("notification", {
+								notification_type: "permission_prompt",
+								tool_name: req.toolName,
+								tool_use_id: req.toolCallId,
+							})
+						}
+						const terminal =
+							ctx.mode === "tui" && ctx.hasUI && dialogActivity
+								? createEscalatedTerminalInteraction(ctx, request, {
+										lastInputAt: () => lastTerminalInputAt,
+										hasOtherDialogs: dialogActivity.hasOtherDialogs,
+										onFirstHold: ringOnce,
+									})
+								: undefined
+						const prompter = terminal ? undefined : resolvePrompter(ctx)
+						if (!terminal && !prompter) {
 							return Promise.reject(new Error("permissions: parent session has no prompt surface"))
 						}
-						const controller = new AbortController()
 						const unlinkWorkerAbort = linkAbortSignal(req.signal, controller)
 						const unregister = registerEscalationAbort(sessionId, req.toolCallId, controller, req.origin?.agentId)
-						try {
-							return await runQueuedPrompt(
-								promptQueue,
-								async () => {
-									if (controller.signal.aborted) return { kind: "aborted" }
-									// The bell / desktop notification and the blocked-session event
-									// belong to the PARENT's bus — the worker's own bus reaches nobody.
-									pi.events.emit("notification", {
-										notification_type: "permission_prompt",
-										tool_name: req.toolName,
-										tool_use_id: req.toolCallId,
-									})
-									return withPermissionBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
-										// The answer timeout starts once this request reaches the
-										// interactive prompt instead of while it waits in the queue.
-										const timer = setTimeout(
-											() => controller.abort(new Error("permissions: subagent permission prompt timed out")),
-											ESCALATED_PROMPT_TIMEOUT_MS,
-										)
-										try {
-											const outcome = await prompter.request({
-												...req,
-												signal: controller.signal,
-												origin: sanitizePermissionOrigin(req.origin),
-											})
-											// A user- or client-initiated mode change returns through the
-											// worker's outer gate so its policy is evaluated again.
-											if (outcome.kind === "aborted" && controller.signal.reason === MODE_CHANGED_ABORT_ERROR) {
-												return outcome
-											}
-											// A worker stop, a timeout, or a closing client has no
-											// answer to carry: fail the route closed rather than
-											// treating an absent answer as an approval.
-											if (outcome.kind === "aborted" || outcome.kind === "denied-by-client") {
-												throw (
-													controller.signal.reason ??
-													new Error(`permissions: escalated prompt closed without an answer (${outcome.kind})`)
-												)
-											}
-											return outcome
-										} finally {
-											clearTimeout(timer)
-										}
-									})
-								},
-								req.signal,
+						// On screen (or sent to the client) and waiting for the answer. The
+						// answer timeout covers only this: time spent held back or queued
+						// does not count, and a reopened selector starts it again.
+						const ask = async (): Promise<EscalatedPromptResult> => {
+							ringOnce()
+							const timer = setTimeout(
+								() => controller.abort(new Error("permissions: subagent permission prompt timed out")),
+								ESCALATED_PROMPT_TIMEOUT_MS,
 							)
+							try {
+								if (terminal) return await terminal.prompt()
+								return await (prompter as ToolPermissionPrompter).request(request)
+							} finally {
+								clearTimeout(timer)
+							}
+						}
+						const settle = (outcome: ApprovalOutcome): ApprovalOutcome => {
+							if (outcome.kind === "aborted") {
+								// A user- or client-initiated mode change returns through the
+								// worker's outer gate so its policy is evaluated again. A
+								// stopped worker is reported by its own gate.
+								if (controller.signal.reason === MODE_CHANGED_ABORT_ERROR || req.signal?.aborted) return outcome
+							}
+							// A timeout or a closing client has no answer to carry: fail the
+							// route closed rather than treating an absent answer as an approval.
+							if (outcome.kind === "aborted" || outcome.kind === "denied-by-client") {
+								throw (
+									controller.signal.reason ??
+									new Error(`permissions: escalated prompt closed without an answer (${outcome.kind})`)
+								)
+							}
+							return outcome
+						}
+						try {
+							// The blocked-session event covers the whole request, held back
+							// or shown, on the PARENT's bus.
+							return await withPermissionBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
+								while (true) {
+									// Held back OUTSIDE the queue. A request that waits for an
+									// empty input is not on screen, and the session's own
+									// prompts must not wait behind it.
+									if (terminal && !(await terminal.waitUntilPromptable())) return settle({ kind: "aborted" })
+									const outcome = await runQueuedPrompt(
+										promptQueue,
+										async (): Promise<EscalatedPromptResult> => {
+											if (controller.signal.aborted) return { kind: "aborted" }
+											// At the front of the queue. The input may have become
+											// busy while this entry waited behind another prompt:
+											// give the place back and wait again.
+											if (terminal && !terminal.isPromptable()) return { kind: "deferred" }
+											return ask()
+										},
+										req.signal,
+									)
+									// Deferred: not asked, or the selector gave way to another
+									// dialog. The queue entry is released either way.
+									if (outcome.kind !== "deferred") return settle(outcome)
+								}
+							})
 						} finally {
+							terminal?.dispose()
 							unlinkWorkerAbort()
 							unregister()
 						}
@@ -2399,7 +2435,7 @@ interface ConfirmOptions {
  * visible prompt produces when its signal fires — downstream
  * mode-change-dismissal accounting stays identical.
  */
-async function runQueuedPrompt<T extends ApprovalOutcome | CompoundApprovalOutcome>(
+async function runQueuedPrompt<T extends { kind: string }>(
 	queue: PromptQueue,
 	task: () => Promise<T>,
 	signal?: AbortSignal,
