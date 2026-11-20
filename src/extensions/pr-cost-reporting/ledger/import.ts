@@ -191,6 +191,35 @@ const continued = new Map<
 >()
 /** The journal each agent directory's last timed slice stopped at; the next slice starts there instead of rewalking. */
 const stopped = new Map<string, string>()
+/** The memo is bounded: a long-lived process that visits many agent directories cannot accumulate
+ * one hash entry per journal forever; the oldest verified prefix ages out first. */
+const MAX_MEMO_JOURNALS = 4096
+function rememberContinued(
+	path: string,
+	entry: {
+		dev: number
+		ino: number
+		size: number
+		offset: number
+		mtimeMs: number
+		ctimeMs: number
+		boundaryHash: string
+		hash: Hash
+		lines: number
+	},
+): void {
+	continued.delete(path)
+	continued.set(path, entry)
+	while (continued.size > MAX_MEMO_JOURNALS) continued.delete(continued.keys().next().value as string)
+}
+/** The replay decision shared by the capture preflight and the importer: a journal whose saved
+ * damage this process has not re-verified, or whose coverage note is missing, reads from the start. */
+function replayDecision(backend: RecordBackend, path: string, cursor: JournalCursor | undefined): boolean {
+	const savedDamage =
+		coverageProblems(backend, path).length > 0 || coverageProblems(backend, path, TAIL_NOTES).length > 0
+	const recheck = savedDamage && !rechecked.has(path)
+	return recheck || (!!cursor && backend.getNote(COVERAGE_NOTES, path) === undefined)
+}
 
 /** Journals whose saved problems this process already re-verified from the start. */
 const rechecked = new Set<string>()
@@ -259,7 +288,7 @@ async function verifyCapturePrefix(
 			continued.delete(path)
 			return
 		}
-		continued.set(path, {
+		rememberContinued(path, {
 			dev: after.dev,
 			ino: after.ino,
 			size: after.size,
@@ -310,7 +339,15 @@ function prepareJournal(
 			known.ino === ino &&
 			known.offset === cursor.offset
 		let lineOffset = samePrefix ? known.lines : 0
-		if (samePrefix && known.size === size && stat.mtimeMs === known.mtimeMs && stat.ctimeMs === known.ctimeMs) {
+		// A settled file's memo is trustworthy for every caller (its times predate the cursor that
+		// committed it); a fresh file's exact-stat memo only for capture, whose preflight read the
+		// bytes behind it. Strict readers keep their inline verification on fresh files — the
+		// budget-checked cancellation their preparation contract requires.
+		if (
+			samePrefix &&
+			(untouched(stat) ||
+				(verifiedPrefix && known.size === size && stat.mtimeMs === known.mtimeMs && stat.ctimeMs === known.ctimeMs))
+		) {
 			prefix = known.hash.copy()
 		} else if (cursor && cursor.dev === dev && cursor.ino === ino && size >= cursor.offset) {
 			// Only the capture path defers: it runs the cooperative preflight first, and its slice never
@@ -446,7 +483,7 @@ function importJournalFiles(
 			// A clean append whose new bytes hold no complete line: memoize the verified prefix for
 			// the cursor, so a later append reuses it once the preflight has re-verified the growth.
 			if (cursor && decision.mode === "clean-append")
-				continued.set(path, {
+				rememberContinued(path, {
 					dev,
 					ino,
 					size,
@@ -576,7 +613,7 @@ function importJournalFiles(
 		})
 		// The memo survives a completed append now: the running hash, line count and stat identity
 		// let the next append's preflight (and any later stat-identical window) skip the re-read.
-		continued.set(path, {
+		rememberContinued(path, {
 			dev,
 			ino,
 			size,
@@ -680,12 +717,8 @@ export async function importJournals(agentDir: string, options: ImportOptions = 
 			options.checkBudget?.()
 			const cursor = backend.getJournalCursor(path)
 			if (!cursor) continue
-			// The same replay decision the importer below will make, computed before it mutates anything.
-			const savedDamage =
-				coverageProblems(backend, path).length > 0 || coverageProblems(backend, path, TAIL_NOTES).length > 0
-			const replay = (savedDamage && !rechecked.has(path)) || backend.getNote(COVERAGE_NOTES, path) === undefined
 			try {
-				await verifyCapturePrefix(path, cursor, replay, options.checkBudget)
+				await verifyCapturePrefix(path, cursor, replayDecision(backend, path, cursor), options.checkBudget)
 			} catch (error) {
 				if (!object(error) || error.code !== "ENOENT") throw error
 			}
@@ -725,7 +758,9 @@ export function legacyInputSignature(agentDir: string): string {
 	for (const path of syncWorkJournals(agentDir)) {
 		try {
 			const info = statSync(path)
-			parts.push(`${path}:${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`)
+			// ctime rides along with mtime: a same-size rewrite that restores its old mtime still
+			// moves ctime, and the gate must re-open for it instead of sleeping through the rewrite.
+			parts.push(`${path}:${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`)
 		} catch (error) {
 			if (!object(error) || error.code !== "ENOENT") throw error
 			parts.push(`${path}:gone`)

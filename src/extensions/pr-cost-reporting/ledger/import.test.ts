@@ -603,12 +603,29 @@ describe("import loop over the memory backend", () => {
 		useBackendFactory(() => createMemoryRecords())
 		const file = join(journal(dir), "parent.jsonl")
 		writeFileSync(file, line(work()) + line(request("req-1")) + line(request("req-2")))
-		const settled = new Date(Date.now() - 60_000)
-		utimesSync(file, settled, settled)
+		// A settled journal is one whose times predate the cursor that consumed it; the test
+		// dates each window's cursor forward instead of forging file times backward, which ctime
+		// (unforgeable) would contradict.
+		const settleCursor = () => {
+			const cursor = backendFor(dir).getJournalCursor(file)
+			if (cursor) backendFor(dir).putJournalCursor({ ...cursor, updatedAt: Date.now() + 10_000 })
+		}
+		const journalFds = new Set<number>()
+		const realOpen = fs.openSync
+		const open = vi.spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+			const fd = realOpen(...args)
+			if (args[0] === file) journalFds.add(fd)
+			return fd
+		})
 		const reads = vi.spyOn(fs, "readSync")
-		for (let window = 0; window < 3; window++) expect((await importJournals(dir, { maxBytes: 1 })).imported).toBe(1)
-		// Each window continues from the last one; none rereads the start of the file.
-		expect(reads.mock.calls.filter((call) => call.at(4) === 0)).toHaveLength(1)
+		for (let window = 0; window < 3; window++) {
+			expect((await importJournals(dir, { maxBytes: 1 })).imported).toBe(1)
+			settleCursor()
+		}
+		// Each window continues from the last one; none rereads the start of the file. Only this
+		// journal's descriptors count: unrelated subsystems share the fs spy's process.
+		expect(reads.mock.calls.filter((call) => journalFds.has(call[0] as number) && call.at(4) === 0)).toHaveLength(1)
+		open.mockRestore()
 		reads.mockClear()
 		expect((await importJournals(dir)).files).toEqual([])
 		expect(reads).not.toHaveBeenCalled()
@@ -674,11 +691,19 @@ describe("capture prefix verification (memory backend)", () => {
 			updatedAt: Date.now() + 10_000,
 		})
 		backend.putNote("journal-coverage", file, "[]")
+		const journalFds = new Set<number>()
+		const realOpen = fs.openSync
+		const open = vi.spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+			const fd = realOpen(...args)
+			if (args[0] === file) journalFds.add(fd)
+			return fd
+		})
 		const reads = vi.spyOn(fs, "readSync")
 		try {
 			expect((await importJournals(dir, { verifyCapturePrefix: true })).files).toEqual([])
-			expect(reads).not.toHaveBeenCalled()
+			expect(reads.mock.calls.filter((call) => journalFds.has(call[0] as number))).toEqual([])
 		} finally {
+			open.mockRestore()
 			reads.mockRestore()
 		}
 	})
