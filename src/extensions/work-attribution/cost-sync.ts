@@ -15,6 +15,7 @@ import {
 	type BillingLookup,
 	billingDisplay,
 	billingRequests,
+	billingRequestsAsync,
 	isSettled,
 	type OpenBilling,
 	openBilling,
@@ -24,13 +25,14 @@ import { type SavedRequestCost, workCostTotals } from "./cost-details.js"
 import {
 	type CostTotal,
 	calculatePullRequestCosts,
+	calculatePullRequestCostsAsync,
 	type PullRequestCost,
 	type PullRequestCostReport,
 	type RequestCostAllocation,
 	totalRequestCosts,
 } from "./costs.js"
 import type { WorkAccount } from "./scope.js"
-import { object, readWorkRecords, readWorkRecordsAsync, workJournalFingerprint } from "./summary.js"
+import { object, readWorkRecords, readWorkRecordsAsync, type WorkRecord, workJournalFingerprint } from "./summary.js"
 
 // The background pass: it looks up due bills within a budget, journals new evidence and publishes reports.
 
@@ -98,9 +100,8 @@ function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
 	return JSON.stringify([result, [...new Set(rows.map((row) => JSON.stringify(row)))].sort()])
 }
 
-/** Read durable evidence rather than combining per-work caches. */
-export function readWorkCostReport(agentDir: string, records = readWorkRecords(agentDir)) {
-	const requests = billingRequests(records)
+/** Inputs identical for both refresh twins; only the calculation's holding pattern differs. */
+function costReportInputs(requests: ReturnType<typeof billingRequests>) {
 	const noCharge = new Map<string, WorkAccount>()
 	for (const item of requests.values()) {
 		const lookup = item.substantiveLookup
@@ -125,12 +126,7 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 			.map((item) => item.requestId),
 	)
 
-	const report = calculatePullRequestCosts(
-		records,
-		[...requests.values()].flatMap((item) => (item.invalid ? [] : item.observations)),
-		incomplete,
-		noCharge,
-	)
+	const observations = [...requests.values()].flatMap((item) => (item.invalid ? [] : item.observations))
 	const costRefreshes = new Map(
 		[...requests.values()].flatMap((item) =>
 			!item.invalid && item.substantiveLookup?.status === "priced"
@@ -138,7 +134,31 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 				: [],
 		),
 	)
-	return { records, report, requests, costRefreshes }
+	return { requests, noCharge, incomplete, observations, costRefreshes }
+}
+
+/** Read durable evidence rather than combining per-work caches. */
+export function readWorkCostReport(agentDir: string, records = readWorkRecords(agentDir)) {
+	const inputs = costReportInputs(billingRequests(records))
+	const report = calculatePullRequestCosts(records, inputs.observations, inputs.incomplete, inputs.noCharge)
+	return { records, report, requests: inputs.requests, costRefreshes: inputs.costRefreshes }
+}
+
+/** The same refresh as readWorkCostReport, breathing between stretches for a caller driving the UI loop. */
+export async function readWorkCostReportAsync(records: WorkRecord[], stretch: () => Promise<void>) {
+	// Discovery breathes at a 2,000-row cadence through the whole-history passes; the per-request
+	// input projection (bounded by request count, not record count) runs between breaths.
+	const requests = await billingRequestsAsync(records, stretch)
+	await stretch()
+	const inputs = costReportInputs(requests)
+	const report = await calculatePullRequestCostsAsync(
+		records,
+		inputs.observations,
+		inputs.incomplete,
+		inputs.noCharge,
+		stretch,
+	)
+	return { records, report, requests: inputs.requests, costRefreshes: inputs.costRefreshes }
 }
 
 interface CostState {

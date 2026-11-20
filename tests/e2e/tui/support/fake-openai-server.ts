@@ -123,6 +123,8 @@ interface StartFakeOpenAiServerOptions {
 	/** Billed rows for one `kimchi-request:<id>` tag, read on every lookup so a test can change them. */
 	billingRows?: (tag: string) => { id: string; totalPrice: string | null }[]
 	rejectedApiKeys?: string[]
+	/** Serve a successful fake OAuth refresh used by startup discovery tests. */
+	refreshedOAuthAccessToken?: string
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	creditsResponses?: unknown[]
@@ -243,6 +245,10 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 					authorized ? 200 : 401,
 					authorized ? { items: options.billingRows(tag) } : { error: "Invalid fixture key" },
 				)
+				return
+			}
+			if (req.method === "POST" && req.url === "/oauth/token" && options.refreshedOAuthAccessToken) {
+				writeJson(res, 200, { access_token: options.refreshedOAuthAccessToken, expires_in: 3600 })
 				return
 			}
 			if (req.method === "GET" && req.url?.startsWith("/v1/models/metadata")) {

@@ -143,8 +143,36 @@ function storedLookup(value: unknown): value is BillingLookup {
 }
 
 export function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
+	const steps = billingRequestsSteps(records)
+	let step = steps.next()
+	while (!step.done) step = steps.next()
+	return step.value
+}
+
+/** Breathing twin for callers that must not hold the thread; same discipline as the cost calculator. */
+export async function billingRequestsAsync(
+	records: WorkRecord[],
+	stretch: () => Promise<void> = async () => {},
+): Promise<Map<string, RequestBilling>> {
+	const steps = billingRequestsSteps(records)
+	let step = steps.next()
+	while (!step.done) {
+		await stretch()
+		step = steps.next()
+	}
+	return step.value
+}
+
+/** Rows of whole-history discovery between breaths; matches the prelude stretcher's row budget. */
+const BILLING_BREATH_ROWS = 2000
+function* billingRequestsSteps(records: WorkRecord[]): Generator<void, Map<string, RequestBilling>> {
 	const requests = new Map<string, RequestBilling>()
+	let sinceBreath = 0
 	for (const row of records) {
+		if (++sinceBreath >= BILLING_BREATH_ROWS) {
+			yield
+			sinceBreath = 0
+		}
 		if (row.type !== "request" || typeof row.requestId !== "string") continue
 		const previous = requests.get(row.requestId)
 		if (previous) {
@@ -154,6 +182,10 @@ export function billingRequests(records: WorkRecord[]): Map<string, RequestBilli
 		requests.set(row.requestId, { request: row, requestId: row.requestId, invalid: false, observations: [] })
 	}
 	for (const row of records) {
+		if (++sinceBreath >= BILLING_BREATH_ROWS) {
+			yield
+			sinceBreath = 0
+		}
 		if (row.type !== "request_dispatch" && row.type !== "request_response") continue
 		const item = requests.get(String(row.requestId))
 		if (!item) continue
@@ -194,6 +226,10 @@ export function billingRequests(records: WorkRecord[]): Map<string, RequestBilli
 
 	const evidence = new Map<RequestBilling, BillingLookup[]>()
 	for (const row of records) {
+		if (++sinceBreath >= BILLING_BREATH_ROWS) {
+			yield
+			sinceBreath = 0
+		}
 		if (row.type !== "request_cost") continue
 		const item = requests.get(String(row.requestId))
 		// Rows without a tag selector came from the removed prompt-ID lookup and prove nothing.

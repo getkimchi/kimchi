@@ -204,7 +204,7 @@ import {
 } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { THINKING_LEVEL_DESCRIPTIONS } from "../../thinking-levels.js"
-import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { AVAILABLE_EXT_METHODS, AVAILABLE_EXT_NOTIFICATIONS, CAPABILITIES_KEY } from "./capabilities.js"
 import { COMPACT_COMMAND_ENTRY_TYPE } from "./commands.js"
 import type { SsoFlowManager } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
@@ -8242,14 +8242,20 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 // hang. Those pi events go out as _kimchi.dev/agent_activity notifications so
 // the client can pin the stall (and its session) to a cause.
 describe("routed model notifications", () => {
-	function routedModelEntry(modelId: string): SessionEntry {
+	function routedModelEntry(modelId: string, routedProvider?: string): SessionEntry {
 		return {
 			type: "custom",
 			id: "routed-entry",
 			parentId: null,
 			timestamp: "2026-01-01T00:00:00.000Z",
 			customType: ROUTED_MODEL_RESOLUTION_ENTRY,
-			data: { version: 1, requestedId: "auto", provider: "kimchi-dev", modelId },
+			data: {
+				version: 1,
+				requestedId: "auto",
+				provider: "kimchi-dev",
+				modelId,
+				...(routedProvider ? { routedProvider } : {}),
+			},
 		}
 	}
 
@@ -8307,6 +8313,30 @@ describe("routed model notifications", () => {
 			{
 				method: "_kimchi.dev/routed_model",
 				params: { sessionId: "session-routed-1", requestedId: "kimchi-dev/auto", routedId: "kimchi-dev/glm-5.3" },
+			},
+		])
+	})
+
+	it("emits the served model's own provider for a sibling-block pick", async () => {
+		const fake = new FakeAgentSession("session-routed-7")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("claude-haiku-5-5", "kimchi-dev/anthropic") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-7")
+		const routedModel = AVAILABLE_EXT_NOTIFICATIONS.routed_model
+		expect(extNotifications.filter((n) => n.method === routedModel)).toEqual([
+			{
+				method: routedModel,
+				params: {
+					sessionId: "session-routed-7",
+					requestedId: "kimchi-dev/auto",
+					routedId: "kimchi-dev/anthropic/claude-haiku-5-5",
+				},
 			},
 		])
 	})

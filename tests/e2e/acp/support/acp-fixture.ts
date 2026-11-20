@@ -67,6 +67,8 @@ export interface AcpFixtureOptions {
 	telemetry?: boolean
 	account?: Parameters<typeof startFakeOpenAiServer>[0]["account"]
 	billingRows?: Parameters<typeof startFakeOpenAiServer>[0]["billingRows"]
+	/** Seed expiring canonical OAuth credentials and serve their fake replacement. */
+	oauth?: { refreshedAccessToken: string }
 	responses: FakeResponseScript[]
 	models?: FakeModel[]
 	providerId?: string
@@ -302,6 +304,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	const fake = await startFakeOpenAiServer({
 		responses,
 		models: configuredModels,
+		refreshedOAuthAccessToken: options.oauth?.refreshedAccessToken,
 		account: options.account,
 		billingRows: options.billingRows,
 		policy: options.policy,
@@ -370,7 +373,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			join(configDir, "config.json"),
 			JSON.stringify(
 				{
-					apiKey: "fake",
+					...(options.oauth ? {} : { apiKey: "fake" }),
 					llmEndpoint: fake.baseUrl,
 					telemetry: { endpoint: `${fake.baseUrl}/logs`, metricsEndpoint: `${fake.baseUrl}/metrics` },
 					skillPaths: [],
@@ -382,6 +385,24 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			),
 			"utf-8",
 		)
+
+		if (options.oauth) {
+			writeFileSync(
+				join(agentDir, "auth.json"),
+				JSON.stringify({
+					"kimchi-dev": {
+						type: "oauth",
+						access: "expiring-fake-access",
+						refresh: "fake-refresh",
+						expires: Date.now() + 60_000,
+						tokenUrl: `${fake.baseUrl}/oauth/token`,
+						clientId: "fake-client",
+						useIdToken: false,
+						orgId: "fake-org",
+					},
+				}),
+			)
+		}
 
 		writeFileSync(
 			join(agentDir, "models.json"),

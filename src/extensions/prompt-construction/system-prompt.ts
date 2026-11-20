@@ -229,7 +229,7 @@ function buildSingleModelInstructions(currentModelId?: string, hasUserLoop = tru
 		: ""
 	return `## Single-Model Mode
 
-${orientation}Single-model session.${modelClause} All work runs on this model — handle tasks directly yourself. Only spawn \`Agent\` subagents when the user explicitly asks; when you do, pass your own model ID in \`model\`.`
+${orientation}Single-model session.${modelClause} By default, handle tasks directly yourself. Only spawn \`Agent\` subagents when the user explicitly asks; pass your own model ID in \`model\` unless the user or their skill/workflow specifies otherwise.`
 }
 
 export const DOCUMENTS_SECTION =

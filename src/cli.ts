@@ -119,6 +119,7 @@ import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import languageCommandExtension from "./extensions/language-command.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import codexCorrelationExtension from "./extensions/login/codex-correlation-extension.js"
+import { installKimchiOAuth } from "./extensions/login/flow.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -617,9 +618,8 @@ async function cliMain(): Promise<void> {
 
 			let currentApiKey = apiKey
 			// SSO login keeps its credential in auth.json (type: "oauth"), not in
-			// config.json. Use the stored access token for the startup model
-			// metadata refresh so OAuth users get fresh models like key users;
-			// request-time token refresh is owned by the provider's OAuth config.
+			// config.json. Catalog discovery resolves that credential through the
+			// provider's OAuth config so an expiring token is persisted before use.
 			const authJsonPath = resolve(agentDir, "auth.json")
 			const gatewayCredentials = resolveGatewayCredentials({ apiKey: currentApiKey ?? "" }, { authPath: authJsonPath })
 			const oauthAccessToken = gatewayCredentials.source === "oauth" ? gatewayCredentials.token : undefined
@@ -638,9 +638,10 @@ async function cliMain(): Promise<void> {
 					models = discovered.models
 					installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
 				} else {
-					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey || oauthAccessToken || "", {
+					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey || "", {
 						endpoint: config.customLlmEndpoint,
 						organizationId: currentApiKey ? undefined : oauthOrganizationId,
+						...(oauthAccessToken ? { refreshOAuth: { authPath: authJsonPath, installOAuth: installKimchiOAuth } } : {}),
 					}))
 					if (experimentalFeatures) {
 						injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")

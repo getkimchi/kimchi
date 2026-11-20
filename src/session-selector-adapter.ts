@@ -15,11 +15,11 @@ import {
 	Spacer,
 	sliceByColumn,
 	stripTerminalSequences,
-	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
 import { getSessionRoles, type SessionRoleInfo } from "./session-visibility.js"
+import { truncateLineToWidth } from "./truncate-lines.js"
 
 // Pi 0.85.1 exposes the selector but not its presentation state. Keep this private
 // boundary here; the contract tests instantiate the real upstream component.
@@ -104,7 +104,7 @@ function sessionDate(date: Date): string {
 }
 
 function cell(text: string, width: number): string {
-	return truncateToWidth(text, width, "…", true)
+	return truncateLineToWidth(text, width, "…", true)
 }
 
 function highlight(text: string, pattern?: RegExp): string {
@@ -156,7 +156,7 @@ function renderSessions(
 	]
 	if (loading) {
 		lines.push(colors.description("Loading sessions…"))
-		return lines.map((line) => truncateToWidth(line, width))
+		return lines.map((line) => truncateLineToWidth(line, width))
 	}
 	if (error || list.filteredSessions.length === 0) {
 		const empty = query.trim()
@@ -169,7 +169,7 @@ function renderSessions(
 						? "No saved sessions yet. Start a conversation to create one."
 						: "No sessions in this folder. Press Tab to search all folders."
 		lines.push(...wrapTextWithAnsi(colors.noMatch(error ?? empty), width))
-		return lines.map((line) => truncateToWidth(line, width))
+		return lines.map((line) => truncateLineToWidth(line, width))
 	}
 
 	const dateWidth = width >= 60 ? 13 : 10
@@ -200,7 +200,7 @@ function renderSessions(
 			: ""
 		const label = `${list.buildTreePrefix(node)}${badge}${current ? "[current] " : ""}${highlight(title, pattern)}`
 		let row = `${selected ? "› " : "  "}${dates}${project}${selected ? bold(label) : label}`
-		row = truncateToWidth(row, width)
+		row = truncateLineToWidth(row, width)
 		if (session.path === list.confirmingDeletePath) row = colors.selectedText(row)
 		if (selected) row = `\x1b[7m${colors.selectedText(bold(cell(stripTerminalSequences(row), width)))}\x1b[27m`
 		lines.push(row)
@@ -260,7 +260,7 @@ function renderSessions(
 	lines.push(
 		`${keyHint("tui.select.confirm", list.confirmingDeletePath ? "confirm deletion" : "resume")} · ${keyHint("tui.select.cancel", "cancel")}`,
 	)
-	return lines.map((line) => truncateToWidth(line, width))
+	return lines.map((line) => truncateLineToWidth(line, width))
 }
 
 const installed = new WeakSet<SessionListState>()
@@ -385,17 +385,17 @@ prototype.buildBaseLayout = function (content, options) {
 				const sortHint = list.searchInput.getValue().trim()
 					? ` · ${keyHint("app.session.toggleSort", `sort: ${list.sortMode === "recent" ? "best match" : "last active"}`)}`
 					: ""
-				hints[0] = truncateToWidth(
+				hints[0] = truncateLineToWidth(
 					`${keyHint("tui.input.tab", "scope")}${sortHint} · ${colors.selectedText("ctrl+e")} ${showInternal ? "hide" : "show"} background checks`,
 					width,
 				)
-				hints[1] = truncateToWidth(
+				hints[1] = truncateLineToWidth(
 					`${keyHint("app.session.toggleNamedFilter", "named")} · ${keyHint("app.session.delete", "delete")} · ${colors.selectedText("ctrl+f")} file (${list.showPath ? "on" : "off"})${this.header.showRenameHint ? ` · ${keyHint("app.session.rename", "rename")}` : ""}`,
 					width,
 				)
 			}
 			return [
-				truncateToWidth(colors.selectedText(bold(`Resume session · ${scope} · ${sort}${named}${loading}`)), width),
+				truncateLineToWidth(colors.selectedText(bold(`Resume session · ${scope} · ${sort}${named}${loading}`)), width),
 				...hints,
 			]
 		}

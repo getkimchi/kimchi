@@ -94,10 +94,24 @@ export interface RecordBackend {
 	/** Every record not yet translated into events, by work. */
 	markedRecords(): { recordHash: string; workId: string; type: string }[]
 	clearTranslation(recordHash: string): void
+	readTransitionRepositories(): string[]
 	/** The entity's newest event that was not set aside. */
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
 	outboxEntityEvents(accountKey: string, entityId: string): OutboxEvent[]
+	/** Every history row for these entities, each entity decoded at most once per claim pass. */
+	outboxClaims(accountKey: string, entityIds: readonly string[]): OutboxEvent[]
+	/**
+	 * One bounded claim-history read for at most 500 entity IDs (the bind cap), continuing
+	 * after a returned cursor. Rows come back rowid-ordered within the call; callers page
+	 * and breathe between calls so a big claim read cannot hold the UI loop in one burst.
+	 */
+	outboxClaimRows(
+		accountKey: string,
+		entityIds: readonly string[],
+		after: number,
+		limit: number,
+	): { rows: OutboxEvent[]; nextAfter: number }
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
 	outboxStatus(): OutboxAccountStatus[]
@@ -126,6 +140,24 @@ export interface RecordBackend {
 	/** Pins an async read to the records committed when it started. */
 	recordWatermark(): number
 	readRecordPage(after: number, through: number, limit: number, checkBudget?: () => void): PositionedRecord[]
+	/** Pages the incremental window (records with imported_at >= modifiedSince) in rowid order within a
+	 * pinned watermark, so a large append backlog is read page by page instead of one uninterruptible scan. */
+	readRecordsSincePage(
+		modifiedSince: number,
+		after: number,
+		through: number,
+		limit: number,
+		checkBudget?: () => void,
+	): PositionedRecord[]
+	/** Pages one work's records in rowid order within a pinned watermark; the
+	 * translation prelude reads big works without materializing them whole. */
+	readWorkRecordPage(
+		workId: string,
+		after: number,
+		through: number,
+		limit: number,
+		checkBudget?: () => void,
+	): PositionedRecord[]
 	recordCount(workId?: string): number
 	/** Whether the projection has any plan or commit rows for the work. */
 	hasProjectionOutput(workId: string): boolean
@@ -281,11 +313,17 @@ export function readRecords(
 	return records
 }
 
+/** Repositories in the stored native file-transition history, without decoding complete records. */
+export function readTransitionRepositories(agentDir: string): string[] {
+	return backendFor(agentDir).readTransitionRepositories()
+}
+
 /** No transaction or live iterator crosses a yield; appends beyond the watermark belong to the next read. */
 async function readRecordPrefixAsync<T>(
 	agentDir: string,
 	checkBudget: () => void,
 	project: (row: StoredRecord) => T | undefined,
+	stretch: () => Promise<void> = () => setImmediate(),
 ): Promise<T[]> {
 	checkBudget()
 	const backend = backendFor(agentDir)
@@ -293,7 +331,7 @@ async function readRecordPrefixAsync<T>(
 	const records: T[] = []
 	let after = 0
 	while (after < through) {
-		await setImmediate()
+		await stretch()
 		checkBudget()
 		const page = backend.readRecordPage(after, through, 128, checkBudget)
 		if (!page.length) break
@@ -309,19 +347,100 @@ async function readRecordPrefixAsync<T>(
 }
 
 /** Retain original capture/import hashes for atomic translation; never hash the reserialized body instead. */
-export function readStoredRecordsAsync(agentDir: string, checkBudget: () => void): Promise<StoredRecord[]> {
-	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row)
+export function readStoredRecordsAsync(
+	agentDir: string,
+	checkBudget: () => void,
+	stretch?: () => Promise<void>,
+): Promise<StoredRecord[]> {
+	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row, stretch)
 }
 
-export function readRecordsAsync(agentDir: string, checkBudget: () => void): Promise<WorkRecord[]> {
-	return readRecordPrefixAsync(agentDir, checkBudget, (row) => {
-		try {
-			return JSON.parse(row.body) as WorkRecord
-		} catch {
-			// Match the synchronous reader's damaged-body behavior.
-			return undefined
+/**
+ * The windowed incremental read. Without STAT4, the planner always prefers a full scan to the
+ * imported_at index because `ORDER BY rowid` would force a temp sort — the index must be hinted.
+ * The hint is chosen per connection: a ledger opened before the additive index landed (a contended
+ * first open defers it) still runs the unhinted scan instead of erroring on the missing index.
+ */
+export function readRecordsSinceSql(hint: boolean): string {
+	return `SELECT ${recordColumnsSql()} FROM work_records ${hint ? "INDEXED BY work_records_imported " : ""}WHERE imported_at >= ? ORDER BY rowid`
+}
+
+function recordColumnsSql(): string {
+	return "record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt"
+}
+
+/** Probe applied per open; statements prepared after openStore's additive apply see the index. */
+export function workRecordsImportedPresent(db: {
+	query: <T>(sql: string) => { get: () => T | null | undefined }
+}): boolean {
+	return (
+		db
+			.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='index' AND name = 'work_records_imported'")
+			.get() != null
+	)
+}
+
+/** Parse one stored row for an anchored read; damaged bodies skip, matching the sync reader. */
+function windowedRow(row: StoredRecord): WindowedRecord | undefined {
+	try {
+		return { record: JSON.parse(row.body) as WorkRecord, hash: row.recordHash, importedAt: row.importedAt }
+	} catch {
+		return undefined
+	}
+}
+
+/** The anchored full history, breathing between ledger pages for a caller driving the UI loop. */
+export function readRecordsAsync(
+	agentDir: string,
+	checkBudget: () => void,
+	stretch?: () => Promise<void>,
+): Promise<WindowedRecord[]> {
+	return readRecordPrefixAsync(agentDir, checkBudget, windowedRow, stretch)
+}
+
+/** A ledger row with its fixed-size identity anchors: the parsed record, its content hash (the
+ * dedup identity — the ledger dedups bodies on it) and its import time (bounds which rows any future
+ * window can re-read, so accumulated slack-window sets stay recent-tail-only). */
+export interface WindowedRecord {
+	record: WorkRecord
+	hash: string
+	importedAt: number
+}
+
+/** The paged windowed read's SQL. The first page's rowid range is the whole table, so it rides the
+ * imported index (the same hint discipline as the sync windowed statement); later pages read exact
+ * rowid ranges and stay unhinted. */
+export function readRecordsSincePageSql(first: boolean): string {
+	return `SELECT rowid AS position, ${recordColumnsSql()} FROM work_records ${first ? "INDEXED BY work_records_imported " : ""}WHERE imported_at >= ?${first ? "" : " AND rowid > ?"} AND rowid <= ? ORDER BY rowid LIMIT ?`
+}
+
+/** The incremental window (imported_at >= modifiedSince), paged rowid-cursored for a caller driving
+ * the UI loop; appends beyond the pinned watermark belong to the next read, as with the prefix reader. */
+export async function readRecordsSinceAsync(
+	agentDir: string,
+	modifiedSince: number,
+	checkBudget: () => void,
+	stretch: () => Promise<void> = () => setImmediate(),
+): Promise<WindowedRecord[]> {
+	checkBudget()
+	const backend = backendFor(agentDir)
+	const through = backend.recordWatermark()
+	const records: WindowedRecord[] = []
+	let after = 0
+	for (;;) {
+		await stretch()
+		checkBudget()
+		const page = backend.readRecordsSincePage(modifiedSince, after, through, 128, checkBudget)
+		if (!page.length) break
+		for (const row of page) {
+			checkBudget()
+			const anchored = windowedRow(row)
+			if (anchored !== undefined) records.push(anchored)
 		}
-	})
+		after = page[page.length - 1].position
+	}
+	checkBudget()
+	return records
 }
 
 /** Changes whenever new records exist; capture-skip logic only needs that much honesty. */
@@ -520,9 +639,38 @@ export function ledgerHasWorkOutput(agentDir: string, workId: string): boolean {
 	return backendFor(agentDir).hasProjectionOutput(workId)
 }
 
-/** The production backend over the C1 store. */
+/** The production backend over the C1 store; a failed construction never leaks the connection. */
 function sqliteBackend(agentDir: string): RecordBackend {
 	const store: LedgerStore = openStore(agentDir)
+	try {
+		return sqliteBackendFor(store)
+	} catch (error) {
+		store.close()
+		throw error
+	}
+}
+
+/** Drains one statement page to completion. Bun 1.4 leaves an interrupted iterator's cursor positioned
+ * mid-result; get() resets before and after one row, so every page drain funnels through here. */
+function drainStatementPage<T, A extends unknown[]>(
+	page: { iterate: (...args: A) => Iterable<T>; get: (...args: A) => unknown },
+	args: A,
+	checkBudget?: () => void,
+): T[] {
+	const rows: T[] = []
+	try {
+		for (const row of page.iterate(...args)) {
+			checkBudget?.()
+			rows.push(row)
+		}
+	} catch (error) {
+		page.get(...args)
+		throw error
+	}
+	return rows
+}
+
+function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const db = store.db
 	if (ensureProjectionVersion(store)) {
 		db.query("INSERT OR IGNORE INTO work_dirty (work_id) SELECT DISTINCT work_id FROM work_records").run()
@@ -552,6 +700,38 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const entityEvents = db.query<OutboxEvent, [string, string]>(
 		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? ORDER BY rowid`,
 	)
+	const claimRows = (accountKey: string, entityIds: readonly string[]): OutboxEvent[] => {
+		const rows: OutboxEvent[] = []
+		// SQLite's bind cap is 999; one bounded page avoids one full scan/statement
+		// preparation per request in a big production ledger.
+		for (let offset = 0; offset < entityIds.length; offset += 500) {
+			const page = entityIds.slice(offset, offset + 500)
+			rows.push(
+				...db
+					.query<OutboxEvent, [string, ...string[]]>(
+						`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${page.map(() => "?").join(",")}) ORDER BY rowid`,
+					)
+					.all(accountKey, ...page),
+			)
+		}
+		return rows
+	}
+	const claimRowsPage = (
+		accountKey: string,
+		entityIds: readonly string[],
+		after: number,
+		limit: number,
+	): { rows: OutboxEvent[]; nextAfter: number } => {
+		// The IN list stays within the bind cap; the rowid cursor keeps each entity's
+		// history ordered across pages because the caller consumes pages in order.
+		const positioned = db
+			.query<OutboxEvent & { position: number }, [string, ...string[], number, number]>(
+				`SELECT rowid AS position, ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${entityIds.map(() => "?").join(",")}) AND rowid > ? ORDER BY rowid LIMIT ?`,
+			)
+			.all(accountKey, ...entityIds, after, limit)
+		const rows = positioned.map(({ position, ...event }) => event)
+		return { rows, nextAfter: positioned.length ? positioned[positioned.length - 1].position : after }
+	}
 	const insertEvent = db.query(
 		"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	)
@@ -571,6 +751,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		"UPDATE outbox_events SET blocked = ? WHERE account_key = ? AND id = ? AND hash = ? AND acked_at IS NULL AND blocked = ''",
 	)
 	const deleteBatch = db.query("DELETE FROM outbox_batches WHERE account_key = ? AND id = ?")
+	const transitionRepositories = db.query<{ repository: string }, []>(
+		"SELECT repository FROM transition_repositories ORDER BY repository",
+	)
 	const outboxStatus = db.query<OutboxAccountStatus, []>(`
 		SELECT a.account_key AS accountKey, COALESCE(e.pending, 0) AS pending,
 			COALESCE(e.sendable, 0) AS sendable, COALESCE(e.blocked, 0) AS blocked,
@@ -602,15 +785,20 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const allHeads = db.query<{ body: string }, []>("SELECT body FROM work_projection_head")
 	const clearRows = db.query("DELETE FROM work_projection_rows WHERE work_id = ?")
 	const clearHead = db.query("DELETE FROM work_projection_head WHERE work_id = ?")
-	const recordColumns =
-		"record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt"
+	const recordColumns = recordColumnsSql()
 	const readRecordsAll = db.query<StoredRecord, []>(`SELECT ${recordColumns} FROM work_records ORDER BY rowid`)
 	const readRecordsWork = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE work_id = ? ORDER BY rowid`,
 	)
-	const readRecordsSince = db.query<StoredRecord, [number]>(
-		`SELECT ${recordColumns} FROM work_records WHERE imported_at >= ? ORDER BY rowid`,
-	)
+	let readRecordsSince = db.query<StoredRecord, [number]>(readRecordsSinceSql(workRecordsImportedPresent(db)))
+	/** A contended open may have deferred the additive index, leaving this connection unhinted. The
+	 * windowed read retries the deferred apply lazily (contention is usually gone by the next read)
+	 * and re-prepares the hinted statement, so a cached backend self-heals within one process. */
+	const readSinceStatement = (): typeof readRecordsSince => {
+		if (store.additiveDeferred && store.tryAdditiveSchema())
+			readRecordsSince = db.query<StoredRecord, [number]>(readRecordsSinceSql(true))
+		return readRecordsSince
+	}
 	const readRecordsSession = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE session_id = ? ORDER BY rowid`,
 	)
@@ -620,6 +808,18 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const watermark = db.query<{ position: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS position FROM work_records")
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
+	const recordSincePage = db.query<PositionedRecord, [number, number, number, number]>(readRecordsSincePageSql(false))
+	// The first page of a windowed read starts at the history's beginning, so the unhinted rowid range
+	// would walk the whole table to reach a tail window — the same planner trap the sync windowed
+	// statement avoids with INDEXED BY. Later pages read exact rowid ranges and never need the hint.
+	// Prepared lazily: an indexless open (a contended first open defers the additive apply) must not
+	// prepare the hint, or backend construction itself would fail on the missing index.
+	const prepareSinceFirstPage = () =>
+		db.query<PositionedRecord, [number, number, number]>(readRecordsSincePageSql(true))
+	let recordSinceFirstPage: ReturnType<typeof prepareSinceFirstPage> | undefined
+	const workRecordPage = db.query<PositionedRecord, [string, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE work_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
 	const recordCountAll = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records")
 	const recordCountWork = db.query<{ count: number }, [string]>(
@@ -685,7 +885,10 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		clearTranslation: (recordHash) => clearTranslation.run(recordHash),
 		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
 		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
+		readTransitionRepositories: () => transitionRepositories.all().map((row) => row.repository),
 		outboxEntityEvents: (accountKey, entityId) => entityEvents.all(accountKey, entityId),
+		outboxClaims: claimRows,
+		outboxClaimRows: claimRowsPage,
 		insertOutboxEvent: (event) =>
 			insertEvent.run(
 				event.id,
@@ -744,7 +947,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 					: opts.type !== undefined
 						? readRecordsType.iterate(opts.type)
 						: opts.modifiedSince !== undefined
-							? readRecordsSince.iterate(opts.modifiedSince)
+							? readSinceStatement().iterate(opts.modifiedSince)
 							: opts.sessionId !== undefined
 								? readRecordsSession.iterate(opts.sessionId)
 								: readRecordsAll.iterate()
@@ -764,7 +967,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				// get() resets before and after one row; it never drains the remaining history.
 				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
 				else if (opts.type !== undefined) readRecordsType.get(opts.type)
-				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
+				else if (opts.modifiedSince !== undefined) readSinceStatement().get(opts.modifiedSince)
 				else if (opts.sessionId !== undefined) readRecordsSession.get(opts.sessionId)
 				else readRecordsAll.get()
 				throw error
@@ -772,21 +975,20 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			return rows
 		},
 		recordWatermark: () => watermark.get()?.position ?? 0,
-		readRecordPage: (after, through, limit, checkBudget) => {
-			checkBudget?.()
-			const rows: PositionedRecord[] = []
-			try {
-				for (const row of recordPage.iterate(after, through, limit)) {
-					checkBudget?.()
-					rows.push(row)
-				}
-			} catch (error) {
-				// The same Bun cursor-reset rule as the synchronous replay above.
-				recordPage.get(after, through, limit)
-				throw error
-			}
-			return rows
+		readRecordPage: (after, through, limit, checkBudget) =>
+			drainStatementPage(recordPage, [after, through, limit], checkBudget),
+		readRecordsSincePage: (modifiedSince, after, through, limit, checkBudget) => {
+			if (after !== 0) return drainStatementPage(recordSincePage, [modifiedSince, after, through, limit], checkBudget)
+			// The first page heals a deferred additive index (the windowed read is the hint's only
+			// consumer), then rides it; a still-contended database falls back to the unhinted range.
+			if (store.additiveDeferred) store.tryAdditiveSchema()
+			if (store.additiveDeferred)
+				return drainStatementPage(recordSincePage, [modifiedSince, 0, through, limit], checkBudget)
+			recordSinceFirstPage ??= prepareSinceFirstPage()
+			return drainStatementPage(recordSinceFirstPage, [modifiedSince, through, limit], checkBudget)
 		},
+		readWorkRecordPage: (workId, after, through, limit, checkBudget) =>
+			drainStatementPage(workRecordPage, [workId, after, through, limit], checkBudget),
 		hasProjectionOutput: (workId) =>
 			readLog.all(workId, "plans").length > 0 || readLog.all(workId, "commits").length > 0,
 		recordCount: (workId) => (workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)),

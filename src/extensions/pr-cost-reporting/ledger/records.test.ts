@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, onTestFinished } from "vitest"
 import type { WorkRecord } from "../../work-attribution/summary.js"
 import { createMemoryRecords } from "./memory-records.js"
 import {
@@ -14,6 +14,7 @@ import {
 	ledgerSessionInfo,
 	readRecordsAsync,
 	readStoredRecordsAsync,
+	readTransitionRepositories,
 	readWorkHead,
 	readWorkSummary,
 	rebuildWork,
@@ -138,7 +139,11 @@ describe("records conformance (memory backend)", () => {
 		const rows = await readStoredRecordsAsync(dir, () => {})
 		expect(rows).toMatchObject([stored, damaged])
 		expect(rows[0].recordHash).not.toBe(createHash("sha256").update(rows[0].body).digest("hex"))
-		expect(await readRecordsAsync(dir, () => {})).toEqual([records[0]])
+		// Parsed reads return the record with its original-hash and import-time anchors; the damaged
+		// body is skipped, and the retained hash stays the original line hash, never re-derived.
+		const anchored = await readRecordsAsync(dir, () => {})
+		expect(anchored).toEqual([{ record: records[0], hash: recordHash, importedAt: 123 }])
+		expect(anchored[0].hash).not.toBe(createHash("sha256").update(JSON.stringify(records[0])).digest("hex"))
 	})
 
 	it("capture folds records into the projection exactly like the legacy summary did", () => {
@@ -273,7 +278,104 @@ function driver(...args: string[]): unknown {
 	return JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}")
 }
 
+it("projects distinct transition repositories, without including other record types", () => {
+	const dir = agentDir()
+	const backend = createMemoryRecords()
+	useBackendFactory(() => backend)
+	for (const record of records) capture(dir, record, "/ignored/source")
+	for (const repository of ["/b", "/a", "/b"])
+		capture(dir, { ...records[3], type: "file_transition", repository, transitionId: repository }, "/ignored/source")
+	backend.insertRecord({
+		recordHash: "damaged",
+		type: "file_transition",
+		workId: WORK,
+		sessionId: SESSION,
+		body: "{invalid",
+		sourcePath: null,
+		sourceGeneration: 0,
+		sourceOffset: null,
+		importedAt: 0,
+	})
+	expect(readTransitionRepositories(dir)).toEqual(["/a", "/b"])
+})
+
 describe("records conformance (SQLite via Bun driver)", { skip: isBun, timeout: 90_000 }, () => {
+	it("matches distinct repository projection including duplicate and non-transition records", () => {
+		const dir = agentDir()
+		try {
+			for (const record of records) driver("capture", dir, JSON.stringify(record))
+			for (const repository of ["/b", "/a", "/b"])
+				driver(
+					"capture",
+					dir,
+					JSON.stringify({ ...records[3], type: "file_transition", repository, transitionId: repository }),
+				)
+			expect(driver("transition-repositories", dir, "damaged")).toEqual(["/a", "/b"])
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+	it("a held writer during a pre-migration open waits for the repository set instead of failing", async () => {
+		const dir = agentDir()
+		let holder: ReturnType<typeof spawn> | undefined
+		try {
+			for (const repository of ["/b", "/a", "/b"])
+				driver(
+					"capture",
+					dir,
+					JSON.stringify({ ...records[3], type: "file_transition", repository, transitionId: repository }),
+				)
+			driver("pre-migrate", dir)
+			holder = spawn("bun", [DRIVER, "hold-raw", dir, "1500"], { cwd: ROOT })
+			onTestFinished(() => {
+				if (holder && holder.exitCode === null) holder.kill("SIGKILL")
+			})
+			await new Promise<void>((resolve) => holder?.stdout?.once("data", () => resolve()))
+			// Unfixed behavior: the busy-skipped additive apply left the backend throwing
+			// `no such table: transition_repositories`; the required apply now waits for the
+			// holder and backfills before the read.
+			expect(driver("transition-repositories", dir)).toEqual(["/a", "/b"])
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("a held writer during an index-absent open reads unhinted instead of erroring", async () => {
+		const dir = agentDir()
+		let holder: ReturnType<typeof spawn> | undefined
+		try {
+			for (const record of records) driver("capture", dir, JSON.stringify(record))
+			driver("pre-migrate", dir)
+			holder = spawn("bun", [DRIVER, "hold-raw", dir, "1500"], { cwd: ROOT })
+			onTestFinished(() => {
+				if (holder && holder.exitCode === null) holder.kill("SIGKILL")
+			})
+			await new Promise<void>((resolve) => holder?.stdout?.once("data", () => resolve()))
+			// Unfixed behavior: the absent index was misdetected as present and the hinted
+			// read threw `no such index: work_records_imported`.
+			const rows = driver("records-since", dir, "0") as WorkRecord[]
+			expect(rows.length).toBeGreaterThanOrEqual(records.length)
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("backfills the materialized repository set for a ledger written before it existed", () => {
+		const dir = agentDir()
+		try {
+			for (const repository of ["/b", "/a", "/b"])
+				driver(
+					"capture",
+					dir,
+					JSON.stringify({ ...records[3], type: "file_transition", repository, transitionId: repository }),
+				)
+			// The command removes the materialized set after adding a damaged-body row and a
+			// non-text repository: the reopen's backfill must restore exactly the text repositories.
+			expect(driver("repository-backfill", dir)).toEqual(["/a", "/b"])
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
 	it("capture folds identically to the memory backend and writes no legacy files", () => {
 		const dir = agentDir()
 		try {

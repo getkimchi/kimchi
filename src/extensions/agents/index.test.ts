@@ -232,7 +232,7 @@ vi.mock("../../project-scope-trust.js", async (importOriginal) => ({
 	isProjectScopeAllowed: vi.fn().mockReturnValue(true),
 }))
 
-import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
+import type { EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -246,6 +246,7 @@ import { clearHandoff, peekHandoff, stageHandoff } from "./manager/subagent-hand
 import type { RemoteRunState } from "./remote-run-persistence.js"
 import { applyAndEmitLoaded } from "./settings.js"
 import type { Theme } from "./ui/agent-widget.js"
+import { SKIPPED_AGENT_FILES_ENTRY, type SkippedAgentFilesEntryData } from "./ui/skipped-agent-files-entry.js"
 
 type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>
 
@@ -2053,6 +2054,39 @@ describe("unparseable agent files", () => {
 		for (const handler of pi._handlers.get("session_start") ?? []) await handler(event, ctx)
 	}
 
+	const skippedEntries = (pi: ReturnType<typeof makeMockPi>): SkippedAgentFilesEntryData[] =>
+		vi
+			.mocked(pi.appendEntry)
+			.mock.calls.filter(([customType]) => customType === SKIPPED_AGENT_FILES_ENTRY)
+			.map(([, data]) => data as SkippedAgentFilesEntryData)
+
+	// Render through the renderer the extension actually registered, so these
+	// tests cover the wiring and not just the entry module.
+	const renderNotice = (
+		pi: ReturnType<typeof makeMockPi>,
+		data: SkippedAgentFilesEntryData,
+		expanded = false,
+	): string[] | undefined => {
+		const registered = vi
+			.mocked(pi.registerEntryRenderer)
+			.mock.calls.find(([customType]) => customType === SKIPPED_AGENT_FILES_ENTRY)?.[1]
+		if (!registered) throw new Error("no skipped-agent-files renderer registered")
+		const renderer = registered as EntryRenderer<SkippedAgentFilesEntryData>
+		const theme = { fg: (_color: string, text: string) => text } as unknown as Parameters<EntryRenderer>[2]
+		return renderer(
+			{
+				type: "custom",
+				id: "notice-1",
+				parentId: null,
+				timestamp: "2026-11-18T00:00:00.000Z",
+				customType: SKIPPED_AGENT_FILES_ENTRY,
+				data,
+			},
+			{ expanded },
+			theme,
+		)?.render(120)
+	}
+
 	it("does not fail extension load when the launch directory has one", () => {
 		// Regression: the factory loads agents from process.cwd(), and a throw
 		// there is a failed extension load — which exits the harness at startup.
@@ -2061,20 +2095,23 @@ describe("unparseable agent files", () => {
 		expect(() => agentsExtension(makeMockPi())).not.toThrow()
 	})
 
-	it("warns once per session start and keeps the other agents", async () => {
+	it("collapses to one transcript entry in the TUI and keeps the other agents", async () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 		const ctx = createContext({ cwd: projectDir })
 
 		await fireSessionStart(pi, ctx)
 
-		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining(join(".kimchi", "agents", "broken-agent.md")),
-			"warning",
-		)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		const entries = skippedEntries(pi)
+		expect(entries).toHaveLength(1)
+		expect(entries[0].files).toEqual([
+			{ path: join(".kimchi", "agents", "broken-agent.md"), reason: expect.any(String) },
+		])
+		expect(renderNotice(pi, entries[0])?.[0]).toContain("Warning: Skipped 1 agent file")
+		expect(renderNotice(pi, entries[0])?.[0]).toContain("with invalid frontmatter (not loaded)")
 
-		// The Agent tool reloads agents on every call: no repeat warning, and
+		// The Agent tool reloads agents on every call: no repeat notice, and
 		// the valid neighbour of the broken file is still spawnable.
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
@@ -2091,9 +2128,97 @@ describe("unparseable agent files", () => {
 
 		expect(managerInstance.spawn.mock.calls[0][2]).toBe("valid-agent")
 		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("broken-agent.md"))
+		expect(skippedEntries(pi)).toHaveLength(1)
+	})
+
+	it("keeps the plain warning on surfaces without a transcript", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const ctx = createContext({ cwd: projectDir, mode: "rpc" })
+
+		await fireSessionStart(pi, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining(join(".kimchi", "agents", "broken-agent.md")),
+			"warning",
+		)
+		expect(skippedEntries(pi)).toHaveLength(0)
+
+		// The dedupe and per-session reset must hold on this branch too: a
+		// reload from the Agent tool stays quiet, and the next session start
+		// reports the file again.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		await getRegisteredAgentTool(pi).execute(
+			"call-rpc-frontmatter",
+			{ prompt: "go", description: "frontmatter rpc", subagent_type: "valid-agent", run_in_background: true },
+			undefined,
+			undefined,
+			{ ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), cwd: projectDir },
+		)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("broken-agent.md"))
+		expect(skippedEntries(pi)).toHaveLength(0)
 
 		await fireSessionStart(pi, ctx)
 
 		expect(ctx.ui.notify).toHaveBeenCalledTimes(2)
+	})
+
+	it("shows one notice per session start and hides the previous one", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const ctx = createContext({ cwd: projectDir })
+
+		await fireSessionStart(pi, ctx)
+		await fireSessionStart(pi, ctx)
+
+		const entries = skippedEntries(pi)
+		expect(entries).toHaveLength(2)
+		expect(entries[0].token).not.toBe(entries[1].token)
+		// Resuming must not stack notices: only today's start is visible.
+		expect(renderNotice(pi, entries[0])).toBeUndefined()
+		expect(renderNotice(pi, entries[1])?.[0]).toContain("Warning: Skipped 1 agent file")
+	})
+
+	it("reports a file that breaks mid-session under the same token", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const ctx = createContext({ cwd: projectDir })
+		await fireSessionStart(pi, ctx)
+
+		writeFileSync(
+			join(projectDir, ".kimchi", "agents", "late-broken.md"),
+			"---\ndescription: late\ntools: [grep\n---\n\nPrompt.\n",
+		)
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		await getRegisteredAgentTool(pi).execute(
+			"call-late-break",
+			{ prompt: "go", description: "late break", subagent_type: "valid-agent", run_in_background: true },
+			undefined,
+			undefined,
+			{
+				...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
+				cwd: projectDir,
+				mode: "tui" as const,
+			},
+		)
+
+		const entries = skippedEntries(pi)
+		expect(entries).toHaveLength(2)
+		expect(entries[1].token).toBe(entries[0].token)
+		expect(entries[1].files).toEqual([
+			{ path: join(".kimchi", "agents", "late-broken.md"), reason: expect.any(String) },
+		])
+		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("late-broken.md"))
+		expect(renderNotice(pi, entries[0])).toBeDefined()
+		expect(renderNotice(pi, entries[1])).toBeDefined()
 	})
 })

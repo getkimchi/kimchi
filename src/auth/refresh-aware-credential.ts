@@ -1,19 +1,28 @@
+import type { CredentialStore } from "@earendil-works/pi-ai"
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 
-/** Store paths needed to resolve the canonical Kimchi credential. */
+/** Store paths and optional persistence override for resolving the canonical Kimchi credential. */
 export type RefreshAwareCredentialPaths = {
 	authPath: string
 	modelsPath: string
+	credentials?: CredentialStore
 }
 
 export type RefreshAwareAuth = Awaited<ReturnType<ModelRuntime["getAuth"]>>
 
-type StoredCredential = NonNullable<ReturnType<typeof readStoredCredential>>
+type PiStoredCredential = NonNullable<ReturnType<typeof readStoredCredential>>
+type StoredOAuthCredential = Extract<PiStoredCredential, { type: "oauth" }> & {
+	/** Organization scope stamped by Kimchi login alongside upstream OAuth fields. */
+	orgId?: string
+}
+type StoredCredential = Exclude<PiStoredCredential, { type: "oauth" }> | StoredOAuthCredential
 
 export type RefreshAwareCredentialResolution = {
 	auth: RefreshAwareAuth
+	/** Canonical credential read after getAuth releases its persist-before-release lock. */
+	credential: StoredCredential | undefined
 	/** True only when the persisted OAuth credential changed during this resolution. */
 	refreshed: boolean
 	/** Previous bearer used only for in-memory/persistent rejection bookkeeping; never logged. */
@@ -48,6 +57,7 @@ export async function resolveRefreshAwareKimchiAuth(
 		const modelRuntime = await ModelRuntime.create({
 			authPath: paths.authPath,
 			modelsPath: paths.modelsPath,
+			credentials: paths.credentials,
 			refreshOnCreate: false,
 		})
 		installOAuth(modelRuntime)
@@ -60,6 +70,7 @@ export async function resolveRefreshAwareKimchiAuth(
 			(before.access !== after.access || before.expires !== after.expires)
 		return {
 			auth,
+			credential: after,
 			refreshed,
 			previousAccessToken: refreshed && before?.type === "oauth" ? before.access : undefined,
 		}

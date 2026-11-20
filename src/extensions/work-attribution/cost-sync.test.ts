@@ -20,7 +20,7 @@ import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { readWorkBrowser } from "./browser.js"
 import { costDetailLines, workCostDetails, workCostTotals } from "./cost-details.js"
-import { readWorkCostReport, reconcileWorkCosts } from "./cost-sync.js"
+import { readWorkCostReport, readWorkCostReportAsync, reconcileWorkCosts } from "./cost-sync.js"
 import * as costs from "./costs.js"
 import { calculatePullRequestCosts, decimalNanos, roundedUsd } from "./costs.js"
 import { PRICED_TAG_LIMIT } from "./request-tags.js"
@@ -2261,6 +2261,38 @@ describe("idle cost passes", () => {
 		expect(fetchMock).not.toHaveBeenCalled()
 		// A coarse ratio, not a wall-clock budget: both passes run on the same machine and load.
 		expect(idle).toBeLessThan(first / 5)
+	})
+})
+
+describe("async cost-report discovery breathing", () => {
+	it("stretches through billing discovery before the calculator starts, not only inside it", async () => {
+		// Discovery breathes on its own: the whole-history passes yield at their 2,000-row cadence
+		// before the calculator starts, instead of completing inside its first stretch.
+		const records = Array.from({ length: 5000 }, (_, index) => ({
+			version: 1,
+			type: "request",
+			requestId: `discovery-${index}`,
+			workId: "one-work",
+			sessionId: "one-session",
+			recordedAt: "2026-08-01T00:00:00.000Z",
+		})) as unknown as WorkRecord[]
+		let stretches = 0
+		let atCalculatorEntry = -1
+		const calculator = vi.spyOn(costs, "calculatePullRequestCostsAsync").mockImplementation(async () => {
+			atCalculatorEntry = stretches
+			return { requests: [] } as unknown as Awaited<ReturnType<typeof costs.calculatePullRequestCostsAsync>>
+		})
+		try {
+			await readWorkCostReportAsync(records, async () => {
+				stretches++
+			})
+		} finally {
+			calculator.mockRestore()
+		}
+		// Six breaths happen during discovery alone: three record passes over 5,000 rows yield twice each,
+		// and the read must have breathed before the calculator even starts.
+		expect(atCalculatorEntry).toBeGreaterThanOrEqual(6)
+		expect(stretches).toBeGreaterThanOrEqual(7)
 	})
 })
 

@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import type { ExtensionContext, ReadonlyFooterDataProvider, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { hyperlink, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
@@ -18,6 +18,7 @@ import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { peekActiveTags } from "../extensions/tags.js"
 import { getActiveAnchor } from "../shared/active-anchor.js"
 import { thinkingSelection } from "../thinking-selection.js"
+import { truncateLinesToWidth, truncateLineToWidth } from "../truncate-lines.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -268,7 +269,7 @@ export class StatusLineScript implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const scriptLines = this.cachedLines.map((line) => truncateToWidth(line, width))
+		const scriptLines = truncateLinesToWidth(this.cachedLines, width)
 		// The callback returns an already-fitted line (compaction ladder →
 		// priority shed → truncation applied inside), so no extra work here.
 		const controls = this.getControlsLine(width)
@@ -496,7 +497,7 @@ function buildAbbrevBudgetStep(theme: Theme): CompactionStep {
 export function renderFittedLine(segments: Segment[], width: number, theme: Theme): string {
 	const sep = ` ${dimText(theme, "·")} `
 	const survivors = fitWithBudgetStep(segments, width, theme)
-	return truncateToWidth(joinSegments(survivors, sep), width)
+	return truncateLineToWidth(joinSegments(survivors, sep), width)
 }
 
 /** Fit segments using the full pipeline. Encapsulates the budget abbreviation
@@ -962,7 +963,7 @@ export class StatusLine implements Component {
 			const padding = width - contentWidth - hintWidth
 			line = `${contentLine}${" ".repeat(padding)}${hintText}`
 		} else {
-			line = contentWidth > width ? truncateToWidth(contentLine, width) : contentLine
+			line = contentWidth > width ? truncateLineToWidth(contentLine, width) : contentLine
 		}
 
 		const infoLine = this.buildInfoLine(width)
@@ -976,7 +977,7 @@ export class StatusLine implements Component {
 
 		let remainingWidth = width
 		if (permissionsWarningText) {
-			line = truncateToWidth(permissionsWarningText, remainingWidth)
+			line = truncateLineToWidth(permissionsWarningText, remainingWidth)
 			remainingWidth -= visibleWidth(line)
 		}
 
