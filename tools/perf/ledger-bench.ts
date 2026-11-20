@@ -10,7 +10,8 @@
 //
 // Usage: bun tools/perf/ledger-bench.ts <agentDir>
 // Scale: KIMCHI_BENCH_RECORDS (100000), KIMCHI_BENCH_ENTITIES (5000),
-//        KIMCHI_BENCH_REPOS (20), KIMCHI_BENCH_REPS (3).
+//        KIMCHI_BENCH_REPOS (20), KIMCHI_BENCH_REPS (3),
+//        KIMCHI_BENCH_DELIVERY (1000, events per delivery shape).
 
 import { createHash, randomUUID } from "node:crypto"
 import { writeSync } from "node:fs"
@@ -29,6 +30,7 @@ const RECORDS = Number(process.env.KIMCHI_BENCH_RECORDS ?? 100_000)
 const ENTITIES = Number(process.env.KIMCHI_BENCH_ENTITIES ?? 5_000)
 const REPOS = Number(process.env.KIMCHI_BENCH_REPOS ?? 20)
 const REPS = Number(process.env.KIMCHI_BENCH_REPS ?? 3)
+const DELIVERY_EVENTS = Number(process.env.KIMCHI_BENCH_DELIVERY ?? 1_000)
 
 // Tree-native capability: the fix branch exports the batched claim read and
 // the distinct-repository projection; an unfixed tree runs its own per-entity
@@ -47,6 +49,20 @@ const batchedClaims = (
 		) => ReadonlyMap<string, Event | undefined>
 	}
 ).effectiveClaims
+
+// Delivery-status read (the worker's delivery loop): a tree that exports
+// outboxDeliveryStatus is measured through it AND through the full status
+// read, with both projections required to agree — the same account set,
+// sendable/batch presence and first batch. A tree without it runs only the
+// full read, exactly as its own product code does.
+type DeliveryAccountStatus = {
+	accountKey: string
+	sendable: boolean
+	hasBatch: boolean
+	firstBatchId: string | null
+}
+const deliveryStatus = (ledgerOutbox as { outboxDeliveryStatus?: (agentDir: string) => DeliveryAccountStatus[] })
+	.outboxDeliveryStatus
 
 const mark = (line: string): void => {
 	writeSync(1, `${line}\n`)
@@ -91,7 +107,8 @@ const seed = {
 
 mark(
 	`BENCH_INFO mode repositories=${distinctRepositories ? "distinct-projection" : "typed-full-decode"} ` +
-		`claims=${batchedClaims ? "batch-per-account" : "one-query-per-entity"}`,
+		`claims=${batchedClaims ? "batch-per-account" : "one-query-per-entity"} ` +
+		`delivery=${deliveryStatus ? "optimized+differential" : "full-read"}`,
 )
 mark(`BENCH_INFO scale records=${RECORDS} entities=${ENTITIES} repositories=${REPOS} reps=${REPS}`)
 mark("BENCH_SEED begin")
@@ -133,6 +150,97 @@ backend.tx(() => {
 })
 mark("BENCH_SEED end")
 
+// Delivery shapes on dedicated accounts: pending (sendable), acknowledged,
+// blocked (set aside), and pending-under-batch. The claims account keeps
+// its own events, so the claims operation measures the same data in every
+// tree. The projection asserts every shape every rep: a seeding that
+// silently stops producing one shape makes the comparison meaningless.
+mark("BENCH_SEED delivery begin")
+const batchedEventIds: string[] = []
+backend.tx(() => {
+	const shape = (accountKey: string, index: number) => {
+		const event = { ...seed, id: randomUUID(), entityId: `delivery-${accountKey}-${index}` } as Event
+		const body = Buffer.from(encodeEvent(event))
+		return {
+			id: event.id,
+			accountKey,
+			entityId: event.entityId,
+			kind: eventKind(event),
+			body,
+			hash: createHash("sha256").update(body).digest("hex"),
+			createdAt: index,
+			ackedAt: null,
+			blocked: "",
+		}
+	}
+	for (let index = 0; index < DELIVERY_EVENTS; index++) {
+		backend.insertOutboxEvent(shape("delivery-pending", index))
+		const acked = shape("delivery-ack", index)
+		backend.insertOutboxEvent(acked)
+		if (!backend.ackOutboxEvent("delivery-ack", acked.id, acked.hash, index)) fail("delivery seed: acknowledge failed")
+		const blocked = shape("delivery-blocked", index)
+		backend.insertOutboxEvent(blocked)
+		if (!backend.blockOutboxEvent("delivery-blocked", blocked.id, blocked.hash, "bench-blocked"))
+			fail("delivery seed: block failed")
+		const batched = shape("delivery-batched", index)
+		backend.insertOutboxEvent(batched)
+		batchedEventIds.push(batched.id)
+	}
+	// Three batches over the batched account's events, created in order so
+	// the first by (order_key, created_at, rowid) — and therefore the
+	// firstBatchId the projection must report — is deterministic.
+	const third = Math.ceil(batchedEventIds.length / 3)
+	for (let index = 0; index < 3; index++) {
+		backend.insertOutboxBatch({
+			id: `delivery-batch-${index}`,
+			accountKey: "delivery-batched",
+			body: Buffer.alloc(0),
+			eventIds: batchedEventIds.slice(index * third, (index + 1) * third),
+			createdAt: index,
+			orderKey: "",
+		})
+	}
+})
+mark("BENCH_SEED delivery end")
+
+type DeliveryRow = { accountKey: string; sendable: number; batches: number; firstBatchId: string | null }
+type DeliveryProjection = Map<string, { sendable: boolean; hasBatch: boolean; firstBatchId: string | null }>
+const expectedDelivery: [string, { sendable: boolean; hasBatch: boolean; firstBatchId: string | null }][] = [
+	["account", { sendable: true, hasBatch: false, firstBatchId: null }],
+	["delivery-pending", { sendable: true, hasBatch: false, firstBatchId: null }],
+	["delivery-ack", { sendable: false, hasBatch: false, firstBatchId: null }],
+	["delivery-blocked", { sendable: false, hasBatch: false, firstBatchId: null }],
+	["delivery-batched", { sendable: true, hasBatch: true, firstBatchId: "delivery-batch-0" }],
+]
+
+/** Delivery-relevant projection of a full status read: the account, sendable
+ * presence, batch presence and first batch the worker's delivery loop needs. */
+function projectDelivery(statuses: readonly DeliveryRow[]): DeliveryProjection {
+	return new Map(
+		statuses.map((status) => [
+			status.accountKey,
+			{ sendable: status.sendable > 0, hasBatch: status.batches > 0, firstBatchId: status.firstBatchId },
+		]),
+	)
+}
+
+function assertDelivery(label: string, projection: DeliveryProjection): void {
+	const mismatches: string[] = []
+	for (const [accountKey, expected] of expectedDelivery) {
+		const got = projection.get(accountKey)
+		if (
+			!got ||
+			got.sendable !== expected.sendable ||
+			got.hasBatch !== expected.hasBatch ||
+			got.firstBatchId !== expected.firstBatchId
+		) {
+			mismatches.push(`${accountKey}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(got)}`)
+		}
+	}
+	if (projection.size !== expectedDelivery.length || mismatches.length)
+		fail(`delivery: ${label} mismatched (${mismatches.join("; ")})`)
+}
+
 // One unmarked warmup rep, then measured reps the harness brackets.
 discoverRepositories()
 resolveClaims(entities)
@@ -145,6 +253,26 @@ for (let rep = 0; rep < REPS; rep++) {
 	const resolved = resolveClaims(entities)
 	mark(`BENCH_OP claims ${rep} end`)
 	if (resolved !== ENTITIES) fail(`claims: expected ${ENTITIES}, got ${resolved}`)
+	mark(`BENCH_OP delivery_full ${rep} begin`)
+	const full = ledgerOutbox.readOutboxStatus(agentDir)
+	mark(`BENCH_OP delivery_full ${rep} end`)
+	assertDelivery("full read", projectDelivery(full))
+	if (deliveryStatus) {
+		mark(`BENCH_OP delivery ${rep} begin`)
+		const optimized = deliveryStatus(agentDir)
+		mark(`BENCH_OP delivery ${rep} end`)
+		if (optimized.length !== expectedDelivery.length)
+			fail(`delivery: optimized read returned ${optimized.length} accounts, expected ${expectedDelivery.length}`)
+		assertDelivery(
+			"optimized read",
+			new Map(
+				optimized.map((status) => [
+					status.accountKey,
+					{ sendable: status.sendable, hasBatch: status.hasBatch, firstBatchId: status.firstBatchId },
+				]),
+			),
+		)
+	}
 }
 ledgerRecords.closeBackends()
 mark("BENCH_DONE")

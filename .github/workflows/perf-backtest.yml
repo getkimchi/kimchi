@@ -23,6 +23,10 @@ on:
         description: "Benchmark ledger operations with external counters (unmodified source; no gate, no budgets)"
         default: "false"
         required: false
+      appender:
+        description: "Ledger scenario live appender: receipt (default) or mixed (also appends tool/response evidence against seeded requests)"
+        default: "receipt"
+        required: false
 
 permissions:
   contents: read
@@ -66,10 +70,11 @@ jobs:
       - name: Overlay the measurement harness from the selected workflow ref
         env:
           SAMPLE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SAMPLE_INPUT: ${{ inputs.sample }}
         run: |
           git fetch --depth=1 origin "$SAMPLE_SHA"
           git checkout FETCH_HEAD -- tools/perf
-          if [ "${{ inputs.sample }}" = "true" ]; then
+          if [ "$SAMPLE_INPUT" = "true" ]; then
             git checkout FETCH_HEAD -- src/extensions/blocking-instructions.ts .github/actions/setup
             python3 tools/perf/instrument-source-for-sample.py --root "$GITHUB_WORKSPACE"
           fi
@@ -100,9 +105,12 @@ jobs:
 
       - name: Benchmark ledger operations
         if: inputs.bench == 'true'
+        env:
+          BENCH_REPS: ${{ inputs.reps }}
+          BENCH_REF: ${{ matrix.entry.label }}
         run: |
           python3 tools/perf/ledger-bench-run.py --tree "$GITHUB_WORKSPACE" \
-            --ref "${{ matrix.entry.label }}" --reps "${{ inputs.reps || 3 }}" \
+            --ref "$BENCH_REF" --reps "${BENCH_REPS:-3}" \
             --out "$RUNNER_TEMP/perf-gate-runs/ledger-bench.jsonl"
 
       - name: Sample sessions, without the gate or budgets
@@ -118,17 +126,25 @@ jobs:
 
       - name: Run perf gate
         if: inputs.sample != 'true' && inputs.bench != 'true'
+        env:
+          # Dispatch inputs never interpolate into the run shell: an expansion inside a run block
+          # is expanded by GitHub before bash parses it, so a crafted value breaks out of argv.
+          REPS: ${{ inputs.reps }}
+          APPENDER: ${{ inputs.appender }}
+          CALIBRATE: ${{ inputs.calibrate }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           python3 tools/perf/gate.py --selfcheck
-          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${{ inputs.reps || 2 }}" ${{ (inputs.calibrate == 'true') && '--calibrate' || '' }}
+          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${REPS:-2}" --appender "${APPENDER:-receipt}" ${{ env.CALIBRATE == 'true' && '--calibrate' || '' }}
 
       - name: Advisory lanes
         if: always() && inputs.sample != 'true' && inputs.bench != 'true'
+        env:
+          ADVISORY_REPS: ${{ inputs.reps }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           for sc in idle_healthy idle_fresh bigtools bigtools_off; do
-            python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario "$sc" --reps "${{ inputs.reps || 2 }}" --idle 90 \
+            python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario "$sc" --reps "${ADVISORY_REPS:-2}" --idle 90 \
               --out "$RUNNER_TEMP/perf-gate-runs/$sc.jsonl" --expect-version "$VERSION" || echo "$sc failed"
           done
 

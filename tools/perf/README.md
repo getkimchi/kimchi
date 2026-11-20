@@ -130,9 +130,13 @@ what gets counted.
 
 Operations: repository discovery over the gate's ledger scale (a tree with
 the distinct-repository projection runs it; an unfixed tree runs its own
-full-decode path), and claim resolution for every outbox entity (batched
-per-account read vs that tree's per-entity reads). Both are the paths the
-product actually calls. Run it via the `Perf gate backtest` workflow with
+full-decode path), claim resolution for every outbox entity (batched
+per-account read vs that tree's per-entity reads), and the delivery-status
+read over four dedicated accounts seeded into the acknowledged, blocked,
+pending and batched event shapes — a tree that exports the optimized
+`outboxDeliveryStatus` read runs it too, with both projections required to
+agree; a tree without it runs only the full status read. All are the paths
+the product actually calls. Run it via the `Perf gate backtest` workflow with
 `bench=true`, or locally where a PMU is available:
 
 ```sh
@@ -154,8 +158,10 @@ pnpm run perf:selfcheck     # harness self-test: fixtures, validators, scenarios
 Run the selfcheck whenever you touch `fixtures.py`, `fakellm.py`,
 `sampler.py` or `scenarios.py`: it regenerates every fixture twice and
 asserts byte-identical output, runs the product's own validators over the
-aged fixture (`tools/perf/validate-fixture.ts`, needs bun), smoke-runs all
-three scenarios, and asserts the aged reporting queue actually engaged
+aged fixture (`tools/perf/validate-fixture.ts`, needs bun), smoke-runs
+every scenario — the ledger lane in both appender modes, asserting the
+mixed appender's evidence is ingested — and asserts the aged reporting
+queue actually engaged
 (its state file is rewritten when the 413-rejected pass applies backoff).
 The CI workflow runs it as its first step, before the timed scenarios.
 
@@ -170,6 +176,20 @@ Run one scenario by hand (results land in the given JSONL):
 python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario idle \
     --out runs.jsonl --reps 1 --idle 70
 ```
+
+### Ledger appender modes
+
+The ledger scenario appends live work records to the fixture's journals
+while the binary idles. `--appender receipt` (the default) emits unresolved
+saved-plan receipts — the per-pass re-read workload. `--appender mixed`
+additionally appends `tool_execution`/`request_response` evidence against
+the seeded requests' exact IDs (work, session, request, repository): an
+immediate first batch so the startup pass settles those groups, then one
+per ~25 s — every later batch is an update to already-settled translations,
+the workload a persistent group cache has to serve. The workflow's
+`appender` input selects the mode per dispatch; every run record carries
+it, and the selfcheck smoke-runs both modes and asserts the appended
+evidence was actually ingested by the binary.
 
 Classify recorded runs without re-running:
 
