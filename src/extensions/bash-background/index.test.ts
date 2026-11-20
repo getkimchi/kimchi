@@ -18,10 +18,9 @@ import { createCommandContext, createContext, createToolContext } from "../__moc
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
 import { createFakeOps } from "./__mocks__/fake-bash-ops.js"
-import { USER_STOP_REASON } from "./bash-display.js"
 import { CommandsPanel } from "./commands-panel.js"
 import bashBackgroundExtension from "./index.js"
-import { DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
+import { DEFAULT_BASH_PROCESS_LIMIT_SECONDS, USER_STOP_REASON } from "./process-registry.js"
 import { type BashSessionState, getSessionState, setSessionState } from "./session-registry.js"
 
 const sessionCtx = createContext({ cwd: "/tmp" })

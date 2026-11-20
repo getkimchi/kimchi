@@ -58,6 +58,9 @@ export const DEFAULT_BASH_PROCESS_LIMIT_SECONDS = 3600
 /** Reason recorded when the harness safety limit kills a process. */
 export const SAFETY_LIMIT_REASON = "safety-limit"
 
+/** Kill reason for a stop the user asked for. Its exit must not wake the model. */
+export const USER_STOP_REASON = "user-stop"
+
 /**
  * Inline output budget for terminal results. Output beyond either limit is
  * cut to its tail inline, and the complete output is kept in the process

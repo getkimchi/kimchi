@@ -36,13 +36,13 @@ import { bashToolDescription } from "../bash-tool-guard.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { BASH_CONTROL_TOOL_NAME } from "./bash-control-tool.js"
-import { USER_STOP_REASON } from "./bash-display.js"
 import { CommandsPanel } from "./commands-panel.js"
 import {
 	createProcessRegistry,
 	DEFAULT_BASH_PROCESS_LIMIT_SECONDS,
 	type ProcessDisplaySnapshot,
 	type ProcessRegistry,
+	USER_STOP_REASON,
 } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import { bashSessionKindFromContext } from "./session-policy.js"

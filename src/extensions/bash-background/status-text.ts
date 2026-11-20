@@ -12,13 +12,13 @@
  * observation, never a claim like "no progress".
  */
 import { relative } from "node:path"
-import { USER_STOP_REASON } from "./bash-display.js"
 import type { IncrementalSnapshot, ProcessEntry, ProcessState } from "./process-registry.js"
 import {
 	elapsedSecondsSince,
 	INLINE_OUTPUT_MAX_BYTES,
 	INLINE_OUTPUT_MAX_LINES,
 	SAFETY_LIMIT_REASON,
+	USER_STOP_REASON,
 } from "./process-registry.js"
 import type { BashSessionKind } from "./session-policy.js"
 

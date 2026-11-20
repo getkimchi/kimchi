@@ -18,8 +18,7 @@
 import { parseCodemodeSource } from "@earendil-works/pi-codemode"
 import { describe, expect, it } from "vitest"
 import { type FermentFsmContext, FSM_STATES, transition } from "../../../ferment/fsm.js"
-import { USER_STOP_REASON } from "../../bash-background/bash-display.js"
-import { SAFETY_LIMIT_REASON } from "../../bash-background/process-registry.js"
+import { SAFETY_LIMIT_REASON, USER_STOP_REASON } from "../../bash-background/process-registry.js"
 import { throwIfTerminal } from "../../bash-background/terminal-status.js"
 import fixtures from "./tool-error-classification.fixtures.json" with { type: "json" }
 import { classifyToolError } from "./tool-error-classification.js"
