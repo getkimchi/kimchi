@@ -354,7 +354,8 @@ or requires confirmation, the main session asks on the subagent's behalf in TUI
 and ACP. The prompt names the subagent and its task; allow once runs one call,
 "remember for this subagent" stores the rule in the child's session across
 resumes, and deny returns the decision to the child. If no parent surface can
-ask, the route fails, or nobody answers within five minutes, the call is blocked
+ask, the route fails, or nobody answers within five minutes of the prompt being
+shown, the call is blocked
 and the subagent is told to report that it needs the user's approval. This adds a
 classifier request for each such call that reaches the permission decision.
 

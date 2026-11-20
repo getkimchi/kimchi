@@ -39,6 +39,7 @@ import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
+import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -1164,6 +1165,164 @@ describe("classifier outage escalation to the parent session", () => {
 		await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledTimes(2))
 		answers[1]?.(shown[1]?.[0])
 		expect(await ownCall).toBeUndefined()
+	})
+
+	// A request that is held back is not on screen. It waits outside the
+	// prompt queue, so it cannot keep the session's own prompt from opening.
+	describe("a subagent request that is held back", () => {
+		const ownEvent = { ...event, toolCallId: "own-call" }
+
+		function createRecordingSelect() {
+			const shown: Array<{ title: string; choices: string[]; answer: (choice: string | undefined) => void }> = []
+			const select = vi.fn(
+				(title: string, choices: string[], opts?: { signal?: AbortSignal }) =>
+					new Promise<string | undefined>((resolve) => {
+						if (opts?.signal?.aborted) return resolve(undefined)
+						opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true })
+						shown.push({ title, choices, answer: resolve })
+					}),
+			)
+			return { select: select as unknown as ExtensionUIContext["select"], calls: select, shown }
+		}
+
+		const waitingLineShown = (parentCtx: ExtensionContext) =>
+			expect(parentCtx.ui.setStatus).toHaveBeenCalledWith("permission-subagent-wait", expect.any(String))
+
+		it("lets the session's own prompt open at once, and opens after the draft is cleared", async () => {
+			const { parent, parentCtx, worker, workerCtx } = await setupEscalation()
+			parentCtx.mode = "tui"
+			let draft = "unfinished draft"
+			parentCtx.ui.getEditorText = vi.fn(() => draft)
+			const ui = createRecordingSelect()
+			parentCtx.ui.select = ui.select
+			const bells: Array<{ tool_use_id?: string }> = []
+			parent.pi.events.on("notification", (payload: unknown) => bells.push(payload as { tool_use_id?: string }))
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+
+			const subagentCall = worker.fire("tool_call", event, workerCtx)
+			await vi.waitFor(() => waitingLineShown(parentCtx))
+			expect(ui.calls).not.toHaveBeenCalled()
+
+			const ownCall = parent.fire("tool_call", ownEvent, parentCtx)
+			await vi.waitFor(() => expect(ui.calls).toHaveBeenCalledTimes(1))
+			expect(ui.shown[0]?.title).not.toContain("Subagent")
+			ui.shown[0]?.answer(ui.shown[0].choices[0])
+			expect(await ownCall).toBeUndefined()
+
+			// Several polls later the draft still holds the subagent's prompt back.
+			await new Promise((resolve) => setTimeout(resolve, 120))
+			expect(ui.calls).toHaveBeenCalledTimes(1)
+			draft = ""
+			await vi.waitFor(() => expect(ui.calls).toHaveBeenCalledTimes(2))
+			expect(ui.shown[1]?.title).toContain("Subagent explorer")
+			ui.shown[1]?.answer(ui.shown[1].choices[0])
+			expect(await subagentCall).toBeUndefined()
+			// Held back and then shown: still one bell for the request.
+			expect(bells.filter((bell) => bell.tool_use_id === event.toolCallId)).toHaveLength(1)
+		})
+
+		it("gives its place in the queue back when another dialog takes the selector's place", async () => {
+			const { parent, parentCtx, worker, workerCtx } = await setupEscalation()
+			parentCtx.mode = "tui"
+			const ui = createRecordingSelect()
+			parentCtx.ui.select = ui.select
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+
+			const subagentCall = worker.fire("tool_call", event, workerCtx)
+			await vi.waitFor(() => expect(ui.calls).toHaveBeenCalledTimes(1))
+			expect(ui.shown[0]?.title).toContain("Subagent explorer")
+
+			let closeQuestion: () => void = () => {}
+			const question = withBlocked(
+				parent.pi.events,
+				"Questionnaire",
+				() =>
+					new Promise<void>((resolve) => {
+						closeQuestion = resolve
+					}),
+			)
+			await vi.waitFor(() => waitingLineShown(parentCtx))
+
+			// The subagent's request no longer holds the queue: the session's own
+			// prompt opens while the question is still open.
+			const ownCall = parent.fire("tool_call", ownEvent, parentCtx)
+			await vi.waitFor(() => expect(ui.calls).toHaveBeenCalledTimes(2))
+			expect(ui.shown[1]?.title).not.toContain("Subagent")
+			ui.shown[1]?.answer(ui.shown[1].choices[0])
+			expect(await ownCall).toBeUndefined()
+
+			closeQuestion()
+			await question
+			await vi.waitFor(() => expect(ui.calls).toHaveBeenCalledTimes(3))
+			expect(ui.shown[2]?.title).toContain("Subagent explorer")
+			ui.shown[2]?.answer(ui.shown[2].choices[0])
+			expect(await subagentCall).toBeUndefined()
+		})
+
+		it("does not time out while it is held back, and can be answered afterwards", async () => {
+			vi.useFakeTimers()
+			try {
+				const { parentCtx, worker, workerCtx } = await setupEscalation()
+				parentCtx.mode = "tui"
+				let draft = "unfinished draft"
+				parentCtx.ui.getEditorText = vi.fn(() => draft)
+				const ui = createRecordingSelect()
+				parentCtx.ui.select = ui.select
+				vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+				let settled = false
+				const subagentCall = worker.fire("tool_call", event, workerCtx).then((result) => {
+					settled = true
+					return result
+				})
+
+				await vi.advanceTimersByTimeAsync(ESCALATED_PROMPT_TIMEOUT_MS + 60_000)
+				expect(settled).toBe(false)
+				expect(ui.calls).not.toHaveBeenCalled()
+
+				draft = ""
+				await vi.advanceTimersByTimeAsync(100)
+				expect(ui.calls).toHaveBeenCalledTimes(1)
+				ui.shown[0]?.answer(ui.shown[0].choices[0])
+				expect(await subagentCall).toBeUndefined()
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("still fails closed when the selector is shown and nobody answers in time", async () => {
+			vi.useFakeTimers()
+			try {
+				const { parentCtx, worker, workerCtx } = await setupEscalation()
+				parentCtx.mode = "tui"
+				let draft = "unfinished draft"
+				parentCtx.ui.getEditorText = vi.fn(() => draft)
+				const ui = createRecordingSelect()
+				parentCtx.ui.select = ui.select
+				vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+				let settled = false
+				const subagentCall = worker.fire("tool_call", event, workerCtx).then((result) => {
+					settled = true
+					return result
+				})
+
+				// Most of the answer time passes while the request is held back.
+				await vi.advanceTimersByTimeAsync(ESCALATED_PROMPT_TIMEOUT_MS - 1000)
+				draft = ""
+				await vi.advanceTimersByTimeAsync(100)
+				expect(ui.calls).toHaveBeenCalledTimes(1)
+
+				// The answer time starts when the selector opens.
+				await vi.advanceTimersByTimeAsync(ESCALATED_PROMPT_TIMEOUT_MS - 1000)
+				expect(settled).toBe(false)
+				await vi.advanceTimersByTimeAsync(1000)
+				expect(await subagentCall).toMatchObject({
+					block: true,
+					reason: classifierBlockReason("no_candidates", true) + classifierBlockReasonCodeTail("no_candidates"),
+				})
+			} finally {
+				vi.useRealTimers()
+			}
+		})
 	})
 
 	it("re-evaluates while a draft blocks the selector after a mode change to yolo", async () => {
