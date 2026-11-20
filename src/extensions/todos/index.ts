@@ -221,9 +221,12 @@ function checkinListBlocks(scopes: readonly TodoScope[], sessionId: string, revi
  *  command-bearing tools their first line, others just the tool name. Both
  *  are normalized to a single line and capped (path at 200 chars, the
  *  convention the permissions prompts use; command at 80) so a model-authored
- *  newline or oversized value cannot break the reminder format. */
+ *  newline or oversized value cannot break the reminder format. A missing
+ *  input degrades to the bare tool name — like the `!toolName` guard above,
+ *  the handler never throws on a malformed event, so the block decision
+ *  itself cannot be lost. */
 function describeWorkToolCall(event: ToolCallEvent): string {
-	const input = event.input as Record<string, unknown>
+	const input = (event.input ?? {}) as Record<string, unknown>
 	if (typeof input.path === "string" && input.path !== "") {
 		const path = input.path.split("\n")[0]?.trim() ?? ""
 		if (path !== "") return `${event.toolName}(${path.slice(0, 200)})`

@@ -962,6 +962,31 @@ describe("todo check-in gate", () => {
 		expect(claimGateBlockedWork("session")).toEqual([`write(${"a".repeat(200)})`, "write(real/path.txt)"])
 	})
 
+	it("blocks safely when a work call carries no input, degrading to the tool name", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		await fireInput(harness, ctx)
+
+		// A malformed event must not take the block decision down with it.
+		const result = await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "w1", toolName: "bash", input: null },
+			ctx,
+		)
+		expect(result).toMatchObject({ block: true })
+
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		expect(claimGateBlockedWork("session")).toEqual(["bash"])
+	})
+
 	it("surfaces the re-issue reminder on the closing todo write's own result, drained once", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
