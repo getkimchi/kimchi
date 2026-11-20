@@ -165,6 +165,28 @@
 #     keep the legacy handshake unless they pin a version explicitly.
 #   - config (+dist mirrors): adapt the 5.3.2 dropped-credential notices
 #     to replay the same field-wise merge as the actual loader.
+#   - Session-scoped private listings (2026-11). MCP servers that mark their
+#     listings identity-scoped (tools/list cacheScope: "private") broke two
+#     user surfaces after /mcp reconnect:
+#       * prompt-autocomplete.ts (new) + index.ts: live autocomplete wrapper
+#         stacked via ctx.ui.addAutocompleteProvider so prompt commands
+#         registered mid-session (first connect, reconnect, list-changed
+#         refresh) show in the TUI slash dropdown without /reload, including
+#         argument completions resolved from live metadata (the base
+#         provider only knows its one-time snapshot); lookup scans by exact
+#         commandName because promptMetadata is keyed by RAW config server
+#         names while commands embed the sanitized part. Both lookup paths
+#         reject absent/disabled server definitions. Invocation suggestions
+#         are limited to owned, unambiguous registry matches; raw `commandName`
+#         is not assumed to resolve to a duplicate `name:N` alias or owner.
+#         Remove when upstream Pi rebuilds its autocomplete provider on
+#         command registration (or registerCommand emits an event).
+#       * commands.ts refreshCacheAfterReconnect: 5.3.2's withSessionMetadata
+#         overlay already renders this session's private and zero-TTL catalogs
+#         when the panel opens. Refreshing a panel with ctrl+r must use the
+#         same overlay rather than the persistent cache alone. Remove when
+#         upstream shares the overlay across the panel refresh path too.
+
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -202,14 +224,23 @@ index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091fa
      }
      return manifest.piConfig
    } catch {
-#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
-#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
-#     drive ui.select/ui.input but not AltScreen overlays)
 diff --git a/commands.ts b/commands.ts
-index da763cf88cc2f9556b6c678bebf084cf667d1b96..7d051051edee8105abcfb6cbbaa3dbf11e20ba9a 100644
+index da763cf88cc2f9556b6c678bebf084cf667d1b96..fee1c9f9313cd4646700d53e1b3f7b2ce8729412 100644
 --- a/commands.ts
 +++ b/commands.ts
-@@ -880,6 +880,47 @@ export async function openMcpPanel(
+@@ -762,8 +762,9 @@ function buildMcpPanelCallbacks(
+     getFailureMessage: (serverName: string) => state.blockedProjectServers?.get(serverName)?.reason
+       ?? authStatusFailures.get(serverName) ?? getFailureMessage(state, serverName),
+     refreshCacheAfterReconnect: (serverName: string) => {
+-      const freshCache = loadMetadataCache();
+-      return freshCache?.servers?.[serverName] ?? null;
++      // Match openMcpPanel(): private and zero-TTL entries captured by this
++      // session are valid here, including after a live ctrl+r reconnect.
++      return withSessionMetadata(loadMetadataCache(), state.config, state.sessionMetadata)?.servers?.[serverName] ?? null;
+     },
+   };
+ }
+@@ -880,6 +881,47 @@ export async function openMcpPanel(
    return { configChanged };
  }
  
@@ -257,7 +288,7 @@ index da763cf88cc2f9556b6c678bebf084cf667d1b96..7d051051edee8105abcfb6cbbaa3dbf1
  export async function openMcpAuthPanel(
    state: McpExtensionState,
    pi: ExtensionAPI,
-@@ -888,8 +929,7 @@ export async function openMcpAuthPanel(
+@@ -888,8 +930,7 @@ export async function openMcpAuthPanel(
  ): Promise<PanelFlowResult> {
    if (!ctx.hasUI) return { configChanged: false };
    if (!canRenderPanel(ctx)) {
@@ -267,6 +298,11 @@ index da763cf88cc2f9556b6c678bebf084cf667d1b96..7d051051edee8105abcfb6cbbaa3dbf1
    }
    if (state.programmaticConfig) {
      ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
+@@ -935,3 +976,4 @@ export async function openMcpAuthPanel(
+ 
+   return { configChanged: false };
+ }
++
 diff --git a/config.ts b/config.ts
 index db256f1df21ab82aafa6a5517f68289be3d8423f..67211e07c55a579791aeed02ca65fa60dbb7263b 100644
 --- a/config.ts
@@ -1112,10 +1148,18 @@ index 298d5f63e404d6743be3cc7d0657ee8191d5bc51..9442387b57d62ed46b7bc1a25869b656
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/index.ts b/index.ts
-index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..884991fd586af6ef8e22095a04e2a8ee45390a36 100644
+index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..eb2a5ad0479bf9d13bf5bbdac4a2a9872c5e8e9b 100644
 --- a/index.ts
 +++ b/index.ts
-@@ -210,6 +210,7 @@ function resolveNamespaceEnvOverride(
+@@ -15,6 +15,7 @@ import { buildProxyDescription, getLargeDirectToolsAdvisory, getMissingConfigure
+ import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
+ import { isServerCacheValid, loadMetadataCache, parseDirectToolSelectors, withSessionMetadata, type MetadataCache } from "./metadata-cache.ts";
+ import { createPromptCommand, resolveCachedPrompts } from "./prompts.ts";
++import { createMcpPromptAutocompleteProvider } from "./prompt-autocomplete.ts";
+ import { logger } from "./logger.ts";
+ import { formatMcpFooterStatus, formatTerminalError, getConfigPathFromArgv, normalizeDirectToolInputSchema, truncateAtWord } from "./utils.ts";
+ import { createMcpDirectToolCallRenderer, createMcpProxyToolCallRenderer, createMcpScriptToolCallRenderer, createMcpToolResultRenderer, resolveMcpToolRenderOptions } from "./tool-result-renderer.ts";
+@@ -210,10 +211,27 @@ function resolveNamespaceEnvOverride(
  
  function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
    const sessionConfig = options.config !== undefined ? cloneMcpConfig(options.config) : undefined;
@@ -1123,7 +1167,48 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..884991fd586af6ef8e22095a04e2a8ee
    const programmaticConfig = sessionConfig !== undefined;
    // Before the first config load, so every load in this process agrees.
    if (!programmaticConfig) setPiMcpConfigEnabled(piSupportsMcp(pi));
-@@ -1099,6 +1100,8 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   let state: McpExtensionState | null = null;
++
++  // Kimchi host: one-time registration of the live prompt-command autocomplete
++  // wrapper. The wrapper closes over `state` via a getter, so owner handoffs
++  // and hands-off state resets need no re-registration. Registration is
++  // interactive-only: outside the TUI broker the call is a documented no-op.
++  let promptAutocompleteWrapperRegistered = false;
++  const registerPromptAutocompleteWrapper = (ctx: ExtensionContext): void => {
++    if (promptAutocompleteWrapperRegistered) return;
++    if (!ctx.hasUI || ctx.mode !== "tui") return;
++    try {
++      ctx.ui.addAutocompleteProvider((base) => createMcpPromptAutocompleteProvider(() => state, base, resolvePromptInvocation));
++      promptAutocompleteWrapperRegistered = true;
++    } catch (error) {
++      logger.debug(`MCP: prompt autocomplete wrapper registration failed: ${error instanceof Error ? error.message : String(error)}`);
++    }
++  };
+   let sessionCtx: ExtensionContext | null = null;
+   let initPromise: Promise<McpExtensionState> | null = null;
+   let initStartedPromise: Promise<void> | null = null;
+@@ -796,6 +814,20 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+ 
+   const registeredPromptCommands = new Set<string>();
+ 
++  function resolvePromptInvocation(commandName: string): string | null {
++    if (!registeredPromptCommands.has(commandName)) return null;
++    try {
++      const matches = pi.getCommands().filter((command) => command.name === commandName);
++      // Public command info exposes raw names, not Pi's resolved invocation
++      // names. When the raw name is shared, its owner and :N alias cannot be
++      // established here; fail closed and leave the base provider in charge.
++      return matches.length === 1 ? commandName : null;
++    } catch {
++      // Lifecycle handoffs can temporarily make the registry inaccessible.
++      return null;
++    }
++  }
++
+   function registerPromptCommands(specs: Iterable<PromptMetadata>): void {
+     for (const spec of specs) {
+       if (registeredPromptCommands.has(spec.commandName)) {
+@@ -1099,6 +1131,8 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
                ...(sessionConfig !== undefined ? { config: sessionConfig } : {}),
              }
            : {}),
@@ -1132,7 +1217,21 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..884991fd586af6ef8e22095a04e2a8ee
          oauthRuntime,
          excludeProjectServers,
          // Pi awaits session_start handlers in order. Returning before the approval
-@@ -1706,8 +1709,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+@@ -1164,6 +1198,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+           syncToolSurface(ctx);
+         };
+         guard();
++        // Kimchi host: the TUI autocomplete provider snapshots the registered
++        // command list once. A live wrapper over it surfaces prompt commands
++        // registered later in the session. One registration per process — the
++        // wrapper reads state at keystroke time, so owner handoffs need no
++        // re-registration. ctx.ui is a no-op broker outside interactive mode.
++        registerPromptAutocompleteWrapper(ctx);
++        guard();
+         syncPromptCommands();
+         guard();
+         syncToolSurface(ctx);
+@@ -1706,8 +1747,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
      },
    });
    registerMcpCommand("mcp-adapter");
@@ -1148,7 +1247,7 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..884991fd586af6ef8e22095a04e2a8ee
    // Opt-in `mcp.panel.open` keys open the panel without touching the editor draft.
    // Shortcut handlers get no reload(), so dispatch the command: its context has one.
    if (!programmaticConfig) {
-@@ -2355,6 +2363,11 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
+@@ -2355,6 +2401,11 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
      installMcpAdapter(pi, {
        ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
        ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
@@ -1160,13 +1259,6 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..884991fd586af6ef8e22095a04e2a8ee
      });
    };
  }
-#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
-#     the call-path readiness gates never re-read the shared credential store
-#     for a plain OAuth server in needs-auth, so a live session stayed broken
-#     after re-authentication elsewhere (settings probe, another chat) wrote a
-#     fresh credential; upstream tracking issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     retries needs-auth routes against the store without an interactive flow)
 diff --git a/init.ts b/init.ts
 index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3fdc8c34b 100644
 --- a/init.ts
@@ -1191,7 +1283,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3
      toolMetadata,
 @@ -670,6 +674,12 @@ function captureMetadata(
    };
-
+ 
    (state.sessionMetadata ??= new Map()).set(serverName, entry);
 +  try {
 +    state.onSessionMetadata?.(serverName, entry);
@@ -1956,7 +2048,7 @@ index 16bde6bf20ef16ecf44a7bcd2edb4a2c56c0db0e..65956bd2d582acbdba35a66c454a8134
  export type McpOAuthStorageOptions = AuthStorageOptions;
  export interface McpOAuthTokenOptions {
 diff --git a/package.json b/package.json
-index b710947a510c2b73c47815b1cb21f1d9a25a0978..51be54825b8fc31b6761e88ec3f6d58ed2378f6e 100644
+index b710947a510c2b73c47815b1cb21f1d9a25a0978..aad68fce29ac7fda182f7972b1b738ed7001551b 100644
 --- a/package.json
 +++ b/package.json
 @@ -20,6 +20,11 @@
@@ -1971,6 +2063,15 @@ index b710947a510c2b73c47815b1cb21f1d9a25a0978..51be54825b8fc31b6761e88ec3f6d58e
      "./host-managed": {
        "types": "./host-managed.ts",
        "import": "./host-managed.ts",
+@@ -107,7 +112,7 @@
+     "namespace-tools.ts",
+     "mcp-references.ts",
+     "commands.ts",
+-    "prompts.ts",
++    "prompts.ts", "prompt-autocomplete.ts",
+     "onboarding-state.ts",
+     "pi-signin-import.ts",
+     "pi-builtin-mcp.ts",
 diff --git a/pi-builtin-mcp.ts b/pi-builtin-mcp.ts
 index 4e3f8775e9e4770d776ed8e92eab80edc5f3f8df..5657644bb7c17ac9c0ead1886dcb20ad1bf644ea 100644
 --- a/pi-builtin-mcp.ts
@@ -2010,7 +2111,143 @@ index 51e5bd594dd66fa4f271fa3bd8a6130caba1d9bf..733cdbfee4fb9c761e9b725fa793736f
 +    if (process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST === "1") continue;
      const approved = isApproved(approvals, projectRoot, name, definition);
      if (projectTrusted && (approved || (!interactive && loaded.projectServerPolicy === "allow"))) continue;
-
+ 
+diff --git a/prompt-autocomplete.ts b/prompt-autocomplete.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..01bf2d87c50f03e0f1d7ea2ead1be8b42f946c84
+--- /dev/null
++++ b/prompt-autocomplete.ts
+@@ -0,0 +1,130 @@
++// Host integration: live MCP prompt commands in the TUI autocomplete.
++// Tracking: upstream Pi rebuilds its autocomplete provider from a one-time
++// snapshot of registered commands. Remove this wrapper when Pi rebuilds the
++// provider on command registration (or registerCommand emits an event).
++import type { AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
++import { completePromptArgs } from "./prompts.ts";
++import type { McpExtensionState } from "./state.ts";
++import { isServerDisabled, type PromptMetadata } from "./types.ts";
++import { truncateAtWord } from "./utils.ts";
++
++export type McpPromptAutocompleteState = Pick<McpExtensionState, "config" | "promptMetadata" | "provisionalInstalls">;
++export type ResolveMcpPromptInvocation = (commandName: string) => string | null;
++
++/**
++ * Kimchi host integration — live MCP prompt-command autocomplete.
++ *
++ * Upstream Pi builds its autocomplete provider once from a snapshot of the
++ * extension-runner command registry, and `pi.registerCommand` emits no event,
++ * so prompt commands registered mid-session (first connect, /mcp reconnect,
++ * list-changed refresh) never appear in the TUI dropdown until /reload — even
++ * though the command already executes. This wrapper reads the adapter's live
++ * prompt metadata at keystroke time and merges matching `mcp__*` prompt
++ * commands into the base provider's answer. Dedupe by value keeps commands
++ * that already made the snapshot single-listed.
++ *
++ * Kept in its own module so index.ts can register the wrapper without
++ * statically importing commands.ts (which is intentionally lazy-loaded).
++ * Remove when Pi rebuilds its autocomplete provider on command registration.
++ */
++export function createMcpPromptAutocompleteProvider(
++  getState: () => McpPromptAutocompleteState | null,
++  base: AutocompleteProvider,
++  resolveInvocation: ResolveMcpPromptInvocation,
++): AutocompleteProvider {
++  return {
++    ...(base.triggerCharacters !== undefined ? { triggerCharacters: base.triggerCharacters } : {}),
++    async getSuggestions(lines, cursorLine, cursorCol, options) {
++      const suggestions = await base.getSuggestions(lines, cursorLine, cursorCol, options);
++      const state = getState();
++      if (!state || options.signal.aborted) return suggestions;
++      // Mirror CombinedAutocompleteProvider's slash context: text before the
++      // cursor (trimmed) is a single "/" token with no space.
++      const currentLine = lines[cursorLine] || "";
++      const commandText = currentLine.slice(0, cursorCol).trimStart();
++      if (!commandText.startsWith("/")) return suggestions;
++      const spaceIndex = commandText.indexOf(" ");
++      if (spaceIndex !== -1) {
++        // Argument phase. The base provider resolves arguments against
++        // its one-time snapshot, so it can only help commands that were
++        // registered before the provider was built — for those it has
++        // already answered. For mid-session commands the snapshot lookup
++        // fails and the base returns nothing; serve the same completions
++        // from the live metadata instead (mirrors
++        // createPromptCommand.getArgumentCompletions).
++        if (suggestions) return suggestions;
++        const commandName = commandText.slice(1, spaceIndex);
++        const spec = findLivePromptSpec(state, commandName, resolveInvocation);
++        if (!spec || spec.arguments.length === 0) return suggestions;
++        const argumentText = commandText.slice(spaceIndex + 1);
++        const argItems = completePromptArgs(spec, argumentText);
++        return argItems && argItems.length > 0 ? { items: argItems, prefix: argumentText } : suggestions;
++      }
++      const prefix = commandText.slice(1);
++      if (!prefix.startsWith("mcp__")) return suggestions;
++      const merged = [...(suggestions?.items ?? [])];
++      const seen = new Set(merged.map((item) => item.value));
++      // Trust + rendering parity with syncPromptCommands: provisional
++      // installs never surface, and descriptions are truncated the same way
++      // the registered command builds them.
++      for (const [serverName, prompts] of state.promptMetadata ?? new Map<string, PromptMetadata[]>()) {
++        if (!isLivePromptServer(state, serverName)) continue;
++        for (const spec of prompts) {
++          const invocationName = resolveInvocation(spec.commandName);
++          if (!invocationName || !invocationName.startsWith(prefix)) continue;
++          // Only invocation names confirmed by the actual command registry are
++          // advertised. Pi can rename duplicate registrations to `name:N`; raw
++          // metadata cannot establish ownership of that name or its alias.
++          if (seen.has(invocationName)) continue;
++          seen.add(invocationName);
++          const base = spec.description || spec.title || `MCP prompt from ${spec.serverName}`;
++          merged.push({
++            value: invocationName,
++            label: invocationName,
++            description: truncateAtWord(`MCP: ${base}`, 120) || `MCP prompt from ${spec.serverName}`,
++          });
++        }
++      }
++      if (merged.length === 0 || merged.length === (suggestions?.items.length ?? 0)) return suggestions;
++      return { items: merged, prefix: suggestions?.prefix ?? commandText } satisfies AutocompleteSuggestions;
++    },
++    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
++      return base.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
++    },
++    ...(base.shouldTriggerFileCompletion
++      ? {
++          shouldTriggerFileCompletion: (lines: string[], cursorLine: number, cursorCol: number) =>
++            base.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? false,
++        }
++      : {}),
++  };
++}
++
++/** Resolve the live prompt metadata behind an `mcp__<server>__<prompt>`
++ * command name, applying the same provisional-install trust filter as the
++ * command list so the wrapper never exceeds the command registry.
++ *
++ * Scans by exact commandName rather than reverse-parsing the command,
++ * because `state.promptMetadata` is keyed by the RAW config server name
++ * while commands embed its sanitized prefix-part (hyphens become
++ * underscores; `toolPrefix: "mcp"` rewrites the shape) — splitting on
++ * "__" would silently miss every sanitizable name. */
++function isLivePromptServer(state: McpPromptAutocompleteState, serverName: string): boolean {
++  if (state.provisionalInstalls?.has(serverName)) return false;
++  const definition = state.config.mcpServers[serverName];
++  return definition !== undefined && !isServerDisabled(definition);
++}
++
++function findLivePromptSpec(
++  state: McpPromptAutocompleteState,
++  commandName: string,
++  resolveInvocation: ResolveMcpPromptInvocation,
++): PromptMetadata | null {
++  if (!commandName.startsWith("mcp__")) return null;
++  for (const [serverName, prompts] of state.promptMetadata ?? []) {
++    if (!isLivePromptServer(state, serverName)) continue;
++    const spec = prompts.find((p) => resolveInvocation(p.commandName) === commandName);
++    if (spec) return spec;
++  }
++  return null;
++}
 diff --git a/proxy-modes.ts b/proxy-modes.ts
 index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98a070add7 100644
 --- a/proxy-modes.ts
