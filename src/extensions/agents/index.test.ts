@@ -2681,6 +2681,23 @@ describe("user stop of background agents", () => {
 		expect(listBackgroundWork("agents-list")).toEqual([])
 	})
 
+	it("never lists or stops a queued cloud agent", async () => {
+		const { ctx, harness, manager } = await startSession("agents-queued-remote")
+		const queuedRemote = makeRunningRecord({ id: "qr", status: "queued", remote: true })
+		manager._records.set("qr", queuedRemote)
+		manager._records.set("bg", makeRunningRecord({ id: "bg", description: "local", isBackground: true }))
+		manager.abort.mockReturnValue(true)
+
+		expect(listBackgroundWork("agents-queued-remote")).toEqual([{ kind: "agent", id: "bg", label: "local" }])
+
+		await stopBackgroundWork("agents-queued-remote", [{ kind: "agent", id: "qr", label: "qr" }])
+		expect(manager.abort).not.toHaveBeenCalledWith("qr")
+		expect(queuedRemote.status).toBe("queued")
+		expect(queuedRemote.userStopped).toBeUndefined()
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
+	})
+
 	it("stops a background agent and its completion notice does not start a turn", async () => {
 		const { harness, ctx, manager } = await startSession("agents-stop")
 		const record = makeRunningRecord({ id: "bg", isBackground: true })
