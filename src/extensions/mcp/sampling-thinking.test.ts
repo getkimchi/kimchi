@@ -5,6 +5,7 @@ import {
 	handleSamplingRequest,
 	type SamplingHandlerOptions,
 } from "../../../node_modules/pi-mcp-adapter/dist/sampling-handler.js"
+import { createModelRegistry } from "../__mocks__/model-registry.js"
 
 const mocks = vi.hoisted(() => ({
 	complete: vi.fn(),
@@ -39,7 +40,7 @@ function createOptions(overrides: Partial<SamplingHandlerOptions> = {}): Samplin
 		serverName: "fixture",
 		autoApprove: true,
 		modelRegistry: {
-			getAvailable: vi.fn(() => [model]),
+			...createModelRegistry([model]),
 			complete: mocks.complete,
 			streamSimple: mocks.streamSimple,
 		},
@@ -99,7 +100,7 @@ describe("MCP sampling thinking level (compiled adapter)", () => {
 	it("falls back to complete without reasoning when streamSimple is unavailable", async () => {
 		const result = await handleSamplingRequest(
 			createOptions({
-				modelRegistry: { getAvailable: () => [model], complete: mocks.complete },
+				modelRegistry: { ...createModelRegistry([model]), complete: mocks.complete },
 				getThinkingLevel: () => "high",
 			}),
 			samplingRequest({ locale: "fr" }),
