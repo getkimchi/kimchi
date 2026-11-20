@@ -1,4 +1,3 @@
-# Patch: Kimchi host integrations for pi-mcp-adapter 5.3.2
 #
 # Tracking:
 #   - Project config directory: https://github.com/nicobailon/pi-mcp-adapter/issues/491
@@ -61,7 +60,28 @@
 #     and remove the hunk when
 #     upstream exposes session-bound catalog metadata (including private
 #     authorization scopes) to host authorization policy without persisting it.
+#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
+#     the call-path readiness gates never re-read the shared credential store
+#     for a plain OAuth server in needs-auth, so a live session stayed broken
+#     after re-authentication elsewhere (settings probe, another chat) wrote a
+#     fresh credential; upstream tracking issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     retries needs-auth routes against the store without an interactive flow)
+#   - Initial runtime server discovery: upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when runtime-scoped
+#     servers can join every initialization's discovery without programmatic
+#     config, while preserving configPath, file installs, and resume reloads)
 # Changes:
+#   - types/index/init (+dist type mirror): add initialRuntimeServers and merge
+#     those proxy-only entries before startup discovery, including lazy close,
+#     metadata publication, lifecycle setup, and per-session config reloads.
+#     initialRuntimeDiscoveryTimeoutMs bounds only this discovery pass, leaving
+#     later tool calls on normal per-server/global request timeouts. Resident
+#     connections also reset the task channel's captured default (mcp-tasks
+#     setDefaultTimeoutMs) so tasks/* polls keep the normal timeout instead of
+#     the discovery one. Runtime-scoped servers always join startup
+#     discovery: a valid-but-empty or private-scoped cached catalog never
+#     suppresses the live listing the host asked for.
 #   - types/init/state (+dist type mirror): notify an optional host observer of
 #     newly captured in-memory server catalogs for session-bound policy; this
 #     does not bypass private-cache validation or persist private metadata.
@@ -995,13 +1015,17 @@ index 45343f8e7ef172cded28b07b6495f99c8c806558..987f5e7edb4d23ebac622f63933f8a33
              let authState = supportsOAuth(definition)
                  ? definition.auth === undefined
 diff --git a/dist/types.d.ts b/dist/types.d.ts
-index cd540e229b893f6c9cec107b736dcea22ce4111c..5334db2102c5c552603cd1ead0829a9b86e11922 100644
+index cd540e229b893f6c9cec107b736dcea22ce4111c..c1004a3d0762ed1056b38fc52ea58b896e06e564 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -522,6 +522,19 @@ export interface McpConfig {
+@@ -522,6 +522,23 @@ export interface McpConfig {
  export interface McpAdapterOptions {
      config?: McpConfig;
      configPath?: string;
++    /** Runtime-scoped servers included in every initialization's startup discovery. Proxy-only and never persisted to config files. */
++    initialRuntimeServers?: Record<string, ServerEntry>;
++    /** Timeout for initial runtime discovery requests only; later tool calls use normal server/global timeouts. */
++    initialRuntimeDiscoveryTimeoutMs?: number;
 +    /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
 +    onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
 +    /** Create a session-bound observer during each runtime initialization. */
@@ -1018,7 +1042,7 @@ index cd540e229b893f6c9cec107b736dcea22ce4111c..5334db2102c5c552603cd1ead0829a9b
  }
  export type ServerDefinition = ServerEntry;
  export interface ToolMetadata {
-@@ -651,6 +664,7 @@ export interface McpPanelResult {
+@@ -651,6 +668,7 @@ export interface McpPanelResult {
      disabledChanges: Map<string, boolean>;
      cancelled: boolean;
  }
@@ -1148,7 +1172,7 @@ index 298d5f63e404d6743be3cc7d0657ee8191d5bc51..9442387b57d62ed46b7bc1a25869b656
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/index.ts b/index.ts
-index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..eb2a5ad0479bf9d13bf5bbdac4a2a9872c5e8e9b 100644
+index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..3fd39c7bc9e5ff25fad20e4fece1ed9c4225ede6 100644
 --- a/index.ts
 +++ b/index.ts
 @@ -15,6 +15,7 @@ import { buildProxyDescription, getLargeDirectToolsAdvisory, getMissingConfigure
@@ -1187,7 +1211,37 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..eb2a5ad0479bf9d13bf5bbdac4a2a987
    let sessionCtx: ExtensionContext | null = null;
    let initPromise: Promise<McpExtensionState> | null = null;
    let initStartedPromise: Promise<void> | null = null;
-@@ -796,6 +814,20 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+@@ -378,7 +396,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   const envRaw = process.env.MCP_DIRECT_TOOLS;
+   const envDirectToolOverride = parseEnvDirectToolOverride(envRaw);
+   const namespaceEnvOverride = resolveNamespaceEnvOverride(envRaw, envDirectToolOverride);
+-  const hasStartupServer = Object.values(earlyConfig.mcpServers).some((definition) =>
++  const hasStartupServer = [...Object.values(earlyConfig.mcpServers), ...Object.values(options.initialRuntimeServers ?? {})].some((definition) =>
+     !isServerDisabled(definition) && (definition.lifecycle === "eager" || definition.lifecycle === "keep-alive"));
+   const registeredDirectTools = new Map<string, string>();
+   const registeredDirectToolServers = new Map<string, string>();
+@@ -405,6 +423,10 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   // Session/runtime scoped server registrations from other extensions. They
+   // survive session restarts within this install and die with the process.
+   const runtimeServers = new Map<string, { definition: ServerEntry; entry: ServerEntry }>();
++  for (const [name, definition] of Object.entries(options.initialRuntimeServers ?? {})) {
++    const snapshotDefinition = structuredClone(definition);
++    runtimeServers.set(name, { definition: snapshotDefinition, entry: { ...structuredClone(snapshotDefinition), directTools: false } });
++  }
+   // Every server registered with Pi's `pi.registerMcpServer()`, and the ones applied to the
+   // session by name, with their config JSON; `registration` is null when skipped or overridden.
+   let piRegistered: RegisteredMcpServer[] = [];
+@@ -749,6 +771,9 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+       if (hasProjectServerDefinitions(loadedConfig)) return undefined;
+       config = loadedConfig;
+     }
++    for (const [name, { entry }] of runtimeServers) {
++      if (!Object.hasOwn(config.mcpServers, name)) config.mcpServers[name] = entry;
++    }
+     const cache = loadMetadataCache();
+     const enabledServers = Object.values(config.mcpServers).filter((definition) => !isServerDisabled(definition));
+     if (enabledServers.some((definition) => definition.lifecycle === "eager" || definition.lifecycle === "keep-alive")) return undefined;
+@@ -796,6 +821,20 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
  
    const registeredPromptCommands = new Set<string>();
  
@@ -1208,16 +1262,29 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..eb2a5ad0479bf9d13bf5bbdac4a2a987
    function registerPromptCommands(specs: Iterable<PromptMetadata>): void {
      for (const spec of specs) {
        if (registeredPromptCommands.has(spec.commandName)) {
-@@ -1099,6 +1131,8 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+@@ -1099,6 +1138,10 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
                ...(sessionConfig !== undefined ? { config: sessionConfig } : {}),
              }
            : {}),
 +        ...(defaultProtocolVersion !== undefined ? { defaultProtocolVersion } : {}),
 +        onSessionMetadata: options.createSessionMetadataObserver?.() ?? options.onSessionMetadata,
++        initialRuntimeServers: Object.fromEntries([...runtimeServers].map(([name, { entry }]) => [name, entry])),
++        initialRuntimeDiscoveryTimeoutMs: options.initialRuntimeDiscoveryTimeoutMs,
          oauthRuntime,
          excludeProjectServers,
          // Pi awaits session_start handlers in order. Returning before the approval
-@@ -1164,6 +1198,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+@@ -1144,7 +1187,9 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+         for (const [name, { entry }] of runtimeServers) {
+           guard();
+           if (Object.hasOwn(nextState.config.mcpServers, name)) {
+-            console.error(`MCP: runtime-registered server "${name}" now collides with a configured server; keeping the configured server`);
++            if (nextState.config.mcpServers[name] !== entry) {
++              console.error(`MCP: runtime-registered server "${name}" now collides with a configured server; keeping the configured server`);
++            }
+             continue;
+           }
+           nextState.config.mcpServers[name] = entry;
+@@ -1164,6 +1209,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
            syncToolSurface(ctx);
          };
          guard();
@@ -1231,7 +1298,7 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..eb2a5ad0479bf9d13bf5bbdac4a2a987
          syncPromptCommands();
          guard();
          syncToolSurface(ctx);
-@@ -1706,8 +1747,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+@@ -1706,8 +1758,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
      },
    });
    registerMcpCommand("mcp-adapter");
@@ -1247,9 +1314,12 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..eb2a5ad0479bf9d13bf5bbdac4a2a987
    // Opt-in `mcp.panel.open` keys open the panel without touching the editor draft.
    // Shortcut handlers get no reload(), so dispatch the command: its context has one.
    if (!programmaticConfig) {
-@@ -2355,6 +2401,11 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
+@@ -2354,7 +2411,14 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
+   return function mcpAdapter(pi: ExtensionAPI) {
      installMcpAdapter(pi, {
        ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
++      initialRuntimeServers: options.initialRuntimeServers,
++      initialRuntimeDiscoveryTimeoutMs: options.initialRuntimeDiscoveryTimeoutMs,
        ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
 +      ...(options.defaultProtocolVersion !== undefined
 +        ? { defaultProtocolVersion: options.defaultProtocolVersion }
@@ -1260,10 +1330,19 @@ index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..eb2a5ad0479bf9d13bf5bbdac4a2a987
    };
  }
 diff --git a/init.ts b/init.ts
-index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3fdc8c34b 100644
+index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..f7bd0baac9109cc732510caaffb7444779bfb1cd 100644
 --- a/init.ts
 +++ b/init.ts
-@@ -156,6 +156,9 @@ export async function initializeMcp(
+@@ -150,12 +150,18 @@ export async function initializeMcp(
+       : await applyProjectServerTrustToConfig(loadMcpConfig(configPath, cwd), ctx);
+   options.onProjectTrustResolved?.();
+   const config = trustResult.config;
++  for (const [name, entry] of Object.entries(options.initialRuntimeServers ?? {})) {
++    if (!Object.hasOwn(config.mcpServers, name)) config.mcpServers[name] = entry;
++  }
+   const authStorageOptions = getAuthStorageOptions(config.settings?.oauthDir, cwd, config.settings?.oauthCredentialStore);
+ 
+   const ownsOAuthRuntime = options.oauthRuntime === undefined;
    const oauthRuntime = options.oauthRuntime ?? createOAuthRuntime(owner.signal);
    const manager = new McpServerManager(cwd);
    manager.setRuntimeSignal?.(owner.signal);
@@ -1273,7 +1352,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3
    manager.setOAuthRuntime?.(oauthRuntime);
    manager.setDefaultRequestTimeoutMs(config.settings?.requestTimeoutMs);
    manager.setTraceConfig?.(config.settings?.trace);
-@@ -208,6 +211,7 @@ export async function initializeMcp(
+@@ -208,6 +214,7 @@ export async function initializeMcp(
    const consentManager = new ConsentManager("once-per-server", persistSessionApproval);
    const state: McpExtensionState = {
      owner,
@@ -1281,7 +1360,63 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3
      manager,
      lifecycle,
      toolMetadata,
-@@ -670,6 +674,12 @@ function captureMetadata(
+@@ -315,7 +322,12 @@ export async function initializeMcp(
+     }
+ 
+     const cachedEntry = cache?.servers?.[name];
+-    if (cachedEntry && isServerCacheValid(cachedEntry, definition)) {
++    // Runtime-scoped servers (initialRuntimeServers) join every initialization's
++    // startup discovery regardless of cache state: a valid-looking but empty
++    // or private-scoped cached catalog must not suppress the live listing the
++    // host asked for.
++    const runtimeDiscoveryServer = options.initialRuntimeServers?.[name] !== undefined;
++    if (cachedEntry && isServerCacheValid(cachedEntry, definition) && !runtimeDiscoveryServer) {
+       const hasToolFilters =
+         (Array.isArray(definition.includeTools) && definition.includeTools.length > 0) ||
+         (Array.isArray(definition.excludeTools) && definition.excludeTools.length > 0);
+@@ -334,10 +346,10 @@ export async function initializeMcp(
+         serverInstructions.set(name, cachedEntry.instructions);
+       }
+       seedObservedOutputs(state, name, cachedEntry);
+-    } else if (cachedEntry?.discoveryFailed && cachedEntry.configHash === tryComputeServerHash(definition)) {
++    } else if (cachedEntry?.discoveryFailed && cachedEntry.configHash === tryComputeServerHash(definition) && !runtimeDiscoveryServer) {
+       // Startup tries a config once; a server that failed is tried again on first use.
+       failedDiscovery.add(name);
+-    } else if (cachedEntry?.cacheScope !== "private") {
++    } else if (runtimeDiscoveryServer || cachedEntry?.cacheScope !== "private") {
+       needsDiscovery.add(name);
+     }
+   }
+@@ -357,14 +369,27 @@ export async function initializeMcp(
+ 
+   const results = await parallelLimit(startupServers, 10, async ([name, definition]) => {
+     const resident = (definition.lifecycle ?? "lazy") !== "lazy" || getEffectiveIdleTimeoutMinutes(state, name) === 0;
++    const discoveryDefinition = options.initialRuntimeServers?.[name] === definition && options.initialRuntimeDiscoveryTimeoutMs !== undefined
++      ? { ...definition, requestTimeoutMs: options.initialRuntimeDiscoveryTimeoutMs }
++      : definition;
+     try {
+-      const connection = await manager.connect(name, definition, runtimeSignal);
++      const connection = await manager.connect(name, discoveryDefinition, runtimeSignal);
+       if (connection.status === "needs-auth") {
+         const error = typeof definition.auth === "object"
+           ? providerSignInMessage(name, definition.auth.provider)
+           : `OAuth authentication required. Run /mcp-auth ${name}.`;
+         return { name, definition, resident, connection: null, error, transient: false };
+       }
++      // Resident connections use normal per-server/global timeouts for later
++      // calls. The task channel captured the discovery timeout as its own
++      // default when the connection was created, and tasks/* polls fall back
++      // to that default, so reset it alongside the restored definition.
++      if (discoveryDefinition !== definition) {
++        connection.definition = definition;
++        connection.taskChannel?.setDefaultTimeoutMs(
++          definition.requestTimeoutMs ?? config.settings?.requestTimeoutMs,
++        );
++      }
+       // Capture before closing; the closed connection keeps its catalog for publication below.
+       captureMetadata(state, name, connection, () => cache);
+       if (!resident) await manager.close(name);
+@@ -670,6 +695,12 @@ function captureMetadata(
    };
  
    (state.sessionMetadata ??= new Map()).set(serverName, entry);
@@ -1294,7 +1429,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3
    seedObservedOutputs(state, serverName, entry);
    return entry;
  }
-@@ -726,9 +736,15 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+@@ -726,9 +757,15 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
    const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
    throwIfAborted(ownedSignal);
    const connection = state.manager.getConnection(serverName);
@@ -1311,7 +1446,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3
    if (connection?.status === "connected") {
      await state.manager.ensureListen?.(serverName, connection);
      updateServerMetadata(state, serverName);
-@@ -737,7 +753,7 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+@@ -737,7 +774,7 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
    }
  
    const failedAgo = getFailureAgeSeconds(state, serverName);
@@ -1320,7 +1455,7 @@ index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..643f8fe02ee3fd4dabcd4e93451a07c3
  
    const definition = state.config.mcpServers[serverName];
    if (!definition || isServerDisabled(definition)) return false;
-@@ -747,7 +763,9 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+@@ -747,7 +784,9 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
        const status = formatMcpStatus(state.config, `connecting to ${serverName}...`);
        state.ui.setStatus("mcp", status);
      }
@@ -1966,6 +2101,40 @@ index 219c949f5de785a1e8ddc6927fcf366444862527..43ed93c9a86014a14129ca73490bccc0
  export const DEFAULT_MCP_OUTPUT_MAX_LINES = DEFAULT_MAX_LINES;
  export const DEFAULT_MCP_DETAILS_MAX_BYTES = 16 * 1024;
  const SCRIPT_PIPE_HINT_MIN_BYTES = 8 * 1024;
+diff --git a/mcp-tasks.ts b/mcp-tasks.ts
+index 88ffa8dd3719442b8f51cdb8ea50ff718b86cba9..0e4e09d71a0656464658fce03b7a68e259bcd184 100644
+--- a/mcp-tasks.ts
++++ b/mcp-tasks.ts
+@@ -96,7 +96,7 @@ export class RawRequestChannel {
+   private readonly transport: Transport;
+   private readonly pending = new Map<string, PendingRawRequest>();
+   private requestCounter = 0;
+-  private readonly defaultTimeoutMs: number;
++  private defaultTimeoutMs: number;
+   private attached = false;
+ 
+   constructor(transport: Transport, defaultTimeoutMs?: number) {
+@@ -104,6 +104,20 @@ export class RawRequestChannel {
+     this.defaultTimeoutMs = defaultTimeoutMs ?? DEFAULT_RAW_REQUEST_TIMEOUT_MS;
+   }
+ 
++  /**
++   * Restores the channel's fallback timeout after a host connected with a
++   * bounded discovery timeout: tasks/* polls that carry no per-request
++   * timeout fall back to this default, so it must track the connection's
++   * normal per-server/global timeout rather than the discovery one.
++   * Non-positive or non-finite values reset to the 60 s default, matching a
++   * channel created without one.
++   */
++  setDefaultTimeoutMs(timeoutMs: number | undefined): void {
++    this.defaultTimeoutMs = (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
++      ? timeoutMs
++      : undefined) ?? DEFAULT_RAW_REQUEST_TIMEOUT_MS;
++  }
++
+   attach(): void {
+     if (this.attached) return;
+     this.attached = true;
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 8e9e9887d44354487b0971bf81af16c6c70188a5..c4b05a2df912172fa8d0abed5db13d1dd93e1867 100644
 --- a/metadata-cache.ts
@@ -2592,13 +2761,17 @@ index 3c4c4b44b3fd4c7012bce98f2abad91e5feba663..15cced2d61dcf40b632699875d24b3d0
      });
    }
 diff --git a/types.ts b/types.ts
-index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..69797a1dad73613608da3b90eec0235fa2a63c07 100644
+index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..1949c73c052bbae605d398f4e2e88fddf288b3ab 100644
 --- a/types.ts
 +++ b/types.ts
-@@ -732,6 +732,19 @@ export interface McpConfig {
+@@ -732,6 +732,23 @@ export interface McpConfig {
  export interface McpAdapterOptions {
    config?: McpConfig;
    configPath?: string;
++  /** Runtime-scoped servers included in every initialization's startup discovery. Proxy-only and never persisted to config files. */
++  initialRuntimeServers?: Record<string, ServerEntry>;
++  /** Timeout for initial runtime discovery requests only; later tool calls use normal server/global timeouts. */
++  initialRuntimeDiscoveryTimeoutMs?: number;
 +  /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
 +  onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
 +  /** Create a session-bound observer during each runtime initialization. */
@@ -2615,7 +2788,7 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..69797a1dad73613608da3b90eec0235f
  }
  
  // Alias for clarity
-@@ -869,14 +882,22 @@ export interface McpPanelResult {
+@@ -869,14 +886,22 @@ export interface McpPanelResult {
    cancelled: boolean;
  }
  
@@ -2643,7 +2816,7 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..69797a1dad73613608da3b90eec0235f
  }
  
  export function getServerPrefix(
-@@ -885,28 +906,51 @@ export function getServerPrefix(
+@@ -885,28 +910,51 @@ export function getServerPrefix(
  ): string {
    if (mode === "none") return "";
    if (mode === "short") {
@@ -2704,7 +2877,7 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..69797a1dad73613608da3b90eec0235f
  }
  
  export function resolveToolPrefix(
-@@ -990,10 +1034,14 @@ export function formatPromptCommandName(
+@@ -990,10 +1038,14 @@ export function formatPromptCommandName(
  }
  
  function getLegacyServerPrefix(serverName: string, mode: ToolPrefix): string {
@@ -2722,7 +2895,7 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..69797a1dad73613608da3b90eec0235f
  }
  
  function formatLegacyToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
-@@ -1053,13 +1101,25 @@ export function createToolSelectorCandidateIndex(
+@@ -1053,13 +1105,25 @@ export function createToolSelectorCandidateIndex(
    };
  }
  
