@@ -1,8 +1,28 @@
 import { expect, test } from "@microsoft/tui-test"
-import { fullText, STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
+import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
+import {
+	fullText,
+	INPUT_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	waitForText,
+	waitForTurnToSettle,
+} from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
+
+const EMPTY_EDITOR = "❯  ask anything or type / for commands"
+
+async function clearEditor(terminal: Terminal, autocompleteText?: string): Promise<void> {
+	if (autocompleteText) {
+		terminal.keyEscape()
+		// Do not let Escape share a stdin chunk with the clear key: Escape +
+		// Backspace is Alt+Backspace, which leaves autocomplete active.
+		await waitForText(terminal, (text) => !text.includes(autocompleteText), { timeoutMs: INPUT_TIMEOUT_MS })
+	}
+	terminal.keyPress("u", { ctrl: true })
+	await waitForText(terminal, EMPTY_EDITOR, { timeoutMs: INPUT_TIMEOUT_MS })
+}
 
 // Regression for the Discord report (2026-11-11): a server whose tools/list
 // declares cacheScope:"private" (credential-scoped listings, #1670) showed
@@ -31,33 +51,27 @@ test("reconnect surfaces session-scoped prompt commands in autocomplete and the 
 			expect(fullText(terminal)).not.toContain("hello-world")
 			trace.step("no prompt command before the first connect")
 
-			terminal.keyEscape()
-			terminal.write("\b\b\b\b\b\b")
+			await clearEditor(terminal)
 			terminal.submit("/mcp reconnect fixture-srv")
 			await waitForText(terminal, "MCP: Reconnected to fixture-srv", { timeoutMs: STREAM_TIMEOUT_MS })
 			await fixture.mcp.waitForEvent("tools_listed")
 			await fixture.mcp.waitForEvent("prompts_listed")
 			trace.step("fixture reconnected; catalog + prompts fetched")
 
-			terminal.keyEscape()
-			terminal.write("\b\b\b\b\b\b")
 			// The freshly registered prompt command must be visible in autocomplete
 			// immediately, without a /reload round-trip.
 			terminal.write("/mcp__")
 			await waitForText(terminal, "hello-world", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("prompt command appears in autocomplete right after reconnect")
 
-			terminal.keyEscape()
-			terminal.write("\b\b\b\b\b\b")
+			await clearEditor(terminal, "MCP: Say hello from the fixture")
 			// Argument completion for a mid-session command resolves from the
 			// live metadata too (the base provider only knows the snapshot).
 			terminal.write("/mcp__fixture_srv__hello-world t")
 			await waitForText(terminal, "topic=", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("argument autocomplete resolves from live metadata")
 
-			terminal.keyEscape()
-			// 32 chars: "/mcp__fixture_srv__hello-world t"
-			terminal.write("\b".repeat(32))
+			await clearEditor(terminal, "Topic to greet")
 			// The command is not cosmetic: running it must reach prompts/get.
 			const execCheckpoint = fixture.mcp.checkpoint()
 			terminal.submit("/mcp__fixture_srv__hello-world")
@@ -82,12 +96,11 @@ test("reconnect surfaces session-scoped prompt commands in autocomplete and the 
 			expect(fullText(terminal).match(/mcp__fixture_srv__hello-world/g) ?? []).toHaveLength(1)
 			trace.step("second reconnect keeps a single autocomplete row")
 
-			terminal.keyEscape()
-			terminal.write("\b\b\b\b\b\b")
+			await clearEditor(terminal, "MCP: Say hello from the fixture")
 			// Same open pattern as mcp-panel.test.ts: type, let autocomplete settle,
 			// then submit; Enter accepts the completed /mcp line and runs it.
 			terminal.write("/mcp")
-			await waitForText(terminal, "/mcp", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, /^❯ \/mcp$/m, { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "MCP Servers", { timeoutMs: STREAM_TIMEOUT_MS })
 			// Session-scoped listings must not render as a cache miss. 5.3.2's
@@ -113,7 +126,7 @@ test("in-panel reconnect shows a private catalog through the upstream session ov
 		},
 		async (fixture, trace) => {
 			terminal.write("/mcp")
-			await waitForText(terminal, "/mcp", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, /^❯ \/mcp$/m, { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "MCP Servers", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("MCP panel opened for a private-scoped lazy server")
