@@ -18,6 +18,7 @@
 import { parseCodemodeSource } from "@earendil-works/pi-codemode"
 import { describe, expect, it } from "vitest"
 import { type FermentFsmContext, FSM_STATES, transition } from "../../../ferment/fsm.js"
+import { USER_STOP_REASON } from "../../bash-background/bash-display.js"
 import { SAFETY_LIMIT_REASON } from "../../bash-background/process-registry.js"
 import { throwIfTerminal } from "../../bash-background/terminal-status.js"
 import {
@@ -357,6 +358,18 @@ describe("classifyToolError — producer contract (bash-background terminal stat
 		expect(c.kind).toBe("command_outcome")
 		expect(asCommandOutcome(c).commandOutcome).toBe("terminated")
 		expect(c.message).toBe("Command killed by harness safety limit")
+	})
+
+	it("classifies the real user stop thrown by throwIfTerminal as an abort", () => {
+		let thrown: unknown
+		try {
+			throwIfTerminal({ reason: USER_STOP_REASON, exitCode: null }, "partial output", 120)
+		} catch (err) {
+			thrown = err
+		}
+		expect(thrown).toBeInstanceOf(Error)
+		const c = classifyToolError("bash", (thrown as Error).message)
+		expect(c).toEqual({ kind: "aborted", message: "Command aborted" })
 	})
 })
 
