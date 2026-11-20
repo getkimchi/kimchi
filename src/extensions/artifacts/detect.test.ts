@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ARTIFACT_EXTENSIONS, artifactsFromToolCall } from "./detect.js"
+import { ARTIFACT_EXTENSIONS, artifactsFromToolCall, snapshotArtifactFiles } from "./detect.js"
 
 let cwd: string
 
@@ -295,6 +295,58 @@ describe("artifactsFromToolCall", () => {
 		expect(
 			artifactsFromToolCall("bash", {}, textResult("wrote a .md file"), cwd, { windowStart: Date.now() - 1000 }),
 		).toEqual([])
+	})
+
+	describe("silent shell file snapshots", () => {
+		it("detects only files created or modified in the command working directory", () => {
+			touch("unchanged.md")
+			const modified = touch("modified.html")
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			expect(fileSnapshot).toBeDefined()
+			const windowStart = Date.now()
+			writeFileSync(modified, "<h1>Modified</h1>")
+			const created = touch("final.html")
+			// Shallow scope: no recursive/tree-wide monitoring.
+			touch("nested/not-attributed.html")
+			const out = artifactsFromToolCall("bash", { command: "node build.js" }, textResult(""), cwd, {
+				windowStart,
+				fileSnapshot,
+			})
+			expect(out.map((a) => a.path).sort()).toEqual([created, modified].sort())
+			expect(out.every((a) => a.origin === "sniffed")).toBe(true)
+		})
+
+		it("ignores an arbitrary pre-existing file and a tree-materializing git command", () => {
+			touch("pre-existing.html")
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			const out = artifactsFromToolCall("bash", { command: "node build.js" }, textResult(""), cwd, {
+				windowStart: Date.now(),
+				fileSnapshot,
+			})
+			expect(out).toEqual([])
+			expect(snapshotArtifactFiles("bash", { command: "git checkout main" }, cwd)).toBeUndefined()
+		})
+
+		it("captures the effective directory from supported leading navigation", () => {
+			touch("out/.keep.md")
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "cd out && node build.js" }, cwd)
+			const created = touch("out/final.html")
+			const out = artifactsFromToolCall("bash", { command: "cd out && node build.js" }, textResult(""), cwd, {
+				windowStart: Date.now(),
+				fileSnapshot,
+			})
+			expect(out.map((a) => a.path)).toEqual([created])
+		})
+
+		it("dedupes a changed file also printed in output", () => {
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			const created = touch("final.html")
+			const out = artifactsFromToolCall("bash", { command: "node build.js" }, textResult("wrote final.html"), cwd, {
+				windowStart: Date.now(),
+				fileSnapshot,
+			})
+			expect(out.map((a) => a.path)).toEqual([created])
+		})
 	})
 
 	describe("mtime window and command filtering", () => {

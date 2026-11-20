@@ -258,3 +258,74 @@ describe("ACP integration — artifact links from bash output", () => {
 		expect(deck?.content.uri).toBe(pathToFileURL(join(fixture.workDir, "out/deck.pptx")).href)
 	})
 })
+
+describe("ACP integration — artifacts from a silent foreground build", () => {
+	let fixture: AcpFixture
+
+	beforeEach(async () => {
+		fixture = await startAcpFixture({
+			artifactName: "artifact-links-silent-build",
+			extraArgs: ["--yolo"],
+			responses: [
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "write",
+								arguments: JSON.stringify({
+									path: "_code-reviewer-prd.template.html",
+									content: "<template>",
+								}),
+							},
+						},
+					],
+				},
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "write",
+								arguments: JSON.stringify({
+									path: "build-report.js",
+									content:
+										"require('node:fs').writeFileSync('code-reviewer-rebuild-prd.html', '<h1>Final report</h1>')",
+								}),
+							},
+						},
+					],
+				},
+				{
+					toolCalls: [
+						{
+							function: { name: "bash", arguments: JSON.stringify({ command: "node build-report.js" }) },
+						},
+					],
+				},
+				{ stream: ["Built code-reviewer-rebuild-prd.html."] },
+			],
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		await fixture.stop()
+	})
+
+	it("links both the intermediate write and the exact final HTML produced with empty stdout", async () => {
+		const sessionId = await newSession(fixture, fixture.workDir)
+		expect((await prompt(fixture, sessionId, "Build the report")).stopReason).toBe("end_turn")
+		expect(artifactChunks(fixture, sessionId).map((chunk) => chunk.content)).toEqual([
+			{
+				type: "resource_link",
+				name: "_code-reviewer-prd.template.html",
+				uri: pathToFileURL(join(fixture.workDir, "_code-reviewer-prd.template.html")).href,
+				mimeType: "text/html",
+			},
+			{
+				type: "resource_link",
+				name: "code-reviewer-rebuild-prd.html",
+				uri: pathToFileURL(join(fixture.workDir, "code-reviewer-rebuild-prd.html")).href,
+				mimeType: "text/html",
+			},
+		])
+	})
+})

@@ -64,6 +64,204 @@ describe("artifact-recorder", () => {
 		expect(rows[0].artifacts).toEqual([{ path: abs, name: "out.md", mimeType: "text/markdown", sniffed: false }])
 	})
 
+	it("records a final HTML file created by a silent foreground build after an intermediate write", async () => {
+		const template = touch("_code-reviewer-prd.template.html")
+		const finalReport = join(cwd, "code-reviewer-rebuild-prd.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-silent-build",
+				toolName: "bash",
+				args: { command: "node build-report.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Final report</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-silent-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [
+						{ type: "toolCall", id: "tc-template", name: "write", arguments: { path: template } },
+						{
+							type: "toolCall",
+							id: "tc-silent-build",
+							name: "bash",
+							arguments: { command: "node build-report.js" },
+						},
+					],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-template",
+						toolName: "write",
+						content: [{ type: "text", text: "ok" }],
+						isError: false,
+						timestamp: now,
+					},
+					{
+						toolCallId: "tc-silent-build",
+						toolName: "bash",
+						content: [],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		expect(rows[0].artifacts).toEqual([
+			{ path: template, name: "_code-reviewer-prd.template.html", mimeType: "text/html", sniffed: false },
+			{ path: finalReport, name: "code-reviewer-rebuild-prd.html", mimeType: "text/html", sniffed: true },
+		])
+	})
+
+	it("does not duplicate a snapshot-detected file also printed by Bash", async () => {
+		const finalReport = join(cwd, "final.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-printed-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Final</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-printed-build",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "wrote final.html" }] },
+				isError: false,
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [
+						{
+							type: "toolCall",
+							id: "tc-printed-build",
+							name: "bash",
+							arguments: { command: "node build.js" },
+						},
+					],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-printed-build",
+						toolName: "bash",
+						content: [{ type: "text", text: "wrote final.html" }],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows.flatMap((row) => row.artifacts)).toEqual([
+			{ path: finalReport, name: "final.html", mimeType: "text/html", sniffed: true },
+		])
+	})
+
+	it("does not record a silent-build artifact deleted later in the same prompt", async () => {
+		const finalReport = join(cwd, "deleted-final.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-deleted-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Temporary</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-deleted-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [
+						{
+							type: "toolCall",
+							id: "tc-deleted-build",
+							name: "bash",
+							arguments: { command: "node build.js" },
+						},
+					],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-deleted-build",
+						toolName: "bash",
+						content: [],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		rmSync(finalReport)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+	})
+
 	it("writes one row per run when several turns produced artifacts", async () => {
 		const abs1 = touch("one.md")
 		const abs2 = touch("two.md")

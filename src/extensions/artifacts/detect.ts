@@ -12,8 +12,8 @@
 // is an explicit user action. Script-capable types (.html/.svg) open in
 // the user's own environment.
 
-import { statSync } from "node:fs"
-import { basename, extname } from "node:path"
+import { type Dirent, readdirSync, statSync } from "node:fs"
+import { basename, extname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { parseCommandSegments } from "../permissions/taxonomy.js"
 import { resolveToolPath } from "./paths.js"
@@ -219,6 +219,70 @@ function navigatedCwd(segments: CommandSegments, cwd: string): string {
 
 type CommandSegments = ReturnType<typeof parseCommandSegments>
 
+type FileStamp = { mtimeMs: number; size: number }
+
+/**
+ * Pre-execution view of allowlisted files directly in a shell command's
+ * effective working directory. Compared at execution end, it proves which
+ * files that command created or modified even when stdout is empty. The
+ * deliberately shallow scope avoids whole-tree/filesystem monitoring.
+ */
+export type ArtifactFileSnapshot = { cwd: string; files: ReadonlyMap<string, FileStamp> }
+
+function supportedDirectoryFiles(cwd: string): Map<string, FileStamp> {
+	const files = new Map<string, FileStamp>()
+	let entries: Dirent[]
+	try {
+		entries = readdirSync(cwd, { withFileTypes: true })
+	} catch {
+		return files
+	}
+	for (const entry of entries) {
+		if (!(extname(entry.name).toLowerCase() in ARTIFACT_EXTENSIONS)) continue
+		try {
+			const path = join(cwd, entry.name)
+			const stats = statSync(path)
+			if (stats.isFile()) files.set(path, { mtimeMs: stats.mtimeMs, size: stats.size })
+		} catch {
+			// A concurrently removed or unreadable entry is a conservative miss.
+		}
+	}
+	return files
+}
+
+function shellCommandContext(toolName: string, args: unknown, cwd: string) {
+	if (toolName !== "bash" && toolName !== "powershell") return undefined
+	const command = (args as { command?: unknown } | null | undefined)?.command
+	if (typeof command !== "string") return undefined
+	const segments = parseCommandSegments(command)
+	if (isTreeMaterializingGit(segments)) return null
+	return { segments, cwd: navigatedCwd(segments, cwd) }
+}
+
+/** Capture command-scoped file state before a foreground shell tool runs. */
+export function snapshotArtifactFiles(toolName: string, args: unknown, cwd: string): ArtifactFileSnapshot | undefined {
+	try {
+		const context = shellCommandContext(toolName, args, cwd)
+		if (!context) return undefined
+		return { cwd: context.cwd, files: supportedDirectoryFiles(context.cwd) }
+	} catch {
+		return undefined
+	}
+}
+
+function changedSnapshotArtifacts(snapshot: ArtifactFileSnapshot, opts: DetectOpts): Artifact[] {
+	const out: Artifact[] = []
+	const current = [...supportedDirectoryFiles(snapshot.cwd).entries()].sort(([a], [b]) => a.localeCompare(b))
+	for (const [path, stamp] of current) {
+		if (out.length >= MAX_BASH_ARTIFACTS) break
+		const before = snapshot.files.get(path)
+		if (before && before.mtimeMs === stamp.mtimeMs && before.size === stamp.size) continue
+		const artifact = artifactFromPath(path, snapshot.cwd, opts, "sniffed")
+		if (artifact) out.push(artifact)
+	}
+	return out
+}
+
 // Tool-declared artifact entry, shaped after ACP's ToolCallLocation.
 // `name` falls back to the file basename.
 type DeclaredArtifactEntry = { path?: unknown; name?: unknown }
@@ -251,6 +315,8 @@ type DetectOpts = {
 	 * and skip the check.
 	 */
 	windowStart?: number
+	/** State captured at tool_execution_start for silent shell side effects. */
+	fileSnapshot?: ArtifactFileSnapshot
 }
 
 // Candidates always have to exist on disk — this is live detection; replay
@@ -375,14 +441,18 @@ export function artifactsFromToolCall(
 			return artifact ? [artifact] : []
 		}
 		if (toolName === "bash" || toolName === "powershell") {
-			const command = (args as { command?: unknown } | null | undefined)?.command
-			if (typeof command !== "string") return bashArtifacts(result, cwd, opts)
-			const segments = parseCommandSegments(command)
-			if (isTreeMaterializingGit(segments)) return []
-			const effectiveCwd = navigatedCwd(segments, cwd)
-			const out = redirectArtifacts(segments, effectiveCwd, opts)
-			for (const artifact of bashArtifacts(result, effectiveCwd, opts)) {
+			const context = shellCommandContext(toolName, args, cwd)
+			if (context === null) return []
+			if (!context) return bashArtifacts(result, cwd, opts)
+			const out = redirectArtifacts(context.segments, context.cwd, opts)
+			for (const artifact of bashArtifacts(result, context.cwd, opts)) {
 				if (!out.some((a) => a.path === artifact.path)) out.push(artifact)
+			}
+			if (opts.fileSnapshot?.cwd === context.cwd) {
+				for (const artifact of changedSnapshotArtifacts(opts.fileSnapshot, opts)) {
+					if (out.length >= MAX_BASH_ARTIFACTS) break
+					if (!out.some((a) => a.path === artifact.path)) out.push(artifact)
+				}
 			}
 			return out
 		}

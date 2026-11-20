@@ -93,6 +93,7 @@ import {
 	markCredentialStale,
 	prepareCredentialForLogin,
 } from "../../credential-staleness.js"
+import { snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import {
@@ -2799,7 +2800,13 @@ export class KimchiAcpAgent implements Agent {
 				// detection can pair args with the result there.
 				// startedAt anchors the artifact mtime window (see
 				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
-				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
+				const startedAt = Date.now()
+				turn.toolCallArgs.set(event.toolCallId, {
+					toolName: event.toolName,
+					args: event.args,
+					startedAt,
+					fileSnapshot: snapshotArtifactFiles(event.toolName, event.args, entry.cwd),
+				})
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
@@ -2898,6 +2905,7 @@ export class KimchiAcpAgent implements Agent {
 						result: event.result,
 						cwd: entry.cwd,
 						windowStart: stashed.startedAt,
+						fileSnapshot: stashed.fileSnapshot,
 					})
 					// Tool-declared artifacts are deliverables the user may need
 					// MID-turn (a submitted plan chips before its review

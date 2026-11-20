@@ -6977,6 +6977,145 @@ describe("generated artifacts (live turns)", () => {
 		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL(target).href])
 	})
 
+	it("includes a final HTML file created by a silent foreground build after an intermediate write", async () => {
+		const template = join(tmpDir, "_code-reviewer-prd.template.html")
+		const finalReport = join(tmpDir, "code-reviewer-rebuild-prd.html")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-template",
+				toolName: "write",
+				args: { path: template, content: "<template>" },
+			})
+			writeFileSync(template, "<template>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-template",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote template." }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-silent-build",
+				toolName: "bash",
+				args: { command: "node build-report.js" },
+			})
+			// Simulate the foreground script's side effect: no redirect and no
+			// stdout path token, only a file created after execution starts.
+			writeFileSync(finalReport, "<h1>Final report</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-silent-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Built code-reviewer-rebuild-prd.html."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build the report" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks().map((chunk) => ({ name: chunk.name, uri: chunk.uri }))).toEqual([
+			{ name: "_code-reviewer-prd.template.html", uri: pathToFileURL(template).href },
+			{ name: "code-reviewer-rebuild-prd.html", uri: pathToFileURL(finalReport).href },
+		])
+	})
+
+	it("does not duplicate a snapshot-detected file also printed by Bash", async () => {
+		const finalReport = join(tmpDir, "final.html")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-printed-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			})
+			writeFileSync(finalReport, "<h1>Final</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-printed-build",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "wrote final.html" }] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Done."))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build" }] })
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(finalReport).href])
+	})
+
+	it("keeps a first prompt's template out of a second prompt that writes the final report and runs Bash", async () => {
+		const template = join(tmpDir, "_code-reviewer-prd.template.html")
+		const finalReport = join(tmpDir, "code-reviewer-rebuild-prd.html")
+		let promptNumber = 0
+		fake.promptImpl = async () => {
+			promptNumber++
+			fake.emit({ type: "agent_start" })
+			if (promptNumber === 1) {
+				fake.emit({
+					type: "tool_execution_start",
+					toolCallId: "tc-first-template",
+					toolName: "write",
+					args: { path: template, content: "<template>" },
+				})
+				writeFileSync(template, "<template>")
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId: "tc-first-template",
+					toolName: "write",
+					result: { content: [{ type: "text", text: "Wrote template." }] },
+					isError: false,
+				})
+				fake.emit(assistantMessageEnd("Template ready."))
+				fake.emit(agentEnd())
+				return
+			}
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-second-final",
+				toolName: "write",
+				args: { path: finalReport, content: "<h1>Final</h1>" },
+			})
+			writeFileSync(finalReport, "<h1>Final</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-second-final",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote final." }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-second-bash",
+				toolName: "bash",
+				args: { command: "node verify-report.js" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-second-bash",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Final ready."))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write template" }] })
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(template).href])
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write and verify final" }] })
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([
+			pathToFileURL(template).href,
+			pathToFileURL(finalReport).href,
+		])
+	})
+
 	// A text-less turn has no id to attach to, and a fresh `km.` id has no
 	// persisted counterpart for replay — so such artifacts are dropped.
 	it("drops artifacts of a text-less turn rather than emitting on a fresh id", async () => {
@@ -7317,6 +7456,41 @@ describe("generated artifacts (replay)", () => {
 		// rather than allocating a fresh one.
 		const textChunk = messageChunks(updates).find((c) => c.text === "Here you go.")
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("replays a recorded silent-build final HTML verbatim without live detection", async () => {
+		const finalPath = "/tmp/code-reviewer-rebuild-prd.html"
+		const fake = new FakeAgentSession("loaded-silent-final")
+		fake.branch = [
+			userTextEntry("build the report", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Built code-reviewer-rebuild-prd.html." },
+					{ type: "toolCall", id: "tc-silent", name: "bash", arguments: { command: "node build.js" } },
+				],
+				"a1",
+				"u1",
+			),
+			// No path in output and no file on disk: only the version-1 row
+			// can supply the action. Replay must not run live filesystem detection.
+			toolResultEntry("tc-silent", "bash", "", false, "tr1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [
+						{ path: finalPath, name: "code-reviewer-rebuild-prd.html", mimeType: "text/html", sniffed: true },
+					],
+				},
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.loadSession({ sessionId: "loaded-silent-final", cwd: "/tmp", mcpServers: [] })
+		expect(artifactChunks(updates).map((chunk) => ({ name: chunk.name, uri: chunk.uri }))).toEqual([
+			{ name: "code-reviewer-rebuild-prd.html", uri: pathToFileURL(finalPath).href },
+		])
 	})
 
 	it("merges multiple recorded rows within one turn (one row per assistant message)", async () => {

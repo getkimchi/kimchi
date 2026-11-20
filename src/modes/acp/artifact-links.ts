@@ -1,7 +1,7 @@
 import { statSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
-import { type Artifact, artifactsFromToolCall } from "../../extensions/artifacts/detect.js"
+import { type Artifact, type ArtifactFileSnapshot, artifactsFromToolCall } from "../../extensions/artifacts/detect.js"
 import type { RecordedArtifact } from "../../extensions/artifacts/recorder.js"
 import { kimchiDevMetaOf } from "./capabilities.js"
 import type { ModelAttribution } from "./model-attribution.js"
@@ -147,9 +147,12 @@ export class TurnArtifactBuffer {
 		cwd: string
 		/** Foreground mtime window start; sniffed bash candidates require a fresh mtime. */
 		windowStart?: number
+		/** Pre-execution directory state; proves changed files when shell output is silent. */
+		fileSnapshot?: ArtifactFileSnapshot
 	}): void {
 		for (const artifact of artifactsFromToolCall(opts.toolName, opts.args, opts.result, opts.cwd, {
 			windowStart: opts.windowStart,
+			fileSnapshot: opts.fileSnapshot,
 		})) {
 			this.addEntry(artifact.origin, artifact)
 		}

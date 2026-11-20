@@ -11,8 +11,9 @@
 // replay hydrates these rows (never re-derives from output): sessions
 // without rows emit no artifacts on reload.
 
+import { statSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
-import { type Artifact, artifactsFromToolCall } from "./detect.js"
+import { type Artifact, type ArtifactFileSnapshot, artifactsFromToolCall, snapshotArtifactFiles } from "./detect.js"
 
 export const ARTIFACTS_ENTRY_TYPE = "kimchi-artifacts"
 
@@ -40,6 +41,14 @@ const MAX_RUN_RECORDED = 32
 const CLOCK_SKEW_MS = 5000
 
 type DetectedArtifact = Artifact & { sniffed: boolean }
+
+type PendingArtifactCall = {
+	toolName: string
+	args: unknown
+	cwd: string
+	startedAt: number
+	fileSnapshot: ArtifactFileSnapshot
+}
 
 // Run-scoped artifact accumulator: detection runs per turn_end, but the
 // row is written once per prompt (agent_settled) so it lands AFTER the
@@ -88,7 +97,12 @@ class RunArtifactAccumulator {
 	}
 }
 
-function detectTurnArtifacts(event: TurnEndEvent, cwd: string, acc: RunArtifactAccumulator): void {
+function detectTurnArtifacts(
+	event: TurnEndEvent,
+	cwd: string,
+	acc: RunArtifactAccumulator,
+	completedShellCalls: Map<string, Artifact[]>,
+): void {
 	if (event.message.role !== "assistant") return
 	const toolCalls = new Map<string, { name: string; arguments: Record<string, unknown> }>()
 	for (const block of event.message.content) {
@@ -103,6 +117,12 @@ function detectTurnArtifacts(event: TurnEndEvent, cwd: string, acc: RunArtifactA
 	for (const result of event.toolResults) {
 		const toolCall = toolCalls.get(result.toolCallId)
 		if (!toolCall) continue
+		const completed = completedShellCalls.get(result.toolCallId)
+		if (completed) {
+			completedShellCalls.delete(result.toolCallId)
+			for (const artifact of completed) acc.add({ ...artifact, sniffed: artifact.origin === "sniffed" })
+			continue
+		}
 		for (const artifact of artifactsFromToolCall(
 			toolCall.name,
 			toolCall.arguments,
@@ -118,10 +138,51 @@ function detectTurnArtifacts(event: TurnEndEvent, cwd: string, acc: RunArtifactA
 
 export function artifactRecorderExtension(pi: ExtensionAPI) {
 	const acc = new RunArtifactAccumulator()
+	const pendingShellCalls = new Map<string, PendingArtifactCall>()
+	const completedShellCalls = new Map<string, Artifact[]>()
+
+	pi.on("tool_execution_start", (event, ctx) => {
+		if (event.parentToolCallId) return
+		try {
+			const startedAt = Date.now()
+			const cwd = ctx.sessionManager.getCwd()
+			const fileSnapshot = snapshotArtifactFiles(event.toolName, event.args, cwd)
+			if (!fileSnapshot) return
+			pendingShellCalls.set(event.toolCallId, {
+				toolName: event.toolName,
+				args: event.args,
+				cwd,
+				startedAt,
+				fileSnapshot,
+			})
+		} catch {
+			// Detection must never prevent the command from executing.
+		}
+	})
+
+	pi.on("tool_execution_end", (event) => {
+		if (event.parentToolCallId) return
+		try {
+			const pending = pendingShellCalls.get(event.toolCallId)
+			pendingShellCalls.delete(event.toolCallId)
+			if (!pending) return
+			completedShellCalls.set(
+				event.toolCallId,
+				event.isError
+					? []
+					: artifactsFromToolCall(pending.toolName, pending.args, event.result, pending.cwd, {
+							windowStart: pending.startedAt,
+							fileSnapshot: pending.fileSnapshot,
+						}),
+			)
+		} catch {
+			// The legacy turn_end path remains as a conservative fallback.
+		}
+	})
 
 	pi.on("turn_end", (event, ctx: ExtensionContext) => {
 		try {
-			detectTurnArtifacts(event, ctx.sessionManager.getCwd(), acc)
+			detectTurnArtifacts(event, ctx.sessionManager.getCwd(), acc, completedShellCalls)
 		} catch {
 			// Persistence must never break a turn; partial state stays buffered.
 		}
@@ -136,7 +197,19 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 	// live ACP flush (finalizeTurn) emits artifact chunks. One row per
 	// prompt even when several turns produced artifacts.
 	pi.on("agent_settled", () => {
-		const artifacts = acc.drain()
+		const artifacts = acc.drain().filter((artifact) => {
+			// Declared artifacts may already have chipped mid-turn. Every other
+			// artifact flushes at prompt end, so mirror live ACP's final existence
+			// check and avoid recording same-prompt ghosts for replay.
+			if (artifact.origin === "declared") return true
+			try {
+				return statSync(artifact.path).isFile()
+			} catch {
+				return false
+			}
+		})
+		pendingShellCalls.clear()
+		completedShellCalls.clear()
 		if (!artifacts.length) return
 		const entry: ArtifactsEntry = {
 			v: 1,
