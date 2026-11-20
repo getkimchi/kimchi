@@ -178,7 +178,7 @@ function previousCostDetailLines(value: unknown, path: string): string[] {
 				.sort(([left], [right]) => left.localeCompare(right))
 				.map(([reason, total]) => `${untagged.size > 1 ? `${total} ` : ""}${reason.replaceAll("-", " ")}`)
 			lines.push(
-				`${count} request${count === 1 ? "" : "s"} untagged: ${reasons.join(", ")}${untagged.has("tag-limit") ? ` (Kimchi adds a model tag; keep at most ${PRICED_TAG_LIMIT} in /tags)` : ""}.`,
+				`${count} request${count === 1 ? "" : "s"} untagged: ${reasons.join(", ")}${untagged.has("tag-limit") ? ` (Kimchi adds model and phase tags; keep at most ${PRICED_TAG_LIMIT} in /tags)` : ""}.`,
 			)
 		}
 		const failed = own.flatMap((row) =>
@@ -659,12 +659,12 @@ describe("automatic exact work cost lookup", () => {
 			"tag-limit",
 		])
 		expect(workCostDetails(dir, workId)).toContain(
-			"3 requests untagged: tag limit (Kimchi adds a model tag; keep at most 8 in /tags).",
+			"3 requests untagged: tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
 		)
 		untagged("body-uninspectable")
 		await sync()
 		expect(workCostDetails(dir, workId)).toContain(
-			"4 requests untagged: 1 body uninspectable, 3 tag limit (Kimchi adds a model tag; keep at most 8 in /tags).",
+			"4 requests untagged: 1 body uninspectable, 3 tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
 		)
 	})
 	it("counts only the work's own untagged and failed requests in work details of connected works", async () => {
@@ -686,7 +686,9 @@ describe("automatic exact work cost lookup", () => {
 		// Both works share PR #1, so each saved report lists both requests.
 		expect(report(untagged.workId).requests).toHaveLength(2)
 		const untaggedLines = workCostDetails(dir, untagged.workId)
-		expect(untaggedLines).toContain("1 request untagged: tag limit (Kimchi adds a model tag; keep at most 8 in /tags).")
+		expect(untaggedLines).toContain(
+			"1 request untagged: tag limit (Kimchi adds model and phase tags; keep at most 7 in /tags).",
+		)
 		expect(untaggedLines.join("\n")).not.toContain("Last billing refresh failed")
 		const pricedLines = workCostDetails(dir, priced.workId)
 		expect(pricedLines).toContain("Last billing refresh failed for 1 request: Billing API returned HTTP 503.")

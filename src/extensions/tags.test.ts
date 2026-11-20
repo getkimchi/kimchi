@@ -17,6 +17,7 @@ vi.mock("node:os", async (importOriginal) => {
 import * as configTags from "../config/tags.js"
 import { isValidTag, parseTag } from "../config/tags.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
+import { clearPermissionModeEnv, setPermissionMode } from "./permissions/mode-controller.js"
 import tagsExtension, { peekActiveTags, TagManager } from "./tags.js"
 import { prepareBillingTag } from "./work-attribution/request-tags.js"
 import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
@@ -493,7 +494,7 @@ describe("room for the per-request billing tag", () => {
 		})
 	}
 
-	it.each([8, 9])("leaves room for the billing tag in a Kimchi request only up to eight tags (%i)", async (count) => {
+	it.each([7, 8])("leaves room for the billing tag in a Kimchi request only up to seven tags (%i)", async (count) => {
 		const sessionId = `billing-room-${count}`
 		const pi = makePi()
 		tagsExtension(pi)
@@ -504,14 +505,32 @@ describe("room for the per-request billing tag", () => {
 			sessionManager: makeSessionManager(sessionId),
 		})
 		await pi.fire("before_provider_request", { type: "before_provider_request", payload }, request)
-		expect(payload.tags).toEqual(["model:glm-5.3", ...configured(count)])
+		expect(payload.tags).toEqual(["model:glm-5.3", "phase:build", ...configured(count)])
 		const result = prepareBillingTag(
 			new Headers(),
 			payload.tags as string[],
 			"11111111-1111-4111-8111-111111111111",
 			() => false,
 		)
-		expect(result.billingTagSkipped).toBe(count > 8 ? "tag-limit" : undefined)
+		expect(result.billingTagSkipped).toBe(count > 7 ? "tag-limit" : undefined)
+	})
+
+	it("tags requests made in plan mode with phase:plan", async () => {
+		const sessionId = "phase-plan-mode"
+		setPermissionMode(sessionId, { mode: "plan", initiatedBy: "user", source: "runtime" })
+		try {
+			const pi = makePi()
+			tagsExtension(pi)
+			const payload: Record<string, unknown> = { messages: [] }
+			const request = createContext({
+				model: { provider: "kimchi-dev", id: "glm-5.3" },
+				sessionManager: makeSessionManager(sessionId),
+			})
+			await pi.fire("before_provider_request", { type: "before_provider_request", payload }, request)
+			expect(payload.tags).toEqual(["model:glm-5.3", "phase:plan"])
+		} finally {
+			clearPermissionModeEnv(sessionId)
+		}
 	})
 
 	it("warns when an added tag leaves no room for the billing tag", async () => {
@@ -519,13 +538,13 @@ describe("room for the per-request billing tag", () => {
 		tagsExtension(pi)
 		const messages: { message: string; type?: string }[] = []
 		const ctx = notifyingContext("billing-warning", messages)
-		await pi.runCommand("tags", `add ${configured(8).join(" ")}`, ctx)
+		await pi.runCommand("tags", `add ${configured(7).join(" ")}`, ctx)
 		expect(messages[0]).toMatchObject({ type: "info" })
 		expect(messages[0].message).not.toContain("billing tag")
-		await pi.runCommand("tags", "add team8:value", ctx)
+		await pi.runCommand("tags", "add team7:value", ctx)
 		expect(messages[1]).toMatchObject({ type: "warning" })
 		expect(messages[1].message).toContain(
-			"With 9 tags plus the model tag, Kimchi requests reach the gateway's 10-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most 8 tags to see their costs.",
+			"With 8 tags plus the model and phase tags, Kimchi requests reach the gateway's 10-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most 7 tags to see their costs.",
 		)
 	})
 
@@ -535,7 +554,7 @@ describe("room for the per-request billing tag", () => {
 		const pi = makePi()
 		tagsExtension(pi)
 		const messages: { message: string; type?: string }[] = []
-		await pi.runCommand("tags", `add ${configured(9).join(" ")}`, notifyingContext("billing-disabled", messages))
+		await pi.runCommand("tags", `add ${configured(8).join(" ")}`, notifyingContext("billing-disabled", messages))
 		expect(messages[0]).toMatchObject({ type: "info" })
 		expect(messages[0].message).not.toContain("billing tag")
 	})

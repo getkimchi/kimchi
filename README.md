@@ -98,7 +98,7 @@ Sources are unioned; when two sources define the same tag key, the stronger sour
 Two tags are added automatically to every request and do not count toward the 10 tag limit:
 
 - `model:{model_id}` -- the model handling the request
-- `phase:{phase}` -- the current work phase
+- `phase:plan` in plan mode, `phase:build` in every other permission mode
 
 ### Persistence
 

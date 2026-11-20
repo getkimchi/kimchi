@@ -251,7 +251,7 @@ export function costDetailLines(value: unknown, path: string): string[] {
 			.map(([reason, total]) => `${untagged.length > 1 ? `${total} ` : ""}${reason.replaceAll("-", " ")}`)
 		if (count)
 			lines.push(
-				`${count} request${count === 1 ? "" : "s"} untagged: ${reasons.join(", ")}${untagged.some(([reason]) => reason === "tag-limit") ? ` (Kimchi adds a model tag; keep at most ${PRICED_TAG_LIMIT} in /tags)` : ""}.`,
+				`${count} request${count === 1 ? "" : "s"} untagged: ${reasons.join(", ")}${untagged.some(([reason]) => reason === "tag-limit") ? ` (Kimchi adds model and phase tags; keep at most ${PRICED_TAG_LIMIT} in /tags)` : ""}.`,
 			)
 	}
 	if (object(value.requests.failedRefresh) && typeof value.requests.failedRefresh.count === "number") {

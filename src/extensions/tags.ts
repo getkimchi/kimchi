@@ -26,6 +26,7 @@ import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../confi
 import { CODEX_PROVIDER_ID } from "../kimchi-provider.js"
 import { isResourceEnabled } from "../resources/store.js"
 import { getEffectiveModel } from "./auto-model/state.js"
+import { getPermissionMode } from "./permissions/mode-controller.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 import { GATEWAY_TAG_LIMIT, PRICED_TAG_LIMIT } from "./work-attribution/request-tags.js"
 import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
@@ -307,7 +308,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 				"",
 				ctx.ui.theme.fg(
 					"warning",
-					`With ${total} tags plus the model tag, Kimchi requests reach the gateway's ${GATEWAY_TAG_LIMIT}-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most ${PRICED_TAG_LIMIT} tags to see their costs.`,
+					`With ${total} tags plus the model and phase tags, Kimchi requests reach the gateway's ${GATEWAY_TAG_LIMIT}-tag limit. They cannot carry a billing tag, so /work cannot price them. Keep at most ${PRICED_TAG_LIMIT} tags to see their costs.`,
 				),
 			)
 		ctx.ui.notify(
@@ -460,16 +461,18 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		const tagManager = getExtensionTagManager(ctx)
 		const allTags = tagManager.getAllTags()
 
-		// Build the reserved model tag first so it is never dropped by the cap
+		// Build reserved tags first (model + phase) so they are never dropped by the cap.
+		// The phase follows the permission mode: plan mode plans, every other mode builds.
 		const reservedTags: string[] = []
 		if (model?.id) {
 			reservedTags.push(`model:${model.id}`)
 		}
+		reservedTags.push(
+			getPermissionMode(ctx.sessionManager.getSessionId())?.mode === "plan" ? "phase:plan" : "phase:build",
+		)
 
-		// User tags are capped at 10; the reserved model tag rides on top of that cap
+		// User tags are capped at 10; reserved tags (model, phase) ride on top of that cap
 		const finalTags = [...reservedTags, ...allTags.slice(0, 10)]
-
-		if (finalTags.length === 0) return
 
 		// Merge with any existing tags in the payload — extension tags take priority
 		const existing = Array.isArray(payload.tags) ? (payload.tags as string[]) : []
