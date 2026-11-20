@@ -377,7 +377,8 @@ dialog keeps them running. **Stop all** (or `2`) aborts every queued and
 running local background agent as a user stop: the completion notice is still
 recorded, but it does not start a new parent turn. Cloud agents are not
 listed and keep running. A queued cloud agent also stays queued and starts
-later. Ctrl+X still stops the most recent background agent.
+later. Internal system agents (such as the Ferment grader) are not listed or
+stopped either. Ctrl+X still stops the most recent background agent.
 See [bash-commands.md](bash-commands.md#stopping-background-commands).
 
 Remote runs belong to their originating session. Resuming that session reattaches

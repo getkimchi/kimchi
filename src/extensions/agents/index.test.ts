@@ -2698,6 +2698,27 @@ describe("user stop of background agents", () => {
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
 	})
 
+	it("never lists or stops a system agent", async () => {
+		const { ctx, harness, manager } = await startSession("agents-system")
+		const running = makeRunningRecord({ id: "sr", visibility: "system", isBackground: true })
+		const queued = makeRunningRecord({ id: "sq", visibility: "system", status: "queued" })
+		manager._records.set("sr", running)
+		manager._records.set("sq", queued)
+		manager.abort.mockReturnValue(true)
+
+		expect(listBackgroundWork("agents-system")).toEqual([])
+
+		await stopBackgroundWork("agents-system", [
+			{ kind: "agent", id: "sr", label: "sr" },
+			{ kind: "agent", id: "sq", label: "sq" },
+		])
+		expect(manager.abort).not.toHaveBeenCalled()
+		expect(running.userStopped).toBeUndefined()
+		expect(queued.userStopped).toBeUndefined()
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
+	})
+
 	it("stops a background agent and its completion notice does not start a turn", async () => {
 		const { harness, ctx, manager } = await startSession("agents-stop")
 		const record = makeRunningRecord({ id: "bg", isBackground: true })
