@@ -781,6 +781,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 			}, 2500)
 		}
 	})
+	pi.on("agent_start", () => {
+		stopPrompt.onRunStart()
+	})
 	pi.on("agent_settled", (_event, ctx) => {
 		stopPrompt.onRunSettled(ctx)
 	})
