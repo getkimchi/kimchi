@@ -10,16 +10,17 @@ import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createKimchiMcpAdapterExtension } from "./index.js"
 
-type Method = "initialize" | "tools/list" | "tools/call"
+type Method = "initialize" | "tools/list" | "tools/call" | "tasks/get"
 type TextResult = { content: Array<{ type: string; text?: string }>; isError?: boolean; details?: { error?: string } }
 
-async function startFixture() {
-	const counts: Record<Method, number> = { initialize: 0, "tools/list": 0, "tools/call": 0 }
+async function startFixture(options: { tasks?: boolean } = {}) {
+	const counts: Record<Method, number> = { initialize: 0, "tools/list": 0, "tools/call": 0, "tasks/get": 0 }
 	let failInitialize = false
 	let listGate: Promise<void> | undefined
 	let releaseList: (() => void) | undefined
 	let callGate: Promise<void> | undefined
 	let releaseCall: (() => void) | undefined
+	let taskGetDelayMs = 0
 	const server = createServer(async (req, res) => {
 		if (req.method !== "POST") {
 			res.writeHead(405)
@@ -42,16 +43,28 @@ async function startFixture() {
 			}
 			respond({
 				protocolVersion: body.params.protocolVersion,
-				capabilities: { tools: {} },
+				capabilities: {
+					tools: {},
+					...(options.tasks ? { extensions: { "io.modelcontextprotocol/tasks": {} } } : {}),
+				},
 				serverInfo: { name: "gateway-discovery-fixture", version: "1.0.0" },
 			})
 		} else if (body.method === "notifications/initialized") {
 			res.writeHead(202)
 			res.end()
+		} else if (options.tasks && body.method === "server/discover") {
+			respond({
+				supportedVersions: ["2026-07-28"],
+				capabilities: {
+					tools: {},
+					...(options.tasks ? { extensions: { "io.modelcontextprotocol/tasks": {} } } : {}),
+				},
+			})
 		} else if (body.method === "tools/list") {
 			counts["tools/list"]++
 			await listGate
 			respond({
+				...(options.tasks ? { resultType: "complete" as const, ttlMs: 0, cacheScope: "private" as const } : {}),
 				tools: [
 					{
 						name: "atlassian_get_issue",
@@ -63,7 +76,43 @@ async function startFixture() {
 		} else if (body.method === "tools/call") {
 			counts["tools/call"]++
 			await callGate
-			respond({ content: [{ type: "text", text: "PROJ-123" }], isError: false })
+			if (options.tasks) {
+				const now = new Date().toISOString()
+				respond({
+					resultType: "task",
+					taskId: "t-1",
+					status: "working",
+					createdAt: now,
+					lastUpdatedAt: now,
+					ttlMs: null,
+					pollIntervalMs: 10,
+				})
+			} else {
+				respond({ content: [{ type: "text", text: "PROJ-123" }], isError: false })
+			}
+		} else if (options.tasks && body.method === "tasks/get") {
+			counts["tasks/get"]++
+			if (taskGetDelayMs > 0) {
+				const delay = taskGetDelayMs
+				taskGetDelayMs = 0
+				await new Promise((resolve) => setTimeout(resolve, delay))
+			}
+			const now = new Date().toISOString()
+			respond({
+				resultType: "complete",
+				taskId: "t-1",
+				status: "completed",
+				result: {
+					resultType: "complete",
+					ttlMs: 0,
+					cacheScope: "private",
+					content: [{ type: "text", text: "PROJ-123" }],
+					isError: false,
+				},
+				createdAt: now,
+				lastUpdatedAt: now,
+				ttlMs: null,
+			})
 		} else {
 			respond({})
 		}
@@ -108,11 +157,15 @@ async function startFixture() {
 				callGate = undefined
 			}, ms)
 		},
+		delayTaskGets: (ms: number) => {
+			taskGetDelayMs = ms
+		},
 		releaseLists: () => {
 			releaseList?.()
 			listGate = undefined
 			releaseCall?.()
 			callGate = undefined
+			taskGetDelayMs = 0
 		},
 	}
 }
@@ -305,6 +358,24 @@ describe("built-in gateway discovery", () => {
 		expect(result.details?.error).toBeUndefined()
 		expect(result.content.some((entry) => entry.text?.includes("PROJ-123"))).toBe(true)
 		expect(fixture.counts["tools/call"]).toBe(1)
+	})
+
+	it("restores normal task-channel timeouts on resident initial runtime connections", async () => {
+		await new Promise<void>((resolve) => fixture.server.close(() => resolve()))
+		fixture = await startFixture({ tasks: true })
+		createMcpAdapter({
+			config: { mcpServers: {}, settings: { autoAuth: false, directTools: false } },
+			defaultProtocolVersion: "2026-07-28",
+			initialRuntimeServers: { gateway: { url: fixture.url, lifecycle: "lazy", idleTimeout: 0 } },
+			initialRuntimeDiscoveryTimeoutMs: 25,
+		})(host.api)
+		await host.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
+		await host.emit("input", {}, ctx)
+		fixture.delayTaskGets(100)
+		const result = await callFixtureTool()
+		expect(result.details?.error).toBeUndefined()
+		expect(result.content.some((entry) => entry.text?.includes("PROJ-123"))).toBe(true)
+		expect(fixture.counts["tasks/get"]).toBe(1)
 	})
 
 	it("does not apply runtime discovery timeout to a configured server with the same name", async () => {
