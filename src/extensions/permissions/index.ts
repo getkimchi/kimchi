@@ -134,7 +134,13 @@ import {
 } from "./policy.js"
 import { getPermissionPolicySource, registerPermissionPolicySource } from "./policy-source-registry.js"
 import { PromptQueue } from "./prompt-queue.js"
-import type { PermissionChoice, PermissionOrigin, PermissionRequest, ToolPermissionPrompter } from "./prompter.js"
+import {
+	MODE_CHANGED_ABORT_ERROR,
+	type PermissionChoice,
+	type PermissionOrigin,
+	type PermissionRequest,
+	type ToolPermissionPrompter,
+} from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
 	type ApprovalOutcome,
@@ -222,8 +228,6 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 ]
 
 export { notifyFermentActive }
-
-const MODE_CHANGED_ABORT_ERROR = new Error("permissions: mode changed")
 
 /** Open or queued permission prompts per event bus (a session's own and its
  *  subagents'). The prompt queue shows them one at a time, so an escalated

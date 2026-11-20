@@ -33,6 +33,18 @@ export interface PermissionRequest {
 	// segments independently and requires all of them allowed).
 }
 
+/**
+ * Abort reason of a permission request that a mode change withdrew. The call
+ * behind it is decided again under the new mode, so "aborted" for this reason
+ * is not a denial. Shared so that surfaces outside the gate (an ACP card) can
+ * tell a withdrawn request from a refused one.
+ */
+export const MODE_CHANGED_ABORT_ERROR = new Error("permissions: mode changed")
+
+export function isModeChangeAbort(signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true && signal.reason === MODE_CHANGED_ABORT_ERROR
+}
+
 export interface ToolPermissionPrompter {
 	request(req: PermissionRequest): Promise<ApprovalOutcome>
 }
