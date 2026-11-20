@@ -4,8 +4,7 @@
  * wording, clamped remaining budget, and omission/truncation formatting.
  */
 import { describe, expect, it } from "vitest"
-import { USER_STOP_REASON } from "./bash-display.js"
-import type { IncrementalSnapshot } from "./process-registry.js"
+import { type IncrementalSnapshot, USER_STOP_REASON } from "./process-registry.js"
 import {
 	checkpointGuidanceText,
 	formatBytes,

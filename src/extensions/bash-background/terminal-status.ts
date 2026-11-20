@@ -1,5 +1,4 @@
-import { USER_STOP_REASON } from "./bash-display.js"
-import { SAFETY_LIMIT_REASON, type TailSnapshot } from "./process-registry.js"
+import { SAFETY_LIMIT_REASON, type TailSnapshot, USER_STOP_REASON } from "./process-registry.js"
 
 /**
  * Append a status line to the output, separated by a blank line.

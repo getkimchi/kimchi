@@ -26,8 +26,12 @@ import bashControlExtension, {
 	EXIT_BATCH_WINDOW_MS,
 } from "./bash-control-extension.js"
 import { createBashControlToolDefinition } from "./bash-control-tool.js"
-import { USER_STOP_REASON } from "./bash-display.js"
-import { createProcessRegistry, MAX_COMPLETED_PROCESSES, type ProcessRegistry } from "./process-registry.js"
+import {
+	createProcessRegistry,
+	MAX_COMPLETED_PROCESSES,
+	type ProcessRegistry,
+	USER_STOP_REASON,
+} from "./process-registry.js"
 import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"

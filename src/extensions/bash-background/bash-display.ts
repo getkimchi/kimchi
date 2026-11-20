@@ -7,7 +7,7 @@ import {
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { safePanelText as safeBashText } from "../../components/input-panel.js"
 import { ToolText, toolHeader, withBranch } from "../tool-rendering.js"
-import type { ProcessDisplaySnapshot, ProcessRegistry } from "./process-registry.js"
+import { type ProcessDisplaySnapshot, type ProcessRegistry, USER_STOP_REASON } from "./process-registry.js"
 
 type BashCallRenderer = NonNullable<ToolDefinition["renderCall"]>
 type BashResultRenderer = NonNullable<ToolDefinition["renderResult"]>
@@ -37,9 +37,6 @@ function rowsForSession(registry: ProcessRegistry | undefined): Map<string, Bash
 function hiddenControl(ctx: Parameters<BashCallRenderer>[2], registry: ProcessRegistry | undefined): boolean {
 	return !ctx.state.bashControlError && !!rowsForSession(registry)?.has(stringArg(ctx.args, "handle"))
 }
-
-/** Kill reason for a stop the user asked for. Its exit must not wake the model. */
-export const USER_STOP_REASON = "user-stop"
 
 const LIVE_TICK_MS = 10_000
 
