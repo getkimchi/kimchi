@@ -119,6 +119,15 @@ function sameRealPath(a: string, b: string): boolean {
  * 2. Kimchi's AGENTS.md (+ AGENTS.local.md).
  */
 export function loadGlobalContextFiles(options: GlobalContextFileOptions): ContextFile[] {
+	return readGlobalContextFiles(options).files
+}
+
+/**
+ * `sources` holds each global file before the .local.md merge. Project files
+ * are compared against it, so a project copy of AGENTS.md still matches when
+ * a global AGENTS.local.md exists.
+ */
+function readGlobalContextFiles(options: GlobalContextFileOptions): { files: ContextFile[]; sources: ContextFile[] } {
 	const files: ContextFile[] = []
 	const dir = getAgentDir()
 	const agentsPath = dir ? join(dir, "AGENTS.md") : undefined
@@ -135,20 +144,23 @@ export function loadGlobalContextFiles(options: GlobalContextFileOptions): Conte
 		if (claude !== null && !duplicate) files.push({ path: claudePath, content: claude })
 	}
 
-	if (!dir || !agentsPath) return files
+	const sources = [...files]
+	if (!dir || !agentsPath) return { files, sources }
 	const localPath = join(dir, localVariant("AGENTS.md"))
 	const local = tryReadFile(localPath)
 	if (agentsPrimary !== null) {
 		const content = local !== null ? `${agentsPrimary}\n\n${local}` : agentsPrimary
 		files.push({ path: agentsPath, content })
+		sources.push({ path: agentsPath, content: agentsPrimary })
 	} else if (local !== null) {
 		files.push({ path: localPath, content: local })
+		sources.push({ path: localPath, content: local })
 	}
-	return files
+	return { files, sources }
 }
 
 /** Global files, then project files that do not repeat them. */
 export function loadContextFiles(cwd: string, options: GlobalContextFileOptions): ContextFile[] {
-	const globalFiles = loadGlobalContextFiles(options)
-	return [...globalFiles, ...loadProjectContextFiles(cwd, globalFiles)]
+	const { files, sources } = readGlobalContextFiles(options)
+	return [...files, ...loadProjectContextFiles(cwd, sources)]
 }

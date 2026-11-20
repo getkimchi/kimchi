@@ -12,7 +12,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	return { ...actual, getAgentDir: () => FAKE_AGENT_DIR }
 })
 
-import { loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { loadContextFiles, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 
 describe("loadProjectContextFiles", () => {
 	beforeEach(() => {
@@ -294,5 +294,48 @@ describe("loadProjectContextFiles with already loaded global files", () => {
 		expect(inTmp(loadProjectContextFiles(nested))).toEqual([
 			{ path: join(nested, "AGENTS.md"), content: "global rules\n" },
 		])
+	})
+})
+
+describe("loadContextFiles with a global AGENTS.local.md", () => {
+	const emptyClaudeDir = join(tmpdir(), `kimchi-empty-claude-${Date.now()}`)
+	const globalAgents = join(FAKE_AGENT_DIR, "AGENTS.md")
+	const load = () =>
+		loadContextFiles(nested, { includeClaudeCodeInstructions: true }).filter(
+			(f) => f.path.startsWith(FAKE_AGENT_DIR) || f.path.startsWith(tmpBase),
+		)
+
+	beforeEach(() => {
+		rmSync(FAKE_AGENT_DIR, { recursive: true, force: true })
+		rmSync(tmpBase, { recursive: true, force: true })
+		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
+		mkdirSync(nested, { recursive: true })
+		vi.stubEnv("CLAUDE_CONFIG_DIR", emptyClaudeDir)
+		writeFileSync(globalAgents, "shared rules\n")
+		writeFileSync(join(FAKE_AGENT_DIR, "AGENTS.local.md"), "global local override\n")
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		rmSync(FAKE_AGENT_DIR, { recursive: true, force: true })
+		rmSync(tmpBase, { recursive: true, force: true })
+	})
+
+	const mergedGlobal = { path: globalAgents, content: "shared rules\n\n\nglobal local override\n" }
+
+	it("skips a project copy of the global AGENTS.md", () => {
+		writeFileSync(join(nested, "AGENTS.md"), "shared rules")
+		expect(load()).toEqual([mergedGlobal])
+	})
+
+	it("skips a project symlink to the global AGENTS.md", () => {
+		symlinkSync(globalAgents, join(nested, "AGENTS.md"))
+		expect(load()).toEqual([mergedGlobal])
+	})
+
+	it("keeps the project AGENTS.local.md of a skipped copy", () => {
+		writeFileSync(join(nested, "AGENTS.md"), "shared rules")
+		writeFileSync(join(nested, "AGENTS.local.md"), "project local override")
+		expect(load()).toEqual([mergedGlobal, { path: join(nested, "AGENTS.local.md"), content: "project local override" }])
 	})
 })
