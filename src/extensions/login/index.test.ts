@@ -1,10 +1,31 @@
-import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
+import {
+	rememberPreparedOAuthCredential,
+	shouldReusePreparedOAuthCredential,
+} from "../../auth/short-lived-credential-handoff.js"
+import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { createModel } from "../__mocks__/model-registry.js"
 import loginExtension from "./index.js"
 
-const { loadConfigMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
+const { acpMode, loadConfigMock, prepareActivePromptMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
+	acpMode: { current: false },
 	loadConfigMock: vi.fn(),
+	prepareActivePromptMock: vi.fn(),
 	refreshBillingStatusFromConfigMock: vi.fn(),
+}))
+
+vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
+	...(await importOriginal()),
+	get IS_ACP_MODE() {
+		return acpMode.current
+	},
+}))
+
+vi.mock("../../auth/active-prompt-refresh.js", () => ({
+	prepareActivePromptKimchiCredential: prepareActivePromptMock,
 }))
 
 vi.mock("../../config.js", () => ({
@@ -29,16 +50,17 @@ type ProviderConfig = Parameters<ModelRegistry["registerProvider"]>[1]
 // Capture the provider config the extension registers for a given customLlmEndpoint.
 function providerConfigFor(customLlmEndpoint: string | undefined): ProviderConfig {
 	loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint })
-	const registerProvider = vi.fn()
-	loginExtension({ on: vi.fn(), registerProvider } as unknown as ExtensionAPI)
+	const { api, registerProvider } = createExtensionApi()
+	loginExtension(api)
 	const [providerId, providerConfig] = registerProvider.mock.calls.find(([provider]) => provider === "kimchi-dev") ?? []
-	expect(providerId).toBe("kimchi-dev")
+	if (providerId !== "kimchi-dev" || !providerConfig) throw new Error("Kimi provider was not registered")
 	return providerConfig
 }
 
 describe("loginExtension", () => {
 	beforeEach(() => {
 		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-extension-test")
+		acpMode.current = false
 		loadConfigMock.mockReset()
 	})
 
@@ -68,12 +90,8 @@ describe("loginExtension", () => {
 
 	it("restores OpenAI Codex subscription login while builtin API-key providers stay disabled", () => {
 		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
-		const registerProvider = vi.fn()
-
-		loginExtension({
-			on: vi.fn(),
-			registerProvider,
-		} as unknown as ExtensionAPI)
+		const { api, registerProvider } = createExtensionApi()
+		loginExtension(api)
 
 		// Stock pi login flow, re-labelled without "(legacy)", with no hardcoded
 		// models (the gateway feed supplies them).
@@ -86,15 +104,113 @@ describe("loginExtension", () => {
 		expect(provider.getModels()).toEqual([])
 	})
 
+	it("stops the prompt after transient canonical failure and requests a retry, not sign-in", async () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		vi.mocked(prepareActivePromptKimchiCredential).mockResolvedValue("oauth_refresh_failed")
+		const { api, getHandler } = createExtensionApi()
+		const notify = vi.fn()
+		loginExtension(api)
+
+		await expect(getHandler("input")({ source: "interactive" }, createContext({ ui: { notify } }))).resolves.toEqual({
+			action: "handled",
+		})
+		expect(notify).toHaveBeenCalledWith("OAuth refresh failed. Retry this prompt; sign-in is not required.", "error")
+	})
+
+	it("handles a credential-sync failure without submitting or requesting sign-in", async () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		vi.mocked(prepareActivePromptKimchiCredential).mockResolvedValue("credential_sync_failed")
+		const { api, getHandler } = createExtensionApi()
+		const notify = vi.fn()
+		loginExtension(api)
+
+		await expect(getHandler("input")({ source: "interactive" }, createContext({ ui: { notify } }))).resolves.toEqual({
+			action: "handled",
+		})
+		expect(notify).toHaveBeenCalledWith(
+			"OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
+			"error",
+		)
+	})
+
+	it("releases a short-lived credential when the TUI prompt is fully settled", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const { api, getHandler } = createExtensionApi()
+		loginExtension(api)
+		const ctx = createContext({ modelRegistry: { getAll: () => [] } })
+		const authPath = "/tmp/kimchi-login-extension-test/auth.json"
+		const credential = { access: "short-replacement", refresh: "short-grant", expires: 1 }
+		rememberPreparedOAuthCredential(authPath, credential, ctx.modelRegistry)
+		expect(shouldReusePreparedOAuthCredential(authPath, credential, ctx.modelRegistry)).toBe(true)
+
+		getHandler("agent_settled")({ aborted: false }, ctx)
+
+		expect(shouldReusePreparedOAuthCredential(authPath, credential, ctx.modelRegistry)).toBe(false)
+	})
+
+	it("leaves ACP handoff release to its own prompt boundary", () => {
+		acpMode.current = true
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const { api, getHandler } = createExtensionApi()
+		loginExtension(api)
+		const ctx = createContext({ modelRegistry: { getAll: () => [] } })
+		const authPath = "/tmp/kimchi-login-extension-test/auth.json"
+		const credential = { access: "short-replacement", refresh: "short-grant", expires: 1 }
+		rememberPreparedOAuthCredential(authPath, credential, ctx.modelRegistry)
+
+		getHandler("agent_settled")({ aborted: false }, ctx)
+
+		expect(shouldReusePreparedOAuthCredential(authPath, credential, ctx.modelRegistry)).toBe(true)
+	})
+
+	it("keeps ACP's session-owned provider callbacks on session_start", () => {
+		acpMode.current = true
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const { api, getHandler, registerProvider } = createExtensionApi()
+		loginExtension(api)
+		registerProvider.mockClear()
+
+		getHandler("session_start")({}, createContext({ mode: "rpc", modelRegistry: { getAll: () => [] } }))
+
+		expect(registerProvider).not.toHaveBeenCalled()
+	})
+
+	it("registers canonical and child OAuth handlers for native RPC session_start", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const { api, getHandler, registerProvider } = createExtensionApi()
+		loginExtension(api)
+		registerProvider.mockClear()
+
+		getHandler("session_start")(
+			{},
+			createContext({
+				mode: "rpc",
+				modelRegistry: { getAll: () => [createModel("child-model", "kimchi-dev/openai")] },
+			}),
+		)
+
+		expect(registerProvider).toHaveBeenCalledTimes(2)
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(registerProvider).toHaveBeenCalledWith(
+				providerId,
+				expect.objectContaining({
+					oauth: expect.objectContaining({
+						name: "Sign in with SSO",
+						refreshToken: expect.any(Function),
+						getApiKey: expect.any(Function),
+					}),
+				}),
+			)
+		}
+	})
+
 	it("refreshes billing when an authenticated session starts", () => {
 		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
-		const on = vi.fn()
-
-		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
+		const { api, getHandler } = createExtensionApi()
+		loginExtension(api)
 		loadConfigMock.mockReturnValue({ apiKey: "configured-api-key", customLlmEndpoint: undefined })
 
-		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
-		sessionStart({}, { modelRegistry: { getAll: () => [] } })
+		getHandler("session_start")({}, createContext({ modelRegistry: { getAll: () => [] } }))
 
 		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledOnce()
 		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledWith({ mode: "forced" })

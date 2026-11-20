@@ -60,7 +60,9 @@ export type AuthStatusDeps = {
  */
 export async function handleAuthStatus(
 	paths: AuthStatusPaths,
-	deps: AuthStatusDeps = { installOAuth: installKimchiOAuth },
+	deps: AuthStatusDeps = {
+		installOAuth: (runtime) => installKimchiOAuth(runtime, paths.authPath),
+	},
 ): Promise<AuthStatusResponse> {
 	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
 	if (apiKey) {

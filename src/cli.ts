@@ -651,7 +651,14 @@ async function cliMain(): Promise<void> {
 					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey || "", {
 						endpoint: config.customLlmEndpoint,
 						organizationId: currentApiKey ? undefined : oauthOrganizationId,
-						...(oauthAccessToken ? { refreshOAuth: { authPath: authJsonPath, installOAuth: installKimchiOAuth } } : {}),
+						...(oauthAccessToken
+							? {
+									refreshOAuth: {
+										authPath: authJsonPath,
+										installOAuth: (runtime) => installKimchiOAuth(runtime, authJsonPath),
+									},
+								}
+							: {}),
 					}))
 					if (experimentalFeatures) {
 						injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")

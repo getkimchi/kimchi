@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
+import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeApiKey } from "../../../config.js"
@@ -36,6 +37,7 @@ describe("handleSsoCredential", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
+		vi.restoreAllMocks()
 		rmSync(dir, { recursive: true, force: true })
 	})
 
@@ -65,6 +67,13 @@ describe("handleSsoCredential", () => {
 		}
 		throw new Error("expected the handler to throw")
 	}
+
+	it("uses an in-memory dynamic model cache for credential-only resolution", async () => {
+		const create = vi.spyOn(ModelRuntime, "create")
+		writeSsoEntry()
+		await handleSsoCredential(fakeOAuthDeps(), paths)
+		expect(create.mock.calls[0]?.[0]?.modelsStore).toBeInstanceOf(InMemoryModelsStore)
+	})
 
 	it("returns the org-scoped credential for a fresh SSO entry", async () => {
 		const entry = writeSsoEntry()

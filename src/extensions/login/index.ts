@@ -1,8 +1,12 @@
+import { join } from "node:path"
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
+import { releasePreparedOAuthCredential } from "../../auth/short-lived-credential-handoff.js"
 import { loadConfig } from "../../config.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { chatCompletionsApi } from "../../models.js"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 import { createGatewayCodexProvider, registerGatewayCodexApi } from "./codex-gateway.js"
 import { createKimchiProviderOAuth } from "./flow.js"
@@ -21,13 +25,66 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	// cached (gateway) models.json — without persisting a project-local endpoint into the global
 	// models.json. Only set when explicitly configured so the default gateway keeps flowing.
 	const { customLlmEndpoint } = loadConfig()
-	const kimchiOAuth = createKimchiProviderOAuth()
+	const authPath = join(agentDir, "auth.json")
+	const kimchiOAuth = createKimchiProviderOAuth(authPath)
+	const sessionOAuthByRegistry = new WeakMap<object, typeof kimchiOAuth>()
+	const sessionOAuthFor = (owner: object) => {
+		let oauth = sessionOAuthByRegistry.get(owner)
+		if (!oauth) {
+			oauth = createKimchiProviderOAuth(authPath, owner)
+			sessionOAuthByRegistry.set(owner, oauth)
+		}
+		return oauth
+	}
 
 	const kimchiProvider: Parameters<typeof pi.registerProvider>[1] = { oauth: kimchiOAuth }
 	if (customLlmEndpoint) {
 		kimchiProvider.baseUrl = chatCompletionsApi(customLlmEndpoint)
 	}
 	pi.registerProvider(KIMCHI_PROVIDER_ID, kimchiProvider)
+
+	pi.on("input", async (event, ctx) => {
+		// Limit the preflight to original TUI prompts. ACP refreshes at its
+		// session/prompt adapter, where a revoked grant becomes -32000 instead
+		// of an extension error. Other sources retain their existing auth path.
+		if (event.source !== "interactive" || ctx.mode !== "tui") return
+		const preparation = await prepareActivePromptKimchiCredential(
+			{ authPath, modelsPath: join(agentDir, "models.json") },
+			(runtime, owner) => {
+				runtime.registerProvider(KIMCHI_PROVIDER_ID, {
+					...kimchiProvider,
+					oauth: sessionOAuthFor(owner ?? ctx.modelRegistry),
+				})
+			},
+			ctx.model?.provider,
+			ctx.modelRegistry,
+		)
+		if (preparation !== "ready") releasePreparedOAuthCredential(authPath, ctx.modelRegistry)
+		if (preparation === "oauth_revoked") {
+			ctx.ui.notify("OAuth refresh was rejected. Run /login to sign in again.", "error")
+			return { action: "handled" as const }
+		}
+		if (preparation === "oauth_refresh_failed") {
+			ctx.ui.notify("OAuth refresh failed. Retry this prompt; sign-in is not required.", "error")
+			return { action: "handled" as const }
+		}
+		if (preparation === "credential_sync_failed") {
+			ctx.ui.notify(
+				"OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
+				"error",
+			)
+			return { action: "handled" as const }
+		}
+	})
+
+	pi.on("agent_settled", (_event, ctx) => {
+		// ACP releases at its own run boundary, after retries and held plan-review
+		// continuations. Native RPC and ACP-spawned workers retain this cleanup.
+		if (IS_ACP_MODE) return
+		// Preserve the short-lived replacement through every model request and tool
+		// continuation in this prompt, then allow the next prompt to rotate normally.
+		releasePreparedOAuthCredential(authPath, ctx.modelRegistry)
+	})
 
 	// Register the same OAuth handler for every Kimchi-managed sub-provider
 	// (kimchi-dev/* and kimchi-experimental) so that authStorage.getApiKey can
@@ -38,7 +95,14 @@ export default function loginExtension(pi: ExtensionAPI): void {
 		if (loadConfig().apiKey) {
 			void refreshBillingStatusFromConfig({ mode: "forced" })
 		}
-
+		if (IS_ACP_MODE) {
+			// ACP rebinds parent-session callbacks after extension loading
+			// (acp-compat rule 10). Native RPC and ACP-spawned subagents still
+			// need these registrations and do not run that ACP rebinding.
+			return
+		}
+		const sessionOAuth = sessionOAuthFor(ctx.modelRegistry)
+		pi.registerProvider(KIMCHI_PROVIDER_ID, { ...kimchiProvider, oauth: sessionOAuth })
 		const subProviders = new Set(
 			ctx.modelRegistry
 				.getAll()
@@ -46,7 +110,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 				.filter((p) => p !== KIMCHI_PROVIDER_ID && isKimchiProvider(p)),
 		)
 		for (const subProviderId of subProviders) {
-			pi.registerProvider(subProviderId, { oauth: kimchiOAuth })
+			pi.registerProvider(subProviderId, { oauth: sessionOAuth })
 		}
 	})
 }
