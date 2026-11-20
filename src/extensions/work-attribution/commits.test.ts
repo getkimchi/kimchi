@@ -58,10 +58,14 @@ const commitRows = (agentDir: string) =>
 			rewrittenFrom: typeof row.rewrittenFrom === "string" ? row.rewrittenFrom : undefined,
 		}))
 
-async function run(command: string, cwd = repository): Promise<number | null> {
+async function run(
+	command: string,
+	cwd = repository,
+	onData: (data: Buffer) => void = () => {},
+): Promise<number | null> {
 	return (
 		await createCommitTrackingOperations((commit) => commits.push(commit)).exec(command, cwd, {
-			onData: () => {},
+			onData,
 			env: { ...process.env },
 		})
 	).exitCode
@@ -250,18 +254,6 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 			})
 		}
 		git(repository, "config", "gc.autoPackLimit", "1")
-		// Some versions cannot show detach support through help; in that case, omit the optional flag.
-		let detachFlag = ""
-		try {
-			detachFlag = execFileSync("git", ["gc", "-h"], {
-				encoding: "utf8",
-				env: { ...process.env, GIT_PAGER: "cat" },
-			}).includes("--detach")
-				? " --detach"
-				: ""
-		} catch {
-			// Older Git versions either reject the help probe or do not support --detach.
-		}
 		const ready = quote(join(directory, "maintenance-ready"))
 		const release = quote(join(directory, "maintenance-release"))
 		writeFileSync(
@@ -277,9 +269,13 @@ done
 `,
 			{ mode: 0o700 },
 		)
+		// A detached gc outlives `wait` and keeps writing into .git while afterEach removes it.
+		// gc.autoDetach exists in every Git; --detach/--no-detach do not.
+		let output = ""
 		expect(
-			await run(`
-git ${maintenance}${detachFlag} &
+			await run(
+				`
+git -c gc.autoDetach=false ${maintenance} &
 maintenance_pid=$!
 finish() { touch ${release}; wait "$maintenance_pid"; }
 trap finish EXIT
@@ -294,8 +290,14 @@ commit_result=$?
 touch ${release}
 wait "$maintenance_pid" || exit 1
 exit "$commit_result"
-`),
+`,
+				repository,
+				(data) => {
+					output += data.toString()
+				},
+			),
 		).toBe(0)
+		expect(output).not.toContain("in background")
 		expect(commits.map((commit) => commit.sha)).toEqual([git(repository, "rev-parse", "HEAD")])
 	}, 15_000)
 
