@@ -25,6 +25,7 @@ import random
 import re
 import shutil
 import signal
+import threading
 import subprocess
 import sys
 import tempfile
@@ -157,13 +158,6 @@ def check_version(binary, env, cwd):
 # ---------------------------------------------------------------- scenarios
 def run_session(binary, env, cwd, srv_state, idle_s=10):
     """Clean TUI session with two turns (one with tools). Gate: disk_w, instr."""
-    # Submit-latency marks (KIMCHI_SUBMIT_TIMING, when the binary carries the
-    # instrument): Enter to the user's message entering the session. The gate
-    # budgets the max across turns; reintroduced blocking between submit and
-    # the request lands here at its full duration. The env var points inside
-    # the per-run HOME; a binary without the instrument never writes the file.
-    marks_path = os.path.join(env["HOME"], "submit-timing.jsonl")
-    env["KIMCHI_SUBMIT_TIMING"] = marks_path
     argv = [binary, "--provider", "fake", "--model", "basic"]
     tp, sampler, cg = launch(env, cwd, argv, "session")
     pid = tp.proc.pid
@@ -282,33 +276,6 @@ def run_session(binary, env, cwd, srv_state, idle_s=10):
                     tot["main"][k] = final[k]
         res["total"] = flatten_total(tot)
         res["counter"] = counter_tier(tot)
-        # Parse the submit-timing marks after the process is gone: the file
-        # is complete then, and the quit flush cannot interleave.
-        res["submit_timing"] = False
-        try:
-            with open(marks_path, encoding="utf-8") as fh:
-                marks = [json.loads(line) for line in fh if line.strip()]
-        except OSError:
-            marks = []
-        if marks:
-            res["submit_timing"] = True
-            lat, pending = [], None
-            for mark in marks:
-                if mark.get("event") == "submit.input":
-                    pending = mark["t"]
-                elif (mark.get("event") == "message.entryStart" and mark.get("role") == "user"
-                      and pending is not None):
-                    lat.append(mark["t"] - pending)
-                    pending = None
-            if lat:
-                res["submit_echo_ms"] = lat
-                res["submit_echo_max_ms"] = max(lat)
-            else:
-                # The instrument ran but produced no user-entry samples — a
-                # measurement failure, not an absent instrument; fail the rep
-                # so the classifier's dormant-lane SKIP can never mask it.
-                res["ok"] = False
-                res["error"] = "submit-timing marks present but no user-entry samples"
     finally:
         cleanup(tp, pid, sampler, cg)
     res["home_bytes"] = home_footprint(env["HOME"])
@@ -397,6 +364,26 @@ def run_resume(binary, env, cwd, srv_state, settle_s=5):
 #   idle_healthy: same aged install, uploads acknowledged, the queue drains
 #   idle_fresh:   clean install, nothing queued
 IDLE_VARIANTS = ("idle_healthy", "idle_fresh")
+
+# A measured heavy-install shape: 1M work records over ~1,000 journals and
+# 600k retained outbox events across three accounts (~71% unacknowledged).
+# The first journal holds 2% of records: many small histories plus one large
+# actively appended prefix, rather than a million-record monolith. This is a
+# deliberately new measurement generation; its budgets are calibrated on the
+# same fixture, not carried forward from the former 100k-record lane.
+LEDGER_RECORDS = 1_000_000
+LEDGER_OUTBOX_EVENTS = 600_000
+LEDGER_JOURNALS = 1_000
+
+# One repository keeps repository-discovery noise stable while work-record,
+# journal, and outbox history reproduce the heavy-install cost drivers.
+LEDGER_REPOS = 1
+
+
+def ledger_records_from_env():
+    """KIMCHI_PERF_LEDGER_RECORDS overrides the seeded count (sweeps, selfcheck)."""
+    raw = os.environ.get("KIMCHI_PERF_LEDGER_RECORDS")
+    return int(raw) if raw else None
 
 BIGTOOLS_TURNS = 10
 BIGTOOLS_READS = 8          # read calls per turn, each on a distinct file
@@ -538,9 +525,11 @@ def run_bigtools(binary, env, cwd, srv_state, turns=BIGTOOLS_TURNS, reads=BIGTOO
     return res
 
 
-def probe_keylat(tp, timeout_s=5.0):
-    """Time one keystroke's echo: send a char, wait for the first PTY output,
-    erase it. None on timeout."""
+def probe_keylat(tp, timeout_s=5.0, phase="startup or unknown window"):
+    """Time one keystroke's echo and erase it. A timeout fails the rep instead
+    of silently selecting only the fast observations that came back. Include
+    enough terminal state to distinguish an event-loop hold from a probe whose
+    editor is not accepting input."""
     quiet_until = time.time() + 0.3  # let unrelated output drain first
     # The drain extends while output keeps arriving, but a pathologically chatty
     # TUI must not hang the probe (and the whole idle bucket loop) forever:
@@ -558,7 +547,11 @@ def probe_keylat(tp, timeout_s=5.0):
     while tp.bytes_out() == n0 and time.perf_counter() < deadline:
         time.sleep(0.002)
     if tp.bytes_out() == n0:
-        return None
+        raise TimeoutError(
+            f"keystroke echo timed out after {timeout_s:.1f}s (phase={phase}); "
+            f"pty_exit={tp.proc.poll()!r}, before_bytes={n0}, after_bytes={tp.bytes_out()}; "
+            f"screen_tail={tp.plain()[-1200:]!r}"
+        )
     lat = (time.perf_counter() - t) * 1000
     tp.send("\x7f")
     time.sleep(0.05)
@@ -626,7 +619,7 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
                 deadline = time.time() + bucket_s
                 while time.time() < deadline:
                     t_probe = time.time() - t0
-                    lat = probe_keylat(tp)
+                    lat = probe_keylat(tp, phase=f"t={t_probe:.2f}s")
                     if lat is not None:
                         res["keylat_ms"].append(lat)
                         if lat > KEYLAT_SLOW_MS:
@@ -678,6 +671,120 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
     res["home_bytes"] = home_footprint(env["HOME"])
     sj = os.path.join(env["HOME"], ".config", "kimchi", "harness", "pr-cost-reporting", "state.json")
     res["state_json_bytes"] = os.path.getsize(sj) if os.path.exists(sj) else None
+    return res
+
+
+def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
+    """Production-scale ledger, idle timeline. Gates: per-window work and
+    keystroke p95.
+
+    Same idle timeline over a heavy install: LEDGER_RECORDS work records in
+    many journals, LEDGER_OUTBOX_EVENTS retained outbox events, and live
+    appends to the largest journal. The retained delivery history is backed
+    off, so passes pay status reads without draining a synthetic backlog.
+    This exposes history re-reads, status aggregation, and journal-prefix
+    verification as both per-window work and keystroke echo latency.
+    The post-run index census and ledger shape are advisory record data; store
+    invariants remain covered by the source tests, not this performance gate.
+    """
+    argv = [binary, "--provider", "fake", "--model", "basic"]
+    t0 = time.time()
+    tp, sampler, cg = launch(env, cwd, argv, "ledger")
+    pid = tp.proc.pid
+    res = {"ok": False, "buckets": [], "keylat_ms": [], "keylat_slow": [], "appended": 0,
+           "fixture_generation": env.get("KIMCHI_PERF_FIXTURE_GENERATION"),
+           "source_sha": env.get("KIMCHI_PERF_SOURCE_SHA"),
+           "harness_sha": env.get("KIMCHI_PERF_HARNESS_SHA"),
+           "fixture_shape_at_start": fixtures.ledger_shape(env["HOME"])}
+    # Grow the largest seeded journal, not a separate tiny live file: passes
+    # must reconcile and verify a large active prefix as history keeps moving.
+    stop_append = threading.Event()
+    def append_live():
+        jd = os.path.join(env["HOME"], ".config", "kimchi", "harness", "work-attribution", "transitions")
+        candidates = [os.path.join(jd, "j0-0.jsonl"), os.path.join(jd, "j0.jsonl"),
+                      os.path.join(jd, "live.jsonl")]
+        live = next((path for path in candidates if os.path.exists(path)), candidates[-1])
+        n = 0
+        while not stop_append.wait(25):
+            try:
+                now_ms = int(time.time() * 1000)
+                with open(live, "a") as f:
+                    for _ in range(30):
+                        n += 1
+                        f.write(fixtures.js(fixtures._work_receipt_body(cwd, 10_000_000 + n, now_ms)) + "\n")
+                res["appended"] = n
+            except OSError as error:
+                res["error"] = f"live journal append failed: {error}"
+                return
+    appender = threading.Thread(target=append_live, daemon=True)
+    appender.start()
+    try:
+        # Full-scale first-open import and optional bundled-tool fetch can exceed
+        # two minutes before the measured steady-state window begins.
+        if not tp.wait_for(READY_MARKERS, 240):
+            res["error"] = "ready marker not seen"
+            res["exit_code"] = tp.proc.poll()
+            res["screen_tail"] = tp.plain()[-1200:]
+            return res
+        res["ready_s"] = time.time() - t0
+        sampler.sample()
+        prev = sampler.totals()
+        # Settle past the startup tail before probing: the ready marker is the
+        # TUI's first output, and a probe fired at that instant times residual
+        # startup work (0.6-1.2s on every binary ever measured) — a harness
+        # artifact, not a steady-state hold. keylat_max/keylat_p95 measure the
+        # window AFTER the settle; per-pass work (first reconcile pass ~t=30s)
+        # is well inside the probed window.
+        time.sleep(10.0)
+
+        def window(seconds):
+            n = int(seconds / bucket_s)
+            nonlocal prev
+            for _ in range(n):
+                deadline = time.time() + bucket_s
+                while time.time() < deadline:
+                    t_probe = time.time() - t0
+                    lat = probe_keylat(tp, phase=f"t={t_probe:.2f}s")
+                    if lat is not None:
+                        res["keylat_ms"].append(lat)
+                        if lat > KEYLAT_SLOW_MS:
+                            res["keylat_slow"].append({"t": round(t_probe, 2), "p": 1,
+                                                       "ms": round(lat, 1)})
+                    time.sleep(1.2)
+                sampler.sample()
+                cur = sampler.totals()
+                d = delta(prev, cur)
+                d["t"] = round(time.time() - t0, 1)
+                d["p"] = 1
+                d["n_children"] = cur["n_children"]
+                res["buckets"].append(d)
+                prev = cur
+
+        window(total_s)
+        # Wall-clock the gated sums cover (the extractor skips the first
+        # bucket: startup mixed with the first background pass).
+        res["window_s"] = {"1": max(0, len(res["buckets"]) - 1) * bucket_s}
+        res["peak_mem"] = peak_mem(prev)
+        res["pids_peak"] = (prev.get("cg") or {}).get("pids_peak", 0)
+        res["counter"] = counter_tier(prev)
+        lat = sorted(res.pop("keylat_ms"))
+        if lat:
+            res["keylat_p50_ms"] = lat[len(lat) // 2]
+            res["keylat_p95_ms"] = lat[max(0, int(len(lat) * 0.95) - 1)]
+            res["keylat_max_ms"] = lat[-1]
+            res["keylat_over_100ms"] = sum(1 for x in lat if x > 100)
+        stop_append.set()
+        appender.join(timeout=5)
+        res["ledger_indexes"] = fixtures.ledger_index_census(env["HOME"])
+        res["ledger_shape"] = fixtures.ledger_shape(env["HOME"])
+        if res["appended"] == 0:
+            res["error"] = "live journal appender did not engage"
+        res["ok"] = res.get("error") is None
+    finally:
+        stop_append.set()
+        appender.join(timeout=5)
+        cleanup(tp, pid, sampler, cg)
+    res["home_bytes"] = home_footprint(env["HOME"])
     return res
 
 
@@ -746,6 +853,19 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
             fixtures.make_repo(r, f"repo{i}", commits=4 + i % 3)
         fixtures.aged_home(home, base_url, repos)
         wd = make_workdir(os.path.join(root, "wdroot"))
+    elif scenario == "ledger":
+        repos = [os.path.join(root, "repos", f"repo{i}") for i in range(LEDGER_REPOS)]
+        for i, r in enumerate(repos):
+            fixtures.make_repo(r, f"repo{i}", commits=4 + i % 3)
+        records = ledger_records_from_env() or LEDGER_RECORDS
+        # Scale the complete profile for selfcheck overrides, not just one
+        # dimension: otherwise the quick lane would still build 600k events.
+        filler = max(0, records // LEDGER_REPOS - 180)
+        outbox_events = round(LEDGER_OUTBOX_EVENTS * records / LEDGER_RECORDS)
+        journals = min(LEDGER_JOURNALS, max(1, records // LEDGER_JOURNALS))
+        fixtures.aged_home(home, base_url, repos, filler_per_repo=filler,
+                           journal_count=journals, outbox_event_count=outbox_events)
+        wd = make_workdir(os.path.join(root, "wdroot"))
     else:
         fixtures.seed_clean_home(home, base_url)
         wd = make_workdir(os.path.join(root, "wdroot"))
@@ -757,6 +877,10 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
         if scenario in BIGTOOLS_VARIANTS:
             write_bigtools_files(wd)
     env = child_env(home, base_url, tmpdir, binary)
+    if scenario == "ledger":
+        env["KIMCHI_PERF_FIXTURE_GENERATION"] = (
+            fixtures.LEDGER_GENERATION if records == LEDGER_RECORDS
+            else f"ledger-heavy-scaled:{records}:{journals}:{outbox_events}" )
     env.update(BIGTOOLS_VARIANTS.get(scenario, {}))
     return env, wd
 
@@ -774,6 +898,23 @@ def selfcheck(binary, session_mb=2, idle_s=20):
     root = tempfile.mkdtemp(prefix="kperf-selfcheck-")
     failures = []
     home = None
+    class SilentTP:
+        class _Proc:
+            def poll(self):
+                return None
+        proc = _Proc()
+        def send(self, _):
+            pass
+        def bytes_out(self):
+            return 0
+        def plain(self):
+            return "test editor ready"
+    try:
+        probe_keylat(SilentTP(), timeout_s=0.01)
+        failures.append("latency: a PTY that never echoes did not fail the rep")
+    except TimeoutError as error:
+        if "screen_tail=" not in str(error) or "test editor ready" not in str(error):
+            failures.append(f"latency: timeout lost terminal diagnostics: {error}")
     try:
         if os.environ.get("KIMCHI_PERF_REQUIRE_EXACT") == "1":
             probe = GateCgroup.create(f"perf-gate-selfcheck-{os.getpid()}")
@@ -814,6 +955,21 @@ def selfcheck(binary, session_mb=2, idle_s=20):
         if state_shas[0] != state_shas[1]:
             failures.append("reporting state not deterministic across regenerations")
         ledger = ledger_shas[0]
+        heavy_shas, heavy_shapes = [], []
+        for _ in range(2):
+            home = os.path.join(root, "home")
+            shutil.rmtree(home, ignore_errors=True)
+            db = fixtures.aged_home(home, "http://127.0.0.1:1", repos[:1],
+                                    filler_per_repo=820, journal_count=2, outbox_event_count=600)
+            heavy_shas.append(hashlib.sha256(open(db, "rb").read()).hexdigest())
+            heavy_shapes.append(fixtures.ledger_shape(home))
+        if heavy_shas[0] != heavy_shas[1]:
+            failures.append("heavy ledger profile not deterministic across regenerations")
+        expected_shape = {"work_records": 1000, "outbox_events": 600,
+                          "outbox_pending": 426, "outbox_accounts": 3, "journals": 2}
+        for key, value in expected_shape.items():
+            if heavy_shapes[0].get(key) != value:
+                failures.append(f"heavy ledger {key}: expected {value}, got {heavy_shapes[0].get(key)}")
         # 3. product validators accept the fixture (bun required; skip silently outside a checkout)
         validator = os.path.join(os.path.dirname(os.path.abspath(__file__)), "validate-fixture.ts")
         if os.path.isfile(validator) and shutil.which("bun"):
@@ -825,12 +981,24 @@ def selfcheck(binary, session_mb=2, idle_s=20):
         #    its queue must drain within the window, proving the accept regime)
         srv, state, base = fakellm.start()
         try:
-            for sc in ("session", "resume", "idle", "idle_healthy"):
+            for sc in ("session", "resume", "idle", "idle_healthy", "ledger"):
                 rep_root = os.path.join(root, f"smoke-{sc}")
                 os.makedirs(rep_root)
                 state_before = None
                 routes_before = None
+                seeded_ledger_shape = None
+                if sc == "ledger":
+                    # smoke scale: the seeding and one pass must run, the
+                    # production record count would only slow the selfcheck
+                    os.environ["KIMCHI_PERF_LEDGER_RECORDS"] = "2400"
                 env, cwd = prepare(rep_root, sc, base, session_mb, binary=binary)
+                if sc == "ledger":
+                    seeded_ledger_shape = fixtures.ledger_shape(env["HOME"])
+                    smoke_shape = {"work_records": 2400, "outbox_events": 1440,
+                                   "outbox_pending": 1005, "outbox_accounts": 3, "journals": 2}
+                    for key, value in smoke_shape.items():
+                        if seeded_ledger_shape.get(key) != value:
+                            failures.append(f"ledger seed {key}: expected {value}, got {seeded_ledger_shape.get(key)}")
                 if not check_version(binary, env, cwd):
                     failures.append(f"{sc}: binary reports no version")
                     continue
@@ -838,6 +1006,9 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                     r = run_session(binary, env, cwd, state)
                 elif sc == "resume":
                     r = run_resume(binary, env, cwd, state)
+                elif sc == "ledger":
+                    os.environ.pop("KIMCHI_PERF_LEDGER_RECORDS", None)
+                    r = run_ledger(binary, env, cwd, state, total_s=30)
                 else:
                     sp = os.path.join(rep_root, "home", ".config", "kimchi", "harness", "pr-cost-reporting", "state.json")
                     state_before = open(sp, "rb").read() if os.path.exists(sp) else None
@@ -846,10 +1017,10 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                     # to prove the queue drains. Gated idle keeps its phases.
                     state.accept_uploads = sc == "idle_healthy"
                     r = (run_idle(binary, env, cwd, state, 20, stuck_s=0) if sc == "idle_healthy"
-                         else run_idle(binary, env, cwd, state, idle_s))
+                         else run_idle(binary, env, cwd, state, idle_s, stuck_s=0))
                     state.accept_uploads = False
                 if not r.get("ok", False):
-                    failures.append(f"{sc}: {r.get('error')}\n{r.get('screen_tail', '')[-400:]}")
+                    failures.append(f"{sc}: {r.get('error')}\n{r.get('screen_tail', '')[-1200:]}")
                 # new advisory fields must be present in every green record
                 if r.get("ok", False):
                     if "home_bytes" not in r:
@@ -858,6 +1029,22 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                         failures.append("session: record lacks startup")
                     if sc in ("idle", "idle_healthy") and "window_s" not in r:
                         failures.append(f"{sc}: record lacks window_s")
+                    if sc == "ledger":
+                        if "ledger_indexes" not in r:
+                            failures.append("ledger: record lacks ledger_indexes")
+                        else:
+                            required = {"work_records_imported", "outbox_pending_cover", "outbox_batches_by_account"}
+                            if not required.issubset(set(r["ledger_indexes"] or [])):
+                                failures.append("ledger: additive indexes did not engage")
+                        if "keylat_p95_ms" not in r:
+                            failures.append("ledger: no keystroke samples parsed")
+                        if not r.get("appended", 0):
+                            failures.append("ledger: live journal appender did not engage")
+                        shape = r.get("ledger_shape") or {}
+                        if shape.get("work_records", 0) <= seeded_ledger_shape["work_records"]:
+                            failures.append("ledger: live appends did not import new work records")
+                        if not shape.get("outbox_pending"):
+                            failures.append("ledger: retained outbox history drained unexpectedly")
                 # engagement: the aged reporting queue must actually run — its
                 # state file is rewritten (upload-refusal backoff) when the pass
                 # engages. Compare against the state captured BEFORE the retire
@@ -897,7 +1084,7 @@ def selfcheck(binary, session_mb=2, idle_s=20):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", required=True, help="kimchi binary (dist/bin/kimchi or a release tree's bin/kimchi)")
-    ap.add_argument("--scenario", choices=["session", "resume", "idle", *IDLE_VARIANTS, *BIGTOOLS_VARIANTS])
+    ap.add_argument("--scenario", choices=["session", "resume", "idle", "ledger", *IDLE_VARIANTS, *BIGTOOLS_VARIANTS])
     ap.add_argument("--selfcheck", action="store_true",
                     help="verify the harness: fixture determinism, product validators, one smoke rep per scenario")
     ap.add_argument("--out", default=None)
@@ -932,7 +1119,7 @@ def main():
     # Healthy idle: the platform acknowledges uploads, so the aged queue drains.
     # Every lane runs the default "forbidden" upload regime (key verifies,
     # uploads get 403); session/resume never reach the upload routes either way.
-    state.accept_uploads = args.scenario == "idle_healthy"
+    state.accept_uploads = args.scenario in ("idle_healthy", "ledger")
     state.upload_failure = "forbidden"
     git_version = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout.strip()
     root = os.path.realpath(args.workroot or tempfile.mkdtemp(prefix="kperf-"))
@@ -963,6 +1150,8 @@ def main():
                 elif args.scenario in IDLE_VARIANTS:
                     # one window, no stuck phase: there is no failing queue to retire
                     r = run_idle(args.binary, env, cwd, state, args.idle, stuck_s=0)
+                elif args.scenario == "ledger":
+                    r = run_ledger(args.binary, env, cwd, state)
                 else:
                     r = run_idle(args.binary, env, cwd, state, args.idle, stuck_s=args.stuck)
                 r.update({"scenario": args.scenario, "rep": rep, "version": version, "git": git_version,

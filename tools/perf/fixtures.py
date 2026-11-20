@@ -30,6 +30,7 @@ import uuid
 
 NS = uuid.UUID("b3a1c0de-0000-4000-8000-000000000000")
 BASE_MS = 1770000000000  # fixed epoch: deterministic timestamps
+LEDGER_GENERATION = "ledger-heavy-v1"
 
 LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -324,6 +325,28 @@ def _commit_body(repo_path, i):
     }
 
 
+def _work_receipt_body(repo_path, i, now_ms):
+    """A work record with a saved-plan continuation: an unconfirmable receipt.
+
+    acceptedContinuation (links.ts) accepts it as a receipt; the plan it names
+    does not exist and no work_link confirmation ever arrives, so the work
+    stays pending forever — the reconcile can never settle to its quiet path.
+    This is the state that makes every pass re-walk the history: the class the
+    ledger scenario gates (pre-incremental reconcile re-reads the whole ledger
+    on every such pass).
+    """
+    return {
+        "version": 1,
+        "type": "work",
+        "workId": _work_id(i % 40),
+        "sessionId": _session_id(i % 12),
+        "cwd": repo_path, "repository": repo_path, "worktree": repo_path,
+        "continuation": {"source": "saved-plan",
+                         "evidence": {"path": f"plan-{i}.md", "contentHash": _sha(f"plan{i}")} },
+        "recordedAt": _iso(now_ms + i),
+    }
+
+
 def _request_body(repo_path, i):
     return {
         "version": 1,
@@ -369,18 +392,58 @@ def _costs_note(repo_i, requests=200):
     return json.dumps(body)
 
 
+def _seed_outbox_history(con, base_url, count):
+    """A retained outbox history at the heavy-install shape.
+
+    Three accounts, 71% unacknowledged and 29% acknowledged. Every account is
+    already backed off, so its valid events remain in place without making the
+    timed scenario spend its window draining a synthetic backlog.
+    """
+    rows = []
+    for i in range(count):
+        account_key = js([base_url, _work_id(900 + (i % 3) * 2), _work_id(901 + (i % 3) * 2)])
+        event = {
+            "id": _work_id(3_000_000 + i), "entityId": _work_id(4_000_000 + i),
+            "revision": "1", "baseRevision": "0", "baseEventId": "",
+            "source": "kimchi", "sourceVersion": "0.0.0", "deviceId": _work_id(901),
+            "observeTime": _iso(BASE_MS + i),
+            "work": {"title": f"heavy install event {i}", "reason": "observed", "quality": "observed"},
+        }
+        text = js(event)
+        acknowledged = i % 100 < 29
+        rows.append((event["id"], account_key, event["entityId"], "work", text, _sha(text),
+                     BASE_MS + i, BASE_MS + i if acknowledged else None, ""))
+        if len(rows) == 5000:
+            con.executemany("INSERT INTO outbox_events VALUES (?,?,?,?,?,?,?,?,?)", rows)
+            rows = []
+    if rows:
+        con.executemany("INSERT INTO outbox_events VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    # deliveryRetry requires batchId to match the first batch; this profile
+    # retains unbatched history, hence null. Its future retry keeps every
+    # account quiet while the journal appender continues forcing full passes.
+    for account_index in range(3):
+        account_key = js([base_url, _work_id(900 + account_index * 2), _work_id(901 + account_index * 2)])
+        retry = {"batchId": None, "attempts": 3, "retryAt": 4_000_000_000_000,
+                 "error": "heavy-install retained delivery history"}
+        con.execute("INSERT OR REPLACE INTO bookkeeping VALUES (?,?,?,?)",
+                    ("pr-cost-delivery", account_key, js(retry), BASE_MS))
+
+
 def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=40,
-              filler_per_repo=900, producer_id=None):
+              filler_per_repo=900, producer_id=None, journal_count=1, outbox_event_count=0):
     """Seed a kimchi HOME with an aged, reporting-active install.
 
     Layout under <home>/.config/kimchi: config.json + harness/settings.json +
     models.json (fake provider), pr-cost-reporting/ledger.db with work records
     (mirrored into legacy journals, as real installs keep both), bookkeeping
     costs notes, frozen snapshot queues under the 'legacy-pr-cost-snapshots'
-    work id, and pr-cost-reporting/state.json whose queue entries hold
-    pending snapshots the endpoint keeps refusing (403: the key verifies
-    but lacks upload permission), so every pass re-reads and re-serializes
-    them.
+    work id, and pr-cost-reporting/state.json whose queued snapshots keep
+    reporting active.
+
+    journal_count=1 preserves the original compact fixture. A larger count
+    streams records across journals with 2% in the first one, mirroring a
+    heavy install's many small journals plus one large active history without
+    materializing all record bodies in Python.
     """
     producer_id = producer_id or str(uuid.uuid5(NS, "producer"))
     seed_clean_home(home, base_url)
@@ -398,6 +461,44 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
         con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('projectionVersion', '1')")
         offset = 0
         for ri, repo in enumerate(repos):
+            if journal_count > 1:
+                # Stream the heavy fixture: one large journal (~2% of records)
+                # and many small ones, with a bounded insert batch and no
+                # million-element list of record dictionaries retained.
+                def record_bodies():
+                    for i in range(transitions_per_repo):
+                        yield _transition_body(repo, ri * 100000 + i)
+                    for i in range(commits_per_repo):
+                        yield _commit_body(repo, ri * 100000 + i)
+                    for gen in (_request_body, _tool_execution_body):
+                        for i in range(filler_per_repo // 2):
+                            yield gen(repo, ri * 100000 + i)
+                bodies = record_bodies()
+                total = transitions_per_repo + commits_per_repo + 2 * (filler_per_repo // 2)
+                if total < journal_count:
+                    raise ValueError("heavy fixture needs at least one record per journal")
+                largest = min(total - journal_count + 1, max(1, int(total * 0.02)))
+                remaining = total - largest
+                counts = [largest] + [remaining // (journal_count - 1) + (j < remaining % (journal_count - 1))
+                                      for j in range(journal_count - 1)]
+                for ji, count in enumerate(counts):
+                    path = os.path.join(journals_dir, f"j{ri}-{ji}.jsonl")
+                    offset = 0
+                    rows = []
+                    with open(path, "w") as journal:
+                        for _ in range(count):
+                            body = next(bodies)
+                            text = js(body)
+                            journal.write(text + "\n")
+                            rows.append((_sha(text), body["type"], body["workId"], body["sessionId"], text,
+                                         path, 1, offset, BASE_MS))
+                            offset += len(text.encode()) + 1
+                            if len(rows) == 5000:
+                                con.executemany("INSERT INTO work_records VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                                rows = []
+                    if rows:
+                        con.executemany("INSERT INTO work_records VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                continue
             records = ([_transition_body(repo, ri * 100000 + i) for i in range(transitions_per_repo)] +
                        [_commit_body(repo, ri * 100000 + i) for i in range(commits_per_repo)])
             for kind, gen in (("request", _request_body), ("tool_execution", _tool_execution_body)):
@@ -411,6 +512,8 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
                             (_sha(text), body["type"], body["workId"], body["sessionId"], text,
                              f"{journals_dir}/j{ri}.jsonl", 1, offset, BASE_MS))
                 offset += len(text) + 1
+        if outbox_event_count:
+            _seed_outbox_history(con, base_url, outbox_event_count)
         con.commit()
 
         # ---- bookkeeping: costs notes + frozen snapshot queues (big bodies, re-read every pass)
@@ -451,6 +554,49 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
              "producerId": producer_id, "entries": entries}
     json.dump(state, open(os.path.join(pr_cost, "state.json"), "w"))
     return db_path
+
+
+def ledger_shape(home):
+    """Record the heavy fixture actually measured, without reading event bodies."""
+    db_path = os.path.join(home, ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return None
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        records, outbox, pending, accounts = con.execute(
+            "SELECT (SELECT COUNT(*) FROM work_records), (SELECT COUNT(*) FROM outbox_events), "
+            "(SELECT COUNT(*) FROM outbox_events WHERE acked_at IS NULL), "
+            "(SELECT COUNT(DISTINCT account_key) FROM outbox_events)"
+        ).fetchone()
+    journal_bytes = []
+    journal_root = os.path.join(home, ".config", "kimchi", "harness", "work-attribution")
+    for base, _, names in os.walk(journal_root):
+        for name in names:
+            if name.endswith(".jsonl"):
+                path = os.path.join(base, name)
+                if os.path.isfile(path):
+                    journal_bytes.append(os.path.getsize(path))
+    return {"work_records": records, "outbox_events": outbox, "outbox_pending": pending,
+            "outbox_accounts": accounts, "journals": len(journal_bytes),
+            "journal_bytes": sum(journal_bytes), "largest_journal_bytes": max(journal_bytes, default=0)}
+
+
+def ledger_index_census(home):
+    """Which indexes exist on work_records/outbox_events after a run.
+
+    Advisory census for the ledger scenario: the additive indexes
+    (work_records_imported, outbox_pending_cover, outbox_batches_by_account)
+    are applied on open by the fixed binary and by nothing else, so their
+    presence after a scenario is proof the binary's ledger path ran against
+    the scaled fixture. Returns a sorted list, or None when no ledger exists
+    (very old releases created none — a sweep finding, not an error)."""
+    db_path = os.path.join(home, ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return None
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        rows = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('work_records','outbox_events','outbox_batches')"
+        ).fetchall()
+    return sorted(r[0] for r in rows)
 
 
 def retire_queue_retries(home, horizon_ms=3_600_000):
