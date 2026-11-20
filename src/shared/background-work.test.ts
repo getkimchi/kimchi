@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
 	type BackgroundWorkItem,
@@ -118,6 +119,14 @@ describe("background-work", () => {
 		expect(long).toHaveLength(80)
 		expect(long.endsWith("…")).toBe(true)
 		expect(backgroundWorkLabel("")).toBe("")
+	})
+
+	it("caps labels by display width without splitting emoji or wide characters", () => {
+		// The 80th column falls inside the emoji, so it must go whole.
+		expect(backgroundWorkLabel(`${"x".repeat(78)}😀 tail`)).toBe(`${"x".repeat(78)}…`)
+		const cjk = backgroundWorkLabel("中".repeat(60))
+		expect(visibleWidth(cjk)).toBeLessThanOrEqual(80)
+		expect(cjk).toBe(`${"中".repeat(39)}…`)
 	})
 
 	it("strips terminal sequences and control characters from labels", () => {

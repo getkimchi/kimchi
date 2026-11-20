@@ -9,6 +9,7 @@
 // This module must stay free of imports from src/extensions/** so that shared
 // code never depends on a feature.
 
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui"
 import { safePanelText } from "../components/input-panel.js"
 
 export interface BackgroundProcessItem {
@@ -37,7 +38,7 @@ export type BackgroundWorkProviderKey = "bash" | "agents"
 // Fixed order so a list always shows processes before agents.
 const PROVIDER_ORDER: readonly BackgroundWorkProviderKey[] = ["bash", "agents"]
 
-const LABEL_MAX_CHARS = 80
+const LABEL_MAX_WIDTH = 80
 
 const providersBySession = new Map<string, Map<BackgroundWorkProviderKey, BackgroundWorkProvider>>()
 
@@ -122,7 +123,15 @@ export async function stopBackgroundWork(
 	return { processes, agents }
 }
 
-/** One-line label for a dialog row: first non-empty line, capped in length.
+/** Cut TEXT to at most MAXWIDTH terminal columns, ending with "…" when cut.
+ *  Cuts fall between graphemes, so emoji and wide characters stay whole. */
+export function fitToWidth(text: string, maxWidth: number): string {
+	if (visibleWidth(text) <= maxWidth) return text
+	if (maxWidth < 1) return ""
+	return `${sliceByColumn(text, 0, maxWidth - 1, true)}…`
+}
+
+/** One-line label for a dialog row: first non-empty line, capped in width.
  *  TEXT is model-written, so it is cleaned before it reaches the terminal. */
 export function backgroundWorkLabel(text: string): string {
 	const line =
@@ -130,5 +139,5 @@ export function backgroundWorkLabel(text: string): string {
 			.split("\n")
 			.map((part) => part.trim())
 			.find((part) => part.length > 0) ?? ""
-	return line.length > LABEL_MAX_CHARS ? `${line.slice(0, LABEL_MAX_CHARS - 1)}…` : line
+	return fitToWidth(line, LABEL_MAX_WIDTH)
 }

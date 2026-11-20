@@ -1,4 +1,5 @@
 import type { ExtensionContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
 	type BackgroundWorkItem,
@@ -68,6 +69,14 @@ describe("formatTitle", () => {
 		const line = title.split("\n")[1]
 		expect(line.length).toBeLessThanOrEqual(100)
 		expect(line.endsWith("… +1 more")).toBe(true)
+	})
+
+	it("keeps each line within 100 columns when labels hold wide characters", () => {
+		const emojiLine = formatTitle([processItem("😀".repeat(50))]).split("\n")[1]
+		expect(emojiLine).toBe(`1 command   ${"😀".repeat(43)}…`)
+		const cjkLine = formatTitle([agentItem("中".repeat(40), "1"), agentItem("中".repeat(40), "2")]).split("\n")[1]
+		expect(visibleWidth(cjkLine)).toBeLessThanOrEqual(100)
+		expect(cjkLine.endsWith("…")).toBe(true)
 	})
 })
 
