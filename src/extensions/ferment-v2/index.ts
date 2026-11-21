@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto"
-import type { ToolCall } from "@earendil-works/pi-ai"
 import type {
 	AgentEndEvent,
 	ExtensionAPI,
@@ -11,23 +10,24 @@ import type {
 import { buildSessionContext } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { formatCount } from "../format.js"
+import { formatCount, formatDuration } from "../format.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
 import { getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
 import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
 import { holdPromptSummary } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js"
-import { getTodoScopeKey, normalizeTodoScope, validateExplicitTodoScope } from "../todos/scope.js"
+import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "../todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
-import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
+import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
 import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
 import {
 	FERMENT_V2_COMMAND_COMPLETIONS,
 	formatFermentV2Status,
 	formatFermentV2Summary,
+	formatFermentV2VerifyingStatus,
 	parseFermentV2Command,
 } from "./command.js"
 import {
@@ -36,6 +36,7 @@ import {
 	FERMENT_V2_CUSTOM_ENTRY_TYPE,
 	FERMENT_V2_TOOL_NAMES,
 	GET_FERMENT_V2_TOOL_NAME,
+	RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME,
 	UPDATE_FERMENT_V2_TOOL_NAME,
 } from "./constants.js"
 import {
@@ -71,15 +72,19 @@ import {
 } from "./prompt.js"
 import {
 	addFermentV2Accounting,
+	applyFermentV2ReviewFindings,
 	clearFermentV2,
 	clearFermentV2Entry,
 	createFermentV2,
 	editFermentV2,
 	type FermentV2State,
 	isRecord,
+	markFermentV2EvaluatorModelWarned,
 	putFermentV2Entry,
 	recordFermentV2Evaluation,
+	recordFermentV2VerifierUsage,
 	replaceFermentV2,
+	respondToFermentV2Finding,
 	restoreFermentV2,
 	setFermentV2ConsecutiveErrorTurns,
 	setFermentV2Status,
@@ -87,6 +92,7 @@ import {
 } from "./reducer.js"
 import {
 	deriveContinuationDecision,
+	deriveHostContinuationDecision,
 	deriveSettledStatus,
 	type FermentV2TodoState,
 	fermentV2ProgressFingerprint,
@@ -100,11 +106,14 @@ import {
 import { getFermentV2Settings } from "./settings.js"
 import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
+	type FermentV2Baseline,
 	type FermentV2CompletionConfidence,
 	type FermentV2Evaluation,
 	type PendingFermentV2Continuation,
 	type SessionFermentV2,
 } from "./types.js"
+import { formatFermentV2EvaluatorModelWarning } from "./verifier-model.js"
+import { pruneStaleBaselineWorktrees, snapshotWorkspace } from "./workspace.js"
 
 type FermentV2MutationContext = ExtensionContext & Partial<Pick<ExtensionCommandContext, "waitForIdle">>
 
@@ -123,6 +132,18 @@ const UPDATE_FERMENT_V2_PARAMETERS = Type.Object({
 })
 
 type UpdateFermentV2Params = Static<typeof UPDATE_FERMENT_V2_PARAMETERS>
+
+const RESPOND_TO_FERMENT_V2_FINDING_PARAMETERS = Type.Object({
+	id: Type.String({ description: "The review finding's ID, for example F2." }),
+	status: Type.Union([Type.Literal("fixed"), Type.Literal("disputed")]),
+	evidence: Type.String({
+		minLength: 1,
+		maxLength: 2_000,
+		description:
+			"Fixed: the change and the passing check. Disputed: the objective or repository text that contradicts the finding.",
+	}),
+})
+type RespondToFermentV2FindingParams = Static<typeof RESPOND_TO_FERMENT_V2_FINDING_PARAMETERS>
 
 type FermentV2CompletionClaim = PendingFermentV2Continuation & {
 	completionConfidence?: FermentV2CompletionConfidence
@@ -146,56 +167,6 @@ const FERMENT_V2_TOOL_NAME_SET = new Set<string>(FERMENT_V2_TOOL_NAMES)
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
-}
-
-function completesCurrentTodoList(
-	message: CompletionCandidate["message"],
-	todoState: FermentV2TodoState | undefined,
-	currentScopeKey: string,
-	sessionId: string,
-): boolean {
-	if (!todoState?.total) return false
-	const calls: ToolCall[] = []
-	for (const block of message.content) {
-		if (block.type === "toolCall" && isTodoWriteToolName(block.name)) calls.push(block)
-	}
-	if (!calls.length) return false
-	const argumentsFor = (call: (typeof calls)[number]): Record<string, unknown> | undefined =>
-		isRecord(call.arguments) ? call.arguments : undefined
-	const targetsCurrentScope = (args: Record<string, unknown>): boolean => {
-		const explicit = validateExplicitTodoScope(args.scope)
-		if (explicit.error) return false
-		return getTodoScopeKey(explicit.scope ?? resolveTodoScope(sessionId)) === currentScopeKey
-	}
-	if (calls.every((call) => call.name === MARK_TODO_TOOL_NAME)) {
-		const completedIds = new Set<number>()
-		const todoIds = new Set(todoState.todos.map((todo) => todo.id))
-		for (const call of calls) {
-			const args = argumentsFor(call)
-			if (
-				!args ||
-				!targetsCurrentScope(args) ||
-				typeof args.id !== "number" ||
-				!todoIds.has(args.id) ||
-				args.status !== "completed"
-			)
-				return false
-			completedIds.add(args.id)
-		}
-		return todoState.todos.every((todo) => todo.status === "completed" || completedIds.has(todo.id))
-	}
-	if (calls.length !== 1 || calls[0].name !== UPDATE_TODOS_TOOL_NAME) return false
-	const args = argumentsFor(calls[0])
-	return Boolean(
-		args &&
-			targetsCurrentScope(args) &&
-			Array.isArray(args.todos) &&
-			args.todos.length > 0 &&
-			args.todos.every(
-				(todo) =>
-					isRecord(todo) && typeof todo.content === "string" && todo.content.trim() && todo.status === "completed",
-			),
-	)
 }
 
 export default function fermentV2Extension(pi: ExtensionAPI): void {
@@ -235,6 +206,12 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let todoStateFor: FermentV2TodoState | undefined
 	let fermentV2Lessons: FermentV2Lesson[] = []
 	let turnStartFingerprint: string | undefined
+	// Progress fingerprint at the last checkpoint (a continuation or evaluation
+	// decision). Unlike turnStartFingerprint, it survives the per-SDK-turn
+	// turn_start refreshes: a Todo/lesson update from an earlier turn of a
+	// multi-turn run still registers as progress at the next stop without a
+	// completion claim.
+	let continuationBaselineFingerprint: string | undefined
 	let substantiveToolUseSinceEvaluation = false
 	let activeSinceMs: number | undefined
 	// `agent_settled` fires after the run is already marked inactive, so ctx.isIdle()
@@ -326,12 +303,18 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			verdict: override?.verdict ?? result.verdict,
 			count,
 			model: result.model,
+			...(result.sameModelAsImplementer ? { sameModelAsImplementer: true } : {}),
+			...(result.modelFallback ? { modelFallback: result.modelFallback } : {}),
 			usage: result.usage,
 			durationMs: diagnostics.durationMs,
 			timeoutMs: diagnostics.timeoutMs,
 			providerRequestCount: diagnostics.providerRequestCount,
 			timeoutCount: diagnostics.timeoutCount,
 			correctionCount: diagnostics.correctionCount,
+			...(diagnostics.toolCalls !== undefined ? { toolCalls: diagnostics.toolCalls } : {}),
+			...(diagnostics.turns !== undefined ? { turns: diagnostics.turns } : {}),
+			...(result.integrity?.restored.length ? { restoredFiles: result.integrity.restored } : {}),
+			...(result.integrity?.removed.length ? { removedFiles: result.integrity.removed } : {}),
 			...(override?.failureType || diagnostics.failureType
 				? { failureType: override?.failureType ?? diagnostics.failureType }
 				: {}),
@@ -404,6 +387,18 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return addFermentV2Accounting(fermentV2, fermentV2.id, tokensUsed, elapsed, timestamp(nowMs))
 	}
 
+	/**
+	 * Capture the ferment's baseline: a snapshot commit of the working tree
+	 * including untracked, non-ignored files (temporary index — the real index,
+	 * tree, and refs are never touched). Outside a git repository, or when the
+	 * snapshot fails, the ferment runs without a baseline: no baseline facts,
+	 * no test-inventory flags, no baseline worktree, and verification proceeds.
+	 */
+	async function captureFermentV2Baseline(cwd: string): Promise<FermentV2Baseline | undefined> {
+		const snapshot = await snapshotWorkspace(cwd)
+		return snapshot ? { commit: snapshot.commit, capturedAt: timestamp() } : undefined
+	}
+
 	function resetFermentV2Runtime(): void {
 		releaseEvaluationIndicator()
 		releaseFermentV2PromptSummary()
@@ -430,6 +425,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		todoStateFor = undefined
 		fermentV2Lessons = []
 		turnStartFingerprint = undefined
+		continuationBaselineFingerprint = undefined
 		substantiveToolUseSinceEvaluation = false
 		activeSinceMs = undefined
 	}
@@ -564,6 +560,59 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	function syncRunStatus(fermentV2: FermentV2State): void {
 		currentContext?.ui.setStatus("ferment-v2", formatFermentV2Status(fermentV2, evaluationAbort !== undefined))
+	}
+
+	// ---- Verifier run status line -------------------------------------------
+	// While the executing verifier runs, the ferment status segment shows the
+	// verifier model, elapsed time, and the warning that the integrity guard
+	// may revert concurrent file edits. It ticks once per second and always
+	// yields back to the regular status line when the run settles.
+	let verifyingStatusTimer: ReturnType<typeof setInterval> | undefined
+	let verifyingStartedAtMs = 0
+	let verifyingModelRef: string | undefined
+	// Ferments already told that a verifier ran without the integrity guard
+	// (the working tree could not be snapshotted); the notice is shown once.
+	const integrityUnenforcedNotified = new Set<string>()
+
+	function updateVerifyingStatus(): void {
+		currentContext?.ui.setStatus(
+			"ferment-v2",
+			formatFermentV2VerifyingStatus(verifyingModelRef, Date.now() - verifyingStartedAtMs),
+		)
+	}
+
+	function startVerifyingStatus(): void {
+		verifyingStartedAtMs = Date.now()
+		verifyingModelRef = undefined
+		updateVerifyingStatus()
+		verifyingStatusTimer = setInterval(updateVerifyingStatus, 1_000)
+	}
+
+	function stopVerifyingStatus(): void {
+		if (verifyingStatusTimer) clearInterval(verifyingStatusTimer)
+		verifyingStatusTimer = undefined
+		verifyingModelRef = undefined
+	}
+
+	/** Toast the verifier verdict: model, duration, tokens; plus the guard-violation recovery note when the verifier touched the working tree. */
+	function notifyVerifierVerdict(ctx: ExtensionContext, result: FermentV2EvaluationResult): void {
+		const parts = [
+			result.model,
+			formatDuration(result.diagnostics.durationMs),
+			result.usage ? `${formatCount(result.usage.totalTokens)} tokens` : undefined,
+		].filter(Boolean)
+		if (result.verdict === "met") {
+			ctx.ui.notify(`Ferment V2 verifier accepted the completion (${parts.join(" · ")}).`, "info")
+		} else if (result.verdict === "continue") {
+			ctx.ui.notify(`Ferment V2 verifier: continue (${parts.join(" · ")}).`, "info")
+		}
+		if (result.integrity?.violated && result.verdict !== "unavailable") {
+			const touched = [...result.integrity.restored, ...result.integrity.removed].sort()
+			ctx.ui.notify(
+				`Verifier workspace changes reverted${touched.length ? `: ${touched.join(", ")}` : ""}${result.integrity.postRunSnapshot ? `. Post-run snapshot: ${result.integrity.postRunSnapshot}` : ""}.`,
+				"warning",
+			)
+		}
 	}
 
 	function displayName(fermentV2: SessionFermentV2 | undefined): string {
@@ -817,6 +866,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		pendingContinuation = undefined
 		deferredControl = undefined
 		turnStartFingerprint = undefined
+		continuationBaselineFingerprint = undefined
 		clearFinalAnswerDelivery()
 	}
 
@@ -939,7 +989,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const startFingerprint = turnStartFingerprint
 		const abort = new AbortController()
 		evaluationAbort = abort
-		syncRunStatus(currentFermentV2)
+		startVerifyingStatus()
 		const target = {
 			sessionId: conversation.sessionId,
 			fermentV2Id: conversation.fermentV2Id,
@@ -947,15 +997,26 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			status: fermentV2.status,
 		}
 		const count = (fermentV2.evaluationCount ?? 0) + 1
+		const claim = matchesFermentV2(completionClaim, fermentV2, conversation.sessionId) ? completionClaim : undefined
+		const previousGap = fermentV2.lastEvaluation?.verdict === "continue" ? fermentV2.lastEvaluation.reason : undefined
 		const evaluation = evaluateFermentV2(
 			{
 				objective: fermentV2.objective,
+				cwd: ctx.cwd,
 				messages: conversation.messages,
 				todos: todoState?.todos ?? [],
-				lessons: fermentV2Lessons,
+				...(claim?.completionConfidence ? { completionConfidence: claim.completionConfidence } : {}),
+				...(previousGap ? { previousGap } : {}),
+				...(fermentV2.baseline ? { baseline: fermentV2.baseline } : {}),
+				...(fermentV2.openFindings?.length ? { openFindings: fermentV2.openFindings } : {}),
+				onVerifierStart: (info) => {
+					verifyingModelRef = info.model
+					updateVerifyingStatus()
+				},
 				signal: abort.signal,
 			},
 			ctx,
+			pi,
 		).then((result) => {
 			// Record the invocation snapshot before validity gates or a waiting user mutation can discard it.
 			emitFermentV2Evaluation(
@@ -971,19 +1032,71 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			() => undefined,
 		)
 		evaluationSettled = settled
+		let result: FermentV2EvaluationResult
 		try {
-			return {
-				conversation,
-				hadSubstantiveToolUse,
-				startFingerprint,
-				abort,
-				result: await evaluation,
-			}
+			result = await evaluation
 		} finally {
 			if (evaluationAbort === abort) evaluationAbort = undefined
 			if (evaluationSettled === settled) evaluationSettled = undefined
+			stopVerifyingStatus()
 			syncRunStatus(currentFermentV2)
 		}
+		// Verifier tokens, cost, and wall-clock time are settled exactly once,
+		// here — as soon as the run settles and before any verdict-validity gate —
+		// so pausing, editing, or steering during verification cannot discard
+		// already-consumed verifier usage.
+		await settleVerifierAccounting(ctx, conversation, result)
+		return {
+			conversation,
+			hadSubstantiveToolUse,
+			startFingerprint,
+			abort,
+			result,
+		}
+	}
+
+	/**
+	 * Settle one verifier run's usage against the ferment that ran it, exactly
+	 * once, when the run settles — before any verdict-validity gate. Runs inside
+	 * the session's mutation chain so a concurrent pause/edit cannot lose the
+	 * accounting; the ferment is matched by id only, since its status or
+	 * revision may legitimately have moved on during the run. When the
+	 * accounting crosses the token budget, the budget outcome is emitted here
+	 * and no further work is scheduled for this Ferment V2 (the in-flight run
+	 * has already finished; this is where the budget catches up).
+	 */
+	async function settleVerifierAccounting(
+		ctx: ExtensionContext,
+		conversation: CapturedFermentV2Conversation,
+		result: FermentV2EvaluationResult,
+	): Promise<void> {
+		await serializeFermentV2Mutation(conversation.sessionId, () => {
+			const current = currentFermentV2
+			if (!current || current.id !== conversation.fermentV2Id) return
+			const now = timestamp()
+			let accounted = current
+			if (result.usage && (result.usage.totalTokens > 0 || result.diagnostics.durationMs > 0)) {
+				accounted = addFermentV2Accounting(
+					current,
+					current.id,
+					result.usage.totalTokens,
+					result.diagnostics.durationMs,
+					now,
+				)
+			}
+			if (result.usage) {
+				accounted = recordFermentV2VerifierUsage(accounted, accounted.id, result.usage, now)
+			}
+			if (accounted !== current) commitFermentV2(accounted)
+			if (current.status === "active" && accounted.status === "budget_limited") {
+				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.BUDGET_LIMITED, accounted, { reason: "token_budget" })
+				invalidateContinuation()
+				ctx.ui.notify(
+					`${displayName(accounted)} stopped after reaching its ${formatCount(accounted.tokenBudget ?? 0)} token budget.`,
+					"warning",
+				)
+			}
+		})
 	}
 
 	function canEvaluateFermentV2(
@@ -1137,7 +1250,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			captured,
 			ctx,
 			source,
-			() => {
+			async () => {
 				assertCurrentSession(ctx, sessionId)
 				assertUnchanged(captured)
 				ensureFermentV2ExecutionMode(sessionId)
@@ -1145,9 +1258,21 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				const now = timestamp(nowMs)
 				const effectiveTokenBudget = tokenBudget ?? getFermentV2Settings().defaultTokenBudget
 				const replaced = captured ? checkpointFermentV2(captured, 0, nowMs) : undefined
+				// Baseline: the snapshot every verifier run compares against, taken
+				// inside the serialized mutation so nothing moves the tree between
+				// capture and ferment creation. Outside git (or on failure) the
+				// ferment starts without one — no flags, no baseline worktree.
+				const baseline = await captureFermentV2Baseline(ctx.cwd)
+				// The capture awaits git work, and the mutation queue is keyed by
+				// session — it does not serialize replaySession. A session_start
+				// or session_tree during the capture replays another state;
+				// without revalidation this command would resume, overwrite the
+				// replayed state, and journal through the current session.
+				assertCurrentSession(ctx, sessionId)
+				assertUnchanged(captured)
 				const next = captured
-					? replaceFermentV2(objective, randomUUID(), now, effectiveTokenBudget, presentation)
-					: createFermentV2(undefined, objective, randomUUID(), now, effectiveTokenBudget, presentation)
+					? replaceFermentV2(objective, randomUUID(), now, effectiveTokenBudget, presentation, baseline)
+					: createFermentV2(undefined, objective, randomUUID(), now, effectiveTokenBudget, presentation, baseline)
 				commitFermentV2(next)
 				if (replaced) {
 					emitFermentV2Lifecycle(FERMENT_V2_EVENTS.REPLACED, replaced, { replacementFermentV2Id: next.id })
@@ -1444,7 +1569,22 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 						throw new Error(`Ferment V2 update rejected: invalid terminal status '${String(params.status)}'.`)
 					}
 					const current = currentFermentV2
-					if (current?.status !== "active" || !matchesFermentV2(activeTurn, current, sessionId)) {
+					// A completion claim for this active revision is already recorded; the
+					// terminating complete result can be retried within the same settled turn.
+					// A blocked update batched after the claim still takes the immediate
+					// blocked path, because upstream executes the whole tool batch before
+					// honoring termination.
+					if (
+						params.status === "complete" &&
+						current?.status === "active" &&
+						matchesFermentV2(completionClaim, current, sessionId)
+					) {
+						return current
+					}
+					if (current?.status !== "active" || (activeTurn && !matchesFermentV2(activeTurn, current, sessionId))) {
+						// A superseded turn's claim is fenced out by the revision mismatch on
+						// `activeTurn`; the model cannot call tools once the turn has ended, so a
+						// claim after turn_end still belongs to the current active revision.
 						throw new Error(
 							"Ferment V2 update rejected: the Ferment V2 changed or stopped during this turn. Continue against the current active Ferment V2 before updating it.",
 						)
@@ -1504,6 +1644,58 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		},
 	})
 
+	pi.registerTool({
+		name: RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME,
+		label: "Respond to Ferment V2 Finding",
+		description:
+			"Answer an open review finding (F1, F2, …): fixed, once verified, or disputed with evidence. The next review re-checks each one.",
+		promptSnippet: "Answer an open review finding as fixed or disputed",
+		promptGuidelines: [
+			"Answer every open finding before claiming completion. Dispute only when the objective, a repository contract, or a delegated specification shows the expectation is wrong or out of scope.",
+		],
+		parameters: RESPOND_TO_FERMENT_V2_FINDING_PARAMETERS,
+		async execute(_toolCallId, params: RespondToFermentV2FindingParams, _signal, _onUpdate, ctx) {
+			const sessionId = bindSession(ctx)
+			try {
+				const fermentV2 = await serializeFermentV2Mutation(sessionId, () => {
+					assertCurrentSession(ctx, sessionId)
+					const current = currentFermentV2
+					if (current?.status !== "active" || (activeTurn && !matchesFermentV2(activeTurn, current, sessionId))) {
+						throw new Error(
+							"the Ferment V2 changed or stopped during this turn. Continue against the current active Ferment V2.",
+						)
+					}
+					const next = respondToFermentV2Finding(
+						current,
+						current.id,
+						current.revision,
+						params.id,
+						{ status: params.status, evidence: params.evidence },
+						timestamp(),
+					)
+					commitFermentV2(next)
+					return next
+				})
+				const pending = (fermentV2.openFindings ?? []).filter((finding) => !finding.response)
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Recorded ${params.status} for ${params.id.trim()}.${pending.length ? ` Still unanswered: ${pending.map((finding) => finding.id).join(", ")}.` : " Every open finding has a response."}`,
+						},
+					],
+					details: { openFindings: fermentV2.openFindings ?? [] },
+				}
+			} catch (error) {
+				const message = errorMessage(error)
+				return {
+					content: [{ type: "text" as const, text: `Finding response rejected: ${message}` }],
+					details: { error: message },
+				}
+			}
+		},
+	})
+
 	pi.registerCommand(FERMENT_V2_COMMAND_NAME, {
 		description: "Set or manage a persistent session Ferment V2",
 		getArgumentCompletions: (prefix) =>
@@ -1533,6 +1725,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		replaySession(ctx)
+		// Leftover baseline worktrees from crashed runs never clean themselves
+		// up; remove them before any new verifier run can race them.
+		void pruneStaleBaselineWorktrees(ctx.cwd).catch(() => {})
 		// Defer a resumed Ferment V2's kick so an embedder's incoming prompt wins the
 		// streaming-slot race; the timer rechecks busy, pending, and Ferment V2 identity.
 		// No waiter is held open, and pendingContinuation keeps repeated resumes idempotent.
@@ -1684,31 +1879,20 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const budgetLimitedTurn =
 			fermentV2?.status === "budget_limited" &&
 			matchesFermentV2(pendingBudgetLimitedOutput, fermentV2, currentSessionId)
-		const todoState = matchesFermentV2(todoStateFor, currentTurn, currentSessionId) ? todoStateFor : undefined
 		const claimedComplete = event.message.content.some(
 			(block) =>
 				block.type === "toolCall" &&
 				block.name === UPDATE_FERMENT_V2_TOOL_NAME &&
 				(block.arguments as { status?: string } | undefined)?.status === "complete",
 		)
-		const hasToolCalls = event.message.content.some((block) => block.type === "toolCall")
 		const restoredContent = event.message.content.map((block, index) =>
 			block.type === "text" ? { ...block, text: bufferedAssistantText?.get(index) ?? block.text } : block,
 		)
 		const hasText = restoredContent.some((block) => block.type === "text" && block.text.trim().length > 0)
-		const completesTodos =
-			hasText &&
-			Boolean(todoState) &&
-			completesCurrentTodoList(
-				{ ...event.message, content: restoredContent },
-				todoState,
-				getTodoScopeKey(resolveTodoScope(ctx.sessionManager.getSessionId())),
-				ctx.sessionManager.getSessionId(),
-			)
-		const isCandidate =
-			currentTurn?.status === "active" &&
-			(claimedComplete || completesTodos || (!hasToolCalls && hasText && Boolean(todoState?.total)))
-		const withholdCandidate = claimedComplete || completesTodos || todoState?.settledStatus === "complete"
+		const hasToolCalls = event.message.content.some((block) => block.type === "toolCall")
+		// Only an explicit completion claim makes this stop a completion candidate;
+		// Todo state never drives verification.
+		const isCandidate = currentTurn?.status === "active" && claimedComplete
 		if (isCandidate && currentTurn && currentSessionId) {
 			const retainedCandidate = matchesFermentV2(completionCandidate, currentTurn, currentSessionId)
 			if (hasText || !retainedCandidate) {
@@ -1718,23 +1902,22 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					revision: currentTurn.revision,
 					message: {
 						...event.message,
-						content: completesTodos ? restoredContent.filter((block) => block.type !== "toolCall") : restoredContent,
+						content: restoredContent,
 					},
-					withheld: withholdCandidate,
+					withheld: true,
 				}
 			}
 			if (ctx.hasUI) {
 				releaseEvaluationWorkingIndicator ??= holdWorkingIndicator(ctx)
 				holdFermentV2WorkedDuration()
 			}
-			if (!withholdCandidate) releaseFermentV2WorkedDuration(true)
 		}
 		const accepted = acceptedFinalAnswerFor(fermentV2, currentSessionId)
 		const statusOnlyBookkeeping =
 			accepted?.alreadyVisible === true &&
 			hasToolCalls &&
 			event.message.content.every((block) => block.type !== "toolCall" || isTodoWriteToolName(block.name))
-		if ((isCandidate && withholdCandidate) || statusOnlyBookkeeping || supersededTurn || budgetLimitedTurn) {
+		if (isCandidate || statusOnlyBookkeeping || supersededTurn || budgetLimitedTurn) {
 			bufferedAssistantText = undefined
 			streamedAssistantTextIndices = undefined
 			return {
@@ -1871,6 +2054,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			activeFinalAnswer = finalAnswer
 			if (pendingFinalAnswer === finalAnswer) pendingFinalAnswer = undefined
 			turnStartFingerprint = undefined
+			continuationBaselineFingerprint = undefined
 		} else if (fermentV2?.status === "active") {
 			activeFinalAnswer = undefined
 			activeSinceMs ??= Date.now()
@@ -1881,10 +2065,15 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 			const todoState = matchesFermentV2(todoStateFor, fermentV2, currentSessionId) ? todoStateFor : undefined
 			turnStartFingerprint = fermentV2ProgressFingerprint(fermentV2, todoState, fermentV2Lessons)
+			// The checkpoint baseline is only armed when no decision has set it yet;
+			// later SDK turns of the same run keep it so their Todo/lesson updates
+			// still count as progress at the stop.
+			continuationBaselineFingerprint ??= turnStartFingerprint
 		} else {
 			activeTurn = undefined
 			activeFinalAnswer = undefined
 			turnStartFingerprint = undefined
+			continuationBaselineFingerprint = undefined
 		}
 	})
 
@@ -1979,6 +2168,110 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		})
 	})
 
+	/**
+	 * Shared continuation driver, extracted from the evaluator's `continue`
+	 * branch: commit the unchanged-continuation counter, pause on stall, and
+	 * queue the next turn. Used both for evaluator `continue` verdicts and for
+	 * the deterministic host continuation after a stop without a completion
+	 * claim. The stop's completion claim is consumed here: the next verification
+	 * needs a fresh explicit claim.
+	 */
+	function continueFermentV2Turn(
+		ctx: ExtensionContext,
+		sessionId: string,
+		evaluated: SessionFermentV2,
+		decision: { reason: string | undefined; unchanged: number },
+		source: string,
+		queueDuringAgentRun: boolean,
+	): void {
+		const now = timestamp()
+		const { maxUnchangedContinuations } = getFermentV2Settings()
+		// Folded into the single commit below (a no-op if unchanged) rather than committed
+		// separately after queueFermentV2Turn: that would mean two commits per turn, and by then
+		// queueFermentV2Turn's pi.sendMessage(triggerTurn) may already have raced a synchronously-started next turn.
+		const withContinuationCount = setFermentV2UnchangedContinuationTurns(
+			evaluated,
+			evaluated.id,
+			evaluated.revision,
+			decision.unchanged,
+			now,
+		)
+		if (decision.unchanged >= maxUnchangedContinuations) {
+			const paused = setFermentV2Status(
+				withContinuationCount,
+				withContinuationCount.id,
+				withContinuationCount.revision,
+				"paused",
+				now,
+			)
+			commitFermentV2(paused)
+			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.STALLED, paused, {
+				reason: "no_progress",
+				continuationCount: decision.unchanged,
+			})
+			completionClaim = undefined
+			activeSinceMs = undefined
+			invalidateContinuation()
+			ctx.ui.notify(
+				`${displayName(paused)} paused after ${maxUnchangedContinuations} stalled continuation turns.`,
+				"warning",
+			)
+			releaseFermentV2PromptSummary()
+			return
+		}
+
+		commitFermentV2(withContinuationCount)
+		completionClaim = undefined
+		const content = buildFermentV2Continuation(decision.unchanged > 0, decision.reason)
+		if (queueDuringAgentRun) {
+			if (!queueFermentV2Turn(ctx, withContinuationCount, content, source, "followUp", true)) {
+				releaseFermentV2PromptSummary()
+				resolveFermentV2Waiter(sessionId, withContinuationCount.id)
+			}
+		} else {
+			queueFermentV2TurnAfterSettled(ctx, withContinuationCount, content, source)
+		}
+	}
+
+	/**
+	 * Deterministic continuation after a stop without a completion claim: no
+	 * evaluator call and no evaluation record. The stop counts as unchanged only
+	 * when there was no substantive tool use and the Todo/lesson fingerprint is
+	 * unchanged since the last checkpoint (a previous continuation or evaluation
+	 * decision) — not since the start of the last SDK turn, so Todo/lesson
+	 * updates from earlier turns of a multi-turn run still count as progress.
+	 */
+	function continueFermentV2WithoutClaim(
+		ctx: ExtensionContext,
+		sessionId: string,
+		fermentV2: SessionFermentV2,
+		options: { source: string; reason?: string },
+		queueDuringAgentRun: boolean,
+	): void {
+		const todoState = matchesFermentV2(todoStateFor, fermentV2, sessionId) ? todoStateFor : undefined
+		const { unchanged, fingerprint } = deriveHostContinuationDecision({
+			evaluated: fermentV2,
+			todoState,
+			lessons: fermentV2Lessons,
+			startFingerprint: continuationBaselineFingerprint,
+			hadSubstantiveToolUse: substantiveToolUseSinceEvaluation,
+		})
+		// Re-arm the checkpoint baseline at this decision; a stall pause clears it
+		// again through invalidateContinuation.
+		continuationBaselineFingerprint = fingerprint
+		capturedConversation = undefined
+		substantiveToolUseSinceEvaluation = false
+		releaseEvaluationIndicator()
+		continueFermentV2Turn(
+			ctx,
+			sessionId,
+			fermentV2,
+			{ reason: options.reason, unchanged },
+			options.source,
+			queueDuringAgentRun,
+		)
+	}
+
 	async function applyFermentV2Evaluation(
 		ctx: ExtensionContext,
 		sessionId: string,
@@ -2015,29 +2308,74 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				verdict: result.verdict,
 				reason: result.reason,
 				...(result.model ? { model: result.model } : {}),
+				...(result.sameModelAsImplementer ? { sameModelAsImplementer: true } : {}),
 				evaluatedAt: now,
 			}
-			const evaluated = recordFermentV2Evaluation(fermentV2, fermentV2.id, fermentV2.revision, evaluation, now)
+			let evaluated = recordFermentV2Evaluation(fermentV2, fermentV2.id, fermentV2.revision, evaluation, now)
+			if (result.verdict !== "unavailable") {
+				// Findings keep their IDs until a later review resolves them.
+				evaluated = applyFermentV2ReviewFindings(
+					evaluated,
+					evaluated.id,
+					evaluated.revision,
+					{
+						verdict: result.verdict,
+						findings: result.findings ?? [],
+						resolutions: result.resolutions ?? [],
+						...(result.workspaceTree ? { workspaceTree: result.workspaceTree } : {}),
+					},
+					now,
+				)
+			}
+			// Verifier tokens and wall-clock time were already settled when the run
+			// settled — before the validity gates above — so they survive even when a
+			// verdict is abandoned; the budget transition was handled there as well.
+			notifyVerifierVerdict(ctx, result)
+			if (result.integrity?.unenforced && !integrityUnenforcedNotified.has(fermentV2.id)) {
+				integrityUnenforcedNotified.add(fermentV2.id)
+				ctx.ui.notify(
+					"Ferment V2 could not snapshot the working tree, so the verifier ran without the integrity guard: files it changes are not reverted.",
+					"warning",
+				)
+			}
+			// One-time-per-ferment warning when the evaluator runs on the implementer's own model.
+			if ((result.sameModelAsImplementer || result.modelFallback) && !fermentV2.evaluatorModelWarned) {
+				ctx.ui.notify(
+					formatFermentV2EvaluatorModelWarning({
+						ref: result.model,
+						sameAsImplementer: result.sameModelAsImplementer,
+						modelFallback: result.modelFallback,
+						configuredRefs: getFermentV2Settings().evaluatorModels,
+						unusableRefs: result.unusableEvaluatorRefs,
+					}),
+					"warning",
+				)
+				evaluated = markFermentV2EvaluatorModelWarned(evaluated, evaluated.id, evaluated.revision, now)
+			}
 			const evaluatedDraft = result.verdict === "met" ? result.acceptedFinalAnswer : undefined
 			capturedConversation = undefined
 			substantiveToolUseSinceEvaluation = false
+			// The evaluation is a checkpoint: re-arm the host-continuation baseline so
+			// the next stop without a claim measures Todo/lesson progress from here.
+			continuationBaselineFingerprint = fermentV2ProgressFingerprint(
+				evaluated,
+				matchesFermentV2(todoStateFor, evaluated, sessionId) ? todoStateFor : undefined,
+				fermentV2Lessons,
+			)
 
 			// Lifecycle events describe the committed outcome; the evaluation event described its invocation.
 			const recordTerminalOutcome = (
 				fermentV2: SessionFermentV2,
 				event: FermentV2EventName,
 				notify: { message: string; level: "info" | "warning" },
-				options: {
-					details?: Pick<
-						FermentV2LifecyclePayload,
-						"reason" | "continuationCount" | "replacementFermentV2Id" | "consecutiveErrorCount"
-					>
-					keepCompletionClaim?: boolean
-				} = {},
+				details: Pick<
+					FermentV2LifecyclePayload,
+					"reason" | "continuationCount" | "replacementFermentV2Id" | "consecutiveErrorCount"
+				> = {},
 			): void => {
 				commitFermentV2(fermentV2)
-				emitFermentV2Lifecycle(event, fermentV2, options.details)
-				if (!options.keepCompletionClaim) completionClaim = undefined
+				emitFermentV2Lifecycle(event, fermentV2, details)
+				completionClaim = undefined
 				activeSinceMs = undefined
 				invalidateContinuation()
 				ctx.ui.notify(notify.message, notify.level)
@@ -2050,7 +2388,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					paused,
 					FERMENT_V2_EVENTS.PAUSED,
 					{ message: `${displayName(paused)} paused: ${result.reason}`, level: "warning" },
-					{ details: { reason: "evaluator_unavailable" } },
+					{ reason: "evaluator_unavailable" },
 				)
 				return
 			}
@@ -2064,7 +2402,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 						message: `${displayName(blocked)} blocked: ${result.reason}`,
 						level: "warning",
 					},
-					{ details: { reason: "evaluator_impossible" } },
+					{ reason: "evaluator_impossible" },
 				)
 				return
 			}
@@ -2104,7 +2442,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				return
 			}
 
-			// Keep the claim across continue; it remains scoped to this Ferment V2 revision.
+			// The claim is consumed by this verdict: the next verification needs a fresh
+			// explicit `update_ferment_v2` completion claim.
 			const continuation = deriveContinuationDecision({
 				verdict: result.verdict,
 				reason: result.reason,
@@ -2115,50 +2454,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				startFingerprint,
 				hadSubstantiveToolUse,
 			})
-			const { maxUnchangedContinuations } = getFermentV2Settings()
-			// Folded into the single commit below (a no-op if unchanged) rather than committed
-			// separately after queueFermentV2Turn: that would mean two commits per turn, and by then
-			// queueFermentV2Turn's pi.sendMessage(triggerTurn) may already have raced a synchronously-started next turn.
-			const withContinuationCount = setFermentV2UnchangedContinuationTurns(
-				evaluated,
-				evaluated.id,
-				evaluated.revision,
-				continuation.unchanged,
-				now,
-			)
-			if (continuation.unchanged >= maxUnchangedContinuations) {
-				const paused = setFermentV2Status(
-					withContinuationCount,
-					withContinuationCount.id,
-					withContinuationCount.revision,
-					"paused",
-					now,
-				)
-				recordTerminalOutcome(
-					paused,
-					FERMENT_V2_EVENTS.STALLED,
-					{
-						message: `${displayName(paused)} paused after ${maxUnchangedContinuations} stalled continuation turns.`,
-						level: "warning",
-					},
-					{
-						details: { reason: "no_progress", continuationCount: continuation.unchanged },
-						keepCompletionClaim: true,
-					},
-				)
-				return
-			}
-
-			commitFermentV2(withContinuationCount)
-			const content = buildFermentV2Continuation(continuation.unchanged > 0, continuation.reason)
-			if (queueDuringAgentRun) {
-				if (!queueFermentV2Turn(ctx, withContinuationCount, content, "evaluation", "followUp", true)) {
-					releaseFermentV2PromptSummary()
-					resolveFermentV2Waiter(sessionId, withContinuationCount.id)
-				}
-			} else {
-				queueFermentV2TurnAfterSettled(ctx, withContinuationCount, content, "evaluation")
-			}
+			continueFermentV2Turn(ctx, sessionId, evaluated, continuation, "evaluation", queueDuringAgentRun)
 		})
 	}
 
@@ -2185,44 +2481,49 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 		}
 		const draftEntry = latestFinalAnswerDraftEntry(messages)
-		if (
-			!hadCandidate &&
-			fermentV2?.status === "active" &&
-			isThinkingOnlyAssistantStop(event.messages) &&
-			!(
-				isReadyForFinalAnswer(fermentV2, todoStateFor, sessionId, ctx.hasUI) &&
-				acceptedFinalAnswerDraftFor(fermentV2, sessionId)
-			)
-		) {
-			capturedConversation = undefined
-			queueFermentV2TurnAfterSettled(
-				ctx,
-				fermentV2,
-				buildFermentV2Continuation(false, "Write visible answer text before finishing."),
-				"missing_final_answer_text",
-			)
-			return
-		}
-		capturedConversation =
-			fermentV2?.status === "active"
-				? {
-						sessionId,
-						fermentV2Id: fermentV2.id,
-						revision: fermentV2.revision,
-						messages,
-						failed: matchesFermentV2(failedTurn, fermentV2, sessionId),
-						finalAnswerAlreadyVisible: hadCandidate ? candidate?.withheld === false : draftEntry?.visible === true,
-					}
-				: undefined
-		const conversation = capturedConversation
+		const activeFermentV2 = fermentV2?.status === "active" ? fermentV2 : undefined
+		const hasCompletionClaim = Boolean(activeFermentV2 && matchesFermentV2(completionClaim, activeFermentV2, sessionId))
 		// A resumed headless prompt has no slash-command waiter. Queue its next
 		// turn before agent_end returns so Pi keeps the same session.prompt alive.
 		const queueDuringAgentRun = Boolean(
 			!ctx.hasUI &&
-				fermentV2 &&
-				!matchesFermentV2(activeFinalAnswer, fermentV2, sessionId) &&
-				!fermentV2Waiters.has(fermentV2WaiterKey(sessionId, fermentV2.id)),
+				activeFermentV2 &&
+				!matchesFermentV2(activeFinalAnswer, activeFermentV2, sessionId) &&
+				!fermentV2Waiters.has(fermentV2WaiterKey(sessionId, activeFermentV2.id)),
 		)
+		if (
+			!hadCandidate &&
+			activeFermentV2 &&
+			isThinkingOnlyAssistantStop(event.messages) &&
+			!(
+				isReadyForFinalAnswer(activeFermentV2, todoStateFor, sessionId, ctx.hasUI) &&
+				acceptedFinalAnswerDraftFor(activeFermentV2, sessionId)
+			)
+		) {
+			capturedConversation = undefined
+			continueFermentV2WithoutClaim(
+				ctx,
+				sessionId,
+				activeFermentV2,
+				{
+					source: "missing_final_answer_text",
+					reason: "Write visible answer text before finishing.",
+				},
+				queueDuringAgentRun,
+			)
+			return
+		}
+		capturedConversation = activeFermentV2
+			? {
+					sessionId,
+					fermentV2Id: activeFermentV2.id,
+					revision: activeFermentV2.revision,
+					messages,
+					failed: matchesFermentV2(failedTurn, activeFermentV2, sessionId),
+					finalAnswerAlreadyVisible: hadCandidate ? candidate?.withheld === false : draftEntry?.visible === true,
+				}
+			: undefined
+		const conversation = capturedConversation
 		if (
 			(!hadCandidate && !queueDuringAgentRun) ||
 			!conversation ||
@@ -2230,6 +2531,12 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			!canEvaluateFermentV2(conversation, fermentV2, sessionId, ctx)
 		) {
 			releaseEvaluationIndicator()
+			return
+		}
+		// Verification runs only after an explicit `update_ferment_v2` completion
+		// claim; a stop without one queues a deterministic continuation instead.
+		if (!hasCompletionClaim) {
+			continueFermentV2WithoutClaim(ctx, sessionId, fermentV2, { source: "no_completion_claim" }, queueDuringAgentRun)
 			return
 		}
 		holdFermentV2PromptSummary()
@@ -2347,6 +2654,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			queueFermentV2TurnAfterSettled(ctx, withErrorTurns, buildFermentV2ErrorContinuation(), "agent_error")
 			return
 		}
+		// No explicit completion claim: queue the deterministic continuation without
+		// calling the evaluator, recording an evaluation, or emitting an EVALUATED event.
+		if (!matchesFermentV2(completionClaim, capturedFermentV2, sessionId)) {
+			releaseEvaluationIndicator()
+			releaseFermentV2PromptSummary()
+			continueFermentV2WithoutClaim(ctx, sessionId, capturedFermentV2, { source: "no_completion_claim" }, false)
+			return
+		}
 		const prepared = preparedEvaluation?.conversation === conversation ? preparedEvaluation : undefined
 		preparedEvaluation = undefined
 		holdFermentV2PromptSummary()
@@ -2358,6 +2673,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (ctx.sessionManager.getSessionId() !== currentSessionId) return
 		unregisterTodoCommandMutationHandler?.()
 		unregisterTodoCommandMutationHandler = undefined
+		stopVerifyingStatus()
 		void abortEvaluation()
 		resolveSessionWaiters(currentSessionId)
 		currentSessionId = undefined

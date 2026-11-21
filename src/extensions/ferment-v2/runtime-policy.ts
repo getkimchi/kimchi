@@ -139,6 +139,12 @@ export function fermentV2ProgressFingerprint(
 	return JSON.stringify([fermentV2.id, fermentV2.revision, todos, durableLessons])
 }
 
+/**
+ * Stall decision for an evaluator verdict. `repeatedGap` (the same evaluator
+ * gap repeating on an unchanged fingerprint) only applies to evaluator
+ * verdicts; a `met` verdict without a settled Todo list is nudged to create
+ * one.
+ */
 export function deriveContinuationDecision(input: {
 	verdict: "continue" | "met"
 	reason: string
@@ -168,4 +174,32 @@ export function deriveContinuationDecision(input: {
 			? (input.evaluated.unchangedContinuationTurns ?? 0) + 1
 			: 0
 	return { reason, unchanged }
+}
+
+/**
+ * Stall decision for a host-generated continuation (the implementer stopped
+ * without a completion claim). It counts as unchanged only when the stop did no
+ * substantive tool work and the Todo/lesson fingerprint matches the checkpoint
+ * baseline — the fingerprint captured at the previous continuation or evaluation
+ * decision, not the start of the last SDK turn, so Todo/lesson updates from
+ * earlier turns of a multi-turn run still count as progress. Returns the
+ * measured fingerprint so the caller can re-arm the baseline for the next
+ * checkpoint. Evaluator `repeatedGap` never applies because there is no
+ * evaluator verdict.
+ */
+export function deriveHostContinuationDecision(input: {
+	evaluated: SessionFermentV2
+	todoState: FermentV2TodoState | undefined
+	lessons: readonly FermentV2Lesson[]
+	startFingerprint: string | undefined
+	hadSubstantiveToolUse: boolean
+}): { unchanged: number; fingerprint: string } {
+	const fingerprint = fermentV2ProgressFingerprint(input.evaluated, input.todoState, input.lessons)
+	return {
+		unchanged:
+			!input.hadSubstantiveToolUse && fingerprint === input.startFingerprint
+				? (input.evaluated.unchangedContinuationTurns ?? 0) + 1
+				: 0,
+		fingerprint,
+	}
 }
