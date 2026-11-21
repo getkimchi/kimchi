@@ -1,27 +1,51 @@
 /**
  * PII redaction extension.
  *
- * Uses three hooks to scrub PII/secrets from the message pipeline with
- * minimal per-request overhead:
+ * Uses three scrubbing hooks to keep PII/secrets out of the message
+ * pipeline with minimal per-request overhead:
  *
- * 1. `message_end` — redacts assistant messages before they are stored.
- *    One-time cost per message; the stored message is already clean.
+ * 1. `message_end` — redacts every persisted message (user, assistant,
+ *    toolResult, system) in place before storage: the runner applies the
+ *    returned replacement to the same object it then persists, so the
+ *    stored entry carries the scrubbed content under the original
+ *    reference. One-time cost per message.
  *
  * 2. `tool_result` — redacts tool result content and its `details` mirror
  *    before they are persisted. One-time cost per tool call; the stored
  *    result is already clean, and message_end's later walk over the
  *    toolResult message nets to zero (single emission per redaction).
  *
- * 3. `before_provider_request` — redacts user messages (the only un-redacted
- *    type) before the LLM request. Uses a WeakMap cache keyed by message
- *    reference identity so previously-redacted messages are O(1) lookups.
- *    Only new user messages (cache misses) incur scanning cost.
+ * 3. `before_provider_request` — redacts every non-system message in the
+ *    request payload, using a WeakMap cache keyed by message reference so
+ *    previously-redacted messages are O(1) lookups. Only cache misses
+ *    (new or restored-unattested messages) incur scanning cost. A scan that
+ *    failed open is never cached — the next request rescans it.
  *
  * This design means:
- * - The session file is scrubbed (assistant + tool results stored redacted)
+ * - The session file is scrubbed by the time a message lands in it
  * - Per-request cost is O(new messages) not O(total messages)
- * - No memory doubling — the WeakMap holds one redacted reference per message
- *   and is GC'd when the session manager drops the original
+ * - No memory doubling — the WeakMap holds one redacted reference per
+ *   message and is GC'd when the session manager drops the original
+ *
+ * Resume attestation (turn_end + session_start) — attest and forget:
+ * - A message_end scan that completes with zero engine failures marks the
+ *   message object as clean-scrubbed. At each turn end one
+ *   `pii-redaction/attest` custom entry persists the turn's clean-scrubbed
+ *   message ids (custom entries never enter LLM context).
+ * - On startup/resume/fork, attested ids seed the request-walk cache, so
+ *   a resumed session does not re-scan history the write path scrubbed —
+ *   content-independent, so PII-heavy sessions benefit equally.
+ * - Anything without evidence — legacy files, fail-open scans, writes
+ *   made with redaction off, broken object identity — falls back to
+ *   today's full scan on every resume. There is deliberately no
+ *   fingerprint and no healing: policy/build changes do NOT re-redact
+ *   attested lines (accepted risk — the live pipeline applied the
+ *   then-current policy when the line ran, so anything a future policy
+ *   would newly redact was already sent to the provider at that time),
+ *   and the request hook records no evidence, so a stored message that
+ *   never went through a live write-path scrub is never attested.
+ * - Trust boundary: the local session file, the same as the token vault
+ *   seed in vault.ts.
  *
  * Redaction is disabled by default. It is governed by the resources system:
  *   - /resources toggle or settings.json resources override
@@ -30,6 +54,7 @@
  */
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
+import { PII_ATTEST_ENTRY_TYPE, parseAttestEntry, sessionEntriesFrom, sessionManagerFrom } from "./attestation.js"
 import { getRedactionRenderMode, isRedactionEnabled } from "./config.js"
 import { emitRedactionFacts, type RedactionSurface } from "./redaction-events.js"
 import {
@@ -48,9 +73,7 @@ import { installVaultLifecycle, substituteTokens, type TokenVault, vaultForPaint
  */
 function hookVault(ctx: unknown): TokenVault | undefined {
 	if (getRedactionRenderMode() !== "tokens") return undefined
-	const sessionId = (
-		ctx as { sessionManager?: { getSessionId?: () => string } } | undefined
-	)?.sessionManager?.getSessionId?.()
+	const sessionId = (sessionManagerFrom(ctx) as { getSessionId?: () => string } | undefined)?.getSessionId?.()
 	return vaultForSession(sessionId)
 }
 
@@ -61,8 +84,39 @@ const redactionCache = new WeakMap<object, object>()
  * synchronously before the first await, so two concurrent cache-miss paths
  * for the same message reference (e.g. one request payload carrying the
  * same object twice) await one redaction and emit its facts exactly once.
+ * Retention bound: keys are STRONG references, held until the redaction
+ * settles — and settlement is bounded per string (SCAN_SETTLE_TIMEOUT_MS
+ * per scanned string), not per message. Under a degraded engine, a
+ * many-string message can therefore pin its original object for minutes
+ * past session disposal, and the shared promise couples any concurrent
+ * payload carrying the same reference.
  */
 const redactionInFlight = new Map<object, Promise<RedactionMeasurement<object>>>()
+
+/**
+ * Write-time evidence that a message's full scan completed clean (zero
+ * engine failures). Keyed by the message object that gets persisted —
+ * message_end replacements are applied in place, so the entry's message
+ * keeps this reference. Attest-and-forget: no fingerprint, no digest —
+ * see attestation.ts for the accepted-risk rationale.
+ */
+const cleanScrubbed = new WeakSet<object>()
+
+/**
+ * Per-sessionManager attestation bookkeeping — object-keyed, so concurrent
+ * ACP sessions (one process, many sessionManagers) never share state and a
+ * session's teardown never touches another's.
+ */
+const attestedIds = new WeakMap<object, Set<string>>()
+
+function attestedIdsFor(manager: object): Set<string> {
+	let ids = attestedIds.get(manager)
+	if (!ids) {
+		ids = new Set()
+		attestedIds.set(manager, ids)
+	}
+	return ids
+}
 
 /** Map a request-message role to the redaction surface it belongs to. */
 function surfaceForRole(role: unknown): RedactionSurface | undefined {
@@ -107,6 +161,14 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
 		// Redact the message content (deep-walk all strings).
 		const { redacted, report } = await redactObjectStringsMeasured(message, hookVault(ctx))
+		// Write-time evidence for resume attestation: this scan completed
+		// with zero engine failures. The runner applies the final replacement
+		// in place to the ORIGINAL event.message, so `message` here (the object
+		// this handler received) is the persisted object only while no
+		// earlier-ordered message_end handler returned a fresh replacement
+		// first. When one does, this evidence keys an intermediate object and
+		// never matches an entry — fail-safe (no attest, rescan on resume).
+		if (report.engineFailures === 0) cleanScrubbed.add(message)
 		// Emit redaction facts labelled by message role. message_end fires for
 		// user and assistant messages (and system messages — redacted for
 		// storage hygiene but never emitted, since they are not user data).
@@ -239,7 +301,13 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				}
 				const { redacted: redactedMsg, report } = await inFlight
 				if (isEmitter) {
-					redactionCache.set(msg, redactedMsg as object)
+					// Never cache a pass that failed open: the original text was
+					// returned for some strings, so the next request must rescan.
+					// (Previously a failed scan was cached as if clean until
+					// restart.) Facts are still emitted for what was found.
+					if (report.engineFailures === 0) {
+						redactionCache.set(msg, redactedMsg as object)
+					}
 					// Facts are labelled by the message role — a cache-miss
 					// assistant-message in restored history must not inflate the
 					// user_input dimension.
@@ -252,6 +320,99 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
 		payload.messages = redacted
 		return payload
+	})
+
+	// 4. Persist write-time evidence: at each turn end, append one attest
+	//    entry per fingerprint for the turn's clean-scrubbed messages, so a
+	//    resumed process can skip re-proving them. The walk re-probes every
+	//    entry each turn (no cursor): getEntries() already copies the whole
+	//    array per call, the per-entry probe is a WeakMap lookup, and a
+	//    message that only gains evidence later (healing, after an
+	//    earlier-ordered message_end handler broke write-time keying) is
+	//    still picked up by the next turn end.
+	pi.on("turn_end", async (_event: unknown, ctx: unknown) => {
+		// Non-throwing gate, as everywhere: a throwing hook's result is
+		// discarded by the runner, and here there is nothing to discard.
+		if (!isRedactionEnabled()) return
+		try {
+			const manager = sessionManagerFrom(ctx)
+			if (!manager || typeof manager !== "object") return
+			const entries = sessionEntriesFrom(ctx)
+			if (!entries) return
+			// getEntries() returns the whole append-only entry tree — the walk
+			// covers every branch, including abandoned ones; attest entries
+			// land at the current leaf, and ids outside the live branch simply
+			// never match a seeding read.
+			const attested = attestedIdsFor(manager)
+			const ids: string[] = []
+			for (const entry of entries) {
+				if (entry?.type !== "message" || typeof entry.id !== "string") continue
+				if (attested.has(entry.id)) continue
+				const message = entry.message
+				// No evidence (never scrubbed by this process's write path) —
+				// never attest.
+				if (message === null || typeof message !== "object" || !cleanScrubbed.has(message)) continue
+				ids.push(entry.id)
+			}
+			if (ids.length > 0) {
+				// appendEntry is write-time only; a stale extension context
+				// (session replaced mid-flight) throws and lands in the catch —
+				// those messages simply stay unattested.
+				pi.appendEntry(PII_ATTEST_ENTRY_TYPE, { v: 1, ids })
+				for (const id of ids) attested.add(id)
+			}
+		} catch (err) {
+			// Best-effort by design: a dropped attestation costs a rescan on
+			// resume, never a leak. But a PERSISTENT failure here silently
+			// reintroduces the resume regression — log it so an operator can
+			// tell "attestation off" from "attestation broken".
+			console.error("PII redaction attest append failed; messages stay unattested:", err)
+		}
+	})
+
+	// 5. Seed the request-walk cache from attestation on session start, so a
+	//    resumed session does not re-scan history the write path proved clean.
+	//    The identity chain this relies on (reopened file → same message
+	//    object references in the provider payload) is pinned by the
+	//    real-SessionManager contract test in index.test.ts.
+	pi.on("session_start", async (event: unknown, ctx: unknown) => {
+		if (!isRedactionEnabled()) return
+		// `reload`/`new` must not seed: a live session whose tail was written
+		// with redaction off would be trusted without evidence. Only a fresh
+		// read from disk (startup/resume/fork) carries file-backed evidence.
+		const reason = (event as { reason?: unknown } | null)?.reason
+		if (reason !== "startup" && reason !== "resume" && reason !== "fork") return
+		try {
+			const manager = sessionManagerFrom(ctx)
+			if (!manager || typeof manager !== "object") return
+			const entries = sessionEntriesFrom(ctx)
+			if (!entries) return
+			const trusted = new Set<string>()
+			for (const entry of entries) {
+				if (entry?.type !== "custom" || entry.customType !== PII_ATTEST_ENTRY_TYPE) continue
+				// Malformed data: ignore wholesale — those messages are
+				// rescanned instead.
+				const ids = parseAttestEntry(entry.data)
+				if (ids) for (const id of ids) trusted.add(id)
+			}
+			if (trusted.size === 0) return
+			const attested = attestedIdsFor(manager)
+			for (const entry of entries) {
+				if (entry?.type !== "message" || typeof entry.id !== "string") continue
+				const message = entry.message
+				if (!trusted.has(entry.id) || message === null || typeof message !== "object") continue
+				// Stored content is the write path's scrubbed form — idempotent
+				// under rescans, so the message is its own redacted form.
+				redactionCache.set(message, message)
+				// Mark attested so the first turn_end does not re-append them.
+				attested.add(entry.id)
+			}
+		} catch (err) {
+			// No seeding — the request walk scans everything, as today. Log
+			// so "seeding unavailable" is distinguishable from "nothing
+			// attested" when the resume regression resurfaces.
+			console.error("PII redaction resume seeding failed; falling back to full scan:", err)
+		}
 	})
 }
 

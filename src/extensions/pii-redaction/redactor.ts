@@ -46,7 +46,7 @@ interface EngineSnapshot {
 	patterns: readonly RedactionPattern[]
 	/** Universe entity → category, for telemetry attribution. */
 	categories: ReadonlyMap<string, string>
-	/** Joined policy signature the snapshot was built from. */
+	/** Joined policy signature the snapshot was built from (includes render mode). */
 	signature: string
 }
 
@@ -1362,7 +1362,6 @@ export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault)
 	}
 	return { redacted, report }
 }
-
 /** An empty report — the starting point for cross-invocation aggregation. */
 export function emptyRedactionReport(): RedactionReport {
 	return { entities: {}, categories: {}, stringsScanned: 0, engineFailures: 0 }
