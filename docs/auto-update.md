@@ -111,6 +111,30 @@ this session's next tick) dedup the release instead of reinstalling it.
 already installed, but only when the record and the installed files agree: it
 stays usable for repairing an install the record no longer describes.
 
+Before anything is downloaded, the update checks that the install target is
+writable: the in-place swap replaces the binary in its own directory, so that
+directory needs write and search permission, and a read-only or non-writable
+install location (a sandboxed runtime with an immutable root, a root-owned
+`/usr/local/bin` without sudo) can never be updated in place. An unwritable
+target fails immediately with reinstall guidance instead of a raw
+`EROFS`/`EACCES` errno after the full release download, and `--dry-run`
+reports the same condition as a note beside the available version.
+`applyUpdate` enforces the gate for every caller, so a background tick that
+cannot write the install target fails (invisibly, into the update result
+file) before spending the download, rather than fetching the whole release on
+every 30-minute tick.
+
+The check is advisory: `access()` can race with the swap, so an `EROFS` or
+`EACCES` that still comes out of the swap on a path inside the install
+directory gets the same guidance. `EPERM` does not on POSIX (it also means an
+immutable flag or a sandbox policy), and neither does a failure elsewhere,
+such as the backup cache or the share directory. Errors are matched through
+any wrapper's `cause` chain, so a step wrapping the fs failure still maps. On
+Windows the check cannot see ACL-denied directories (libuv reports every
+directory writable), so there the swap's own error path applies — and `EPERM`
+from the swap is mapped to the guidance on Windows, where an ACL-denied
+install is the common case and a locked executable the rarer one.
+
 ## Why background updates
 
 The previous design checked for, downloaded, installed, and re-exec'd into
