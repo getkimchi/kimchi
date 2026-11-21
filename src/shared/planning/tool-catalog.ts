@@ -108,6 +108,8 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	// planning profiles so the step can return its result or questions.
 	{ name: "workflow_submit_result", modes: ["shared"] },
 	{ name: "workflow_submit_questions", modes: ["shared"] },
+	// Ferment-linked workers must always be able to return their final report.
+	{ name: "submit_agent_report", modes: ["shared"] },
 	// MCP gateway — discovery + proxy for MCP server tools. Available in normal
 	// and implementation modes, but filtered out of both planning profiles
 	// (arbitrary server calls). Read-only-qualified MCP direct tools are
@@ -143,6 +145,8 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "add_todo", modes: ["shared"] },
 	{ name: "mark_todo", modes: ["shared"] },
 	{ name: "clear_todos", modes: ["shared"] },
+	// Read-back/reconciliation control plane, registered beside the write aliases.
+	{ name: "confirm_todos", modes: ["shared"] },
 	...FERMENT_V2_TOOL_NAMES.map<ToolEntry>((name) => ({ name, modes: ["shared"] })),
 ]
 

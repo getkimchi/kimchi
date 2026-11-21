@@ -235,9 +235,9 @@ const NO_UI_SUFFIX = " (no UI to confirm)"
  *
  * The rate-limit window timestamp embedded in provider error text is dropped;
  * availability stays observable via the bounded `failure_code`. Model/tool
- * attribution is extracted only from the strict "(model=X [tool=Y])" tail —
+ * attribution is extracted only from a strict "(model=X [tool=Y])" pair —
  * ids never contain spaces, so diagnostic-laden reasons yield no attr
- * rather than a polluted one.
+ * rather than a polluted one. The pair may precede worker approval guidance.
  *
  * Trade-off (documented): the match is prefix-only — the suffix is stripped
  * when present but not required — so a NON-bash error result that happens to
@@ -252,7 +252,7 @@ function classifyClassifierGate(fullMsg: string): ToolErrorClassification | unde
 	if (reason.endsWith(NO_UI_SUFFIX)) reason = reason.slice(0, -NO_UI_SUFFIX.length)
 
 	const attrs: Record<string, string | number> = {}
-	const modelTool = reason.match(/\(model=([^\s()]+)(?: tool=([^\s()]+))?\)\s*$/)
+	const modelTool = reason.match(/\(model=([^\s()]+)(?: tool=([^\s()]+))?\)/)
 	if (modelTool) {
 		if (modelTool[1]) attrs.classifier_model = cap(modelTool[1])
 		if (modelTool[2]) attrs.classifier_tool = cap(modelTool[2])
