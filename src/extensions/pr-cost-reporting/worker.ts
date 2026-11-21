@@ -30,8 +30,8 @@ import {
 	effectiveClaimsAsync,
 	type Fact,
 	observeEvents,
+	outboxDeliveryStatus,
 	pendingBatch,
-	readOutboxStatus,
 } from "./ledger/outbox.js"
 import { backendFor, type OutboxBatch, type RecordBackend, type StoredRecord } from "./ledger/records.js"
 import { preludeStretch } from "./prelude.js"
@@ -553,8 +553,8 @@ export function deliverEvents(
 		let queueFile: FreshReportingState = {}
 		for (let attempt = 0; attempt < 3; attempt++) {
 			check()
-			const due = readOutboxStatus(agentDir).filter(
-				(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
+			const due = outboxDeliveryStatus(agentDir).filter(
+				(status) => (status.sendable || status.hasBatch) && (status.retry?.retryAt ?? 0) <= Date.now(),
 			)
 			if (!due.length) return
 			const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
@@ -850,11 +850,11 @@ async function passGateStamp(
 		}
 	let eventsRetryAt: number | undefined
 	let unstampedOutbox = false
-	for (const status of readOutboxStatus(agentDir)) {
+	for (const status of outboxDeliveryStatus(agentDir)) {
+		const { retry } = status
 		// An open account without a backoff note says "attempt now": keep opening until one appears.
-		if ((status.sendable > 0 || status.batches > 0) && !status.retry) unstampedOutbox = true
-		if (status.retry && (eventsRetryAt === undefined || status.retry.retryAt < eventsRetryAt))
-			eventsRetryAt = status.retry.retryAt
+		if ((status.sendable || status.hasBatch) && !retry) unstampedOutbox = true
+		if (retry && (eventsRetryAt === undefined || retry.retryAt < eventsRetryAt)) eventsRetryAt = retry.retryAt
 	}
 	let nextHoldExpiryAt: number | undefined
 	// Only a hold with a parked body can wake something up; the freeze sweep releases those.
@@ -1127,9 +1127,14 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	check()
 	let historyComplete = true
-	await importWorkRecordsAsync(agentDir, check, () => {
-		historyComplete = false
-	})
+	await importWorkRecordsAsync(
+		agentDir,
+		check,
+		() => {
+			historyComplete = false
+		},
+		true,
+	)
 	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
 	const backend = backendFor(agentDir)
 	const marked = new Map<string, Map<string, string>>()
