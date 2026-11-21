@@ -33,6 +33,8 @@
 		"check:acp-wire": "node scripts/check-acp-wire.mjs",
 		"check:acp-wire:self-test": "node scripts/check-acp-wire.mjs --self-test",
 		"test": "vitest run --dir src",
+		"test:pi-upgrade": "tsc -p scripts/pi-upgrade/tsconfig.workflow.json && vitest run scripts/pi-upgrade",
+		"pi-upgrade": "tsx scripts/pi-upgrade/cli.ts",
 		"test:dap-integration": "vitest run --config vitest.dap-integration.config.ts",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
 		"test:e2e:tui": "pnpm run build:binary && node scripts/run-tui-e2e.js",
