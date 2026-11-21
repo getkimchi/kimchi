@@ -2256,6 +2256,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 				const streamUpdate = () => {
 					if (fgDetached) return
+					const activity = describeActivity(fgState.activeTools, fgState.responseText)
 					const details: AgentDetails = {
 						...detailBase,
 						toolUses: fgState.toolUses,
@@ -2264,11 +2265,11 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						maxTurns: fgState.maxTurns,
 						durationMs: Date.now() - startedAt,
 						status: "running",
-						activity: describeActivity(fgState.activeTools, fgState.responseText),
+						activity,
 						spinnerFrame: spinnerFrame % SPINNER.length,
 					}
 					onUpdate?.({
-						content: [{ type: "text", text: `${fgState.toolUses} tool uses...` }],
+						content: [{ type: "text", text: activity }],
 						details: details as unknown,
 					})
 				}
