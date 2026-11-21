@@ -32,6 +32,24 @@ While agents run, a persistent widget above the editor shows live status, token
 counts, and current activity. Open `/agents` to see the menu — select any
 running or completed agent to view its full conversation in a live overlay.
 
+## Permissions
+
+Subagent tool calls run through the same permission gate as the main session.
+The worker's immutable permission role supplies its parent session id and task
+identity. Per-run async context isolates interactive holds and ownership state,
+so concurrent workers cannot borrow each other's parent or watchdog state.
+Workers have no prompt surface of their own — when the classifier is unavailable
+or otherwise requires confirmation, the prompt **escalates to the main session**
+and names the asking subagent. See
+[Subagent approval in the main session](permission-classifier.md#subagent-approval-in-the-main-session).
+
+### Branching
+
+After `/branch`, continuing subagents retain their original parent session id
+in their permission role. They cannot route new approval requests to the new
+session: calls that need approval retain the non-UI fail-closed block. Start a
+new worker from the new session when a call needs user approval.
+
 ## Discovery hierarchy
 
 Agents are discovered from three locations, in priority order (later wins):
@@ -338,24 +356,32 @@ reads, read-only MCP calls, inspection-only debugger results, and the Ferment
 worker-report tool remain available as control-plane or read-only operations.
 
 A subagent cannot open its own approval prompt. In `default` and `auto` modes,
-an otherwise unapproved non-read-only call therefore goes through the classifier;
-it runs only when the classifier returns `safe`. A non-safe verdict or classifier
-failure blocks the call and tells the subagent not to retry it, but to report that
-the main agent needs the user's approval. This adds a classifier request for each
-such call that reaches the permission decision. Plan mode blocks writes and
-non-read-only bash. Debugger launch/continue/step controls are execution, not
-reads, and therefore use the classifier in `default` and `auto`; only stopped
-session inspection such as `debug_locals` and `debug_backtrace` is read-only.
-Yolo mode still enforces deny rules and hard-blocked bash unless the main
-session has the dangerous full bypass enabled. As in a non-promptable main
-session, well-formed `kimchi doc-cli` commands use their deterministic
-first-party shortcut; in `default` mode that includes mutating subcommands.
+an otherwise unapproved non-read-only call therefore goes through the classifier
+first. A `safe` verdict runs the call without a prompt. When the classifier fails
+or requires confirmation, the main session asks on the subagent's behalf in TUI
+and ACP. The prompt names the subagent and its task; allow once runs one call,
+"remember for this subagent" stores the rule in the child's session across
+resumes, and deny returns the decision to the child. If no parent surface can
+ask, the route fails, or nobody answers within five minutes of the prompt being
+shown, the call is blocked
+and the subagent is told to report that it needs the user's approval. This adds a
+classifier request for each such call that reaches the permission decision.
 
-The same behavior applies on TUI, print mode, and ACP; no ACP permission request
-is sent for a subagent's own call. After `/branch` or `/clone`, a running child
-whose old parent policy has gone away keeps its last policy snapshot rather than
-falling back to allow. Remote sandbox agents are separate: they run in another
-process with that process's permission gate.
+Plan mode blocks writes and non-read-only bash. Debugger launch/continue/step
+controls are execution, not reads, and therefore use the classifier in `default`
+and `auto`; only stopped session inspection such as `debug_locals` and
+`debug_backtrace` is read-only. Yolo mode still enforces deny rules and
+hard-blocked bash unless the main session has the dangerous full bypass enabled.
+As in a non-promptable main session, well-formed `kimchi doc-cli` commands use
+their deterministic first-party shortcut; in `default` mode that includes
+mutating subcommands.
+
+After `/branch` or `/clone`, a running child whose old parent policy has gone
+away keeps its last policy snapshot rather than falling back to allow. Print
+mode and headless ACP hosts have no one to answer, so they retain the fail-closed
+block. Remote sandbox agents are separate: they run in another process with that
+process's permission gate. See [permission-classifier.md](permission-classifier.md)
+for the failure behaviour, circuit breaker, escalation, and fallback details.
 
 ## Remote runs and session replacement
 

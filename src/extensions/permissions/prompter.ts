@@ -7,6 +7,14 @@ export type PermissionChoice =
 	| { kind: "allow-remember-wildcard"; label: string; rules: Rule[] }
 	| { kind: "deny"; label: string }
 
+/** The subagent a permission prompt is shown on behalf of, when a worker's
+ *  call was escalated to its parent session's surface. */
+export interface PermissionOrigin {
+	persona?: string
+	agentId?: string
+	description?: string
+}
+
 export interface PermissionRequest {
 	toolCallId: string
 	toolName: string
@@ -16,10 +24,25 @@ export interface PermissionRequest {
 	riskScore?: RiskScore
 	choices: PermissionChoice[]
 	signal?: AbortSignal
+	/** Set when a worker escalated this request to the parent session — the
+	 *  prompt names the subagent so the user knows whose call it is. */
+	origin?: PermissionOrigin
 
 	// NOTE: remember choices carry multiple rules because compound bash
 	// commands produce one rule per segment (the compound gate evaluates
 	// segments independently and requires all of them allowed).
+}
+
+/**
+ * Abort reason of a permission request that a mode change withdrew. The call
+ * behind it is decided again under the new mode, so "aborted" for this reason
+ * is not a denial. Shared so that surfaces outside the gate (an ACP card) can
+ * tell a withdrawn request from a refused one.
+ */
+export const MODE_CHANGED_ABORT_ERROR = new Error("permissions: mode changed")
+
+export function isModeChangeAbort(signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true && signal.reason === MODE_CHANGED_ABORT_ERROR
 }
 
 export interface ToolPermissionPrompter {

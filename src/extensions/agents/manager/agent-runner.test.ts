@@ -187,6 +187,7 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
+import { holdAgentWorkerInactivity, runAsAgentWorker } from "../../agent-worker-context.js"
 import {
 	createSubagentBashClampExtension,
 	DEFAULT_BASH_TIMEOUT_SECONDS,
@@ -201,6 +202,7 @@ import { loadProjectContextFiles } from "../../prompt-construction/context-files
 import requestTimingExtension from "../../request-timing.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
+import { createInteractiveTimeBudget } from "../interactive-time-budget.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
@@ -466,6 +468,8 @@ describe("runAgent — telemetry extension", () => {
 		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith({
 			parentSessionId: ctx.sessionManager.getSessionId(),
 			persona: "General-Purpose",
+			agentId: undefined,
+			description: "do something",
 		})
 		const childApi = createExtensionApi()
 		await runInlineExtension(ctorArg?.extensionFactories?.[1], childApi.api)
@@ -2029,6 +2033,64 @@ describe("runAgent — maxDuration enforcement", () => {
 		})
 	}
 
+	it("does not charge the time spent setting the session up", async () => {
+		const SETUP_MS = 20_000
+		const abortSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const session = {
+			subscribe: vi.fn(() => () => {}),
+			abort: abortSpy.mockImplementation(() => {
+				resolvePrompt?.()
+			}),
+			steer: vi.fn(),
+			getActiveToolNames: vi.fn().mockReturnValue([]),
+			setActiveToolsByName: vi.fn(),
+			bindExtensions: vi.fn().mockResolvedValue(undefined),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+		// A slow session setup: most of max_duration passes before the worker
+		// can do anything.
+		mockCreateAgentSession.mockImplementation(async () => {
+			await new Promise((resolve) => setTimeout(resolve, SETUP_MS))
+			return {
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			}
+		})
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				maxDuration: 30,
+			},
+		)
+
+		await vi.advanceTimersByTimeAsync(SETUP_MS)
+		expect(session.prompt).toHaveBeenCalledOnce()
+		// 40 s after the start, but only 20 s into the worker's own time.
+		await vi.advanceTimersByTimeAsync(20_000)
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		await vi.advanceTimersByTimeAsync(11_000)
+		const result = await resultPromise
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.abortReason).toBe("max_duration")
+	})
+
 	it("uses agentConfig.maxDuration when no param override", async () => {
 		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxDuration: 20 }))
 		const abortSpy = vi.fn()
@@ -2674,6 +2736,148 @@ describe("steerAgent — explicit steering", () => {
 	})
 })
 
+describe("runAgent — inactivity watchdog hold", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		vi.useFakeTimers()
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	it("pauses the fresh-run watchdog while the worker waits in an escalated prompt", async () => {
+		const abortSpy = vi.fn()
+		let releaseHold: (() => void) | undefined
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				// The gate takes this hold for the duration of an escalated
+				// permission prompt; without it the watchdog would steer this
+				// legitimately-waiting worker at 10 s.
+				releaseHold = holdAgentWorkerInactivity()
+				await vi.advanceTimersByTimeAsync(25_000)
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			inactivityTimeout: 10,
+			maxDuration: 0,
+		})
+
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+		releaseHold?.()
+	})
+
+	it("pauses the resume watchdog while a resumed worker waits in an escalated prompt", async () => {
+		const abortSpy = vi.fn()
+		let releaseHold: (() => void) | undefined
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				releaseHold = holdAgentWorkerInactivity()
+				await vi.advanceTimersByTimeAsync(25_000)
+			},
+		})
+
+		// The manager wraps resumes in runAsAgentWorker (see agent-manager)
+		// before resumeAgent installs the hold — mirrored here.
+		const result = await runAsAgentWorker(
+			async () =>
+				resumeAgent(session as unknown as AgentSession, "continue", { inactivityTimeout: 10, maxDuration: 0 }),
+			{},
+		)
+
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+		releaseHold?.()
+	})
+
+	it("pauses the fresh wall-clock cap and keeps bash's remaining time while waiting", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				const releaseHold = holdAgentWorkerInactivity()
+				const getRemaining = mockCreateSubagentBashClampExtension.mock.calls.at(-1)?.[3]
+				if (!getRemaining) throw new Error("bash clamp did not receive the shared clock")
+				expect(getRemaining()).toBe(20_000)
+				await vi.advanceTimersByTimeAsync(35_000)
+				expect(getRemaining()).toBe(20_000)
+				releaseHold()
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			maxDuration: 20,
+		})
+
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+	})
+
+	it("uses the resume's paused clock instead of the disposed prior run clock", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({ abortSpy, emitUsage: false })
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			maxDuration: 20,
+		})
+		const getRemaining = mockCreateSubagentBashClampExtension.mock.calls.at(-1)?.[3]
+		if (!getRemaining) throw new Error("bash clamp did not receive the shared clock")
+		vi.mocked(session.prompt).mockImplementation(async () => {
+			const releaseHold = holdAgentWorkerInactivity()
+			expect(getRemaining()).toBe(20_000)
+			await vi.advanceTimersByTimeAsync(35_000)
+			expect(getRemaining()).toBe(20_000)
+			releaseHold()
+		})
+
+		const result = await runAsAgentWorker(
+			() => resumeAgent(session as unknown as AgentSession, "continue", { maxDuration: 20 }),
+			{},
+		)
+
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+	})
+})
+
 describe("resumeAgent — inactivity steering", () => {
 	it("completes after a report on the resume's final turn and token boundary", async () => {
 		const { resumeAgent } = await import("./agent-runner.js")
@@ -2815,6 +3019,7 @@ describe("buildInlineExtensionFactories", () => {
 	function makeDeps(overrides: Partial<InlineExtensionFactoryDeps> = {}): InlineExtensionFactoryDeps {
 		return {
 			effectiveMaxDuration: 900,
+			timeBudget: { budget: createInteractiveTimeBudget(900, Date.now()) },
 			type: "General-Purpose",
 			workerPermissionsExtension: WORKER_PERMISSIONS_EXTENSION,
 			parentSessionId: "parent-session",
@@ -2887,7 +3092,12 @@ describe("buildInlineExtensionFactories", () => {
 		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith("work-1", segment)
-		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(900, expect.any(Number), "General-Purpose")
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(
+			900,
+			expect.any(Number),
+			"General-Purpose",
+			expect.any(Function),
+		)
 		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
 	})
 
@@ -2906,7 +3116,12 @@ describe("buildInlineExtensionFactories", () => {
 
 	it("uses the bash clamp when effectiveMaxDuration is positive and the default timeout when it is 0", () => {
 		const clamped = buildInlineExtensionFactories(makeDeps({ effectiveMaxDuration: 60 }))
-		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(60, expect.any(Number), "General-Purpose")
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(
+			60,
+			expect.any(Number),
+			"General-Purpose",
+			expect.any(Function),
+		)
 		expect(clamped).not.toContain(subagentBashDefaultTimeoutExtension)
 
 		mockCreateSubagentBashClampExtension.mockClear()
@@ -3044,5 +3259,59 @@ describe("buildInlineExtensionFactories", () => {
 		expect(buildSystemPrompt).toHaveBeenCalledWith(["tool_a"], CONCRETE_MODEL.id)
 		expect(onSystemPrompt).toHaveBeenCalledWith("Rebuilt prompt")
 		expect(result).toEqual({ systemPrompt: "Rebuilt prompt" })
+	})
+})
+
+describe("runAgent — worker permission role", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Explore" }))
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+		Reflect.deleteProperty(process.env, "KIMCHI_AGENT_PERSONA")
+	})
+
+	it("passes parent, persona, agent ID, and description to the worker role", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Explore", "look around", {
+			pi: pi as unknown as RunOptions["pi"],
+			agentId: "agent-7",
+			description: "inspect the settings",
+		})
+
+		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith({
+			parentSessionId: "session-1",
+			persona: "Explore",
+			agentId: "agent-7",
+			description: "inspect the settings",
+		})
+	})
+
+	it("does not leave the persona env var set when the child session cannot be created", async () => {
+		mockCreateAgentSession.mockRejectedValue(new Error("session creation failed"))
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Explore", "look around", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("session creation failed")
+
+		expect(process.env.KIMCHI_AGENT_PERSONA).toBeUndefined()
 	})
 })

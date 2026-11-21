@@ -1064,8 +1064,9 @@ export class KimchiAcpAgent implements Agent {
 				this.conn,
 				sessionId,
 				uiContext,
-				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				(piToolCallId, toolName, agentId) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName, agentId),
 				record.cwd,
+				(piToolCallId, agentId) => this.releaseEscalatedAcpToolCallId(record, piToolCallId, agentId),
 			)
 			registerAcpPrompter(sessionId, ownPrompter)
 			record.ownPrompter = ownPrompter
@@ -1417,8 +1418,9 @@ export class KimchiAcpAgent implements Agent {
 				this.conn,
 				sessionId,
 				uiContext,
-				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				(piToolCallId, toolName, agentId) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName, agentId),
 				record.cwd,
+				(piToolCallId, agentId) => this.releaseEscalatedAcpToolCallId(record, piToolCallId, agentId),
 			)
 			registerAcpPrompter(sessionId, ownPrompter)
 			record.ownPrompter = ownPrompter
@@ -3451,17 +3453,31 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
+	/** Remove an escalated child's composite id mapping when its permission settles. */
+	private releaseEscalatedAcpToolCallId(record: SessionRecord, piToolCallId: string, agentId: string): void {
+		record.toolCallIdMap.delete(`${agentId}:${piToolCallId}`)
+	}
+
 	/**
 	 * Return the existing ACP toolCallId for an upstream id, allocating a fresh
 	 * session-unique id if none exists. Permission prompts fire before
 	 * `tool_execution_start`, so this ensures the permission request and the
 	 * subsequent tool_call notification share the same id.
 	 */
-	private getOrAllocateAcpToolCallId(record: SessionRecord, piToolCallId: string, toolName: string): string {
-		let acpId = record.toolCallIdMap.get(piToolCallId)
+	private getOrAllocateAcpToolCallId(
+		record: SessionRecord,
+		piToolCallId: string,
+		toolName: string,
+		agentId?: string,
+	): string {
+		// Escalated subagent calls arrive with the CHILD's call id, unknown to the
+		// parent's record; two children hashing onto the same id would collide, so
+		// the allocator key carries the requesting agent's identity.
+		const key = agentId ? `${agentId}:${piToolCallId}` : piToolCallId
+		let acpId = record.toolCallIdMap.get(key)
 		if (acpId === undefined) {
 			acpId = buildToolCallId(toolName, record.nextToolCallId++)
-			record.toolCallIdMap.set(piToolCallId, acpId)
+			record.toolCallIdMap.set(key, acpId)
 		}
 		return acpId
 	}

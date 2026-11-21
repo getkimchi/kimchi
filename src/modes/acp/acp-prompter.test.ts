@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../../extensions/__mocks__/context.js"
 import { createExtensionApi } from "../../extensions/__mocks__/extension-api.js"
 import { setSessionState } from "../../extensions/bash-background/session-registry.js"
+import { MODE_CHANGED_ABORT_ERROR } from "../../extensions/permissions/prompter.js"
 import {
 	installVaultLifecycle,
 	resetTokenVaults,
 	tokenFor,
 	vaultForSession,
 } from "../../extensions/pii-redaction/vault.js"
-import { createAcpPermissionPrompter } from "./acp-prompter.js"
+import { createAcpPermissionPrompter, WITHDRAWN_BY_MODE_CHANGE_SUFFIX } from "./acp-prompter.js"
 
 // Regression guard for the ACP permission flap: a client-cancelled
 // permission request must surface as a distinct denial outcome, NOT as
@@ -45,6 +46,24 @@ describe("acp-prompter cancelled-request mapping", () => {
 		expect(outcome).toEqual({ kind: "denied-by-client" })
 	})
 
+	it("carries the abort signal through feedback input into a plain denial", async () => {
+		const conn = makeConnection({ outcome: "selected", optionId: "choice-1" })
+		const controller = new AbortController()
+		let resolveFeedback!: () => void
+		const pendingFeedback = new Promise<string>((resolve) => {
+			resolveFeedback = () => resolve("")
+		})
+		const input = vi.fn(() => pendingFeedback)
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", { input } as never, () => "acp-1")
+		const pending = prompter.request({ ...baseReq, signal: controller.signal })
+		await vi.waitFor(() => expect(input).toHaveBeenCalledOnce())
+		controller.abort()
+		resolveFeedback()
+
+		expect(await pending).toEqual({ kind: "deny" })
+		expect(input).toHaveBeenCalledWith(expect.any(String), undefined, { signal: controller.signal })
+	})
+
 	it("keeps a real abort (signal) mapped to aborted", async () => {
 		const conn = makeConnection({ outcome: "cancelled" })
 		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-1")
@@ -55,7 +74,7 @@ describe("acp-prompter cancelled-request mapping", () => {
 	})
 
 	it("still maps selected options to their choices", async () => {
-		const conn = makeConnection({ outcome: "outcome_selected", optionId: "choice-0" })
+		const conn = makeConnection({ outcome: "selected", optionId: "choice-0" })
 		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-1")
 		const outcome = await prompter.request(baseReq)
 		expect(outcome).toEqual({ kind: "allow-once" })
@@ -207,5 +226,229 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 		} finally {
 			setSessionState("sess-wait", undefined)
 		}
+	})
+})
+
+describe("escalated subagent requests", () => {
+	const originReq = {
+		...baseReq,
+		origin: { persona: "General-Purpose", agentId: "agent-1", description: "write the file" },
+	}
+
+	function makeRecordingConnection(outcome: { outcome: string; optionId?: string }) {
+		const permissionPayloads: Array<{ sessionId: string; toolCall: ToolCall }> = []
+		const updates: Array<{ sessionId: string; update: Record<string, unknown> }> = []
+		const conn = {
+			requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+				permissionPayloads.push(payload)
+				return { outcome }
+			}),
+			sessionUpdate: vi.fn(async (payload: { sessionId: string; update: Record<string, unknown> }) => {
+				updates.push(payload)
+			}),
+		} as unknown as AgentSideConnection
+		return { conn, permissionPayloads, updates }
+	}
+
+	it("names the subagent in the title and _meta, keys the card id by agent, and closes completed", async () => {
+		const { conn, permissionPayloads, updates } = makeRecordingConnection({
+			outcome: "selected",
+			optionId: "choice-0",
+		})
+		const resolver = vi.fn(() => "acp-escalated")
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, resolver)
+		const outcome = await prompter.request(originReq)
+		expect(outcome).toEqual({ kind: "allow-once" })
+
+		expect(resolver).toHaveBeenCalledWith("tc-1", "bash", "agent-1")
+		const card = permissionPayloads[0]?.toolCall
+		expect(card?.title).toMatch(/^Subagent General-Purpose: /)
+		expect((card?._meta?.["kimchi.dev"] as { subagent?: unknown }).subagent).toEqual({
+			persona: "General-Purpose",
+			agentId: "agent-1",
+		})
+
+		const closes = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(closes).toHaveLength(1)
+		expect(closes[0]?.update).toMatchObject({ toolCallId: "acp-escalated", status: "completed" })
+		expect((closes[0]?.update.title as string) ?? "").toMatch(/^Subagent General-Purpose: /)
+	})
+
+	it("closes the card as failed when the client cancels an escalated request", async () => {
+		const { conn, updates } = makeRecordingConnection({ outcome: "cancelled" })
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated")
+		const outcome = await prompter.request(originReq)
+		expect(outcome).toEqual({ kind: "denied-by-client" })
+
+		const closes = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(closes).toHaveLength(1)
+		expect(closes[0]?.update).toMatchObject({ toolCallId: "acp-escalated", status: "failed" })
+	})
+
+	it("keeps the main session's own cards unchanged (no title prefix, no closing update)", async () => {
+		const { conn, permissionPayloads, updates } = makeRecordingConnection({
+			outcome: "selected",
+			optionId: "choice-0",
+		})
+		const resolver = vi.fn(() => "acp-1")
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, resolver)
+		await prompter.request(baseReq)
+
+		expect(resolver).toHaveBeenCalledWith("tc-1", "bash", undefined)
+		expect(permissionPayloads[0]?.toolCall.title).not.toMatch(/^Subagent /)
+		expect(updates).toHaveLength(0)
+	})
+
+	it("preserves an allow and releases the id when the closing update fails", async () => {
+		const { conn } = makeRecordingConnection({ outcome: "selected", optionId: "choice-0" })
+		vi.mocked(conn.sessionUpdate).mockRejectedValue(new Error("client disconnected"))
+		const release = vi.fn()
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated", undefined, release)
+
+		expect(await prompter.request(originReq)).toEqual({ kind: "allow-once" })
+		expect(release).toHaveBeenCalledWith("tc-1", "agent-1")
+	})
+
+	it.each([
+		{ name: "deny", outcome: { outcome: "selected", optionId: "choice-1" } },
+		{ name: "cancel", outcome: { outcome: "cancelled" } },
+	])("releases the id after $name", async ({ outcome }) => {
+		const { conn } = makeRecordingConnection(outcome)
+		const release = vi.fn()
+		const uiContext = { input: vi.fn(async () => "") } as never
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", uiContext, () => "acp-escalated", undefined, release)
+
+		await prompter.request(originReq)
+		expect(release).toHaveBeenCalledWith("tc-1", "agent-1")
+	})
+
+	it("releases the id when an in-flight prompt is aborted", async () => {
+		const controller = new AbortController()
+		const conn = {
+			requestPermission: vi.fn(async () => new Promise(() => {})),
+			sessionUpdate: vi.fn(async () => {}),
+		} as unknown as AgentSideConnection
+		const release = vi.fn()
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated", undefined, release)
+		const pending = prompter.request({ ...originReq, signal: controller.signal })
+		controller.abort()
+
+		expect(await pending).toEqual({ kind: "aborted" })
+		expect(release).toHaveBeenCalledWith("tc-1", "agent-1")
+	})
+
+	it("releases the id when the permission request rejects", async () => {
+		const conn = {
+			requestPermission: vi.fn(async () => {
+				throw new Error("request failed")
+			}),
+			sessionUpdate: vi.fn(async () => {}),
+		} as unknown as AgentSideConnection
+		const release = vi.fn()
+		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated", undefined, release)
+
+		await expect(prompter.request(originReq)).rejects.toThrow("request failed")
+		expect(release).toHaveBeenCalledWith("tc-1", "agent-1")
+	})
+
+	// The client never sees a tool_call stream for a subagent's call. Its card
+	// is closed by exactly one update on every way out of the request.
+	describe("closing the card", () => {
+		type Update = { sessionId: string; update: Record<string, unknown> }
+
+		function makeConnectionWith(requestPermission: () => Promise<unknown>) {
+			const updates: Update[] = []
+			const conn = {
+				requestPermission: vi.fn(requestPermission),
+				sessionUpdate: vi.fn(async (payload: Update) => {
+					updates.push(payload)
+				}),
+			} as unknown as AgentSideConnection
+			const closes = () => updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+			return { conn, closes }
+		}
+
+		const neverAnswered = () => new Promise<unknown>(() => {})
+
+		it("closes as failed when the permission request rejects", async () => {
+			const { conn, closes } = makeConnectionWith(async () => {
+				throw new Error("request failed")
+			})
+			const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated")
+
+			await expect(prompter.request(originReq)).rejects.toThrow("request failed")
+			expect(closes()).toHaveLength(1)
+			expect(closes()[0]?.update).toMatchObject({ toolCallId: "acp-escalated", status: "failed" })
+			expect(closes()[0]?.update.title).not.toContain(WITHDRAWN_BY_MODE_CHANGE_SUFFIX)
+		})
+
+		it("closes as failed when the client's answer cannot be read", async () => {
+			const { conn, closes } = makeConnectionWith(async () => ({}))
+			const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated")
+
+			await expect(prompter.request(originReq)).rejects.toThrow()
+			expect(closes()).toHaveLength(1)
+			expect(closes()[0]?.update).toMatchObject({ toolCallId: "acp-escalated", status: "failed" })
+		})
+
+		it("says so in the title when a mode change withdrew the card", async () => {
+			const { conn, closes } = makeConnectionWith(neverAnswered)
+			const controller = new AbortController()
+			const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated")
+			const pending = prompter.request({ ...originReq, signal: controller.signal })
+			controller.abort(MODE_CHANGED_ABORT_ERROR)
+
+			expect(await pending).toEqual({ kind: "aborted" })
+			expect(closes()).toHaveLength(1)
+			expect(closes()[0]?.update).toMatchObject({ toolCallId: "acp-escalated", status: "failed" })
+			expect(closes()[0]?.update.title).toMatch(/^Subagent General-Purpose: .* — withdrawn: permission mode changed$/)
+		})
+
+		it("keeps the plain title when the request ends for any other reason", async () => {
+			const { conn, closes } = makeConnectionWith(neverAnswered)
+			const controller = new AbortController()
+			const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated")
+			const pending = prompter.request({ ...originReq, signal: controller.signal })
+			controller.abort(new Error("permissions: subagent permission prompt timed out"))
+
+			expect(await pending).toEqual({ kind: "aborted" })
+			expect(closes()).toHaveLength(1)
+			expect(closes()[0]?.update).toMatchObject({ status: "failed" })
+			expect(closes()[0]?.update.title).not.toContain(WITHDRAWN_BY_MODE_CHANGE_SUFFIX)
+		})
+
+		it("keeps the plain title for a chosen 'No' whose feedback a mode change interrupted", async () => {
+			const { conn, closes } = makeConnectionWith(async () => ({
+				outcome: { outcome: "selected", optionId: "choice-1" },
+			}))
+			const controller = new AbortController()
+			const input = vi.fn(
+				(_title: string, _placeholder: string | undefined, opts?: { signal?: AbortSignal }) =>
+					new Promise<string | undefined>((resolve) => {
+						opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true })
+					}),
+			)
+			const prompter = createAcpPermissionPrompter(conn, "sess-1", { input } as never, () => "acp-escalated")
+			const pending = prompter.request({ ...originReq, signal: controller.signal })
+			await vi.waitFor(() => expect(input).toHaveBeenCalledOnce())
+			controller.abort(MODE_CHANGED_ABORT_ERROR)
+
+			// The user refused the call before the mode changed.
+			expect(await pending).toEqual({ kind: "deny" })
+			expect(closes()).toHaveLength(1)
+			expect(closes()[0]?.update).toMatchObject({ status: "failed" })
+			expect(closes()[0]?.update.title).not.toContain(WITHDRAWN_BY_MODE_CHANGE_SUFFIX)
+		})
+
+		it("sends no closing update for a request that was aborted before it was sent", async () => {
+			const { conn, closes } = makeConnectionWith(neverAnswered)
+			const controller = new AbortController()
+			controller.abort(MODE_CHANGED_ABORT_ERROR)
+			const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated")
+
+			expect(await prompter.request({ ...originReq, signal: controller.signal })).toEqual({ kind: "aborted" })
+			expect(conn.requestPermission).not.toHaveBeenCalled()
+			expect(closes()).toHaveLength(0)
+		})
 	})
 })

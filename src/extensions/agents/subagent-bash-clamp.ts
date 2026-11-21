@@ -151,7 +151,12 @@ function emitBashClamped(pi: ExtensionAPI, payload: SubagentBashClampedPayload):
  *                             event for attribution (matches subagent.spawned's
  *                             agent_type).
  */
-export function createSubagentBashClampExtension(maxDurationSeconds: number, startTimeMs: number, agentType?: string) {
+export function createSubagentBashClampExtension(
+	maxDurationSeconds: number,
+	startTimeMs: number,
+	agentType?: string,
+	getRemainingMs?: () => number,
+) {
 	return function subagentBashClampExtension(pi: ExtensionAPI): void {
 		/** Tool call ids of calls this run clamped — consumed by the
 		 *  tool_result annotation below. Per-run closure: concurrent
@@ -160,7 +165,7 @@ export function createSubagentBashClampExtension(maxDurationSeconds: number, sta
 
 		onSubagentBashCall(pi, (input, toolCallId) => {
 			const resolved = resolveBashTimeout(input)
-			const remainingMs = startTimeMs + maxDurationSeconds * 1000 - Date.now()
+			const remainingMs = getRemainingMs?.() ?? startTimeMs + maxDurationSeconds * 1000 - Date.now()
 			const remainingSeconds = Math.floor(remainingMs / 1000)
 			if (remainingSeconds <= 0) {
 				// Budget exhausted — the max_duration timer should already be

@@ -20,7 +20,13 @@ import { isResourceEnabled } from "../../../resources/store.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
-import { runAsAgentWorker } from "../../agent-worker-context.js"
+import {
+	getRegisteredWorkerParentSession,
+	registerWorkerParentSession,
+	runAsAgentWorker,
+	setAgentWorkerInactivityHold,
+	setAgentWorkerParentSessionId,
+} from "../../agent-worker-context.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { getEffectiveModel } from "../../auto-model/state.js"
@@ -48,6 +54,7 @@ import {
 	type WorkSegment,
 } from "../../work-attribution.js"
 import { detectEnv } from "../env.js"
+import { createInteractiveTimeBudget, type InteractiveTimeBudgetRef } from "../interactive-time-budget.js"
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import {
@@ -81,6 +88,9 @@ const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", 
 
 const WORKER_PERMISSIONS_EXTENSION_NAME = "kimchi-worker-permissions"
 const WORKER_PERMISSIONS_EXTENSION_PATH = `<inline:${WORKER_PERMISSIONS_EXTENSION_NAME}>`
+
+/** Per-session clock references stay alive for the session's inline factories across resumes. */
+const sessionTimeBudgets = new WeakMap<AgentSession, InteractiveTimeBudgetRef>()
 
 /** The native skill-loading tool name, appendable to a subagent's tool list
  *  when its skills config entails it. Not part of BUILTIN_TOOL_NAMES (which
@@ -283,6 +293,10 @@ export interface RunOptions {
 	/** Called on streaming text deltas from the assistant response. */
 	onTextDelta?: (delta: string, fullText: string) => void
 	onSessionCreated?: (session: AgentSession) => void
+	/** ID of this run as the manager tracks it — passed to the worker permission role. */
+	agentId?: string
+	/** Task description shown in escalated permission prompts. */
+	description?: string
 	/** Called at the end of each agentic turn with the cumulative count. */
 	onTurnEnd?: (turnCount: number) => void
 	/** Called once per assistant message_end with that message's usage delta. */
@@ -424,7 +438,11 @@ export async function runAgent(
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
-	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)))
+	// Per-run watchdog holds ride the async context, not process.env: parallel
+	// runs share the env, so anything a child reads from it can belong to a sibling.
+	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)), {
+		parentSessionId: ctx.sessionManager.getSessionId(),
+	})
 }
 
 async function runAgentInner(
@@ -512,6 +530,7 @@ ${skillLines}`
 	// front — without it, a time-based clamp firing later is unexplainable
 	// to the agent (see subagent-bash-clamp.ts).
 	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
+	const timeBudget = { budget: createInteractiveTimeBudget(effectiveMaxDuration, Date.now()) }
 	if (effectiveMaxTurns != null || effectiveTokenBudget != null || effectiveMaxDuration > 0) {
 		extras.budget = {
 			maxTurns: effectiveMaxTurns,
@@ -559,9 +578,12 @@ ${skillLines}`
 	const workerPermissionsExtension = createWorkerPermissionsExtension({
 		parentSessionId,
 		persona: agentConfig?.name ?? type,
+		agentId: options.agentId,
+		description: options.description ?? prompt.slice(0, 200),
 	})
 	const extensionFactories = buildInlineExtensionFactories({
 		effectiveMaxDuration,
+		timeBudget,
 		type,
 		parentSessionId,
 		workerPermissionsExtension,
@@ -682,6 +704,8 @@ ${skillLines}`
 	}
 
 	const { session } = await createAgentSession(sessionOpts)
+	registerWorkerParentSession(session, parentSessionId)
+	sessionTimeBudgets.set(session, timeBudget)
 
 	await session.bindExtensions({
 		onError: (err) => {
@@ -745,6 +769,26 @@ ${skillLines}`
 
 	const inactivity = { lastActivityAt: Date.now(), steered: false }
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	// Interactive waits (a permission prompt escalated to the parent) emit no
+	// session events, so the watchdog would steer then abort a worker that is
+	// legitimately waiting for a human. The gate takes this hold for the wait.
+	const inactivityHolds = { count: 0 }
+	setAgentWorkerInactivityHold({
+		acquire: () => {
+			const releaseTimeBudget = timeBudget.budget.pause()
+			inactivityHolds.count += 1
+			let released = false
+			return () => {
+				if (released) return
+				released = true
+				inactivityHolds.count -= 1
+				releaseTimeBudget()
+				// The wait was the activity: restart the clock, clear a pending steer.
+				inactivity.lastActivityAt = Date.now()
+				inactivity.steered = false
+			}
+		},
+	})
 
 	const PROGRESS_STEER_POINTS: { threshold: number; message: string }[] = [
 		{
@@ -874,6 +918,7 @@ ${skillLines}`
 	})
 
 	let inactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+		if (inactivityHolds.count > 0) return // interactive wait (e.g. escalated permission prompt)
 		const elapsed = Date.now() - inactivity.lastActivityAt
 		if (inactivity.steered && elapsed >= inactivityTimeout) {
 			aborted = true
@@ -891,13 +936,17 @@ ${skillLines}`
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
 
-	const durationTimer = effectiveMaxDuration
-		? setTimeout(() => {
-				aborted = true
-				abortReason = "max_duration"
-				hardAbort(session)
-			}, effectiveMaxDuration * 1000)
-		: undefined
+	// The worker's clock starts here. The budget object was created earlier
+	// because the prompt and the bash clamp need a reference to it, but
+	// building the loader and the session takes time that must not be charged
+	// to max_duration. No tool call has run yet, so nothing holds the old one.
+	timeBudget.budget.dispose()
+	timeBudget.budget = createInteractiveTimeBudget(effectiveMaxDuration, Date.now())
+	timeBudget.budget.setOnExpire(() => {
+		aborted = true
+		abortReason = "max_duration"
+		hardAbort(session)
+	})
 
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
@@ -928,7 +977,7 @@ ${skillLines}`
 		await session.prompt(effectivePrompt)
 	} finally {
 		cleanupInactivityInterval()
-		if (durationTimer) clearTimeout(durationTimer)
+		timeBudget.budget.dispose()
 		unsubTurns()
 		collector.unsubscribe()
 		cleanupAbort()
@@ -996,6 +1045,8 @@ ${skillLines}`
 export interface InlineExtensionFactoryDeps {
 	/** Resolved wall-clock budget in seconds; 0 = unlimited (default bash timeout instead of the clamp). */
 	effectiveMaxDuration: number
+	/** Shared run/resume clock used by the expiry timer and bash timeout clamp. */
+	timeBudget: InteractiveTimeBudgetRef
 	/** Subagent persona type — labels the bash clamp telemetry. */
 	type: SubagentType
 	/** Fully constructed worker gate, appended after every tool provider. */
@@ -1058,7 +1109,9 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 	// and use the plain default-timeout extension instead.
 	const bashExtension =
 		deps.effectiveMaxDuration > 0
-			? createSubagentBashClampExtension(deps.effectiveMaxDuration, Date.now(), deps.type)
+			? createSubagentBashClampExtension(deps.effectiveMaxDuration, Date.now(), deps.type, () =>
+					deps.timeBudget.budget.getRemainingMs(),
+				)
 			: subagentBashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
@@ -1158,6 +1211,8 @@ export async function resumeAgent(
 	// terminally (its lifecycle manager cannot reconnect). A resumed session is
 	// the same AgentSession object, so restart its extensions with a fresh
 	// session_start — reason "resume", matching pi's own resumption event.
+	const ownerSessionId = getRegisteredWorkerParentSession(session)
+	if (ownerSessionId) setAgentWorkerParentSessionId(ownerSessionId)
 	await session.extensionRunner?.emit({ type: "session_start", reason: "resume" })
 
 	const collector = collectResponseText(session)
@@ -1165,10 +1220,32 @@ export async function resumeAgent(
 
 	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
 	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	// Same interactive-wait hold as the fresh-run path: resumes also escalate
+	// permission prompts to the parent during a classifier outage.
+	const resumeInactivityHolds = { count: 0 }
+	setAgentWorkerInactivityHold({
+		acquire: () => {
+			const releaseTimeBudget = timeBudget.budget.pause()
+			resumeInactivityHolds.count += 1
+			let released = false
+			return () => {
+				if (released) return
+				released = true
+				resumeInactivityHolds.count -= 1
+				releaseTimeBudget()
+				resumeInactivity.lastActivityAt = Date.now()
+				resumeInactivity.steered = false
+			}
+		},
+	})
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
 	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
 	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined
 	const effectiveMaxDuration = options.maxDuration ?? DEFAULT_MAX_DURATION
+	const resumeTimeBudget = createInteractiveTimeBudget(effectiveMaxDuration, Date.now())
+	const timeBudget = sessionTimeBudgets.get(session) ?? { budget: resumeTimeBudget }
+	timeBudget.budget = resumeTimeBudget
+	sessionTimeBudgets.set(session, timeBudget)
 	const observedUsage: LifetimeUsage = getSessionUsage(session) ?? {
 		input: 0,
 		output: 0,
@@ -1263,6 +1340,7 @@ export async function resumeAgent(
 	})
 
 	let resumeInactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+		if (resumeInactivityHolds.count > 0) return // interactive wait (e.g. escalated permission prompt)
 		const elapsed = Date.now() - resumeInactivity.lastActivityAt
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			aborted = true
@@ -1279,19 +1357,17 @@ export async function resumeAgent(
 		resumeInactivityInterval = undefined
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupResumeInactivityInterval)
-	const durationTimer = effectiveMaxDuration
-		? setTimeout(() => {
-				aborted = true
-				abortReason = "max_duration"
-				hardAbort(session)
-			}, effectiveMaxDuration * 1000)
-		: undefined
+	resumeTimeBudget.setOnExpire(() => {
+		aborted = true
+		abortReason = "max_duration"
+		hardAbort(session)
+	})
 
 	try {
 		await session.prompt(prompt)
 	} finally {
 		cleanupResumeInactivityInterval()
-		if (durationTimer) clearTimeout(durationTimer)
+		resumeTimeBudget.dispose()
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()

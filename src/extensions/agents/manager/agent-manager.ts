@@ -10,6 +10,7 @@ import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { type AcpSessionCallbacks, AcpSessionDetachedError } from "../../../sandbox/worker/acp-client.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
+import { runAsAgentWorker } from "../../agent-worker-context.js"
 import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
@@ -344,6 +345,8 @@ export class AgentManager {
 					tokenBudget: options.tokenBudget,
 					inactivityTimeout: options.inactivityTimeout,
 					maxDuration: options.maxDuration,
+					agentId: record.id,
+					description: record.description,
 					workerReport: record.taskRef
 						? {
 								isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
@@ -849,6 +852,8 @@ export class AgentManager {
 	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id)
 		if (!record?.session) return undefined
+		// Hoisted: the runAsAgentWorker closure below would drop the narrowing.
+		const session = record.session
 		const purpose = options.purpose ?? "continuation"
 		if (this.getResumeBlockReason(id, purpose)) return record
 		const tierBudget = record.taskRef ? FERMENT_WORKER_BUDGETS[record.taskRef.budget_tier ?? "standard"] : undefined
@@ -900,33 +905,38 @@ export class AgentManager {
 			purpose === "finalize_report" && record.taskRef
 				? reportFinalizationPrompt(record.taskRef)
 				: withAgentReportProtocol(prompt ?? "", record.taskRef)
-		const resumePromise = resumeAgent(record.session, attemptPrompt, {
-			onToolActivity: (activity) => {
-				if (activity.status === "completed" || activity.status === "failed") record.toolUses++
-			},
-			onTurnEnd: (turnCount) => {
-				record.lastTurnCount = turnCount
-			},
-			onAssistantUsage: (usage) => {
-				addUsage(record.lifetimeUsage, usage)
-			},
-			onCompaction: (info) => {
-				record.compactionCount++
-				this.onCompact?.(record, info)
-			},
-			signal: abortController.signal,
-			maxTurns: attemptLimits.maxTurns,
-			tokenBudget: attemptTokenBudget,
-			minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
-			inactivityTimeout: options.inactivityTimeout,
-			maxDuration: attemptLimits.maxDuration,
-			hardTurnLimit: record.taskRef?.kind === "ferment_step",
-			shouldTerminateAfterTool: (toolName) =>
-				toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId,
-			onRuntimeCleanupRegistered: (cleanup) => {
-				this.runtimeCleanups.set(record, cleanup)
-			},
-		})
+		// Resume gets a fresh async store for its watchdog hold. The worker-session
+		// binding restores the retained parent ID for telemetry; prompt identity
+		// remains in the existing worker permission role.
+		const resumePromise = runAsAgentWorker(() =>
+			resumeAgent(session, attemptPrompt, {
+				onToolActivity: (activity) => {
+					if (activity.status === "completed" || activity.status === "failed") record.toolUses++
+				},
+				onTurnEnd: (turnCount) => {
+					record.lastTurnCount = turnCount
+				},
+				onAssistantUsage: (usage) => {
+					addUsage(record.lifetimeUsage, usage)
+				},
+				onCompaction: (info) => {
+					record.compactionCount++
+					this.onCompact?.(record, info)
+				},
+				signal: abortController.signal,
+				maxTurns: attemptLimits.maxTurns,
+				tokenBudget: attemptTokenBudget,
+				minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
+				inactivityTimeout: options.inactivityTimeout,
+				maxDuration: attemptLimits.maxDuration,
+				hardTurnLimit: record.taskRef?.kind === "ferment_step",
+				shouldTerminateAfterTool: (toolName) =>
+					toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId,
+				onRuntimeCleanupRegistered: (cleanup) => {
+					this.runtimeCleanups.set(record, cleanup)
+				},
+			}),
+		)
 		this.activeResumePromises.set(record, resumePromise)
 
 		try {

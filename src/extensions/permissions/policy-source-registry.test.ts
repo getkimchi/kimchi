@@ -20,6 +20,7 @@ function source(): PermissionPolicySource {
 			paths: {},
 		}),
 		isDangerBypass: () => false,
+		whenModeSettled: async () => {},
 	}
 }
 
