@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../resources/store.js"
 import { REVIEW_HANDOFF_TOOL_NAMES, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -215,12 +215,35 @@ function checkinListBlocks(scopes: readonly TodoScope[], sessionId: string, revi
 	return lines
 }
 
+/** One-line summary of a gate-blocked work call, for the re-issue reminder
+ *  the closing surface delivers: enough for the model to identify and
+ *  re-issue the swallowed call. Path-bearing tools name their target,
+ *  command-bearing tools their first line, others just the tool name. Both
+ *  are normalized to a single line and capped (path at 200 chars, the
+ *  convention the permissions prompts use; command at 80) so a model-authored
+ *  newline or oversized value cannot break the reminder format. A missing
+ *  input degrades to the bare tool name — like the `!toolName` guard above,
+ *  the handler never throws on a malformed event, so the block decision
+ *  itself cannot be lost. */
+function describeWorkToolCall(event: ToolCallEvent): string {
+	const input = (event.input ?? {}) as Record<string, unknown>
+	if (typeof input.path === "string" && input.path !== "") {
+		const path = input.path.split("\n")[0]?.trim() ?? ""
+		if (path !== "") return `${event.toolName}(${path.slice(0, 200)})`
+	}
+	if (typeof input.command === "string") {
+		const firstLine = input.command.split("\n")[0]?.trim() ?? ""
+		if (firstLine !== "") return `${event.toolName}(${firstLine.slice(0, 80)})`
+	}
+	return event.toolName
+}
+
 /** Block reason for work tools admitted while a check is pending. Carries
  *  the current instructions on every blocked call — without queuing
  *  repeated steer messages. */
 function checkinBlockReason(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
 	return [
-		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed.`,
+		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed. Blocked work calls are NOT executed and are never replayed — after reconciling or confirming, re-issue them (or their updated equivalents) yourself.`,
 		...checkinListBlocks(
 			pending.map((check) => check.scope),
 			sessionId,
@@ -611,8 +634,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		const pending = getPendingCheckins(sessionId)
 		if (pending.length === 0) return { block: false }
 		// Record the blocked call so transcript renderers can anchor the
-		// collapsed gate display on provenance tool output cannot forge.
-		recordGateBlockedToolCall(sessionId, event.toolCallId)
+		// collapsed gate display on provenance tool output cannot forge, and
+		// its one-line summary so the closing surface can remind the model to
+		// re-issue it — the gate never replays blocked calls itself.
+		recordGateBlockedToolCall(sessionId, event.toolCallId, describeWorkToolCall(event))
 		return { block: true, reason: checkinBlockReason(pending, sessionId, revision) }
 	})
 
