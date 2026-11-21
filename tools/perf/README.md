@@ -19,13 +19,14 @@ nondeterministically — the cgroup never misses. Wall clock is never gated,
 with the one deliberate exception of keystroke echo latency, gated as a
 coarse absolute detector (below).
 
-Three scenarios, one per shipped regression class:
+Four scenarios covering shipped regressions and heavy-install scaling:
 
 | scenario | fixture | gated metrics | catches |
 |---|---|---|---|
 | `session` | clean HOME, 2-turn TUI session with tools | work units, MB written, peak MB | per-turn blowups, write churn (v1.22) |
-| `resume` | 31 MB session, 12+ compactions, `--continue` | load/turn work units, peak MB | pre-compaction render cost (v1.11) |
-| `idle` | aged synthetic install (ledger + stuck reporting queue), 90 s idle | steady-state work units, MB read, peak helper concurrency, keystroke p95 | background work scaling with data (v1.10) |
+| `resume` | 31 MB session, 12+ compactions, `--continue` | load/turn work units, MB read, peak MB | pre-compaction render cost (v1.11) |
+| `idle` | aged synthetic install (ledger + stuck reporting queue), 90 s idle | work units, MB read/written, peak MB, keystroke p95 | background work scaling with data (v1.10) |
+| `ledger` | 1M work records in ~1,000 journals, 600k retained outbox events across three accounts, live appends to the largest journal, 180 s | work units, MB read/written, peak MB, keystroke p95 | full-history reconciliation, delivery-status aggregation, journal-prefix event-loop holds |
 
 The fake LLM server (`fakellm.py`) answers chat deterministically and
 rejects pr-cost snapshot uploads with HTTP 413 — the body-limit real
@@ -64,11 +65,14 @@ the first background pass and would dilute per-pass regressions).
 
 **Thresholds are calibrated, not chosen**: `pnpm run perf:budgets` sets
 each limit to `median x headroom` (byte/work counters), `max + 2`
-(`pids.peak`: exact discrete counts — a ratio on small integers would be
-noise-shaped), or a constant (`keylat max`, below). The historical
+or a constant (`keylat p95`, below). The historical
 regressions were 1.5–9x — far above the headrooms. The workflow can
 regenerate budgets on its actual runner via a calibrate dispatch; never
-hand-edit a failing limit away.
+hand-edit a failing limit away. A ledger profile carries
+`fixture_generation`, `source_sha` and `harness_sha`; comparison and
+calibration reject an unknown/mismatched generation or missing identity.
+Raising an existing limit additionally requires the explicit
+`--allow-budget-increase` review decision.
 
 **Keystroke echo latency** is the one wall-clock metric: during the idle
 window the harness types a character, times the first PTY bytes back (its
@@ -92,6 +96,8 @@ step summary.
 The current limits live in [budgets.json](budgets.json); its `_meta`
 records the arch/commit/runner/counter tier they were calibrated on.
 
+## Instructions per blocking pass
+
 ## Usage
 
 ```sh
@@ -104,8 +110,10 @@ pnpm run perf:selfcheck     # harness self-test: fixtures, validators, scenarios
 Run the selfcheck whenever you touch `fixtures.py`, `fakellm.py`,
 `sampler.py` or `scenarios.py`: it regenerates every fixture twice and
 asserts byte-identical output, runs the product's own validators over the
-aged fixture (`tools/perf/validate-fixture.ts`, needs bun), smoke-runs all
-three scenarios, and asserts the aged reporting queue actually engaged
+aged fixture (`tools/perf/validate-fixture.ts`, needs bun), smoke-runs
+every scenario — the ledger lane asserts the seeded records are
+imported and the additive indexes are present — and asserts the aged reporting
+queue actually engaged
 (its state file is rewritten when the 413-rejected pass applies backoff).
 The CI workflow runs it as its first step, before the timed scenarios.
 
@@ -119,12 +127,6 @@ Run one scenario by hand (results land in the given JSONL):
 ```sh
 python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario idle \
     --out runs.jsonl --reps 1 --idle 70
-```
-
-Classify recorded runs without re-running:
-
-```sh
-python3 tools/perf/gate.py --dry-run --runs runs.jsonl
 ```
 
 ## Budgets
@@ -147,10 +149,12 @@ needs its own budget set; the macOS backend is for local runs only.
 
 `fixtures.py` generates everything deterministically (seeded UUIDs, fixed
 epoch): the multi-compaction session, small git repositories, and an aged
-HOME — a synthetic ledger whose `work_records`, `costs` notes and frozen
-snapshot queues match the recorded shapes of a long-lived real install at
-CI scale (~18 MB ledger, ~1.4 MB reporting state). No real user data is
-copied; when the underlying schemas change
+HOME whose record bodies and bookkeeping match the product's stored shapes.
+The heavy ledger profile streams 1M records into bounded SQL batches across
+~1,000 journals, then adds 600k outbox events (~71% unacknowledged) across
+three pre-backed-off accounts. The first journal holds 2% of records and
+receives live appends, combining many small histories with a large active
+prefix. No real user data is copied; when the underlying schemas change
 (`src/extensions/pr-cost-reporting/ledger/schema.ts`, `queue.ts`
 `ReportingState`, `snapshot.ts` `SnapshotContent`), regenerate and review.
 

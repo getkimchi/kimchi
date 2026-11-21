@@ -1,9 +1,4 @@
-# Release-series backtest: re-measures any set of releases or commits with
-# the current harness (gated + advisory lanes) for the release-series report.
-# Dispatched on demand with the entries passed in the dispatch input — no
-# committed list, so nothing fires by accident. With calibrate=true the gate
-# also rewrites budgets.json from a fully green run and uploads it for
-# review; nothing is committed by CI.
+# Raw session sampling and the release-series backtest, dispatched on demand.
 name: Perf gate backtest
 
 on:
@@ -13,11 +8,11 @@ on:
         description: "Lines: SHA [LABEL] — the trees to measure"
         required: true
       reps:
-        description: "Reps per scenario"
+        description: "Reps per scenario or sampled session"
         default: "2"
         required: false
       calibrate:
-        description: "Rewrite budgets.json from this run (uploaded as an artifact for review)"
+        description: "Rewrite budgets.json from a fully green backtest (not a sample run)"
         default: "false"
         required: false
 
@@ -35,8 +30,6 @@ jobs:
       list: ${{ steps.split.outputs.list }}
     steps:
       - id: split
-        # One entry per line: "SHA [LABEL]". The optional label names the
-        # artifact, so the same SHA can appear several times (repeat jobs).
         env:
           ENTRIES: ${{ inputs.entries }}
         run: |
@@ -51,7 +44,9 @@ jobs:
   backtest:
     needs: shas
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    # Two full heavy-install reps generate and reconcile 1M work records
+    # plus 600k outbox events, in addition to the other gate lanes.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -62,17 +57,13 @@ jobs:
           ref: ${{ matrix.entry.sha }}
           fetch-depth: 0
 
-      - name: Overlay the gate harness from the PR head
-        # Only tools/perf (harness + budgets) comes from the PR head; the
-        # measured tree keeps its own package.json/lockfile/patches/proxy
-        # helper, so old code builds against its own dependencies — exactly
-        # what a PR diff touching nothing else would have compiled like.
+      - name: Overlay the measurement harness from the selected workflow ref
         env:
-          GATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SAMPLE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          git fetch --depth=1 origin "$GATE_SHA"
+          git fetch --depth=1 origin "$SAMPLE_SHA"
           git checkout FETCH_HEAD -- tools/perf
-          git status --short | head -20
+          git status --short | head -40
 
       - uses: ./.github/actions/setup
         with:
@@ -95,23 +86,26 @@ jobs:
         run: pnpm run build:binary
 
       - name: Run perf gate
-        # Direct python3 calls: old trees have no perf:* package scripts. With
-        # calibrate=true the gate rewrites tools/perf/budgets.json in the
-        # workspace from a fully green run — uploaded below for human review
-        # and commit; nothing is committed by CI.
+        env:
+          # Dispatch inputs never interpolate into the run shell: an expansion inside a run block
+          # is expanded by GitHub before bash parses it, so a crafted value breaks out of argv.
+          REPS: ${{ inputs.reps }}
+          CALIBRATE: ${{ inputs.calibrate }}
+          KIMCHI_PERF_SOURCE_SHA: ${{ matrix.entry.sha }}
+          KIMCHI_PERF_HARNESS_SHA: ${{ github.sha }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           python3 tools/perf/gate.py --selfcheck
-          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${{ inputs.reps || 2 }}" ${{ (inputs.calibrate == 'true') && '--calibrate' || '' }}
+          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${REPS:-2}" ${{ env.CALIBRATE == 'true' && '--calibrate' || '' }}
 
-      - name: Advisory lanes (healthy/fresh idle, large tool outputs store on vs off)
-        # Runs even when the gate step fails: old binaries miss today's budgets,
-        # and those are exactly the baselines these lanes need.
+      - name: Advisory lanes
         if: always()
+        env:
+          ADVISORY_REPS: ${{ inputs.reps }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           for sc in idle_healthy idle_fresh bigtools bigtools_off; do
-            python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario "$sc" --reps "${{ inputs.reps || 2 }}" --idle 90 \
+            python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario "$sc" --reps "${ADVISORY_REPS:-2}" --idle 90 \
               --out "$RUNNER_TEMP/perf-gate-runs/$sc.jsonl" --expect-version "$VERSION" || echo "$sc failed"
           done
 
@@ -130,4 +124,3 @@ jobs:
           name: budgets-${{ matrix.entry.label }}
           path: tools/perf/budgets.json
           if-no-files-found: ignore
-
