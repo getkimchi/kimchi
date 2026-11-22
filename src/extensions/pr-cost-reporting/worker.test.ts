@@ -486,7 +486,7 @@ describe("account-fenced reporting delivery", () => {
 		config.endpoint = "https://api.cast.ai"
 		await seedCoverageEvents(legacyKey, 400)
 		acceptEventBatches()
-		const statusCalls = vi.spyOn(outbox, "readOutboxStatus")
+		const statusCalls = vi.spyOn(outbox, "outboxDeliveryStatus")
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(eventUploads()).toHaveLength(4)
 		expect(statusCalls).toHaveBeenCalledTimes(1)
@@ -534,7 +534,7 @@ describe("account-fenced reporting delivery", () => {
 		config.endpoint = "https://api.cast.ai"
 		await seedCoverageEvents(currentKey, 400, [legacyKey, currentKey])
 		acceptEventBatches()
-		const statusCalls = vi.spyOn(outbox, "readOutboxStatus")
+		const statusCalls = vi.spyOn(outbox, "outboxDeliveryStatus")
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(eventUploads()).toHaveLength(4)
 		expect(statusCalls).toHaveBeenCalledTimes(1)
