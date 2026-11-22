@@ -28,7 +28,7 @@ import fixtures
 import signal
 import subprocess
 import unittest.mock
-from sampler import reap_process_tree
+from sampler import descendant_process_groups, reap_process_tree
 from scenarios import scenario_timeout
 import sys
 import tempfile
@@ -491,10 +491,12 @@ def run_scenarios(binary, scenarios, args, out_dir):
         driver = None
         try:
             driver = subprocess.Popen(cmd, start_new_session=True)
-            returncode = reap_process_tree(driver, scenario_timeout(sc, args.reps))
+            owned = {driver.pid}
+            owned.update(descendant_process_groups(driver.pid))
+            returncode = reap_process_tree(driver, scenario_timeout(sc, args.reps), owned)
         finally:
-            if driver is not None and driver.poll() is None:
-                reap_process_tree(driver, 0)
+            if driver is not None:
+                reap_process_tree(driver, 0, owned, force=True)
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
         records = load_runs(runs, out_dir)
@@ -679,8 +681,8 @@ def main():
         if empty:
             raise SystemExit(f"refusing to calibrate: no passing records for {', '.join(empty)}; "
                              "fix the scenario before regenerating budgets")
-        if args.reps < 2 or any(len(recs) != args.reps for recs in ok_by_scenario.values()):
-            raise SystemExit("refusing to calibrate: require at least two complete passing repetitions per scenario")
+        if args.reps != 2 or any(len(recs) != args.reps for recs in ok_by_scenario.values()):
+            raise SystemExit("refusing to calibrate: require exactly two complete passing repetitions per scenario")
         tiers = {r.get("counter") for recs in ok_by_scenario.values() for r in recs}
         if len(tiers) > 1:
             raise SystemExit(f"refusing to calibrate: runs mixed work-counter tiers {sorted(tiers)}; "

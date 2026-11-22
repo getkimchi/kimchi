@@ -35,7 +35,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fakellm  # noqa: E402
 import fixtures  # noqa: E402
-from sampler import GateCgroup, Pty, TreeSampler, delta, enable_child_subreaper, reap_process_tree, wait_zombie  # noqa: E402
+from sampler import GateCgroup, Pty, TreeSampler, delta, descendant_process_groups, enable_child_subreaper, reap_process_tree, wait_zombie  # noqa: E402
 
 
 def launch(env, cwd, argv, scenario, rep_tag="r", sampler_interval=0.2):
@@ -441,7 +441,7 @@ LEDGER_REMAINING_CACHE_VALIDATIONS = 4 * 90
 def scenario_timeout(scenario, reps):
     if scenario != "ledger":
         return 900
-    return LEDGER_WARM_LIMIT_S + reps * (LEDGER_READY_LIMIT_S + LEDGER_MEASUREMENT_S + LEDGER_REMAINING_CACHE_VALIDATIONS)
+    return LEDGER_WARM_LIMIT_S + LEDGER_READY_LIMIT_S + reps * (LEDGER_READY_LIMIT_S + LEDGER_MEASUREMENT_S + LEDGER_REMAINING_CACHE_VALIDATIONS)
 
 # One repository keeps repository-discovery noise stable while work-record,
 # journal, and outbox history reproduce the heavy-install cost drivers.
@@ -900,11 +900,8 @@ def cleanup(tp, pid, sampler, cg=None):
         pass
     if not sampler.stop_ev.is_set():
         sampler.stop()
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except OSError:
-        pass
-    tp.proc.wait()
+    groups = tp.owned_groups()
+    reap_process_tree(tp.proc, 0, groups, force=True)
     tp.close()
     if cg is not None:
         cg.close()
@@ -936,6 +933,7 @@ def warm_ledger(root, env, cwd, binary):
         fixtures.remap_warm_home(cache, env["HOME"])
         return {"cache_hit": True, "prepare_s": round(time.perf_counter() - started, 2)}
     tp, sampler, cg = launch(env, cwd, [binary, "--provider", "fake", "--model", "basic"], "ledger-warm")
+    root_closed = False
     try:
         if not wait_fixture_ready(tp, LEDGER_READY_LIMIT_S):
             raise RuntimeError("ledger warm-up did not reach an editor")
@@ -952,8 +950,9 @@ def warm_ledger(root, env, cwd, binary):
         try:
             tp.proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
-            tp.proc.kill()
-            tp.proc.wait(timeout=10)
+            reap_process_tree(tp.proc, 0, force=True)
+        cleanup(tp, tp.proc.pid, sampler, cg)
+        root_closed = True
         driver = subprocess.Popen(
             [shutil.which("bun"), os.path.join(os.path.dirname(__file__), "warm-billing.ts"),
              os.path.join(env["HOME"], ".config", "kimchi", "harness")],
@@ -961,16 +960,17 @@ def warm_ledger(root, env, cwd, binary):
             text=True, start_new_session=True,
         )
         try:
+            owned = {driver.pid}
+            owned.update(descendant_process_groups(driver.pid))
             remaining_s = max(1, int(deadline - time.time()))
-            returncode = reap_process_tree(driver, remaining_s)
+            returncode = reap_process_tree(driver, remaining_s, owned)
             if returncode:
                 kind = "timed out" if returncode == 124 else f"exit {returncode}"
                 raise RuntimeError(
                     f"production billing reconciliation failed ({kind}): {driver.stderr.read()[-1200:]}")
             native_output = driver.stdout.read()
         finally:
-            if driver.poll() is None:
-                reap_process_tree(driver, 0)
+            reap_process_tree(driver, 0, owned, force=True)
             driver.stdout.close()
             driver.stderr.close()
         native = json.loads(native_output)
@@ -988,7 +988,8 @@ def warm_ledger(root, env, cwd, binary):
         fixtures.remap_warm_home(env["HOME"], cache)
         fixtures.remap_warm_home(cache, env["HOME"])
     finally:
-        cleanup(tp, tp.proc.pid, sampler, cg)
+        if not root_closed:
+            cleanup(tp, tp.proc.pid, sampler, cg)
     return {"cache_hit": False, "warm_s": round(time.perf_counter() - started, 2), "health": health}
 
 
@@ -1209,6 +1210,8 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                         failures.append("ledger warm-up did not establish real steady-state projections")
                     if not fixtures.ledger_pricing_health(env["HOME"]).get("ready"):
                         failures.append("ledger warm-up did not publish priced billing evidence")
+                    pristine_home = os.path.join(root, "pristine-warm")
+                    fixtures.remap_warm_home(env["HOME"], pristine_home)
                     partial_home = os.path.join(root, "partial-home")
                     fixtures.remap_warm_home(env["HOME"], partial_home)
                     partial = subprocess.Popen([shutil.which("bun"), os.path.join(os.path.dirname(__file__), "warm-billing.ts"),
@@ -1274,6 +1277,9 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                         except ValueError as error:
                             if expected_fragment not in str(error):
                                 failures.append(f"wrong corruption diagnosis for {expected_fragment}: {error}")
+                    # All destructive admission and shape checks run only on copies.
+                    # Start the measured smoke scenario from the pristine warm state.
+                    fixtures.remap_warm_home(os.path.join(root, "pristine-warm"), env["HOME"])
                     continue
                 if not check_version(binary, env, cwd):
                     failures.append(f"{sc}: binary reports no version")

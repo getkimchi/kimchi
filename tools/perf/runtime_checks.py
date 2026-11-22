@@ -4,15 +4,13 @@ import os
 import signal
 import subprocess
 import sys
-import io
-import json
 import shutil
 import tempfile
 import time
 import unittest.mock
 from types import SimpleNamespace
 
-from sampler import reap_process_tree
+from sampler import descendant_process_groups, reap_process_tree
 
 
 def state(pid):
@@ -21,8 +19,8 @@ def state(pid):
     return result.stdout.strip()
 
 
-def check_independent_grandchild_session():
-    """A plain child must not hide its new-session descendant from cleanup."""
+def check_independent_grandchild_session(root_exits_first=False):
+    """Nested independent descendants survive neither early root exit nor timeout."""
     child_code = (
         "import subprocess, sys, time; "
         "child = subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]], "
@@ -59,7 +57,12 @@ def check_independent_grandchild_session():
             groups.append(os.getpgid(grandchild))
             assert groups[-1] == grandchild, "grandchild did not create an independent session"
             children = [child, grandchild]
-            assert reap_process_tree(proc, 1.5) == 124, "cleanup did not report a timeout"
+            owned = descendant_process_groups(proc.pid)
+            if root_exits_first:
+                proc.kill()
+                proc.wait(timeout=5)
+            result = reap_process_tree(proc, 0, owned, force=True) if root_exits_first else reap_process_tree(proc, 1.5)
+            assert result == 124, "cleanup did not report a timeout"
             for pid in children:
                 assert not state(pid) or state(pid).startswith("Z"), f"live process survived cleanup: {pid}"
         finally:
@@ -85,21 +88,24 @@ def check_gate_cancellation():
     import gate
     from calibration_checks import test_root
     class Driver:
-        pid = 0
+        pid = 99999999
         def poll(self):
             return None
     calls = []
-    def fake_reaper(_driver, timeout_s):
-        calls.append(timeout_s)
+    def fake_reaper(_driver, timeout_s, _owned_groups, **_kwargs):
+        calls.append((timeout_s, _kwargs.get("force", False)))
         if len(calls) == 1:
             assert callable(signal.getsignal(signal.SIGTERM)), "no cancellation handler installed"
-            os.kill(os.getpid(), signal.SIGTERM)
+            raise SystemExit("perf gate cancelled")
         return 0
     root, budget_path = test_root("ledger-heavy-v2")
     before = open(budget_path).read()
     old_handler = signal.getsignal(signal.SIGTERM)
+    real_popen = gate.subprocess.Popen
+    def fake_popen(argv, **kwargs):
+        return real_popen(argv, **kwargs) if argv[0] == "ps" else Driver()
     try:
-        with unittest.mock.patch.object(gate.subprocess, "Popen", return_value=Driver()), \
+        with unittest.mock.patch.object(gate.subprocess, "Popen", side_effect=fake_popen), \
                 unittest.mock.patch.object(gate, "reap_process_tree", side_effect=fake_reaper), \
                 unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable,
                                                         "--scenarios", "ledger", "--budgets", budget_path]):
@@ -109,60 +115,61 @@ def check_gate_cancellation():
                 assert str(error) == "perf gate cancelled", str(error)
             else:
                 raise AssertionError("cancellation did not escape the active driver wait")
-        assert calls == [gate.scenario_timeout("ledger", 2), 0], calls
+        assert len(calls) == 2, calls
+        assert calls[0] == (gate.scenario_timeout("ledger", 2), False), calls
+        assert calls[1] == (0, True), calls
         assert signal.getsignal(signal.SIGTERM) == old_handler, "signal handler was not restored"
         assert open(budget_path).read() == before
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def check_native_warm_cancellation():
-    import fixtures
+def _run_scenario(binary, output):
     import scenarios
-    calls = []
-    native_driver = SimpleNamespace(pid=1, poll=lambda: None,
-                                    stdout=io.StringIO(), stderr=io.StringIO())
-    def fake_reaper(_driver, timeout_s):
-        calls.append(timeout_s)
-        if len(calls) == 1:
-            os.kill(os.getpid(), signal.SIGTERM)
-            time.sleep(0.01)
-        return 0
-    process = SimpleNamespace(pid=1, wait=lambda timeout: 0, kill=lambda: None, poll=lambda: 0)
-    def fake_prepare(root, _scenario, _base, *_args, binary=None, **_kwargs):
-        env["KIMCHI_PERF_WARM"] = json.dumps(scenarios.warm_ledger(root, env, os.path.join(root, "work"), binary))
-        return env, os.path.join(root, "work")
-    tp = SimpleNamespace(proc=process, send=lambda _text: None, plain=lambda: "ready")
-    server = SimpleNamespace(shutdown=lambda: None, server_close=lambda: None)
+    sys.argv = ["scenarios.py", "--binary", binary, "--scenario", "ledger", "--out", output]
+    scenarios.main()
+
+
+def check_native_warm_cancellation():
+    """Cancel a real scenario after native warm-up starts and require a clean tree."""
+    import multiprocessing
     root = tempfile.mkdtemp(prefix="perf-warm-cancel-")
-    output = os.path.join(root, "ledger.jsonl")
-    env = {"HOME": os.path.join(root, "home"), "TMPDIR": os.path.join(root, "tmp"),
-           "KIMCHI_PERF_FIXTURE_GENERATION": fixtures.LEDGER_GENERATION,
-           "KIMCHI_REMOTE_ENDPOINT": "http://fixture.invalid"}
+    binary = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../dist/bin/kimchi"))
+    prior = os.environ.get("KIMCHI_PERF_LEDGER_RECORDS")
+    os.environ["KIMCHI_PERF_LEDGER_RECORDS"] = "2400"
+    process = multiprocessing.Process(target=_run_scenario, args=(binary, os.path.join(root, "result.jsonl")), daemon=True)
+    process.start()
     try:
-        with unittest.mock.patch.object(scenarios.fakellm, "start", return_value=(server, SimpleNamespace(), "http://fixture.invalid")), \
-                unittest.mock.patch.object(scenarios, "make_workdir", return_value=os.path.join(root, "work")), \
-                unittest.mock.patch.object(scenarios, "prepare", side_effect=fake_prepare), \
-                unittest.mock.patch.object(scenarios, "check_version", return_value="fixture"), \
-                unittest.mock.patch.object(scenarios, "launch", return_value=(tp, None, None)), \
-                unittest.mock.patch.object(scenarios.subprocess, "run", return_value=SimpleNamespace(stdout="git fixture")), \
-                unittest.mock.patch.object(scenarios, "wait_fixture_ready", return_value="ready"), \
-                unittest.mock.patch.object(fixtures, "ledger_projection_health", return_value={"ready": True}), \
-                unittest.mock.patch.object(scenarios.subprocess, "Popen", return_value=native_driver), \
-                unittest.mock.patch.object(scenarios, "reap_process_tree", side_effect=fake_reaper), \
-                unittest.mock.patch.object(scenarios, "cleanup"), \
-                unittest.mock.patch.object(sys, "argv", ["scenarios.py", "--binary", sys.executable,
-                                                        "--scenario", "ledger", "--out", output]):
-            try:
-                scenarios.main()
-            except SystemExit as error:
-                assert error.code == 1, error.code
-            else:
-                raise AssertionError("SIGTERM did not interrupt native warming")
-        assert len(calls) == 2 and calls[-1] == 0, calls
-        assert native_driver.stdout.closed and native_driver.stderr.closed
+        deadline = time.monotonic() + 180
+        while True:
+            waves = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True).splitlines()
+            if any("/tmp/kimchi-realistic-fixture/tools/perf/warm-billing.ts" in row for row in waves):
+                break
+            assert process.exitcode is None, f"scenario exited before native warming: {process.exitcode}"
+            assert time.monotonic() < deadline, "native warming did not start in time"
+            time.sleep(0.1)
+        os.kill(process.pid, signal.SIGTERM)
+        process.join(timeout=30)
+        assert not process.is_alive(), "scenario did not stop after SIGTERM"
+        assert process.exitcode == 1, process.exitcode
+        survivors = []
+        for row in subprocess.check_output(["ps", "-axo", "pid=,stat=,command="], text=True).splitlines():
+            _, stat, command = row.strip().split(None, 2)
+            argv = command.split()
+            app = bool(argv and argv[0] == binary)
+            native = bool(argv and argv[0].endswith("/bun") and len(argv) > 1 and argv[1].endswith("warm-billing.ts"))
+            if (app or native) and not stat.startswith("Z"):
+                survivors.append({"stat": stat, "argv0": argv[0], "script": argv[1] if len(argv) > 1 else None})
+        assert not survivors, survivors
     finally:
+        if process.is_alive():
+            os.kill(process.pid, signal.SIGKILL)
+            process.join(timeout=10)
         shutil.rmtree(root, ignore_errors=True)
+        if prior is None:
+            os.environ.pop("KIMCHI_PERF_LEDGER_RECORDS", None)
+        else:
+            os.environ["KIMCHI_PERF_LEDGER_RECORDS"] = prior
 
 
 def check_linux_subreaper_contract():
@@ -180,7 +187,7 @@ def check_linux_subreaper_contract():
 
 def check_timeout_composition():
     import gate
-    assert gate.scenario_timeout("ledger", 2) == 2460, gate.scenario_timeout("ledger", 2)
+    assert gate.scenario_timeout("ledger", 2) == 2700, gate.scenario_timeout("ledger", 2)
     assert gate.scenario_timeout("session", 2) == 900
     expected_growth = gate.scenario_timeout("ledger", 3) - gate.scenario_timeout("ledger", 2)
     assert expected_growth == 780, expected_growth
@@ -188,6 +195,7 @@ def check_timeout_composition():
 
 if __name__ == "__main__":
     check_independent_grandchild_session()
+    check_independent_grandchild_session(root_exits_first=True)
     check_timeout_composition()
     check_linux_subreaper_contract()
     check_gate_cancellation()

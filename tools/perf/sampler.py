@@ -249,23 +249,45 @@ def descendant_process_groups(root_pid):
     return groups
 
 
-def reap_process_tree(proc, timeout_s):
-    """Terminate an owned timed-out process tree, then reap its driver."""
+def reap_process_tree(proc, timeout_s, owned_groups=(), force=False):
+    """Wait, or terminate an owned tree, including independent sessions.
+
+    Capture ownership before waiting, freeze the owned groups, then rescan
+    before killing so sessions created during cleanup are included. Never
+    kill the caller's own process group.
+    """
+    groups = set(owned_groups)
     try:
-        return proc.wait(timeout=timeout_s)
+        if not force:
+            return proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        groups = descendant_process_groups(proc.pid)
-        caller_pgid = os.getpgid(0)
+        pass
+    groups.update(descendant_process_groups(proc.pid))
+    caller_pgid = os.getpgid(0)
+    if proc.poll() is None:
         for group in groups:
             if group == caller_pgid:
                 continue
             try:
-                os.killpg(group, signal.SIGKILL)
-            except ProcessLookupError:
+                os.killpg(group, signal.SIGSTOP)
+            except (ProcessLookupError, PermissionError):
+                # The group may have disappeared as its root exited.
                 pass
+    # No owned child can fork after this point, so include sessions
+    # created between the first snapshot and freezing the tree.
+    groups.update(descendant_process_groups(proc.pid))
+    for group in groups:
+        if group == caller_pgid:
+            continue
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            # Likewise, a teardown can race a root's exit.
+            pass
+    if proc.poll() is None:
         proc.kill()
-        proc.wait(timeout=10)
-        return 124
+    proc.wait(timeout=10)
+    return 124
 
 
 class GateCgroup:
@@ -588,6 +610,7 @@ class Pty:
         self.proc = subprocess.Popen(argv, env=env, cwd=cwd, stdin=slave, stdout=slave, stderr=slave,
                                      start_new_session=True, close_fds=True)
         os.close(slave)
+        self.group_ids = {self.proc.pid}
         self.buf = bytearray()
         self.lock = threading.Lock()
         self.alive = True
@@ -616,6 +639,10 @@ class Pty:
                     os.write(self.master, b"\x1b[?62;22c")
             except OSError:
                 break
+
+    def owned_groups(self):
+        self.group_ids.update(descendant_process_groups(self.proc.pid))
+        return set(self.group_ids)
 
     def plain(self):
         with self.lock:

@@ -145,13 +145,19 @@ def check_cases():
 
     root, budget_path = test_root(fixtures.LEDGER_GENERATION)
     expect_rejection_without_write(lambda: invoke(sys.executable, budget_path, [base_record("ledger")], reps=1),
-                                   budget_path, "at least two complete passing repetitions")
+                                   budget_path, "exactly two complete passing repetitions")
+    shutil.rmtree(root, ignore_errors=True)
+    root, budget_path = test_root(fixtures.LEDGER_GENERATION)
+    records = [base_record("ledger") for _ in range(3)]
+    expect_rejection_without_write(lambda: invoke(sys.executable, budget_path, records, reps=3, scenarios="ledger"),
+                                   budget_path, "exactly two complete passing repetitions")
     shutil.rmtree(root, ignore_errors=True)
 
     root, budget_path = test_root(fixtures.LEDGER_GENERATION)
-    first = records[-1]
+    records = [base_record("ledger"), base_record("ledger")]
+    records[-1] = copy.deepcopy(records[-1])
     records[-1]["source_sha"] = "different-source"
-    expect_rejection_without_write(lambda: invoke(sys.executable, budget_path, records), budget_path, "inconsistent source_sha")
+    expect_rejection_without_write(lambda: invoke(sys.executable, budget_path, records, scenarios="ledger"), budget_path, "inconsistent source_sha")
     root, budget_path = test_root(fixtures.LEDGER_GENERATION)
     with open(budget_path) as f:
         old = json.load(f)
