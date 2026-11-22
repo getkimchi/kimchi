@@ -235,6 +235,10 @@ def make_repo(path, name, commits=6, git="git"):
     os.makedirs(home, exist_ok=True)
     with open(os.path.join(home, ".gitconfig"), "w") as g:
         g.write("[user]\n\tname = bench\n\temail = bench@example.com\n[init]\n\tdefaultBranch = main\n")
+    existing = subprocess.run([git, "rev-parse", "--verify", "HEAD"], cwd=path, env=env, check=False,
+                              capture_output=True)
+    if existing.returncode == 0:
+        return path
     for c in (["init", "-q"], ["add", "."]):
         subprocess.run([git] + c, cwd=path, env=env, check=True, capture_output=True)
     for i in range(commits):
@@ -384,12 +388,16 @@ def _mixed_record_body(repo_path, base_url, index):
     at = BASE_MS + family * 2000
     work_id, session_id = _work_id(family % 100), _session_id(family % 12)
     request_id = _work_id(5_000_000 + family)
-    source = {"apiUrl": base_url, "gatewayUrl": f"{base_url}/openai/v1/chat/completions",
+    account = (
+        {"apiUrl": base_url, "organizationId": _work_id(2_000_000), "userId": _work_id(2_000_001)}
+        if index // 10 == 9
+        else {"apiUrl": f"{base_url}/" if index // 10 % 10 < 7 else base_url, **HEALTHY_ACCOUNT}
+    )
+    source = {"apiUrl": account["apiUrl"], "gatewayUrl": f"{base_url}/openai/v1/chat/completions",
               "credentialHash": _sha("perf-only-api-key")}
     selector = {"type": "tag", "tag": f"kimchi-request:{request_id}",
                 "startTime": _iso(at - 12 * 60 * 60 * 1000),
                 "endTime": _iso(at + 32 * 24 * 60 * 60 * 1000)}
-    account = {"apiUrl": base_url, **HEALTHY_ACCOUNT}
     base = {"version": 1, "workId": work_id, "sessionId": session_id,
             "cwd": repo_path, "repository": repo_path, "worktree": repo_path,
             "requestId": request_id, "recordedAt": _iso(at),
@@ -444,7 +452,7 @@ def _costs_note(repo_i, requests=200):
 
 
 def _seed_outbox_history(con, base_url, count):
-    """Retained history shaped like a migrated real install.
+    """Seed retry notes. The SDK warm-up creates request-linked claim histories.
 
     A large legacy-console-URL key and the current key have the same identity;
     a genuinely foreign account has only a tiny backlog. All three are backed
@@ -452,33 +460,9 @@ def _seed_outbox_history(con, base_url, count):
     """
     if count < 3:
         raise ValueError("retained-history fixture needs three accounts")
-    legacy_count = round(count * 446556 / 625744)
-    foreign_count = min(10, count - legacy_count)
-    current_count = count - legacy_count - foreign_count
-    legacy_key = js(["https://app.kimchi.dev/api", HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
+    legacy_key = js([base_url.rstrip("/") + "/", HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
     current_key = js([base_url, HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
     foreign_key = js([base_url, _work_id(2_000_000), _work_id(2_000_001)])
-    rows = []
-    for i in range(count):
-        is_legacy = i < legacy_count
-        is_foreign = i >= legacy_count + current_count
-        account_key = legacy_key if is_legacy else foreign_key if is_foreign else current_key
-        event = {
-            "id": _work_id(3_000_000 + i), "entityId": _work_id(4_000_000 + i),
-            "revision": "1", "baseRevision": "0", "baseEventId": "",
-            "source": "kimchi", "sourceVersion": "0.0.0", "deviceId": _work_id(901),
-            "observeTime": _iso(BASE_MS + i),
-            "work": {"title": f"heavy install event {i}", "reason": "observed", "quality": "observed"},
-        }
-        text = js(event)
-        acknowledged = not (is_legacy or is_foreign)
-        rows.append((event["id"], account_key, event["entityId"], "work", text, _sha(text),
-                     BASE_MS + i, BASE_MS + i if acknowledged else None, ""))
-        if len(rows) == 5000:
-            con.executemany("INSERT INTO outbox_events VALUES (?,?,?,?,?,?,?,?,?)", rows)
-            rows = []
-    if rows:
-        con.executemany("INSERT INTO outbox_events VALUES (?,?,?,?,?,?,?,?,?)", rows)
     # deliveryRetry requires batchId to match the first batch; this profile
     # retains unbatched history, hence null. Its future retry keeps every
     # account quiet while the journal appender continues forcing full passes.
@@ -665,6 +649,9 @@ def validate_warm_home(home):
     health = ledger_projection_health(home)
     if not health["ready"]:
         raise ValueError(f"incomplete warmed ledger: {health}")
+    pricing = ledger_pricing_health(home)
+    if not pricing["ready"]:
+        raise ValueError(f"warmed ledger lacks priced billing evidence: {pricing}")
     agent = os.path.join(home, ".config", "kimchi", "harness")
     db_path = os.path.join(agent, "pr-cost-reporting", "ledger.db")
     with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:

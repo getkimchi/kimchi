@@ -35,7 +35,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fakellm  # noqa: E402
 import fixtures  # noqa: E402
-from sampler import GateCgroup, Pty, TreeSampler, delta, wait_zombie  # noqa: E402
+from sampler import GateCgroup, Pty, TreeSampler, delta, reap_process_tree, wait_zombie  # noqa: E402
 
 
 def launch(env, cwd, argv, scenario, rep_tag="r", sampler_interval=0.2):
@@ -56,15 +56,19 @@ READY_MARKERS = ["ask anything or type / for commands", "ask anything", "type / 
 def wait_fixture_ready(tp, timeout_s):
     """Trust only this disposable checkout, if asked, then wait for its editor."""
     deadline = time.time() + timeout_s
+    trusted_session = False
     while time.time() < deadline:
         text = tp.plain()
         marker = next((needle for needle in READY_MARKERS if needle in text), None)
         if marker is not None:
             return marker
-        if all(needle in text for needle in ("Trust parent folder", "Trust (this session only)", "Do not trust")):
+        if not trusted_session and all(needle in text for needle in ("Trust parent folder", "Trust (this session only)", "Do not trust")):
+            trusted_session = True
             tp.send("\x1b[B")
             tp.send("\r")
-            return "session-trust"
+            # Choosing this session's trust does not mean the editor is ready.
+            # Continue until its real marker, exit, or the bounded deadline.
+            continue
         if tp.proc.poll() is not None and not tp.t.is_alive():
             return None
         time.sleep(0.05)
@@ -122,6 +126,9 @@ def child_env(home, base_url, tmpdir, binary=None):
         "KIMCHI_PERMISSIONS": "yolo", "KIMCHI_NO_UPDATE_CHECK": "1", "KIMCHI_REMOTE_RUN": "0",
         "KIMCHI_REMOTE_ENDPOINT": base_url, "KIMCHI_PARENT_SESSION_ID": "",
     }
+    for key in ("KIMCHI_PERF_SOURCE_SHA", "KIMCHI_PERF_HARNESS_SHA"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
     if binary:
         # release trees carry share/kimchi next to bin/; older builds need it via PI_PACKAGE_DIR
         pkg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(binary))), "share", "kimchi")
@@ -134,13 +141,16 @@ def make_workdir(root):
     """A working repo: files + one commit, like a fresh clone."""
     wd = os.path.join(root, "work")
     os.makedirs(wd, exist_ok=True)
+    env = {"PATH": "/usr/bin:/bin", "HOME": root, "GIT_CONFIG_NOSYSTEM": "1"}
+    if subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=wd, env=env, check=False,
+                      capture_output=True).returncode == 0:
+        return wd
     with open(os.path.join(wd, "big.txt"), "w") as f:
         for i in range(1500):
             f.write(f"line {i}: lorem ipsum dolor sit amet consectetur adipiscing elit\n")
     for i in range(30):
         with open(os.path.join(wd, f"mod{i}.ts"), "w") as f:
             f.write(f"export const v{i} = {i}\n")
-    env = {"PATH": "/usr/bin:/bin", "HOME": root, "GIT_CONFIG_NOSYSTEM": "1"}
     os.makedirs(root, exist_ok=True)
     with open(os.path.join(root, ".gitconfig"), "w") as g:
         g.write("[user]\n\tname = bench\n\temail = bench@example.com\n[init]\n\tdefaultBranch = main\n")
@@ -179,6 +189,10 @@ def check_version(binary, env, cwd):
 # ---------------------------------------------------------------- scenarios
 def run_session(binary, env, cwd, srv_state, idle_s=10):
     """Clean TUI session with two turns (one with tools). Gate: disk_w, instr."""
+    # Enter-to-message-entry timing. Older binaries without the instrument do
+    # not write this file and the classifier deliberately skips that lane.
+    marks_path = os.path.join(env["HOME"], "submit-timing.jsonl")
+    env["KIMCHI_SUBMIT_TIMING"] = marks_path
     argv = [binary, "--provider", "fake", "--model", "basic"]
     tp, sampler, cg = launch(env, cwd, argv, "session")
     pid = tp.proc.pid
@@ -297,6 +311,27 @@ def run_session(binary, env, cwd, srv_state, idle_s=10):
                     tot["main"][k] = final[k]
         res["total"] = flatten_total(tot)
         res["counter"] = counter_tier(tot)
+        res["submit_timing"] = False
+        try:
+            with open(marks_path, encoding="utf-8") as fh:
+                marks = [json.loads(line) for line in fh if line.strip()]
+        except OSError:
+            marks = []
+        if marks:
+            res["submit_timing"] = True
+            lat, pending = [], None
+            for mark in marks:
+                if mark.get("event") == "submit.input":
+                    pending = mark["t"]
+                elif mark.get("event") == "message.entryStart" and mark.get("role") == "user" and pending is not None:
+                    lat.append(mark["t"] - pending)
+                    pending = None
+            if lat:
+                res["submit_echo_ms"] = lat
+                res["submit_echo_max_ms"] = max(lat)
+            else:
+                res["ok"] = False
+                res["error"] = "submit-timing marks present but no user-entry samples"
     finally:
         cleanup(tp, pid, sampler, cg)
     res["home_bytes"] = home_footprint(env["HOME"])
@@ -879,6 +914,10 @@ def warm_ledger(root, env, cwd, binary):
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 digest.update(chunk)
     digest.update(env["KIMCHI_PERF_FIXTURE_GENERATION"].encode())
+    # Reuse only the state built for this working tree and service identity.
+    # Different job roots must not inherit rep0 repository/API references.
+    digest.update(os.path.realpath(cwd).encode())
+    digest.update(env["KIMCHI_REMOTE_ENDPOINT"].encode())
     cache = os.path.join(os.path.dirname(root), f"warm-{digest.hexdigest()[:20]}", "home")
     started = time.perf_counter()
     if os.path.isdir(cache):
@@ -903,14 +942,28 @@ def warm_ledger(root, env, cwd, binary):
         except subprocess.TimeoutExpired:
             tp.proc.kill()
             tp.proc.wait(timeout=10)
-        result = subprocess.run(
+        driver = subprocess.Popen(
             [shutil.which("bun"), os.path.join(os.path.dirname(__file__), "warm-billing.ts"),
              os.path.join(env["HOME"], ".config", "kimchi", "harness")],
-            env=env, cwd=env["HOME"], capture_output=True, text=True,
-            timeout=max(1, int(deadline - time.time())),
+            env=env, cwd=env["HOME"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"production billing reconciliation failed: {result.stderr[-1200:]}")
+        try:
+            remaining_ms = max(1, int(deadline - time.time()))
+            returncode = reap_process_tree(driver, remaining_ms)
+            if returncode:
+                kind = "timed out" if returncode == 124 else f"exit {returncode}"
+                raise RuntimeError(
+                    f"production billing reconciliation failed ({kind}): {driver.stderr.read()[-1200:]}")
+            native_output = driver.stdout.read()
+        finally:
+            driver.stdout.close()
+            driver.stderr.close()
+        native = json.loads(native_output)
+        if not native.get("ok") or native.get("events_written", 0) < 6 or native.get("claims_verified", 0) < 3:
+            raise RuntimeError(f"native warm-up did not produce linked claim evidence: {native}")
+        health["native"] = native
+        health["outbox_history"] = fixtures.ledger_shape(env["HOME"])
         health["pricing"] = fixtures.ledger_pricing_health(env["HOME"])
         if not health["pricing"].get("ready"):
             raise RuntimeError(f"reconciliation produced no saved priced evidence: {health}")
@@ -934,7 +987,8 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
         fixtures.aged_home(home, base_url, repos)
         wd = make_workdir(os.path.join(root, "wdroot"))
     elif scenario == "ledger":
-        repos = [os.path.join(root, "repos", f"repo{i}") for i in range(LEDGER_REPOS)]
+        project_root = os.path.dirname(root)
+        repos = [os.path.join(project_root, "repos", f"repo{i}") for i in range(LEDGER_REPOS)]
         for i, r in enumerate(repos):
             fixtures.make_repo(r, f"repo{i}", commits=4 + i % 3)
         records = ledger_records_from_env() or LEDGER_RECORDS
@@ -945,7 +999,7 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
         journals = min(LEDGER_JOURNALS, max(1, records // LEDGER_JOURNALS))
         fixtures.aged_home(home, base_url, repos, filler_per_repo=filler,
                            journal_count=journals, outbox_event_count=outbox_events)
-        wd = make_workdir(os.path.join(root, "wdroot"))
+        wd = make_workdir(os.path.join(project_root, "wdroot"))
     else:
         fixtures.seed_clean_home(home, base_url)
         wd = make_workdir(os.path.join(root, "wdroot"))
@@ -979,6 +1033,31 @@ def selfcheck(binary, session_mb=2, idle_s=20):
     root = tempfile.mkdtemp(prefix="kperf-selfcheck-")
     failures = []
     home = None
+    class TrustTP:
+        def __init__(self, delayed_editor):
+            self.delayed_editor = delayed_editor
+            self.editor = False
+            self.sent = []
+            self.proc = type("Proc", (), {"poll": lambda self: None})()
+            self.t = type("Reader", (), {"is_alive": lambda self: True})()
+        def plain(self):
+            if self.editor:
+                return READY_MARKERS[0]
+            return "Trust parent folder; Trust (this session only); Do not trust"
+        def send(self, data):
+            self.sent.append(data)
+            if data == "\r" and self.delayed_editor:
+                self.editor = True
+    ready_tp = TrustTP(True)
+    if wait_fixture_ready(ready_tp, 1) != READY_MARKERS[0]:
+        failures.append("readiness: session-trust selection returned before editor readiness")
+    stuck_tp = TrustTP(False)
+    if wait_fixture_ready(stuck_tp, 0.07) is not None:
+        failures.append("readiness: trust without an editor was accepted")
+    for tp in (ready_tp, stuck_tp):
+        if tp.sent != ["\x1b[B", "\r"]:
+            failures.append(f"readiness: unexpected trust responses {tp.sent}")
+
     class SilentTP:
         class _Proc:
             def poll(self):
@@ -1046,8 +1125,9 @@ def selfcheck(binary, session_mb=2, idle_s=20):
             heavy_shapes.append(fixtures.ledger_shape(home))
         if heavy_shas[0] != heavy_shas[1]:
             failures.append("heavy ledger profile not deterministic across regenerations")
-        expected_shape = {"work_records": 1000, "outbox_events": 600,
-                          "outbox_pending": 438, "outbox_accounts": 3, "journals": 2}
+        # Warm-up creates linked claim events through production APIs; the
+        # Python seed supplies only records, journals, and retry notes.
+        expected_shape = {"work_records": 1000, "outbox_events": 0, "journals": 2}
         for key, value in expected_shape.items():
             if heavy_shapes[0].get(key) != value:
                 failures.append(f"heavy ledger {key}: expected {value}, got {heavy_shapes[0].get(key)}")
@@ -1089,31 +1169,19 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                 if sc == "ledger":
                     seeded_ledger_shape = fixtures.ledger_shape(env["HOME"])
                     # Warming through a real session creates its current work record.
-                    smoke_shape = {"work_records": 2401, "outbox_events": 1440,
-                                   "outbox_accounts": 3, "journals": 2}
+                    smoke_shape = {"work_records": 2401, "journals": 2}
                     for key, value in smoke_shape.items():
                         if seeded_ledger_shape.get(key) != value:
                             failures.append(f"ledger seed {key}: expected {value}, got {seeded_ledger_shape.get(key)}")
-                    with sqlite3.connect(os.path.join(
-                            env["HOME"], ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")) as con:
-                        rows = con.execute(
-                            "SELECT account_key, acked_at IS NULL, COUNT(*) FROM outbox_events "
-                            "WHERE created_at <= ? GROUP BY 1, 2", (fixtures.BASE_MS + 1440,)).fetchall()
-                    accounts = {}
-                    for key, pending, number in rows:
-                        fields = json.loads(key)
-                        form = ("legacy" if fields[0] == "https://app.kimchi.dev/api"
-                                else "foreign" if fields[1] != fixtures.HEALTHY_ACCOUNT["organizationId"] else "current")
-                        accounts[(form, bool(pending))] = number
-                        if form in ("legacy", "current") and fields[1:] != [
-                                fixtures.HEALTHY_ACCOUNT["organizationId"], fixtures.HEALTHY_ACCOUNT["userId"]]:
-                            failures.append("legacy/current outbox keys do not preserve the same identity")
-                    legacy_count = round(1440 * 446556 / 625744)
-                    expected = {("legacy", True): legacy_count,
-                                ("current", False): 1440 - legacy_count - 10,
-                                ("foreign", True): 10}
-                    if accounts != expected:
-                        failures.append(f"migrated outbox distribution: expected {expected}, got {accounts}")
+                    native = json.loads(env["KIMCHI_PERF_WARM"]).get("health", {}).get("native", {})
+                    if native.get("events_written", 0) < 6:
+                        failures.append("warm-up did not create request-linked claim history")
+                    if seeded_ledger_shape.get("outbox_events", 0) < native.get("events_written", 0):
+                        failures.append("warmed outbox count does not include native linked history")
+                    if seeded_ledger_shape.get("outbox_pending", 0) <= 0:
+                        failures.append("warmed outbox lacks retained pending history")
+                    if native.get("claims_verified", 0) < 3:
+                        failures.append("warm-up did not verify distributed request claims")
                     if not fixtures.ledger_projection_health(env["HOME"]).get("ready"):
                         failures.append("ledger warm-up did not establish real steady-state projections")
                     if not fixtures.ledger_pricing_health(env["HOME"]).get("ready"):

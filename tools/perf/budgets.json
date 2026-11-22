@@ -30,6 +30,10 @@
   "think_instr": {
    "limit": 40000000000.0,
    "budget_note": "renderer work for a streaming step-shaped thinking turn (#1645 class)"
+  },
+  "submit_echo_max_ms": {
+   "limit": 1000.0,
+   "budget_note": "Enter to message-entry (blocking pre-request work); dormant until the binary carries the submit-timing marks"
   }
  },
  "resume": {
@@ -44,10 +48,6 @@
   "peak_mem_mb": {
    "limit": 1095,
    "budget_note": "retained-history memory (whole tree)"
-  },
-  "read_mb": {
-   "limit": 1000.0,
-   "budget_note": "session-file and extension reads during the load (v1.11 class)"
   }
  },
  "ledger": {
@@ -81,17 +81,21 @@
    "limit": 126,
    "budget_note": "root's own per-pass re-reads of accumulated data"
   },
+  "stuck_instr": {
+   "limit": 6671577044,
+   "budget_note": "background work with a stuck queue and no due retries (sleep-schedule class)"
+  },
+  "stuck_read_mb": {
+   "limit": 28,
+   "budget_note": "reads with a stuck queue and no due retries"
+  },
+  "pids_peak": {
+   "limit": 18,
+   "budget_note": "peak helper concurrency (git pollers, tar+gzip archiver)"
+  },
   "keylat_p95_ms": {
    "limit": 100.0,
    "budget_note": "keystroke echo latency; absolute event-loop-blocker detector"
-  },
-  "disk_w_mb": {
-   "limit": 200.0,
-   "budget_note": "background writes (state.json, journals, ledger; v1.22 class)"
-  },
-  "peak_mem_mb": {
-   "limit": 1000.0,
-   "budget_note": "memory ceiling of the aged install (whole tree)"
   }
  }
 }

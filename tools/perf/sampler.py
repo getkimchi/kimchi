@@ -222,6 +222,44 @@ def tree(pid):
     return out
 
 
+def descendant_process_groups(root_pid):
+    """Owned process-group IDs, including children that created a new session."""
+    output = subprocess.run(["ps", "-axo", "pid=,pgid=,ppid="], capture_output=True, text=True).stdout
+    children = {}
+    for line in output.splitlines():
+        pid, pgid, parent = map(int, line.split())
+        children.setdefault(parent, []).append((pid, pgid))
+    groups, pending = set(), [root_pid]
+    while pending:
+        parent = pending.pop()
+        try:
+            groups.add(os.getpgid(parent))
+        except ProcessLookupError:
+            continue
+        for child_pid, _child_pgid in children.pop(parent, []):
+            pending.append(child_pid)
+    return groups
+
+
+def reap_process_tree(proc, timeout_s):
+    """Terminate an owned timed-out process tree, then reap its driver."""
+    try:
+        return proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        groups = descendant_process_groups(proc.pid)
+        caller_pgid = os.getpgid(0)
+        for group in groups:
+            if group == caller_pgid:
+                continue
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        proc.kill()
+        proc.wait(timeout=10)
+        return 124
+
+
 class GateCgroup:
     """A cgroup v2 containing exactly the measured process tree.
 
