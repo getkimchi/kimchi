@@ -32,7 +32,6 @@ import {
 	observeEvents,
 	outboxDeliveryStatus,
 	pendingBatch,
-	readOutboxStatus,
 } from "./ledger/outbox.js"
 import { backendFor, type OutboxBatch, type RecordBackend, type StoredRecord } from "./ledger/records.js"
 import { preludeStretch } from "./prelude.js"
