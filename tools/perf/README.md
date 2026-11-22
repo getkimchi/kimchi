@@ -150,11 +150,22 @@ needs its own budget set; the macOS backend is for local runs only.
 `fixtures.py` generates everything deterministically (seeded UUIDs, fixed
 epoch): the multi-compaction session, small git repositories, and an aged
 HOME whose record bodies and bookkeeping match the product's stored shapes.
-The heavy ledger profile streams 1M records into bounded SQL batches across
-~1,000 journals, then adds 600k outbox events (~71% unacknowledged) across
-three pre-backed-off accounts. The first journal holds 2% of records and
-receives live appends, combining many small histories with a large active
-prefix. No real user data is copied; when the underlying schemas change
+The heavy ledger profile streams about 1.1M records into bounded SQL batches
+across ~1,000 journals. The real application completes projections and cursors,
+then exits. A separate native warm-up uses actual `buildEvents`/
+`observeEvents`/frozen-ACK functions to produce about 600k events linked to
+actual request/billing/test evidence. Current history is acknowledged, one
+legacy batch is acknowledged, and the larger legacy backlog plus a small
+foreign-account backlog remain pending (about 70% overall). A later actual
+response must advance a request claim to revision 2 without forking it.
+
+Warm-home reuse is scoped by executable, harness source, repository/worktree,
+API endpoint, and fixture generation. Every copy must have complete projections
+and cursors, priced evidence, an exact summary of the seeded request sequence
+and outbox counts, and three resolved production `effectiveClaim` reads.
+Incomplete or differently shaped caches fail closed. The first journal holds 2%
+of records and receives live appends, combining many small histories with a
+large active prefix. No real user data is copied; when the underlying schemas change
 (`src/extensions/pr-cost-reporting/ledger/schema.ts`, `queue.ts`
 `ReportingState`, `snapshot.ts` `SnapshotContent`), regenerate and review.
 

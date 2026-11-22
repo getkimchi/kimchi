@@ -427,7 +427,9 @@ IDLE_VARIANTS = ("idle_healthy", "idle_fresh")
 # actively appended prefix, rather than a million-record monolith. This is a
 # deliberately new measurement generation; its budgets are calibrated on the
 # same fixture, not carried forward from the former 100k-record lane.
-LEDGER_RECORDS = 1_000_000
+# Account for actual producer output: ~600k mixed events, not six synthetic
+# request claims per request, with 100k-plus real linked requests.
+LEDGER_RECORDS = 1_110_000
 LEDGER_OUTBOX_EVENTS = 600_000
 LEDGER_JOURNALS = 1_000
 
@@ -949,21 +951,27 @@ def warm_ledger(root, env, cwd, binary):
             text=True, start_new_session=True,
         )
         try:
-            remaining_ms = max(1, int(deadline - time.time()))
-            returncode = reap_process_tree(driver, remaining_ms)
+            remaining_s = max(1, int(deadline - time.time()))
+            returncode = reap_process_tree(driver, remaining_s)
             if returncode:
                 kind = "timed out" if returncode == 124 else f"exit {returncode}"
                 raise RuntimeError(
                     f"production billing reconciliation failed ({kind}): {driver.stderr.read()[-1200:]}")
             native_output = driver.stdout.read()
         finally:
+            if driver.poll() is None:
+                reap_process_tree(driver, 0)
             driver.stdout.close()
             driver.stderr.close()
         native = json.loads(native_output)
-        if not native.get("ok") or native.get("events_written", 0) < 6 or native.get("claims_verified", 0) < 3:
-            raise RuntimeError(f"native warm-up did not produce linked claim evidence: {native}")
+        expected_requests = int(env["KIMCHI_PERF_EXPECTED_REQUEST_COUNT"])
+        if (not native.get("ok") or native.get("requests") != expected_requests or
+                native.get("claims_verified") != 3 or native.get("events_written", 0) <= 0):
+            raise RuntimeError(f"native warm-up did not produce the expected request history: {native}")
         health["native"] = native
         health["outbox_history"] = fixtures.ledger_shape(env["HOME"])
+        if health["outbox_history"].get("outbox_accounts") != 3 or health["outbox_history"].get("outbox_pending", 0) <= 0:
+            raise RuntimeError(f"warm-up did not produce all three expected retained-account queues: {health}")
         health["pricing"] = fixtures.ledger_pricing_health(env["HOME"])
         if not health["pricing"].get("ready"):
             raise RuntimeError(f"reconciliation produced no saved priced evidence: {health}")
@@ -999,6 +1007,7 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
         journals = min(LEDGER_JOURNALS, max(1, records // LEDGER_JOURNALS))
         fixtures.aged_home(home, base_url, repos, filler_per_repo=filler,
                            journal_count=journals, outbox_event_count=outbox_events)
+        expected_requests = (fixtures.ledger_shape(home) or {}).get("work_records", 0) // 10
         wd = make_workdir(os.path.join(project_root, "wdroot"))
     else:
         fixtures.seed_clean_home(home, base_url)
@@ -1012,6 +1021,7 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
             write_bigtools_files(wd)
     env = child_env(home, base_url, tmpdir, binary)
     if scenario == "ledger":
+        env["KIMCHI_PERF_EXPECTED_REQUEST_COUNT"] = str(expected_requests)
         env["KIMCHI_PERF_FIXTURE_GENERATION"] = (
             fixtures.LEDGER_GENERATION if records == LEDGER_RECORDS
             else f"ledger-heavy-scaled:{records}:{journals}:{outbox_events}" )
@@ -1169,7 +1179,10 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                 if sc == "ledger":
                     seeded_ledger_shape = fixtures.ledger_shape(env["HOME"])
                     # Warming through a real session creates its current work record.
-                    smoke_shape = {"work_records": 2401, "journals": 2}
+                    # One app-created work record plus one real observation used
+                    # to prove the producer's next claim revision.
+                    smoke_shape = {"work_records": int(os.environ["KIMCHI_PERF_LEDGER_RECORDS"]) + 2,
+                                   "journals": 2}
                     for key, value in smoke_shape.items():
                         if seeded_ledger_shape.get(key) != value:
                             failures.append(f"ledger seed {key}: expected {value}, got {seeded_ledger_shape.get(key)}")
@@ -1198,6 +1211,28 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                     except ValueError:
                         pass
                     shutil.rmtree(corrupt, ignore_errors=True)
+                    summary_path = os.path.join(env["HOME"], ".config", "kimchi", "harness", "warm-summary.json")
+                    os.rename(summary_path, summary_path + ".valid")
+                    try:
+                        fixtures.validate_warm_home(env["HOME"])
+                        failures.append("a warm home without native history summary was accepted")
+                    except ValueError:
+                        pass
+                    os.rename(summary_path + ".valid", summary_path)
+                    for sql, expected_fragment in (("DELETE FROM outbox_events", "outbox_events"),
+                                                   ("DELETE FROM work_records WHERE rowid = (SELECT rowid FROM work_records WHERE type = 'request' LIMIT 1)",
+                                                    "expected_requests")):
+                        with sqlite3.connect(os.path.join(env["HOME"], ".config", "kimchi", "harness",
+                                                            "pr-cost-reporting", "ledger.db")) as con:
+                            con.execute(sql)
+                            con.commit()
+                        try:
+                            fixtures.validate_warm_home(env["HOME"])
+                            failures.append(f"corrupt native history was accepted: {expected_fragment}")
+                        except ValueError as error:
+                            if expected_fragment not in str(error):
+                                failures.append(f"wrong corruption diagnosis for {expected_fragment}: {error}")
+                    continue
                 if not check_version(binary, env, cwd):
                     failures.append(f"{sc}: binary reports no version")
                     continue

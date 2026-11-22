@@ -59,11 +59,12 @@ def test_root(generation):
     return root, path
 
 
-def invoke(binary, budget_path, records):
+def invoke(binary, budget_path, records, reps=2):
     groups = {}
     for record in records:
         groups.setdefault(record["scenario"], []).append(record)
-    with unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", binary, "--calibrate", "--budgets", budget_path]), \
+    with unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", binary, "--calibrate", "--budgets", budget_path,
+                                               "--reps", str(reps)]), \
             unittest.mock.patch.object(gate, "run_scenarios", return_value=(groups, set())):
         gate.main()
 
@@ -99,6 +100,22 @@ def check_cases():
         expect_rejection_without_write(lambda: gate.main(), budget_path, "unsupported ledger budget generation")
     shutil.rmtree(root, ignore_errors=True)
 
+    root, budget_path = test_root(fixtures.LEDGER_GENERATION)
+    scaled = base_record("ledger")
+    scaled["fixture_generation"] = "ledger-heavy-scaled:2400:2:1440"
+    with unittest.mock.patch.object(gate, "run_scenarios", return_value=({"ledger": [scaled]}, set())), \
+            unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable,
+                                                    "--scenarios", "ledger", "--budgets", budget_path]):
+        expect_rejection_without_write(lambda: gate.main(), budget_path, "ledger generation mismatch")
+    anonymous = base_record("ledger")
+    anonymous.pop("source_sha")
+    anonymous_path = os.path.join(root, "anonymous.jsonl")
+    with open(anonymous_path, "w") as f:
+        f.write(json.dumps(anonymous) + "\n")
+    with unittest.mock.patch.object(sys, "argv", ["gate.py", "--dry-run", "--runs", anonymous_path, "--budgets", budget_path]):
+        expect_rejection_without_write(lambda: gate.main(), budget_path, "missing measurement identity: source_sha")
+    shutil.rmtree(root, ignore_errors=True)
+
     root, budget_path = test_root("previous-generation")
     records = []
     for scenario in gate.EXTRACTORS:
@@ -110,7 +127,10 @@ def check_cases():
     expect_rejection_without_write(lambda: invoke(sys.executable, budget_path, records), budget_path, "failed its guards")
     if json.load(open(budget_path)) != before:
         raise AssertionError("budget-failing source rewrote budgets")
-    records = [base_record(scenario) for scenario in gate.EXTRACTORS]
+    records = []
+    for scenario in gate.EXTRACTORS:
+        root_record = base_record(scenario)
+        records.extend([root_record, copy.deepcopy(root_record)])
     invoke(sys.executable, budget_path, records)
     changed = json.load(open(budget_path))
     if changed["_meta"]["ledger_generation"] != fixtures.LEDGER_GENERATION:
@@ -121,10 +141,13 @@ def check_cases():
     shutil.rmtree(root, ignore_errors=True)
 
     root, budget_path = test_root(fixtures.LEDGER_GENERATION)
+    expect_rejection_without_write(lambda: invoke(sys.executable, budget_path, [base_record("ledger")], reps=1),
+                                   budget_path, "at least two complete passing repetitions")
+    shutil.rmtree(root, ignore_errors=True)
+
+    root, budget_path = test_root(fixtures.LEDGER_GENERATION)
     first = records[-1]
-    records.append(copy.deepcopy(first))
     records[-1]["source_sha"] = "different-source"
-    records.append(copy.deepcopy(records[-1]))
     expect_rejection_without_write(lambda: invoke(sys.executable, budget_path, records), budget_path, "inconsistent source_sha")
     shutil.rmtree(root, ignore_errors=True)
     print("calibration checks OK: generation failures and preservation are verified")

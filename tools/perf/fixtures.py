@@ -390,8 +390,8 @@ def _mixed_record_body(repo_path, base_url, index):
     request_id = _work_id(5_000_000 + family)
     account = (
         {"apiUrl": base_url, "organizationId": _work_id(2_000_000), "userId": _work_id(2_000_001)}
-        if index // 10 == 9
-        else {"apiUrl": f"{base_url}/" if index // 10 % 10 < 7 else base_url, **HEALTHY_ACCOUNT}
+        if family % 10 == 9
+        else {"apiUrl": "https://app.kimchi.dev/api" if family % 10 < 7 else base_url, **HEALTHY_ACCOUNT}
     )
     source = {"apiUrl": account["apiUrl"], "gatewayUrl": f"{base_url}/openai/v1/chat/completions",
               "credentialHash": _sha("perf-only-api-key")}
@@ -406,7 +406,7 @@ def _mixed_record_body(repo_path, base_url, index):
         return {**base, "type": "request", "startedAt": _iso(at),
                 "summary": " ".join(f"word{n}" for n in range(140))}
     if slot == 1:
-        return {**base, "type": "request_dispatch", "dispatchedAt": _iso(at),
+        return {**base, "type": "request_dispatch", "startedAt": _iso(at), "dispatchedAt": _iso(at),
                 "billingSource": source, "billingSelector": selector}
     if slot in (2, 4):
         return {**base, "type": "request_response", "billingSource": source,
@@ -416,18 +416,23 @@ def _mixed_record_body(repo_path, base_url, index):
         return {**base, "type": "request_cost", "billingSource": source, "billingSelector": selector,
                 "billingRows": ([{"id": _work_id(6_000_000 + family), "costUsd": "0.000100000"}] if priced else []),
                 "billingLookup": {"status": "priced" if priced else "pending", "checkedAt": _iso(at),
-                                    **HEALTHY_ACCOUNT}}
+                                    "organizationId": account["organizationId"], "userId": account["userId"]}}
+    tool_call_id = f"tool-call-{family}"
     if slot in (5, 8):
-        body = _tool_execution_body(repo_path, index)
-        return {**body, "requestId": request_id, "workId": work_id, "sessionId": session_id}
+        path = f"src/module-{family % 30}.ts"
+        return {**base, "type": "tool_execution", "toolCallId": tool_call_id,
+                "toolName": "edit" if slot == 5 else "read", "outcome": "completed",
+                "durationMs": 12.75, "args": {"path": path}, "result": {"content": "fixture result"}}
     if slot == 6:
         body = _commit_body(repo_path, index)
-        return {**body, "workId": work_id, "sessionId": session_id}
+        return {**body, "workId": work_id, "sessionId": session_id, "requestId": request_id}
     if slot == 7:
         body = _work_receipt_body(repo_path, family, at)
-        return {**body, "workId": work_id, "sessionId": session_id}
-    body = _transition_body(repo_path, index)
-    return {**body, "workId": work_id, "sessionId": session_id}
+        return {**body, "workId": work_id, "sessionId": session_id, "requestId": request_id}
+    return {**base, "type": "file_transition", "transitionId": f"transition-{family}",
+            "toolCallId": tool_call_id, "path": f"src/module-{family % 30}.ts",
+            "before": {"blob": f"{family:040d}", "mode": "100644"},
+            "after": {"blob": f"{family + 1:040d}", "mode": "100644"}}
 
 
 def _costs_note(repo_i, requests=200):
@@ -654,8 +659,38 @@ def validate_warm_home(home):
         raise ValueError(f"warmed ledger lacks priced billing evidence: {pricing}")
     agent = os.path.join(home, ".config", "kimchi", "harness")
     db_path = os.path.join(agent, "pr-cost-reporting", "ledger.db")
+    try:
+        with open(os.path.join(agent, "warm-summary.json")) as handle:
+            summary = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"missing or invalid warm summary: {error}") from error
+    if not isinstance(summary, dict) or not isinstance(summary.get("expected_requests"), int) or summary["expected_requests"] < 3:
+        raise ValueError("warm summary lacks a valid expected request count")
     with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
         cursors = con.execute("SELECT path, offset FROM journal_cursor").fetchall()
+        for key, sql in (("expected_requests", "SELECT COUNT(*) FROM work_records WHERE type = 'request'"),
+                         ("outbox_events", "SELECT COUNT(*) FROM outbox_events"),
+                         ("outbox_pending", "SELECT COUNT(*) FROM outbox_events WHERE acked_at IS NULL"),
+                         ("outbox_accounts", "SELECT COUNT(DISTINCT account_key) FROM outbox_events")):
+            actual = con.execute(sql).fetchone()[0]
+            if not isinstance(summary.get(key), int) or summary[key] != actual:
+                raise ValueError(f"warmed {key}: summary={summary.get(key)!r}, database={actual}")
+    from sampler import reap_process_tree
+    driver = subprocess.Popen([shutil.which("bun"), os.path.join(os.path.dirname(__file__), "warm-billing.ts"),
+                               agent, "--verify-claims"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+    try:
+        code = reap_process_tree(driver, 90)
+        if code:
+            raise ValueError(f"cached claim verification failed ({code}): {driver.stderr.read()[-600:]}")
+        claims = json.loads(driver.stdout.read())
+        if not claims.get("ok") or claims.get("claims_verified") != 3:
+            raise ValueError(f"cached linked-claim verification failed: {claims}")
+    finally:
+        if driver.poll() is None:
+            reap_process_tree(driver, 0)
+        driver.stdout.close()
+        driver.stderr.close()
     for path, offset in cursors:
         if not os.path.isfile(path):
             raise ValueError("warmed ledger has a cursor for a missing journal")

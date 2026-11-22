@@ -4,8 +4,13 @@ import os
 import signal
 import subprocess
 import sys
+import io
+import json
+import shutil
 import tempfile
 import time
+import unittest.mock
+from types import SimpleNamespace
 
 from sampler import reap_process_tree
 
@@ -76,6 +81,92 @@ def check_independent_grandchild_session():
             proc.wait(timeout=5)
 
 
+def check_gate_cancellation():
+    import gate
+    from calibration_checks import test_root
+    class Driver:
+        pid = 0
+        def poll(self):
+            return None
+    calls = []
+    def fake_reaper(_driver, timeout_s):
+        calls.append(timeout_s)
+        if len(calls) == 1:
+            assert callable(signal.getsignal(signal.SIGTERM)), "no cancellation handler installed"
+            os.kill(os.getpid(), signal.SIGTERM)
+        return 0
+    root, budget_path = test_root("ledger-heavy-v2")
+    before = open(budget_path).read()
+    old_handler = signal.getsignal(signal.SIGTERM)
+    try:
+        with unittest.mock.patch.object(gate.subprocess, "Popen", return_value=Driver()), \
+                unittest.mock.patch.object(gate, "reap_process_tree", side_effect=fake_reaper), \
+                unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable,
+                                                        "--scenarios", "ledger", "--budgets", budget_path]):
+            try:
+                gate.main()
+            except SystemExit as error:
+                assert str(error) == "perf gate cancelled", str(error)
+            else:
+                raise AssertionError("cancellation did not escape the active driver wait")
+        assert calls == [900, 0], calls
+        assert signal.getsignal(signal.SIGTERM) == old_handler, "signal handler was not restored"
+        assert open(budget_path).read() == before
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def check_native_warm_cancellation():
+    import fixtures
+    import scenarios
+    calls = []
+    native_driver = SimpleNamespace(pid=1, poll=lambda: None,
+                                    stdout=io.StringIO(), stderr=io.StringIO())
+    def fake_reaper(_driver, timeout_s):
+        calls.append(timeout_s)
+        if len(calls) == 1:
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.01)
+        return 0
+    process = SimpleNamespace(pid=1, wait=lambda timeout: 0, kill=lambda: None, poll=lambda: 0)
+    def fake_prepare(root, _scenario, _base, *_args, binary=None, **_kwargs):
+        env["KIMCHI_PERF_WARM"] = json.dumps(scenarios.warm_ledger(root, env, os.path.join(root, "work"), binary))
+        return env, os.path.join(root, "work")
+    tp = SimpleNamespace(proc=process, send=lambda _text: None, plain=lambda: "ready")
+    server = SimpleNamespace(shutdown=lambda: None, server_close=lambda: None)
+    root = tempfile.mkdtemp(prefix="perf-warm-cancel-")
+    output = os.path.join(root, "ledger.jsonl")
+    env = {"HOME": os.path.join(root, "home"), "TMPDIR": os.path.join(root, "tmp"),
+           "KIMCHI_PERF_FIXTURE_GENERATION": fixtures.LEDGER_GENERATION,
+           "KIMCHI_REMOTE_ENDPOINT": "http://fixture.invalid"}
+    try:
+        with unittest.mock.patch.object(scenarios.fakellm, "start", return_value=(server, SimpleNamespace(), "http://fixture.invalid")), \
+                unittest.mock.patch.object(scenarios, "make_workdir", return_value=os.path.join(root, "work")), \
+                unittest.mock.patch.object(scenarios, "prepare", side_effect=fake_prepare), \
+                unittest.mock.patch.object(scenarios, "check_version", return_value="fixture"), \
+                unittest.mock.patch.object(scenarios, "launch", return_value=(tp, None, None)), \
+                unittest.mock.patch.object(scenarios.subprocess, "run", return_value=SimpleNamespace(stdout="git fixture")), \
+                unittest.mock.patch.object(scenarios, "wait_fixture_ready", return_value="ready"), \
+                unittest.mock.patch.object(fixtures, "ledger_projection_health", return_value={"ready": True}), \
+                unittest.mock.patch.object(scenarios.subprocess, "Popen", return_value=native_driver), \
+                unittest.mock.patch.object(scenarios, "reap_process_tree", side_effect=fake_reaper), \
+                unittest.mock.patch.object(scenarios, "cleanup"), \
+                unittest.mock.patch.object(sys, "argv", ["scenarios.py", "--binary", sys.executable,
+                                                        "--scenario", "ledger", "--out", output]):
+            try:
+                scenarios.main()
+            except SystemExit as error:
+                assert error.code == 1, error.code
+            else:
+                raise AssertionError("SIGTERM did not interrupt native warming")
+        assert len(calls) == 2 and calls[-1] == 0, calls
+        assert native_driver.stdout.closed and native_driver.stderr.closed
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
     check_independent_grandchild_session()
-    print("runtime checks OK: nested independent child sessions are reaped on timeout")
+    check_gate_cancellation()
+    check_native_warm_cancellation()
+    print("runtime checks OK: nested child sessions, gate, and native cancellation are reaped")

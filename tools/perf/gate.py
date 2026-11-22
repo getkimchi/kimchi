@@ -25,6 +25,7 @@ import re
 import shutil
 import statistics
 import fixtures
+import signal
 import subprocess
 import unittest.mock
 from sampler import reap_process_tree
@@ -196,6 +197,19 @@ def generation_mismatch(records, budgets):
     for record in records:
         if record["scenario"] == "ledger" and record.get("fixture_generation") != expected:
             return f"ledger generation mismatch: record {record.get('fixture_generation')!r}, budgets {expected!r}"
+    return None
+
+
+def measurement_identity_mismatch(records):
+    """Identity required on every comparison, not just on budget authoring."""
+    for record in records:
+        missing = [key for key in ("fixture_generation", "source_sha", "harness_sha")
+                   if not record.get(key)]
+        if missing:
+            return f"missing measurement identity: {', '.join(missing)}"
+    for key in ("source_sha", "harness_sha"):
+        if any(record.get(key) != records[0].get(key) for record in records):
+            return f"inconsistent {key} across reps"
     return None
 
 
@@ -467,8 +481,21 @@ def run_scenarios(binary, scenarios, args, out_dir):
         if args.expect_version:
             cmd += ["--expect-version", args.expect_version]
         print(f"[gate] {sc}: {' '.join(cmd)}", flush=True)
-        driver = subprocess.Popen(cmd, start_new_session=True)
-        returncode = reap_process_tree(driver, 900)
+        def cancel(signum, _frame):
+            signal.signal(signum, signal.SIG_DFL)
+            raise SystemExit("perf gate cancelled")
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+        for sig in previous:
+            signal.signal(sig, cancel)
+        driver = None
+        try:
+            driver = subprocess.Popen(cmd, start_new_session=True)
+            returncode = reap_process_tree(driver, 900)
+        finally:
+            if driver is not None and driver.poll() is None:
+                reap_process_tree(driver, 0)
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
         records = load_runs(runs, out_dir)
         if returncode != 0 or any(not r.get("ok", False) for r in records):
             failed.add(sc)
@@ -560,7 +587,10 @@ def main():
                 records += load_runs(f, None)
         budgets = json.load(open(args.budgets))
         if "ledger" in scenarios:
-            mismatch = generation_mismatch(records, budgets)
+            ledger_records = [r for r in records if r.get("scenario") == "ledger"]
+            mismatch = generation_mismatch(ledger_records, budgets)
+            if mismatch is None and ledger_records:
+                mismatch = measurement_identity_mismatch(ledger_records)
             if mismatch is not None:
                 raise SystemExit(mismatch)
         expected_tier = budgets.get("_meta", {}).get("counter")
@@ -611,6 +641,12 @@ def main():
         if mismatch is not None:
             raise SystemExit(mismatch)
     by_scenario, failed_scenarios = run_scenarios(binary, scenarios, args, out_dir)
+    if "ledger" in scenarios and not args.calibrate and by_scenario.get("ledger"):
+        mismatch = generation_mismatch(by_scenario["ledger"], json.load(open(args.budgets)))
+        if mismatch is None:
+            mismatch = measurement_identity_mismatch(by_scenario["ledger"])
+        if mismatch is not None:
+            raise SystemExit(mismatch)
 
     ctx = {}
     versions = set()
@@ -642,6 +678,8 @@ def main():
         if empty:
             raise SystemExit(f"refusing to calibrate: no passing records for {', '.join(empty)}; "
                              "fix the scenario before regenerating budgets")
+        if args.reps < 2 or any(len(recs) != args.reps for recs in ok_by_scenario.values()):
+            raise SystemExit("refusing to calibrate: require at least two complete passing repetitions per scenario")
         tiers = {r.get("counter") for recs in ok_by_scenario.values() for r in recs}
         if len(tiers) > 1:
             raise SystemExit(f"refusing to calibrate: runs mixed work-counter tiers {sorted(tiers)}; "
@@ -658,16 +696,14 @@ def main():
                     raise SystemExit(f"refusing to calibrate because the exact source failed its guards: {sc}: {failures}")
         budgets = {"_meta": _meta(ctx.get("version", "?"), ctx.get("git", "?"), args.reps)}
         budgets["_meta"]["counter"] = sorted(tiers)[0]
-        ledger_record = (by_scenario["ledger"][0] if "ledger" in by_scenario else {})
-        missing_identity = [key for key in ("fixture_generation", "source_sha", "harness_sha")
-                            if not ledger_record.get(key)]
-        if missing_identity:
-            raise SystemExit(f"refusing to calibrate: missing measurement identity {', '.join(missing_identity)}")
+        ledger_records = by_scenario.get("ledger", [])
+        if ledger_records:
+            mismatch = measurement_identity_mismatch(ledger_records)
+            if mismatch is not None:
+                raise SystemExit(f"refusing to calibrate: {mismatch}")
+        ledger_record = ledger_records[0] if ledger_records else {}
         budgets["_meta"]["ledger_generation"] = ledger_record.get("fixture_generation")
         budgets["_meta"]["source_sha"] = ledger_record.get("source_sha")
-        for key in ("source_sha", "harness_sha"):
-            if any(record.get(key) != ledger_record.get(key) for record in by_scenario["ledger"]):
-                raise SystemExit(f"refusing to calibrate: inconsistent {key} across reps")
         budgets["_meta"]["harness_sha"] = ledger_record.get("harness_sha")
         for sc, recs in ok_by_scenario.items():
             metrics, _ = collect(recs)
