@@ -25,6 +25,7 @@ import random
 import re
 import shutil
 import signal
+import sqlite3
 import threading
 import subprocess
 import sys
@@ -50,6 +51,26 @@ def launch(env, cwd, argv, scenario, rep_tag="r", sampler_interval=0.2):
     return tp, sampler, cg
 
 READY_MARKERS = ["ask anything or type / for commands", "ask anything", "type / for commands"]
+
+
+def wait_fixture_ready(tp, timeout_s):
+    """Trust only this disposable checkout, if asked, then wait for its editor."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        text = tp.plain()
+        marker = next((needle for needle in READY_MARKERS if needle in text), None)
+        if marker is not None:
+            return marker
+        if all(needle in text for needle in ("Trust parent folder", "Trust (this session only)", "Do not trust")):
+            tp.send("\x1b[B")
+            tp.send("\r")
+            return "session-trust"
+        if tp.proc.poll() is not None and not tp.t.is_alive():
+            return None
+        time.sleep(0.05)
+    return None
+
+
 REPOS = 8
 KEYLAT_SLOW_MS = 100  # probes slower than this are recorded with their time and phase
 
@@ -692,6 +713,8 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
     tp, sampler, cg = launch(env, cwd, argv, "ledger")
     pid = tp.proc.pid
     res = {"ok": False, "buckets": [], "keylat_ms": [], "keylat_slow": [], "appended": 0,
+           "warm_up": json.loads(env["KIMCHI_PERF_WARM"]),
+           "projection_health_at_start": fixtures.ledger_projection_health(env["HOME"]),
            "fixture_generation": env.get("KIMCHI_PERF_FIXTURE_GENERATION"),
            "source_sha": env.get("KIMCHI_PERF_SOURCE_SHA"),
            "harness_sha": env.get("KIMCHI_PERF_HARNESS_SHA"),
@@ -721,7 +744,7 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
     try:
         # Full-scale first-open import and optional bundled-tool fetch can exceed
         # two minutes before the measured steady-state window begins.
-        if not tp.wait_for(READY_MARKERS, 240):
+        if not wait_fixture_ready(tp, 240):
             res["error"] = "ready marker not seen"
             res["exit_code"] = tp.proc.poll()
             res["screen_tail"] = tp.plain()[-1200:]
@@ -841,6 +864,49 @@ def cleanup(tp, pid, sampler, cg=None):
 
 
 # ---------------------------------------------------------------- driver
+def warm_ledger(root, env, cwd, binary):
+    """Build a steady ledger through one unmeasured real-binary launch.
+
+    All warmed state comes from the product, never a Python copy of projection
+    logic. The per-job cache is scoped to the executable and harness/generation
+    inputs. An incomplete result or corrupt cache is an error, not a sample.
+    """
+    digest = hashlib.sha256()
+    for path in (binary, __file__, fixtures.__file__, fakellm.__file__,
+                 os.path.join(os.path.dirname(__file__), "sampler.py")):
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+    digest.update(env["KIMCHI_PERF_FIXTURE_GENERATION"].encode())
+    cache = os.path.join(os.path.dirname(root), f"warm-{digest.hexdigest()[:20]}", "home")
+    started = time.perf_counter()
+    if os.path.isdir(cache):
+        fixtures.remap_warm_home(cache, env["HOME"])
+        return {"cache_hit": True, "prepare_s": round(time.perf_counter() - started, 2)}
+    tp, sampler, cg = launch(env, cwd, [binary, "--provider", "fake", "--model", "basic"], "ledger-warm")
+    try:
+        if not wait_fixture_ready(tp, 240):
+            raise RuntimeError("ledger warm-up did not reach an editor")
+        deadline = time.time() + 240
+        health = fixtures.ledger_projection_health(env["HOME"])
+        while not health.get("ready") and time.time() < deadline:
+            time.sleep(0.15)
+            health = fixtures.ledger_projection_health(env["HOME"])
+        if not health.get("ready"):
+            raise RuntimeError(f"ledger warm-up did not reach steady state: {health}; {tp.plain()[-600:]}")
+        tp.send("/quit\r")
+        try:
+            tp.proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            tp.proc.kill()
+            tp.proc.wait(timeout=10)
+        fixtures.remap_warm_home(env["HOME"], cache)
+        fixtures.remap_warm_home(cache, env["HOME"])
+    finally:
+        cleanup(tp, tp.proc.pid, sampler, cg)
+    return {"cache_hit": False, "warm_s": round(time.perf_counter() - started, 2), "health": health}
+
+
 def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
     """Build the per-rep environment for one scenario. Returns (env, cwd)."""
     home = os.path.join(root, "home")
@@ -881,6 +947,7 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
         env["KIMCHI_PERF_FIXTURE_GENERATION"] = (
             fixtures.LEDGER_GENERATION if records == LEDGER_RECORDS
             else f"ledger-heavy-scaled:{records}:{journals}:{outbox_events}" )
+        env["KIMCHI_PERF_WARM"] = json.dumps(warm_ledger(root, env, wd, binary))
     env.update(BIGTOOLS_VARIANTS.get(scenario, {}))
     return env, wd
 
@@ -966,7 +1033,7 @@ def selfcheck(binary, session_mb=2, idle_s=20):
         if heavy_shas[0] != heavy_shas[1]:
             failures.append("heavy ledger profile not deterministic across regenerations")
         expected_shape = {"work_records": 1000, "outbox_events": 600,
-                          "outbox_pending": 426, "outbox_accounts": 3, "journals": 2}
+                          "outbox_pending": 438, "outbox_accounts": 3, "journals": 2}
         for key, value in expected_shape.items():
             if heavy_shapes[0].get(key) != value:
                 failures.append(f"heavy ledger {key}: expected {value}, got {heavy_shapes[0].get(key)}")
@@ -981,6 +1048,19 @@ def selfcheck(binary, session_mb=2, idle_s=20):
         #    its queue must drain within the window, proving the accept regime)
         srv, state, base = fakellm.start()
         try:
+            # Production wraps an event batch in the "batch" envelope.
+            previous = (state.accept_uploads, state.uploads_accepted)
+            state.accept_uploads = True
+            batch = {"id": fixtures._work_id(8_000_000), "version": 1,
+                     "events": [{"id": fixtures._work_id(8_000_001), "revision": "1"}]}
+            from urllib.request import Request, urlopen
+            with urlopen(Request(base + "/pr-cost-events:batchIngest",
+                                 data=json.dumps({"batch": batch}).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")) as response:
+                ack = json.load(response)
+            if ack.get("batchId") != batch["id"] or len(ack.get("receipts", [])) != 1:
+                failures.append("event ACK lost the production batch envelope")
+            state.accept_uploads, state.uploads_accepted = previous
             for sc in ("session", "resume", "idle", "idle_healthy", "ledger"):
                 rep_root = os.path.join(root, f"smoke-{sc}")
                 os.makedirs(rep_root)
@@ -994,11 +1074,46 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                 env, cwd = prepare(rep_root, sc, base, session_mb, binary=binary)
                 if sc == "ledger":
                     seeded_ledger_shape = fixtures.ledger_shape(env["HOME"])
-                    smoke_shape = {"work_records": 2400, "outbox_events": 1440,
-                                   "outbox_pending": 1005, "outbox_accounts": 3, "journals": 2}
+                    # Warming through a real session creates its current work record.
+                    smoke_shape = {"work_records": 2401, "outbox_events": 1440,
+                                   "outbox_accounts": 3, "journals": 2}
                     for key, value in smoke_shape.items():
                         if seeded_ledger_shape.get(key) != value:
                             failures.append(f"ledger seed {key}: expected {value}, got {seeded_ledger_shape.get(key)}")
+                    with sqlite3.connect(os.path.join(
+                            env["HOME"], ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")) as con:
+                        rows = con.execute(
+                            "SELECT account_key, acked_at IS NULL, COUNT(*) FROM outbox_events "
+                            "WHERE created_at <= ? GROUP BY 1, 2", (fixtures.BASE_MS + 1440,)).fetchall()
+                    accounts = {}
+                    for key, pending, number in rows:
+                        fields = json.loads(key)
+                        form = ("legacy" if fields[0] == "https://app.kimchi.dev/api"
+                                else "foreign" if fields[1] != fixtures.HEALTHY_ACCOUNT["organizationId"] else "current")
+                        accounts[(form, bool(pending))] = number
+                        if form in ("legacy", "current") and fields[1:] != [
+                                fixtures.HEALTHY_ACCOUNT["organizationId"], fixtures.HEALTHY_ACCOUNT["userId"]]:
+                            failures.append("legacy/current outbox keys do not preserve the same identity")
+                    legacy_count = round(1440 * 446556 / 625744)
+                    expected = {("legacy", True): legacy_count,
+                                ("current", False): 1440 - legacy_count - 10,
+                                ("foreign", True): 10}
+                    if accounts != expected:
+                        failures.append(f"migrated outbox distribution: expected {expected}, got {accounts}")
+                    if not fixtures.ledger_projection_health(env["HOME"]).get("ready"):
+                        failures.append("ledger warm-up did not establish real steady-state projections")
+                    corrupt = os.path.join(root, "incomplete-warm")
+                    fixtures.remap_warm_home(env["HOME"], corrupt)
+                    with sqlite3.connect(os.path.join(
+                            corrupt, ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")) as con:
+                        con.execute("DELETE FROM work_projection_head")
+                        con.commit()
+                    try:
+                        fixtures.validate_warm_home(corrupt)
+                        failures.append("incomplete warmed projections were accepted")
+                    except ValueError:
+                        pass
+                    shutil.rmtree(corrupt, ignore_errors=True)
                 if not check_version(binary, env, cwd):
                     failures.append(f"{sc}: binary reports no version")
                     continue

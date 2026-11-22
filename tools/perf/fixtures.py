@@ -25,12 +25,13 @@ import hashlib
 import json
 import os
 import sqlite3
+import shutil
 import subprocess
 import uuid
 
 NS = uuid.UUID("b3a1c0de-0000-4000-8000-000000000000")
 BASE_MS = 1770000000000  # fixed epoch: deterministic timestamps
-LEDGER_GENERATION = "ledger-heavy-v1"
+LEDGER_GENERATION = "ledger-heavy-v2"
 
 LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -393,15 +394,25 @@ def _costs_note(repo_i, requests=200):
 
 
 def _seed_outbox_history(con, base_url, count):
-    """A retained outbox history at the heavy-install shape.
+    """Retained history shaped like a migrated real install.
 
-    Three accounts, 71% unacknowledged and 29% acknowledged. Every account is
-    already backed off, so its valid events remain in place without making the
-    timed scenario spend its window draining a synthetic backlog.
+    A large legacy-console-URL key and the current key have the same identity;
+    a genuinely foreign account has only a tiny backlog. All three are backed
+    off, so the timed lane measures retained reads rather than synthetic drain work.
     """
+    if count < 3:
+        raise ValueError("retained-history fixture needs three accounts")
+    legacy_count = round(count * 446556 / 625744)
+    foreign_count = min(10, count - legacy_count)
+    current_count = count - legacy_count - foreign_count
+    legacy_key = js(["https://app.kimchi.dev/api", HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
+    current_key = js([base_url, HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
+    foreign_key = js([base_url, _work_id(2_000_000), _work_id(2_000_001)])
     rows = []
     for i in range(count):
-        account_key = js([base_url, _work_id(900 + (i % 3) * 2), _work_id(901 + (i % 3) * 2)])
+        is_legacy = i < legacy_count
+        is_foreign = i >= legacy_count + current_count
+        account_key = legacy_key if is_legacy else foreign_key if is_foreign else current_key
         event = {
             "id": _work_id(3_000_000 + i), "entityId": _work_id(4_000_000 + i),
             "revision": "1", "baseRevision": "0", "baseEventId": "",
@@ -410,7 +421,7 @@ def _seed_outbox_history(con, base_url, count):
             "work": {"title": f"heavy install event {i}", "reason": "observed", "quality": "observed"},
         }
         text = js(event)
-        acknowledged = i % 100 < 29
+        acknowledged = not (is_legacy or is_foreign)
         rows.append((event["id"], account_key, event["entityId"], "work", text, _sha(text),
                      BASE_MS + i, BASE_MS + i if acknowledged else None, ""))
         if len(rows) == 5000:
@@ -421,8 +432,7 @@ def _seed_outbox_history(con, base_url, count):
     # deliveryRetry requires batchId to match the first batch; this profile
     # retains unbatched history, hence null. Its future retry keeps every
     # account quiet while the journal appender continues forcing full passes.
-    for account_index in range(3):
-        account_key = js([base_url, _work_id(900 + account_index * 2), _work_id(901 + account_index * 2)])
+    for account_key in (legacy_key, current_key, foreign_key):
         retry = {"batchId": None, "attempts": 3, "retryAt": 4_000_000_000_000,
                  "error": "heavy-install retained delivery history"}
         con.execute("INSERT OR REPLACE INTO bookkeeping VALUES (?,?,?,?)",
@@ -554,6 +564,94 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
              "producerId": producer_id, "entries": entries}
     json.dump(state, open(os.path.join(pr_cost, "state.json"), "w"))
     return db_path
+
+
+def ledger_projection_health(home):
+    """Whether warm-up produced the state a real, current install keeps.
+
+    Heads must cover every authority work, no work may remain dirty, and every
+    on-disk journal must have a cursor. A busy writer is still warm-up progress;
+    malformed state and missing files are never silently accepted.
+    """
+    agent = os.path.join(home, ".config", "kimchi", "harness")
+    db_path = os.path.join(agent, "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return {"ready": False, "reason": "ledger not opened"}
+    try:
+        with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+            works, heads, dirty, cursors = con.execute(
+                "SELECT (SELECT COUNT(DISTINCT work_id) FROM work_records), "
+                "(SELECT COUNT(*) FROM work_projection_head), (SELECT COUNT(*) FROM work_dirty), "
+                "(SELECT COUNT(*) FROM journal_cursor)"
+            ).fetchone()
+    except sqlite3.OperationalError as error:
+        if "locked" not in str(error).lower():
+            raise
+        return {"ready": False, "reason": "ledger writer busy"}
+    journals = []
+    for base, _, names in os.walk(os.path.join(agent, "work-attribution")):
+        journals.extend(os.path.join(base, name) for name in names if name.endswith(".jsonl"))
+    return {"ready": works > 0 and works == heads and dirty == 0 and cursors == len(journals),
+            "works": works, "projection_heads": heads, "dirty_works": dirty,
+            "journal_cursors": cursors, "journals": len(journals)}
+
+
+def validate_warm_home(home):
+    """Fail closed if copied hot state is incomplete or still points at its source."""
+    health = ledger_projection_health(home)
+    if not health["ready"]:
+        raise ValueError(f"incomplete warmed ledger: {health}")
+    agent = os.path.join(home, ".config", "kimchi", "harness")
+    db_path = os.path.join(agent, "pr-cost-reporting", "ledger.db")
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        cursors = con.execute("SELECT path, offset FROM journal_cursor").fetchall()
+    for path, offset in cursors:
+        if not os.path.isfile(path):
+            raise ValueError("warmed ledger has a cursor for a missing journal")
+        if os.path.getsize(path) < offset:
+            raise ValueError("warmed ledger cursor exceeds its journal size")
+    return health
+
+
+def remap_warm_home(source_home, destination_home):
+    """Copy a warm HOME, preserving ledger and journal identities at its new path.
+
+    Both rows and cursors reference ledger-owned files by absolute path. Update
+    them together with the copied journal dev/ino values; copied ctimes are
+    newer than source cursors, so advance the fast-cache timestamps as well.
+    Callers separately ensure the real binary has completed warm-up.
+    """
+    # The product writes path strings without resolving filesystem symlinks;
+    # preserve that spelling (/var vs /private/var on macOS) while stat uses the OS target.
+    source = os.path.abspath(os.path.join(source_home, ".config", "kimchi", "harness"))
+    destination = os.path.abspath(os.path.join(destination_home, ".config", "kimchi", "harness"))
+    if source == destination:
+        validate_warm_home(destination_home)
+        return
+    validate_warm_home(source_home)
+    shutil.copytree(source, destination, dirs_exist_ok=True, copy_function=shutil.copy2)
+    prefix = source + "/"
+    with sqlite3.connect(os.path.join(destination, "pr-cost-reporting", "ledger.db")) as con:
+        with con:
+            for table, column in (("work_records", "source_path"), ("bookkeeping", "work_id"),
+                                  ("bookkeeping", "name")):
+                con.execute(
+                    f"UPDATE {table} SET {column} = ? || substr({column}, ?) WHERE substr({column}, 1, ?) = ?",
+                    (destination, len(prefix), len(prefix), prefix),
+                )
+                if con.execute(f"SELECT COUNT(*) FROM {table} WHERE substr({column}, 1, ?) = ?",
+                               (len(prefix), prefix)).fetchone()[0]:
+                    raise ValueError(f"warmed ledger still contains source paths in {table}.{column}")
+            cursor_time = int(time.time() * 1000) + 120_000
+            cursors = con.execute("SELECT path, offset FROM journal_cursor").fetchall()
+            for path, _ in cursors:
+                if not path.startswith(prefix):
+                    raise ValueError(f"journal cursor path outside synthetic home: source={source!r}, cursor={path!r}")
+                replacement = destination + path[len(source):]
+                info = os.stat(replacement)
+                con.execute("UPDATE journal_cursor SET path=?, dev=?, ino=?, updated_at=? WHERE path=?",
+                            (replacement, info.st_dev, info.st_ino, cursor_time, path))
+    validate_warm_home(destination_home)
 
 
 def ledger_shape(home):
