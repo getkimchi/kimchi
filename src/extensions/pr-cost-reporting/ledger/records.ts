@@ -682,6 +682,14 @@ function drainStatementPage<T, A extends unknown[]>(
 	return rows
 }
 
+const OUTBOX_CLAIM_COLUMNS =
+	"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
+
+/** Pins the selective entity index; otherwise SQLite scans a whole account and sorts it per page. */
+export function outboxClaimsSql(entityPlaceholders: readonly string[], paged: boolean): string {
+	return `SELECT ${paged ? "rowid AS position, " : ""}${OUTBOX_CLAIM_COLUMNS} FROM outbox_events INDEXED BY outbox_entity WHERE account_key = ? AND entity_id IN (${entityPlaceholders.join(",")})${paged ? " AND rowid > ? ORDER BY rowid LIMIT ?" : " ORDER BY rowid"}`
+}
+
 function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const db = store.db
 	if (ensureProjectionVersion(store)) {
@@ -701,8 +709,7 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const marked = db.query<{ recordHash: string; workId: string; type: string }, []>(
 		"SELECT record_hash AS recordHash, work_id AS workId, type FROM pending_translation",
 	)
-	const eventColumns =
-		"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
+	const eventColumns = OUTBOX_CLAIM_COLUMNS
 	const latestEvent = db.query<OutboxEvent, [string, string]>(
 		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? AND blocked = '' ORDER BY rowid DESC LIMIT 1`,
 	)
@@ -721,7 +728,7 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			rows.push(
 				...db
 					.query<OutboxEvent, [string, ...string[]]>(
-						`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${page.map(() => "?").join(",")}) ORDER BY rowid`,
+						outboxClaimsSql(page.map(() => "?"), false),
 					)
 					.all(accountKey, ...page),
 			)
@@ -738,7 +745,7 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 		// history ordered across pages because the caller consumes pages in order.
 		const positioned = db
 			.query<OutboxEvent & { position: number }, [string, ...string[], number, number]>(
-				`SELECT rowid AS position, ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${entityIds.map(() => "?").join(",")}) AND rowid > ? ORDER BY rowid LIMIT ?`,
+				outboxClaimsSql(entityIds.map(() => "?"), true),
 			)
 			.all(accountKey, ...entityIds, after, limit)
 		const rows = positioned.map(({ position, ...event }) => event)

@@ -29,6 +29,7 @@ import { importJournals } from "../../../../src/extensions/pr-cost-reporting/led
 import {
 	backendFor,
 	capture,
+	outboxClaimsSql,
 	closeBackends,
 	fingerprint,
 	getNote,
@@ -2306,6 +2307,24 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		let same = sync.size === async.size
 		for (const [id, event] of sync) if (JSON.stringify(event) !== JSON.stringify(async.get(id))) same = false
 		out({ same, entities: sync.size, stretches })
+	},
+	"claim-plan": (agent) => {
+		const store = openStore(agent)
+		const insert = store.db.query(
+			"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, 'bulk', 'bulk', 'work', '{}', 'hash', ?, NULL, '')",
+		)
+		store.tx(() => {
+			for (let index = 0; index < 25_000; index++) insert.run(`claim-plan-${index}`, index)
+		})
+		const plan = (paged: boolean): string[] => {
+			const sql = `EXPLAIN QUERY PLAN ${outboxClaimsSql(["?", "?"], paged)}`
+			const rows = paged
+				? store.db.query<{ detail: string }, [string, string, string, number, number]>(sql).all("bulk", "a", "b", 0, 256)
+				: store.db.query<{ detail: string }, [string, string, string]>(sql).all("bulk", "a", "b")
+			return rows.map((row) => row.detail)
+		}
+		out({ claimRows: plan(false), claimRowsPage: plan(true) })
+		store.close()
 	},
 	"pre-migrate": async (agent) => {
 		// Strip a ledger to its pre-migration shape: no materialized repository

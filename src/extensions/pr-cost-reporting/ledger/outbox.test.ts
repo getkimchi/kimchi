@@ -75,6 +75,22 @@ it("sqlite: the rowid cursor pages claim history to the same result (bun driver)
 	}
 })
 
+it("sqlite: multi-entity claim reads use the entity index (bun driver)", () => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-claims-plan-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "claim-plan", dir], { encoding: "utf8", timeout: 30_000 }),
+		) as Record<string, string[]>
+		for (const [name, plan] of Object.entries(result)) {
+			expect(plan.join(" | "), name).toContain("outbox_entity (entity_id=?")
+			expect(plan.join(" | "), name).not.toContain("outbox_pending (account_key=?)")
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
 it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and atomic rollback (%s)", {
 	timeout: 30_000,
 }, (mode) => {
