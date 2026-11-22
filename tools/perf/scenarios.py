@@ -35,7 +35,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fakellm  # noqa: E402
 import fixtures  # noqa: E402
-from sampler import GateCgroup, Pty, TreeSampler, delta, reap_process_tree, wait_zombie  # noqa: E402
+from sampler import GateCgroup, Pty, TreeSampler, delta, enable_child_subreaper, reap_process_tree, wait_zombie  # noqa: E402
 
 
 def launch(env, cwd, argv, scenario, rep_tag="r", sampler_interval=0.2):
@@ -929,7 +929,7 @@ def warm_ledger(root, env, cwd, binary):
     try:
         if not wait_fixture_ready(tp, 240):
             raise RuntimeError("ledger warm-up did not reach an editor")
-        deadline = time.time() + 240
+        deadline = time.time() + 900
         def projection_ready():
             return {"projection": fixtures.ledger_projection_health(env["HOME"])}
         health = projection_ready()
@@ -1341,6 +1341,7 @@ def main():
     def _sigterm(*_):
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         sys.exit(1)
+    enable_child_subreaper()
     signal.signal(signal.SIGTERM, _sigterm)
 
     if args.selfcheck:

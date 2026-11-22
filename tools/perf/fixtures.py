@@ -386,7 +386,7 @@ def _mixed_record_body(repo_path, base_url, index):
     slot = index % 10
     family = index // 10
     at = BASE_MS + family * 2000
-    work_id, session_id = _work_id(family % 100), _session_id(family % 12)
+    work_id, session_id = _work_id(family % 1834), _session_id(family % 12)
     request_id = _work_id(5_000_000 + family)
     account = (
         {"apiUrl": base_url, "organizationId": _work_id(2_000_000), "userId": _work_id(2_000_001)}
@@ -666,6 +666,10 @@ def validate_warm_home(home):
         raise ValueError(f"missing or invalid warm summary: {error}") from error
     if not isinstance(summary, dict) or not isinstance(summary.get("expected_requests"), int) or summary["expected_requests"] < 3:
         raise ValueError("warm summary lacks a valid expected request count")
+    expected_works = min(summary["expected_requests"], 1834) + 1
+    for key in ("works", "projection_heads"):
+        if health.get(key) != expected_works:
+            raise ValueError(f"warmed work granularity: expected {expected_works} {key}, found {health.get(key)}")
     with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
         cursors = con.execute("SELECT path, offset FROM journal_cursor").fetchall()
         for key, sql in (("expected_requests", "SELECT COUNT(*) FROM work_records WHERE type = 'request'"),

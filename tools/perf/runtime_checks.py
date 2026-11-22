@@ -165,8 +165,22 @@ def check_native_warm_cancellation():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def check_linux_subreaper_contract():
+    import sampler
+    if sys.platform.startswith("linux"):
+        sampler.enable_child_subreaper()
+        return
+    calls = []
+    libc = SimpleNamespace(prctl=lambda operation, setting: calls.append((operation, setting)) or 0)
+    with unittest.mock.patch.object(sampler, "IS_LINUX", True), \
+            unittest.mock.patch.object(sampler.ctypes, "CDLL", return_value=libc):
+        sampler.enable_child_subreaper()
+    assert calls == [(36, 1)], calls
+
+
 if __name__ == "__main__":
     check_independent_grandchild_session()
+    check_linux_subreaper_contract()
     check_gate_cancellation()
     check_native_warm_cancellation()
     print("runtime checks OK: nested child sessions, gate, and native cancellation are reaped")

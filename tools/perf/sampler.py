@@ -28,6 +28,14 @@ import time
 IS_LINUX = sys.platform.startswith("linux")
 IS_MACOS = sys.platform == "darwin"
 
+
+def enable_child_subreaper():
+    """Keep orphan descendants owned by this scenario on Linux (PR_SET_CHILD_SUBREAPER)."""
+    if IS_LINUX:
+        # Constant and semantics: Linux include/uapi/linux/prctl.h and prctl(2).
+        if ctypes.CDLL(None).prctl(36, 1) != 0:
+            raise OSError("unable to enable child subreaper ownership")
+
 if IS_MACOS:
     libproc = ctypes.CDLL(ctypes.util.find_library("proc"))
     libc = ctypes.CDLL(ctypes.util.find_library("c"))
