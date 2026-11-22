@@ -873,7 +873,8 @@ def warm_ledger(root, env, cwd, binary):
     """
     digest = hashlib.sha256()
     for path in (binary, __file__, fixtures.__file__, fakellm.__file__,
-                 os.path.join(os.path.dirname(__file__), "sampler.py")):
+                 os.path.join(os.path.dirname(__file__), "sampler.py"),
+                 os.path.join(os.path.dirname(__file__), "warm-billing.ts")):
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 digest.update(chunk)
@@ -888,11 +889,13 @@ def warm_ledger(root, env, cwd, binary):
         if not wait_fixture_ready(tp, 240):
             raise RuntimeError("ledger warm-up did not reach an editor")
         deadline = time.time() + 240
-        health = fixtures.ledger_projection_health(env["HOME"])
-        while not health.get("ready") and time.time() < deadline:
+        def projection_ready():
+            return {"projection": fixtures.ledger_projection_health(env["HOME"])}
+        health = projection_ready()
+        while not health["projection"].get("ready") and time.time() < deadline:
             time.sleep(0.15)
-            health = fixtures.ledger_projection_health(env["HOME"])
-        if not health.get("ready"):
+            health = projection_ready()
+        if not health["projection"].get("ready"):
             raise RuntimeError(f"ledger warm-up did not reach steady state: {health}; {tp.plain()[-600:]}")
         tp.send("/quit\r")
         try:
@@ -900,6 +903,17 @@ def warm_ledger(root, env, cwd, binary):
         except subprocess.TimeoutExpired:
             tp.proc.kill()
             tp.proc.wait(timeout=10)
+        result = subprocess.run(
+            [shutil.which("bun"), os.path.join(os.path.dirname(__file__), "warm-billing.ts"),
+             os.path.join(env["HOME"], ".config", "kimchi", "harness")],
+            env=env, cwd=env["HOME"], capture_output=True, text=True,
+            timeout=max(1, int(deadline - time.time())),
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"production billing reconciliation failed: {result.stderr[-1200:]}")
+        health["pricing"] = fixtures.ledger_pricing_health(env["HOME"])
+        if not health["pricing"].get("ready"):
+            raise RuntimeError(f"reconciliation produced no saved priced evidence: {health}")
         fixtures.remap_warm_home(env["HOME"], cache)
         fixtures.remap_warm_home(cache, env["HOME"])
     finally:
@@ -1102,6 +1116,8 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                         failures.append(f"migrated outbox distribution: expected {expected}, got {accounts}")
                     if not fixtures.ledger_projection_health(env["HOME"]).get("ready"):
                         failures.append("ledger warm-up did not establish real steady-state projections")
+                    if not fixtures.ledger_pricing_health(env["HOME"]).get("ready"):
+                        failures.append("ledger warm-up did not publish priced billing evidence")
                     corrupt = os.path.join(root, "incomplete-warm")
                     fixtures.remap_warm_home(env["HOME"], corrupt)
                     with sqlite3.connect(os.path.join(

@@ -30,7 +30,7 @@ import subprocess
 import uuid
 
 NS = uuid.UUID("b3a1c0de-0000-4000-8000-000000000000")
-BASE_MS = 1770000000000  # fixed epoch: deterministic timestamps
+BASE_MS = 1793232000000  # 2026-10-29T00:00:00Z: deterministic, within the current billing window
 LEDGER_GENERATION = "ledger-heavy-v2"
 
 LEDGER_SCHEMA = """
@@ -372,6 +372,56 @@ def _tool_execution_body(repo_path, i):
     }
 
 
+def _mixed_record_body(repo_path, base_url, index):
+    """One record from a linked, priced request group.
+
+    Counts approximate the request/billing/tool record mix. Matching identities,
+    billing selectors and evidence make discovery and price reconciliation work;
+    request-only filler does not exercise those paths at all.
+    """
+    slot = index % 10
+    family = index // 10
+    at = BASE_MS + family * 2000
+    work_id, session_id = _work_id(family % 100), _session_id(family % 12)
+    request_id = _work_id(5_000_000 + family)
+    source = {"apiUrl": base_url, "gatewayUrl": f"{base_url}/openai/v1/chat/completions",
+              "credentialHash": _sha("perf-only-api-key")}
+    selector = {"type": "tag", "tag": f"kimchi-request:{request_id}",
+                "startTime": _iso(at - 12 * 60 * 60 * 1000),
+                "endTime": _iso(at + 32 * 24 * 60 * 60 * 1000)}
+    account = {"apiUrl": base_url, **HEALTHY_ACCOUNT}
+    base = {"version": 1, "workId": work_id, "sessionId": session_id,
+            "cwd": repo_path, "repository": repo_path, "worktree": repo_path,
+            "requestId": request_id, "recordedAt": _iso(at),
+            "scope": {"account": account, "repository": repo_path}}
+    if slot == 0:
+        return {**base, "type": "request", "startedAt": _iso(at),
+                "summary": " ".join(f"word{n}" for n in range(140))}
+    if slot == 1:
+        return {**base, "type": "request_dispatch", "dispatchedAt": _iso(at),
+                "billingSource": source, "billingSelector": selector}
+    if slot in (2, 4):
+        return {**base, "type": "request_response", "billingSource": source,
+                "response": {"status": 200, "sequence": slot, "text": " ".join(f"result {n}" for n in range(120))}}
+    if slot == 3:
+        priced = family % 5 != 0
+        return {**base, "type": "request_cost", "billingSource": source, "billingSelector": selector,
+                "billingRows": ([{"id": _work_id(6_000_000 + family), "costUsd": "0.000100000"}] if priced else []),
+                "billingLookup": {"status": "priced" if priced else "pending", "checkedAt": _iso(at),
+                                    **HEALTHY_ACCOUNT}}
+    if slot in (5, 8):
+        body = _tool_execution_body(repo_path, index)
+        return {**body, "requestId": request_id, "workId": work_id, "sessionId": session_id}
+    if slot == 6:
+        body = _commit_body(repo_path, index)
+        return {**body, "workId": work_id, "sessionId": session_id}
+    if slot == 7:
+        body = _work_receipt_body(repo_path, family, at)
+        return {**body, "workId": work_id, "sessionId": session_id}
+    body = _transition_body(repo_path, index)
+    return {**body, "workId": work_id, "sessionId": session_id}
+
+
 def _costs_note(repo_i, requests=200):
     """A `costs` bookkeeping note in the recorded real-world shape."""
     body = {"version": 1, "workId": _work_id(repo_i), "pullRequests": [], "requests": []}
@@ -476,13 +526,8 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
                 # and many small ones, with a bounded insert batch and no
                 # million-element list of record dictionaries retained.
                 def record_bodies():
-                    for i in range(transitions_per_repo):
-                        yield _transition_body(repo, ri * 100000 + i)
-                    for i in range(commits_per_repo):
-                        yield _commit_body(repo, ri * 100000 + i)
-                    for gen in (_request_body, _tool_execution_body):
-                        for i in range(filler_per_repo // 2):
-                            yield gen(repo, ri * 100000 + i)
+                    for i in range(total):
+                        yield _mixed_record_body(repo, base_url, ri * 1000000 + i)
                 bodies = record_bodies()
                 total = transitions_per_repo + commits_per_repo + 2 * (filler_per_repo // 2)
                 if total < journal_count:
@@ -594,6 +639,25 @@ def ledger_projection_health(home):
     return {"ready": works > 0 and works == heads and dirty == 0 and cursors == len(journals),
             "works": works, "projection_heads": heads, "dirty_works": dirty,
             "journal_cursors": cursors, "journals": len(journals)}
+
+
+def ledger_pricing_health(home):
+    """A small fail-closed check that warm-up produced priced billing evidence."""
+    db_path = os.path.join(home, ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return {"ready": False, "reason": "ledger not opened"}
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        notes = con.execute("SELECT COUNT(*) FROM bookkeeping WHERE name = 'costs'").fetchone()[0]
+        rows = con.execute("SELECT body FROM bookkeeping WHERE name = 'costs'").fetchall()
+    priced = 0
+    for (body,) in rows:
+        for request in json.loads(body).get("requests", []):
+            if request.get("priceStatus") == "priced":
+                priced += 1
+                break
+        if priced:
+            break
+    return {"ready": priced > 0, "cost_notes": notes, "priced_requests": priced}
 
 
 def validate_warm_home(home):
