@@ -1,7 +1,7 @@
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
 import { Box, Container, Spacer, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import {
+import registerToolGrouping, {
 	buildCurrentToolLine,
 	buildGroupSummaryText,
 	buildGroupView,
@@ -929,5 +929,93 @@ describe("muteAssistantLines memoization", () => {
 
 		const other = muteAssistantLines(["different"], "\x1b[90m")
 		expect(other).not.toBe(first)
+	})
+})
+
+describe("folded group row: chrome and click paths", () => {
+	it("renders a spacer line before the folded header so the icon is not glued to the label", () => {
+		settings.mode = "tools"
+		patchAddChild()
+		patchToolGroupRendering()
+
+		const first = makeFakeToolHarness(50)
+		const second = makeFakeToolHarness(51)
+		const parent = new Container()
+		parent.addChild(first.fake)
+		parent.addChild(second.fake)
+
+		const lines = first.fake.render(80)
+		expect(lines.length).toBeGreaterThan(0)
+		expect(lines[0]?.trim()).toBe("")
+		const visible = lines.join("\n")
+		expect(visible).toContain("ctrl+o to expand")
+	})
+
+	it("self-shell tools get a framed row with a spacer and a click that expands the run", () => {
+		settings.mode = "tools"
+		// Full registration: the click handler propagates expansion via a patched
+		// setExpanded, which patchToolGroupRendering alone does not install.
+		registerToolGrouping({ on: () => {} } as any)
+
+		// Two real components in self mode share the same container (like upstream
+		// MCP tools with a custom renderer); the renderer reports the tool as self-shelled.
+		const make = (id: string) => {
+			// biome-ignore lint/suspicious/noExplicitAny: minimal self-rendered tool definition
+			const toolDefinition: any = {
+				renderShell: "self",
+				renderCall: () => ({ render: () => [`call-${id}`], invalidate: () => {} }),
+				renderResult: () => ({ render: () => [`result-${id}`], invalidate: () => {} }),
+			}
+			return new ToolExecutionComponent(id, id, {}, {}, toolDefinition, { theme: renderTheme } as any, process.cwd())
+		}
+
+		const first = make("tc-self-1")
+		const second = make("tc-self-2")
+		// Mark both completed: without a result upstream keeps isPartial=true, which
+		// real-Renderer grouping correctly refuses to fold.
+		for (const tool of [first, second]) {
+			tool.updateResult({ content: [], isError: false }, false)
+		}
+		const parent = new Container()
+		parent.addChild(first)
+		parent.addChild(second)
+
+		const lines = (first as any).render(80)
+		expect(lines[0]?.trim()).toBe("")
+		expect(lines.join("\n")).toMatch(/Done|Worked for/)
+		expect(lines.join("\n")).toContain("ctrl+o to expand")
+
+		;(second as any).result = { content: [], isError: false }
+		// The folded summary is owned by the first completed member (the row tool),
+		// so its own handleMouse drives expansion for the whole run.
+		const event = { type: "click", button: "left" }
+		const result = (first as any).handleMouse(event)
+		expect(result).toEqual({ handled: true })
+		expect((second as any).expanded).toBe(true)
+		expect((first as any).expanded).toBe(true)
+
+		// Expand restores real children once expanded no longer folds: the rendered
+		// transcript shows the original tool output, not the group summary.
+		;(second as any).updateDisplay()
+		const restored = (first as any).render(80).join("\n")
+		expect(restored).toContain("result-tc-self-1")
+		expect(restored).not.toContain("ctrl+o to expand")
+	})
+
+	it("self-shell with no container still renders the group header instead of dropping it", () => {
+		settings.mode = "tools"
+		patchAddChild()
+		patchToolGroupRendering()
+
+		const first = makeFakeToolHarness(70)
+		const second = makeFakeToolHarness(71)
+		for (const harness of [first, second]) {
+			harness.fake.getRenderShell = () => "self"
+		}
+		const parent = new Container()
+		parent.addChild(first.fake)
+		parent.addChild(second.fake)
+		const lines = first.fake.render(80)
+		expect(lines.join("\n")).toMatch(/Done|Worked for/)
 	})
 })

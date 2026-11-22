@@ -577,6 +577,23 @@ function restoreGroupCosmetics(self: any): void {
  */
 // biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 export function ensureOriginalChildren(self: any): void {
+	// Self-shell path: upstream rebuilds selfRenderContainer.children on every
+	// updateDisplay(), so dropping the swap marker is enough. If the rebuild
+	// fails, re-arm so a later frame retries instead of latching the fold.
+	const selfContainer = self?.selfRenderContainer
+	if (selfContainer && groupSwapOriginals.has(selfContainer)) {
+		const saved = groupSwapOriginals.get(selfContainer)
+		groupSwapOriginals.delete(selfContainer)
+		if (typeof self.updateDisplay === "function") {
+			try {
+				self.updateDisplay()
+			} catch {
+				if (saved) groupSwapOriginals.set(selfContainer, saved)
+			}
+		}
+		return
+	}
+
 	const contentBox = self?.contentBox
 	if (!contentBox) return
 	const saved = groupSwapOriginals.get(contentBox)
@@ -603,8 +620,14 @@ export function patchToolGroupRendering(): void {
 	const originalHandleMouse = proto.handleMouse
 	if (typeof originalHandleMouse !== "function") return // retried by the next registration
 	proto.handleMouse = function patchedGroupHandleMouse(event: { type?: string; button?: string | number }) {
+		// Self-shell groups swap selfRenderContainer.children; the regular path
+		// swaps contentBox.children. Both register in groupSwapOriginals.
+		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
+		const selfContainer = (this as any)?.selfRenderContainer
 		const contentBox = (this as any)?.contentBox
-		const showingGroupRow = contentBox && groupSwapOriginals.has(contentBox)
+		const showingGroupRow =
+			(selfContainer && groupSwapOriginals.has(selfContainer)) ||
+			(contentBox && groupSwapOriginals.has(contentBox))
 		if (
 			showingGroupRow &&
 			(this as any).result &&
@@ -696,8 +719,32 @@ export function patchToolGroupRendering(): void {
 		const usingSelf = typeof (this as any).getRenderShell === "function" && (this as any).getRenderShell() === "self"
 
 		if (!contentBox || usingSelf) {
-			// Fallback: no contentBox available — return raw lines without stroke.
-			return groupView.render(width)
+			// Self-shell renderers (e.g. MCP's compact default) draw their own
+			// chrome, so substitute a framed group row there too: a spacer line up
+			// top (the spinner must not be glued to its label), the group view with
+			// a MouseRegion, and the swap markers the tool-level click handler and
+			// `ensureOriginalChildren` use. contentBox ALWAYS exists but must not be
+			// used here — upstream takes its self path, not contentBox.
+			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
+			const selfContainer = (this as any).selfRenderContainer
+			if (!usingSelf || !selfContainer || !Array.isArray(selfContainer.children)) {
+				return ["", ...groupView.render(width)]
+			}
+
+			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
+			const selfState = selfContainer
+			if (!groupSwapOriginals.has(selfState)) {
+				groupSwapOriginals.set(selfState, { bgFn: (selfState as any).bgFn, paddingY: 0 })
+			}
+			selfState.children = [new MouseRegion(groupView, (event: any) => {
+				if (!lastTool.result || event.type !== "click" || event.button !== "left") return undefined
+				lastTool.setExpanded(!lastTool.expanded)
+				return { handled: true }
+			})]
+			const lines = originalRender.call(this, width)
+			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
+			delete (this as any)[TOOL_RENDER_CACHE_KEY]
+			return ["", ...lines]
 		}
 
 		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instances
@@ -736,7 +783,10 @@ export function patchToolGroupRendering(): void {
 		delete (this as any)[TOOL_RENDER_CACHE_KEY]
 		contentBox.invalidate()
 
-		return originalRender.call(this, width)
+		// The upstream self path already emits a leading spacer line before its
+		// tool chrome; without it the spinner ends up flush against the header
+		// ("▍ ⟳Working for…" reads as if there were no space after ⟳).
+		return ["", ...originalRender.call(this, width)]
 	}
 
 	proto.render = function patchedGroupRender(width: number): string[] {
