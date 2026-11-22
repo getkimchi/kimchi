@@ -297,10 +297,13 @@ describe("account-fenced reporting delivery", () => {
 		expect(http).not.toHaveBeenCalled()
 	})
 	it("delivers from the projection rather than aggregating the full status", async () => {
+		await seedCoverageEvents(accountKey(content.account), 1)
+		acceptEventBatches()
 		const fullStatus = vi.spyOn(outbox, "readOutboxStatus").mockImplementation(() => {
 			throw new Error("full status aggregation must not run during delivery")
 		})
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(1)
 		expect(fullStatus).not.toHaveBeenCalled()
 	})
 	it.each([
