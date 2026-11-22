@@ -127,6 +127,31 @@ const capturedReport = () => vi.mocked(eventBuilder.buildEvents).mock.calls.at(-
 /** Every request each connected group of works passed to the producer. */
 const capturedRequests = () => vi.mocked(eventBuilder.buildEvents).mock.calls.flatMap(([, report]) => report.requests)
 const deliver = () => deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+const eventUploads = () => http.mock.calls.filter(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))
+
+async function seedCoverageEvents(storedKey: string, count: number): Promise<void> {
+	const actual = await vi.importActual<typeof outbox>("./ledger/outbox.js")
+	for (let index = 0; index < count; index++) {
+		actual.observeEvents(
+			directory,
+			storedKey,
+			[
+				{
+					entityId: `aaaaaaaa-aaaa-4aaa-8aaa-${index.toString(16).padStart(12, "0")}`,
+					source: "codex",
+					sourceVersion: "test",
+					deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+					observeTime: "2026-10-24T00:00:00.123456789Z",
+					coverage: { code: "observed", count: "1" },
+				},
+			],
+			[],
+			() => {},
+		)
+	}
+	vi.spyOn(outbox, "pendingBatch").mockImplementation(actual.pendingBatch)
+}
+
 async function seedLinked(priced = true) {
 	const at = "2026-10-04T12:00:00.000Z"
 	const common = {
@@ -436,6 +461,71 @@ describe("account-fenced reporting delivery", () => {
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(posts()).toHaveLength(1)
 		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
+	})
+
+	it("delivers canonical-equivalent legacy account keys and drains beyond the old attempt cap", async () => {
+		const legacyKey = accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api" })
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(legacyKey, 400)
+		http.mockImplementation(async (input, init) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			const batch = JSON.parse(String(init?.body)).batch
+			return Response.json({
+				batchId: batch.id,
+				receipts: batch.events.map((event: { id: string; revision: string }) => ({
+					id: event.id,
+					revision: event.revision,
+					status: "accepted",
+				})),
+			})
+		})
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === legacyKey)).toMatchObject({
+			pending: 0,
+			acknowledged: 400,
+			batches: 0,
+		})
+		expect(
+			outbox.readOutboxStatus(directory).find((status) => status.accountKey === accountKey(content.account)),
+		).toBeUndefined()
+	})
+
+	it("does not treat a legacy URL belonging to another organization as the credential", async () => {
+		const foreignKey = accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api", organizationId: user })
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(foreignKey, 1)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(0)
+		expect(JSON.parse(backendFor(directory).getNote("pr-cost-delivery", foreignKey) ?? "{}").error).toBe(
+			"PR reporting is waiting for the original account",
+		)
+	})
+
+	it("stops draining event batches when the pass's deadline cancels the fourth upload", async () => {
+		const storedKey = accountKey(content.account)
+		await seedCoverageEvents(storedKey, 500)
+		const controller = new AbortController()
+		let uploadAttempts = 0
+		http.mockImplementation(async (input, init) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			const batch = JSON.parse(String(init?.body)).batch
+			if (++uploadAttempts === 4) controller.abort()
+			return Response.json({
+				batchId: batch.id,
+				receipts: batch.events.map((event: { id: string; revision: string }) => ({
+					id: event.id,
+					revision: event.revision,
+					status: "accepted",
+				})),
+			})
+		})
+		await deliverEvents(directory, "/project", controller.signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === storedKey)).toMatchObject({
+			pending: 200,
+			acknowledged: 300,
+		})
 	})
 
 	it("keeps an event batch without an error when the credential changes during its upload", async () => {

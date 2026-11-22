@@ -539,6 +539,18 @@ export function deliverSnapshots(
 	})
 }
 
+/** Compare a persisted account key without rewriting it: the API base is canonical, while org/user match exactly. */
+function sameStoredWorkAccount(storedKey: string, account: WorkAccount): boolean {
+	try {
+		const value: unknown = JSON.parse(storedKey)
+		if (!Array.isArray(value) || value.length !== 3) return false
+		const parsed = { apiUrl: value[0], organizationId: value[1], userId: value[2] }
+		return isWorkAccount(parsed) && sameWorkAccount(parsed, account)
+	} catch {
+		return false
+	}
+}
+
 /** Frozen delta batches use the existing reporting worker; inference and proxy metrics are not prerequisites. */
 export function deliverEvents(
 	agentDir: string,
@@ -551,7 +563,9 @@ export function deliverEvents(
 		const backend = backendFor(agentDir)
 		// Pass-scoped signature cache; details at the snapshots deliver path below the events loop.
 		let queueFile: FreshReportingState = {}
-		for (let attempt = 0; attempt < 3; attempt++) {
+		let deliveredBatches = 0
+		for (;;) {
+			const previousDeliveries = deliveredBatches
 			check()
 			const due = outboxDeliveryStatus(agentDir).filter(
 				(status) => (status.sendable || status.hasBatch) && (status.retry?.retryAt ?? 0) <= Date.now(),
@@ -630,112 +644,120 @@ export function deliverEvents(
 				await recordReportingError(agentDir, errorMessage)
 				return
 			}
-			const accountId = accountKey(account)
-			// Events captured under another account wait for its credential without verifying on every pass.
-			const others = due.filter((status) => status.accountKey !== accountId)
+			// URL forms compare canonically, exactly as snapshots do. Never rewrite the stored keys, though:
+			// old batches, events and ACKs remain related by their original persisted key.
+			const others = due.filter((status) => !sameStoredWorkAccount(status.accountKey, account))
 			if (others.length) defer(others, "PR reporting is waiting for the original account")
-			const own = due.filter((status) => status.accountKey === accountId)
+			const own = due.filter((status) => sameStoredWorkAccount(status.accountKey, account))
 			if (!own.length) return
-			let batch: OutboxBatch | undefined
-			const ready = await withReportingConsent(
-				agentDir,
-				(fence) => {
-					batch = pendingBatch(agentDir, accountId, fence)
-				},
-				assertCurrent,
-			)
-			if (!ready || !batch) return
-			const sent = batch
-			const schedule = deliveryRetry(backend, accountId, sent.id)
-			if (schedule && schedule.retryAt > Date.now()) return
-			status = undefined
-			retryAfterMs = null
-			try {
-				let dispatched: Promise<Response> | undefined
-				if (
-					!(await withReportingConsent(
-						agentDir,
-						(fence) => {
-							const current = pendingBatch(agentDir, accountId, fence)
-							if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
-								throw new Error("PR cost event batch changed")
-							fence()
-							// Launch under the old-writer lock; await network and body reads after releasing it.
-							dispatched = fetch(
-								`${apiUrl}/ai-optimizer/v1beta/organizations/${account.organizationId}/pr-cost-events:batchIngest`,
-								{
-									method: "POST",
-									body: Buffer.from(sent.body).toString("utf8"),
-									redirect: "error",
-									signal: combined,
-									headers: {
-										Authorization: `Bearer ${key}`,
-										...(organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: organizationId } : {}),
-										"Content-Type": "application/json",
-										Accept: "application/json",
-									},
-								},
-							)
-							void dispatched.catch(() => {})
-						},
-						assertCurrent,
-					))
+			for (const { accountKey: accountId } of own) {
+				check()
+				let batch: OutboxBatch | undefined
+				const ready = await withReportingConsent(
+					agentDir,
+					(fence) => {
+						batch = pendingBatch(agentDir, accountId, fence)
+					},
+					assertCurrent,
 				)
-					return
-				if (!dispatched) throw new Error("PR cost event batch was not dispatched")
-				const response = await readResponse(await dispatched)
-				assertCurrent()
-				if (!response.ok) throw new Error(errorMessage)
-				const ack: Acknowledgement = await response.json()
-				assertCurrent()
-				let acknowledged = false
-				if (
-					!(await withReportingConsent(
-						agentDir,
-						(fence) => {
-							backend.tx(() => {
-								acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)
-								if (acknowledged) backend.deleteNote("pr-cost-delivery", accountId)
-								fence()
-							})
-						},
-						assertCurrent,
-					)) ||
-					!acknowledged
-				)
-					return
-				trackPRCostMetric({ kind: "delivery", outcome: "success" })
-			} catch {
-				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
-				if (signal.aborted) return
+				if (!ready) return
+				if (!batch) continue
+				const sent = batch
+				const schedule = deliveryRetry(backend, accountId, sent.id)
+				if (schedule && schedule.retryAt > Date.now()) continue
+				status = undefined
+				retryAfterMs = null
 				try {
-					assertOwnership()
+					let dispatched: Promise<Response> | undefined
+					if (
+						!(await withReportingConsent(
+							agentDir,
+							(fence) => {
+								const current = pendingBatch(agentDir, accountId, fence)
+								if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
+									throw new Error("PR cost event batch changed")
+								fence()
+								// Launch under the old-writer lock; await network and body reads after releasing it.
+								dispatched = fetch(
+									`${apiUrl}/ai-optimizer/v1beta/organizations/${account.organizationId}/pr-cost-events:batchIngest`,
+									{
+										method: "POST",
+										body: Buffer.from(sent.body).toString("utf8"),
+										redirect: "error",
+										signal: combined,
+										headers: {
+											Authorization: `Bearer ${key}`,
+											...(organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: organizationId } : {}),
+											"Content-Type": "application/json",
+											Accept: "application/json",
+										},
+									},
+								)
+								void dispatched.catch(() => {})
+							},
+							assertCurrent,
+						))
+					)
+						return
+					if (!dispatched) throw new Error("PR cost event batch was not dispatched")
+					const response = await readResponse(await dispatched)
+					assertCurrent()
+					if (!response.ok) throw new Error(errorMessage)
+					const ack: Acknowledgement = await response.json()
+					assertCurrent()
+					let acknowledged = false
+					if (
+						!(await withReportingConsent(
+							agentDir,
+							(fence) => {
+								backend.tx(() => {
+									acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)
+									if (acknowledged) backend.deleteNote("pr-cost-delivery", accountId)
+									fence()
+								})
+							},
+							assertCurrent,
+						)) ||
+						!acknowledged
+					)
+						return
+					deliveredBatches++
+					trackPRCostMetric({ kind: "delivery", outcome: "success" })
 				} catch {
+					trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
+					if (signal.aborted) return
+					try {
+						assertOwnership()
+					} catch {
+						return
+					}
+					const attempts = Number(schedule?.attempts ?? 0)
+					backend.tx(() => {
+						assertOwnership()
+						if (backend.getOutboxBatch(accountId)?.id !== sent.id) return
+						// 409: the server holds other content under this batch ID, so its events go out in a new batch.
+						if (status === 409) backend.deleteOutboxBatch(accountId, sent.id)
+						else
+							backend.putNote(
+								"pr-cost-delivery",
+								accountId,
+								JSON.stringify({
+									batchId: sent.id,
+									attempts: attempts + 1,
+									retryAt: Date.now() + retryDelay(status, attempts, retryAfterMs),
+									resume,
+									error: errorMessage,
+								}),
+							)
+						assertOwnership()
+					})
+					await recordReportingError(agentDir, errorMessage)
 					return
 				}
-				const attempts = Number(schedule?.attempts ?? 0)
-				backend.tx(() => {
-					assertOwnership()
-					if (backend.getOutboxBatch(accountId)?.id !== sent.id) return
-					// 409: the server holds other content under this batch ID, so its events go out in a new batch.
-					if (status === 409) backend.deleteOutboxBatch(accountId, sent.id)
-					else
-						backend.putNote(
-							"pr-cost-delivery",
-							accountId,
-							JSON.stringify({
-								batchId: sent.id,
-								attempts: attempts + 1,
-								retryAt: Date.now() + retryDelay(status, attempts, retryAfterMs),
-								resume,
-								error: errorMessage,
-							}),
-						)
-					assertOwnership()
-				})
-				await recordReportingError(agentDir, errorMessage)
-				return
 			}
+			// An empty or concurrently changed batch may remain visible in status without delivering.
+			// Only a fully acknowledged batch is evidence that another pass is warranted.
+			if (deliveredBatches === previousDeliveries) return
 		}
 	})
 }
