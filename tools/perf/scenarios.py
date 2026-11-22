@@ -893,6 +893,7 @@ def flatten_total(tot):
 
 
 def cleanup(tp, pid, sampler, cg=None):
+    groups = tp.owned_groups()
     try:
         tp.send("/quit\r")
         wait_zombie(pid, 10)
@@ -900,7 +901,6 @@ def cleanup(tp, pid, sampler, cg=None):
         pass
     if not sampler.stop_ev.is_set():
         sampler.stop()
-    groups = tp.owned_groups()
     reap_process_tree(tp.proc, 0, groups, force=True)
     tp.close()
     if cg is not None:
@@ -1280,7 +1280,6 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                     # All destructive admission and shape checks run only on copies.
                     # Start the measured smoke scenario from the pristine warm state.
                     fixtures.remap_warm_home(os.path.join(root, "pristine-warm"), env["HOME"])
-                    continue
                 if not check_version(binary, env, cwd):
                     failures.append(f"{sc}: binary reports no version")
                     continue

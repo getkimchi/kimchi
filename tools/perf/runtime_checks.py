@@ -140,10 +140,11 @@ def check_native_warm_cancellation():
     process = multiprocessing.Process(target=_run_scenario, args=(binary, os.path.join(root, "result.jsonl")), daemon=True)
     process.start()
     try:
+        driver_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "warm-billing.ts"))
         deadline = time.monotonic() + 180
         while True:
             waves = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True).splitlines()
-            if any("/tmp/kimchi-realistic-fixture/tools/perf/warm-billing.ts" in row for row in waves):
+            if any(driver_path in row.split() for row in waves):
                 break
             assert process.exitcode is None, f"scenario exited before native warming: {process.exitcode}"
             assert time.monotonic() < deadline, "native warming did not start in time"
@@ -163,8 +164,12 @@ def check_native_warm_cancellation():
         assert not survivors, survivors
     finally:
         if process.is_alive():
+            os.kill(process.pid, signal.SIGTERM)
+            process.join(timeout=30)
+        if process.is_alive():
             os.kill(process.pid, signal.SIGKILL)
             process.join(timeout=10)
+        assert not process.is_alive(), "failed to terminate owned scenario"
         shutil.rmtree(root, ignore_errors=True)
         if prior is None:
             os.environ.pop("KIMCHI_PERF_LEDGER_RECORDS", None)
@@ -193,8 +198,56 @@ def check_timeout_composition():
     assert expected_growth == 780, expected_growth
 
 
+def check_permission_errors_are_not_suppressed():
+    import sampler
+    class Driver:
+        pid = 99999999
+        def __init__(self):
+            self.waited = []
+            self.kill_called = False
+        def poll(self):
+            return -9
+        def wait(self, timeout):
+            self.waited.append(timeout)
+            return -9
+        def kill(self):
+            self.kill_called = True
+    proc = Driver()
+    with unittest.mock.patch.object(sampler.os, "getpgid", return_value=0), \
+            unittest.mock.patch.object(sampler.os, "killpg", side_effect=PermissionError("fixture denied")):
+        try:
+            sampler.reap_process_tree(proc, 0, {proc.pid}, force=True)
+        except PermissionError as error:
+            assert str(error) == "fixture denied", str(error)
+        else:
+            raise AssertionError("permission error was suppressed")
+    assert proc.waited == [10], proc.waited
+    assert not proc.kill_called
+
+
+def check_zombie_cleanup():
+    import sampler
+    proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    group = os.getpgid(proc.pid)
+    try:
+        state = sampler.wait_zombie(proc.pid, 10)
+        assert state is not False, "child did not exit"
+        status = subprocess.check_output(["ps", "-p", str(proc.pid), "-o", "stat="], text=True).strip()
+        assert status.startswith("Z"), status
+        with unittest.mock.patch.object(sampler.os, "killpg", side_effect=PermissionError("owned zombie")):
+            result = sampler.reap_process_tree(proc, 0, {group}, force=True)
+        assert result == 124, result
+        assert proc.poll() is not None, "zombie root was not reaped"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+
+
 if __name__ == "__main__":
     check_independent_grandchild_session()
+    check_permission_errors_are_not_suppressed()
+    check_zombie_cleanup()
     check_independent_grandchild_session(root_exits_first=True)
     check_timeout_composition()
     check_linux_subreaper_contract()

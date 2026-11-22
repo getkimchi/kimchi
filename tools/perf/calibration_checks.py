@@ -44,7 +44,8 @@ def base_record(scenario, rep=0):
 
 def test_root(generation):
     root = tempfile.mkdtemp(prefix="perf-calibration-check-")
-    budgets = {"_meta": {"counter": "cgroup-instructions", "ledger_generation": generation}}
+    budgets = {"_meta": {"counter": "cgroup-instructions", "ledger_generation": generation,
+                         "source_sha": "source-fixture", "harness_sha": "harness-fixture"}}
     for scenario, metrics in gate.EXTRACTORS.items():
         budgets[scenario] = {metric: {"limit": meta[3][1] if meta[3][0] == gate.ABS else 1000}
                              for metric, meta in metrics.items()}
@@ -117,6 +118,26 @@ def check_cases():
         f.write(json.dumps(anonymous) + "\n")
     with unittest.mock.patch.object(sys, "argv", ["gate.py", "--dry-run", "--runs", anonymous_path, "--budgets", budget_path]):
         expect_rejection_without_write(lambda: gate.main(), budget_path, "missing measurement identity: source_sha")
+    root, budget_path = test_root(fixtures.LEDGER_GENERATION)
+    wrong = base_record("ledger")
+    path = os.path.join(root, "wrong-source.jsonl")
+    with open(path, "w") as f:
+        f.write(json.dumps(wrong) + "\n")
+    with open(budget_path) as f:
+        budget = json.load(f)
+    budget["_meta"]["source_sha"] = "another-source"
+    with open(budget_path, "w") as f:
+        json.dump(budget, f)
+    with unittest.mock.patch.object(sys, "argv", ["gate.py", "--dry-run", "--runs", path, "--budgets", budget_path]):
+        expect_rejection_without_write(lambda: gate.main(), budget_path, "source_sha mismatch with budgets")
+    budget["_meta"]["source_sha"] = "source-fixture"
+    budget["_meta"]["harness_sha"] = "another-harness"
+    with open(budget_path, "w") as f:
+        json.dump(budget, f)
+    with unittest.mock.patch.object(gate, "run_scenarios", return_value=({"ledger": [wrong, wrong]}, set())), \
+            unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable,
+                                                    "--scenarios", "ledger", "--budgets", budget_path]):
+        expect_rejection_without_write(lambda: gate.main(), budget_path, "harness_sha mismatch with budgets")
     shutil.rmtree(root, ignore_errors=True)
 
     root, budget_path = test_root("previous-generation")

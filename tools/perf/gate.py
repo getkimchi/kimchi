@@ -201,7 +201,7 @@ def generation_mismatch(records, budgets):
     return None
 
 
-def measurement_identity_mismatch(records):
+def measurement_identity_mismatch(records, budgets=None):
     """Identity required on every comparison, not just on budget authoring."""
     for record in records:
         missing = [key for key in ("fixture_generation", "source_sha", "harness_sha")
@@ -211,6 +211,13 @@ def measurement_identity_mismatch(records):
     for key in ("source_sha", "harness_sha"):
         if any(record.get(key) != records[0].get(key) for record in records):
             return f"inconsistent {key} across reps"
+    if budgets is not None and records:
+        meta = budgets.get("_meta", {})
+        for key in ("source_sha", "harness_sha"):
+            if not meta.get(key):
+                return f"budgets lack {key} required for comparison"
+            if any(record.get(key) != meta[key] for record in records):
+                return f"{key} mismatch with budgets"
     return None
 
 
@@ -593,7 +600,7 @@ def main():
             ledger_records = [r for r in records if r.get("scenario") == "ledger"]
             mismatch = generation_mismatch(ledger_records, budgets)
             if mismatch is None and ledger_records:
-                mismatch = measurement_identity_mismatch(ledger_records)
+                mismatch = measurement_identity_mismatch(ledger_records, budgets)
             if mismatch is not None:
                 raise SystemExit(mismatch)
         expected_tier = budgets.get("_meta", {}).get("counter")
@@ -645,9 +652,11 @@ def main():
             raise SystemExit(mismatch)
     by_scenario, failed_scenarios = run_scenarios(binary, scenarios, args, out_dir)
     if "ledger" in scenarios and not args.calibrate and by_scenario.get("ledger"):
-        mismatch = generation_mismatch(by_scenario["ledger"], json.load(open(args.budgets)))
+        with open(args.budgets) as f:
+            budget = json.load(f)
+        mismatch = generation_mismatch(by_scenario["ledger"], budget)
         if mismatch is None:
-            mismatch = measurement_identity_mismatch(by_scenario["ledger"])
+            mismatch = measurement_identity_mismatch(by_scenario["ledger"], budget)
         if mismatch is not None:
             raise SystemExit(mismatch)
 

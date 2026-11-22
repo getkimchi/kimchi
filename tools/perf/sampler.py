@@ -264,29 +264,43 @@ def reap_process_tree(proc, timeout_s, owned_groups=(), force=False):
         pass
     groups.update(descendant_process_groups(proc.pid))
     caller_pgid = os.getpgid(0)
-    if proc.poll() is None:
+    def signal_groups(sig):
         for group in groups:
             if group == caller_pgid:
                 continue
             try:
-                os.killpg(group, signal.SIGSTOP)
-            except (ProcessLookupError, PermissionError):
-                # The group may have disappeared as its root exited.
+                os.killpg(group, sig)
+            except ProcessLookupError:
                 pass
-    # No owned child can fork after this point, so include sessions
-    # created between the first snapshot and freezing the tree.
-    groups.update(descendant_process_groups(proc.pid))
-    for group in groups:
-        if group == caller_pgid:
-            continue
+            except PermissionError as error:
+                snapshot = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,uid=,stat="],
+                                          capture_output=True, text=True).stdout
+                members = [line.split() for line in snapshot.splitlines()
+                           if line.split() and int(line.split()[2]) == group]
+                if members and all(member[4].startswith("Z") for member in members):
+                    # Darwin rejects SIGSTOP/SIGCONT for a zombie-only group
+                    # with EPERM. No live member needs signaling or can spawn.
+                    continue
+                error.add_note(f"owned-tree cleanup: pid={proc.pid}, group={group}, "
+                               f"caller_pgid={caller_pgid}, groups={sorted(groups)}, "
+                               f"root_returncode={proc.poll()}, members={members}")
+                raise
+
+    try:
+        # Freeze all owned groups, including an already-exited root's, so
+        # descendants cannot create more independent sessions.
+        signal_groups(signal.SIGSTOP)
+        groups.update(descendant_process_groups(proc.pid))
+        signal_groups(signal.SIGKILL)
+    finally:
+        # Always reap the driver. A permission failure is not a vanished group,
+        # and must retain its original exception rather than be hidden.
         try:
-            os.killpg(group, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            # Likewise, a teardown can race a root's exit.
+            if proc.poll() is None:
+                proc.kill()
+        except ProcessLookupError:
             pass
-    if proc.poll() is None:
-        proc.kill()
-    proc.wait(timeout=10)
+        proc.wait(timeout=10)
     return 124
 
 
