@@ -91,20 +91,28 @@ work-counter tier different from the budgets' calibration tier, or a
 binary whose self-reported version differs from what CI built
 (`--expect-version`) all fail the run. Unknown budget keys warn (rename drift in the other
 direction); PR-controlled strings are sanitized before they reach the CI
-step summary.
+step summary. Unknown budget keys also fail.
 
 The current limits live in [budgets.json](budgets.json); its `_meta`
 records the arch/commit/runner/counter tier they were calibrated on.
+The ordinary gate compares against the matching fixture generation.
+Source and harness SHAs record calibration provenance; ordinary comparisons
+do not require the measured commit to equal that historical calibration commit.
 
-## Instructions per blocking pass
+The ordinary gate covers `session`, `resume`, and `idle`. The `ledger`
+comparison is opt-in until its new generation has budgets from exactly two
+complete, passing repetitions of the actual source PR. Request it with
+`--scenarios ledger`; never repurpose legacy-run limits as a new-generation
+calibration. The 100 ms keystroke guard is always preserved.
 
 ## Usage
 
 ```sh
 pnpm run build:binary
 pnpm run perf:gate          # run all scenarios, compare medians to budgets
-pnpm run perf:budgets       # regenerate tools/perf/budgets.json
+pnpm run perf:budgets       # regenerate tools/perf/budgets.json from two green reps
 pnpm run perf:selfcheck     # harness self-test: fixtures, validators, scenarios
+python3 tools/perf/gate.py --dry-run --runs <records.jsonl>  # validate saved measurements
 ```
 
 Run the selfcheck whenever you touch `fixtures.py`, `fakellm.py`,

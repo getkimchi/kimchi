@@ -946,11 +946,8 @@ def warm_ledger(root, env, cwd, binary):
             health = projection_ready()
         if not health["projection"].get("ready"):
             raise RuntimeError(f"ledger warm-up did not reach steady state: {health}; {tp.plain()[-600:]}")
-        tp.send("/quit\r")
-        try:
-            tp.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            reap_process_tree(tp.proc, 0, force=True)
+        # cleanup captures ownership before asking the application to exit.
+        # Native reconciliation must not start until that owned tree is gone.
         cleanup(tp, tp.proc.pid, sampler, cg)
         root_closed = True
         driver = subprocess.Popen(
@@ -959,6 +956,7 @@ def warm_ledger(root, env, cwd, binary):
             env=env, cwd=env["HOME"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, start_new_session=True,
         )
+        owned = set()
         try:
             owned = {driver.pid}
             owned.update(descendant_process_groups(driver.pid))
@@ -986,6 +984,8 @@ def warm_ledger(root, env, cwd, binary):
         if not health["pricing"].get("ready"):
             raise RuntimeError(f"reconciliation produced no saved priced evidence: {health}")
         fixtures.remap_warm_home(env["HOME"], cache)
+        # Exercise the actual reuse remap, not just the initial cache admission:
+        # this checks cursor and path rewriting in the measured HOME.
         fixtures.remap_warm_home(cache, env["HOME"])
     finally:
         if not root_closed:

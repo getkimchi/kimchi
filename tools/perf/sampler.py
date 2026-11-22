@@ -262,7 +262,13 @@ def reap_process_tree(proc, timeout_s, owned_groups=(), force=False):
             return proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         pass
-    groups.update(descendant_process_groups(proc.pid))
+    def refresh_groups():
+        # A reaped PID may belong to a new, unrelated process. A live or
+        # zombie root still has a stable identity for descendant discovery.
+        if proc.returncode is None:
+            groups.update(descendant_process_groups(proc.pid))
+
+    refresh_groups()
     caller_pgid = os.getpgid(0)
     def signal_groups(sig):
         for group in groups:
@@ -290,7 +296,7 @@ def reap_process_tree(proc, timeout_s, owned_groups=(), force=False):
         # Freeze all owned groups, including an already-exited root's, so
         # descendants cannot create more independent sessions.
         signal_groups(signal.SIGSTOP)
-        groups.update(descendant_process_groups(proc.pid))
+        refresh_groups()
         signal_groups(signal.SIGKILL)
     finally:
         # Always reap the driver. A permission failure is not a vanished group,

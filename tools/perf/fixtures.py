@@ -514,11 +514,11 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
                 # Stream the heavy fixture: one large journal (~2% of records)
                 # and many small ones, with a bounded insert batch and no
                 # million-element list of record dictionaries retained.
+                total = transitions_per_repo + commits_per_repo + 2 * (filler_per_repo // 2)
                 def record_bodies():
                     for i in range(total):
                         yield _mixed_record_body(repo, base_url, ri * 1000000 + i)
                 bodies = record_bodies()
-                total = transitions_per_repo + commits_per_repo + 2 * (filler_per_repo // 2)
                 if total < journal_count:
                     raise ValueError("heavy fixture needs at least one record per journal")
                 largest = min(total - journal_count + 1, max(1, int(total * 0.02)))

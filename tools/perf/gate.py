@@ -201,8 +201,8 @@ def generation_mismatch(records, budgets):
     return None
 
 
-def measurement_identity_mismatch(records, budgets=None):
-    """Identity required on every comparison, not just on budget authoring."""
+def measurement_identity_mismatch(records):
+    """Record complete, internally consistent measurement provenance."""
     for record in records:
         missing = [key for key in ("fixture_generation", "source_sha", "harness_sha")
                    if not record.get(key)]
@@ -211,13 +211,6 @@ def measurement_identity_mismatch(records, budgets=None):
     for key in ("source_sha", "harness_sha"):
         if any(record.get(key) != records[0].get(key) for record in records):
             return f"inconsistent {key} across reps"
-    if budgets is not None and records:
-        meta = budgets.get("_meta", {})
-        for key in ("source_sha", "harness_sha"):
-            if not meta.get(key):
-                return f"budgets lack {key} required for comparison"
-            if any(record.get(key) != meta[key] for record in records):
-                return f"{key} mismatch with budgets"
     return None
 
 
@@ -429,11 +422,9 @@ def compare(scenario, metrics, budgets):
             continue
         ratio = measured / limit if limit else float("inf")
         status = "PASS" if measured <= limit else f"FAIL ({ratio:.2f}x limit)"
-        if measured <= 0 and "zero_ok" not in EXTRACTORS[scenario][m][3]:
-            # A gated metric of exactly zero means the counter did not fire
-            # (unsupported on this runner) — never a pass. Count-style metrics
-            # where zero is a legitimate reading (and their budget note says so)
-            # mark the mode tuple with "zero_ok".
+        if measured <= 0:
+            # Zero means the backend did not report a gated metric. Do not
+            # convert a broken sampler into a passing measurement.
             status = "FAIL (counter reads zero; runner/kernel does not report it)"
             failures.append((scenario, m, measured, limit, None))
         elif measured > limit:
@@ -496,6 +487,7 @@ def run_scenarios(binary, scenarios, args, out_dir):
         for sig in previous:
             signal.signal(sig, cancel)
         driver = None
+        owned = set()
         try:
             driver = subprocess.Popen(cmd, start_new_session=True)
             owned = {driver.pid}
@@ -566,7 +558,7 @@ def main():
     ap.add_argument("--budgets", default=DEFAULT_BUDGETS)
     ap.add_argument("--out", default=None, help="runs directory (default: <temp>/kimchi-perf-gate; must be outside any kimchi project)")
     ap.add_argument("--reps", type=int, default=2)
-    ap.add_argument("--scenarios", default="session,resume,idle,ledger")
+    ap.add_argument("--scenarios", default="session,resume,idle")
     ap.add_argument("--idle", type=float, default=90.0)  # whole 30s pass periods
     ap.add_argument("--stuck", type=float, default=60.0,
                     help="idle stuck-queue phase window (s): retries retired past the window, work must collapse")
@@ -600,7 +592,7 @@ def main():
             ledger_records = [r for r in records if r.get("scenario") == "ledger"]
             mismatch = generation_mismatch(ledger_records, budgets)
             if mismatch is None and ledger_records:
-                mismatch = measurement_identity_mismatch(ledger_records, budgets)
+                mismatch = measurement_identity_mismatch(ledger_records)
             if mismatch is not None:
                 raise SystemExit(mismatch)
         expected_tier = budgets.get("_meta", {}).get("counter")
@@ -656,7 +648,7 @@ def main():
             budget = json.load(f)
         mismatch = generation_mismatch(by_scenario["ledger"], budget)
         if mismatch is None:
-            mismatch = measurement_identity_mismatch(by_scenario["ledger"], budget)
+            mismatch = measurement_identity_mismatch(by_scenario["ledger"])
         if mismatch is not None:
             raise SystemExit(mismatch)
 

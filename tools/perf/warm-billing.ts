@@ -28,7 +28,11 @@ import {
 	stableID,
 	validateIngestEvent,
 } from "../../src/extensions/pr-cost-reporting/protocol.ts"
-import { accountKey, type RepositoryIdentity } from "../../src/extensions/pr-cost-reporting/snapshot.ts"
+import {
+	accountKey,
+	parseStoredWorkAccount,
+	type RepositoryIdentity,
+} from "../../src/extensions/pr-cost-reporting/snapshot.ts"
 import { readWorkCostReportAsync, reconcileWorkCosts } from "../../src/extensions/work-attribution/cost-sync.ts"
 import { isWorkScope, type WorkAccount } from "../../src/extensions/work-attribution/scope.ts"
 import type { WorkRecord } from "../../src/extensions/work-attribution/summary.ts"
@@ -69,7 +73,10 @@ function repositoriesFor(records: readonly WorkRecord[]): Map<string, Repository
 }
 
 /** Translate authority records with the real claim builder and observe its facts through CAS. */
-async function seedClaimHistory(agentDir: string, controller: AbortController): Promise<number> {
+async function seedClaimHistory(
+	agentDir: string,
+	controller: AbortController,
+): Promise<{ history: ExpectedHistory; translated: number }> {
 	const reporting = JSON.parse(readFileSync(join(agentDir, "pr-cost-reporting", "state.json"), "utf8")) as {
 		producerId: string
 	}
@@ -210,8 +217,10 @@ function verifyLinkedClaims(agentDir: string): number {
 	return 3
 }
 
-function isCurrentAccount(fields: readonly unknown[], endpoint: string, account: WorkAccount): boolean {
-	return fields[0] === endpoint && fields[1] === account.organizationId && fields[2] === account.userId
+function isCurrentAccount(stored: WorkAccount, endpoint: string, account: WorkAccount): boolean {
+	return (
+		stored.apiUrl === endpoint && stored.organizationId === account.organizationId && stored.userId === account.userId
+	)
 }
 
 /** Drain current history while retaining legacy and foreign pending history. */
@@ -226,13 +235,12 @@ async function acknowledgeCurrentHistory(agentDir: string, controller: AbortCont
 	const seenLegacy = new Set<string>()
 	const expectedByAccount = new Map<string, { events: number; pending: number; acknowledged: number }>()
 	for (const [rawKey, ids] of history) {
-		const fields: unknown = JSON.parse(rawKey)
-		if (!Array.isArray(fields) || fields.length !== 3 || typeof fields[0] !== "string")
-			throw new Error("Invalid stored account key")
+		const stored = parseStoredWorkAccount(rawKey)
+		if (!stored) throw new Error("Invalid stored account key")
 		const expectedAcknowledged =
-			fields[0] === LEGACY_API
+			stored.apiUrl === LEGACY_API
 				? Math.min(100, ids.size)
-				: isCurrentAccount(fields, endpoint, currentAccount)
+				: isCurrentAccount(stored, endpoint, currentAccount)
 					? ids.size
 					: 0
 		expectedByAccount.set(rawKey, {
@@ -243,12 +251,11 @@ async function acknowledgeCurrentHistory(agentDir: string, controller: AbortCont
 	}
 	let batches = 0
 	for (const status of readOutboxStatus(agentDir)) {
-		const fields: unknown = JSON.parse(status.accountKey)
-		if (!Array.isArray(fields) || fields.length !== 3 || typeof fields[0] !== "string")
-			throw new Error("Invalid stored account key")
 		const rawKey = status.accountKey
-		const isLegacy = fields[0] === LEGACY_API
-		const isCurrent = isCurrentAccount(fields, endpoint, currentAccount)
+		const stored = parseStoredWorkAccount(rawKey)
+		if (!stored) throw new Error("Invalid stored account key")
+		const isLegacy = stored.apiUrl === LEGACY_API
+		const isCurrent = isCurrentAccount(stored, endpoint, currentAccount)
 		if (isLegacy ? seenLegacy.has(rawKey) : !isCurrent) continue
 		const ids = history.get(rawKey)
 		if (!ids) throw new Error("Stored account is absent from the expected history")

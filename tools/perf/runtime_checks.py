@@ -84,6 +84,59 @@ def check_independent_grandchild_session(root_exits_first=False):
             proc.wait(timeout=5)
 
 
+def check_no_rescan_of_reaped_root():
+    import sampler
+    proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    group = os.getpgid(proc.pid)
+    proc.wait(timeout=10)
+    try:
+        with unittest.mock.patch.object(sampler, "descendant_process_groups",
+                                        side_effect=AssertionError("reaped PID was rescanned")):
+            result = sampler.reap_process_tree(proc, 0, {group}, force=True)
+        assert result == 124, result
+    finally:
+        proc.wait(timeout=10)
+
+
+def check_gate_cancellation_before_owned():
+    import gate
+    from calibration_checks import test_root
+    class Driver:
+        def __init__(self):
+            self.signaled = False
+        @property
+        def pid(self):
+            if not self.signaled:
+                self.signaled = True
+                signal.raise_signal(signal.SIGTERM)
+            return 99999999
+    driver = Driver()
+    calls = []
+    def fake_reaper(actual, timeout_s, groups, **_kwargs):
+        calls.append((actual, groups, timeout_s, _kwargs.get("force", False)))
+        return 0
+    root, budget_path = test_root("ledger-heavy-v2")
+    old_handler = signal.getsignal(signal.SIGTERM)
+    real_popen = gate.subprocess.Popen
+    def fake_popen(argv, **kwargs):
+        return real_popen(argv, **kwargs) if argv[0] == "ps" else driver
+    try:
+        with unittest.mock.patch.object(gate.subprocess, "Popen", side_effect=fake_popen), \
+                unittest.mock.patch.object(gate, "reap_process_tree", side_effect=fake_reaper), \
+                unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable,
+                                                        "--scenarios", "ledger", "--budgets", budget_path]):
+            try:
+                gate.main()
+            except SystemExit as error:
+                assert str(error) == "perf gate cancelled", str(error)
+            else:
+                raise AssertionError("early cancellation was not delivered")
+        assert calls == [(driver, set(), 0, True)], calls
+        assert signal.getsignal(signal.SIGTERM) == old_handler, "signal handler was not restored"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def check_gate_cancellation():
     import gate
     from calibration_checks import test_root
@@ -203,6 +256,7 @@ def check_permission_errors_are_not_suppressed():
     class Driver:
         pid = 99999999
         def __init__(self):
+            self.returncode = -9
             self.waited = []
             self.kill_called = False
         def poll(self):
@@ -249,6 +303,8 @@ if __name__ == "__main__":
     check_permission_errors_are_not_suppressed()
     check_zombie_cleanup()
     check_independent_grandchild_session(root_exits_first=True)
+    check_no_rescan_of_reaped_root()
+    check_gate_cancellation_before_owned()
     check_timeout_composition()
     check_linux_subreaper_contract()
     check_gate_cancellation()
