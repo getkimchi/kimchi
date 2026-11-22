@@ -296,6 +296,21 @@ describe("account-fenced reporting delivery", () => {
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(http).not.toHaveBeenCalled()
 	})
+	it("preserves cooperative journal-prefix verification during capture", async () => {
+		const importer = vi.spyOn(summary, "importWorkRecordsAsync")
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(importer).toHaveBeenCalledWith(directory, expect.any(Function), expect.any(Function), true)
+	})
+	it("stamps the gate from delivery-only status instead of historical aggregation", async () => {
+		await seedCoverageEvents(accountKey(content.account), 1)
+		acceptEventBatches()
+		const fullStatus = vi.spyOn(outbox, "readOutboxStatus").mockImplementation(() => {
+			throw new Error("historical aggregation must not gate delivery")
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(1)
+		expect(fullStatus).not.toHaveBeenCalled()
+	})
 	it("delivers from the projection rather than aggregating the full status", async () => {
 		await seedCoverageEvents(accountKey(content.account), 1)
 		acceptEventBatches()
