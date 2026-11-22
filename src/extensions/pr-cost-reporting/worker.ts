@@ -30,6 +30,7 @@ import {
 	effectiveClaimsAsync,
 	type Fact,
 	observeEvents,
+	outboxDeliveryStatus,
 	pendingBatch,
 	readOutboxStatus,
 } from "./ledger/outbox.js"
