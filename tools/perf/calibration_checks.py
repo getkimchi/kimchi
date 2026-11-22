@@ -59,12 +59,15 @@ def test_root(generation):
     return root, path
 
 
-def invoke(binary, budget_path, records, reps=2):
+def invoke(binary, budget_path, records, reps=2, scenarios=None):
     groups = {}
     for record in records:
         groups.setdefault(record["scenario"], []).append(record)
+    if scenarios is not None:
+        groups = {scenarios: groups[scenarios]}
+    for_scenario = ["--scenarios", scenarios] if scenarios is not None else []
     with unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", binary, "--calibrate", "--budgets", budget_path,
-                                               "--reps", str(reps)]), \
+                                               "--reps", str(reps), *for_scenario]), \
             unittest.mock.patch.object(gate, "run_scenarios", return_value=(groups, set())):
         gate.main()
 
@@ -149,6 +152,23 @@ def check_cases():
     first = records[-1]
     records[-1]["source_sha"] = "different-source"
     expect_rejection_without_write(lambda: invoke(sys.executable, budget_path, records), budget_path, "inconsistent source_sha")
+    root, budget_path = test_root(fixtures.LEDGER_GENERATION)
+    with open(budget_path) as f:
+        old = json.load(f)
+    old["_meta"]["source_sha"] = "old-source"
+    old["_meta"]["harness_sha"] = "old-harness"
+    with open(budget_path, "w") as f:
+        json.dump(old, f)
+    before = json.load(open(budget_path))
+    records = [base_record("session"), base_record("session")]
+    invoke(sys.executable, budget_path, records, scenarios="session")
+    changed = json.load(open(budget_path))
+    if changed["ledger"] != before["ledger"]: raise AssertionError("session calibration rewrote ledger limits")
+    for key in ("ledger_generation", "source_sha", "harness_sha"):
+        if changed["_meta"].get(key) != before["_meta"].get(key):
+            raise AssertionError(f"session calibration rewrote {key}")
+    if gate.generation_mismatch([], changed) is not None:
+        raise AssertionError("session calibration produced an unusable ledger generation")
     shutil.rmtree(root, ignore_errors=True)
     print("calibration checks OK: generation failures and preservation are verified")
 

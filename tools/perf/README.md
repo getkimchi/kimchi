@@ -156,7 +156,7 @@ then exits. A separate native warm-up uses actual `buildEvents`/
 `observeEvents`/frozen-ACK functions to produce about 600k events linked to
 actual request/billing/test evidence. Current history is acknowledged, one
 legacy batch is acknowledged, and the larger legacy backlog plus a small
-foreign-account backlog remain pending (about 70% overall). A later actual
+foreign-account backlog remain pending (about 80% overall). A later actual
 response must advance a request claim to revision 2 without forking it.
 
 Warm-home reuse is scoped by executable, harness source, repository/worktree,

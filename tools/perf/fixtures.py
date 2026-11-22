@@ -465,7 +465,7 @@ def _seed_outbox_history(con, base_url, count):
     """
     if count < 3:
         raise ValueError("retained-history fixture needs three accounts")
-    legacy_key = js([base_url.rstrip("/") + "/", HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
+    legacy_key = js(["https://app.kimchi.dev/api", HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
     current_key = js([base_url, HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
     foreign_key = js([base_url, _work_id(2_000_000), _work_id(2_000_001)])
     # deliveryRetry requires batchId to match the first batch; this profile
@@ -679,6 +679,20 @@ def validate_warm_home(home):
             actual = con.execute(sql).fetchone()[0]
             if not isinstance(summary.get(key), int) or summary[key] != actual:
                 raise ValueError(f"warmed {key}: summary={summary.get(key)!r}, database={actual}")
+        expected = summary.get("expected_by_account")
+        if not isinstance(expected, dict):
+            raise ValueError("warm summary lacks per-account expectations")
+        actual = {row[0]: {"pending": row[1], "acknowledged": row[2], "events": row[3]}
+                  for row in con.execute("SELECT account_key, SUM(acked_at IS NULL), "
+                                         "SUM(acked_at IS NOT NULL), COUNT(*) FROM outbox_events GROUP BY account_key")}
+        if set(actual) != set(expected):
+            raise ValueError("warm-cache account set does not match the expected history")
+        for key, expected_shape in expected.items():
+            if not isinstance(expected_shape, dict): raise ValueError("invalid per-account expectation")
+            for metric in ("events", "pending", "acknowledged"):
+                if type(expected_shape.get(metric)) is not int or expected_shape[metric] != actual[key][metric]:
+                    raise ValueError(f"warmed account shape: expected {metric}={expected_shape.get(metric)!r}, "
+                                     f"actual={actual[key][metric]}")
     from sampler import reap_process_tree
     driver = subprocess.Popen([shutil.which("bun"), os.path.join(os.path.dirname(__file__), "warm-billing.ts"),
                                agent, "--verify-claims"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,

@@ -432,6 +432,16 @@ IDLE_VARIANTS = ("idle_healthy", "idle_fresh")
 LEDGER_RECORDS = 1_110_000
 LEDGER_OUTBOX_EVENTS = 600_000
 LEDGER_JOURNALS = 1_000
+LEDGER_WARM_LIMIT_S = 900
+LEDGER_READY_LIMIT_S = 240
+LEDGER_MEASUREMENT_S = 180
+LEDGER_REMAINING_CACHE_VALIDATIONS = 4 * 90
+
+
+def scenario_timeout(scenario, reps):
+    if scenario != "ledger":
+        return 900
+    return LEDGER_WARM_LIMIT_S + reps * (LEDGER_READY_LIMIT_S + LEDGER_MEASUREMENT_S + LEDGER_REMAINING_CACHE_VALIDATIONS)
 
 # One repository keeps repository-discovery noise stable while work-record,
 # journal, and outbox history reproduce the heavy-install cost drivers.
@@ -732,7 +742,7 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
     return res
 
 
-def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
+def run_ledger(binary, env, cwd, srv_state, total_s=LEDGER_MEASUREMENT_S, bucket_s=10.0):
     """Production-scale ledger, idle timeline. Gates: per-window work and
     keystroke p95.
 
@@ -781,7 +791,7 @@ def run_ledger(binary, env, cwd, srv_state, total_s=180, bucket_s=10.0):
     try:
         # Full-scale first-open import and optional bundled-tool fetch can exceed
         # two minutes before the measured steady-state window begins.
-        if not wait_fixture_ready(tp, 240):
+        if not wait_fixture_ready(tp, LEDGER_READY_LIMIT_S):
             res["error"] = "ready marker not seen"
             res["exit_code"] = tp.proc.poll()
             res["screen_tail"] = tp.plain()[-1200:]
@@ -927,9 +937,9 @@ def warm_ledger(root, env, cwd, binary):
         return {"cache_hit": True, "prepare_s": round(time.perf_counter() - started, 2)}
     tp, sampler, cg = launch(env, cwd, [binary, "--provider", "fake", "--model", "basic"], "ledger-warm")
     try:
-        if not wait_fixture_ready(tp, 240):
+        if not wait_fixture_ready(tp, LEDGER_READY_LIMIT_S):
             raise RuntimeError("ledger warm-up did not reach an editor")
-        deadline = time.time() + 900
+        deadline = time.time() + LEDGER_WARM_LIMIT_S
         def projection_ready():
             return {"projection": fixtures.ledger_projection_health(env["HOME"])}
         health = projection_ready()
@@ -1199,6 +1209,26 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                         failures.append("ledger warm-up did not establish real steady-state projections")
                     if not fixtures.ledger_pricing_health(env["HOME"]).get("ready"):
                         failures.append("ledger warm-up did not publish priced billing evidence")
+                    partial_home = os.path.join(root, "partial-home")
+                    fixtures.remap_warm_home(env["HOME"], partial_home)
+                    partial = subprocess.Popen([shutil.which("bun"), os.path.join(os.path.dirname(__file__), "warm-billing.ts"),
+                                                os.path.join(partial_home, ".config", "kimchi", "harness"),
+                                                "--partial-history"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                               stdin=subprocess.DEVNULL, text=True, start_new_session=True,
+                                               env=env)
+                    try:
+                        code = reap_process_tree(partial, 120)
+                        detail = partial.stderr.read()
+                        if code == 0:
+                            failures.append("partial fresh request history was accepted")
+                        elif "Expected " not in detail:
+                            failures.append(f"partial-history rejection did not explain the missing requests: {detail[-600:]}")
+                    finally:
+                        if partial.poll() is None:
+                            reap_process_tree(partial, 0)
+                        partial.stdout.close()
+                        partial.stderr.close()
+                    shutil.rmtree(partial_home, ignore_errors=True)
                     corrupt = os.path.join(root, "incomplete-warm")
                     fixtures.remap_warm_home(env["HOME"], corrupt)
                     with sqlite3.connect(os.path.join(
@@ -1211,6 +1241,18 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                     except ValueError:
                         pass
                     shutil.rmtree(corrupt, ignore_errors=True)
+                    summary_path = os.path.join(env["HOME"], ".config", "kimchi", "harness", "warm-summary.json")
+                    summary = json.load(open(summary_path))
+                    first_account = next(iter(summary["expected_by_account"]))
+                    summary["expected_by_account"][first_account]["pending"] += 1
+                    with open(summary_path, "w") as handle:
+                        json.dump(summary, handle)
+                    try:
+                        fixtures.validate_warm_home(env["HOME"])
+                        failures.append("tampered per-account expected history was accepted")
+                    except ValueError as error:
+                        if "warmed account shape" not in str(error):
+                            failures.append(f"wrong expected-account diagnosis: {error}")
                     summary_path = os.path.join(env["HOME"], ".config", "kimchi", "harness", "warm-summary.json")
                     os.rename(summary_path, summary_path + ".valid")
                     try:

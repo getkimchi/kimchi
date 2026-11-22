@@ -7,6 +7,7 @@ import {
 	acknowledgeBatch,
 	effectiveClaim,
 	effectiveClaims,
+	type Fact,
 	observeEvents,
 	pendingBatch,
 	readOutboxStatus,
@@ -19,13 +20,38 @@ import {
 	readStoredRecordsAsync,
 	type StoredRecord,
 } from "../../src/extensions/pr-cost-reporting/ledger/records.ts"
-import { type Batch, stableID } from "../../src/extensions/pr-cost-reporting/protocol.ts"
+import {
+	type Batch,
+	encodeEvent,
+	eventHash,
+	normalizeIngestTimes,
+	stableID,
+	validateIngestEvent,
+} from "../../src/extensions/pr-cost-reporting/protocol.ts"
 import { accountKey, type RepositoryIdentity } from "../../src/extensions/pr-cost-reporting/snapshot.ts"
 import { readWorkCostReportAsync, reconcileWorkCosts } from "../../src/extensions/work-attribution/cost-sync.ts"
-import { isWorkScope } from "../../src/extensions/work-attribution/scope.ts"
+import { isWorkScope, type WorkAccount } from "../../src/extensions/work-attribution/scope.ts"
 import type { WorkRecord } from "../../src/extensions/work-attribution/summary.ts"
 
 const LEGACY_API = "https://app.kimchi.dev/api"
+
+function recordExpectations(
+	account: Parameters<typeof accountKey>[0],
+	facts: readonly Fact[],
+	expected: Map<string, Set<string>>,
+): void {
+	const key = accountKey(account)
+	const ids = expected.get(key) ?? new Set<string>()
+	for (const fact of facts) {
+		const event = normalizeIngestTimes({ ...fact, id: "", revision: "1", baseRevision: "0", baseEventId: "" })
+		event.id = stableID(key, event.entityId, eventHash(event))
+		validateIngestEvent(event, encodeEvent(event))
+		ids.add(event.id)
+	}
+	expected.set(key, ids)
+}
+
+type ExpectedHistory = Map<string, Set<string>>
 
 function repositoriesFor(records: readonly WorkRecord[]): Map<string, RepositoryIdentity> {
 	const repositories = [...new Set(records.flatMap((row) => (isWorkScope(row.scope) ? [row.scope.repository] : [])))]
@@ -59,7 +85,10 @@ async function seedClaimHistory(agentDir: string, controller: AbortController): 
 		works.set(row.workId, group)
 	}
 	let translated = 0
+	const history: ExpectedHistory = new Map()
+	const producedRequests = new Set<string>()
 	for (const [index, rows] of [...works.values()].entries()) {
+		if (process.argv[3] === "--partial-history" && index > 0) break
 		controller.signal.throwIfAborted()
 		const records = rows.map((row) => JSON.parse(row.body) as WorkRecord)
 		const { report } = await readWorkCostReportAsync(records, async () => {})
@@ -76,7 +105,9 @@ async function seedClaimHistory(agentDir: string, controller: AbortController): 
 				`Unresolvable warm evidence: ${[...new Set(built.unresolved.map((row) => row.reason))].join(",")}`,
 			)
 		}
+		for (const unit of built.units) if (unit.requestId !== undefined) producedRequests.add(unit.requestId)
 		for (const group of built.accounts) {
+			recordExpectations(group.account, group.facts, history)
 			observeEvents(agentDir, accountKey(group.account), group.facts, group.recordHashes, () =>
 				controller.signal.throwIfAborted(),
 			)
@@ -84,7 +115,9 @@ async function seedClaimHistory(agentDir: string, controller: AbortController): 
 		}
 		if (index % 100 === 0) await setImmediate()
 	}
-	return translated
+	if (producedRequests.size !== expected)
+		throw new Error(`Expected ${expected} translated requests, found ${producedRequests.size}`)
+	return { history, translated }
 }
 
 function identity(request: WorkRecord | undefined, producerId: string) {
@@ -110,7 +143,7 @@ function identity(request: WorkRecord | undefined, producerId: string) {
 }
 
 /** A real subsequent response must advance, not fork or invalidate, the request claim chain. */
-async function verifyNextRevision(agentDir: string, controller: AbortController): Promise<void> {
+async function verifyNextRevision(agentDir: string, controller: AbortController): Promise<{ key: string; id: string }> {
 	const reporting = JSON.parse(readFileSync(join(agentDir, "pr-cost-reporting", "state.json"), "utf8")) as {
 		producerId: string
 	}
@@ -159,6 +192,7 @@ async function verifyNextRevision(agentDir: string, controller: AbortController)
 	const next = effectiveClaim(backendFor(agentDir), id.key, id.entity)
 	if (next?.usage?.counterScope !== "request" || next.revision !== "2")
 		throw new Error("Next real request did not advance its claim to revision 2")
+	return { key: id.key, id: next.id }
 }
 
 function verifyLinkedClaims(agentDir: string): number {
@@ -176,8 +210,12 @@ function verifyLinkedClaims(agentDir: string): number {
 	return 3
 }
 
+function isCurrentAccount(fields: readonly unknown[], endpoint: string, account: WorkAccount): boolean {
+	return fields[0] === endpoint && fields[1] === account.organizationId && fields[2] === account.userId
+}
+
 /** Drain current history while retaining legacy and foreign pending history. */
-async function acknowledgeCurrentHistory(agentDir: string, controller: AbortController): Promise<number> {
+async function acknowledgeCurrentHistory(agentDir: string, controller: AbortController, history: ExpectedHistory) {
 	const endpoint = process.env.KIMCHI_REMOTE_ENDPOINT
 	if (!endpoint) throw new Error("Missing fixture API endpoint")
 	const current = readRecords(agentDir, { type: "request" }).find(
@@ -186,6 +224,23 @@ async function acknowledgeCurrentHistory(agentDir: string, controller: AbortCont
 	if (!current?.scope || !isWorkScope(current.scope)) throw new Error("Missing current fixture account")
 	const currentAccount = current.scope.account
 	const seenLegacy = new Set<string>()
+	const expectedByAccount = new Map<string, { events: number; pending: number; acknowledged: number }>()
+	for (const [rawKey, ids] of history) {
+		const fields: unknown = JSON.parse(rawKey)
+		if (!Array.isArray(fields) || fields.length !== 3 || typeof fields[0] !== "string")
+			throw new Error("Invalid stored account key")
+		const expectedAcknowledged =
+			fields[0] === LEGACY_API
+				? Math.min(100, ids.size)
+				: isCurrentAccount(fields, endpoint, currentAccount)
+					? ids.size
+					: 0
+		expectedByAccount.set(rawKey, {
+			events: ids.size,
+			acknowledged: expectedAcknowledged,
+			pending: ids.size - expectedAcknowledged,
+		})
+	}
 	let batches = 0
 	for (const status of readOutboxStatus(agentDir)) {
 		const fields: unknown = JSON.parse(status.accountKey)
@@ -193,12 +248,10 @@ async function acknowledgeCurrentHistory(agentDir: string, controller: AbortCont
 			throw new Error("Invalid stored account key")
 		const rawKey = status.accountKey
 		const isLegacy = fields[0] === LEGACY_API
-		if (
-			isLegacy
-				? seenLegacy.has(rawKey)
-				: fields[0] !== endpoint || fields[1] !== currentAccount.organizationId || fields[2] !== currentAccount.userId
-		)
-			continue
+		const isCurrent = isCurrentAccount(fields, endpoint, currentAccount)
+		if (isLegacy ? seenLegacy.has(rawKey) : !isCurrent) continue
+		const ids = history.get(rawKey)
+		if (!ids) throw new Error("Stored account is absent from the expected history")
 		if (isLegacy) seenLegacy.add(rawKey)
 		let remaining = isLegacy ? 1 : Number.MAX_SAFE_INTEGER
 		while (remaining > 0) {
@@ -220,7 +273,16 @@ async function acknowledgeCurrentHistory(agentDir: string, controller: AbortCont
 			if (batches % 20 === 0) await setImmediate()
 		}
 	}
-	return { batches }
+	const actual = new Map(readOutboxStatus(agentDir).map((status) => [status.accountKey, status]))
+	if (actual.size !== expectedByAccount.size) throw new Error("Unexpected number of reporting accounts")
+	for (const [key, expected] of expectedByAccount) {
+		const status = actual.get(key)
+		if (status?.pending !== expected.pending || status.acknowledged !== expected.acknowledged)
+			throw new Error(
+				`Account acknowledgement shape mismatch: expected ${JSON.stringify(expected)}, got ${JSON.stringify(status)}`,
+			)
+	}
+	return { batches, expectedByAccount }
 }
 
 const agentDir = process.argv[2]
@@ -242,22 +304,31 @@ try {
 		acknowledged: status.acknowledged,
 		batches: status.batches,
 	}))
-	const translated = await seedClaimHistory(agentDir, controller)
+	const { history, translated } = await seedClaimHistory(agentDir, controller)
 	const claimsVerified = verifyLinkedClaims(agentDir)
-	await verifyNextRevision(agentDir, controller)
+	const next = await verifyNextRevision(agentDir, controller)
+	const ids = history.get(next.key)
+	if (!ids) throw new Error("Next request account is absent from the expected history")
+	ids.add(next.id)
 	const before = readOutboxStatus(agentDir).map((status) => status.pending)
-	const acknowledgements = await acknowledgeCurrentHistory(agentDir, controller)
+	const acknowledgements = await acknowledgeCurrentHistory(agentDir, controller, history)
 	await reconcileWorkCosts(agentDir, controller.signal)
-	const statuses = readOutboxStatus(agentDir)
 	writeFileSync(
 		join(agentDir, "warm-summary.json"),
 		JSON.stringify({
 			fixture_generation: process.env.KIMCHI_PERF_FIXTURE_GENERATION,
 			expected_requests: Number(process.env.KIMCHI_PERF_EXPECTED_REQUEST_COUNT),
 			requests: readRecords(agentDir, { type: "request" }).length,
-			outbox_events: statuses.reduce((total, status) => total + status.pending + status.acknowledged, 0),
-			outbox_pending: statuses.reduce((total, status) => total + status.pending, 0),
-			outbox_accounts: statuses.length,
+			outbox_events: [...acknowledgements.expectedByAccount.values()].reduce(
+				(total, account) => total + account.events,
+				0,
+			),
+			outbox_pending: [...acknowledgements.expectedByAccount.values()].reduce(
+				(total, account) => total + account.pending,
+				0,
+			),
+			outbox_accounts: acknowledgements.expectedByAccount.size,
+			expected_by_account: Object.fromEntries(acknowledgements.expectedByAccount),
 		}),
 	)
 	console.log(

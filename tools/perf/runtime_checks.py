@@ -109,7 +109,7 @@ def check_gate_cancellation():
                 assert str(error) == "perf gate cancelled", str(error)
             else:
                 raise AssertionError("cancellation did not escape the active driver wait")
-        assert calls == [900, 0], calls
+        assert calls == [gate.scenario_timeout("ledger", 2), 0], calls
         assert signal.getsignal(signal.SIGTERM) == old_handler, "signal handler was not restored"
         assert open(budget_path).read() == before
     finally:
@@ -178,8 +178,17 @@ def check_linux_subreaper_contract():
     assert calls == [(36, 1)], calls
 
 
+def check_timeout_composition():
+    import gate
+    assert gate.scenario_timeout("ledger", 2) == 2460, gate.scenario_timeout("ledger", 2)
+    assert gate.scenario_timeout("session", 2) == 900
+    expected_growth = gate.scenario_timeout("ledger", 3) - gate.scenario_timeout("ledger", 2)
+    assert expected_growth == 780, expected_growth
+
+
 if __name__ == "__main__":
     check_independent_grandchild_session()
+    check_timeout_composition()
     check_linux_subreaper_contract()
     check_gate_cancellation()
     check_native_warm_cancellation()

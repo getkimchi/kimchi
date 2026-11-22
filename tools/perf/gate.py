@@ -29,6 +29,7 @@ import signal
 import subprocess
 import unittest.mock
 from sampler import reap_process_tree
+from scenarios import scenario_timeout
 import sys
 import tempfile
 
@@ -490,7 +491,7 @@ def run_scenarios(binary, scenarios, args, out_dir):
         driver = None
         try:
             driver = subprocess.Popen(cmd, start_new_session=True)
-            returncode = reap_process_tree(driver, 900)
+            returncode = reap_process_tree(driver, scenario_timeout(sc, args.reps))
         finally:
             if driver is not None and driver.poll() is None:
                 reap_process_tree(driver, 0)
@@ -702,9 +703,14 @@ def main():
             if mismatch is not None:
                 raise SystemExit(f"refusing to calibrate: {mismatch}")
         ledger_record = ledger_records[0] if ledger_records else {}
-        budgets["_meta"]["ledger_generation"] = ledger_record.get("fixture_generation")
-        budgets["_meta"]["source_sha"] = ledger_record.get("source_sha")
-        budgets["_meta"]["harness_sha"] = ledger_record.get("harness_sha")
+        if ledger_records:
+            budgets["_meta"]["ledger_generation"] = ledger_record["fixture_generation"]
+            budgets["_meta"]["source_sha"] = ledger_record["source_sha"]
+            budgets["_meta"]["harness_sha"] = ledger_record["harness_sha"]
+        else:
+            for key in ("ledger_generation", "source_sha", "harness_sha"):
+                if key in previous.get("_meta", {}):
+                    budgets["_meta"][key] = previous["_meta"][key]
         for sc, recs in ok_by_scenario.items():
             metrics, _ = collect(recs)
             missing = [m for m in EXTRACTORS[sc]
