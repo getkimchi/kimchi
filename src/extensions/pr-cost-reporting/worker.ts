@@ -68,7 +68,7 @@ import {
 	UPLOAD_INTERVAL_MS,
 	withReportingConsent,
 } from "./queue.js"
-import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
+import { accountKey, parseStoredWorkAccount, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
 /** Failed repository-identity lookups wait this long before retrying, inside and outside a pass. */
@@ -541,14 +541,8 @@ export function deliverSnapshots(
 
 /** Compare a persisted account key without rewriting it: the API base is canonical, while org/user match exactly. */
 function sameStoredWorkAccount(storedKey: string, account: WorkAccount): boolean {
-	try {
-		const value: unknown = JSON.parse(storedKey)
-		if (!Array.isArray(value) || value.length !== 3) return false
-		const parsed = { apiUrl: value[0], organizationId: value[1], userId: value[2] }
-		return isWorkAccount(parsed) && sameWorkAccount(parsed, account)
-	} catch {
-		return false
-	}
+	const parsed = parseStoredWorkAccount(storedKey)
+	return parsed !== null && sameWorkAccount(parsed, account)
 }
 
 /** Frozen delta batches use the existing reporting worker; inference and proxy metrics are not prerequisites. */

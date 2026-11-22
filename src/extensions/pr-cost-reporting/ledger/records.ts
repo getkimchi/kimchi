@@ -728,7 +728,10 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			rows.push(
 				...db
 					.query<OutboxEvent, [string, ...string[]]>(
-						outboxClaimsSql(page.map(() => "?"), false),
+						outboxClaimsSql(
+							page.map(() => "?"),
+							false,
+						),
 					)
 					.all(accountKey, ...page),
 			)
@@ -745,7 +748,10 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 		// history ordered across pages because the caller consumes pages in order.
 		const positioned = db
 			.query<OutboxEvent & { position: number }, [string, ...string[], number, number]>(
-				outboxClaimsSql(entityIds.map(() => "?"), true),
+				outboxClaimsSql(
+					entityIds.map(() => "?"),
+					true,
+				),
 			)
 			.all(accountKey, ...entityIds, after, limit)
 		const rows = positioned.map(({ position, ...event }) => event)
