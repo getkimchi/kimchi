@@ -196,9 +196,11 @@ import {
 	BACKGROUND_RUNS_CAPABILITY,
 	getClientOptedIntoArtifacts,
 	getClientOptedIntoBackgroundRuns,
+	getClientOptedIntoMcpOAuthTurn,
 	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
+	MCP_OAUTH_TURN_CAPABILITY,
 	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
 import {
@@ -331,13 +333,20 @@ function resolveCliPermissionMode(): PermissionMode | undefined {
 	return undefined
 }
 
+type SessionMcpOAuthOptions = {
+	/** Mapped from initialize capabilities by the agent; not a wire request field. */
+	holdOAuthTurn?: boolean
+}
+type SessionFactoryParams = NewSessionRequest & SessionMcpOAuthOptions
+type SessionLoaderParams = LoadSessionRequest & SessionMcpOAuthOptions
+
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
  * model verification, extension binding, ACP prompter registration, and final
  * lifecycle registration. Exposed so tests can inject fakes; production uses
  * {@link defaultSessionFactory}.
  */
-export type AcpSessionFactory = (params: NewSessionRequest) => Promise<AgentSession>
+export type AcpSessionFactory = (params: SessionFactoryParams) => Promise<AgentSession>
 
 /**
  * Enumerates persisted sessions for a listSessions request. Mirrors pi's
@@ -351,7 +360,7 @@ export type AcpSessionLister = (params: ListSessionsRequest) => Promise<PiSessio
  * verification, extension binding, replay, and response shaping. Exposed so
  * tests can stub disk access.
  */
-export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSession>
+export type AcpSessionLoader = (params: SessionLoaderParams) => Promise<AgentSession>
 
 export interface RunAcpOptions {
 	extensionFactories: InlineExtension[]
@@ -784,6 +793,7 @@ export class KimchiAcpAgent implements Agent {
 					// button. Note the agent NEEDS this flag advertised only so
 					// clients feature-detect the gate; emission is opt-in gated.
 					[BACKGROUND_RUNS_CAPABILITY]: true,
+					[MCP_OAUTH_TURN_CAPABILITY]: true,
 					[PR_MONITORING_CAPABILITY]: true,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
@@ -1028,7 +1038,10 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-		const session = await this.sessionFactory(params)
+		const session = await this.sessionFactory({
+			...params,
+			holdOAuthTurn: getClientOptedIntoMcpOAuthTurn(this.clientCapabilities),
+		})
 		// Captured for the identity-checked catch unwind: a concurrent
 		// attach of the same id may own the prompter registry by then.
 		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
@@ -1340,7 +1353,10 @@ export class KimchiAcpAgent implements Agent {
 		// otherwise the session sits in `sessions` while loadSession rejects —
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
-		const session = await this.sessionLoader(params)
+		const session = await this.sessionLoader({
+			...params,
+			holdOAuthTurn: getClientOptedIntoMcpOAuthTurn(this.clientCapabilities),
+		})
 		const initialMode = this.getInitialPermissionMode(session)
 		const sessionId = session.sessionId
 		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
@@ -4404,7 +4420,7 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 async function createSessionSettings(
 	cwd: string,
 	options: RunAcpOptions,
-	params: { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
+	params: SessionMcpOAuthOptions & { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
 ) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
@@ -4427,9 +4443,13 @@ async function createSessionSettings(
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
-	// The adapter's ordinary OAuth watcher starts a fresh trigger-turn after
-	// authorization. ACP keeps that work inside the originating tool/model run.
-	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers, holdOAuthTurn: true })
+	// Only negotiated ACP clients keep the OAuth watcher inside the originating
+	// tool/model run. Every other client retains the ordinary follow-up run.
+	const mcpExtension = options.mcpExtensionFactory?.({
+		cwd,
+		callerServers,
+		holdOAuthTurn: params.holdOAuthTurn,
+	})
 	// The main loader carries the LIVE extension set (inline factories + MCP
 	// adapter) and is only reloaded on intentional full session reloads. The
 	// ACP adapter in front of it serves skills from per-session discovery
@@ -4455,7 +4475,7 @@ async function createSessionSettings(
 
 /** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
 export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
-	return async (params: LoadSessionRequest): Promise<AgentSession> => {
+	return async (params: SessionLoaderParams): Promise<AgentSession> => {
 		const cwd = params.cwd
 		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
 		// re-export getDefaultSessionDir from its package index. Threading
@@ -4597,7 +4617,7 @@ function bindSessionScopedOAuth(session: AgentSession, agentDir: string): void {
 
 /** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
 export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
-	return async (params: NewSessionRequest): Promise<AgentSession> => {
+	return async (params: SessionFactoryParams): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
 		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
 		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)

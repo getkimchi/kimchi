@@ -16,6 +16,7 @@ const OAUTH_SETTLE_QUIET_MS = 300
 const OAUTH_ACTION_TIMEOUT_MS = 15_000
 const OAUTH_PROMPT_TEXT = "Authenticate the MCP server, then call its protected echo tool"
 const LIFECYCLE_EXTENSION = fileURLToPath(new URL("./support/test-agent-lifecycle-extension.js", import.meta.url))
+const OAUTH_TURN_META = { "kimchi.dev": { mcpOAuthTurn: true } }
 
 type LifecycleEntry = { type: string; sessionId: string; toolName?: string; toolCallId?: string }
 
@@ -104,10 +105,69 @@ function oauthToolOutput(fixture: AcpMcpFixture, text: string): ToolCallUpdate["
 }
 
 it(
+	"preserves legacy OAuth boundaries for an unnegotiated client",
+	async () => {
+		const echo = gatewayMcpCall("echo", { message: "oauth-turn-legacy" })
+		const fixture = await startAcpMcpFixture({
+			artifactName: "acp-mcp-oauth-turn-legacy-capability",
+			extensionPath: LIFECYCLE_EXTENSION,
+			// A plain client declares no mcpOAuthTurn and no background-run opt-in.
+			clientMeta: { "kimchi.dev": { backgroundRuns: false } },
+			mcp: {
+				transport: "oauth",
+				oauthAutoComplete: false,
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-turn-legacy" }] },
+							{ message: "oauth-turn-legacy" },
+						),
+					],
+				},
+			},
+			responses: [
+				authStartForPrompt("fixture", OAUTH_PROMPT_TEXT, "oauth-start-legacy"),
+				echo.response,
+				modelReply("Authorization instructions returned."),
+				modelReply("OAuth follow-up completed after browser authorization."),
+			],
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const first = await withTimeout(prompt(fixture, sessionId, OAUTH_PROMPT_TEXT), "unnegotiated OAuth prompt")
+			expect(first.stopReason).toBe("end_turn")
+			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
+			expect(fixture.mcp.eventsOfType("tool_called")).toHaveLength(0)
+			const modelRequestsBeforeAuthorization = fixture.fake.requests.length
+
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "legacy MCP OAuth authorization",
+			})
+			expect((await openAuthorization(opened.target)).ok).toBe(true)
+			// Preserve the pre-gate lifecycle: the adapter's ordinary wake becomes
+			// its own model run, not another phase of the original client prompt.
+			await expect
+				.poll(() => agentEndCount(fixture.homeDir, sessionId), { message: "legacy adapter follow-up" })
+				.toBe(2)
+			expect(fixture.fake.requests.length).toBeGreaterThan(modelRequestsBeforeAuthorization)
+			expect(fixture.initializeResponse.agentCapabilities._meta).toMatchObject(OAUTH_TURN_META)
+
+			await delay(OAUTH_SETTLE_QUIET_MS)
+			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(2)
+		} finally {
+			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it(
 	"keeps the originating prompt pending until OAuth and all resumed work complete",
 	async () => {
 		const echo = gatewayMcpCall("echo", { message: "oauth-turn-success" })
 		const fixture = await startAcpMcpFixture({
+			clientMeta: OAUTH_TURN_META,
 			artifactName: "acp-mcp-oauth-turn-success",
 			extensionPath: LIFECYCLE_EXTENSION,
 			mcp: {
@@ -218,6 +278,7 @@ it(
 	async () => {
 		const echo = gatewayMcpCall("echo", { message: "oauth-fast-callback" })
 		const fixture = await startAcpMcpFixture({
+			clientMeta: OAUTH_TURN_META,
 			artifactName: "acp-mcp-oauth-turn-fast-callback",
 			extensionPath: LIFECYCLE_EXTENSION,
 			mcp: {
@@ -262,6 +323,7 @@ it(
 	"returns immediately when auth-start finds an existing OAuth grant",
 	async () => {
 		const fixture = await startAcpMcpFixture({
+			clientMeta: OAUTH_TURN_META,
 			artifactName: "acp-mcp-oauth-turn-existing-grant",
 			extensionPath: LIFECYCLE_EXTENSION,
 			mcp: { transport: "oauth", oauthAutoComplete: true },
@@ -307,6 +369,7 @@ it(
 		const echo = gatewayMcpCall("echo", { message: "oauth-manual-callback" })
 		const releaseCallbackPort = await occupyOAuthCallbackPort()
 		const fixture = await startAcpMcpFixture({
+			clientMeta: OAUTH_TURN_META,
 			artifactName: "acp-mcp-oauth-turn-remote-manual",
 			extensionPath: LIFECYCLE_EXTENSION,
 			mcp: {
@@ -391,6 +454,7 @@ it(
 async function verifySettledOAuthOutcome(scenario: "oauth-deny" | "oauth-token-failure"): Promise<void> {
 	const finalText = scenario === "oauth-deny" ? "The user cancelled OAuth." : "OAuth token issuance failed."
 	const fixture = await startAcpMcpFixture({
+		clientMeta: OAUTH_TURN_META,
 		artifactName: `acp-mcp-oauth-turn-${scenario}`,
 		extensionPath: LIFECYCLE_EXTENSION,
 		mcp: { transport: "oauth", scenario, oauthAutoComplete: false },
@@ -462,6 +526,7 @@ it.each([
 	"$kind during OAuth releases the session and prevents late continuation work",
 	async ({ kind, promptText }) => {
 		const fixture = await startAcpMcpFixture({
+			clientMeta: OAUTH_TURN_META,
 			artifactName: `acp-mcp-oauth-turn-${kind}`,
 			extensionPath: LIFECYCLE_EXTENSION,
 			mcp: { transport: "oauth", oauthAutoComplete: false },
@@ -542,6 +607,7 @@ it(
 			const echoA = gatewayMcpCall("echo", { message: "session-a" })
 			const echoB = gatewayMcpCall("echo", { message: "session-b" }, { serverName: "secondary" })
 			fixture = await startAcpMcpFixture({
+				clientMeta: OAUTH_TURN_META,
 				artifactName: "acp-mcp-oauth-turn-session-isolation",
 				homeDirOverride: homeDir,
 				workDirOverride: workDir,
@@ -673,6 +739,7 @@ it(
 	"rejects a duplicate auth-start without replacing the original pending flow",
 	async () => {
 		const fixture = await startAcpMcpFixture({
+			clientMeta: OAUTH_TURN_META,
 			artifactName: "acp-mcp-oauth-turn-duplicate-start",
 			extensionPath: LIFECYCLE_EXTENSION,
 			mcp: { transport: "oauth", oauthAutoComplete: false },
@@ -732,6 +799,7 @@ it(
 		const firstPrompt = "Start the cancellable OAuth flow"
 		const retryPrompt = "Retry OAuth after explicit cancel"
 		const fixture = await startAcpMcpFixture({
+			clientMeta: OAUTH_TURN_META,
 			artifactName: "acp-mcp-oauth-turn-cancel-retry",
 			extensionPath: LIFECYCLE_EXTENSION,
 			mcp: { transport: "oauth", oauthAutoComplete: false },

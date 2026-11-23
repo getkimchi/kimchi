@@ -102,6 +102,19 @@ when v2 stabilizes.)
    pattern in `src/extensions/bash-background/session-policy.ts`
    (`setBackgroundRunsPermitted` / `getBackgroundRunsPermitted`, mapped from the
    `backgroundRuns` client capability).
+   For MCP browser OAuth, `_meta["kimchi.dev"].mcpOAuthTurn: true` at
+   initialize opts into holding the originating prompt through watcher-backed
+   authorization and its resumed model/tool work. The agent advertises the same
+   key for feature detection. Omission or `false` preserves the legacy early
+   prompt completion and ordinary adapter follow-up run. The capability is
+   independent from `backgroundRuns`; the [v2 RFD list](https://agentclientprotocol.com/rfds/v2/overview)
+   has no MCP-specific OAuth authorization surface, and Background Work is
+   about work outliving a foreground run, not this ownership change.
+   Remote HTTPS redirects without loopback capture are the deliberate
+   exception even for opted-in clients: there is no watcher to hold, so the
+   first prompt returns paste instructions and a later prompt performs
+   `auth-complete`. See `mcp-oauth-turn-lifecycle.test.ts` for both negotiated
+   and default-client coverage. Studio's adoption is tracked by #798.
 2. **Schema-first.** *(Anchor: tool-calls §rawInput + patch semantics.)* New wire content
    names its field in the spec/SDK first; if it is not in the schema, it goes in `_meta`.
    Never invent top-level fields (the spec reserves them). `rawInput` is the agent's
