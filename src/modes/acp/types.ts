@@ -1,6 +1,6 @@
 import type { PromptResponse } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import type { ArtifactFileSnapshot } from "../../extensions/artifacts/detect.js"
+import type { ArtifactFileSnapshot, ArtifactSnapshotClaim } from "../../extensions/artifacts/detect.js"
 import type { TurnArtifactBuffer } from "./artifact-links.js"
 import type { AcpSkillInfo } from "./skill-commands.js"
 
@@ -72,7 +72,16 @@ export type TurnContext = {
 	 * detection against args+result together. Same lifecycle as
 	 * pendingFileChanges: set at start, deleted at end / retireToolCall.
 	 */
-	toolCallArgs: Map<string, { toolName: string; args: unknown; startedAt: number; fileSnapshot?: ArtifactFileSnapshot }>
+	toolCallArgs: Map<
+		string,
+		{
+			toolName: string
+			args: unknown
+			startedAt: number
+			fileSnapshot?: ArtifactFileSnapshot
+			snapshotClaim: ArtifactSnapshotClaim
+		}
+	>
 	/**
 	 * Per-turn artifact accumulator (artifact-links.ts): detected files plus
 	 * the attachment point (last text block id). finalizeTurn flushes it as

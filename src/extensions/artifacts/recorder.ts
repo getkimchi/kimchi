@@ -13,7 +13,14 @@
 
 import { statSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
-import { type Artifact, type ArtifactFileSnapshot, artifactsFromToolCall, snapshotArtifactFiles } from "./detect.js"
+import {
+	type Artifact,
+	type ArtifactFileSnapshot,
+	type ArtifactSnapshotClaim,
+	artifactsFromToolCall,
+	releaseArtifactSnapshot,
+	snapshotArtifactFiles,
+} from "./detect.js"
 
 export const ARTIFACTS_ENTRY_TYPE = "kimchi-artifacts"
 
@@ -48,6 +55,7 @@ type PendingArtifactCall = {
 	cwd: string
 	startedAt: number
 	fileSnapshot: ArtifactFileSnapshot
+	snapshotClaim: ArtifactSnapshotClaim
 }
 
 // Run-scoped artifact accumulator: detection runs per turn_end, but the
@@ -146,14 +154,23 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 		try {
 			const startedAt = Date.now()
 			const cwd = ctx.sessionManager.getCwd()
-			const fileSnapshot = snapshotArtifactFiles(event.toolName, event.args, cwd)
-			if (!fileSnapshot) return
+			const snapshotClaim = {
+				scope: ctx.sessionManager,
+				toolCallId: event.toolCallId,
+				consumer: "recorder" as const,
+			}
+			const fileSnapshot = snapshotArtifactFiles(event.toolName, event.args, cwd, snapshotClaim)
+			if (!fileSnapshot) {
+				releaseArtifactSnapshot(snapshotClaim)
+				return
+			}
 			pendingShellCalls.set(event.toolCallId, {
 				toolName: event.toolName,
 				args: event.args,
 				cwd,
 				startedAt,
 				fileSnapshot,
+				snapshotClaim,
 			})
 		} catch {
 			// Detection must never prevent the command from executing.
@@ -166,18 +183,22 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 			const pending = pendingShellCalls.get(event.toolCallId)
 			pendingShellCalls.delete(event.toolCallId)
 			if (!pending) return
-			// Match live ACP and the legacy detector: failed calls produce no
-			// artifacts. Consume an explicit empty result so turn_end cannot
-			// fall back and re-admit a file created before the failure.
-			completedShellCalls.set(
-				event.toolCallId,
-				event.isError
-					? []
-					: artifactsFromToolCall(pending.toolName, pending.args, event.result, pending.cwd, {
-							windowStart: pending.startedAt,
-							fileSnapshot: pending.fileSnapshot,
-						}),
-			)
+			try {
+				// Match live ACP and the legacy detector: failed calls produce no
+				// artifacts. Consume an explicit empty result so turn_end cannot
+				// fall back and re-admit a file created before the failure.
+				completedShellCalls.set(
+					event.toolCallId,
+					event.isError
+						? []
+						: artifactsFromToolCall(pending.toolName, pending.args, event.result, pending.cwd, {
+								windowStart: pending.startedAt,
+								fileSnapshot: pending.fileSnapshot,
+							}),
+				)
+			} finally {
+				releaseArtifactSnapshot(pending.snapshotClaim)
+			}
 		} catch {
 			// The legacy turn_end path remains as a conservative fallback.
 		}
@@ -211,6 +232,7 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 				return false
 			}
 		})
+		for (const pending of pendingShellCalls.values()) releaseArtifactSnapshot(pending.snapshotClaim)
 		pendingShellCalls.clear()
 		completedShellCalls.clear()
 		if (!artifacts.length) return

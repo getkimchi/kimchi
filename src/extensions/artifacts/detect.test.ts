@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ARTIFACT_EXTENSIONS, artifactsFromToolCall, snapshotArtifactFiles } from "./detect.js"
+import { ARTIFACT_EXTENSIONS, artifactsFromToolCall, releaseArtifactSnapshot, snapshotArtifactFiles } from "./detect.js"
 
 let cwd: string
 
@@ -335,6 +335,33 @@ describe("artifactsFromToolCall", () => {
 				windowStart: Date.now(),
 				fileSnapshot,
 			})
+			expect(out.map((a) => a.path)).toEqual([created])
+		})
+
+		it("shares ACP and recorder snapshots until both consumers release them", () => {
+			const scope = {}
+			const acpClaim = { scope, toolCallId: "shared-call", consumer: "acp" as const }
+			const recorderClaim = { scope, toolCallId: "shared-call", consumer: "recorder" as const }
+			const first = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, acpClaim)
+			const second = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, recorderClaim)
+			expect(second).toBe(first)
+			releaseArtifactSnapshot(acpClaim)
+			releaseArtifactSnapshot(recorderClaim)
+			const next = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, acpClaim)
+			expect(next).not.toBe(first)
+			releaseArtifactSnapshot(acpClaim)
+		})
+
+		it("skips a mismatched snapshot without disabling redirect or output detection", () => {
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			const created = touch("out/final.html")
+			const out = artifactsFromToolCall(
+				"bash",
+				{ command: "cd out && node build.js" },
+				textResult("wrote final.html"),
+				cwd,
+				{ windowStart: Date.now(), fileSnapshot },
+			)
 			expect(out.map((a) => a.path)).toEqual([created])
 		})
 

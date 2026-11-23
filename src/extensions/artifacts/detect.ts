@@ -229,6 +229,22 @@ type FileStamp = { mtimeMs: number; size: number }
  */
 export type ArtifactFileSnapshot = { cwd: string; files: ReadonlyMap<string, FileStamp> }
 
+/** One consumer of a shared execution snapshot (live ACP or recorder). */
+export type ArtifactSnapshotClaim = {
+	scope: object
+	toolCallId: string
+	consumer: "acp" | "recorder"
+}
+
+const sharedSnapshots = new WeakMap<
+	object,
+	Map<string, { snapshot: ArtifactFileSnapshot | undefined; consumers: Set<ArtifactSnapshotClaim["consumer"]> }>
+>()
+
+function isArtifactExtension(path: string): boolean {
+	return extname(path).toLowerCase() in ARTIFACT_EXTENSIONS
+}
+
 function supportedDirectoryFiles(cwd: string): Map<string, FileStamp> {
 	const files = new Map<string, FileStamp>()
 	let entries: Dirent[]
@@ -238,7 +254,7 @@ function supportedDirectoryFiles(cwd: string): Map<string, FileStamp> {
 		return files
 	}
 	for (const entry of entries) {
-		if (!(extname(entry.name).toLowerCase() in ARTIFACT_EXTENSIONS)) continue
+		if (!isArtifactExtension(entry.name)) continue
 		try {
 			const path = join(cwd, entry.name)
 			const stats = statSync(path)
@@ -259,8 +275,7 @@ function shellCommandContext(toolName: string, args: unknown, cwd: string) {
 	return { segments, cwd: navigatedCwd(segments, cwd) }
 }
 
-/** Capture command-scoped file state before a foreground shell tool runs. */
-export function snapshotArtifactFiles(toolName: string, args: unknown, cwd: string): ArtifactFileSnapshot | undefined {
+function captureArtifactSnapshot(toolName: string, args: unknown, cwd: string): ArtifactFileSnapshot | undefined {
 	try {
 		const context = shellCommandContext(toolName, args, cwd)
 		if (!context) return undefined
@@ -268,6 +283,44 @@ export function snapshotArtifactFiles(toolName: string, args: unknown, cwd: stri
 	} catch {
 		return undefined
 	}
+}
+
+/**
+ * Capture command-scoped file state before a foreground shell tool runs.
+ * ACP and the recorder pass the same SessionManager as `claim.scope`, so
+ * they share the one directory scan instead of duplicating synchronous I/O.
+ */
+export function snapshotArtifactFiles(
+	toolName: string,
+	args: unknown,
+	cwd: string,
+	claim?: ArtifactSnapshotClaim,
+): ArtifactFileSnapshot | undefined {
+	if (!claim) return captureArtifactSnapshot(toolName, args, cwd)
+	let calls = sharedSnapshots.get(claim.scope)
+	if (!calls) {
+		calls = new Map()
+		sharedSnapshots.set(claim.scope, calls)
+	}
+	const existing = calls.get(claim.toolCallId)
+	if (existing) {
+		existing.consumers.add(claim.consumer)
+		return existing.snapshot
+	}
+	const snapshot = captureArtifactSnapshot(toolName, args, cwd)
+	calls.set(claim.toolCallId, { snapshot, consumers: new Set([claim.consumer]) })
+	return snapshot
+}
+
+/** Release one consumer; the snapshot dies after its last user finishes. */
+export function releaseArtifactSnapshot(claim: ArtifactSnapshotClaim): void {
+	const calls = sharedSnapshots.get(claim.scope)
+	const existing = calls?.get(claim.toolCallId)
+	if (!calls || !existing) return
+	existing.consumers.delete(claim.consumer)
+	if (existing.consumers.size > 0) return
+	calls.delete(claim.toolCallId)
+	if (calls.size === 0) sharedSnapshots.delete(claim.scope)
 }
 
 function changedSnapshotArtifacts(snapshot: ArtifactFileSnapshot, opts: DetectOpts): Artifact[] {
@@ -322,8 +375,8 @@ type DetectOpts = {
 // Candidates always have to exist on disk — this is live detection; replay
 // reads recorded rows instead of re-running this pipeline.
 function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts, origin: Artifact["origin"]): Artifact | null {
+	if (!isArtifactExtension(rawPath)) return null
 	const mimeType = ARTIFACT_EXTENSIONS[extname(rawPath).toLowerCase()]
-	if (mimeType === undefined) return null
 	let path: string
 	try {
 		path = resolveToolPath(rawPath, cwd)
@@ -407,7 +460,7 @@ function redirectArtifacts(segments: CommandSegments, cwd: string, opts: DetectO
 	for (const segment of segments) {
 		for (const op of segment.ops) {
 			if ((op.op !== ">" && op.op !== ">>") || typeof op.target !== "string") continue
-			if (!(extname(op.target).toLowerCase() in ARTIFACT_EXTENSIONS)) continue
+			if (!isArtifactExtension(op.target)) continue
 			const artifact = artifactFromPath(op.target, cwd, opts, "sniffed")
 			if (!artifact || seen.has(artifact.path)) continue
 			seen.add(artifact.path)

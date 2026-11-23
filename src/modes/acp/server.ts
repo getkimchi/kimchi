@@ -93,7 +93,7 @@ import {
 	markCredentialStale,
 	prepareCredentialForLogin,
 } from "../../credential-staleness.js"
-import { snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
+import { releaseArtifactSnapshot, snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import {
@@ -2801,11 +2801,17 @@ export class KimchiAcpAgent implements Agent {
 				// startedAt anchors the artifact mtime window (see
 				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
 				const startedAt = Date.now()
+				const snapshotClaim = {
+					scope: entry.session.sessionManager,
+					toolCallId: event.toolCallId,
+					consumer: "acp" as const,
+				}
 				turn.toolCallArgs.set(event.toolCallId, {
 					toolName: event.toolName,
 					args: event.args,
 					startedAt,
-					fileSnapshot: snapshotArtifactFiles(event.toolName, event.args, entry.cwd),
+					fileSnapshot: snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim),
+					snapshotClaim,
 				})
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
@@ -2918,6 +2924,7 @@ export class KimchiAcpAgent implements Agent {
 							this.send({ sessionId, update })
 					}
 				}
+				if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
 				const preWrite = turn.preWriteContents.get(event.toolCallId)
 				turn.preWriteContents.delete(event.toolCallId)
 				// Diffs are additional content blocks, appended after the existing
@@ -3457,6 +3464,8 @@ export class KimchiAcpAgent implements Agent {
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
 		turn.lastStreamedContent.delete(piToolCallId)
+		const stashed = turn.toolCallArgs.get(piToolCallId)
+		if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
 		turn.toolCallArgs.delete(piToolCallId)
 		if (opts.removeFromHidden) {
 			turn.hiddenToolCallIds.delete(piToolCallId)

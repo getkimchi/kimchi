@@ -37,8 +37,10 @@ Source of truth: `src/extensions/artifacts/detect.ts`. Three inputs per tool cal
 
 The artifact-recorder extension (`src/extensions/artifacts/recorder.ts`, both
 surfaces) runs the same detection at every turn end. For foreground shell
-calls it captures the same pre-execution snapshot as live ACP, diffs it at
-tool execution end, and associates the result with that call; turn-end
+calls it claims the same cached pre-execution snapshot as live ACP through
+the shared SessionManager and tool-call ID. The startup directory scan runs
+once; each consumer releases its claim after diffing at tool execution end.
+Turn-end
 detection remains the backward-compatible fallback for events without
 execution-start captures. Results accumulate across the
 agent run, and the recorder appends one row at `agent_settled` (once per prompt —

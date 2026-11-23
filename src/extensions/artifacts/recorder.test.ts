@@ -322,6 +322,73 @@ describe("artifact-recorder", () => {
 		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
 	})
 
+	it("does not leak a late completed shell call into the next prompt", async () => {
+		const lateReport = join(cwd, "late.html")
+		const nextReport = touch("next.md")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-late",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: { role: "assistant", timestamp: now, content: [] },
+				toolResults: [],
+			},
+			ctx,
+		)
+		writeFileSync(lateReport, "<h1>Late</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-late",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [{ type: "toolCall", id: "tc-next", name: "write", arguments: { path: nextReport } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-next",
+						toolName: "write",
+						content: [{ type: "text", text: "ok" }],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows.flatMap((row) => row.artifacts.map((artifact) => artifact.path))).toEqual([nextReport])
+	})
+
 	it("writes one row per run when several turns produced artifacts", async () => {
 		const abs1 = touch("one.md")
 		const abs2 = touch("two.md")
