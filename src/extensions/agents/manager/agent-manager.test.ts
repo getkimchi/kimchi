@@ -68,7 +68,6 @@ import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from ".
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { flushWorkSummaries } from "../../work-attribution/summary.js"
-import { getAgentConfig } from "../personas/agent-types.js"
 import type { AgentRecord } from "../personas/types.js"
 import type { PersistedGitWorkflow, RemoteRunState } from "../remote-run-persistence.js"
 import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
