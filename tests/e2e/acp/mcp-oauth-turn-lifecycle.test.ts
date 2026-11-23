@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import type * as acp from "@agentclientprotocol/sdk"
 import { expect, it } from "vitest"
 import type { FakeResponseScript } from "../tui/support/fake-openai-server.js"
-import { createMcpFixture, mcpToolResult } from "../tui/support/mcp-fixture.js"
+import { createMcpFixture, mcpToolResult, oauthBrowserDriverScript } from "../tui/support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "../tui/support/mcp-model-script.js"
 import { type AcpMcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture, startAcpMcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
@@ -353,6 +353,114 @@ it(
 			expect(fixture.mcp.eventsOfType("tool_called")).toHaveLength(0)
 			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
 		} finally {
+			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it(
+	"consumes a late watcher status after a cancelled remote browser launch fails",
+	async () => {
+		const initialPrompt = "Start remote OAuth with a browser launch that is cancelled"
+		const nextPrompt = "Continue after the remote browser-launch failure"
+		const browserToolCallId = "oauth-remote-browser-cancel"
+		const releaseFilename = "release-cancelled-oauth-browser"
+		const fixture = await startAcpMcpFixture({
+			clientMeta: OAUTH_TURN_META,
+			artifactName: "acp-mcp-oauth-turn-remote-browser-cancel",
+			extensionPath: LIFECYCLE_EXTENSION,
+			seedHome: (homeDir) => {
+				const agentDir = join(homeDir, ".config", "kimchi", "harness")
+				const browserPath = join(agentDir, "mcp-oauth-browser", "open")
+				const browserReleasePath = join(homeDir, releaseFilename)
+				const driver = `${oauthBrowserDriverScript(join(agentDir, "mcp-fixture-fixture.jsonl"), {
+					autoComplete: false,
+				})}
+import { existsSync } from "node:fs"
+const browserReleaseStarted = Date.now()
+while (!existsSync(${JSON.stringify(browserReleasePath)})) {
+  if (Date.now() - browserReleaseStarted > 10_000) throw new Error("OAuth browser release timed out")
+  await new Promise((resolve) => setTimeout(resolve, 25))
+}
+throw new Error("Fixture remote browser launch failed after cancellation")
+`
+				writeFileSync(browserPath, driver, "utf8")
+				chmodSync(browserPath, 0o755)
+			},
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-token-failure",
+				oauthAutoComplete: false,
+				oauth: {
+					scope: "mcp:tools",
+					clientId: "remote-loopback-fixture",
+					redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2",
+				},
+			},
+			responses: [
+				authStartForPrompt("fixture", initialPrompt, browserToolCallId),
+				modelReplyForPrompt("mcp-oauth-status", "Unexpected late OAuth follow-up."),
+				modelReplyForPrompt(nextPrompt, "The next prompt works after watcher cleanup."),
+			],
+		})
+		const releasePath = join(fixture.homeDir, releaseFilename)
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const original = fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: initialPrompt }] })
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened")
+			expect(new URL(new URL(opened.target).searchParams.get("redirect_uri") ?? "").protocol).toBe("https:")
+
+			await fixture.conn.cancel({ sessionId })
+			writeFileSync(releasePath, "release failed browser launch\n", "utf8")
+			expect((await withTimeout(original, "cancelled remote browser launch")).stopReason).toBe("cancelled")
+
+			// Wait for the actual failed tool result, not just the ACP cancellation.
+			// The adapter must have gone through its post-watcher cleanup path.
+			const toolResultDeadline = Date.now() + OAUTH_ACTION_TIMEOUT_MS
+			while (
+				!lifecycleEntries(fixture.homeDir, sessionId).some(
+					(entry) => entry.type === "tool_execution_end" && entry.toolCallId === browserToolCallId,
+				)
+			) {
+				if (Date.now() >= toolResultDeadline) throw new Error("Cancelled browser auth-start did not finish")
+				await delay(25)
+			}
+
+			// Let the remote provider bounce to this watcher's local loopback
+			// callback. Its token failure is the owned watcher's terminal status.
+			const authorization = await fetch(opened.target, {
+				redirect: "manual",
+				signal: AbortSignal.timeout(OAUTH_ACTION_TIMEOUT_MS),
+			})
+			expect(authorization.status).toBe(302)
+			const bounced = new URL(authorization.headers.get("location") ?? "")
+			const callback = new URL("http://127.0.0.1:19876/callback")
+			for (const name of ["code", "state"]) {
+				const value = bounced.searchParams.get(name)
+				if (!value) throw new Error(`OAuth callback fixture omitted ${name}`)
+				callback.searchParams.set(name, value)
+			}
+			const modelRequestsBeforeStatus = fixture.fake.requests.length
+			const terminalCount = agentEndCount(fixture.homeDir, sessionId)
+			const callbackResponse = await fetch(callback, { signal: AbortSignal.timeout(OAUTH_ACTION_TIMEOUT_MS) })
+			await callbackResponse.text()
+			await fixture.mcp.waitForEvent("oauth_token_rejected", { where: { grantType: "authorization_code" } })
+			await delay(OAUTH_SETTLE_QUIET_MS)
+
+			expect(fixture.fake.requests).toHaveLength(modelRequestsBeforeStatus)
+			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(terminalCount)
+			expect(fixture.mcp.eventsOfType("tool_called")).toHaveLength(0)
+			expect(
+				fixture.client.extNotifications.filter((n) => n.method === "_kimchi.dev/background_run_start"),
+			).toHaveLength(0)
+
+			const next = await prompt(fixture, sessionId, nextPrompt)
+			expect(next.stopReason).toBe("end_turn")
+			expect(next.chunks).toContain("The next prompt works after watcher cleanup.")
+			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(terminalCount + 1)
+		} finally {
+			writeFileSync(releasePath, "release during cleanup\n", "utf8")
 			await fixture.stop()
 		}
 	},

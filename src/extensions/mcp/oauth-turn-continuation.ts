@@ -109,9 +109,21 @@ export class McpOAuthTurnContinuation {
 				typeof result.details.authorizationUrl !== "string" ||
 				result.details.authenticated === true ||
 				isManualHandoff(result)
-			// Existing grants, non-browser failures, and manual handoffs have no
-			// terminal watcher status. Never retain a cancelled tombstone for them.
-			if (returnsWithoutWatcher) this.pending.delete(serverName)
+			const knownPreWatcherError =
+				isRecord(result.details) &&
+				typeof result.details.error === "string" &&
+				["not_found", "oauth_not_supported", "server_disabled"].includes(result.details.error)
+			const knownWithoutWatcher =
+				knownPreWatcherError ||
+				(isRecord(result.details) && result.details.authenticated === true) ||
+				isManualHandoff(result)
+			// Pre-watcher validation failures, existing grants, and manual handoffs
+			// prove there is no watcher. A cancelled setup failure does not: remote
+			// registration precedes the browser launch, whose failure can omit the
+			// authorization URL while its watcher is still alive.
+			if (returnsWithoutWatcher && (!signal?.aborted || knownWithoutWatcher)) {
+				this.pending.delete(serverName)
+			}
 			if (signal?.aborted) throw abortError(signal)
 			if (returnsWithoutWatcher) return result
 

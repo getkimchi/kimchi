@@ -74,6 +74,50 @@ describe("McpOAuthTurnContinuation status correlation", () => {
 		expect((await startAuthorization(continuation, true)).details).toMatchObject({ authenticated: true })
 	})
 
+	it("retains a cancelled watcher when the remote browser launch fails", async () => {
+		const continuation = new McpOAuthTurnContinuation()
+		const controller = new AbortController()
+
+		await expect(
+			continuation.runAuthStart("fixture", controller.signal, async () => {
+				await Promise.resolve()
+				// The adapter has already registered its remote loopback watcher.
+				// Cancellation and browser-launch failure precede its failed result.
+				controller.abort(new Error("remote browser launch cancelled"))
+				return {
+					content: [{ type: "text", text: "Could not launch the remote OAuth browser" }],
+					details: { mode: "auth-start", server: "fixture", error: "auth_start_failed" },
+					isError: true,
+				}
+			}),
+		).rejects.toThrow("remote browser launch cancelled")
+
+		expect(continuation.consumeStatusMessage(statusMessage("failed"))).toBe(true)
+		expect((await startAuthorization(continuation, true)).details).toMatchObject({ authenticated: true })
+	})
+
+	it.each([
+		"not_found",
+		"oauth_not_supported",
+		"server_disabled",
+	])("allows retry after a cancelled pre-watcher failure (%s)", async (error) => {
+		const continuation = new McpOAuthTurnContinuation()
+		const controller = new AbortController()
+
+		await expect(
+			continuation.runAuthStart("fixture", controller.signal, async () => {
+				controller.abort(new Error("cancel before watcher creation"))
+				return {
+					content: [{ type: "text", text: "Authorization cannot start for this server" }],
+					details: { mode: "auth-start", server: "fixture", error },
+					isError: true,
+				}
+			}),
+		).rejects.toThrow("cancel before watcher creation")
+
+		expect((await startAuthorization(continuation, true)).details).toMatchObject({ authenticated: true })
+	})
+
 	it("retains retry fencing for a registered watcher after cancellation", async () => {
 		vi.useFakeTimers()
 		const continuation = new McpOAuthTurnContinuation()
