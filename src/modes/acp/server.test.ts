@@ -6847,10 +6847,11 @@ describe("generated artifacts (live turns)", () => {
 	const attachArtifactRecorder = () => {
 		const recorder = createExtensionApi()
 		artifactRecorderExtension(recorder.api)
-		const context = createContext({ cwd: tmpDir })
-		// The recorder needs SessionManager only as a cache/policy scope.
-		setSnapshotArtifactsOptIn(context.sessionManager, true)
-		onTestFinished(() => setSnapshotArtifactsOptIn(context.sessionManager, false))
+		const sessionManager = asSession(fake).sessionManager
+		const context = { ...createContext({ cwd: tmpDir }), sessionManager }
+		// Match production's shared execution snapshot and concurrency scope.
+		setSnapshotArtifactsOptIn(sessionManager, true)
+		onTestFinished(() => setSnapshotArtifactsOptIn(sessionManager, false))
 		fake.subscribe((event) => {
 			for (const handler of recorder.getHandlers(event.type)) void handler(event, context)
 		})

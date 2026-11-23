@@ -12,8 +12,8 @@
 // is an explicit user action. Script-capable types (.html/.svg) open in
 // the user's own environment.
 
-import { type Dirent, readdirSync, statSync } from "node:fs"
-import { basename, extname, join } from "node:path"
+import { type Dirent, readdirSync, realpathSync, statSync } from "node:fs"
+import { basename, extname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { parseCommandSegments } from "../permissions/taxonomy.js"
 import { resolveToolPath } from "./paths.js"
@@ -223,9 +223,9 @@ type FileStamp = { mtimeMs: number; size: number }
 
 /**
  * Pre-execution view of allowlisted files directly in a shell command's
- * effective working directory. Compared at execution end, it proves which
- * files that command created or modified even when stdout is empty. The
- * deliberately shallow scope avoids whole-tree/filesystem monitoring.
+ * effective working directory. A delta is an authorship candidate, not
+ * proof that this command wrote the file. The deliberately shallow scope
+ * avoids whole-tree/filesystem monitoring.
  */
 export type ArtifactFileSnapshot = { cwd: string; files: ReadonlyMap<string, FileStamp> }
 
@@ -236,10 +236,17 @@ export type ArtifactSnapshotClaim = {
 	consumer: "acp" | "recorder"
 }
 
-const sharedSnapshots = new WeakMap<
-	object,
-	Map<string, { snapshot: ArtifactFileSnapshot | undefined; consumers: Set<ArtifactSnapshotClaim["consumer"]> }>
->()
+type CwdExecutionObservation = { cwd: string; active: number; ambiguous: boolean }
+type SharedSnapshot = {
+	snapshot: ArtifactFileSnapshot | undefined
+	consumers: Set<ArtifactSnapshotClaim["consumer"]>
+	observation: CwdExecutionObservation | undefined
+	executionReleased: boolean
+}
+
+const sharedSnapshots = new WeakMap<object, Map<string, SharedSnapshot>>()
+const cwdExecutions = new Map<string, CwdExecutionObservation>()
+const snapshotExecutions = new WeakMap<ArtifactFileSnapshot, CwdExecutionObservation>()
 
 function isArtifactExtension(path: string): boolean {
 	return extname(path).toLowerCase() in ARTIFACT_EXTENSIONS
@@ -285,6 +292,32 @@ function captureArtifactSnapshot(toolName: string, args: unknown, cwd: string): 
 	}
 }
 
+function canonicalCwd(cwd: string): string {
+	try {
+		return realpathSync(cwd)
+	} catch {
+		return resolve(cwd)
+	}
+}
+
+function observeExecution(snapshot: ArtifactFileSnapshot | undefined): CwdExecutionObservation | undefined {
+	if (!snapshot) return undefined
+	const cwd = canonicalCwd(snapshot.cwd)
+	let observation = cwdExecutions.get(cwd)
+	if (observation) {
+		// A delta cannot be attributed while another command observes the same
+		// directory, even when the other command belongs to a different session.
+		// The shared object keeps the interval ambiguous after either one ends.
+		observation.ambiguous = true
+	} else {
+		observation = { cwd, active: 0, ambiguous: false }
+		cwdExecutions.set(cwd, observation)
+	}
+	observation.active++
+	snapshotExecutions.set(snapshot, observation)
+	return observation
+}
+
 /**
  * Capture command-scoped file state before a foreground shell tool runs.
  * ACP and the recorder pass the same SessionManager as `claim.scope`, so
@@ -308,7 +341,12 @@ export function snapshotArtifactFiles(
 		return existing.snapshot
 	}
 	const snapshot = captureArtifactSnapshot(toolName, args, cwd)
-	calls.set(claim.toolCallId, { snapshot, consumers: new Set([claim.consumer]) })
+	calls.set(claim.toolCallId, {
+		snapshot,
+		consumers: new Set([claim.consumer]),
+		observation: observeExecution(snapshot),
+		executionReleased: false,
+	})
 	return snapshot
 }
 
@@ -316,14 +354,26 @@ export function snapshotArtifactFiles(
 export function releaseArtifactSnapshot(claim: ArtifactSnapshotClaim): void {
 	const calls = sharedSnapshots.get(claim.scope)
 	const existing = calls?.get(claim.toolCallId)
-	if (!calls || !existing) return
-	existing.consumers.delete(claim.consumer)
+	if (!calls || !existing?.consumers.delete(claim.consumer)) return
+	if (!existing.executionReleased) {
+		// The consumers diff at the same execution boundary. Only one of them
+		// ends the command's cwd observation; cache retention must not prolong it.
+		existing.executionReleased = true
+		const observation = existing.observation
+		if (observation) {
+			observation.active--
+			if (observation.active === 0 && cwdExecutions.get(observation.cwd) === observation) {
+				cwdExecutions.delete(observation.cwd)
+			}
+		}
+	}
 	if (existing.consumers.size > 0) return
 	calls.delete(claim.toolCallId)
 	if (calls.size === 0) sharedSnapshots.delete(claim.scope)
 }
 
 function changedSnapshotArtifacts(snapshot: ArtifactFileSnapshot, opts: DetectOpts): Artifact[] {
+	if (snapshotExecutions.get(snapshot)?.ambiguous) return []
 	const out: Artifact[] = []
 	const current = [...supportedDirectoryFiles(snapshot.cwd).entries()].sort(([a], [b]) => a.localeCompare(b))
 	for (const [path, stamp] of current) {

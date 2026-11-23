@@ -338,6 +338,39 @@ describe("artifactsFromToolCall", () => {
 			expect(out.map((a) => a.path)).toEqual([created])
 		})
 
+		it("suppresses snapshot deltas when same-cwd commands overlap, then recovers", () => {
+			const scopeA = {}
+			const scopeB = {}
+			const claimA = { scope: scopeA, toolCallId: "passive-wait", consumer: "acp" as const }
+			const claimB = { scope: scopeB, toolCallId: "other-session", consumer: "acp" as const }
+			const waiting = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claimA)
+			const concurrent = snapshotArtifactFiles("bash", { command: "node write.js" }, cwd, claimB)
+			expect(waiting).toBeDefined()
+			expect(concurrent).toBeDefined()
+			writeFileSync(join(cwd, "other-session.html"), "<h1>Other session</h1>")
+			const waitResult = artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, {
+				fileSnapshot: waiting,
+			})
+			const writeResult = artifactsFromToolCall("bash", { command: "node write.js" }, textResult(""), cwd, {
+				fileSnapshot: concurrent,
+			})
+			// Neither side can establish authorship when the snapshots overlap.
+			expect(waitResult).toEqual([])
+			expect(writeResult).toEqual([])
+			releaseArtifactSnapshot(claimA)
+			releaseArtifactSnapshot(claimB)
+
+			// The ambiguity belongs to the overlapping execution interval, not
+			// the directory forever: a later isolated command can still detect.
+			const isolated = snapshotArtifactFiles("bash", { command: "node next.js" }, cwd, claimA)
+			const created = touch("isolated.html")
+			const isolatedResult = artifactsFromToolCall("bash", { command: "node next.js" }, textResult(""), cwd, {
+				fileSnapshot: isolated,
+			})
+			expect(isolatedResult.map((artifact) => artifact.path)).toEqual([created])
+			releaseArtifactSnapshot(claimA)
+		})
+
 		it("shares ACP and recorder snapshots until both consumers release them", () => {
 			const scope = {}
 			const acpClaim = { scope, toolCallId: "shared-call", consumer: "acp" as const }
@@ -345,6 +378,11 @@ describe("artifactsFromToolCall", () => {
 			const first = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, acpClaim)
 			const second = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, recorderClaim)
 			expect(second).toBe(first)
+			const created = touch("same-call.html")
+			const detected = artifactsFromToolCall("bash", { command: "node build.js" }, textResult(""), cwd, {
+				fileSnapshot: first,
+			})
+			expect(detected.map((artifact) => artifact.path)).toEqual([created])
 			releaseArtifactSnapshot(acpClaim)
 			releaseArtifactSnapshot(recorderClaim)
 			const next = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, acpClaim)
