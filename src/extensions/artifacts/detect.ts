@@ -30,11 +30,11 @@ export type Artifact = {
 	/**
 	 * Provenance, assigned once here in detect: "declared" (tool's own
 	 * details.artifacts — mid-turn emission trigger), "write" (write/edit
-	 * args — intentional), "sniffed" (bash/powershell output —
-	 * eviction-eligible at the turn cap). Recorded rows serialize it as
-	 * the sniffed boolean.
+	 * args — intentional), "sniffed" (bash/powershell output), or
+	 * "snapshot" (a filesystem delta hidden behind the client's artifact
+	 * opt-in). Sniffed/snapshot entries are eviction-eligible at the cap.
 	 */
-	origin: "declared" | "write" | "sniffed"
+	origin: "declared" | "write" | "sniffed" | "snapshot"
 }
 
 /** Lowercase extension → MIME type. Fixed allowlist for v1 (not configurable). */
@@ -330,7 +330,7 @@ function changedSnapshotArtifacts(snapshot: ArtifactFileSnapshot, opts: DetectOp
 		if (out.length >= MAX_BASH_ARTIFACTS) break
 		const before = snapshot.files.get(path)
 		if (before && before.mtimeMs === stamp.mtimeMs && before.size === stamp.size) continue
-		const artifact = artifactFromPath(path, snapshot.cwd, opts, "sniffed")
+		const artifact = artifactFromPath(path, snapshot.cwd, opts, "snapshot")
 		if (artifact) out.push(artifact)
 	}
 	return out

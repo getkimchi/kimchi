@@ -266,6 +266,7 @@ describe("ACP integration — artifacts from a silent foreground build", () => {
 		fixture = await startAcpFixture({
 			artifactName: "artifact-links-silent-build",
 			extraArgs: ["--yolo"],
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
 			responses: [
 				{
 					toolCalls: [

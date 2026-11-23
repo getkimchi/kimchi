@@ -22,6 +22,7 @@ import {
 	releaseArtifactSnapshot,
 	snapshotArtifactFiles,
 } from "./detect.js"
+import { snapshotArtifactsOptedIn } from "./snapshot-policy.js"
 
 export const ARTIFACTS_ENTRY_TYPE = "kimchi-artifacts"
 
@@ -29,8 +30,10 @@ export interface RecordedArtifact {
 	path: string
 	name: string
 	mimeType: string | null
-	/** bash/powershell-sniffed: eviction-eligible at the run cap. */
+	/** bash/powershell output or snapshot-derived: eviction-eligible at the run cap. */
 	sniffed: boolean
+	/** Additive v1 marker; absent on legacy and non-snapshot rows. */
+	snapshot?: boolean
 }
 
 export interface ArtifactsEntry {
@@ -129,7 +132,9 @@ function detectTurnArtifacts(
 		const completed = completedShellCalls.get(result.toolCallId)
 		if (completed) {
 			completedShellCalls.delete(result.toolCallId)
-			for (const artifact of completed) acc.add({ ...artifact, sniffed: artifact.origin === "sniffed" })
+			for (const artifact of completed) {
+				acc.add({ ...artifact, sniffed: artifact.origin === "sniffed" || artifact.origin === "snapshot" })
+			}
 			continue
 		}
 		for (const artifact of artifactsFromToolCall(
@@ -140,7 +145,7 @@ function detectTurnArtifacts(
 			cwd,
 			{ windowStart },
 		)) {
-			acc.add({ ...artifact, sniffed: artifact.origin === "sniffed" })
+			acc.add({ ...artifact, sniffed: artifact.origin === "sniffed" || artifact.origin === "snapshot" })
 		}
 	}
 }
@@ -151,7 +156,7 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 	const completedShellCalls = new Map<string, Artifact[]>()
 
 	pi.on("tool_execution_start", (event, ctx) => {
-		if (event.parentToolCallId) return
+		if (event.parentToolCallId || !snapshotArtifactsOptedIn(ctx.sessionManager)) return
 		try {
 			const startedAt = Date.now()
 			const cwd = ctx.cwd
@@ -244,6 +249,7 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 				name: a.name,
 				mimeType: a.mimeType ?? null,
 				sniffed: a.sniffed,
+				...(a.origin === "snapshot" ? { snapshot: true } : {}),
 			})),
 		}
 		pi.appendEntry(ARTIFACTS_ENTRY_TYPE, entry)

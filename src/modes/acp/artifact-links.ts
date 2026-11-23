@@ -108,6 +108,8 @@ export function buildArtifactLinkChunks(opts: {
  *
  * Emission is turn-scoped: one flush point per turn, no mid-turn state.
  */
+type ArtifactVisibility = { includeSnapshotArtifacts?: boolean }
+
 export class TurnArtifactBuffer {
 	private readonly artifacts = new Map<string, Artifact>()
 	private readonly sniffedKeys: string[] = []
@@ -140,20 +142,24 @@ export class TurnArtifactBuffer {
 	 * Live-only: detection always stat-verifies candidates. Replay fills
 	 * the buffer from recorded rows (adoptRecorded), never from tool data.
 	 */
-	collectFromToolCall(opts: {
-		toolName: string
-		args: unknown
-		result: unknown
-		cwd: string
-		/** Foreground mtime window start; sniffed bash candidates require a fresh mtime. */
-		windowStart?: number
-		/** Pre-execution directory state; proves changed files when shell output is silent. */
-		fileSnapshot?: ArtifactFileSnapshot
-	}): void {
+	collectFromToolCall(
+		opts: {
+			toolName: string
+			args: unknown
+			result: unknown
+			cwd: string
+			/** Foreground mtime window start; sniffed bash candidates require a fresh mtime. */
+			windowStart?: number
+			/** Pre-execution directory state; proves changed files when shell output is silent. */
+			fileSnapshot?: ArtifactFileSnapshot
+		},
+		visibility: ArtifactVisibility = {},
+	): void {
 		for (const artifact of artifactsFromToolCall(opts.toolName, opts.args, opts.result, opts.cwd, {
 			windowStart: opts.windowStart,
 			fileSnapshot: opts.fileSnapshot,
 		})) {
+			if (artifact.origin === "snapshot" && visibility.includeSnapshotArtifacts !== true) continue
 			this.addEntry(artifact.origin, artifact)
 		}
 	}
@@ -175,9 +181,11 @@ export class TurnArtifactBuffer {
 	 * path, never clear: the clear existed to discard replay-side
 	 * re-derivation, which replay no longer does at all.
 	 */
-	adoptRecorded(artifacts: RecordedArtifact[]): void {
+	adoptRecorded(artifacts: RecordedArtifact[], visibility: ArtifactVisibility = {}): void {
 		for (const artifact of artifacts) {
-			const origin: Artifact["origin"] = artifact.sniffed ? "sniffed" : "write"
+			if (artifact.snapshot === true && visibility.includeSnapshotArtifacts !== true) continue
+			const origin: Artifact["origin"] =
+				artifact.snapshot === true ? "snapshot" : artifact.sniffed ? "sniffed" : "write"
 			this.addEntry(origin, {
 				uri: pathToFileURL(artifact.path).href,
 				path: artifact.path,
@@ -268,7 +276,7 @@ export class TurnArtifactBuffer {
 	private addEntry(origin: Artifact["origin"], artifact: Artifact): void {
 		// Already chipped mid-turn: no re-chip, no buffer churn.
 		if (this.emittedPaths.has(artifact.path)) return
-		if (origin === "sniffed") {
+		if (origin === "sniffed" || origin === "snapshot") {
 			if (this.artifacts.has(artifact.path)) return
 			this.sniffedKeys.push(artifact.path)
 			this.artifacts.set(artifact.path, artifact)

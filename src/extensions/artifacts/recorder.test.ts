@@ -6,6 +6,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } from "./recorder.js"
+import { setSnapshotArtifactsOptIn } from "./snapshot-policy.js"
 
 // Artifact recorder: one custom session entry per prompt, so replay
 // (any client) can re-emit exactly what live detected — stat-gated, run-
@@ -14,8 +15,14 @@ import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } 
 
 describe("artifact-recorder", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "artifact-recorder-"))
-	beforeEach(() => mkdirSync(cwd, { recursive: true }))
-	afterEach(() => rmSync(cwd, { recursive: true, force: true }))
+	beforeEach(() => {
+		mkdirSync(cwd, { recursive: true })
+		setSnapshotArtifactsOptIn(ctx.sessionManager, true)
+	})
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true })
+		setSnapshotArtifactsOptIn(ctx.sessionManager, false)
+	})
 
 	const ctx = { cwd, sessionManager: { getCwd: () => join(cwd, "different-session-cwd") } } as ExtensionContext
 
@@ -94,6 +101,60 @@ describe("artifact-recorder", () => {
 		expect(rows[0].artifacts).toEqual([{ path: abs, name: "out.md", mimeType: "text/markdown", sniffed: false }])
 	})
 
+	it("does not record snapshot-derived files without the artifact capability", async () => {
+		const finalReport = join(cwd, "not-opted.html")
+		const plainContext = { cwd, sessionManager: {} } as ExtensionContext
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-not-opted",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			plainContext,
+		)
+		writeFileSync(finalReport, "<h1>Not opted</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-not-opted",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			plainContext,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [{ type: "toolCall", id: "tc-not-opted", name: "bash", arguments: { command: "node build.js" } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-not-opted",
+						toolName: "bash",
+						content: [],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			plainContext,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, plainContext)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+	})
+
 	it("records a final HTML file created by a silent foreground build after an intermediate write", async () => {
 		const template = touch("_code-reviewer-prd.template.html")
 		const finalReport = join(cwd, "code-reviewer-rebuild-prd.html")
@@ -164,7 +225,13 @@ describe("artifact-recorder", () => {
 		expect(rows).toHaveLength(1)
 		expect(rows[0].artifacts).toEqual([
 			{ path: template, name: "_code-reviewer-prd.template.html", mimeType: "text/html", sniffed: false },
-			{ path: finalReport, name: "code-reviewer-rebuild-prd.html", mimeType: "text/html", sniffed: true },
+			{
+				path: finalReport,
+				name: "code-reviewer-rebuild-prd.html",
+				mimeType: "text/html",
+				sniffed: true,
+				snapshot: true,
+			},
 		])
 	})
 

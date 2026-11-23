@@ -120,6 +120,17 @@ export function getClientSupportsMethod(capabilities: ClientCapabilities | undef
 }
 
 /**
+ * Client opt-in for filesystem-snapshot-derived artifact links. Existing
+ * write/declared/output-sniffed artifacts retain their legacy behavior.
+ */
+export const ARTIFACTS_CAPABILITY = "artifacts"
+
+export function getClientOptedIntoArtifacts(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[ARTIFACTS_CAPABILITY] === true
+}
+
+/**
  * Client opt-in key for background runs, in
  * `clientCapabilities._meta["kimchi.dev"]` at initialize. Opted-in clients
  * get async background runs: a prompt turn may END while bash commands keep

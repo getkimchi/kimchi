@@ -6790,6 +6790,10 @@ describe("generated artifacts (live turns)", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory,
 		})
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
 		const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
 		sessionId = res.sessionId
 	})
@@ -6994,6 +6998,55 @@ describe("generated artifacts (live turns)", () => {
 		const chunks = artifactChunks()
 		expect(chunks).toHaveLength(1)
 		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL(target).href])
+	})
+
+	it("keeps snapshot-derived links invisible to an empty-capability client", async () => {
+		const legacy = new FakeAgentSession("session-artifacts-no-opt-in", tmpDir)
+		const recording = makeRecordingConn()
+		const legacyAgent = new KimchiAcpAgent(recording.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(legacy),
+		})
+		await legacyAgent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		const opened = await legacyAgent.newSession({ cwd: tmpDir, mcpServers: [] })
+		const written = join(tmpDir, "legacy-write.md")
+		const silent = join(tmpDir, "legacy-silent.html")
+		legacy.promptImpl = async () => {
+			legacy.emit({ type: "agent_start" })
+			legacy.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-legacy-write",
+				toolName: "write",
+				args: { path: written, content: "legacy" },
+			})
+			writeFileSync(written, "legacy")
+			legacy.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-legacy-write",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote legacy.md" }] },
+				isError: false,
+			})
+			legacy.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-legacy-silent",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			})
+			writeFileSync(silent, "<h1>Silent</h1>")
+			legacy.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-legacy-silent",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			legacy.emit(assistantMessageEnd("Done."))
+			legacy.emit(agentEnd())
+		}
+		await legacyAgent.prompt({ sessionId: opened.sessionId, prompt: [{ type: "text", text: "Build" }] })
+		expect(artifactChunks(recording.updates).map((chunk) => chunk.uri)).toEqual([pathToFileURL(written).href])
 	})
 
 	it("includes a final HTML file created by a silent foreground build after an intermediate write", async () => {
@@ -7345,6 +7398,10 @@ describe("generated artifacts (live turns)", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
 			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
 		})
 		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
 		expect(artifactChunks(replay.updates).map((chunk) => chunk.uri)).toEqual([
@@ -7744,17 +7801,53 @@ describe("generated artifacts (replay)", () => {
 				data: {
 					v: 1,
 					artifacts: [
-						{ path: finalPath, name: "code-reviewer-rebuild-prd.html", mimeType: "text/html", sniffed: true },
+						{
+							path: finalPath,
+							name: "code-reviewer-rebuild-prd.html",
+							mimeType: "text/html",
+							sniffed: true,
+							snapshot: true,
+						},
 					],
 				},
 			} as never,
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
 		await agent.loadSession({ sessionId: "loaded-silent-final", cwd: "/tmp", mcpServers: [] })
 		expect(artifactChunks(updates).map((chunk) => ({ name: chunk.name, uri: chunk.uri }))).toEqual([
 			{ name: "code-reviewer-rebuild-prd.html", uri: pathToFileURL(finalPath).href },
 		])
+	})
+
+	it("omits only snapshot rows when replaying for an empty-capability client", async () => {
+		const legacyPath = "/tmp/legacy-replay.md"
+		const snapshotPath = "/tmp/snapshot-replay.html"
+		const fake = new FakeAgentSession("loaded-snapshot-no-opt-in")
+		fake.branch = [
+			userTextEntry("show the files", "u1", null),
+			assistantTextEntry("Done.", "a1", "u1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [
+						{ path: legacyPath, name: "legacy-replay.md", mimeType: "text/markdown", sniffed: false },
+						{ path: snapshotPath, name: "snapshot-replay.html", mimeType: "text/html", sniffed: true, snapshot: true },
+					],
+				},
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		await agent.loadSession({ sessionId: fake.sessionId, cwd: "/tmp", mcpServers: [] })
+		expect(artifactChunks(updates).map((chunk) => chunk.uri)).toEqual([pathToFileURL(legacyPath).href])
 	})
 
 	it("merges multiple recorded rows within one turn (one row per assistant message)", async () => {

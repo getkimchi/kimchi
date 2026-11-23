@@ -96,6 +96,7 @@ import {
 import { releaseArtifactSnapshot, snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
+import { setSnapshotArtifactsOptIn, snapshotArtifactsOptedIn } from "../../extensions/artifacts/snapshot-policy.js"
 import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
@@ -188,6 +189,7 @@ import {
 	ADVERTISED_CAPABILITIES,
 	AVAILABLE_EXT_METHODS,
 	BACKGROUND_RUNS_CAPABILITY,
+	getClientOptedIntoArtifacts,
 	getClientOptedIntoBackgroundRuns,
 	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
@@ -1035,6 +1037,7 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionModelHasAuth(session)
 
 			const sessionId = session.sessionId
+			setSnapshotArtifactsOptIn(session.sessionManager, getClientOptedIntoArtifacts(this.clientCapabilities))
 			const uiContext = this.createUiContext(session)
 			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
@@ -1351,6 +1354,7 @@ export class KimchiAcpAgent implements Agent {
 				)
 			}
 			assertSessionHasModel(session)
+			setSnapshotArtifactsOptIn(session.sessionManager, getClientOptedIntoArtifacts(this.clientCapabilities))
 
 			const uiContext = this.createUiContext(session)
 			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
@@ -2397,6 +2401,7 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
+		setSnapshotArtifactsOptIn(entry.session.sessionManager, false)
 		if (entry.turn) releaseTurnArtifactSnapshots(entry.turn)
 		if (entry.unsolicitedTurn) releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 		entry.planTracker?.stop()
@@ -2819,9 +2824,10 @@ export class KimchiAcpAgent implements Agent {
 					toolName: event.toolName,
 					args: event.args,
 					startedAt,
-					fileSnapshot: event.parentToolCallId
-						? undefined
-						: snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim),
+					fileSnapshot:
+						event.parentToolCallId || !snapshotArtifactsOptedIn(entry.session.sessionManager)
+							? undefined
+							: snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim),
 					snapshotClaim,
 				})
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
@@ -2916,14 +2922,17 @@ export class KimchiAcpAgent implements Agent {
 					}
 				}
 				if (!event.isError && !event.parentToolCallId && stashed) {
-					turn.artifactBuffer.collectFromToolCall({
-						toolName: stashed.toolName,
-						args: stashed.args,
-						result: event.result,
-						cwd: entry.cwd,
-						windowStart: stashed.startedAt,
-						fileSnapshot: stashed.fileSnapshot,
-					})
+					turn.artifactBuffer.collectFromToolCall(
+						{
+							toolName: stashed.toolName,
+							args: stashed.args,
+							result: event.result,
+							cwd: entry.cwd,
+							windowStart: stashed.startedAt,
+							fileSnapshot: stashed.fileSnapshot,
+						},
+						{ includeSnapshotArtifacts: snapshotArtifactsOptedIn(entry.session.sessionManager) },
+					)
 					// Tool-declared artifacts are deliverables the user may need
 					// MID-turn (a submitted plan chips before its review
 					// questionnaire opens) — emit immediately. emitNow marks them
@@ -3117,7 +3126,11 @@ export class KimchiAcpAgent implements Agent {
 				// (exact: live detection was stat-gated).
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
-				if (data?.v === 1 && Array.isArray(data.artifacts)) artifactBuffer.adoptRecorded(data.artifacts)
+				if (data?.v === 1 && Array.isArray(data.artifacts)) {
+					artifactBuffer.adoptRecorded(data.artifacts, {
+						includeSnapshotArtifacts: snapshotArtifactsOptedIn(session.sessionManager),
+					})
+				}
 				continue
 			}
 			if (!entry || typeof entry !== "object" || entry.type !== "message") continue

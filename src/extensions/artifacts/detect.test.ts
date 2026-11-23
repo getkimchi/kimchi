@@ -313,7 +313,7 @@ describe("artifactsFromToolCall", () => {
 				fileSnapshot,
 			})
 			expect(out.map((a) => a.path).sort()).toEqual([created, modified].sort())
-			expect(out.every((a) => a.origin === "sniffed")).toBe(true)
+			expect(out.every((a) => a.origin === "snapshot")).toBe(true)
 		})
 
 		it("ignores an arbitrary pre-existing file and a tree-materializing git command", () => {
