@@ -135,6 +135,7 @@ import {
 import { getPermissionPolicySource, registerPermissionPolicySource } from "./policy-source-registry.js"
 import { PromptQueue } from "./prompt-queue.js"
 import {
+	type EscalatedCallStatus,
 	MODE_CHANGED_ABORT_ERROR,
 	type PermissionChoice,
 	type PermissionOrigin,
@@ -415,6 +416,30 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		}
 	}
 
+	// Calls this worker asked its parent about. The parent's surface may keep
+	// a card for each of them; an entry stays until the parent has been told
+	// how the call ended.
+	const escalatedCalls = new Set<string>()
+
+	/**
+	 * Tell the parent surface where an escalated call stands. The answer to a
+	 * permission request does not say this: an allowed call can still fail,
+	 * and a request withdrawn by a mode change is decided again.
+	 */
+	function reportEscalatedCall(toolCallId: string | undefined, status: EscalatedCallStatus): void {
+		if (options.role !== "worker" || toolCallId === undefined || !escalatedCalls.has(toolCallId)) return
+		if (status !== "running") escalatedCalls.delete(toolCallId)
+		try {
+			getParentSurface(options.parentSessionId)?.reportEscalatedCall?.({
+				toolCallId,
+				agentId: options.agentId,
+				status,
+			})
+		} catch {
+			// Reporting is display only; it must never change the call's outcome.
+		}
+	}
+
 	/**
 	 * Try the parent surface for a worker's unapproved call. A wrapped result
 	 * distinguishes an allow (`result === undefined`) from an unavailable or
@@ -439,6 +464,8 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				description: options.description,
 			}) ?? {}
 		let releaseHold = () => {}
+		// Without an id the tool's result cannot be matched to this call later.
+		if (event.toolCallId !== undefined) escalatedCalls.add(event.toolCallId)
 		try {
 			releaseHold = holdAgentWorkerInactivity()
 			// One prompt for the whole call, including compounds. Remembered rules
@@ -1220,6 +1247,16 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 							unregister()
 						}
 					}),
+				// Only a surface that keeps a card for the call has anything to
+				// update (ACP); the terminal selector is gone once it is answered.
+				reportEscalatedCall: (report) =>
+					runOutsideWorkerContext(() => {
+						try {
+							resolvePrompter(ctx)?.reportEscalatedCall?.(report)
+						} catch {
+							// Display only.
+						}
+					}),
 			}
 			parentSurfaceSessionId = sessionId
 			registerParentSurface(sessionId, parentSurface)
@@ -1242,6 +1279,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 
 	pi.on("session_shutdown", () => {
 		if (isWorker) {
+			// The run is over. A call that was allowed but whose result never
+			// arrived (the run was stopped first) did not complete.
+			for (const toolCallId of [...escalatedCalls]) reportEscalatedCall(toolCallId, "failed")
 			// Per-run shutdown is not disposal: the label "for this subagent"
 			// promises that approvals and the policy snapshot survive resume.
 			return
@@ -1895,6 +1935,27 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		[input.path, input.file_path].filter((value): value is string => typeof value === "string")
 
 	pi.on("tool_call", async (event, ctx) => {
+		try {
+			const result = await gateToolCall(event, ctx)
+			// The gate's own decision, whatever the last answer was: a call that
+			// is let through is about to run, a blocked one will not.
+			reportEscalatedCall(event.toolCallId, result?.block ? "failed" : "running")
+			return result
+		} catch (error) {
+			reportEscalatedCall(event.toolCallId, "failed")
+			throw error
+		}
+	})
+
+	// How an allowed call really ended. A call the gate blocked never gets here.
+	// Only a worker escalates, so only a worker has anything to report.
+	if (isWorker) {
+		pi.on("tool_result", (event) => {
+			reportEscalatedCall(event.toolCallId, event.isError ? "failed" : "completed")
+		})
+	}
+
+	async function gateToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<GateResult> {
 		refreshWorkerPolicy(ctx)
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
@@ -2383,7 +2444,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			// unique, so an unconsumed entry would otherwise sit here forever.
 			pendingModeChangeDismissals.delete(dismissalKey)
 		}
-	})
+	}
 
 	if (!isWorker)
 		registerCommands(pi, {
@@ -2406,6 +2467,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 /** What a permission prompt settles to: a decision to apply, "aborted"
  *  (dismissed by a mode change — re-evaluate), or undefined (allow). */
 type PromptOutcome = { block: true; reason: string } | "aborted" | undefined
+
+/** What the gate hands back to the tool loop: a block, or nothing (let it run). */
+type GateResult = Exclude<PromptOutcome, "aborted">
 
 interface ConfirmOptions {
 	ctx: ExtensionContext

@@ -3,7 +3,7 @@
  *
  * A session that can reach its user (toasts and permission prompts) registers
  * a surface under its own session ID so that subagent workers (which have no
- * UI and no prompt route of their own) can hand it two kinds of work:
+ * UI and no prompt route of their own) can hand it three kinds of work:
  *
  * - `notify`: permission-classifier warnings, shown in the parent's surface;
  * - `requestPermission` (present only when the session can prompt): an
@@ -12,6 +12,10 @@
  *   approval. The caller awaits the user's outcome; a thrown error means the
  *   route failed (stale surface, timeout) and the caller must fail closed.
  *   A mode change instead withdraws the prompt for fresh policy evaluation.
+ * - `reportEscalatedCall`: where a call that was asked about stands now. The
+ *   worker reports it after its gate has decided and again after the tool has
+ *   run, so a client-side card shows what happened to the call and not only
+ *   what was answered.
  *
  * A worker reads its parent's session ID from the immutable role supplied
  * by the runner, then looks the surface up here.
@@ -24,7 +28,7 @@
  * only their own object.
  */
 
-import type { PermissionRequest } from "./prompter.js"
+import type { EscalatedCallReport, PermissionRequest } from "./prompter.js"
 import type { ApprovalOutcome } from "./prompts.js"
 
 /** Severity for a classifier notice; maps onto `ui.notify` levels. */
@@ -35,6 +39,9 @@ export interface ParentSurface {
 	/** Show a permission prompt in this session's UI on a subagent's behalf.
 	 *  Rejects when the route fails — the caller falls back to blocking. */
 	requestPermission?: (req: PermissionRequest) => Promise<ApprovalOutcome>
+	/** Tell this session's surface where a call it was asked about stands
+	 *  now: running, completed or failed. Best effort; never throws. */
+	reportEscalatedCall?: (report: EscalatedCallReport) => void
 }
 
 const bySessionId = new Map<string, ParentSurface[]>()

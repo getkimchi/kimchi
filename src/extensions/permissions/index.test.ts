@@ -1493,6 +1493,137 @@ describe("classifier outage escalation to the parent session", () => {
 	// Shift+Tab cycles default → plan → auto → yolo. A call whose prompt a mode
 	// change withdrew is decided only after the mode has stayed unchanged for
 	// MODE_SETTLE_MS, so a mode that was only passed through decides nothing.
+	// A surface that keeps a card for the call (ACP) must show what happened to
+	// the call, not what was answered: an allowed call can still fail, and a
+	// request withdrawn by a mode change is decided again.
+	describe("reports where an escalated call stands", () => {
+		type Report = { toolCallId: string; agentId?: string; status: string }
+		const toolResult = (isError: boolean) => ({
+			type: "tool_result",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			input: event.input,
+			content: [],
+			isError,
+		})
+
+		function registerCardPrompter(request: ToolPermissionPrompter["request"]): Report[] {
+			const reports: Report[] = []
+			registerAcpPrompter(TEST_SESSION_ID, { request, reportEscalatedCall: (report) => reports.push(report) })
+			return reports
+		}
+
+		afterEach(() => {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		})
+
+		it.each([
+			{ isError: false, ending: "completed" },
+			{ isError: true, ending: "failed" },
+		])("reports an allowed call as running, then as $ending when its result arrives", async ({ isError, ending }) => {
+			const { worker, workerCtx } = await setupEscalation()
+			const reports = registerCardPrompter(async () => ({ kind: "allow-once" }))
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+
+			expect(await runAsAgentWorker(() => worker.fire("tool_call", event, workerCtx))).toBeUndefined()
+			expect(reports).toEqual([{ toolCallId: "escalated-call", agentId: "agent-9", status: "running" }])
+
+			await worker.fire("tool_result", toolResult(isError), workerCtx)
+			expect(reports.map((report) => report.status)).toEqual(["running", ending])
+			// One ending per call.
+			await worker.fire("tool_result", toolResult(!isError), workerCtx)
+			await worker.fire("session_shutdown", {}, workerCtx)
+			expect(reports).toHaveLength(2)
+		})
+
+		it("reports a refused call as failed and never as running", async () => {
+			const { worker, workerCtx } = await setupEscalation()
+			const reports = registerCardPrompter(async () => ({ kind: "deny" }))
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+
+			expect(await worker.fire("tool_call", event, workerCtx)).toMatchObject({ block: true })
+			expect(reports).toEqual([{ toolCallId: "escalated-call", agentId: "agent-9", status: "failed" }])
+		})
+
+		it("reports a call as failed when the request itself fails", async () => {
+			const { worker, workerCtx } = await setupEscalation()
+			const reports = registerCardPrompter(async () => {
+				throw new Error("client went away")
+			})
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+
+			expect(await worker.fire("tool_call", event, workerCtx)).toMatchObject({ block: true })
+			expect(reports.map((report) => report.status)).toEqual(["failed"])
+		})
+
+		it("reports an allowed call whose result never arrives as failed when the run ends", async () => {
+			const { worker, workerCtx } = await setupEscalation()
+			const reports = registerCardPrompter(async () => ({ kind: "allow-once" }))
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+
+			await worker.fire("tool_call", event, workerCtx)
+			await worker.fire("session_shutdown", {}, workerCtx)
+			expect(reports.map((report) => report.status)).toEqual(["running", "failed"])
+		})
+
+		it("reports nothing for a call that was never asked about", async () => {
+			const { worker, workerCtx } = await setupEscalation()
+			const request = vi.fn(async () => ({ kind: "allow-once" as const }))
+			const reports = registerCardPrompter(request)
+			// Mocked classifier default: safe.
+			expect(await worker.fire("tool_call", event, workerCtx)).toBeUndefined()
+			await worker.fire("tool_result", toolResult(false), workerCtx)
+			await worker.fire("session_shutdown", {}, workerCtx)
+
+			expect(request).not.toHaveBeenCalled()
+			expect(reports).toEqual([])
+		})
+
+		describe("after a mode change withdrew the request", () => {
+			beforeEach(() => {
+				vi.useFakeTimers()
+			})
+			afterEach(() => {
+				vi.useRealTimers()
+			})
+
+			/** Pending until the parent withdraws it. */
+			const untilWithdrawn: ToolPermissionPrompter["request"] = (req) =>
+				new Promise((resolve) => {
+					if (req.signal?.aborted) return resolve({ kind: "aborted" })
+					req.signal?.addEventListener("abort", () => resolve({ kind: "aborted" }), { once: true })
+				})
+
+			it.each([
+				{ mode: "plan", blocked: true, statuses: ["failed"] },
+				{ mode: "yolo", blocked: false, statuses: ["running"] },
+			])("reports nothing at the withdrawal and $statuses once the call is decided under $mode", async ({
+				mode,
+				blocked,
+				statuses,
+			}) => {
+				const { parent, parentCtx, worker, workerCtx } = await setupEscalation()
+				const request = vi.fn(untilWithdrawn)
+				const reports = registerCardPrompter(request)
+				vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+				const pending = worker.fire("tool_call", event, workerCtx)
+				await vi.advanceTimersByTimeAsync(50)
+				expect(request).toHaveBeenCalledOnce()
+
+				await parent.commands.get("permissions")?.handler(`mode ${mode}`, parentCtx)
+				await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS / 2)
+				// Withdrawn, not refused, and not run yet.
+				expect(reports).toEqual([])
+
+				await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS)
+				const result = await pending
+				if (blocked) expect(result).toMatchObject({ block: true })
+				else expect(result).toBeUndefined()
+				expect(reports.map((report) => report.status)).toEqual(statuses)
+			})
+		})
+	})
+
 	describe("mode changes while a prompt is pending", () => {
 		/** Between two presses: longer than any microtask chain, shorter than the settle time. */
 		const BETWEEN_PRESSES_MS = 100
@@ -7423,7 +7554,7 @@ describe("inline worker permissions", () => {
 				.mocked(worker.pi.on)
 				.mock.calls.map(([event]) => event)
 				.sort(),
-		).toEqual(["session_shutdown", "session_start", "tool_call"])
+		).toEqual(["session_shutdown", "session_start", "tool_call", "tool_result"])
 		expect(workerCtx.ui.select).not.toHaveBeenCalled()
 	})
 

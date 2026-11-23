@@ -134,14 +134,17 @@ Behavioral rules:
   deferred prompts and decides each affected call again under the new mode. A
   stopped worker returns an explicit block rather than a mode-flap warning.
 - TUI and ACP use the same parent route. ACP sends a normal permission card for
-  a parent-allocated tool-call ID, names the subagent in the title and `_meta`,
-  and sends exactly one closing `tool_call_update` on every way out: `completed`
-  for an allow, `failed` for a denial, a cancel, an abort, or an error. A card
-  that a mode change withdrew also closes as `failed`, because ACP has no
-  "cancelled" status; its title ends with "— withdrawn: permission mode
-  changed", since the call is decided again and may still run. Print mode
-  and headless ACP hosts retain the fail-closed block. Remote sandbox agents and
-  the separate curator subprocess do not use this in-process route.
+  a parent-allocated tool-call ID and names the subagent in the title and
+  `_meta`. The answer settles the approval only; the card's status follows the
+  call itself, reported by the subagent's gate. An allowed call is sent as
+  `in_progress` when it starts and as `completed` or `failed` when its result
+  is in. A call that is refused, cancelled, unanswered or blocked is sent as
+  `failed`. A request that a mode change withdrew gets no status: the call is
+  decided again, and the same card is asked about again, or it moves to
+  `in_progress` or `failed` once the new mode has decided. Each card gets
+  exactly one final status. Print mode and headless ACP hosts retain the
+  fail-closed block. Remote sandbox agents and the separate curator subprocess
+  do not use this in-process route.
 
 ## Configuration
 

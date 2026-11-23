@@ -36,15 +36,32 @@ export interface PermissionRequest {
 /**
  * Abort reason of a permission request that a mode change withdrew. The call
  * behind it is decided again under the new mode, so "aborted" for this reason
- * is not a denial. Shared so that surfaces outside the gate (an ACP card) can
- * tell a withdrawn request from a refused one.
+ * is not a denial.
  */
 export const MODE_CHANGED_ABORT_ERROR = new Error("permissions: mode changed")
 
-export function isModeChangeAbort(signal: AbortSignal | undefined): boolean {
-	return signal?.aborted === true && signal.reason === MODE_CHANGED_ABORT_ERROR
+/**
+ * Where a subagent's call stands after it was asked about in the parent
+ * session: allowed and now running, or ended. `failed` covers a call that was
+ * refused or blocked as well as one that ran and failed.
+ */
+export type EscalatedCallStatus = "running" | "completed" | "failed"
+
+export interface EscalatedCallReport {
+	/** The subagent's own id for the call, as in the request. */
+	toolCallId: string
+	agentId?: string
+	status: EscalatedCallStatus
 }
 
 export interface ToolPermissionPrompter {
 	request(req: PermissionRequest): Promise<ApprovalOutcome>
+	/**
+	 * A subagent's call that was asked about through this prompter has moved
+	 * on. A surface that keeps a card for the call (ACP) updates it from this
+	 * and never from the answer alone: allowing a call does not mean that it
+	 * succeeded, and a withdrawn request does not mean that it failed. Best
+	 * effort; must not throw.
+	 */
+	reportEscalatedCall?(report: EscalatedCallReport): void
 }
