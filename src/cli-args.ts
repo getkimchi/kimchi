@@ -82,7 +82,7 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	"enable-experimental-features": {
 		type: "boolean",
-		description: "Enable experimental features, including the kimchi-dev/auto model",
+		description: "Enable experimental features, such as kimchi-experimental models and the background daemon",
 	},
 	thinking: {
 		type: "string",
