@@ -6,6 +6,19 @@
 #   soft-wrap copy behavior; report it to https://github.com/earendil-works/pi
 #   before the next pi-tui upgrade.
 # Changes:
+#   - Markdown strong/table-header light-theme contrast (paired with the
+#     pi-coding-agent getMarkdownTheme() `text` entry): strong spans and
+#     table headers whose content carries no styling of its own are wrapped
+#     in the markdown theme's plain-text color before bold is applied, so
+#     bold text carries an explicit fg instead of falling back to the
+#     terminal's bold/bright color (bright white on many terminals —
+#     invisible on light themes that pin the terminal background white via
+#     OSC 11). Styled content and headings keep their own colors. The wrap
+#     is guarded on `typeof theme.text === "function"` so stock markdown
+#     themes (no text entry) render exactly as before.
+#     Tracking: publication pending (upstream issue/PR planned; see the
+#     pi-coding-agent patch's markdown bullet). Removal: delete the hunk
+#     once upstream pins unstyled bold to the theme text color itself.
 #   - Account for stroke width in Box/Text/Markdown rendering (applyStrokeToLine),
 #     including Box.handleMouse() so mouse hit-testing matches render().
 #   - Hard-truncate all emitted lines to `width` in Text/Box/Markdown no-bg paths
@@ -100,7 +113,7 @@ index 1146b95e5c5b2a2d4ff21153364bbf4d3ba8cc71..3cfb694052f9385a7d36386e44facf96
  //# sourceMappingURL=box.js.map
 \ No newline at end of file
 diff --git a/dist/components/markdown.js b/dist/components/markdown.js
-index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..f1ed467920cbdad665174458fc7c93f21068ff96 100644
+index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..8c760e34dbc8f3424dce5adbad2adcfa609593ba 100644
 --- a/dist/components/markdown.js
 +++ b/dist/components/markdown.js
 @@ -1,7 +1,7 @@
@@ -169,7 +182,26 @@ index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..f1ed467920cbdad665174458fc7c93f2
                      }
                  }
                  if (nextTokenType && nextTokenType !== "space") {
-@@ -627,7 +634,10 @@ export class Markdown {
+@@ -525,7 +532,17 @@ export class Markdown {
+                     break;
+                 case "strong": {
+                     const boldContent = this.renderInlineTokens(token.tokens || [], resolvedStyleContext);
+-                    result += this.theme.bold(boldContent) + stylePrefix;
++                    // Kimchi: bold text with no explicit fg falls back to the
++                    // terminal's bold/bright color (bright white on many
++                    // terminals) — invisible on light themes that pin the
++                    // terminal background white via OSC 11. Content that
++                    // carries no styling is wrapped in the theme's plain-text
++                    // color first (when the markdown theme provides one);
++                    // styled content keeps its own color untouched.
++                    const strongContent = typeof this.theme.text === "function" && !boldContent.includes("\u001b[")
++                        ? this.theme.text(boldContent)
++                        : boldContent;
++                    result += this.theme.bold(strongContent) + stylePrefix;
+                     break;
+                 }
+                 case "em": {
+@@ -627,7 +644,10 @@ export class Markdown {
                  for (const line of itemLines) {
                      for (const wrappedLine of wrapTextWithAnsi(line, itemWidth)) {
                          const linePrefix = renderedAnyLine ? continuationPrefix : firstPrefix;
@@ -181,6 +213,21 @@ index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..f1ed467920cbdad665174458fc7c93f2
                          renderedAnyLine = true;
                      }
                  }
+@@ -782,7 +802,13 @@ export class Markdown {
+             const rowParts = headerCellLines.map((cellLines, colIdx) => {
+                 const text = cellLines[lineIdx] || "";
+                 const padded = text + " ".repeat(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
+-                return this.theme.bold(padded);
++                // Kimchi: same light-theme fix as the strong case — table
++                // headers are bold by definition and were rendering with no
++                // explicit fg.
++                const headerContent = typeof this.theme.text === "function" && !padded.includes("\u001b[")
++                    ? this.theme.text(padded)
++                    : padded;
++                return this.theme.bold(headerContent);
+             });
+             lines.push(`│ ${rowParts.join(" │ ")} │`);
+         }
 diff --git a/dist/components/text.js b/dist/components/text.js
 index 3572668c677bd4d449aff9622273440c8bb103b0..903fd11259306157bc1d1522dbb1c2af46cb8f53 100644
 --- a/dist/components/text.js
@@ -282,7 +329,7 @@ index cc41fea6df832f87b45bf054b5b8db0370885fc1..5e8ecdc106782562c759d79444979889
      }
      async copySelectionToClipboard() {
 diff --git a/dist/utils.js b/dist/utils.js
-index 946da9d..67c39ec 100644
+index 946da9df9f098c55272410a78e31363623fdc219..67c39eceefff4667d16b9d87e961bdc214337b10 100644
 --- a/dist/utils.js
 +++ b/dist/utils.js
 @@ -820,6 +820,58 @@ export function flattenLines(lines) {
