@@ -34,7 +34,12 @@ jobs:
   pr-checks:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    # A hang guard, not a budget for the suite. Measured over a week (#1847):
+    # a green run takes 8.5 minutes at the median and 11.9 at the slowest, and
+    # the unit suite alone varies 1.4x with the runner. At 12 minutes the limit
+    # cancelled jobs with every step green; 20 leaves room for a slow runner
+    # and for the suite to grow.
+    timeout-minutes: 20
     concurrency:
       group: ci-pr-${{ github.head_ref }}
       cancel-in-progress: true
@@ -114,7 +119,9 @@ jobs:
     # the tree that would land on master before squashing.
     if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    # Same hang guard as pr-checks. This is the merge queue's required check,
+    # so a cancel at the limit also costs the queued PR a second pass.
+    timeout-minutes: 20
     concurrency:
       # Pick a concurrency group name based on the triggering event:
       #
