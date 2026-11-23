@@ -45,28 +45,45 @@ const READ_ONLY_NAME_PREFIXES = /^(get|search|list|read|fetch)/
 /** Process-level dedupe for convention promotions — audit signal, not noise. */
 const warnedConventionPromotions = new Set<string>()
 
-export function isReadOnlyQualifiedMcpTool(originalName: string, annotations?: ToolAnnotations | null): boolean {
-	if (annotations?.readOnlyHint === true) return true
-	if (annotations === undefined || annotations === null) {
-		if (READ_ONLY_NAME_PREFIXES.test(originalName)) {
-			if (!warnedConventionPromotions.has(originalName)) {
-				warnedConventionPromotions.add(originalName)
-				console.warn(`[mcp] Tool "${originalName}" promoted to read-only via name convention (no annotations)`)
-			}
-			return true
-		}
+export type ReadOnlyEvidence =
+	| "annotation_true"
+	| "annotation_false"
+	| "none"
+	| "unannotated"
+	| "name_convention"
+	| "resource"
+
+export function getMcpReadOnlyEvidence(
+	originalName: string,
+	annotations?: ToolAnnotations | null,
+): Exclude<ReadOnlyEvidence, "resource"> {
+	if (annotations?.readOnlyHint === true) return "annotation_true"
+	if (annotations?.readOnlyHint === false) return "annotation_false"
+	if (annotations !== undefined && annotations !== null) return "none"
+	if (!READ_ONLY_NAME_PREFIXES.test(originalName)) return "unannotated"
+	if (!warnedConventionPromotions.has(originalName)) {
+		warnedConventionPromotions.add(originalName)
+		console.warn(`[mcp] Tool "${originalName}" promoted to read-only via name convention (no annotations)`)
 	}
-	return false
+	return "name_convention"
 }
 
-interface McpToolCandidate {
+function isReadOnlyEvidence(evidence: ReadOnlyEvidence): boolean {
+	return evidence === "annotation_true" || evidence === "name_convention" || evidence === "resource"
+}
+
+export function isReadOnlyQualifiedMcpTool(originalName: string, annotations?: ToolAnnotations | null): boolean {
+	return isReadOnlyEvidence(getMcpReadOnlyEvidence(originalName, annotations))
+}
+
+export interface McpToolCandidate {
 	serverName: string
 	prefix: ToolPrefix
 	tool: ToolMetadata
-	readOnly: boolean
+	evidence: ReadOnlyEvidence
 }
 
-function collectMcpToolCandidates(
+export function collectMcpToolCandidates(
 	config: McpConfig,
 	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
 ): McpToolCandidate[] {
@@ -118,12 +135,12 @@ function collectMcpToolCandidates(
 				serverName,
 				prefix,
 				tool,
-				readOnly:
-					sourceResource !== undefined ||
-					(nameCounts.get(tool.name) === 1 &&
-						tool.resourceUri === undefined &&
-						source !== undefined &&
-						isReadOnlyQualifiedMcpTool(source.name, source.annotations)),
+				evidence:
+					sourceResource !== undefined
+						? "resource"
+						: nameCounts.get(tool.name) === 1 && tool.resourceUri === undefined && source !== undefined
+							? getMcpReadOnlyEvidence(source.name, source.annotations)
+							: "unannotated",
 			})
 		}
 	}
@@ -144,14 +161,17 @@ export function collectReadOnlyMcpWireNames(
 	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
 ): string[] {
 	const qualified = new Map<string, boolean>()
-	for (const { serverName, tool, readOnly } of collectMcpToolCandidates(config, privateCatalogs)) {
-		qualified.set(tool.name, (server === undefined || serverName === server) && !qualified.has(tool.name) && readOnly)
+	for (const { serverName, tool, evidence } of collectMcpToolCandidates(config, privateCatalogs)) {
+		qualified.set(
+			tool.name,
+			(server === undefined || serverName === server) && !qualified.has(tool.name) && isReadOnlyEvidence(evidence),
+		)
 	}
 	return [...qualified].filter(([, readOnly]) => readOnly).map(([name]) => name)
 }
 
 function hasSingleReadOnlyMatch(candidates: McpToolCandidate[]): boolean {
-	return candidates.length === 1 && candidates[0]?.readOnly === true
+	return candidates.length === 1 && candidates[0] !== undefined && isReadOnlyEvidence(candidates[0].evidence)
 }
 
 function resolveServerGatewayTool(candidates: McpToolCandidate[], toolName: string, serverName: string): boolean {

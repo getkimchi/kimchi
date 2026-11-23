@@ -11,6 +11,7 @@ vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => ({
 
 import {
 	collectReadOnlyMcpWireNames,
+	getMcpReadOnlyEvidence,
 	isReadOnlyQualifiedMcpGatewayTool,
 	isReadOnlyQualifiedMcpTool,
 } from "./read-only.js"
@@ -42,6 +43,34 @@ describe("isReadOnlyQualifiedMcpTool", () => {
 			expect.stringContaining('Tool "get_once" promoted to read-only via name convention'),
 		)
 		warn.mockRestore()
+	})
+})
+
+describe("getMcpReadOnlyEvidence", () => {
+	it("returns annotation_true when readOnlyHint is true", () => {
+		expect(getMcpReadOnlyEvidence("deploy", { readOnlyHint: true })).toBe("annotation_true")
+	})
+	it("returns annotation_false when readOnlyHint is false", () => {
+		expect(getMcpReadOnlyEvidence("get_item", { readOnlyHint: false })).toBe("annotation_false")
+	})
+	it("returns none when annotations omit readOnlyHint true", () => {
+		expect(getMcpReadOnlyEvidence("get_item", { destructiveHint: true })).toBe("none")
+	})
+	it("returns unannotated for a non-convention name without annotations", () => {
+		expect(getMcpReadOnlyEvidence("deploy", undefined)).toBe("unannotated")
+	})
+	it("returns name_convention for unannotated get search list read and fetch names", () => {
+		for (const name of ["get_issue", "search_docs", "list_repos", "read_file", "fetch_page"])
+			expect(getMcpReadOnlyEvidence(name, null)).toBe("name_convention")
+	})
+	it("annotation_true wins over conflicting destructive and open-world hints", () => {
+		expect(
+			getMcpReadOnlyEvidence("deploy", {
+				readOnlyHint: true,
+				destructiveHint: true,
+				openWorldHint: true,
+			}),
+		).toBe("annotation_true")
 	})
 })
 
