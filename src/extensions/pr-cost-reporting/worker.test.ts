@@ -2605,6 +2605,51 @@ describe("incremental translation", () => {
 		expect(backend.markedRecords()).toEqual([])
 	})
 
+	it("a plan whose construction outlasts the pass is saved and resumed, not rebuilt every pass", async () => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 150 }, (_, index) => `entity-${index}`)
+		const built = {
+			accounts: [
+				{
+					account: content.account,
+					facts: entities.map((entityId) => ({
+						entityId,
+						source: "kimchi",
+						sourceVersion: "test",
+						deviceId: requestId,
+						observeTime: "2026-10-04T12:00:00Z",
+						coverage: { code: "fixture", count: "1" },
+					})),
+					recordHashes: [],
+				},
+			],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		}
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		// A large group's read, report and event build take longer than one 5 s pass.
+		vi.mocked(eventBuilder.buildEvents).mockImplementation(async () => {
+			clock.mockReturnValue(start + 6_000)
+			return built
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		// The finished prelude is kept even though the pass had no time left to commit a chunk.
+		expect(backend.getNote("agent", "translation-plan")).toBeDefined()
+		expect((await readReportingState(directory)).error).toBeUndefined()
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const observed = vi
+			.mocked(outbox.observeEvents)
+			.mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed).toEqual(entities)
+		expect(backend.markedRecords()).toEqual([])
+	})
+
 	it("the suspended group resumes before another changed group can take over the plan slot", async () => {
 		await seedLinked()
 		const big = "55555555-5555-4555-8555-555555555555"

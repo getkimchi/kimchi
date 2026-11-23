@@ -1002,6 +1002,8 @@ export { preludeStretch } from "./prelude.js"
 
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
+/** Ceiling for building one group's translation plan; the prelude yields throughout and runs once per round. */
+const PRELUDE_MS = 60_000
 /** The group translation in progress: units committed while its marked records stay unchanged. */
 const PROGRESS_NOTE = "translation-progress"
 
@@ -1226,7 +1228,7 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 			continue
 		}
 		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
-		const translated = await translateGroup(agentDir, works, changed, producer, deadline, bounded, check)
+		const translated = await translateGroup(agentDir, works, changed, producer, deadline, check, signal, assertLease)
 		if (translated === undefined) return
 		waiting ||= translated
 		// Every retry that still leaves the group unresolved rests the window from now; a group that invoked every
@@ -1294,10 +1296,16 @@ async function translateGroup(
 	changed: ReadonlyMap<string, string>,
 	producer: string,
 	deadline: number,
-	bounded: AbortSignal,
 	check: () => void,
+	signal: AbortSignal,
+	assertLease: () => void,
 ): Promise<boolean | undefined> {
 	const backend = backendFor(agentDir)
+	// Lease and cancellation only: the pass deadline bounds the chunk loop, not the plan's construction.
+	const checkLease = () => {
+		assertLease()
+		signal.throwIfAborted()
+	}
 	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
 	const groupKey = groupKeyOf(works)
 	// A note written by another version, or corrupted storage, never substitutes for a rebuild: it reads as absent.
@@ -1340,6 +1348,17 @@ async function translateGroup(
 		serializedAccounts = existingPlan.accounts
 		facts = factsMapOf(serializedAccounts)
 	} else {
+		// The prelude runs under its own limit, not the pass deadline. A large group's read, report and event build
+		// exceed one pass; a deadline inside the prelude discarded all of it before the plan was saved, so the next
+		// pass started over and the group never translated. The prelude yields on its stretch cadence throughout,
+		// and finishes once: its saved plan lets later passes commit chunks under the pass deadline.
+		const preludeSignal = AbortSignal.any([signal, AbortSignal.timeout(PRELUDE_MS)])
+		const preludeDeadline = Date.now() + PRELUDE_MS
+		const preludeCheck = () => {
+			assertLease()
+			preludeSignal.throwIfAborted()
+			if (Date.now() >= preludeDeadline) throw new Error("PR reporting translation time limit exceeded")
+		}
 		// Reads page through each work's records — at most 128 rows materialize between
 		// stretches, so a single work with a huge history cannot own the UI loop for its
 		// whole read — and parses pull one record at a time, so a big group keeps breathing:
@@ -1352,7 +1371,7 @@ async function translateGroup(
 			const through = backend.recordWatermark()
 			let after = 0
 			for (;;) {
-				const page = backend.readWorkRecordPage(workId, after, through, 128, check)
+				const page = backend.readWorkRecordPage(workId, after, through, 128, preludeCheck)
 				if (!page.length) break
 				for (const row of page) {
 					stored.push(row)
@@ -1365,20 +1384,21 @@ async function translateGroup(
 		}
 		const records: WorkRecord[] = []
 		for (const row of stored) {
-			check()
+			preludeCheck()
 			records.push(JSON.parse(row.body) as WorkRecord)
 			await stretch()
 		}
 		// The report shares the prelude's stretch cadence: a big group breathes between the calculation's
 		// 2,000-step or ~50ms stretches instead of owning the loop end-to-end.
 		const { report } = await readWorkCostReportAsync(records, stretch)
+		// Lookups get a full pass window of their own, not whatever the read left of the pass.
 		const { repositories, settled: identitiesSettled } = await repositoryIdentities(
 			agentDir,
 			records,
 			report,
-			deadline,
-			bounded,
-			check,
+			Math.min(Date.now() + PASS_MS, preludeDeadline),
+			preludeSignal,
+			preludeCheck,
 		)
 		// A commit or work link can move any request of the group; other records touch only their own request.
 		const structural = [...changed.values()].some((type) => type === "commit" || type === "work_link")
@@ -1397,8 +1417,8 @@ async function translateGroup(
 			report,
 			repositories,
 			producer,
-			check,
-			(account, entities) => effectiveClaimsAsync(backend, account, entities, stretch, check),
+			preludeCheck,
+			(account, entities) => effectiveClaimsAsync(backend, account, entities, stretch, preludeCheck),
 			touched,
 			stretch,
 		)
@@ -1408,7 +1428,7 @@ async function translateGroup(
 		serializedAccounts = built.accounts
 		facts = factsMapOf(serializedAccounts)
 	}
-	check()
+	checkLease()
 	const progress = {
 		group: groupKey,
 		markers: markers.length,
