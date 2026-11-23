@@ -16,7 +16,6 @@ const OPTIONS_PREFIX = "// @options:"
 export interface CodemodeContextReduction {
 	intermediateTextChars: number
 	returnedTextChars: number
-	estimatedTokensKeptOut: number
 	complete: boolean
 }
 
@@ -31,6 +30,9 @@ export function codemodePurpose(args: unknown): string | undefined {
 	const code = Reflect.get(args, "code")
 	if (typeof code !== "string") return undefined
 	const lines = code.split("\n")
+	// Match execution: @options is invalid anywhere except the first line,
+	// including after an otherwise-valid purpose directive.
+	if (lines.some((line, index) => index > 0 && line.trimStart().startsWith(OPTIONS_PREFIX))) return undefined
 	let index = 0
 	if (lines[0]?.trimStart().startsWith(OPTIONS_PREFIX)) index = 1
 	const line = lines[index]
@@ -59,22 +61,16 @@ export function readCodemodeContextReduction(details: unknown): CodemodeContextR
 	if (
 		!isNonNegativeSafeInteger(value.intermediateTextChars) ||
 		!isNonNegativeSafeInteger(value.returnedTextChars) ||
-		!finiteNumber(value.estimatedTokensKeptOut) ||
-		!Number.isSafeInteger(value.estimatedTokensKeptOut) ||
 		typeof value.complete !== "boolean"
 	) {
 		return undefined
 	}
-	// Replay trusts the recorded calculation but never a torn or internally
-	// inconsistent tuple. Validation is not a fresh estimate: the two counters
-	// are the source of truth already captured at execution time.
-	if (value.estimatedTokensKeptOut !== Math.round((value.intermediateTextChars - value.returnedTextChars) / 4)) {
-		return undefined
-	}
+	// Character counters are canonical. Legacy estimatedTokensKeptOut fields
+	// are ignored: the UI derives diagnostic values instead of trusting a
+	// stored rounded estimate that can disagree with either count.
 	return {
 		intermediateTextChars: value.intermediateTextChars,
 		returnedTextChars: value.returnedTextChars,
-		estimatedTokensKeptOut: value.estimatedTokensKeptOut,
 		complete: value.complete,
 	}
 }
@@ -163,7 +159,6 @@ export function createCodemodeOutcomeTracker() {
 				return {
 					intermediateTextChars: 0,
 					returnedTextChars,
-					estimatedTokensKeptOut: Math.round(-returnedTextChars / 4),
 					complete: false,
 				}
 			}
@@ -171,7 +166,6 @@ export function createCodemodeOutcomeTracker() {
 			return {
 				intermediateTextChars: outcome.intermediateTextChars,
 				returnedTextChars,
-				estimatedTokensKeptOut: Math.round((outcome.intermediateTextChars - returnedTextChars) / 4),
 				complete: outcome.complete && outcome.pendingNestedCalls.size === 0,
 			}
 		},
