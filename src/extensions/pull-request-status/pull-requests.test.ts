@@ -522,6 +522,56 @@ describe("native provider credentials", () => {
 		expect(http).not.toHaveBeenCalled()
 		expect(existsSync(join(agentDir, "work-attribution", "writer.jsonl"))).toBe(false)
 	})
+	it("renews an expiring glab OAuth login before reading its keyring token", async () => {
+		seed()
+		useProvider("gitlab")
+		const path = gitlabConfig(
+			`hosts:\n  gitlab.com:\n    use_keyring: "true"\n    is_oauth2: "true"\n    oauth2_expiry_date: "${new Date(Date.now() - 60_000).toISOString()}"\n`,
+		)
+		let renewed = false
+		cli.auth.mockImplementation(async (_command, args, options) => {
+			if (args[1] === "path") return path
+			if (args[0] === "auth") {
+				expect(args).toEqual(["auth", "status", "--hostname", "gitlab.com"])
+				// Renewal needs the user's own login, not the isolated keyring config.
+				expect(options.env?.GLAB_CONFIG_DIR).toBeUndefined()
+				expect(options.env?.GIT_DIR).toBe(join(String(options.cwd), ".git"))
+				for (const name of authEnv) expect(options.env?.[name]).toBeUndefined()
+				renewed = true
+				return undefined
+			}
+			return renewed ? "renewed-token" : "expired-token"
+		})
+		await lookup()
+		expect(cli.auth.mock.calls.map(([, args]) => args.slice(0, 2).join(" "))).toEqual([
+			"config path",
+			"auth status",
+			"config get",
+		])
+		expect(http).toHaveBeenCalled()
+		for (const [, options] of http.mock.calls)
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer renewed-token")
+	})
+	it.each([
+		["leaves an unexpired OAuth login alone", 60 * 60_000, "stored-token"],
+		["reads a renewed plaintext OAuth token", -60_000, "renewed-token"],
+	])("%s", async (_case, expiresIn, expected) => {
+		seed()
+		useProvider("gitlab")
+		const login = (token: string, expiry: number) =>
+			`hosts:\n  gitlab.com:\n    token: ${token}\n    use_keyring: "false"\n    is_oauth2: "true"\n    oauth2_expiry_date: "${new Date(expiry).toISOString()}"\n`
+		const path = gitlabConfig(login("stored-token", Date.now() + expiresIn))
+		cli.auth.mockImplementation(async (_command, args) => {
+			if (args[1] === "path") return path
+			if (args[0] === "auth") writeFileSync(path, login("renewed-token", Date.now() + 2 * 60 * 60_000))
+			return undefined
+		})
+		await lookup()
+		expect(cli.auth.mock.calls.some(([, args]) => args[0] === "auth")).toBe(expiresIn < 0)
+		expect(http).toHaveBeenCalled()
+		for (const [, options] of http.mock.calls)
+			expect(new Headers(options.headers).get("authorization")).toBe(`Bearer ${expected}`)
+	})
 	it.each([
 		["prints its help, as glab 1.73 and 1.75-1.114 do", "Manage key/value strings.\n\n  Current respected settings:"],
 		["is an unknown command, as glab 1.72 and older", undefined],
