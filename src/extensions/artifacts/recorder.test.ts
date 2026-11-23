@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { TurnArtifactBuffer } from "../../modes/acp/artifact-links.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } from "./recorder.js"
 import { setSnapshotArtifactsOptIn } from "./snapshot-policy.js"
@@ -233,6 +234,73 @@ describe("artifact-recorder", () => {
 				snapshot: true,
 			},
 		])
+	})
+
+	it("promotes a snapshot-detected file to a write for recording and replay", async () => {
+		const finalReport = join(cwd, "promoted.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		const endTurn = (turnIndex: number, id: string, name: string, args: Record<string, unknown>) =>
+			emit(
+				"turn_end",
+				{
+					type: "turn_end",
+					turnIndex,
+					message: {
+						role: "assistant",
+						timestamp: now,
+						content: [{ type: "toolCall", id, name, arguments: args }],
+					},
+					toolResults: [
+						{
+							toolCallId: id,
+							toolName: name,
+							content: [],
+							isError: false,
+							timestamp: now,
+						},
+					],
+				},
+				ctx,
+			)
+
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-promoted-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Snapshot</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-promoted-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			ctx,
+		)
+		await endTurn(0, "tc-promoted-build", "bash", { command: "node build.js" })
+		writeFileSync(finalReport, "<h1>Intentional write</h1>")
+		await endTurn(1, "tc-promoted-write", "write", { path: "promoted.html" })
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		expect(rows[0].artifacts).toEqual([
+			{ path: finalReport, name: "promoted.html", mimeType: "text/html", sniffed: false },
+		])
+		const replay = new TurnArtifactBuffer()
+		replay.noteTextBlock("km.1")
+		replay.adoptRecorded(rows[0].artifacts)
+		expect(replay.flush(undefined, { verifyExists: false })).toHaveLength(1)
 	})
 
 	it("does not duplicate a snapshot-detected file also printed by Bash", async () => {

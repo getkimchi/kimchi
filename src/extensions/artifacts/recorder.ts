@@ -76,8 +76,9 @@ class RunArtifactAccumulator {
 		const existing = this.seen.has(artifact.path) ? this.out.findIndex((a) => a.path === artifact.path) : -1
 		if (sniffed && existing >= 0) return
 		if (!sniffed && existing >= 0) {
-			// Intentional path promotes out of sniffed eviction eligibility.
-			this.out[existing] = { ...this.out[existing], sniffed: false }
+			// Intentional provenance replaces snapshot/sniffed provenance as
+			// well as eviction eligibility, matching the live buffer.
+			this.out[existing] = artifact
 			const idx = this.sniffedKeys.indexOf(artifact.path)
 			if (idx >= 0) this.sniffedKeys.splice(idx, 1)
 			return
