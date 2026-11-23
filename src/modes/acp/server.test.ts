@@ -7423,8 +7423,13 @@ describe("generated artifacts (live turns)", () => {
 		{ kind: "direct write", fileName: "other-prompt.html" },
 		{ kind: "non-opted redirect", fileName: "nested-redirect.html" },
 		{ kind: "non-opted output sniff", fileName: "nested-sniff.html" },
+		{ kind: "non-opted output sniff", fileName: "reverse-order.html", reverse: true },
 		{ kind: "declaration", fileName: "declared.html" },
-	])("does not attribute another session's $kind to a waiting Bash prompt", async ({ kind, fileName }) => {
+	])("does not attribute another session's $kind to a waiting Bash prompt", async ({
+		kind,
+		fileName,
+		reverse = false,
+	}) => {
 		const waitingSession = new FakeAgentSession("session-waiting-for-bash", tmpDir)
 		const writingSession = new FakeAgentSession("session-direct-writer", tmpDir)
 		const sessionQueue = [waitingSession, writingSession]
@@ -7450,9 +7455,13 @@ describe("generated artifacts (live turns)", () => {
 		setSnapshotArtifactsOptIn(writingSession.sessionManager, false)
 		const otherPromptReport = join(tmpDir, fileName)
 		let signalBashStarted!: () => void
+		let signalProducerStarted!: () => void
 		let signalWriterFinished!: () => void
 		const bashStarted = new Promise<void>((resolve) => {
 			signalBashStarted = resolve
+		})
+		const producerStarted = new Promise<void>((resolve) => {
+			signalProducerStarted = resolve
 		})
 		const writerFinished = new Promise<void>((resolve) => {
 			signalWriterFinished = resolve
@@ -7499,7 +7508,7 @@ describe("generated artifacts (live turns)", () => {
 				args: waitArgs,
 			})
 			signalBashStarted()
-			await writerFinished
+			await (reverse ? producerStarted : writerFinished)
 			waitingSession.emit({
 				type: "tool_execution_end",
 				toolCallId: "tc-other-prompt-bash",
@@ -7508,6 +7517,9 @@ describe("generated artifacts (live turns)", () => {
 				isError: false,
 			})
 			finishRecordedPrompt(waitingSession, "tc-other-prompt-bash", "bash", waitArgs, "Bash done.", "")
+			// In the reverse-order case, the waiting call has emitted and recorded
+			// before the producer returns its validated legacy source.
+			if (reverse) signalWriterFinished()
 		}
 		const producerToolName = kind === "direct write" ? "write" : kind === "declaration" ? "render_report" : "bash"
 		const producerArgs =
@@ -7530,6 +7542,10 @@ describe("generated artifacts (live turns)", () => {
 				args: producerArgs,
 			})
 			writeFileSync(otherPromptReport, "<h1>Other prompt</h1>")
+			if (reverse) {
+				signalProducerStarted()
+				await writerFinished
+			}
 			writingSession.emit({
 				type: "tool_execution_end",
 				toolCallId: "tc-other-prompt-producer",
@@ -7549,7 +7565,7 @@ describe("generated artifacts (live turns)", () => {
 				producerStdout,
 				producerDetails,
 			)
-			signalWriterFinished()
+			if (!reverse) signalWriterFinished()
 		}
 
 		const waitingPrompt = concurrentAgent.prompt({
@@ -7557,8 +7573,17 @@ describe("generated artifacts (live turns)", () => {
 			prompt: [{ type: "text", text: "Wait for a silent command" }],
 		})
 		await bashStarted
-		await concurrentAgent.prompt({ sessionId: writingId, prompt: [{ type: "text", text: "Write directly" }] })
-		await waitingPrompt
+		const writingPrompt = concurrentAgent.prompt({
+			sessionId: writingId,
+			prompt: [{ type: "text", text: "Write directly" }],
+		})
+		if (reverse) {
+			await waitingPrompt
+			await writingPrompt
+		} else {
+			await writingPrompt
+			await waitingPrompt
+		}
 
 		expect(artifactChunks(rec.updates).map((chunk) => chunk.uri)).toEqual([pathToFileURL(otherPromptReport).href])
 		expect(writingRecorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)).toEqual([

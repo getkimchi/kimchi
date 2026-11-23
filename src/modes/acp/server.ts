@@ -2801,8 +2801,26 @@ export class KimchiAcpAgent implements Agent {
 				// tool_call notifications the client would have to reconcile against
 				// a turn it already considers over.
 				if (!turn) return
+				const hidden = isHiddenToolCall(event.toolName, event.args)
+				const startedAt = Date.now()
+				const snapshotClaim = {
+					scope: entry.session.sessionManager,
+					toolCallId: event.toolCallId,
+					consumer: "acp" as const,
+					capture: !event.parentToolCallId && snapshotArtifactsOptedIn(entry.session.sessionManager),
+				}
+				// Nested/non-opted calls track ambiguity without file snapshots. ACP
+				// and the recorder share one observation for the execution.
+				const fileSnapshot = snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim)
+				turn.toolCallArgs.set(event.toolCallId, {
+					toolName: event.toolName,
+					args: event.args,
+					startedAt,
+					fileSnapshot,
+					snapshotClaim,
+				})
 				observeDirectArtifactWrite(event.toolName, event.args, entry.cwd)
-				if (isHiddenToolCall(event.toolName, event.args)) {
+				if (hidden) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					// A hidden call may already have an allocated ACP id if the permission
 					// prompter ran before we knew it was hidden — retire its state.
@@ -2816,26 +2834,6 @@ export class KimchiAcpAgent implements Agent {
 				if (fileChanges.length > 0) {
 					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
 				}
-				// tool_execution_end carries no args — stash them for artifact
-				// detection and existing completion bookkeeping. Nested calls keep
-				// their UI/lifecycle state and established artifact collection, but
-				// only top-level calls capture filesystem snapshots.
-				const startedAt = Date.now()
-				const snapshotClaim = {
-					scope: entry.session.sessionManager,
-					toolCallId: event.toolCallId,
-					consumer: "acp" as const,
-				}
-				turn.toolCallArgs.set(event.toolCallId, {
-					toolName: event.toolName,
-					args: event.args,
-					startedAt,
-					fileSnapshot:
-						event.parentToolCallId || !snapshotArtifactsOptedIn(entry.session.sessionManager)
-							? undefined
-							: snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim),
-					snapshotClaim,
-				})
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
@@ -2896,6 +2894,9 @@ export class KimchiAcpAgent implements Agent {
 				// would strand the prompt forever.
 				if (event.toolName === "submit_plan" && !event.isError) turn.planReviewHeld = true
 				if (turn.hiddenToolCallIds.has(event.toolCallId)) {
+					const stashed = turn.toolCallArgs.get(event.toolCallId)
+					if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
+					turn.toolCallArgs.delete(event.toolCallId)
 					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
 					return
 				}

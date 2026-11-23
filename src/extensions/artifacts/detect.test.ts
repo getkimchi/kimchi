@@ -3,7 +3,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ARTIFACT_EXTENSIONS, artifactsFromToolCall, releaseArtifactSnapshot, snapshotArtifactFiles } from "./detect.js"
+import {
+	ARTIFACT_EXTENSIONS,
+	artifactsFromToolCall,
+	observeDirectArtifactWrite,
+	releaseArtifactSnapshot,
+	snapshotArtifactFiles,
+} from "./detect.js"
 
 let cwd: string
 
@@ -432,6 +438,51 @@ describe("artifactsFromToolCall", () => {
 				[],
 			)
 			releaseArtifactSnapshot(claim)
+		})
+
+		it("does not attribute a later output sniff to an already collected Bash snapshot", () => {
+			const claim = { scope: {}, toolCallId: "waiting-first-bash", consumer: "acp" as const }
+			const producerClaim = {
+				scope: {},
+				toolCallId: "nested-build-finishes-last",
+				consumer: "acp" as const,
+				capture: false,
+			}
+			expect(snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, producerClaim)).toBeUndefined()
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claim)
+			const report = touch("reverse-order.html")
+			const waitingArtifacts = artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, {
+				fileSnapshot,
+			})
+			const producerArtifacts = artifactsFromToolCall(
+				"bash",
+				{ command: "node build.js" },
+				textResult("Created reverse-order.html"),
+				cwd,
+			)
+			expect(producerArtifacts.map(({ path, origin }) => ({ path, origin }))).toEqual([
+				{ path: report, origin: "sniffed" },
+			])
+			expect(waitingArtifacts).toEqual([])
+			releaseArtifactSnapshot(producerClaim)
+			releaseArtifactSnapshot(claim)
+		})
+
+		it("keeps precise direct-write ownership when the writer starts first", () => {
+			const writerClaim = { scope: {}, toolCallId: "writer-starts-first", consumer: "acp" as const }
+			const waitingClaim = { scope: {}, toolCallId: "waiting-after-writer", consumer: "acp" as const }
+			expect(snapshotArtifactFiles("write", { path: "writer-starts-first.html" }, cwd, writerClaim)).toBeUndefined()
+			observeDirectArtifactWrite("write", { path: "writer-starts-first.html" }, cwd)
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, waitingClaim)
+			touch("writer-starts-first.html")
+			const shellArtifact = touch("waiting-shell.html")
+			expect(
+				artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, { fileSnapshot }).map(
+					({ path }) => path,
+				),
+			).toEqual([shellArtifact])
+			releaseArtifactSnapshot(waitingClaim)
+			releaseArtifactSnapshot(writerClaim)
 		})
 
 		it("shares ACP and recorder snapshots until both consumers release them", () => {

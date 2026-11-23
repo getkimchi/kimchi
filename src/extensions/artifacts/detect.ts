@@ -229,23 +229,29 @@ type FileStamp = { mtimeMs: number; size: number }
  */
 export type ArtifactFileSnapshot = { cwd: string; files: ReadonlyMap<string, FileStamp> }
 
-/** One consumer of a shared execution snapshot (live ACP or recorder). */
+/** One consumer of a shared execution claim (live ACP or recorder). */
 export type ArtifactSnapshotClaim = {
 	scope: object
 	toolCallId: string
 	consumer: "acp" | "recorder"
+	/** Ineligible calls retain producer tracking without capturing a file snapshot. */
+	capture?: boolean
 }
 
+type ExecutionObservationKind = "snapshot" | "direct-path" | "opaque"
 type CwdExecutionObservation = {
 	cwd: string
 	active: number
+	activeSnapshots: number
+	activeOpaqueProducers: number
 	ambiguous: boolean
 	knownWriterPaths: Set<string>
 }
 type SharedSnapshot = {
 	snapshot: ArtifactFileSnapshot | undefined
 	consumers: Set<ArtifactSnapshotClaim["consumer"]>
-	observation: CwdExecutionObservation | undefined
+	observation: CwdExecutionObservation
+	observationKind: ExecutionObservationKind
 	executionReleased: boolean
 }
 
@@ -327,28 +333,43 @@ export function observeDirectArtifactWrite(toolName: string, args: unknown, cwd:
 	}
 }
 
-function observeExecution(snapshot: ArtifactFileSnapshot | undefined): CwdExecutionObservation | undefined {
-	if (!snapshot) return undefined
-	const cwd = canonicalCwd(snapshot.cwd)
-	let observation = cwdExecutions.get(cwd)
-	if (observation) {
-		// A delta cannot be attributed while another command observes the same
-		// directory, even when the other command belongs to a different session.
-		// The shared object keeps the interval ambiguous after either one ends.
-		observation.ambiguous = true
-	} else {
-		observation = { cwd, active: 0, ambiguous: false, knownWriterPaths: new Set() }
-		cwdExecutions.set(cwd, observation)
+function observeExecution(
+	cwd: string,
+	snapshot: ArtifactFileSnapshot | undefined,
+	kind: ExecutionObservationKind,
+): CwdExecutionObservation {
+	const canonical = canonicalCwd(cwd)
+	let observation = cwdExecutions.get(canonical)
+	if (!observation) {
+		observation = {
+			cwd: canonical,
+			active: 0,
+			activeSnapshots: 0,
+			activeOpaqueProducers: 0,
+			ambiguous: false,
+			knownWriterPaths: new Set(),
+		}
+		cwdExecutions.set(canonical, observation)
+	}
+	// Unknown producer outputs make overlapping filesystem deltas ambiguous,
+	// regardless of which call finishes first. Precise direct-write paths do
+	// not suppress the rest of the directory. Ambiguity stays through its interval.
+	if (kind === "snapshot") {
+		if (observation.activeSnapshots > 0 || observation.activeOpaqueProducers > 0) observation.ambiguous = true
+		observation.activeSnapshots++
+	} else if (kind === "opaque") {
+		if (observation.activeSnapshots > 0) observation.ambiguous = true
+		observation.activeOpaqueProducers++
 	}
 	observation.active++
-	snapshotExecutions.set(snapshot, observation)
+	if (snapshot) snapshotExecutions.set(snapshot, observation)
 	return observation
 }
 
 /**
- * Capture command-scoped file state before a foreground shell tool runs.
+ * Capture eligible file state before a tool runs and share producer ownership.
  * ACP and the recorder pass the same SessionManager as `claim.scope`, so
- * they share the one directory scan instead of duplicating synchronous I/O.
+ * they share one execution observation (and at most one directory scan).
  */
 export function snapshotArtifactFiles(
 	toolName: string,
@@ -367,11 +388,25 @@ export function snapshotArtifactFiles(
 		existing.consumers.add(claim.consumer)
 		return existing.snapshot
 	}
-	const snapshot = captureArtifactSnapshot(toolName, args, cwd)
+	const snapshot = claim.capture === false ? undefined : captureArtifactSnapshot(toolName, args, cwd)
+	let executionCwd = snapshot?.cwd ?? cwd
+	if (!snapshot) {
+		try {
+			executionCwd = shellCommandContext(toolName, args, cwd)?.cwd ?? cwd
+		} catch {
+			// A malformed command can still run through its legacy fallback.
+		}
+	}
+	const observationKind: ExecutionObservationKind = snapshot
+		? "snapshot"
+		: toolName === "write" || toolName === "edit"
+			? "direct-path"
+			: "opaque"
 	calls.set(claim.toolCallId, {
 		snapshot,
 		consumers: new Set([claim.consumer]),
-		observation: observeExecution(snapshot),
+		observation: observeExecution(executionCwd, snapshot, observationKind),
+		observationKind,
 		executionReleased: false,
 	})
 	return snapshot
@@ -383,15 +418,15 @@ export function releaseArtifactSnapshot(claim: ArtifactSnapshotClaim): void {
 	const existing = calls?.get(claim.toolCallId)
 	if (!calls || !existing?.consumers.delete(claim.consumer)) return
 	if (!existing.executionReleased) {
-		// The consumers diff at the same execution boundary. Only one of them
-		// ends the command's cwd observation; cache retention must not prolong it.
+		// The consumers finish at the same execution boundary. Only one ends
+		// the claim's ownership; cache retention must not prolong its lifetime.
 		existing.executionReleased = true
-		const observation = existing.observation
-		if (observation) {
-			observation.active--
-			if (observation.active === 0 && cwdExecutions.get(observation.cwd) === observation) {
-				cwdExecutions.delete(observation.cwd)
-			}
+		const { observation, observationKind } = existing
+		observation.active--
+		if (observationKind === "snapshot") observation.activeSnapshots--
+		if (observationKind === "opaque") observation.activeOpaqueProducers--
+		if (observation.active === 0 && cwdExecutions.get(observation.cwd) === observation) {
+			cwdExecutions.delete(observation.cwd)
 		}
 	}
 	if (existing.consumers.size > 0) return

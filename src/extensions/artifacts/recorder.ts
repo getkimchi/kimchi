@@ -156,13 +156,10 @@ function detectTurnArtifacts(
 export function artifactRecorderExtension(pi: ExtensionAPI) {
 	const acc = new RunArtifactAccumulator()
 	const pendingShellCalls = new Map<string, PendingArtifactCall>()
+	const pendingProducerClaims = new Map<string, ArtifactSnapshotClaim>()
 	const completedShellCalls = new Map<string, Artifact[]>()
 
 	pi.on("tool_execution_start", (event, ctx) => {
-		// Explicit writers retain their own paths even when execution and result
-		// events from another session overlap. Nested snapshot capture is untouched.
-		observeDirectArtifactWrite(event.toolName, event.args, ctx.cwd)
-		if (event.parentToolCallId || !snapshotArtifactsOptedIn(ctx.sessionManager)) return
 		try {
 			const startedAt = Date.now()
 			const cwd = ctx.cwd
@@ -170,10 +167,14 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 				scope: ctx.sessionManager,
 				toolCallId: event.toolCallId,
 				consumer: "recorder" as const,
+				capture: !event.parentToolCallId && snapshotArtifactsOptedIn(ctx.sessionManager),
 			}
 			const fileSnapshot = snapshotArtifactFiles(event.toolName, event.args, cwd, snapshotClaim)
+			// Explicit paths are known before a write starts; nested and ineligible
+			// calls never capture a snapshot but still track producer ambiguity.
+			observeDirectArtifactWrite(event.toolName, event.args, cwd)
 			if (!fileSnapshot) {
-				releaseArtifactSnapshot(snapshotClaim)
+				pendingProducerClaims.set(event.toolCallId, snapshotClaim)
 				return
 			}
 			pendingShellCalls.set(event.toolCallId, {
@@ -190,6 +191,9 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("tool_execution_end", (event) => {
+		const producerClaim = pendingProducerClaims.get(event.toolCallId)
+		pendingProducerClaims.delete(event.toolCallId)
+		if (producerClaim) releaseArtifactSnapshot(producerClaim)
 		if (event.parentToolCallId) return
 		try {
 			const pending = pendingShellCalls.get(event.toolCallId)
@@ -247,6 +251,8 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 			}
 		})
 		clearDeclaredArtifactEmissions(ctx.sessionManager)
+		for (const claim of pendingProducerClaims.values()) releaseArtifactSnapshot(claim)
+		pendingProducerClaims.clear()
 		for (const pending of pendingShellCalls.values()) releaseArtifactSnapshot(pending.snapshotClaim)
 		pendingShellCalls.clear()
 		completedShellCalls.clear()
