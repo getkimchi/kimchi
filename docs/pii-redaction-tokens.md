@@ -44,10 +44,10 @@ model never sees the PII while moving it.
 
 Marker mode stays uneditable by design: exact-match editing needs bytes the
 model never receives, and there is no vault to dereference. A "Could not
-find" failure there gains a note naming the cause and the escape hatch,
-`redaction.excludedEntities` in settings.json (or disabling redaction for
-the session). The same note fires in token mode when the span is a literal
-unknown token or the vault is gone.
+find" failure there gains a note naming the cause and the escape hatch:
+turning the entity type off via `redaction.entities` in settings.json (or
+disabling redaction for the session). The same note fires in token mode
+when the span is a literal unknown token or the vault is gone.
 
 ## The vault
 

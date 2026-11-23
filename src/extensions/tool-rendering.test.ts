@@ -115,7 +115,10 @@ describe("paint substitution (pii-redaction token mode)", () => {
 		const out = explainRedactedEditFailure(base(), { oldText: "buyer [EMAIL_ADDRESS_9]" }, false)
 		expect(out.content).toHaveLength(2)
 		expect(out.content[1].text).toContain("redacted span")
-		expect(out.content[1].text).toContain("redaction.excludedEntities")
+		// The current policy key: the deprecated excludedEntities list replaces the
+		// default exclusions wholesale and throws next to categories/entities (#1830).
+		expect(out.content[1].text).toContain('redaction.entities (e.g. {"EMAIL_ADDRESS": "off"})')
+		expect(out.content[1].text).not.toContain("excludedEntities")
 		// Markers-shaped args get the same guidance.
 		const outMarker = explainRedactedEditFailure(base(), { oldText: "buyer [REDACTED-EMAIL_ADDRESS]" }, false)
 		expect(outMarker.content).toHaveLength(2)
