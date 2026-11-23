@@ -154,7 +154,8 @@ function resolveGatewayTool(input: Record<string, unknown>, catalog: McpCallCata
 	if (original.length > 0) return resolveMatches(catalog, original, "gateway") as McpGatewayInputFacts
 
 	const scopedServer = prefixedServerScope(catalog.config, toolName)
-	if (scopedServer !== undefined) return resolveOnServer(catalog, toolName, scopedServer, "gateway") as McpGatewayInputFacts
+	if (scopedServer !== undefined)
+		return resolveOnServer(catalog, toolName, scopedServer, "gateway") as McpGatewayInputFacts
 	return resolveMatches(
 		catalog,
 		catalog.candidates.filter((candidate) =>
