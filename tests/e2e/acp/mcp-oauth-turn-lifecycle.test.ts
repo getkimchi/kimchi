@@ -823,6 +823,7 @@ it(
 	"completes an ordinary non-OAuth prompt immediately with one terminal lifecycle event",
 	async () => {
 		const fixture = await startAcpFixture({
+			clientMeta: OAUTH_TURN_META,
 			artifactName: "acp-mcp-oauth-turn-ordinary-prompt",
 			extensionPath: LIFECYCLE_EXTENSION,
 			responses: [modelReply("Ordinary prompts are unchanged.")],
