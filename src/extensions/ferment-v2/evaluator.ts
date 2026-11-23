@@ -408,6 +408,7 @@ export async function evaluateFermentV2(
 				before,
 				beforeHead,
 				undefined,
+				{ createdFiles: guard?.createdFiles },
 			)
 			result = applyIntegrity(result, integrity, diagnostics, baseResultFields)
 		} catch (error) {

@@ -284,6 +284,21 @@ describe("isVerifierWritablePath", () => {
 			rmSync(dir, { recursive: true, force: true })
 		}
 	})
+
+	it("rejects git metadata destinations in both roots", () => {
+		const repo = mkdtempSync(join(tmpdir(), "kimchi-verifier-git-path-"))
+		const worktree = mkdtempSync(join(tmpdir(), "kimchi-verifier-worktree-git-path-"))
+		try {
+			for (const path of [".git/hooks/pre-commit", ".git/refs/heads/evil", ".GIT/config"]) {
+				expect(isVerifierWritablePath(path, { cwd: repo })).toBe(false)
+			}
+			expect(isVerifierWritablePath(".git/hooks/pre-commit", { cwd: repo, worktree })).toBe(false)
+			expect(isVerifierWritablePath(".git/refs/heads/evil", { worktree })).toBe(false)
+		} finally {
+			rmSync(repo, { recursive: true, force: true })
+			rmSync(worktree, { recursive: true, force: true })
+		}
+	})
 })
 
 describe("createVerifierGuard usage accumulation", () => {
@@ -375,6 +390,26 @@ describe("snapshotWorkspace", () => {
 			// The real index and status are byte-identical after the snapshot.
 			expect(await git(dir, ["status", "--porcelain"])).toBe(beforeStatus)
 			expect(readFileSync(join(dir, ".git", "index"))).toEqual(beforeIndex)
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("keeps a pre-existing empty nested repository from disabling parent integrity", async () => {
+		const dir = await initRepo()
+		try {
+			await git(dir, ["init", "-q", "sub"])
+			writeFileSync(join(dir, "sub", "new.txt"), "nested\n")
+			const before = await snapshotWorkspace(dir)
+			expect(before).toBeDefined()
+			const snapshotPaths = await git(dir, ["ls-tree", "-r", "--name-only", before?.tree ?? ""])
+			expect(snapshotPaths).toContain("tracked.txt")
+			expect(snapshotPaths).not.toContain("sub/new.txt")
+
+			writeFileSync(join(dir, "tracked.txt"), "verifier edit\n")
+			const result = await enforceWorkspaceIntegrity(dir, before as never, await workspaceHead(dir))
+			expect(result.unenforced).toBeUndefined()
+			expect(readFileSync(join(dir, "tracked.txt"), "utf-8")).toBe("original\n")
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
@@ -574,6 +609,76 @@ describe("enforceWorkspaceIntegrity", () => {
 			expect(result.postRunSnapshot).toMatch(/^[0-9a-f]{40}$/)
 			expect(readFileSync(join(dir, "tracked.txt"), "utf-8")).toBe("original\n")
 			expect(existsSync(join(dir, "verifier-scratch.txt"))).toBe(false)
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("removes verifier-created ignored files and reports the violation", async () => {
+		const dir = await initRepo()
+		try {
+			writeFileSync(join(dir, ".gitignore"), ".env.local\n")
+			await git(dir, ["add", ".gitignore"])
+			await git(dir, ["commit", "-q", "-m", "ignore env local"])
+			const before = await snapshotWorkspace(dir)
+			const head = await workspaceHead(dir)
+			const created = join(dir, ".env.local")
+			writeFileSync(created, "SECRET=value\n")
+
+			const result = await enforceWorkspaceIntegrity(dir, before as never, head, undefined, {
+				createdFiles: new Set([created]),
+			})
+
+			expect(result.violated).toBe(true)
+			expect(result.removed).toContain(".env.local")
+			expect(existsSync(created)).toBe(false)
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("restores before-run files when the after-run snapshot fails", async () => {
+		const dir = await initRepo()
+		try {
+			const before = await snapshotWorkspace(dir)
+			const head = await workspaceHead(dir)
+			writeFileSync(join(dir, "tracked.txt"), "verifier edit\n")
+			const created = join(dir, "verifier-scratch.txt")
+			writeFileSync(created, "scratch\n")
+
+			const result = await enforceWorkspaceIntegrity(dir, before as never, head, undefined, {
+				createdFiles: new Set([created]),
+				afterSnapshot: async () => undefined,
+			})
+
+			expect(result.unenforced).toBe(true)
+			expect(result.violated).toBe(true)
+			expect(result.restored).toEqual(["src/nested.txt", "tracked.txt"])
+			expect(result.removed).toEqual(["verifier-scratch.txt"])
+			expect(readFileSync(join(dir, "tracked.txt"), "utf-8")).toBe("original\n")
+			expect(existsSync(created)).toBe(false)
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("keeps enforcing the parent when an empty nested repository is added during verification", async () => {
+		const dir = await initRepo()
+		try {
+			const before = await snapshotWorkspace(dir)
+			const head = await workspaceHead(dir)
+			await git(dir, ["init", "-q", "sub"])
+			writeFileSync(join(dir, "sub", "new.txt"), "nested\n")
+			writeFileSync(join(dir, "tracked.txt"), "verifier edit\n")
+
+			const result = await enforceWorkspaceIntegrity(dir, before as never, head)
+
+			expect(result.unenforced).toBeUndefined()
+			expect(result.violated).toBe(true)
+			expect(readFileSync(join(dir, "tracked.txt"), "utf-8")).toBe("original\n")
+			// Nested repository internals have their own git boundary and are not
+			// part of the parent's snapshot/restore claim.
+			expect(existsSync(join(dir, "sub", "new.txt"))).toBe(true)
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}

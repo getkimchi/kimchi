@@ -2322,6 +2322,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 						verdict: result.verdict,
 						findings: result.findings ?? [],
 						resolutions: result.resolutions ?? [],
+						...(result.incompleteReview ? { incompleteReview: true } : {}),
 						...(result.workspaceTree ? { workspaceTree: result.workspaceTree } : {}),
 					},
 					now,

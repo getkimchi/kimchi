@@ -340,6 +340,11 @@ export function createVerifierReport(options: VerifierReportOptions): VerifierRe
 					if (submission) return result("Rejected: the verdict was already submitted.")
 					const finding = findActive(params.id)
 					if (!finding) return result(`Rejected: no active finding ${params.id}.`)
+					if (finding.carried) {
+						return result(
+							`Rejected: ${finding.id} was carried from an earlier review and cannot be retracted. Leave it open and submit continue instead of met.`,
+						)
+					}
 					finding.status = "retracted"
 					finding.retractReason = params.reason.trim()
 					return result(`Retracted finding ${finding.id}.`)
@@ -548,14 +553,14 @@ function disputeQuoteProblem(
 /** Renders carried findings for a fresh session after a transport retry. */
 export function formatCarriedFindings(findings: readonly VerifierFinding[]): string {
 	return [
-		"Findings recorded by the interrupted earlier attempt of this review (still active; they block met until you retract them):",
+		"Findings recorded by the interrupted earlier attempt of this review (still active):",
 		...findings.map(
 			(finding) =>
 				`- ${finding.id} [${finding.clause}] observed: ${finding.observed} | expected: ${finding.expected}${
 					finding.evidence.length ? ` (evidence ${finding.evidence.join(", ")})` : ""
-				}`,
+				}${finding.carried ? " (carried from an earlier review; retraction is not allowed)" : ""}`,
 		),
-		"Confirm each one or retract it with a reason before submitting.",
+		"Confirm each one. Retract only a non-carried finding whose expectation proved wrong; carried findings keep blocking met.",
 	].join("\n")
 }
 

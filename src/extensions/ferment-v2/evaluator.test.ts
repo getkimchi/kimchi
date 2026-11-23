@@ -881,6 +881,7 @@ describe("Ferment V2 executing verifier", () => {
 				{ commit: "snap", tree: "tree" },
 				undefined,
 				undefined,
+				expect.objectContaining({ createdFiles: expect.any(Set) }),
 			)
 		})
 	})

@@ -38,9 +38,11 @@ import {
 	createGitRunner,
 	diffSnapshots,
 	type HeadState,
+	listSnapshotPaths,
 	readHeadState,
 	removePaths,
 	restorePaths,
+	type SnapshotPaths,
 	snapshotWorkspace,
 	type WorkspaceSnapshot,
 } from "./workspace.js"
@@ -186,13 +188,17 @@ function isInsideAny(path: string, roots: readonly string[]): boolean {
  * blocks every other write) and the permissions pre-approval (so these writes
  * never wait on the classifier).
  */
+function hasGitMetadataSegment(path: string): boolean {
+	return path.split(/[\\/]+/).some((segment) => segment.toLowerCase() === ".git")
+}
+
 export function isVerifierWritablePath(rawPath: unknown, roots: { cwd?: string; worktree?: string }): boolean {
 	if (typeof rawPath !== "string" || !rawPath.trim()) return false
 	const base = roots.cwd ?? roots.worktree
 	if (!base) return false
 	const target = resolve(base, rawPath)
 	const destination = resolvedDestination(target)
-	if (!destination) return false
+	if (!destination || hasGitMetadataSegment(target) || hasGitMetadataSegment(destination)) return false
 	if (roots.worktree && isInsideAny(target, pathForms(roots.worktree))) {
 		const worktree = resolvedDestination(roots.worktree)
 		return worktree !== undefined && isInsideAny(destination, [worktree])
@@ -309,15 +315,46 @@ export interface IntegrityResult {
  * attempting git surgery. HEAD-move detection is skipped when the before-run
  * HEAD could not be resolved.
  */
+export interface WorkspaceIntegrityOptions {
+	/** Successful host-visible `write` calls from this run, used to remove new ignored files too. */
+	createdFiles?: ReadonlySet<string>
+	/** Test seam for post-run snapshot failures. */
+	afterSnapshot?: typeof snapshotWorkspace
+}
+
+function newCreatorRelativePaths(before: SnapshotPaths, createdFiles: ReadonlySet<string> | undefined): string[] {
+	if (!createdFiles) return []
+	const paths = new Set<string>()
+	for (const absolute of createdFiles) {
+		if (!pathExists(absolute)) continue
+		const candidate = pathForms(absolute).find((path) => isInsideAny(path, [before.root]))
+		if (!candidate) continue
+		const path = relative(before.root, candidate).replaceAll("\\\\", "/")
+		if (!before.paths.has(path)) paths.add(path)
+	}
+	return [...paths].sort()
+}
+
 export async function enforceWorkspaceIntegrity(
 	cwd: string,
 	before: WorkspaceSnapshot,
 	beforeHead: HeadState | undefined,
 	signal?: AbortSignal,
+	options: WorkspaceIntegrityOptions = {},
 ): Promise<IntegrityResult> {
 	const git = createGitRunner(cwd)
-	const after = await snapshotWorkspace(cwd, signal)
-	if (!after) return { violated: false, restored: [], removed: [], headMoved: false, unenforced: true }
+	const after = await (options.afterSnapshot ?? snapshotWorkspace)(cwd, signal)
+	const beforePaths = !after || options.createdFiles?.size ? await listSnapshotPaths(cwd, before, signal) : undefined
+	const creatorAdded = beforePaths ? newCreatorRelativePaths(beforePaths, options.createdFiles) : []
+	if (!after) {
+		if (!beforePaths) return { violated: false, restored: [], removed: [], headMoved: false, unenforced: true }
+		// A failed after-snapshot cannot compare the two trees, but it must not
+		// leave verifier damage in files known to the before-snapshot.
+		const restored = [...beforePaths.paths].sort()
+		if (restored.length) await restorePaths(cwd, before, restored, signal)
+		if (creatorAdded.length) await removePaths(cwd, creatorAdded)
+		return { violated: true, restored, removed: creatorAdded, headMoved: false, unenforced: true }
+	}
 	const result: IntegrityResult = {
 		violated: false,
 		restored: [],
@@ -347,9 +384,11 @@ export async function enforceWorkspaceIntegrity(
 		result.restored = toRestore
 		result.violated = true
 	}
-	if (diff.added.length > 0) {
-		await removePaths(cwd, diff.added)
-		result.removed = diff.added
+	const removed = [...new Set([...diff.added, ...creatorAdded])].sort()
+	if (removed.length > 0) {
+		await removePaths(cwd, removed)
+		result.removed = removed
+		result.violated = true
 	}
 	return result
 }

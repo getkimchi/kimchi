@@ -95,6 +95,8 @@ export function applyFermentV2ReviewFindings(
 		verdict: "met" | "continue" | "impossible"
 		findings: readonly VerifierFinding[]
 		resolutions: readonly FindingResolution[]
+		/** True when no verdict was submitted and some earlier findings may not have been reached. */
+		incompleteReview?: boolean
 		/** The working tree the review checked; every finding it leaves open was observed against it. */
 		workspaceTree?: string
 	},
@@ -122,6 +124,17 @@ export function applyFermentV2ReviewFindings(
 				...(review.workspaceTree ? { observedTree: review.workspaceTree } : {}),
 			}
 		})
+	if (review.incompleteReview) {
+		for (const finding of previous ?? []) {
+			const wasResolved = review.resolutions.some((resolution) => resolution.id === finding.id)
+			const isInCurrentFindings = openFindings.some((openFinding) => openFinding.id === finding.id)
+			if (wasResolved || isInCurrentFindings) continue
+			const { response: _response, ...untouched } = finding
+			// This finding was not re-checked: retain its last observed tree instead
+			// of claiming it was observed against the current workspace tree.
+			openFindings.push(untouched)
+		}
+	}
 	return { ...rest, ...(openFindings.length ? { openFindings } : {}), updatedAt: now }
 }
 

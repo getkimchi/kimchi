@@ -2267,6 +2267,27 @@ describe("Agent tool session-cwd agent resolution", () => {
 		expect(result.content[0]?.text ?? "").not.toContain("Unknown agent type")
 	})
 
+	it("rejects an explicit host-only Verifier request without spawning", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		const ctx = makeMockCtx(makeMockModelRegistry([]))
+
+		const result = await getRegisteredAgentTool(pi).execute(
+			"call-host-only",
+			{ prompt: "verify", description: "explicit host-only request", subagent_type: "verifier" },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(result.content[0]?.text).toContain(
+			'Agent type "verifier" is host-only and cannot be spawned through the Agent tool.',
+		)
+		expect(managerInstance.spawn).not.toHaveBeenCalled()
+	})
+
 	it("applies project agent settings from the session cwd on session_start", async () => {
 		// Settings half of the cwd fix: .kimchi/agents.json must be read from
 		// the session's project, not the launch directory (an ACP server hosts

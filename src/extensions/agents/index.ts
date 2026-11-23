@@ -2111,6 +2111,9 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const parentSessionId = ctx.sessionManager.getSessionId()
 
 				const rawType = params.subagent_type as SubagentType
+				if (getAgentConfig(rawType)?.hostOnly === true) {
+					return textResult(`Agent type "${rawType}" is host-only and cannot be spawned through the Agent tool.`)
+				}
 				const resolved = resolveType(rawType)
 				const subagentType = resolved ?? AGENT_GENERAL_PURPOSE
 				const fellBack = resolved === undefined

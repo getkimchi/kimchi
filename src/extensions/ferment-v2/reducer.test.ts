@@ -149,6 +149,74 @@ describe("Ferment V2 reducer", () => {
 		expect(editFermentV2(second, run.id, 1, "ship it signed", T3)).not.toHaveProperty("openFindings")
 	})
 
+	it("keeps earlier findings that an incomplete review did not resolve", () => {
+		const run = createFermentV2(undefined, "ship it", "ferment-v2-a", T1)
+		const finding = (id: string, extra: Record<string, unknown> = {}) => ({
+			id,
+			attempt: 1,
+			clause: `clause ${id}`,
+			evidence: ["e1"],
+			observed: "wrong",
+			expected: "right",
+			why: "objective",
+			status: "active" as const,
+			...extra,
+		})
+		const before = applyFermentV2ReviewFindings(
+			run,
+			run.id,
+			1,
+			{
+				verdict: "continue",
+				findings: [finding("F1"), finding("F2")],
+				resolutions: [],
+				workspaceTree: "tree-1",
+			},
+			T2,
+		)
+		const responded = respondToFermentV2Finding(
+			before,
+			run.id,
+			1,
+			"F2",
+			{ status: "fixed", evidence: "user reports F2 is fixed" },
+			T2,
+		)
+
+		const result = applyFermentV2ReviewFindings(
+			responded,
+			run.id,
+			1,
+			{
+				verdict: "continue",
+				incompleteReview: true,
+				findings: [finding("F1", { carried: true, observed: "F1 still fails" })],
+				resolutions: [{ id: "F1", resolution: "still_failing", evidence: ["e2"], reason: "re-run fails" }],
+				workspaceTree: "tree-2",
+			},
+			T3,
+		)
+
+		expect(result.openFindings).toEqual([
+			{
+				id: "F1",
+				clause: "clause F1",
+				observed: "F1 still fails",
+				expected: "right",
+				why: "objective",
+				observedTree: "tree-2",
+			},
+			{
+				id: "F2",
+				clause: "clause F2",
+				observed: "wrong",
+				expected: "right",
+				why: "objective",
+				observedTree: "tree-1",
+			},
+		])
+	})
+
 	it("drops obsolete approved-plan presentation when the user edits the objective", () => {
 		const presentation = { kind: "approved-plan" as const, title: "Cache plan", planPath: "/tmp/cache-plan.md" }
 		const fermentV2 = createFermentV2(undefined, "execute it", "ferment-v2-a", T1, undefined, presentation)

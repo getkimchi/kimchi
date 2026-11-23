@@ -60,8 +60,9 @@ describe("DEFAULT_AGENTS", () => {
 		expect(verifier.extensions).toBe(false)
 		expect(verifier.skills).toBe(false)
 		expect(verifier.thinking).toBe("low")
-		// Hidden from the Agent tool list: only the ferment host spawns it.
-		expect(verifier.enabled).toBe(false)
+		// Hidden from the Agent tool and agent UIs without disabling its runtime config.
+		expect(verifier.hostOnly).toBe(true)
+		expect(verifier.enabled).toBeUndefined()
 		// No persona-level caps — the host controls limits per run.
 		expect(verifier.maxTurns).toBeUndefined()
 		expect(verifier.maxDuration).toBeUndefined()

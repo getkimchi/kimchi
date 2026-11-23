@@ -635,10 +635,10 @@ Do not iterate beyond the verification needed. Once you have checked the load-be
 				extensions: false,
 				skills: false,
 				thinking: "low",
-				// Host-spawned only: hidden from the Agent tool list. The ferment host
-				// spawns it with unlimited turns and duration; a persona-level cap
-				// would silently bound every verification run.
-				enabled: false,
+				// Host-spawned only: hidden from user spawning and agent UIs without
+				// disabling its runtime config. The ferment host spawns it with unlimited
+				// turns and duration; a persona-level cap would bound every verification run.
+				hostOnly: true,
 				systemPrompt: VERIFIER_SYSTEM_PROMPT,
 				promptMode: "replace",
 				isDefault: true,

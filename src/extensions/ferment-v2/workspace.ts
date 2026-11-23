@@ -175,14 +175,41 @@ function isNotARepositoryError(error: unknown): boolean {
  * fails; callers must have confirmed a git workspace first and treat
  * undefined as failure.
  */
+async function emptyNestedRepositoryExcludes(
+	git: ReturnType<typeof createGitRunner>,
+	root: string,
+	indexFile: string,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	// An embedded repository with no HEAD cannot be represented by a gitlink,
+	// so `git add -A` fails the entire parent snapshot. Its internal files are
+	// outside the parent's protection; don't let it disable all other recovery.
+	const candidates = await git.run(["ls-files", "--others", "--exclude-standard", "--directory", "-z"], {
+		env: { GIT_INDEX_FILE: indexFile },
+		signal,
+	})
+	const excludes: string[] = []
+	for (const path of candidates.split("\0").filter((candidate) => candidate.endsWith("/"))) {
+		const nested = join(root, path)
+		if (!existsSync(join(nested, ".git"))) continue
+		try {
+			await git.run(["-C", nested, "rev-parse", "--verify", "HEAD"], { signal })
+		} catch {
+			excludes.push(`:(exclude,literal)${path}`)
+		}
+	}
+	return excludes
+}
+
 export async function snapshotWorkspace(cwd: string, signal?: AbortSignal): Promise<WorkspaceSnapshot | undefined> {
-	const git = createGitRunner(cwd, SNAPSHOT_GIT_TIMEOUT_MS)
 	let indexFile: string | undefined
 	let tempDir: string | undefined
 	try {
+		const root = await workspaceRoot(cwd, signal)
+		const git = createGitRunner(root, SNAPSHOT_GIT_TIMEOUT_MS)
 		const realIndex = (await git.run(["rev-parse", "--git-path", "index"], { signal })).trim()
-		// git-path returns a path relative to cwd when inside the work tree.
-		const realIndexPath = isAbsolute(realIndex) ? realIndex : resolve(cwd, realIndex)
+		// git-path returns a path relative to the work tree root.
+		const realIndexPath = isAbsolute(realIndex) ? realIndex : resolve(root, realIndex)
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-snapshot-"))
 		indexFile = join(tempDir, "index")
 		// A missing index (fresh repository): git creates a fresh empty index
@@ -193,7 +220,8 @@ export async function snapshotWorkspace(cwd: string, signal?: AbortSignal): Prom
 		// after-run snapshots would record the stale blob and the guard would
 		// leave a verifier modification in place.
 		await clearSnapshotIndexFlags(cwd, indexFile, signal)
-		await git.run(["add", "-A", "--"], { env: { GIT_INDEX_FILE: indexFile }, signal })
+		const nestedExcludes = await emptyNestedRepositoryExcludes(git, root, indexFile, signal)
+		await git.run(["add", "-A", "--", ...nestedExcludes], { env: { GIT_INDEX_FILE: indexFile }, signal })
 		const tree = (await git.run(["write-tree"], { env: { GIT_INDEX_FILE: indexFile }, signal })).trim()
 		if (!tree) return undefined
 		const head = await readHeadState(git, signal)

@@ -609,6 +609,49 @@ describe("runAgent — telemetry extension", () => {
 		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 
+	it("loads the host-only Verifier without disk extensions, skills, web tools or MCP", async () => {
+		mockGetConfig.mockReturnValue(
+			makeTypeConfig({
+				extensions: false,
+				skills: false,
+				builtinToolNames: [
+					"read",
+					"bash",
+					"grep",
+					"find",
+					"ls",
+					"write",
+					"report_finding",
+					"retract_finding",
+					"resolve_finding",
+					"submit_verdict",
+				],
+			}),
+		)
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Verifier", disallowedTools: ["edit"] }))
+		mockGetToolNamesForType.mockReturnValue(["read", "write"])
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Verifier", "verify", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const loaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(loaderOptions?.noExtensions).toBe(true)
+		expect(loaderOptions?.noSkills).toBe(true)
+		// Six host-installed factories only: no web or MCP factories, and no
+		// caller-provided inline factories in this focused profile run.
+		expect(loaderOptions?.extensionFactories).toHaveLength(6)
+		expect(mockScanBriefSkills).not.toHaveBeenCalled()
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+	})
+
 	it("applies Kimchi's default bash timeout to subagent tool calls", async () => {
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({

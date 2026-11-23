@@ -53,21 +53,22 @@ export function getAgentConfig(name: string): AgentConfig | undefined {
 	return key ? agents.get(key) : undefined
 }
 
-/** Get all enabled type names (for spawning and tool descriptions). */
+/** Get all user-spawnable type names, excluding disabled and host-only personas. */
 export function getAvailableTypes(): string[] {
-	return [...agents.entries()].filter(([_, config]) => config.enabled !== false).map(([name]) => name)
+	return [...agents.entries()]
+		.filter(([_, config]) => config.enabled !== false && config.hostOnly !== true)
+		.map(([name]) => name)
 }
 
-/** Get all type names including disabled (for UI listing). */
+/** Get all user-facing type names, including disabled custom agents but excluding host-only personas. */
 export function getAllTypes(): string[] {
-	return [...agents.keys()]
+	return [...agents.entries()].filter(([_, config]) => config.hostOnly !== true).map(([name]) => name)
 }
 
 /** Get names of default agents currently in the registry. */
 export function getDefaultAgentNames(): string[] {
-	// Host-only personas (the Ferment V2 verifier family) are disabled: never advertise what cannot be spawned.
 	return [...agents.entries()]
-		.filter(([_, config]) => config.isDefault === true && config.enabled !== false)
+		.filter(([_, config]) => config.isDefault === true && config.enabled !== false && config.hostOnly !== true)
 		.map(([name]) => name)
 }
 
@@ -80,7 +81,8 @@ export function getUserAgentNames(): string[] {
 export function isValidType(type: string): boolean {
 	const key = resolveKey(type)
 	if (!key) return false
-	return agents.get(key)?.enabled !== false
+	const config = agents.get(key)
+	return config?.enabled !== false && config?.hostOnly !== true
 }
 
 /** Get built-in tool names for a type (case-insensitive). */

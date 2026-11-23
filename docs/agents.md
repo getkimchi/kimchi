@@ -90,6 +90,8 @@ You are a senior X engineer who...
 (persona body — markdown, becomes the subagent's system prompt)
 ```
 
+Built-in host-spawned personas (currently the Ferment V2 `Verifier`) use the internal `hostOnly` flag. Unlike `enabled: false`, this hides them from user spawning and agent UIs without discarding their runtime configuration or falling back to General Purpose. `hostOnly` is not a supported custom-agent frontmatter field.
+
 ### Invalid frontmatter
 
 The frontmatter must be valid YAML, with one exception: a single-line
