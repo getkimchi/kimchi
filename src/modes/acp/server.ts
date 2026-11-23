@@ -93,6 +93,7 @@ import {
 	markCredentialStale,
 	prepareCredentialForLogin,
 } from "../../credential-staleness.js"
+import { markDeclaredArtifactsEmitted } from "../../extensions/artifacts/declared-emissions.js"
 import { releaseArtifactSnapshot, snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
@@ -2940,8 +2941,9 @@ export class KimchiAcpAgent implements Agent {
 					// keys come from this one collect (no re-parse).
 					const paths = turn.artifactBuffer.getDeclaredPaths()
 					if (paths.length > 0) {
-						for (const update of turn.artifactBuffer.emitNow(paths, entry.emittedModelMeta))
-							this.send({ sessionId, update })
+						const emitted = turn.artifactBuffer.emitNow(paths, entry.emittedModelMeta)
+						if (emitted.length > 0) markDeclaredArtifactsEmitted(entry.session.sessionManager, paths)
+						for (const update of emitted) this.send({ sessionId, update })
 					}
 				}
 				if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)

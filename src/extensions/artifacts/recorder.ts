@@ -14,6 +14,7 @@
 
 import { statSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
+import { clearDeclaredArtifactEmissions, wasDeclaredArtifactEmitted } from "./declared-emissions.js"
 import {
 	type Artifact,
 	type ArtifactFileSnapshot,
@@ -227,18 +228,21 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 	// lands after the prompt's final agent message — the exact position the
 	// live ACP flush (finalizeTurn) emits artifact chunks. One row per
 	// prompt even when several turns produced artifacts.
-	pi.on("agent_settled", () => {
+	pi.on("agent_settled", (_event, ctx) => {
 		const artifacts = acc.drain().filter((artifact) => {
-			// Declared artifacts may already have chipped mid-turn. Every other
-			// artifact flushes at prompt end, so mirror live ACP's final existence
-			// check and avoid recording same-prompt ghosts for replay.
-			if (artifact.origin === "declared") return true
+			// A declaration that actually chipped mid-turn retains its link after
+			// deletion. If no text block existed for emitNow, live retains no such
+			// chip: apply the same existence check to avoid recording a replay ghost.
+			if (artifact.origin === "declared" && wasDeclaredArtifactEmitted(ctx.sessionManager, artifact.path)) {
+				return true
+			}
 			try {
 				return statSync(artifact.path).isFile()
 			} catch {
 				return false
 			}
 		})
+		clearDeclaredArtifactEmissions(ctx.sessionManager)
 		for (const pending of pendingShellCalls.values()) releaseArtifactSnapshot(pending.snapshotClaim)
 		pendingShellCalls.clear()
 		completedShellCalls.clear()

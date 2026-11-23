@@ -6976,6 +6976,81 @@ describe("generated artifacts (live turns)", () => {
 		expect(chipIdx).toBeLessThan(laterTextIdx)
 	})
 
+	it("drops a declared artifact deleted before any text allowed it to emit", async () => {
+		const declared = join(tmpDir, "deleted-declaration.md")
+		const recorder = attachArtifactRecorder()
+		const declarationTurn = makeAssistantMessage([
+			{ type: "toolCall", id: "tc-declare-before-text", name: "custom_doc_tool", arguments: { path: declared } },
+		])
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-declare-before-text",
+				toolName: "custom_doc_tool",
+				args: { path: declared },
+			})
+			writeFileSync(declared, "# Temporary plan")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-declare-before-text",
+				toolName: "custom_doc_tool",
+				result: {
+					content: [{ type: "text", text: "Plan saved." }],
+					details: { artifacts: [{ path: declared }] },
+				},
+				isError: false,
+			})
+			// The declaration is recorded while the file exists, but no text
+			// block is available for emitNow to attach it to.
+			fake.emit({ type: "message_end", message: declarationTurn })
+			fake.emit({
+				type: "turn_end",
+				message: declarationTurn,
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "tc-declare-before-text",
+						toolName: "custom_doc_tool",
+						content: [{ type: "text", text: "Plan saved." }],
+						details: { artifacts: [{ path: declared }] },
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			rmSync(declared)
+			const textTurn = makeAssistantMessage([{ type: "text", text: "The plan was removed." }])
+			fake.emit({ type: "message_end", message: textTurn })
+			fake.emit({ type: "turn_end", message: textTurn, toolResults: [] })
+			fake.emit(agentEnd())
+			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write a temporary plan" }] })
+		const rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		const loaded = new FakeAgentSession("loaded-deleted-declaration", tmpDir)
+		loaded.branch = [
+			userTextEntry("Write a temporary plan", "u1", null),
+			assistantTextEntry("The plan was removed.", "a1", "u1"),
+			...(rows.length > 0 ? [{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never] : []),
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect({
+			live: artifactChunks().map((chunk) => chunk.uri),
+			recorded: rows.flatMap((row) => row.artifacts.map((artifact) => pathToFileURL(artifact.path).href)),
+			replayed: artifactChunks(replay.updates).map((chunk) => chunk.uri),
+		}).toEqual({ live: [], recorded: [], replayed: [] })
+	})
+
 	it("detects artifacts mentioned in bash output and dedupes across calls", async () => {
 		const target = join(tmpDir, "report.pdf")
 		writeFileSync(target, "pdf")
