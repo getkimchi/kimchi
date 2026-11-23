@@ -1,0 +1,132 @@
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { expect, test } from "@microsoft/tui-test"
+import { viewText, waitForText } from "./support/assertions.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+
+test.use(TUI_TEST_CONFIG)
+
+test("Codemode without a purpose or positive context reduction retains the legacy fallback", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "codemode-outcome-fallback",
+			extraArgs: ["--plan=false"],
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "codemode-fallback",
+							function: { name: "codemode", arguments: JSON.stringify({ code: 'return "tiny";' }) },
+						},
+					],
+				},
+				{ stream: ["Legacy fallback complete."] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Run the legacy Codemode fallback")
+			await waitForText(terminal, "Legacy fallback complete.", { full: false })
+			const collapsed = viewText(terminal)
+			expect(collapsed).toContain("● Codemode Codemode")
+			expect(collapsed).toMatch(/✓ \d+(?:\.\d+)?(?:ms|s)/)
+			expect(collapsed).not.toContain("tokens kept out of context")
+			trace.step("missing purpose and a non-positive estimate preserve the old title and omit token claims")
+
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, "Intermediate ≈", { full: false })
+			expect(viewText(terminal)).toContain("Output:")
+			expect(viewText(terminal)).toContain("tiny")
+		},
+	)
+})
+
+test("Codemode shows a complete context estimate for a failed script", async ({ terminal }) => {
+	const script = [
+		"// @description: Filter the fixture before failing deliberately",
+		'const source = await tools.read({ path: "fixture.txt" });',
+		'if (!source.includes("alpha")) throw new Error("missing alpha");',
+		'throw new Error("intentional-codemode-failure");',
+	].join("\n")
+
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "codemode-outcome-failed",
+			extraArgs: ["--plan=false"],
+			seedHome: (_home, workDir) => {
+				writeFileSync(join(workDir, "fixture.txt"), "alpha\n".repeat(200))
+			},
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "codemode-failed",
+							function: { name: "codemode", arguments: JSON.stringify({ code: script }) },
+						},
+					],
+				},
+				{ stream: ["Failed Codemode scenario complete."] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Run the failed Codemode outcome scenario")
+			await waitForText(terminal, "Failed Codemode scenario complete.", { full: false })
+			const collapsed = viewText(terminal)
+			expect(collapsed).toContain("● Codemode Filter the fixture before failing deliberately")
+			expect(collapsed).toMatch(/✗ ≈\d+(?:\.\d+)?[km]? tokens kept out of context · \d+(?:\.\d+)?(?:ms|s)/)
+			trace.step("a completed failed script reports overall failure with its valid context estimate")
+
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, "intentional-codemode-failure", { full: false })
+			expect(viewText(terminal)).toContain("Actions: read 1 file")
+			expect(viewText(terminal)).toContain("Script failed")
+		},
+	)
+})
+
+test("Codemode keeps overall success when the script catches a nested failure", async ({ terminal }) => {
+	const script = [
+		"// @description: Filter successful reads and tolerate a missing file",
+		'const [source, missing] = await Promise.allSettled([tools.read({ path: "fixture.txt" }), tools.read({ path: "missing.txt" })]);',
+		'if (source.status !== "fulfilled") throw new Error("fixture read failed");',
+		'if (missing.status !== "rejected") throw new Error("missing fixture unexpectedly loaded");',
+		'return source.value.split("\\n").filter(line => line.includes("alpha")).slice(0, 2).join("\\n");',
+	].join("\n")
+
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "codemode-outcome-nested-failure",
+			extraArgs: ["--plan=false"],
+			seedHome: (_home, workDir) => {
+				writeFileSync(join(workDir, "fixture.txt"), "alpha intermediate payload\n".repeat(100))
+			},
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "codemode-nested-failure",
+							function: { name: "codemode", arguments: JSON.stringify({ code: script }) },
+						},
+					],
+				},
+				{ stream: ["Nested failure scenario complete."] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Run the nested Codemode failure scenario")
+			await waitForText(terminal, "Nested failure scenario complete.", { full: false })
+			const collapsed = viewText(terminal)
+			expect(collapsed).toMatch(/✓ ≈\d+(?:\.\d+)?[km]? tokens kept out of context/)
+			expect(collapsed).not.toContain("⚠")
+			trace.step("caught nested failures do not change the compact overall success")
+
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, "Actions: read 2 files", { full: false })
+			const expanded = viewText(terminal)
+			expect(expanded).toContain('✗ read {"path":"missing.txt"}')
+			expect(expanded).toMatch(/Intermediate ≈\d+(?:\.\d+)?[km]? tokens/)
+		},
+	)
+})

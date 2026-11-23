@@ -9,6 +9,7 @@ import type {
 	ToolKind,
 } from "@agentclientprotocol/sdk"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "../../../extensions/bash-background/process-registry.js"
+import { codemodePurpose } from "../../../extensions/codemode/outcome.js"
 import { asString, truncate } from "../utils.js"
 
 // Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
@@ -62,7 +63,7 @@ export function describeToolCall(
 	// and icon on the client side. Truncate so a long absolute path or regex
 	// doesn't blow up client UIs (locations[].path keeps the full value for
 	// clients that want it).
-	const rawTitle = targeted ?? toolName
+	const rawTitle = (toolName === "codemode" ? codemodePurpose(a) : undefined) ?? targeted ?? toolName
 	const path = asString(a.file_path) || asString(a.path)
 	// ACP requires locations[].path to be absolute (clients resolve it against
 	// their own view of the filesystem, not our session cwd). Models regularly

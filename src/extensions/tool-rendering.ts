@@ -65,6 +65,15 @@ import {
  */
 const REDACTED_SPAN_RE = /\[REDACTED-[A-Z0-9_]+\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\]/
 
+import {
+	CODEMODE_CONTEXT_DISPLAY_MIN_TOKENS,
+	codemodeActionSummary,
+	codemodeNestedCalls,
+	codemodePurpose,
+	estimatedTokens,
+	formatEstimatedTokenCount,
+	readCodemodeContextReduction,
+} from "./codemode/outcome.js"
 import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
@@ -3940,6 +3949,8 @@ export function summarizeOpenAiToolCall(
 			return theme.fg("muted", "enable read-only planning")
 		case "ExitPlanMode":
 			return theme.fg("muted", "present plan")
+		case "codemode":
+			return codemodePurpose(args) || "Codemode"
 		case "Agent":
 			return summarizeText(getStringArg(args, "description", "prompt") || "launch agent", 72)
 		case "get_subagent_result":
@@ -4118,6 +4129,58 @@ function renderReadImageResult(
 	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme))
 }
 
+function renderCodemodeOutcome(
+	result: AgentToolResult<unknown>,
+	expanded: boolean,
+	theme: Theme,
+	ctx: ToolRenderContext,
+): Text {
+	const reduction = readCodemodeContextReduction(result.details)
+	const parts: string[] = []
+	if (reduction?.complete && reduction.estimatedTokensKeptOut >= CODEMODE_CONTEXT_DISPLAY_MIN_TOKENS) {
+		parts.push(`≈${formatEstimatedTokenCount(reduction.estimatedTokensKeptOut)} tokens kept out of context`)
+	}
+	const timer = formatToolTimer(ctx.durationMs ?? getToolElapsedMs(ctx))
+	if (timer) parts.push(timer)
+	const icon = theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "✗" : "✓")
+	const outcome = ctx.isError ? "Script failed" : "Script completed"
+	const status = `${icon} ${parts.length > 0 ? parts.join(" · ") : outcome}`
+
+	if (!expanded) {
+		return makeText(ctx.lastComponent, withBranch(`${status}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
+	}
+
+	const lines = [status]
+	const actionSummary = codemodeActionSummary(result.details)
+	if (actionSummary) lines.push(theme.fg("muted", `Actions: ${actionSummary}`))
+	if (reduction) {
+		const intermediate = formatEstimatedTokenCount(estimatedTokens(reduction.intermediateTextChars))
+		const returned = formatEstimatedTokenCount(estimatedTokens(reduction.returnedTextChars))
+		lines.push(
+			theme.fg(
+				"muted",
+				`Intermediate ≈${intermediate} tokens (${reduction.intermediateTextChars} chars) → returned ≈${returned} tokens (${reduction.returnedTextChars} chars)${reduction.complete ? "" : " · incomplete accounting"}`,
+			),
+		)
+	}
+	for (const call of codemodeNestedCalls(result.details)) {
+		const callColor = call.status === "ok" ? "success" : call.status === "error" ? "error" : "muted"
+		const callIcon =
+			call.status === "ok" ? "✓" : call.status === "error" ? "✗" : call.status === "cancelled" ? "⊘" : "…"
+		const duration = typeof call.durationMs === "number" ? formatToolTimer(call.durationMs) : ""
+		const cost = call.cost ? ` · $${call.cost.toFixed(call.cost >= 0.01 ? 2 : 3)}` : ""
+		lines.push(
+			`${theme.fg(callColor, callIcon)} ${theme.fg("toolTitle", call.name)} ${theme.fg("muted", call.args)}${duration ? theme.fg("dim", ` · ${duration}`) : ""}${cost}`,
+		)
+		if (call.error) lines.push(...call.error.split("\n").map((line) => theme.fg("error", `  ${line}`)))
+	}
+	const raw = getTextContent(result).trim()
+	if (raw) {
+		lines.push(...raw.split("\n").map((line) => theme.fg(ctx.isError ? "error" : "dim", line || " ")))
+	}
+	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme))
+}
+
 function renderOpenAiToolResult(
 	name: string,
 	result: AgentToolResult<unknown>,
@@ -4131,6 +4194,7 @@ function renderOpenAiToolResult(
 		return makeText(ctx.lastComponent, withBranch(theme.fg("dim", `${humanizeToolName(name)}...`), theme))
 	}
 	clearBlinkTimer(ctx)
+	if (name === "codemode") return renderCodemodeOutcome(result, expanded, theme, ctx)
 
 	const raw = getTextContent(result).trim()
 	const lines = raw ? raw.split("\n") : []

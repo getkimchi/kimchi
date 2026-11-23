@@ -4984,6 +4984,12 @@ function wireSafeToolResult(result: unknown, exposeManualHandoff = false): Recor
 		const { handoff: _manualHandoff, ...visibleDetails } = details
 		r = { ...r, details: visibleDetails }
 	}
+	if (r.details && typeof r.details === "object" && !Array.isArray(r.details) && "contextReduction" in r.details) {
+		// Codemode's context estimate is TUI presentation state, not part of the wire contract.
+		const { contextReduction: _contextReduction, ...visibleDetails } = r.details as Record<string, unknown>
+		const { details: _details, ...withoutDetails } = r
+		r = Object.keys(visibleDetails).length === 0 ? withoutDetails : { ...withoutDetails, details: visibleDetails }
+	}
 	if (!Array.isArray(r.content)) return r as Record<string, unknown>
 	let changed = false
 	const content = r.content.map((block) => {
