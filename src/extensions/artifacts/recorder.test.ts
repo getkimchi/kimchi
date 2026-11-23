@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { TurnArtifactBuffer } from "../../modes/acp/artifact-links.js"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } from "./recorder.js"
 import { setSnapshotArtifactsOptIn } from "./snapshot-policy.js"
@@ -25,7 +25,7 @@ describe("artifact-recorder", () => {
 		setSnapshotArtifactsOptIn(ctx.sessionManager, false)
 	})
 
-	const ctx = { cwd, sessionManager: { getCwd: () => join(cwd, "different-session-cwd") } } as ExtensionContext
+	const ctx = createContext({ cwd, sessionManager: { getCwd: () => join(cwd, "different-session-cwd") } })
 
 	const touch = (rel: string) => {
 		const abs = join(cwd, rel)
@@ -104,7 +104,7 @@ describe("artifact-recorder", () => {
 
 	it("does not record snapshot-derived files without the artifact capability", async () => {
 		const finalReport = join(cwd, "not-opted.html")
-		const plainContext = { cwd, sessionManager: {} } as ExtensionContext
+		const plainContext = createContext({ cwd, sessionManager: {} })
 		const now = Date.now()
 		const { api, emit, getAppendedEntries } = createExtensionApi()
 		artifactRecorderExtension(api)
