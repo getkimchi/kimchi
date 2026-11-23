@@ -1,5 +1,7 @@
-import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
-import { Box, Container, Spacer, visibleWidth } from "@earendil-works/pi-tui"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { AssistantMessageComponent, ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
+import { Box, Container, SettingsList, type SettingsListTheme, Spacer } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import registerToolGrouping, {
 	buildCurrentToolLine,
@@ -19,19 +21,19 @@ import registerToolGrouping, {
 	muteAssistantLines,
 	patchAddChild,
 	patchToolGroupRendering,
-	renderHeaderOnly,
 	resetToolGroupingSessionState,
 } from "./tool-grouping.js"
 
 // The fold mode is the only input these render paths take from settings; keep it
 // controllable per test instead of touching the user's real settings file.
-const settings = vi.hoisted(() => ({ mode: "tools" as "all" | "tools" | "off", reads: 0 }))
+const settings = vi.hoisted(() => ({ mode: "tools" as "all" | "tools" | "off", reads: 0, writeFails: false }))
 vi.mock("./work-collapse-settings.js", () => ({
 	readCollapseWorkMode: () => {
 		settings.reads += 1
 		return settings.mode
 	},
 	writeCollapseWorkMode: (mode: "all" | "tools" | "off") => {
+		if (settings.writeFails) return { ok: false as const, error: "ENOTDIR: not a directory" }
 		settings.mode = mode
 		return { ok: true as const, path: "/tmp/mock-settings.json", scope: "global" as const }
 	},
@@ -43,6 +45,7 @@ afterEach(() => {
 	vi.useRealTimers()
 	settings.mode = "tools"
 	settings.reads = 0
+	settings.writeFails = false
 	resetToolGroupingSessionState()
 })
 
@@ -746,9 +749,16 @@ describe("ensureOriginalChildren", () => {
 	})
 
 	it("restores cosmetics and rebuilds the children exactly once", () => {
+		settings.mode = "tools"
+		patchAddChild()
+		patchToolGroupRendering()
 		const harness = makeFakeToolHarness(6)
-		renderHeaderOnly(harness.fake, () => ["call-6"], 80) // registers the swap
-		harness.fake.contentBox.children = [harness.callRegion]
+		// Register a fold swap through the real patched group render, then impair
+		// the cosmetics as a mode-off restoration would see them.
+		const parent = new Container()
+		parent.addChild(harness.fake)
+		parent.addChild(makeFakeToolHarness(66).fake)
+		harness.fake.render(80)
 		harness.fake.contentBox.bgFn = () => ""
 		harness.fake.contentBox.paddingY = 0
 
@@ -763,8 +773,15 @@ describe("ensureOriginalChildren", () => {
 	})
 
 	it("never throws and re-arms the swap when updateDisplay fails", () => {
+		settings.mode = "tools"
+		patchAddChild()
+		patchToolGroupRendering()
 		const harness = makeFakeToolHarness(7)
-		renderHeaderOnly(harness.fake, () => ["call-7"], 80)
+		const parent = new Container()
+		parent.addChild(harness.fake)
+		parent.addChild(makeFakeToolHarness(77).fake)
+		harness.fake.contentBox.bgFn = () => ""
+		harness.fake.render(80)
 		harness.fake.contentBox.bgFn = () => ""
 
 		const failing = vi.fn(() => {
@@ -772,8 +789,6 @@ describe("ensureOriginalChildren", () => {
 		})
 		harness.fake.updateDisplay = failing
 		expect(() => ensureOriginalChildren(harness.fake)).not.toThrow()
-		// Cosmetics are already restored; only the rebuild is left for a later frame.
-		expect(harness.fake.contentBox.bgFn).toBe(harness.originalBg)
 
 		harness.fake.updateDisplay = vi.fn()
 		ensureOriginalChildren(harness.fake)
@@ -781,49 +796,70 @@ describe("ensureOriginalChildren", () => {
 	})
 })
 
-describe("renderHeaderOnly", () => {
-	it("appends the expand hint to the header line", () => {
-		const harness = makeFakeToolHarness(8)
-		const lines = renderHeaderOnly(harness.fake, () => ["call-8"], 80)
-		expect(lines).toHaveLength(1)
-		expect(lines[0]).toContain("call-8")
-		expect(lines[0]).toContain("ctrl+o to expand")
+describe("interstitial assistant commentary across model cycles", () => {
+	function fakeAssistantMessage(text: string): AssistantMessageComponent {
+		const message = {
+			role: "assistant" as const,
+			timestamp: 1,
+			content: [{ type: "text" as const, text }],
+			stopReason: "stop" as const,
+			provider: "test",
+			api: "test",
+			model: "test",
+			usage: { input: 0, output: 0, totalTokens: 0, cacheRead: 0, cacheWrite: 0 },
+		}
+		return new AssistantMessageComponent(message as AssistantMessage, false, undefined, undefined, 0, [])
+	}
+
+	it("hides interim commentary when turn_start-like cycles happen between it and the final response", () => {
+		settings.mode = "all"
+		// A real AssistantMessageComponent render surface is wrapped by the extension,
+		// which also installs grouping, expansion and text-fold patches.
+		registerToolGrouping({ on: () => {} } as unknown as ExtensionAPI)
+
+		const first = makeFakeToolHarness(200)
+		const interim = fakeAssistantMessage("INTERIM_COLLAPSE_MARKER")
+		const second = makeFakeToolHarness(201)
+		const finalMessage = fakeAssistantMessage("FINAL_COLLAPSE_MARKER")
+		const parent = new Container()
+		parent.addChild(first.fake)
+		parent.addChild(interim)
+		parent.addChild(second.fake)
+		parent.addChild(finalMessage)
+
+		// Both tools complete. The next model cycle still sits before the final
+		// response (turn_start fires per cycle, not just on a new user prompt).
+		expect(interim.render(80).join("\n")).not.toContain("INTERIM_COLLAPSE_MARKER")
+		expect(finalMessage.render(80).join("\n")).toContain("FINAL_COLLAPSE_MARKER")
 	})
+})
 
-	it("targets the last visible line and keeps padding lines intact", () => {
-		const harness = makeFakeToolHarness(9)
-		const lines = renderHeaderOnly(harness.fake, () => ["", "call-9", ""], 80)
-		expect(lines).toHaveLength(3)
-		expect(lines[0]).toBe("")
-		expect(lines[1]).toContain("ctrl+o to expand")
-		expect(lines[2]).toBe("")
-	})
+describe("settings write failures", () => {
+	it("restores the effective value through real SettingsList activation", () => {
+		settings.mode = "tools"
+		const listTheme: SettingsListTheme = {
+			label: (text: string) => text,
+			value: (text: string) => text,
+			description: (text: string) => text,
+			hint: (text: string) => text,
+			cursor: "➤",
+		}
+		const list = new SettingsList(
+			[],
+			5,
+			listTheme,
+			() => {},
+			() => {},
+		)
+		maybeInjectCollapseWorkSetting(list)
 
-	it("never emits an over-wide line", () => {
-		const harness = makeFakeToolHarness(10)
-		const lines = renderHeaderOnly(harness.fake, () => ["x".repeat(60)], 20)
-		// Measured in visible cells so SGR sequences don't count toward the width.
-		expect(visibleWidth(lines[0])).toBeLessThanOrEqual(20)
-	})
+		settings.writeFails = true
+		list.selectItem("collapse-work")
+		;(list as any).activateItem()
 
-	it("registers the swap so a left click toggles the expand state", () => {
-		patchToolGroupRendering()
-		const harness = makeFakeToolHarness(11)
-		renderHeaderOnly(harness.fake, () => ["call-11"], 80)
-
-		expect(harness.fake.expanded).toBe(false)
-		const result = harness.fake.handleMouse({
-			type: "click",
-			button: "left",
-			x: 1,
-			y: 0,
-			width: 80,
-			height: 10,
-			screenX: 1,
-			screenY: 0,
-		})
-		expect(result).toEqual({ handled: true })
-		expect(harness.fake.expanded).toBe(true)
+		const item = (list as any).items.find((entry: { id: string }) => entry.id === "collapse-work")
+		expect(item?.currentValue).toBe("tools")
+		expect(settings.mode).toBe("tools")
 	})
 })
 

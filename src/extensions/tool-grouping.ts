@@ -4,7 +4,7 @@ import {
 	SettingsSelectorComponent,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent"
-import { Container, MouseRegion, Spacer, truncateToWidth } from "@earendil-works/pi-tui"
+import { Container, MouseRegion, Spacer } from "@earendil-works/pi-tui"
 import { ToolBlockView } from "../components/tool-block.js"
 import { formatToolTimer } from "./tool-rendering.js"
 import {
@@ -35,9 +35,6 @@ let collapseWorkTheme: Theme | undefined
 
 /** Muted colour calibrated against `collapseWorkTheme` (see `resolveMutedFg`). */
 let mutedFgCalibrated: string | null | undefined
-
-/** Latest turn boundary: a completed turn's answer never folds when the next turn starts. */
-let lastTurnStartTimestamp = 0
 
 interface CollapseWorkModeCache {
 	cwd: string
@@ -105,7 +102,6 @@ export function resetToolGroupingSessionState(cwd?: string): void {
 	collapseWorkTrustCache = undefined
 	mutedFgCalibrated = undefined
 	mutedLinesCache = new WeakMap()
-	lastTurnStartTimestamp = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -474,74 +470,6 @@ export function buildGroupView(run: object[], theme: any): ToolBlockView {
 // evicted from the cache and the injected lines don't persist across renders.
 const TOOL_RENDER_CACHE_KEY = Symbol.for("pi-claude-style-tools:tool-render-cache")
 
-// Render the tool's call (header) region only — suppress the result region —
-// using the same temporary contentBox swap + cache bust as the group view.
-export function renderHeaderOnly(
-	self: any,
-	originalRender: (this: unknown, width: number) => string[],
-	width: number,
-): string[] {
-	const contentBox = self.contentBox
-	const usingSelf = typeof self.getRenderShell === "function" && self.getRenderShell() === "self"
-	if (!contentBox || usingSelf) return originalRender.call(self, width)
-
-	const savedChildren = contentBox.children.slice() as object[]
-	if (savedChildren.length === 0) return originalRender.call(self, width)
-
-	// Register the swap so the folded single-tool row is clickable: Box hit-testing
-	// cannot reach a child MouseRegion, so clicks are handled at the tool by
-	// `patchedGroupHandleMouse`, which keys off this WeakMap. The entry doubles as
-	// the ownership marker `ensureOriginalChildren` restores from.
-	if (!groupSwapOriginals.has(contentBox)) {
-		groupSwapOriginals.set(contentBox, { bgFn: contentBox.bgFn, paddingY: contentBox.paddingY as number })
-	}
-
-	contentBox.children = [savedChildren[0]]
-	// One cache bust per frame: the next invocation busts again *before*
-	// rendering, so a folded frame can never be served from this frame's entry.
-	contentBox.invalidate()
-	delete self[TOOL_RENDER_CACHE_KEY]
-	const result = originalRender.call(self, width)
-
-	// Restore the real children WITHOUT a second invalidate()/bust: every path
-	// that renders them again goes through `ensureOriginalChildren()` (mode off,
-	// expanded, no longer superseded), whose `updateDisplay()` invalidates this
-	// subtree and clears the tool render cache (patched in tool-rendering.ts).
-	contentBox.children = savedChildren
-
-	return appendExpandHint(result, self.ui?.theme, width)
-}
-
-const EXPAND_HINT = " • ctrl+o to expand"
-const SGR_RE = /\x1b\[[0-9;]*m/g
-// Trailing fill (padding / background) and reset sequences of a rendered line.
-const TRAILING_FILL_RE = /(?:[ \t]+|\x1b\[[0-9;]*m)+$/
-
-/**
- * Append the `ctrl+o to expand` affordance to the last visible line of a
- * header-only render, ahead of that line's trailing fill/reset so the hint is
- * not painted over by the region background. Truncated to the render width —
- * pi-tui crashes on over-wide lines.
- */
-export function appendExpandHint(lines: string[], theme: any, width: number): string[] {
-	if (!Array.isArray(lines) || lines.length === 0) return lines
-	let hint = EXPAND_HINT
-	try {
-		hint = theme?.fg?.("muted", EXPAND_HINT) ?? EXPAND_HINT
-	} catch {
-		/* fall back to plain text */
-	}
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (lines[i].replace(SGR_RE, "").trim() === "") continue
-		const tail = lines[i].match(TRAILING_FILL_RE)?.[0] ?? ""
-		const head = lines[i].slice(0, lines[i].length - tail.length)
-		const out = lines.slice()
-		out[i] = truncateToWidth(`${head}${hint}${tail}`, Math.max(1, width))
-		return out
-	}
-	return lines
-}
-
 // Original contentBox cosmetics captured when a fold swap is applied, so they can
 // be restored when the fold no longer applies to this tool. Also the ownership
 // marker for a contentBox whose children were swapped by a fold (group row or
@@ -650,22 +578,12 @@ export function patchToolGroupRendering(): void {
 
 		const children = parent.children as object[]
 		const run = findToolGroup(this, children)
-		const selfIdx = children.indexOf(this)
 
-		// A lone tool folds to its header line once a later tool call exists
-		// ("collapse work when the next tool call starts").
+		// A lone completed tool renders normally until the next tool call arrives:
+		// that call becomes a run member above, so the whole completed run folds
+		// into the usual group row. There is no distinct singleton fold to reach,
+		// and user messages already bound runs, so previous turns stay intact.
 		if (run.length < 2) {
-			const self = this as any
-			if (
-				run.length === 1 &&
-				run[0] === this &&
-				selfIdx !== -1 &&
-				self.isPartial !== true &&
-				self.expanded !== true &&
-				isSupersededByLaterTool(children, selfIdx)
-			) {
-				return renderHeaderOnly(self, originalRender, width)
-			}
 			ensureOriginalChildren(this)
 			return originalRender.call(this, width)
 		}
@@ -907,10 +825,10 @@ function patchAssistantTextFolding(): void {
 		const selfIdx = children.indexOf(this)
 		if (selfIdx === -1) return lines
 
-		// A completed turn's answer stays on screen when the next prompt starts —
-		// only the current turn's interstitial commentary folds.
-		const messageTimestamp = (this as any)?.lastMessage?.timestamp
-		if (typeof messageTimestamp === "number" && messageTimestamp < lastTurnStartTimestamp) return lines
+		// Only interstitial commentary between two completed tools of the same
+		// run folds. User messages already break runs, so previous turns' final
+		// answers are safe without a wall-clock cutoff (turn_start fires for
+		// every model/tool cycle, which would wrongly exclude live commentary).
 		const decision = decideAssistantTextFold(children, selfIdx)
 		if (!decision.fold) return lines
 		// Live narration while work is still running must stay visible — keeping
@@ -1046,8 +964,15 @@ export function maybeInjectCollapseWorkSetting(list: unknown): boolean {
 		// mode and the project is trusted, so cycling is never a silent no-op.
 		const result = writeCollapseWorkMode(newValue, { cwd, projectTrusted })
 		invalidateCollapseWorkModeCache()
-		if (!result.ok) reportCollapseWorkWriteError(result.error)
-		else writeErrorReported = false
+		if (!result.ok) {
+			// SettingsList.activateItem() already flipped currentValue to the unsaved
+			// choice; pin it back to the mode that is actually still in effect.
+			const failedItem = items.find((item) => item?.id === COLLAPSE_WORK_ITEM_ID)
+			if (failedItem) failedItem.currentValue = getCollapseWorkMode()
+			reportCollapseWorkWriteError(result.error)
+		} else {
+			writeErrorReported = false
+		}
 	}
 	return true
 }
@@ -1088,9 +1013,5 @@ export default function registerToolGrouping(pi: ExtensionAPI): void {
 		collapseWorkTheme = ctx.hasUI ? ctx.ui.theme : undefined
 		sessionNotify = ctx.hasUI ? (message, type) => ctx.ui.notify(message, type) : undefined
 		writeErrorReported = false
-	})
-
-	pi.on("turn_start", async () => {
-		lastTurnStartTimestamp = Date.now()
 	})
 }
