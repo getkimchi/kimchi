@@ -8,11 +8,21 @@ const cacheState = vi.hoisted(() => ({
 	cache: undefined as MetadataCache | undefined,
 	loadMetadataCache: vi.fn<() => MetadataCache | undefined>(),
 }))
+const hashState = vi.hoisted(() => ({ throwFor: undefined as string | undefined }))
 
-vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => ({
-	...(await importOriginal<typeof import("pi-mcp-adapter/metadata-cache")>()),
-	loadMetadataCache: cacheState.loadMetadataCache,
-}))
+vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => {
+	const original = await importOriginal<typeof import("pi-mcp-adapter/metadata-cache")>()
+	return {
+		...original,
+		computeServerHash: (definition: Parameters<typeof original.computeServerHash>[0]) => {
+			if (hashState.throwFor !== undefined && definition.command === hashState.throwFor) {
+				throw new Error(`Cannot hash ${definition.command}`)
+			}
+			return original.computeServerHash(definition)
+		},
+		loadMetadataCache: cacheState.loadMetadataCache,
+	}
+})
 
 function privateEntry(config: McpConfig, server: string, readOnlyHint: boolean): ServerCacheEntry {
 	return {
@@ -37,6 +47,7 @@ describe("snapshotMcpCallCatalog", () => {
 	beforeEach(() => {
 		cacheState.cache = { version: 1, servers: {} }
 		cacheState.loadMetadataCache.mockReset().mockImplementation(() => cacheState.cache)
+		hashState.throwFor = undefined
 	})
 
 	it("loads persistent metadata at most once per snapshot", () => {
@@ -87,6 +98,30 @@ describe("snapshotMcpCallCatalog", () => {
 			kind: "unresolved",
 			via: "gateway",
 			why: "stale",
+		})
+	})
+
+	it("treats a server whose config hash throws as stale without failing other servers", () => {
+		const config: McpConfig = {
+			mcpServers: {
+				broken: { command: "broken", directTools: true },
+				docs: { command: "docs", directTools: true },
+			},
+		}
+		const privateCatalogs = new Map([
+			["broken", privateEntry(config, "broken", true)],
+			["docs", privateEntry(config, "docs", true)],
+		])
+		hashState.throwFor = "broken"
+
+		const catalog = snapshotMcpCallCatalog(config, privateCatalogs, new Set(["broken_get_issue", "docs_get_issue"]))
+
+		expect(catalog.staleServers.has("broken")).toBe(true)
+		expect(describeMcpCall("broken_get_issue", {}, catalog)).toMatchObject({ kind: "unresolved" })
+		expect(describeMcpCall("docs_get_issue", {}, catalog)).toMatchObject({
+			kind: "tool",
+			server: "docs",
+			evidence: "annotation_true",
 		})
 	})
 

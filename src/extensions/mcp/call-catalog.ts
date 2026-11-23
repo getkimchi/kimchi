@@ -1,11 +1,7 @@
-import { computeServerHash, isServerCacheValid, loadMetadataCache } from "pi-mcp-adapter/metadata-cache"
-import { isServerDisabled, type McpConfig, type ServerCacheEntry, type ServerEntry } from "pi-mcp-adapter/types"
+import { isServerCacheValid, loadMetadataCache } from "pi-mcp-adapter/metadata-cache"
+import { isServerDisabled, type McpConfig, type ServerCacheEntry } from "pi-mcp-adapter/types"
 import type { McpCallCatalog } from "./call-facts.js"
-import { collectMcpToolCandidates } from "./read-only.js"
-
-function isPrivateEntryUsable(entry: ServerCacheEntry, definition: ServerEntry): boolean {
-	return entry.cacheScope === "private" && entry.configHash === computeServerHash(definition)
-}
+import { collectMcpToolCandidates, isPrivateEntryUsable } from "./read-only.js"
 
 export function snapshotMcpCallCatalog(
 	config: McpConfig,

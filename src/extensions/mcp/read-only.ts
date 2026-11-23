@@ -37,6 +37,7 @@ import {
 	type MetadataCache,
 	resolveToolPrefix,
 	type ServerCacheEntry,
+	type ServerEntry,
 	type ToolMetadata,
 	type ToolPrefix,
 } from "pi-mcp-adapter/types"
@@ -84,6 +85,14 @@ export interface McpToolCandidate {
 	evidence: ReadOnlyEvidence
 }
 
+export function isPrivateEntryUsable(entry: ServerCacheEntry, definition: ServerEntry): boolean {
+	try {
+		return entry.cacheScope === "private" && entry.configHash === computeServerHash(definition)
+	} catch {
+		return false
+	}
+}
+
 export function collectMcpToolCandidates(
 	config: McpConfig,
 	cache: MetadataCache | null,
@@ -99,11 +108,7 @@ export function collectMcpToolCandidates(
 	for (const [serverName, definition] of Object.entries(config.mcpServers)) {
 		if (isServerDisabled(definition)) continue
 		const sessionEntry = privateCatalogs?.get(serverName)
-		if (
-			sessionEntry &&
-			(sessionEntry.cacheScope !== "private" || sessionEntry.configHash !== computeServerHash(definition))
-		)
-			continue
+		if (sessionEntry && !isPrivateEntryUsable(sessionEntry, definition)) continue
 		// Match the adapter's own in-memory direct-tool projection: session-only
 		// cache hints are not revalidated against the persistent cache contract.
 		let entry = cache?.servers[serverName]
