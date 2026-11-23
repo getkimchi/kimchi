@@ -4221,6 +4221,24 @@ describe("permission mode session-log persistence", () => {
 	})
 })
 
+describe("Plan persona path scope in the main session", () => {
+	it("judges the main session's Plan persona write on every path the call names", async () => {
+		vi.stubEnv("KIMCHI_AGENT_PERSONA", "Plan")
+		const harness = createPermissionsHarness(["write"], { "deny-tool": "write" })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+		const fire = (input: Record<string, unknown>) =>
+			harness.fire("tool_call", { type: "tool_call", toolCallId: "tc-plan", toolName: "write", input }, ctx)
+
+		expect(await fire({ path: "src/code.ts", file_path: ".kimchi/plans/design.md", content: "x" })).toMatchObject({
+			block: true,
+			reason: expect.stringContaining('The path "src/code.ts"'),
+		})
+		// Unchanged: a write inside the scope is allowed before rules are read.
+		expect(await fire({ path: ".kimchi/plans/design.md", content: "x" })).toBeUndefined()
+	})
+})
+
 describe("document-skill CLI route (kimchi doc-cli)", () => {
 	let bundledDir: string
 
@@ -4401,6 +4419,31 @@ describe("document-skill CLI route (kimchi doc-cli)", () => {
 
 		expect(result).toBeUndefined() // mocked classifier says safe
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it.each([
+		["path", "file_path"],
+		["file_path", "path"],
+	] as const)("denies a write whose %s is inside the bundled skills dir even when %s names another file", async (inside, other) => {
+		const harness = createPermissionsHarness(["write"], { yolo: true })
+		const decisions: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (payload) => decisions.push(payload))
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-both",
+				toolName: "write",
+				input: { [inside]: `${bundledDir}/pwn/scripts/pwn.mjs`, [other]: "notes.md", content: "x" },
+			},
+			ctx,
+		)
+
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		expect(decisions).toEqual([expect.objectContaining({ decision: "reject", sourceDetail: "bundled_skill_dir_deny" })])
 	})
 
 	it("keeps the doc-cli gate identical across two sessions", async () => {
@@ -6045,6 +6088,21 @@ describe("inline worker permissions", () => {
 			block: true,
 			reason: expect.stringContaining("restricted to .kimchi/plans"),
 		})
+	})
+
+	it("judges a Plan persona write or edit on every path the call names", async () => {
+		const { worker, workerCtx } = await setup({}, { persona: "Plan" })
+		// The tools write to `path`: a `file_path` inside the scope must not vouch for it.
+		expect(
+			await call(worker, workerCtx, "write", { path: "src/code.ts", file_path: ".kimchi/plans/design.md" }),
+		).toMatchObject({ block: true, reason: expect.stringContaining('The path "src/code.ts"') })
+		expect(
+			await call(worker, workerCtx, "edit", { path: ".kimchi/plans/design.md", file_path: "src/code.ts" }),
+		).toMatchObject({ block: true, reason: expect.stringContaining('The path "src/code.ts"') })
+		expect(
+			await call(worker, workerCtx, "write", { path: ".kimchi/plans/a.md", file_path: ".kimchi/plans/b.md" }),
+		).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 
 	it("follows parent mode changes in both directions after the child started", async () => {

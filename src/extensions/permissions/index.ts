@@ -1548,9 +1548,14 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			}
 		})
 
-	/** Write/edit target path: `file_path` or `path`, whichever the tool names. */
-	const writeEditTargetPath = (input: Record<string, unknown>): string =>
-		typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+	/**
+	 * Every path a write/edit call names. The tools write to `path`;
+	 * `file_path` is an alias a call can carry next to it. A path check must
+	 * hold for all of them, so that a call carrying both is never judged on
+	 * the one that is not written.
+	 */
+	const writeEditTargetPaths = (input: Record<string, unknown>): string[] =>
+		[input.path, input.file_path].filter((value): value is string => typeof value === "string")
 
 	pi.on("tool_call", async (event, ctx) => {
 		refreshWorkerPolicy(ctx)
@@ -1573,14 +1578,14 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		const agentPersona = options.role === "worker" ? options.persona : process.env.KIMCHI_AGENT_PERSONA
 		if (agentPersona?.toLowerCase() === "plan") {
 			if (toolName === "write" || toolName === "edit") {
-				const filePath = writeEditTargetPath(input)
-				if (filePath && !isWithinKimchiPlans(filePath, ctx.cwd)) {
+				const outside = writeEditTargetPaths(input).find((target) => !isWithinKimchiPlans(target, ctx.cwd))
+				if (outside !== undefined) {
 					return {
 						block: true,
-						reason: `Plan persona: ${toolName} is restricted to .kimchi/plans/ files. The path "${filePath}" is outside that scope.`,
+						reason: `Plan persona: ${toolName} is restricted to .kimchi/plans/ files. The path "${outside}" is outside that scope.`,
 					}
 				}
-				// path is within .kimchi/plans/ — allow without further checks
+				// every named path is within .kimchi/plans/ — allow without further checks
 				return undefined
 			}
 		}
@@ -1592,8 +1597,8 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		// tools) inside it stay behind the classifier, the documented residual
 		// (see docs/doc-cli.md).
 		if ((toolName === "write" || toolName === "edit") && bundledSkillCliRoot !== null) {
-			const filePath = writeEditTargetPath(input)
-			if (filePath && isUnderBundledSkillsDir(filePath, bundledSkillCliRoot, ctx.cwd)) {
+			const skillsRoot = bundledSkillCliRoot
+			if (writeEditTargetPaths(input).some((target) => isUnderBundledSkillsDir(target, skillsRoot, ctx.cwd))) {
 				emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "bundled_skill_dir_deny")
 				return {
 					block: true,
