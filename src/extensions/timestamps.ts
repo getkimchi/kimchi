@@ -10,8 +10,8 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth } from "@earendil-works/pi-tui"
 import { liveTheme } from "../components/live-theme.js"
+import { buildAlignedLine } from "../components/tool-block.js"
 import { loadConfig, normalizeTuiTimezone, writeTuiTimestamps, writeTuiTimezone } from "../config.js"
 import { notifyUser } from "../utils/notify-user.js"
 
@@ -104,8 +104,8 @@ interface TimestampRenderable {
 	render(width: number): string[]
 }
 
-/** Prepend display-only text outside the component's content and ANSI zones. */
-function patchTimestampRenderer(prototype: TimestampRenderable): void {
+/** Prepend role-labelled, right-aligned metadata outside content and ANSI zones. */
+function patchTimestampRenderer(prototype: TimestampRenderable, label: string): void {
 	if (patchedRenderers.has(prototype)) return
 	const originalRender = prototype.render
 	if (typeof originalRender !== "function") return
@@ -120,8 +120,9 @@ function patchTimestampRenderer(prototype: TimestampRenderable): void {
 		if (!text) return lines
 
 		const theme = liveTheme()
-		const styled = theme?.fg("muted", text) ?? text
-		return [truncateToWidth(styled, Math.max(1, Math.floor(width))), ...lines]
+		const role = theme?.fg("accent", `${label} ·`) ?? `${label} ·`
+		const datetime = theme?.fg("muted", text) ?? text
+		return [buildAlignedLine(role, datetime, Math.max(1, Math.floor(width))), ...lines]
 	}
 }
 
@@ -173,18 +174,17 @@ export function installTranscriptTimestampAdapters(): void {
 	installedAdapterRoots.add(adapterRoot)
 
 	patchAddMessageToChat()
-	for (const prototype of [
-		UserMessageComponent.prototype,
-		AssistantMessageComponent.prototype,
-		ToolExecutionComponent.prototype,
-		BashExecutionComponent.prototype,
-		CustomMessageComponent.prototype,
-		CompactionSummaryMessageComponent.prototype,
-		BranchSummaryMessageComponent.prototype,
-		SkillInvocationMessageComponent.prototype,
-	]) {
-		patchTimestampRenderer(prototype)
-	}
+	const renderers: [TimestampRenderable, string][] = [
+		[UserMessageComponent.prototype, "user"],
+		[AssistantMessageComponent.prototype, "assistant"],
+		[ToolExecutionComponent.prototype, "tool completed"],
+		[BashExecutionComponent.prototype, "bash completed"],
+		[CustomMessageComponent.prototype, "event"],
+		[CompactionSummaryMessageComponent.prototype, "compaction"],
+		[BranchSummaryMessageComponent.prototype, "branch"],
+		[SkillInvocationMessageComponent.prototype, "skill"],
+	]
+	for (const [prototype, label] of renderers) patchTimestampRenderer(prototype, label)
 
 	const toolPrototype = ToolExecutionComponent.prototype as unknown as ToolExecutionAdapter
 	const originalToolResult = toolPrototype.updateResult

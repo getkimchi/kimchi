@@ -24,6 +24,13 @@ const UTC_LABEL = "2026-11-23 13:04:05 GMT+0"
 const SGR_RE = new RegExp(`${"\x1b"}\\[[0-9;]*m`, "g")
 const stripSgr = (line: string): string => line.replace(SGR_RE, "")
 
+function expectTimestampRow(lines: string[], role: string, timestamp: string | undefined = UTC_LABEL): void {
+	expect(timestamp).toBeDefined()
+	const row = stripSgr(lines[0] ?? "")
+	expect(row.startsWith(`${role} ·`)).toBe(true)
+	if (timestamp) expect(row.trimEnd().endsWith(timestamp)).toBe(true)
+}
+
 interface FakeChat {
 	host: object
 	container: Container
@@ -134,7 +141,8 @@ describe("message timestamp rendering", () => {
 		expect(rendered).toEqual(original)
 		configureTranscriptTimestamps({ enabled: true, timezone: "UTC" })
 		const withTimestamp = component.render(80)
-		expect(stripSgr(withTimestamp[0] ?? "")).toBe(UTC_LABEL)
+		expectTimestampRow(withTimestamp, "user")
+		expect(withTimestamp[0]).not.toBe(stripSgr(withTimestamp[0] ?? ""))
 		expect(withTimestamp.slice(1)).toEqual(original)
 		expect(withTimestamp.join("\n")).toContain("Original user prompt")
 		expect(withTimestamp.slice(1).join("\n")).toContain("\x1b]133;A\x07")
@@ -151,7 +159,7 @@ describe("message timestamp rendering", () => {
 		const first = component.render(80)
 		const second = component.render(80)
 		expect(first).toEqual(second)
-		expect(first.filter((line) => stripSgr(line) === UTC_LABEL)).toHaveLength(1)
+		expect(first.filter((line) => stripSgr(line).trimEnd().endsWith(UTC_LABEL))).toHaveLength(1)
 	})
 
 	it("reads live and settled assistant timestamps without modifying content", () => {
@@ -159,7 +167,7 @@ describe("message timestamp rendering", () => {
 		const component = new AssistantMessageComponent(message as never)
 		const rendered = component.render(80)
 
-		expect(stripSgr(rendered[0] ?? "")).toBe(UTC_LABEL)
+		expectTimestampRow(rendered, "assistant")
 		expect(rendered.slice(1).join("\n")).toContain("Original assistant response")
 		expect(message.content).toEqual([{ type: "text", text: "Original assistant response" }])
 	})
@@ -186,16 +194,16 @@ describe("message timestamp rendering", () => {
 			timestamp: FIXED_MS,
 		})
 
-		for (const type of [
-			CustomMessageComponent,
-			CompactionSummaryMessageComponent,
-			BranchSummaryMessageComponent,
-			SkillInvocationMessageComponent,
-		]) {
+		for (const [type, role] of [
+			[CustomMessageComponent, "event"],
+			[CompactionSummaryMessageComponent, "compaction"],
+			[BranchSummaryMessageComponent, "branch"],
+			[SkillInvocationMessageComponent, "skill"],
+		] as const) {
 			const component = chat.container.children.find((child) => child instanceof type)
 			expect(component, type.name).toBeDefined()
 			if (!(component instanceof type)) continue
-			expect(stripSgr(component.render(80)[0] ?? ""), type.name).toBe(UTC_LABEL)
+			expectTimestampRow(component.render(80), role)
 		}
 	})
 
@@ -222,7 +230,7 @@ describe("tool and bash completion timestamps", () => {
 		component.updateResult(result as never, false)
 		const rendered = component.render(80)
 
-		expect(stripSgr(rendered[0] ?? "")).toBe(UTC_LABEL)
+		expectTimestampRow(rendered, "tool completed")
 		expect(rendered.slice(1).join("\n")).toContain("Original tool output")
 		expect(result).toEqual({
 			content: [{ type: "text", text: "Original tool output" }],
@@ -240,7 +248,7 @@ describe("tool and bash completion timestamps", () => {
 		expect(component.render(80).join("\n")).not.toContain("1970-01-01")
 
 		component.updateResult({ content: [], isError: false } as never, false)
-		expect(stripSgr(component.render(80)[0] ?? "")).toBe(formatTranscriptTimestamp(currentMs, "UTC"))
+		expectTimestampRow(component.render(80), "tool completed", formatTranscriptTimestamp(currentMs, "UTC"))
 	})
 
 	it("keeps an empty/hidden tool block hidden even when it has a completion time", () => {
@@ -259,7 +267,7 @@ describe("tool and bash completion timestamps", () => {
 		component.setComplete(0, false)
 		const rendered = component.render(80)
 
-		expect(stripSgr(rendered[0] ?? "")).toBe(formatTranscriptTimestamp(currentMs, "UTC"))
+		expectTimestampRow(rendered, "bash completed", formatTranscriptTimestamp(currentMs, "UTC"))
 		expect(rendered.slice(1).join("\n")).toContain("$ printf hello")
 		expect(rendered.slice(1).join("\n")).toContain("hello")
 		expect(component.getCommand()).toBe("printf hello")

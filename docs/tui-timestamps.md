@@ -63,6 +63,12 @@ A trusted project can also set these values in `<project>/.kimchi/config.json`. 
 
 ## Covered activity
 
+Each block has a small metadata row rather than a standalone log line: its role label appears in the accent color on the left, while the muted datetime is aligned to the right edge of the terminal. Narrow terminals truncate the row safely.
+
+```text
+user ·                                      2026-11-23 15:04:05 GMT+2
+```
+
 Datetime labels appear above these settled transcript blocks:
 
 - User prompts and assistant responses
