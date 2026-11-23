@@ -395,6 +395,59 @@ test("a session-scoped /model choice survives resume but not /new or restart", a
 	}
 })
 
+for (const command of ["/new", "/clear"] as const) {
+	test(`${command} preserves an explicit CLI model for the new session`, async ({ terminal }) => {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: `auto-model-${command.slice(1)}-explicit-cli`,
+				providerId: "kimchi-dev",
+				initialModel: "override",
+				models: MODELS_WITH_OVERRIDE,
+				responses: [],
+			},
+			async (_fixture, trace) => {
+				await waitForText(terminal, "override → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				terminal.submit(command)
+				if (command === "/new") {
+					await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				} else {
+					// The local /clear alias replaces the session without adding a transcript marker.
+					await new Promise((resolve) => setTimeout(resolve, 1_000))
+				}
+				expect(viewText(terminal)).toContain("override → ctrl+p")
+				trace.step("explicit CLI model survived the new session")
+			},
+		)
+	})
+
+	test(`${command} restores Auto for the new session after a default launch`, async ({ terminal }) => {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: `auto-model-${command.slice(1)}-default-launch`,
+				providerId: "kimchi-dev",
+				initialModel: false,
+				models: MODELS_WITH_OVERRIDE,
+				responses: [],
+			},
+			async (_fixture, trace) => {
+				await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				terminal.submit("/model kimchi-dev/override")
+				await waitForText(terminal, "override → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				terminal.submit(command)
+				if (command === "/new") {
+					await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				} else {
+					await new Promise((resolve) => setTimeout(resolve, 1_000))
+				}
+				expect(viewText(terminal)).toContain("auto → ctrl+p")
+				trace.step("session-scoped model returned to the Auto default")
+			},
+		)
+	})
+}
+
 test("a saved Auto default keeps working across restarts", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
