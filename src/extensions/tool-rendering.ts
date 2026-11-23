@@ -47,6 +47,9 @@ import type { TSchema } from "typebox"
 import { liveTheme } from "../components/live-theme.js"
 import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
+import { readCodemodeContextReduction } from "./codemode/outcome.js"
+import { codemodeActionSummary, estimatedTokens, formatEstimatedTokenCount } from "./codemode/presentation.js"
+import { codemodePurpose } from "./codemode/purpose.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import {
@@ -65,14 +68,6 @@ import {
  */
 const REDACTED_SPAN_RE = /\[REDACTED-[A-Z0-9_]+\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\]/
 
-import {
-	codemodeActionSummary,
-	codemodeNestedCalls,
-	codemodePurpose,
-	estimatedTokens,
-	formatEstimatedTokenCount,
-	readCodemodeContextReduction,
-} from "./codemode/outcome.js"
 import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
@@ -834,6 +829,17 @@ function patchToolExecutionRenderers(): void {
 				theme: Theme,
 				ctx: ToolRenderContext,
 			) => renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx)
+		}
+		if (!renderer && toolName === "codemode" && typeof originalGetResultRenderer === "function") {
+			const upstream: UpstreamResultRenderer | undefined = originalGetResultRenderer.call(this)
+			if (upstream) {
+				renderer = (
+					result: AgentToolResult<unknown>,
+					options: ToolRenderResultOptions,
+					theme: Theme,
+					ctx: ToolRenderContext,
+				) => renderCodemodeResult(result, options, theme, ctx, upstream)
+			}
 		}
 		if (!renderer && shouldUseGenericToolRenderer(toolName)) {
 			renderer = (
@@ -4128,64 +4134,48 @@ function renderReadImageResult(
 	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme))
 }
 
-function renderCodemodeOutcome(
+/** Collapsed: overall status plus observed actions. Expanded: our status and
+ *  context estimate above Pi's own Codemode renderer (per-call rows and
+ *  script output). Partial results keep the generic running row. */
+function renderCodemodeResult(
 	result: AgentToolResult<unknown>,
-	expanded: boolean,
+	options: ToolRenderResultOptions,
 	theme: Theme,
 	ctx: ToolRenderContext,
-): Text {
-	const reduction = readCodemodeContextReduction(result.details)
-	const parts: string[] = []
+	upstream: UpstreamResultRenderer,
+): Component {
+	if (options.isPartial) return renderGenericToolResult("codemode", result, options, theme, ctx)
+	clearBlinkTimer(ctx)
 	const timer = formatToolTimer(ctx.durationMs ?? getToolElapsedMs(ctx))
-	if (timer) parts.push(timer)
+	const actions = codemodeActionSummary(result.details)
+	const outcome = ctx.isError ? ["Script failed", actions] : [actions || "Script completed"]
 	const icon = theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "✗" : "✓")
-	const outcome = ctx.isError ? "Script failed" : "Script completed"
-	const status = `${icon} ${[outcome, ...parts].join(" · ")}`
-
-	if (!expanded) {
+	const status = `${icon} ${[...outcome, timer].filter(Boolean).join(" · ")}`
+	if (!options.expanded) {
 		return makeText(ctx.lastComponent, withBranch(`${status}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 	}
 
 	const lines = [status]
-	const actionSummary = codemodeActionSummary(result.details)
-	if (actionSummary) lines.push(theme.fg("muted", `Actions: ${actionSummary}`))
-	if (reduction) {
+	const reduction = readCodemodeContextReduction(result.details)
+	// Incomplete accounting would understate the intermediate size, so no estimate is shown.
+	if (reduction?.complete) {
 		const intermediate = formatEstimatedTokenCount(estimatedTokens(reduction.intermediateTextChars))
 		const returned = formatEstimatedTokenCount(estimatedTokens(reduction.returnedTextChars))
 		lines.push(
 			theme.fg(
 				"muted",
-				`Context estimate: ≈${intermediate} intermediate tokens (${reduction.intermediateTextChars} chars) → ≈${returned} returned tokens (${reduction.returnedTextChars} chars)${reduction.complete ? "" : " · incomplete accounting"}`,
+				`Context estimate: ≈${intermediate} intermediate tokens (${reduction.intermediateTextChars} chars) → ≈${returned} returned tokens (${reduction.returnedTextChars} chars)`,
 			),
 		)
 	}
-	const detailsStart = lines.length
-	for (const call of codemodeNestedCalls(result.details)) {
-		const callColor = call.status === "ok" ? "success" : call.status === "error" ? "error" : "muted"
-		const callIcon =
-			call.status === "ok" ? "✓" : call.status === "error" ? "✗" : call.status === "cancelled" ? "⊘" : "…"
-		const duration = typeof call.durationMs === "number" ? formatToolTimer(call.durationMs) : ""
-		const cost = call.cost ? ` · $${call.cost.toFixed(call.cost >= 0.01 ? 2 : 3)}` : ""
-		lines.push(
-			`${theme.fg(callColor, callIcon)} ${theme.fg("toolTitle", call.name)} ${theme.fg("muted", call.args)}${duration ? theme.fg("dim", ` · ${duration}`) : ""}${cost}`,
-		)
-		if (call.error) lines.push(...call.error.split("\n").map((line) => theme.fg("error", `  ${line}`)))
-	}
-	// Pi keeps this header in the model's context, but it duplicates our status
-	// and timing line in the TUI. Strip it only for presentation.
-	const raw = getTextContent(result)
-		.trim()
-		.replace(/^Script (?:completed|failed)\r?\nWall time [\d.]+ seconds\r?\nOutput:\r?\n/, "")
-		.trim()
-	if (raw) {
-		lines.push(...raw.split("\n").map((line) => theme.fg(ctx.isError ? "error" : "dim", line || " ")))
-	}
-	const details = lines.splice(detailsStart)
-	const preview = buildPreviewText(details, true, theme, previewLimit())
-	if (preview) lines.push(preview)
-	const fullOutputPath = getStringArg(result.details, "fullOutputPath")
-	if (fullOutputPath) lines.push(theme.fg("muted", `Full output: ${fullOutputPath}`))
-	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme))
+	const component = new Container()
+	component.addChild(makeText(undefined, withBranch(lines.join("\n"), theme)))
+	// Pi never receives our component, and a fresh state with no duration
+	// drops its own "Took" line, which would repeat the status timer.
+	component.addChild(
+		upstream(result, options, theme, { ...ctx, lastComponent: undefined, state: {}, durationMs: undefined }),
+	)
+	return component
 }
 
 function renderOpenAiToolResult(
@@ -4201,7 +4191,6 @@ function renderOpenAiToolResult(
 		return makeText(ctx.lastComponent, withBranch(theme.fg("dim", `${humanizeToolName(name)}...`), theme))
 	}
 	clearBlinkTimer(ctx)
-	if (name === "codemode") return renderCodemodeOutcome(result, expanded, theme, ctx)
 
 	const raw = getTextContent(result).trim()
 	const lines = raw ? raw.split("\n") : []

@@ -6,7 +6,9 @@ import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from ".
 
 test.use(TUI_TEST_CONFIG)
 
-test("Codemode shows its purpose and context outcome, then replays the recorded calculation", async ({ terminal }) => {
+test("Codemode shows its purpose and observed actions, then replays the recorded context estimate", async ({
+	terminal,
+}) => {
 	const script = [
 		'// @options: {"max_output_tokens": 2000}',
 		"// @description: Filter the fixture down to its alpha lines",
@@ -47,14 +49,14 @@ test("Codemode shows its purpose and context outcome, then replays the recorded 
 			await waitForText(terminal, "Codemode outcome complete.", { full: false })
 			const collapsed = viewText(terminal)
 			expect(collapsed).toContain("● Codemode Filter the fixture down to its alpha lines")
-			expect(collapsed).toMatch(/✓ Script completed · \d+(?:\.\d+)?(?:ms|s)/)
+			expect(collapsed).toMatch(/✓ read 1 file · \d+(?:\.\d+)?(?:ms|s)/)
 			expect(collapsed).not.toContain("// @description:")
 			expect(collapsed).not.toContain("Actions:")
 			expect(collapsed).not.toContain("tokens kept out of context")
-			trace.step("purpose and compact script status replace the repeated Codemode title and line count")
+			trace.step("purpose and the observed actions replace the repeated Codemode title and line count")
 
 			terminal.keyPress("o", { ctrl: true })
-			await waitForText(terminal, "Actions: read 1 file", { full: false })
+			await waitForText(terminal, "Context estimate:", { full: false })
 			const expanded = viewText(terminal)
 			expect(expanded).toMatch(
 				/Context estimate: ≈\d+(?:\.\d+)?[km]? intermediate tokens \(\d+ chars\) → ≈\d+(?:\.\d+)?[km]? returned tokens \(\d+ chars\)/,
@@ -65,7 +67,8 @@ test("Codemode shows its purpose and context outcome, then replays the recorded 
 				/Context estimate: ≈\d+(?:\.\d+)?[km]? intermediate tokens \(\d+ chars\) → ≈\d+(?:\.\d+)?[km]? returned tokens \(\d+ chars\)/,
 			)?.[0]
 			expect(liveCalculation).toBeDefined()
-			trace.step("expansion reveals actions, calculation inputs, the nested call, and script output")
+			expect(expanded).not.toMatch(/Took \d/)
+			trace.step("expansion reveals the calculation inputs, then Pi's nested call rows and script output")
 
 			terminal.submit("/quit")
 			await waitForText(terminal, exitMarker, { full: false })

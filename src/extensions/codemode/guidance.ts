@@ -1,6 +1,7 @@
 import { createCodemodeExtension, type ExtensionAPI, type ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { isDefaultToolEnabled } from "../../settings-watcher.js"
-import { CODEMODE_PURPOSE_MAX_CHARS, createCodemodeOutcomeTracker } from "./outcome.js"
+import { createCodemodeOutcomeTracker } from "./outcome.js"
+import { CODEMODE_PURPOSE_MAX_CHARS } from "./purpose.js"
 
 /** Selection rule shown at the moment of tool choice. Codemode pays off when
  *  intermediate output can be filtered before it reaches the model, or when
@@ -29,17 +30,15 @@ export function createGuidedCodemodeExtension(): ExtensionFactory {
 				// at registration instead.
 				defaultActive: true,
 				async execute(toolCallId, params, signal, onUpdate, ctx) {
-					if (!ctx) return tool.execute(toolCallId, params, signal, onUpdate, ctx)
 					outcomes.begin(ctx, toolCallId)
 					let completed = false
 					try {
 						const result = await tool.execute(toolCallId, params, signal, onUpdate, ctx)
 						const contextReduction = outcomes.complete(ctx, toolCallId, result)
 						completed = true
-						const details = result.details && typeof result.details === "object" ? result.details : {}
-						// The registration generic cannot express an additive details field;
-						// codemode's concrete result is extended by this approved contract.
-						return { ...result, details: { ...details, contextReduction } } as typeof result
+						// No details object: nothing to attach to, so the renderer shows no estimate.
+						if (!result.details || typeof result.details !== "object") return result
+						return { ...result, details: { ...result.details, contextReduction } }
 					} finally {
 						if (!completed) outcomes.discard(ctx, toolCallId)
 					}
