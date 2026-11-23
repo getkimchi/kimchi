@@ -195,7 +195,6 @@ import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
-import permissionsExtension from "../../permissions/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import requestTimingExtension from "../../request-timing.js"
 import telemetryExtension from "../../telemetry/index.js"
@@ -3222,7 +3221,7 @@ describe("buildInlineExtensionFactories", () => {
 			clampFactory,
 			infrastructureBreakerExtension,
 			codexCorrelationExtension,
-			permissionsExtension,
+			expect.any(Function), // permissions, loaded after module initialization
 			dapExtension,
 			workerReportFactory,
 			mockCreateKimchiMcpAdapterExtension.mock.results[0].value,

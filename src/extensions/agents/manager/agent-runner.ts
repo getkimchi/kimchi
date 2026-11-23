@@ -34,7 +34,6 @@ import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { ModelRole } from "../../orchestration/model-registry/types.js"
-import permissionsExtension from "../../permissions/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { pinnedLanguageSection } from "../../prompt-construction/system-prompt.js"
 import requestTimingExtension from "../../request-timing.js"
@@ -320,6 +319,13 @@ export interface RunOptions {
 	extensionFactories?: readonly InlineExtension[]
 	/** How inactivity is accounted. "model_only" keeps a running tool from counting as inactivity. */
 	inactivityMode?: InactivityMode
+}
+
+const permissionsExtension: InlineExtension = async (pi) => {
+	// Loading at extension setup avoids a static permissions -> remote runner ->
+	// agents -> worker cycle. Workers still install the gate before tool binding.
+	const { default: extension } = await import("../../permissions/index.js")
+	return extension(pi)
 }
 
 export interface RunResult {
