@@ -69,6 +69,9 @@ export default defineConfig({
 			// so vi.mock() can target it without a "missing specifier" error.
 			"@earendil-works/pi-coding-agent/dist/utils/clipboard-image.js": stubPath,
 		},
+		// The protocol's timestamp codec uses Temporal, which Node exposes behind
+		// its harmony flag before it exposes it natively (Bun supplies it directly).
+		execArgv: ["--harmony-temporal"],
 		// Isolate test files to prevent mock leakage between tests
 		pool: "forks",
 		// Cap the fork pool. The default (one fork per CPU core) spawns a dozen-plus full Node
