@@ -14,6 +14,7 @@ import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import { parseLocalPolicy } from "./pii-redaction/policy.js"
 import { installVaultLifecycle, resetTokenVaults, tokenFor, vaultForSession } from "./pii-redaction/vault.js"
 import { __resetCheckinGate, recordGateBlockedToolCall } from "./todos/checkin-gate.js"
 import {
@@ -114,11 +115,14 @@ describe("paint substitution (pii-redaction token mode)", () => {
 		})
 		const out = explainRedactedEditFailure(base(), { oldText: "buyer [EMAIL_ADDRESS_9]" }, false)
 		expect(out.content).toHaveLength(2)
-		expect(out.content[1].text).toContain("redacted span")
-		// The current policy key: the deprecated excludedEntities list replaces the
-		// default exclusions wholesale and throws next to categories/entities (#1830).
-		expect(out.content[1].text).toContain('redaction.entities (e.g. {"EMAIL_ADDRESS": "off"})')
-		expect(out.content[1].text).not.toContain("excludedEntities")
+		const note = out.content[1].text
+		expect(note).toContain("redacted span")
+		// The current policy key (#1830), with an example the settings parser accepts.
+		expect(note).toContain('redaction.entities (e.g. {"EMAIL_ADDRESS": "off"})')
+		const example = /\(e\.g\. (\{.*?\})\)/.exec(note)?.[1] ?? ""
+		expect(parseLocalPolicy({ entities: JSON.parse(example) })).toEqual({ entities: { EMAIL_ADDRESS: "off" } })
+		// A legacy excludedEntities list throws next to the policy keys, so it takes the type itself.
+		expect(note).toContain("deprecated redaction.excludedEntities list, add the entity type to that list instead")
 		// Markers-shaped args get the same guidance.
 		const outMarker = explainRedactedEditFailure(base(), { oldText: "buyer [REDACTED-EMAIL_ADDRESS]" }, false)
 		expect(outMarker.content).toHaveLength(2)
