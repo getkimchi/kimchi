@@ -6,7 +6,11 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-test("Codemode without a purpose or positive context reduction retains the legacy fallback", async ({ terminal }) => {
+test("Codemode without a valid purpose or positive context reduction retains the legacy fallback", async ({
+	terminal,
+}) => {
+	const script = `// @description: ${"x".repeat(121)}\nreturn "tiny";`
+
 	await runKimchiSession(
 		terminal,
 		{
@@ -17,7 +21,7 @@ test("Codemode without a purpose or positive context reduction retains the legac
 					toolCalls: [
 						{
 							id: "codemode-fallback",
-							function: { name: "codemode", arguments: JSON.stringify({ code: 'return "tiny";' }) },
+							function: { name: "codemode", arguments: JSON.stringify({ code: script }) },
 						},
 					],
 				},
@@ -31,7 +35,7 @@ test("Codemode without a purpose or positive context reduction retains the legac
 			expect(collapsed).toContain("● Codemode Codemode")
 			expect(collapsed).toMatch(/✓ \d+(?:\.\d+)?(?:ms|s)/)
 			expect(collapsed).not.toContain("tokens kept out of context")
-			trace.step("missing purpose and a non-positive estimate preserve the old title and omit token claims")
+			trace.step("an oversized purpose and a non-positive estimate preserve the old title and omit token claims")
 
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, "Intermediate ≈", { full: false })

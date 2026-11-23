@@ -1,14 +1,13 @@
 import { createCodemodeExtension, type ExtensionAPI, type ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { isDefaultToolEnabled } from "../../settings-watcher.js"
-import { createCodemodeOutcomeTracker } from "./outcome.js"
+import { CODEMODE_PURPOSE_MAX_CHARS, createCodemodeOutcomeTracker } from "./outcome.js"
 
 /** Selection rule shown at the moment of tool choice. Codemode pays off when
  *  intermediate output can be filtered before it reaches the model, or when
  *  later arguments follow mechanically from earlier results; independent calls
  *  whose full results are needed already cost one round as direct parallel calls.
  *  The grep line format (pi's grep tool) is what a chaining script must parse. */
-export const CODEMODE_SELECTION_GUIDANCE =
-	"Use to filter large output before it reaches the model, or to chain calls whose arguments follow mechanically from earlier results. For independent calls whose full results you need, call tools directly in one turn. Nested grep resolves to `path:line: text` lines. Start with `// @description: <short purpose>` (one plain-text line, maximum 120 characters), immediately after the optional `@options` line when present."
+export const CODEMODE_SELECTION_GUIDANCE = `Use to filter large output before it reaches the model, or to chain calls whose arguments follow mechanically from earlier results. For independent calls whose full results you need, call tools directly in one turn. Nested grep resolves to \`path:line: text\` lines. Start with \`// @description: <short purpose>\` (one plain-text line, maximum ${CODEMODE_PURPOSE_MAX_CHARS} characters), immediately after the optional \`@options\` line when present.`
 
 /** Decorate Pi's dynamic tool description without replacing its execution or loadout logic. */
 export function createGuidedCodemodeExtension(): ExtensionFactory {
@@ -80,6 +79,7 @@ export function createGuidedCodemodeExtension(): ExtensionFactory {
 		})
 		pi.on("tool_execution_start", (event, ctx) => outcomes.nestedStart(ctx, event))
 		pi.on("tool_execution_end", (event, ctx) => outcomes.nestedEnd(ctx, event))
+		pi.on("agent_end", (_event, ctx) => outcomes.discard(ctx))
 		pi.on("session_shutdown", (_event, ctx) => outcomes.discard(ctx))
 	}
 }

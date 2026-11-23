@@ -66,13 +66,13 @@ import {
 const REDACTED_SPAN_RE = /\[REDACTED-[A-Z0-9_]+\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\]/
 
 import {
-	CODEMODE_CONTEXT_DISPLAY_MIN_TOKENS,
 	codemodeActionSummary,
 	codemodeNestedCalls,
 	codemodePurpose,
 	estimatedTokens,
 	formatEstimatedTokenCount,
 	readCodemodeContextReduction,
+	shouldDisplayCodemodeContextReduction,
 } from "./codemode/outcome.js"
 import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
@@ -4137,7 +4137,7 @@ function renderCodemodeOutcome(
 ): Text {
 	const reduction = readCodemodeContextReduction(result.details)
 	const parts: string[] = []
-	if (reduction?.complete && reduction.estimatedTokensKeptOut >= CODEMODE_CONTEXT_DISPLAY_MIN_TOKENS) {
+	if (reduction && shouldDisplayCodemodeContextReduction(reduction)) {
 		parts.push(`≈${formatEstimatedTokenCount(reduction.estimatedTokensKeptOut)} tokens kept out of context`)
 	}
 	const timer = formatToolTimer(ctx.durationMs ?? getToolElapsedMs(ctx))

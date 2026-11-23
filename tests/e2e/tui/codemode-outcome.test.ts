@@ -8,6 +8,7 @@ test.use(TUI_TEST_CONFIG)
 
 test("Codemode shows its purpose and context outcome, then replays the recorded calculation", async ({ terminal }) => {
 	const script = [
+		'// @options: {"max_output_tokens": 2000}',
 		"// @description: Filter the fixture down to its alpha lines",
 		'const source = await tools.read({ path: "fixture.txt" });',
 		'return source.split("\\n").filter(line => line.includes("alpha")).slice(0, 2).join("\\n");',
@@ -49,6 +50,8 @@ test("Codemode shows its purpose and context outcome, then replays the recorded 
 			expect(collapsed).toMatch(/✓ ≈\d+(?:\.\d+)?[km]? tokens kept out of context · \d+(?:\.\d+)?(?:ms|s)/)
 			expect(collapsed).not.toContain("// @description:")
 			expect(collapsed).not.toContain("Actions:")
+			const liveMetric = collapsed.match(/≈\d+(?:\.\d+)?[km]? tokens kept out of context/)?.[0]
+			expect(liveMetric).toBeDefined()
 			trace.step("purpose and compact context outcome replace the repeated Codemode title and line count")
 
 			terminal.keyPress("o", { ctrl: true })
@@ -59,6 +62,10 @@ test("Codemode shows its purpose and context outcome, then replays the recorded 
 			)
 			expect(expanded).toContain('read {"path":"fixture.txt"}')
 			expect(expanded).toContain("alpha 001 intermediate payload")
+			const liveCalculation = expanded.match(
+				/Intermediate ≈\d+(?:\.\d+)?[km]? tokens \(\d+ chars\) → returned ≈\d+(?:\.\d+)?[km]? tokens \(\d+ chars\)/,
+			)?.[0]
+			expect(liveCalculation).toBeDefined()
 			trace.step("expansion reveals actions, calculation inputs, the nested call, and script output")
 
 			terminal.submit("/quit")
@@ -70,8 +77,8 @@ test("Codemode shows its purpose and context outcome, then replays the recorded 
 			await waitForText(terminal, "Intermediate ≈", { full: false })
 			const replayed = fullText(terminal)
 			expect(replayed).toContain("Codemode Filter the fixture down to its alpha lines")
-			expect(replayed).toMatch(/✓ ≈\d+(?:\.\d+)?[km]? tokens kept out of context/)
-			expect(replayed).toMatch(/Intermediate ≈\d+(?:\.\d+)?[km]? tokens \(\d+ chars\)/)
+			expect(replayed).toContain(liveMetric)
+			expect(replayed).toContain(liveCalculation)
 			trace.step("resume replays the persisted purpose and context calculation without executing the script again")
 		},
 	)
