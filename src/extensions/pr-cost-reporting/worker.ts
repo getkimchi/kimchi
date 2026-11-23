@@ -1016,7 +1016,10 @@ const PLAN_NOTE = "translation-plan"
 
 /** The persisted composition of a translation pass's prelude, JSON round-trippable through the plan note. */
 interface PlanTail {
-	signature: string
+	/** The works the plan was built over (groupKey); a regrouped history never resumes it. */
+	group: string
+	/** The marked records the plan covers: only these clear when it completes. */
+	markers: string[]
 	generation: number
 	units: EventUnit[]
 	accounts: readonly { account: WorkAccount; facts: Fact[] }[]
@@ -1043,19 +1046,27 @@ function groupSignatureParts(works: readonly string[], changed: ReadonlyMap<stri
 	)
 }
 
-function planSignature(works: readonly string[], changed: ReadonlyMap<string, string>): string {
-	return groupSignatureParts(works, changed)
+/** Stable key of a group's works: the plan and progress notes name the group they belong to. */
+function groupKeyOf(works: readonly string[]): string {
+	return createHash("sha256").update(works.join("\0")).digest("hex")
 }
 
 /**
  * A note left by another version, or corrupted storage, never substitutes for a rebuilt plan. The elements are
  * checked one by one — not only the envelope — and every unit's entities must resolve to facts the note itself
  * carries: a partial tail would otherwise be replayed as empty events with the markers still cleared.
+ *
+ * Records captured after the plan was built only add markers. The plan still resumes while every marker it covers
+ * is still pending: finishing it is exactly the round that would have completed before those records arrived, and
+ * the new markers stay for the next round. Rebuilding instead restarts a large group from its first unit on every
+ * pass that sees a new record, so a group in active use never finishes.
  */
-function readPlanTail(value: unknown, signature: string): PlanTail | undefined {
+function readPlanTail(value: unknown, group: string, changed: ReadonlyMap<string, string>): PlanTail | undefined {
 	if (!object(value)) return undefined
 	if (
-		value.signature !== signature ||
+		value.group !== group ||
+		!Array.isArray(value.markers) ||
+		!value.markers.every((marker) => typeof marker === "string" && changed.has(marker)) ||
 		value.generation !== PLAN_GENERATION ||
 		!Array.isArray(value.units) ||
 		!Array.isArray(value.accounts) ||
@@ -1092,7 +1103,8 @@ function readPlanTail(value: unknown, signature: string): PlanTail | undefined {
 		if (!entities || !unit.entities.every((entity) => entities.has(entity))) return undefined
 	}
 	return {
-		signature,
+		group,
+		markers: value.markers as string[],
 		generation: PLAN_GENERATION,
 		units,
 		accounts,
@@ -1160,6 +1172,20 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	const producer = await reportingProducer(agentDir, check)
 	const groups = changedWorkGroups(backend, new Set(marked.keys()))
+	// The plan slot holds one group's suspended translation. That group resumes first: another group running ahead
+	// of it would take over the slot, and the suspended group would restart its prelude from the beginning.
+	const suspended = (() => {
+		try {
+			const progress: unknown = JSON.parse(backend.getNote("agent", PROGRESS_NOTE) ?? "null")
+			return object(progress) && typeof progress.group === "string" ? progress.group : undefined
+		} catch {
+			return undefined
+		}
+	})()
+	if (suspended !== undefined) {
+		const index = groups.findIndex((works) => groupKeyOf(works) === suspended)
+		if (index > 0) groups.unshift(...groups.splice(index, 1))
+	}
 	const signatures = groups.map((works) => ({
 		works,
 		signature: groupSignature(works, new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))),
@@ -1273,8 +1299,7 @@ async function translateGroup(
 ): Promise<boolean | undefined> {
 	const backend = backendFor(agentDir)
 	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
-	const groupKey = hash(works)
-	const signature = planSignature(works, changed)
+	const groupKey = groupKeyOf(works)
 	// A note written by another version, or corrupted storage, never substitutes for a rebuild: it reads as absent.
 	const readNote = (note: string): unknown => {
 		try {
@@ -1290,7 +1315,7 @@ async function translateGroup(
 	// inputs, and a pass over the exact same works and markers resumes after the prelude instead of re-paying it.
 	const existingPlan = (() => {
 		if (!object(saved) || saved.group !== groupKey) return undefined
-		const plan = readPlanTail(readNote(PLAN_NOTE), signature)
+		const plan = readPlanTail(readNote(PLAN_NOTE), groupKey, changed)
 		// A committed count cannot point beyond the plan it indexes: an out-of-range counter degrades the plan
 		// to a full rebuild — never to a skipped loop that retires the markers without uploading the facts.
 		if (
@@ -1306,6 +1331,8 @@ async function translateGroup(
 	let unresolved: number
 	let settled: boolean
 	let serializedAccounts: PlanTail["accounts"]
+	// A resumed plan covers the markers it was built for; markers captured since then wait for the next round.
+	const markers = existingPlan ? existingPlan.markers : [...changed.keys()].sort()
 	if (existingPlan) {
 		builtUnits = existingPlan.units
 		unresolved = existingPlan.unresolved
@@ -1384,11 +1411,12 @@ async function translateGroup(
 	check()
 	const progress = {
 		group: groupKey,
-		markers: changed.size,
+		markers: markers.length,
 		plan: hash(builtUnits.map((unit) => unit.requestId ?? unit.recordHashes.join())),
 	}
 	const tail: PlanTail = {
-		signature,
+		group: groupKey,
+		markers,
 		generation: PLAN_GENERATION,
 		units: builtUnits,
 		accounts: serializedAccounts,
@@ -1438,7 +1466,7 @@ async function translateGroup(
 	backend.tx(() => {
 		check()
 		// A repository lookup that failed or ran out of time retries the group with a later pass.
-		if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+		if (settled) for (const recordHash of markers) backend.clearTranslation(recordHash)
 		backend.deleteNote("agent", PROGRESS_NOTE)
 		backend.deleteNote("agent", PLAN_NOTE)
 	})

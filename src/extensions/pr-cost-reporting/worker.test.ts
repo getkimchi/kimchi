@@ -2549,6 +2549,132 @@ describe("incremental translation", () => {
 		expect(backendFor(directory).markedRecords()).toEqual([])
 	})
 
+	it("a suspended group resumes its plan when records arrive between passes, and leaves only them marked", async () => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 250 }, (_, index) => `entity-${index}`)
+		const facts = entities.map((entityId) => ({
+			entityId,
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [{ account: content.account, facts, recordHashes: [] }],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		const before = new Set(backend.markedRecords().map((row) => row.recordHash))
+		// A live session appends to the same work while the group is suspended: a new marker joins the group.
+		await appendFile(
+			join(directory, "work-attribution", "source.jsonl"),
+			`${JSON.stringify({
+				version: 1,
+				type: "request",
+				workId: "55555555-5555-4555-8555-555555555555",
+				sessionId: "private-session",
+				recordedAt: "2026-10-04T12:05:00.000Z",
+				requestId: "66666666-6666-4666-8666-666666666666",
+				startedAt: "2026-10-04T12:05:00.000Z",
+				scope: { account: content.account, repository: "/private/repo/.git" },
+			})}\n`,
+		)
+		await run()
+		// The plan carried over despite the new record: one build, every planned entity committed.
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const observed = () =>
+			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed()).toEqual(entities)
+		// Only the planned markers cleared; the record captured after the plan waits for its own round.
+		const left = backend.markedRecords()
+		expect(left).toHaveLength(1)
+		expect(before.has(left[0].recordHash)).toBe(false)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("the suspended group resumes before another changed group can take over the plan slot", async () => {
+		await seedLinked()
+		const big = "55555555-5555-4555-8555-555555555555"
+		const small = "11111111-1111-4111-8111-111111111111"
+		const smallRequest = (index: number) => ({
+			version: 1,
+			type: "request",
+			workId: small,
+			sessionId: "other-session",
+			recordedAt: `2026-10-04T12:0${index}:00.000Z`,
+			requestId: `7777777${index}-7777-4777-8777-777777777777`,
+			startedAt: `2026-10-04T12:0${index}:00.000Z`,
+			scope: { account: content.account, repository: "/private/repo/.git" },
+		})
+		const journal = join(directory, "work-attribution", "source.jsonl")
+		await appendFile(journal, `${JSON.stringify(smallRequest(1))}\n`)
+		const account = accountKey(content.account)
+		const fixture = (prefix: string, count: number) => {
+			const ids = Array.from({ length: count }, (_, index) => `${prefix}-${index}`)
+			return {
+				ids,
+				built: {
+					accounts: [
+						{
+							account: content.account,
+							facts: ids.map((entityId) => ({
+								entityId,
+								source: "kimchi",
+								sourceVersion: "test",
+								deviceId: requestId,
+								observeTime: "2026-10-04T12:00:00Z",
+								coverage: { code: "fixture", count: "1" },
+							})),
+							recordHashes: [],
+						},
+					],
+					units: ids.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+					unresolved: [],
+				},
+			}
+		}
+		const bigGroup = fixture("big", 250)
+		const smallGroup = fixture("small", 1)
+		const ofBig = (stored: readonly { workId: string }[]) => stored.some((row) => row.workId === big)
+		vi.mocked(eventBuilder.buildEvents).mockImplementation(async (stored) =>
+			ofBig(stored) ? bigGroup.built : smallGroup.built,
+		)
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		// The small group (first by work id) completes; the big group's first chunk then exhausts the pass.
+		vi.mocked(outbox.observeEvents).mockImplementation((_dir, _account, list) => {
+			if (list[0]?.entityId === "big-0") clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const bigBuilds = () => vi.mocked(eventBuilder.buildEvents).mock.calls.filter(([stored]) => ofBig(stored)).length
+		expect(bigBuilds()).toBe(1)
+		// The small group changes again while the big one is suspended.
+		await appendFile(journal, `${JSON.stringify(smallRequest(2))}\n`)
+		await run()
+		// The big group resumed its plan instead of losing the slot to the small group's rebuild.
+		expect(bigBuilds()).toBe(1)
+		const observed = vi
+			.mocked(outbox.observeEvents)
+			.mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed).toEqual(expect.arrayContaining(bigGroup.ids))
+		expect(backendFor(directory).markedRecords()).toEqual([])
+	})
+
 	it("drives event translation with the stretcher the prelude uses", async () => {
 		await seedLinked()
 		respond(accepted)
