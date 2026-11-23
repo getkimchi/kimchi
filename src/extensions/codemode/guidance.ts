@@ -7,7 +7,7 @@ import { CODEMODE_PURPOSE_MAX_CHARS, createCodemodeOutcomeTracker } from "./outc
  *  later arguments follow mechanically from earlier results; independent calls
  *  whose full results are needed already cost one round as direct parallel calls.
  *  The grep line format (pi's grep tool) is what a chaining script must parse. */
-export const CODEMODE_SELECTION_GUIDANCE = `Use to filter large output before it reaches the model, or to chain calls whose arguments follow mechanically from earlier results. For independent calls whose full results you need, call tools directly in one turn. Nested grep resolves to \`path:line: text\` lines. Start with \`// @description: <short purpose>\` (one plain-text line, maximum ${CODEMODE_PURPOSE_MAX_CHARS} characters), immediately after the optional \`@options\` line when present.`
+export const CODEMODE_SELECTION_GUIDANCE = `Use to filter large output before it reaches the model, or to chain calls whose arguments follow mechanically from earlier results. For independent calls whose full results you need, call tools directly in one turn. Nested grep resolves to \`path:line: text\` lines. For optional purpose metadata, use \`// @description: <short purpose>\` (one plain-text line, maximum ${CODEMODE_PURPOSE_MAX_CHARS} characters). If you use \`@options\`, place it first; put \`// @description:\` immediately after it. Otherwise put \`// @description:\` first. Always place purpose metadata before executable code.`
 
 /** Decorate Pi's dynamic tool description without replacing its execution or loadout logic. */
 export function createGuidedCodemodeExtension(): ExtensionFactory {

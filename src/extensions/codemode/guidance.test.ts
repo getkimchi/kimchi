@@ -40,6 +40,12 @@ it("steers filtering and mechanical chains to codemode, independent full-result 
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain("`path:line: text`")
 })
 
+it("places required @options before the optional purpose in model-facing guidance", () => {
+	expect(CODEMODE_SELECTION_GUIDANCE).toContain(
+		"If you use `@options`, place it first; put `// @description:` immediately after it",
+	)
+})
+
 describe("defaultTools exclusion (session_start)", () => {
 	let projectDir: string
 
