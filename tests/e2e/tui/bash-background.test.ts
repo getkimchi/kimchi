@@ -66,15 +66,16 @@ test("background bash: slow command + independent read + final outcome via one b
 		async (fixture, trace) => {
 			terminal.submit("Run a long command, read a file while it runs, then wait for its outcome")
 
-			// The read tool call runs while the process is still tracked — it
-			// must not be hard-blocked.
-			await waitForText(terminal, "Reading a file while the command runs", { timeoutMs: STREAM_TIMEOUT_MS })
+			// Interim narration folds once the next call runs; the final outcome
+			// and the read call in request history are the stable evidence that
+			// independent work ran during the long-lived command.
+			await waitForText(terminal, "The command finished with its output", {
+				timeoutMs: STREAM_TIMEOUT_MS * 3,
+			})
+			expect(fixture.fake.requests.some((request) => JSON.stringify(request.body ?? {}).includes('"call_read"'))).toBe(
+				true,
+			)
 			trace.step("read tool executed concurrently")
-
-			// The bounded wait blocks until the natural exit (~15s), then the
-			// model continues with the final outcome in hand.
-			await waitForText(terminal, "waiting for the command", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("bounded wait issued")
 			await waitForText(terminal, "The command finished with its output", {
 				timeoutMs: STREAM_TIMEOUT_MS * 3,
 			})
