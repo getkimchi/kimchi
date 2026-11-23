@@ -161,7 +161,11 @@ export class RecordingClient {
 	 *  so tests asserting relative order between the two channels read this. */
 	readonly wireArrivalOrder: string[] = []
 
-	private permissionResolver: ((response: acp.RequestPermissionResponse) => acp.RequestPermissionResponse) | null = null
+	private permissionResolver:
+		| ((
+				response: acp.RequestPermissionResponse,
+		  ) => acp.RequestPermissionResponse | Promise<acp.RequestPermissionResponse>)
+		| null = null
 	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null =
 		null
 
@@ -239,6 +243,30 @@ export class RecordingClient {
 			const opt = req?.options.find((o) => o.kind === response.kind) ?? req?.options[0]
 			return { outcome: { outcome: "selected", optionId: opt?.optionId ?? "" } }
 		}
+	}
+
+	/**
+	 * Leave the next permission request unanswered, like a card the user has
+	 * not clicked yet. `received` resolves when the request has arrived;
+	 * `respond` answers it, at any later time.
+	 */
+	holdNextPermission(): {
+		received: Promise<acp.RequestPermissionRequest>
+		respond: (response: acp.RequestPermissionResponse) => void
+	} {
+		let arrived: (request: acp.RequestPermissionRequest) => void = () => {}
+		const received = new Promise<acp.RequestPermissionRequest>((resolve) => {
+			arrived = resolve
+		})
+		let respond: (response: acp.RequestPermissionResponse) => void = () => {}
+		const answer = new Promise<acp.RequestPermissionResponse>((resolve) => {
+			respond = resolve
+		})
+		this.permissionResolver = () => {
+			arrived(this.permissionRequests[this.permissionRequests.length - 1])
+			return answer
+		}
+		return { received, respond }
 	}
 
 	/** All agent_message_chunk text chunks concatenated, per session. */

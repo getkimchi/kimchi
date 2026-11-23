@@ -2,9 +2,10 @@
 // prompt surface of its own, so when its classifier fails the permission
 // card lands on the PARENT session as `session/request_permission`, naming
 // the subagent in both the card title and `_meta["kimchi.dev"].subagent`.
-// Approving runs the call; cancelling fails the call closed and closes the
-// card with a failed status (the client never gets a tool_call stream for
-// the child's call, so the prompter emits the closing update explicitly).
+// Approving runs the call; cancelling fails the call closed. The client never
+// gets a tool_call stream for the child's call, so the card's status is sent
+// from what happens to the call itself: in_progress when an allowed call
+// starts, completed or failed when it has ended, failed when it never runs.
 //
 // Wiring notes (mirrors tests/e2e/acp/permission-classifier-outage.test.ts):
 //   - `match` predicates reserve each script for its intended request —
@@ -12,10 +13,12 @@
 //   - `--auto` overrides the fixture's yolo env. The parent's live policy is
 //     forwarded to each worker role instead of per-child mode env keys.
 
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 import type { ClientCapabilities, RequestPermissionRequest } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { newSession, prompt } from "./support/scenarios.js"
+import { newSession, prompt, waitForSessionUpdate } from "./support/scenarios.js"
 
 const FULL_CAPABILITIES: ClientCapabilities = {
 	fs: { readTextFile: false, writeTextFile: false },
@@ -87,10 +90,27 @@ const TURN_SCRIPTS = {
 	},
 }
 
+/** The child's first turn, for any request that is not the classifier's. */
+const CHILD_WRITE_TURN = {
+	...TURN_SCRIPTS.childTurn1,
+	match: (request: { body: unknown }) => !isClassifierRequest(request.body) && bodyIncludes("hello world")(request),
+}
+
+function escalatedRequests(fixture: AcpFixture): RequestPermissionRequest[] {
+	return fixture.client.permissionRequests.filter((req) => req.toolCall.title?.startsWith("Subagent General-Purpose: "))
+}
+
 function findEscalatedRequest(fixture: AcpFixture): RequestPermissionRequest | undefined {
-	return fixture.client.permissionRequests.filter((req) =>
-		req.toolCall.title?.startsWith("Subagent General-Purpose: "),
-	)[0]
+	return escalatedRequests(fixture)[0]
+}
+
+/** Every status the client was sent for one card, in wire order. */
+function cardStatuses(fixture: AcpFixture, sessionId: string, toolCallId: string | undefined): string[] {
+	return fixture.client.sessionUpdates
+		.filter((u) => u.sessionId === sessionId)
+		.map((u) => u.update)
+		.filter((u) => u.sessionUpdate === "tool_call_update" && u.toolCallId === toolCallId)
+		.map((u) => String((u as { status?: unknown }).status))
 }
 
 describe("ACP integration — subagent escalated permission card", () => {
@@ -136,15 +156,14 @@ describe("ACP integration — subagent escalated permission card", () => {
 			// session memory, so the labels say so.
 			expect(escalated?.options.some((option) => option.name.includes("for this subagent"))).toBe(true)
 
-			// The card was closed with a completed update for the same card id.
+			// Approving is not completing: the card moves to in_progress when the
+			// child starts the call and to completed only after the write succeeded.
 			const updates = fixture.client.sessionUpdates.filter((u) => u.sessionId === sessionId).map((u) => u.update)
-			const closing = updates.find(
-				(u) =>
-					u.sessionUpdate === "tool_call_update" &&
-					u.toolCallId === escalated?.toolCall.toolCallId &&
-					u.status === "completed",
-			)
-			expect(closing, "card closed with completed status").toBeDefined()
+			expect(cardStatuses(fixture, sessionId, escalated?.toolCall.toolCallId), "card follows the call").toEqual([
+				"in_progress",
+				"completed",
+			])
+			expect(existsSync(join(fixture.workDir, "output.txt")), "the approved write ran").toBe(true)
 
 			// The outage never leaks provider text onto the wire. This path sends
 			// no pi_notify, so the permission request and the session updates are
@@ -208,14 +227,10 @@ describe("ACP integration — subagent escalated permission card", () => {
 				subagent: { persona: "General-Purpose", agentId: expect.any(String) },
 			})
 
-			const updates = fixture.client.sessionUpdates.filter((u) => u.sessionId === sessionId).map((u) => u.update)
-			const closing = updates.find(
-				(u) =>
-					u.sessionUpdate === "tool_call_update" &&
-					u.toolCallId === escalated?.toolCall.toolCallId &&
-					u.status === "completed",
-			)
-			expect(closing, "approved non-safe card closed with completed status").toBeDefined()
+			expect(cardStatuses(fixture, sessionId, escalated?.toolCall.toolCallId), "card follows the call").toEqual([
+				"in_progress",
+				"completed",
+			])
 		})
 	})
 
@@ -261,14 +276,86 @@ describe("ACP integration — subagent escalated permission card", () => {
 			const escalated = findEscalatedRequest(fixture)
 			expect(escalated, "escalated permission request").toBeDefined()
 
-			const updates = fixture.client.sessionUpdates.filter((u) => u.sessionId === sessionId).map((u) => u.update)
-			const closing = updates.find(
-				(u) =>
-					u.sessionUpdate === "tool_call_update" &&
-					u.toolCallId === escalated?.toolCall.toolCallId &&
-					u.status === "failed",
+			// The call never ran: one final status, and never in_progress.
+			expect(cardStatuses(fixture, sessionId, escalated?.toolCall.toolCallId), "card closed as failed").toEqual([
+				"failed",
+			])
+			expect(existsSync(join(fixture.workDir, "output.txt")), "nothing was written").toBe(false)
+		})
+	})
+
+	// session/cancel for the parent's turn while the card is still open. The
+	// client answers its open request with `cancelled`, as the protocol asks.
+	describe("client cancels the turn while the card is open", () => {
+		let fixture: AcpFixture
+
+		beforeEach(async () => {
+			fixture = await startAcpFixture({
+				artifactName: "subagent-permission-escalation-turn-cancel",
+				providerId: "kimchi-dev",
+				defaultProvider: "kimchi-dev",
+				defaultModel: "basic",
+				models: [MAIN_MODEL, CLASSIFIER_MODEL],
+				extraArgs: ["--auto"],
+				clientCapabilities: FULL_CAPABILITIES,
+				clientMeta: { "kimchi.dev": { pi_notify: true } },
+				responses: [
+					TURN_SCRIPTS.parentTurn1,
+					// The second turn's history still holds the first prompt and the
+					// first Agent call, so its script has to come before the scripts
+					// those texts would match.
+					{ match: bodyIncludes("delegate it once more"), stream: ["Delegating again."], toolCalls: [AGENT_CALL] },
+					// One per subagent. The classifier's request quotes the write it
+					// judges, "hello world" included, and must not take the second
+					// subagent's script while it is still waiting in the queue.
+					CHILD_WRITE_TURN,
+					CHILD_WRITE_TURN,
+					...CLASSIFIER_ERROR_SCRIPTS,
+					...CLASSIFIER_ERROR_SCRIPTS,
+					{ match: bodyIncludes("Successfully wrote"), stream: ["The file is in place."] },
+					{ match: bodyIncludes("The file is in place"), stream: ["Done — the subagent wrote it."] },
+				],
+			})
+		}, STARTUP_TIMEOUT_MS)
+
+		afterEach(async () => {
+			await fixture.stop()
+		})
+
+		it("ends the turn as cancelled, runs nothing, settles the card once and leaves the session usable", async () => {
+			const held = fixture.client.holdNextPermission()
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const turn = prompt(fixture, sessionId, "delegate a file write to a subagent")
+			const card = await held.received
+			expect(card.toolCall.title, "the open card is the subagent's").toMatch(/^Subagent General-Purpose: /)
+
+			await fixture.conn.cancel({ sessionId })
+			held.respond({ outcome: { outcome: "cancelled" } })
+
+			expect((await turn).stopReason, "the parent's turn ends as cancelled").toBe("cancelled")
+			await waitForSessionUpdate(
+				fixture,
+				sessionId,
+				(u) => u.sessionUpdate === "tool_call_update" && u.toolCallId === card.toolCall.toolCallId,
 			)
-			expect(closing, "card closed with failed status").toBeDefined()
+			expect(existsSync(join(fixture.workDir, "output.txt")), "the child did not run the write").toBe(false)
+			expect(escalatedRequests(fixture), "the call is not asked about a second time").toHaveLength(1)
+			expect(cardStatuses(fixture, sessionId, card.toolCall.toolCallId), "one final status, never run").toEqual([
+				"failed",
+			])
+
+			// Nothing is left behind: the next subagent call gets a card of its
+			// own, and that card follows its call to the end.
+			const again = await prompt(fixture, sessionId, "delegate it once more")
+			expect(again.stopReason, "the session still works").toBe("end_turn")
+			expect(again.chunks).toContain("Done — the subagent wrote it.")
+			const [, second] = escalatedRequests(fixture)
+			expect(second, "second escalated request").toBeDefined()
+			expect(second?.toolCall.toolCallId, "a card of its own").not.toBe(card.toolCall.toolCallId)
+			expect(cardStatuses(fixture, sessionId, second?.toolCall.toolCallId)).toEqual(["in_progress", "completed"])
+			expect(existsSync(join(fixture.workDir, "output.txt")), "the approved write ran").toBe(true)
+			// The cancelled card got nothing more after its final status.
+			expect(cardStatuses(fixture, sessionId, card.toolCall.toolCallId)).toEqual(["failed"])
 		})
 	})
 })
