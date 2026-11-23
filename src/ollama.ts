@@ -12,8 +12,6 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { debuglog } from "node:util"
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 
-import type { ModelRoles, RoleModelAssignment } from "./extensions/orchestration/model-roles.js"
-import { normalizeRoleModels } from "./extensions/orchestration/model-roles.js"
 import type { ModelMetadata, PiModelConfig } from "./models.js"
 
 const DEFAULT_OLLAMA_HOST = "http://localhost:11434"
@@ -415,9 +413,7 @@ export function readOllamaModelsFromConfig(modelsJsonPath: string): PiModelConfi
 		if (!Array.isArray(models)) return []
 		// Defensive runtime guard: a hand-edited or corrupted models.json could
 		// contain null / primitives / objects missing the required `id`. Filter
-		// to entries that look like a real PiModelConfig before they reach
-		// `augmentModelRolesWithOllama` (which would otherwise produce
-		// `ollama/undefined` refs in the role pools).
+		// to entries that look like a real PiModelConfig.
 		return models.filter(
 			(m): m is PiModelConfig => !!m && typeof m === "object" && typeof (m as { id?: unknown }).id === "string",
 		) as PiModelConfig[]
@@ -443,53 +439,4 @@ export function ollamaModelsToMetadata(configs: PiModelConfig[]): ModelMetadata[
 		is_serverless: true,
 		limits: { context_window: c.contextWindow, max_output_tokens: c.maxTokens },
 	}))
-}
-
-/** Append an Ollama model ref to a role pool, returning the new assignment.
- *  Accepts either a string or an array (the `RoleModelAssignment` union) and
- *  dedupes against existing entries. */
-function appendToAssignment(value: RoleModelAssignment, ref: string): RoleModelAssignment {
-	const existing = normalizeRoleModels(value)
-	if (existing.includes(ref)) return value
-	const next = [...existing, ref]
-	return next.length === 1 ? next[0] : next
-}
-
-/** Build the `ollama/<ref>` model reference consumed by the registry. */
-function refForOllamaModel(model: PiModelConfig | OllamaModel): string {
-	return `ollama/${model.name}`
-}
-
-/**
- * Add discovered Ollama models to the explorer / reviewer / builder role pools.
- * Returns a fresh ModelRoles object — the input is not mutated. Orchestrator,
- * planner, judge, and researcher are intentionally left untouched so Ollama
- * never displaces the main agent loop or the research role (research models
- * tend to be proprietary web-search wrappers, not something a local Ollama
- * instance should be augmenting).
- */
-export function augmentModelRolesWithOllama(
-	roles: ModelRoles,
-	models: readonly (PiModelConfig | OllamaModel)[],
-): ModelRoles {
-	if (models.length === 0) return roles
-
-	const next: ModelRoles = {
-		orchestrator: roles.orchestrator,
-		planner: roles.planner,
-		judge: roles.judge,
-		researcher: roles.researcher,
-		builder: roles.builder,
-		reviewer: roles.reviewer,
-		explorer: roles.explorer,
-	}
-
-	for (const model of models) {
-		const ref = refForOllamaModel(model)
-		next.builder = appendToAssignment(next.builder, ref)
-		next.reviewer = appendToAssignment(next.reviewer, ref)
-		next.explorer = appendToAssignment(next.explorer, ref)
-	}
-
-	return next
 }

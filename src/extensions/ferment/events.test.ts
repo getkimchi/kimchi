@@ -174,7 +174,6 @@ describe("registerFermentEvents", () => {
 			{ name: "read" },
 			{ name: "Agent" },
 			{ name: "get_subagent_result" },
-			{ name: "set_phase" },
 			{ name: "list_ferments" },
 			{ name: "scope_ferment" },
 			{ name: "activate_ferment_phase" },
@@ -494,7 +493,7 @@ describe("registerFermentEvents", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith('Plan saved for "Google OAuth Login". 1 phase(s) ready.')
 	})
 
-	it.each([false, true])("model_select captures the newly-selected model with multi-model %s", (multiModel) => {
+	it("model_select captures the newly-selected model", () => {
 		const captureJudgeContext = vi.fn()
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -510,23 +509,14 @@ describe("registerFermentEvents", () => {
 			model: { id: "new-model" },
 			modelRegistry: {},
 			sessionManager: {
-				getSessionId: () => `model-select-${multiModel}`,
-				getEntries: () => [
-					{
-						type: "custom",
-						id: "mode",
-						parentId: null,
-						timestamp: new Date().toISOString(),
-						customType: "multi_model_enabled",
-						data: multiModel,
-					},
-				],
+				getSessionId: () => "model-select",
+				getEntries: () => [],
 			},
 		})
 
 		handler({ model: ctx.model, previousModel: undefined }, ctx)
 
-		expect(captureJudgeContext).toHaveBeenCalledWith(ctx.model, ctx.modelRegistry, multiModel, ctx)
+		expect(captureJudgeContext).toHaveBeenCalledWith(ctx.model, ctx.modelRegistry, ctx)
 	})
 
 	it("transitions profile from planning to implementation when activate_ferment_phase succeeds", async () => {

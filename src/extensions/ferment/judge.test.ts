@@ -1127,7 +1127,8 @@ describe("judge renders intent charter", () => {
 })
 
 describe("describeJudgeModel", () => {
-	// Mirrors DEFAULT_MODEL_ROLES.judge — the role this (unmocked) test env reads.
+	// A registry that resolves some other model: the judge must still grade
+	// with the captured session model.
 	const judgeModel = { provider: "kimchi-dev", id: "glm-5.3" } as unknown as Model<Api>
 	const sessionModel = { provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>
 	const roleResolvingRegistry = {
@@ -1135,27 +1136,8 @@ describe("describeJudgeModel", () => {
 		getAvailable: () => [judgeModel],
 	} as unknown as ModelRegistry
 
-	afterEach(() => {
-		// Leave single-model mode behind so sibling describes keep their defaults.
-		captureJudgeContext(undefined, undefined, false)
-	})
-
-	it("returns the captured session model in single-model mode, ignoring the role", () => {
-		captureJudgeContext(sessionModel, roleResolvingRegistry, false)
-		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
-	})
-
-	it("returns the judge-role model in multi-model mode when the role resolves", () => {
-		captureJudgeContext(sessionModel, roleResolvingRegistry, true)
-		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.3")
-	})
-
-	it("falls back to the captured session model in multi-model mode when the role does not resolve", () => {
-		captureJudgeContext(
-			sessionModel,
-			{ find: () => undefined, getAvailable: () => [] } as unknown as ModelRegistry,
-			true,
-		)
+	it("returns the captured session model", () => {
+		captureJudgeContext(sessionModel, roleResolvingRegistry)
 		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
 	})
 })
@@ -1165,14 +1147,14 @@ describe("judgeApiCall", () => {
 	beforeEach(() => {
 		attributionDir = mkdtempSync(join(tmpdir(), "judge-attribution-"))
 		vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
-		captureJudgeContext(undefined, undefined, false, createContext())
+		captureJudgeContext(undefined, undefined, createContext())
 	})
 	afterEach(async () => {
 		await flushWorkSummaries()
 		vi.unstubAllEnvs()
 		rmSync(attributionDir, { recursive: true, force: true })
 		completeMock.mockReset()
-		captureJudgeContext(undefined, undefined, false)
+		captureJudgeContext(undefined, undefined)
 	})
 	it.each(["identity", "request"])("grades normally when %s attribution fails", async (stage) => {
 		const ctx = createContext()
@@ -1184,7 +1166,7 @@ describe("judgeApiCall", () => {
 		const registry = createContext({
 			modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "test", headers: {} }) },
 		}).modelRegistry
-		captureJudgeContext(model, registry, false, ctx)
+		captureJudgeContext(model, registry, ctx)
 		completeMock.mockResolvedValue({ content: [{ type: "text", text: "grade evidence" }], stopReason: "stop" })
 		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		try {
@@ -1206,7 +1188,7 @@ describe("judgeApiCall", () => {
 			setWorkId(ctx)
 			return { ok: true, apiKey: "test", headers: {} }
 		})
-		captureJudgeContext(model, registry, false, ctx)
+		captureJudgeContext(model, registry, ctx)
 		completeMock.mockImplementation((_model, _context, options) => {
 			const rows = backendFor(attributionDir)
 				.readRecords({ sessionId: "judge-original" })
@@ -1248,7 +1230,7 @@ describe("judgeApiCall", () => {
 			requests.push(options as (typeof requests)[number])
 			return { content: [{ type: "text", text: "ok" }], stopReason: "stop" }
 		})
-		captureJudgeContext(model, registry, false)
+		captureJudgeContext(model, registry)
 
 		await judgeApiCall("system", "user")
 		await judgeApiCall("system", "user", 100)

@@ -14,9 +14,8 @@ import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/b
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
-import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
-import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
+import { peekActiveTags } from "../extensions/tags.js"
 import { getActiveAnchor } from "../shared/active-anchor.js"
 import { thinkingSelection } from "../thinking-selection.js"
 import { truncateLinesToWidth, truncateLineToWidth } from "../truncate-lines.js"
@@ -30,7 +29,6 @@ export type SegmentId =
 	| "agents"
 	| "context"
 	| "usage"
-	| "phase"
 	| "tags"
 	| "team"
 	| "credits"
@@ -51,8 +49,6 @@ export type SegmentId =
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
-	| { kind: "model"; multiModel: boolean; modelId: string }
-	| { kind: "phase"; phase: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 	| { kind: "ferment-v2"; state: string }
@@ -258,10 +254,6 @@ export function buildScriptPayload(
 		permissions: {
 			mode: getPermissionMode(sessionId),
 		},
-		multi_model: {
-			enabled: getMultiModelEnabled(ctx.sessionManager),
-		},
-		phase: getCurrentPhase(sessionId),
 	}
 }
 
@@ -300,29 +292,6 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 		text,
 		width: visibleWidth(text),
 		raw: { kind: "context", percent, pctColor },
-	}
-}
-
-/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
-export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
-	const label = multiModel ? `m-m (${modelId})` : modelId
-	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
-	return {
-		id: "model",
-		text,
-		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId },
-	}
-}
-
-/** Compact form for phase: drops the "phase:" prefix, keeps just the value. */
-export function buildPhaseCompact(ctx: CompactionContext, phase: string): Segment {
-	const text = ctx.accent(phase)
-	return {
-		id: "phase",
-		text,
-		width: visibleWidth(text),
-		raw: { kind: "phase", phase },
 	}
 }
 
@@ -400,17 +369,8 @@ const STEPS: CompactionStep[] = [
 			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
 	},
 	{
-		name: "abbrev-model-label",
-		apply: (segs, ctx) =>
-			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
-	},
-	{
 		name: "drop-shortcut-hints",
 		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "model", "ferment"]),
-	},
-	{
-		name: "drop-phase-prefix",
-		apply: (segs, ctx) => recompactSegment(segs, "phase", "phase", (raw) => buildPhaseCompact(ctx, raw.phase)),
 	},
 	{
 		name: "drop-ferment-prefix",
@@ -453,7 +413,6 @@ const SHED_ORDER: SegmentId[] = [
 	"work-pr",
 	"team",
 	"tags",
-	"phase",
 	"usage",
 	"memory",
 	"shells",
@@ -549,17 +508,9 @@ function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme): Se
 }
 
 function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
-	const multiModel = getMultiModelEnabled(ctx.sessionManager)
-	const selectedModelId = ctx.model?.id ?? "n/a"
-	const modelId = selectedModelId
-	const label = multiModel ? `multi-model (${modelId})` : modelId
-	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
-	return {
-		id: "model",
-		text,
-		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId },
-	}
+	const modelId = ctx.model?.id ?? "n/a"
+	const text = `${accentText(theme, modelId)} ${dimText(theme, "→ ctrl+p")}`
+	return { id: "model", text, width: visibleWidth(text) }
 }
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
@@ -620,22 +571,11 @@ function buildContextSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct, pctColor } }
 }
 
-function buildPhaseSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
-	if (!pinned) return null
-	const phase = getCurrentPhase(ctx.sessionManager.getSessionId())
-	if (!phase) {
-		const text = `${dimText(theme, "phase:")}${dimText(theme, "—")}`
-		return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase: "—" } }
-	}
-	const text = `${dimText(theme, "phase:")}${accentText(theme, phase)}`
-	return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase } }
-}
-
 type ParsedTag = { key: string; value: string }
 
 function buildTagsSegment(theme: Theme, parsed: ParsedTag[], pinned: boolean): Segment | null {
 	if (!pinned) return null
-	const display = parsed.filter((t) => t.key !== "team" && t.key !== "phase")
+	const display = parsed.filter((t) => t.key !== "team")
 	if (display.length === 0) {
 		const text = `${dimText(theme, "tags:")} ${dimText(theme, "—")}`
 		return { id: "tags", text, width: visibleWidth(text) }
@@ -895,7 +835,6 @@ export function buildStatusLineSegments(
 		buildBudgetSegment(theme, pinned.has("budget")),
 		buildContextSegment(ctx, theme),
 		buildUsageSegment(ctx, theme, pinned.has("usage")),
-		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData, pinned.has("lsp")),

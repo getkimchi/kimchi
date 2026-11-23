@@ -3,9 +3,6 @@ import type { AgentDiscovery } from "../../agent-discovery/index.js"
 import * as agentDiscovery from "../../agent-discovery/index.js"
 import type { KimchiConfig, SearchStrategyConfig } from "../../config.js"
 import * as resourceStore from "../../resources/store.js"
-import * as multiModel from "../multi-model.js"
-import type { ModelRoles } from "../orchestration/model-roles.js"
-import * as modelRoles from "../orchestration/model-roles.js"
 import { buildConfigSnapshot } from "./config-snapshot.js"
 
 const SEARCH_STRATEGY: SearchStrategyConfig = {
@@ -37,35 +34,16 @@ const EXPECTED_KEYS = [
 	"config.mcp_server_count",
 	"config.memory_enabled",
 	"config.model",
-	"config.model_roles.builder",
-	"config.model_roles.explorer",
-	"config.model_roles.judge",
-	"config.model_roles.orchestrator",
-	"config.model_roles.planner",
-	"config.model_roles.researcher",
-	"config.model_roles.reviewer",
-	"config.multi_model_enabled",
 	"config.permission_mode",
 	"config.provider",
 	"config.search_provider",
 	"config.telemetry_enabled",
 ]
 
-const MOCK_MODEL_ROLES: ModelRoles = {
-	orchestrator: "test/orch",
-	planner: ["test/p1", "test/p2"],
-	builder: "test/build",
-	reviewer: ["test/rev1", "test/rev2"],
-	explorer: "test/explore",
-	researcher: "test/research",
-	judge: ["test/judge"],
-}
-
 describe("buildConfigSnapshot", () => {
 	let savedEnv: NodeJS.ProcessEnv
 	// biome-ignore lint/suspicious/noExplicitAny: mock spy refs typed loosely to avoid vitest MockInstance generic friction
-	let multiSpy: any
-	let memoryEnabled: boolean
+	let resourceSpy: any
 
 	beforeEach(() => {
 		savedEnv = { ...process.env }
@@ -73,10 +51,7 @@ describe("buildConfigSnapshot", () => {
 		process.env.KIMCHI_CODING_AGENT_DIR = undefined
 		process.env.KIMCHI_PERMISSIONS = "plan"
 
-		multiSpy = vi.spyOn(multiModel, "getMultiModelEnabled").mockReturnValue(true)
-		memoryEnabled = true
-		vi.spyOn(resourceStore, "isResourceEnabled").mockImplementation(() => memoryEnabled)
-		vi.spyOn(modelRoles, "getModelRoles").mockReturnValue(MOCK_MODEL_ROLES)
+		resourceSpy = vi.spyOn(resourceStore, "isResourceEnabled").mockReturnValue(true)
 		// Mock discoverAgent to return 1 server named "evil-corp-server" per definition.
 		const fakeDiscovery: AgentDiscovery = {
 			id: "test",
@@ -99,7 +74,7 @@ describe("buildConfigSnapshot", () => {
 	})
 
 	describe("safe keys present with correct values", () => {
-		it("returns exactly the 16 expected config.* keys", () => {
+		it("returns exactly the 8 expected config.* keys", () => {
 			const snapshot = buildConfigSnapshot(makeConfig(), true)
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 		})
@@ -118,6 +93,7 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.telemetry_enabled"]).toBe(true)
 			expect(snapshot["config.permission_mode"]).toBe("plan")
 			expect(snapshot["config.agents_enabled"]).toBe(true)
+			expect(resourceSpy).toHaveBeenCalledWith("extensions.agents")
 			expect(snapshot["config.memory_enabled"]).toBe(true)
 			// model unknown when no settings.json present
 			expect(snapshot["config.model"]).toBe("unknown")
@@ -126,7 +102,7 @@ describe("buildConfigSnapshot", () => {
 
 		it("flows through alternate mocked values when telemetry disabled", () => {
 			process.env.KIMCHI_PERMISSIONS = "yolo"
-			multiSpy.mockReturnValue(false)
+			resourceSpy.mockReturnValue(false)
 			const snapshot = buildConfigSnapshot(makeConfig({ mcpSearch: { ...SEARCH_STRATEGY, strategy: "regex" } }), false)
 			expect(snapshot["config.telemetry_enabled"]).toBe(false)
 			expect(snapshot["config.permission_mode"]).toBe("yolo")
@@ -136,7 +112,8 @@ describe("buildConfigSnapshot", () => {
 
 		it("mirrors the memory resource enablement, including the off state", () => {
 			expect(buildConfigSnapshot(makeConfig(), true)["config.memory_enabled"]).toBe(true)
-			memoryEnabled = false
+			expect(resourceSpy).toHaveBeenCalledWith("extensions.memory")
+			resourceSpy.mockReturnValue(false)
 			expect(buildConfigSnapshot(makeConfig(), true)["config.memory_enabled"]).toBe(false)
 		})
 
@@ -145,56 +122,6 @@ describe("buildConfigSnapshot", () => {
 			// discoverAgent mocked to return 1 server per AGENT_DEFINITIONS entry.
 			expect(snapshot["config.mcp_server_count"]).toBe(agentDiscovery.AGENT_DEFINITIONS.length)
 			expect(typeof snapshot["config.mcp_server_count"]).toBe("number")
-		})
-	})
-
-	describe("multimodel config fields", () => {
-		it("multi_model_enabled mirrors the mocked getMultiModelEnabled() value", () => {
-			const snapshot = buildConfigSnapshot(makeConfig(), true)
-			// multiSpy returns true in beforeEach; multi_model_enabled mirrors it.
-			expect(snapshot["config.multi_model_enabled"]).toBe(true)
-			// Same source value as the legacy agents_enabled flag.
-			expect(snapshot["config.multi_model_enabled"]).toBe(snapshot["config.agents_enabled"])
-		})
-
-		it("serializes single-string roles unchanged", () => {
-			const snapshot = buildConfigSnapshot(makeConfig(), true)
-			expect(snapshot["config.model_roles.orchestrator"]).toBe("test/orch")
-			expect(snapshot["config.model_roles.builder"]).toBe("test/build")
-			expect(snapshot["config.model_roles.explorer"]).toBe("test/explore")
-			expect(snapshot["config.model_roles.researcher"]).toBe("test/research")
-		})
-
-		it("joins array roles with a comma", () => {
-			const snapshot = buildConfigSnapshot(makeConfig(), true)
-			expect(snapshot["config.model_roles.planner"]).toBe("test/p1,test/p2")
-			expect(snapshot["config.model_roles.reviewer"]).toBe("test/rev1,test/rev2")
-			expect(snapshot["config.model_roles.judge"]).toBe("test/judge")
-		})
-
-		it("emits all 7 role fields as primitive strings", () => {
-			const snapshot = buildConfigSnapshot(makeConfig(), true)
-			const roleKeys = [
-				"config.model_roles.orchestrator",
-				"config.model_roles.planner",
-				"config.model_roles.builder",
-				"config.model_roles.reviewer",
-				"config.model_roles.explorer",
-				"config.model_roles.researcher",
-				"config.model_roles.judge",
-			]
-			for (const key of roleKeys) {
-				expect(key in snapshot, `missing role key ${key}`).toBe(true)
-				expect(typeof (snapshot as unknown as Record<string, unknown>)[key]).toBe("string")
-			}
-		})
-
-		it("flows multi_model_enabled through an alternate mocked value", () => {
-			multiSpy.mockReturnValue(false)
-			const snapshot = buildConfigSnapshot(makeConfig(), false)
-			expect(snapshot["config.multi_model_enabled"]).toBe(false)
-			// model roles still come from the mocked getModelRoles().
-			expect(snapshot["config.model_roles.orchestrator"]).toBe("test/orch")
 		})
 	})
 
@@ -224,7 +151,7 @@ describe("buildConfigSnapshot", () => {
 			}
 		})
 
-		it("emits exactly the 16 safe keys even when config carries secrets", () => {
+		it("emits exactly the 8 safe keys even when config carries secrets", () => {
 			const configWithSecrets = makeConfig({
 				apiKey: "secret-key-123",
 				llmEndpoint: "https://secret.example.com",
@@ -232,7 +159,7 @@ describe("buildConfigSnapshot", () => {
 			const snapshot = buildConfigSnapshot(configWithSecrets, true)
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 			// No extra key smuggles a secret value through.
-			expect(Object.keys(snapshot)).toHaveLength(16)
+			expect(Object.keys(snapshot)).toHaveLength(8)
 		})
 	})
 
@@ -245,7 +172,7 @@ describe("buildConfigSnapshot", () => {
 
 			const snapshot = buildConfigSnapshot(makeConfig(), true)
 
-			// Must still have exactly the 16 expected keys.
+			// Must still have exactly the 8 expected keys.
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 			// Fallback values are safe defaults.
 			expect(snapshot["config.model"]).toBe("unknown")
@@ -256,15 +183,6 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.agents_enabled"]).toBe(false)
 			expect(snapshot["config.mcp_server_count"]).toBe(0)
 			expect(snapshot["config.memory_enabled"]).toBe(false)
-			// Multimodel fallback defaults.
-			expect(snapshot["config.multi_model_enabled"]).toBe(false)
-			expect(snapshot["config.model_roles.orchestrator"]).toBe("unknown")
-			expect(snapshot["config.model_roles.planner"]).toBe("unknown")
-			expect(snapshot["config.model_roles.builder"]).toBe("unknown")
-			expect(snapshot["config.model_roles.reviewer"]).toBe("unknown")
-			expect(snapshot["config.model_roles.explorer"]).toBe("unknown")
-			expect(snapshot["config.model_roles.researcher"]).toBe("unknown")
-			expect(snapshot["config.model_roles.judge"]).toBe("unknown")
 		})
 	})
 })

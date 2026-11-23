@@ -12,16 +12,14 @@ import {
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
-import { resolveMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
-import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
 import { shouldSuppressInteractiveTools } from "./print-mode.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
 
-/** Suppress the model_select guard temporarily (e.g. when /multi-model calls setModel). */
+/** Suppress the model_select guard temporarily while a caller sets an already-validated model. */
 export async function withSuppressedModelSelectGuard<T>(fn: () => Promise<T>): Promise<T> {
 	suppressModelSelectGuard = true
 	return fn().finally(() => {
@@ -62,13 +60,8 @@ export default function modelSwitchExtension(
 	startNewSessionWithModel: StartNewSessionWithModel = startNewInteractiveSessionWithModel,
 ) {
 	// Model switching is an interactive action: in --print runs the model is
-	// pinned by the CLI and set_model is dead schema weight. Multi-model print
-	// sessions keep it — the orchestrator may legitimately switch roles mid-run.
-	// Known limit: this runs at load time with no session, so only the CLI flags and
-	// global default count — a resumed session whose persisted state is multi-model
-	// (but neither is set) loses set_model in print mode. Accepted: multi-model is
-	// being deprecated and resumed print runs are rare.
-	if (!(shouldSuppressInteractiveTools() && !resolveMultiModelEnabled(null).value)) {
+	// pinned by the CLI and set_model is dead schema weight.
+	if (!shouldSuppressInteractiveTools()) {
 		pi.registerTool({
 			name: "set_model",
 			label: "Switch Model",
@@ -84,42 +77,12 @@ export default function modelSwitchExtension(
 				const sessionId = ctx.sessionManager.getSessionId()
 				const { model } = params
 
-				if (model === "multi-model") {
-					const {
-						model: orchestrator,
-						modelId: orchId,
-						modelRef: orchRef,
-					} = getOrchestratorModel(sessionId, ctx.modelRegistry)
-					if (!orchestrator) {
-						return {
-							content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
-							details: null,
-						}
-					}
-					setMultiModelEnabled(sessionId, true)
-					suppressModelSelectGuard = true
-					try {
-						await pi.setModel(orchestrator)
-					} finally {
-						suppressModelSelectGuard = false
-					}
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `Switched to multi-model mode (orchestrator: ${orchId})`,
-							},
-						],
-						details: null,
-					}
-				}
-
 				if (!splitModelRef(model)) {
 					return {
 						content: [
 							{
 								type: "text" as const,
-								text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
+								text: `Invalid model format: "${model}". Expected "provider/modelId".\n\nAvailable models:\n${availableModelRefs(ctx.modelRegistry).join("\n")}`,
 							},
 						],
 						details: null,
@@ -180,7 +143,6 @@ export default function modelSwitchExtension(
 					}
 				}
 
-				setMultiModelEnabled(sessionId, false)
 				let ok: boolean
 				suppressModelSelectGuard = true
 				try {
@@ -294,14 +256,6 @@ export default function modelSwitchExtension(
 				"error",
 			)
 			return
-		}
-
-		if (event.source === "set") {
-			const orchRef = getOrchestratorModelRef(sessionId)
-			const selectedRef = `${event.model.provider}/${event.model.id}`
-			if (selectedRef !== orchRef) {
-				setMultiModelEnabled(sessionId, false)
-			}
 		}
 	})
 }

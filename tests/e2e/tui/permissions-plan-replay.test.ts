@@ -91,7 +91,6 @@ for (const referenceState of ["changed", "missing"] as const) {
 					settingsPath,
 					JSON.stringify({
 						...settings,
-						multiModel: false,
 						resources: { ...settings.resources, "extensions.ferment-v2": true },
 					}),
 				)
@@ -232,7 +231,6 @@ test("approved plan edits save separate files and reopen full requirements after
 				settingsPath,
 				JSON.stringify({
 					...settings,
-					multiModel: false,
 					resources: { ...settings.resources, "extensions.ferment-v2": true },
 				}),
 			)

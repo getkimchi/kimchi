@@ -156,7 +156,6 @@ export const EXTENSION_SOURCES: ExtensionSource[] = [
 	// context-budget.test.ts mocks this state, so this module contributes
 	// nothing to the canonical measurement.
 	{ module: "./mcp/index.js", source: "mcp-adapter" },
-	{ module: "./tags.js", source: "tags(set_phase)" },
 	{ module: "./claude-code-skills/index.js", source: "claude-code-skills(skill)" },
 ]
 

@@ -4748,18 +4748,18 @@ describe("permissions:tool_decision emissions", () => {
 	})
 
 	it("builtin allow-listed tools emit accept/config/builtin_safe", async () => {
-		const harness = createPermissionsHarness(["set_phase"])
+		const harness = createPermissionsHarness(["get_subagent_result"])
 		const decisions = collectDecisions(harness)
 		await harness.fire("session_start", {}, createMockContext([]))
 		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
 
 		expect(
-			await harness.fire("tool_call", tcall("set_phase", { phase: "build" }), createMockContext([])),
+			await harness.fire("tool_call", tcall("get_subagent_result", { agent_id: "agent-1" }), createMockContext([])),
 		).toBeUndefined()
 
 		expect(decisions).toEqual([
 			expect.objectContaining({
-				toolName: "set_phase",
+				toolName: "get_subagent_result",
 				decision: "accept",
 				sourceDetail: "builtin_safe",
 				permissionMode: "default",

@@ -29,14 +29,13 @@ import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import codexCorrelationExtension from "../../login/codex-correlation-extension.js"
 import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
-import type { Phase } from "../../orchestration/model-registry/types.js"
+import type { ModelRole } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { pinnedLanguageSection } from "../../prompt-construction/system-prompt.js"
 import requestTimingExtension from "../../request-timing.js"
 import type { SkillTriggerHit } from "../../skills-manager/skill-triggers.js"
-import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { COST_PER_PR_RESOURCE_ID } from "../../work-attribution/resource.js"
 import {
@@ -496,7 +495,7 @@ ${skillLines}`
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
-	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
+	const guidelineRole = agentConfig?.roles?.[0] as ModelRole | undefined
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024
@@ -521,7 +520,7 @@ ${skillLines}`
 
 	const buildSystemPrompt = (activeToolNames: string[], promptModelId = model?.id) => {
 		extras.activeToolNames = activeToolNames
-		const guidelinesBlock = buildPhaseGuidelinesSection(promptModelId, guidelinePhase, getGuidelinesRegistry())
+		const guidelinesBlock = buildRoleGuidelinesSection(promptModelId, guidelineRole, getGuidelinesRegistry())
 		extras.guidelinesBlock = guidelinesBlock
 		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
@@ -897,13 +896,6 @@ ${skillLines}`
 		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
 	}
 
-	const sessionId = ctx.sessionManager.getSessionId()
-	const prevPhase = getCurrentPhase(sessionId)
-	const personaPhase = agentConfig?.roles?.[0]
-	if (personaPhase) {
-		setCurrentPhase(sessionId, personaPhase)
-	}
-
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
@@ -922,9 +914,6 @@ ${skillLines}`
 			} else {
 				process.env.KIMCHI_AGENT_PERSONA = prevPersona
 			}
-		}
-		if (personaPhase) {
-			setCurrentPhase(sessionId, prevPhase)
 		}
 	}
 

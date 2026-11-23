@@ -32,7 +32,7 @@ export function renderModelTable(
 ): string[] {
 	if (rows.length === 0) return []
 	// A model offered by several providers shows one labelled entry per provider.
-	// Rows whose id is not the model id (the virtual multi-model row) keep theirs.
+	// Rows whose id is not the model id keep theirs.
 	rows = rows.map((row) =>
 		row.id === row.model.id ? { ...row, id: getLabel(`${row.model.provider}/${row.model.id}`) ?? row.id } : row,
 	)
@@ -46,7 +46,7 @@ export function renderModelTable(
 	const context = (row: ModelTableRow) => humanizeContextWindow(row.model.contextWindow)
 	const contextW = Math.max(7, ...rows.map((row) => visibleWidth(context(row))))
 	// Capabilities always come from the underlying model: `row.id` is a display
-	// label and becomes "multi-model" for the virtual orchestrator row.
+	// label.
 	const thinking = (row: ModelTableRow) =>
 		thinkingColumnValue(getLevels(`${row.model.provider}/${row.model.id}`), row.model.reasoning)
 	const thinkingW = Math.max(8, ...rows.map((row) => visibleWidth(thinking(row))))
@@ -95,9 +95,7 @@ export function renderModelTable(
 			description = `  ${theme.fg("warning", "⚠")}`
 		} else if (showDesc) {
 			// The annotation comes from the row producer: the pi-coding-agent
-			// patch annotates the virtual multi-model row with the deprecation
-			// label (outranking "Default for new sessions.") and defaults with
-			// "Default for new sessions.".
+			// patch annotates defaults with "Default for new sessions.".
 			const annotation = row.annotation ?? ""
 			if (row.warning && annotation) {
 				const annotationW = Math.min(visibleWidth(annotation), descW)

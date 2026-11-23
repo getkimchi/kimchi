@@ -3,8 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { getVersion } from "../../utils.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
-import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
-import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
+import { setPrintGate } from "../print-mode.js"
 import {
 	buildCoreGuidelinesSections,
 	buildSystemPrompt,
@@ -116,7 +115,6 @@ describe("buildSystemPrompt", () => {
 
 	it.each([
 		"single",
-		"orchestrator",
 		"subagent",
 	] as const)("renders kimchi-authored guidelines and filters pi tools in %s mode", (mode) => {
 		const result = buildSystemPrompt({
@@ -236,11 +234,9 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("keep code, file paths, and technical terms unchanged")
 	})
 
-	it("pins the language in orchestrator and subagent modes too", () => {
-		for (const mode of ["orchestrator", "subagent"] as const) {
-			const result = buildSystemPrompt({ tools, env: testEnv, mode, language: "fr" })
-			expect(result).toContain("Always respond in fr, whatever language the user writes in")
-		}
+	it("pins the language in subagent mode too", () => {
+		const result = buildSystemPrompt({ tools, env: testEnv, mode: "subagent", language: "fr" })
+		expect(result).toContain("Always respond in fr, whatever language the user writes in")
 	})
 
 	it("escapes a closing steer marker in the value at both interpolation points", () => {
@@ -307,8 +303,8 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("verify against https://kimchi.dev")
 		})
 
-		it("gives orchestrator and subagent modes the same identity clause", () => {
-			for (const mode of ["orchestrator", "subagent"] as const) {
+		it("gives single-model and subagent modes the same identity clause", () => {
+			for (const mode of ["single", "subagent"] as const) {
 				const result = buildSystemPrompt({ tools: webTools, env: testEnv, mode })
 				expect(result).toContain("You are Kimchi, an AI coding agent by CAST AI")
 				expect(result).toContain("verify against https://kimchi.dev with web_search/web_fetch before answering")
@@ -346,71 +342,12 @@ describe("buildSystemPrompt", () => {
 		expect(result).not.toContain("merge_requests/123/changes")
 	})
 
-	describe("orchestrator mode", () => {
-		it("includes all expected sections", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("You are Kimchi, an AI coding agent")
-			expect(result).toContain("# Environment")
-			expect(result).toContain("## Available Tools")
-			expect(result).toContain("## Documents")
-			expect(result).toContain("## Guidelines")
-			expect(result).toContain("## Orchestration")
-			expect(result).toContain("Token budgets")
-			expect(result).toContain("token_budget")
-		})
-
-		it("threads backgroundNotificationsReachUser into orchestrator delegation guidance", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "orchestrator",
-				backgroundNotificationsReachUser: false,
-			})
-			expect(result).toContain("Agents run in the foreground by default in this session")
-			expect(result).not.toContain("background by default")
-			expect(result).not.toContain("backgrounded by default")
-		})
-
-		it("defaults backgroundNotificationsReachUser to true when omitted", () => {
-			const withDefault = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "orchestrator",
-			})
-			const withExplicitTrue = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "orchestrator",
-				backgroundNotificationsReachUser: true,
-			})
-			expect(withExplicitTrue).toBe(withDefault)
-			expect(withDefault).toContain("Agents run in the background by default")
-		})
-
-		it("leaves single-model prompts unaffected by backgroundNotificationsReachUser", () => {
-			const singleDefault = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "single",
-			})
-			const singleDetached = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "single",
-				backgroundNotificationsReachUser: false,
-			})
-			expect(singleDetached).toBe(singleDefault)
-		})
-
+	describe("prompt content", () => {
 		it("includes all tool names (descriptions live in the API payload)", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).toContain(
 				"## Available Tools\n\nread, bash, skill_view, Agent, get_subagent_result, steer_subagent",
@@ -421,26 +358,11 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Launch a specialized agent")
 		})
 
-		it("keeps phase behaviour but omits phase tool instructions without set_phase", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "kimi-k3",
-				roles: DEFAULT_MODEL_ROLES,
-				mode: "orchestrator",
-			})
-
-			expect(result).not.toContain("Phase Tagging for Analytics")
-			expect(result).not.toContain("Call `set_phase`")
-			expect(result).toContain("### Phase-specific behaviour")
-			expect(result).toContain("During **review** phase")
-		})
-
 		it("handles empty tools list", () => {
 			const result = buildSystemPrompt({
 				tools: [],
 				env: testEnv,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).toContain("(No tools available)")
 		})
@@ -451,7 +373,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				contextFiles,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).toContain("# Project Guidelines")
 			expect(result).toContain("Always run tests before committing.")
@@ -466,7 +388,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				contextFiles,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			const globalPos = result.indexOf("Global rule")
 			const projectPos = result.indexOf("Project rule")
@@ -481,7 +403,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).toContain("## Skills")
 			expect(result).toContain("deploy")
@@ -497,7 +419,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).toContain("safe-skill")
 			expect(result).not.toContain("hidden-skill")
@@ -509,7 +431,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			// The catalog routes through the dedicated tool: no read-tool
 			// instruction and no file locations for the model to copy paths from.
@@ -524,7 +446,7 @@ describe("buildSystemPrompt", () => {
 				tools: tools.filter((t) => t.name !== "skill_view"),
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			// Sessions without the skills-manager extension must not be directed at
 			// an unregistered tool; the read-tool catalog keeps the SKILL.md path
@@ -543,7 +465,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			const descriptionLine = result.split("\n").find((line) => line.startsWith("- **wordy**"))
 			expect(descriptionLine).toBeDefined()
@@ -561,7 +483,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			const bullets = skillsCatalogBullets(result)
 			// The head keeps full entries; the tail degrades to name-only — but no
@@ -586,7 +508,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(skillsCatalogBullets(result)).toEqual(["- **normal** — short"])
 			expect(result).toContain("1 further entry omitted from the catalog")
@@ -601,7 +523,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			const listed = skillsCatalogBullets(result).length
 			expect(listed).toBeGreaterThan(0)
@@ -619,7 +541,7 @@ describe("buildSystemPrompt", () => {
 				tools: tools.filter((t) => t.name !== "skill_view"),
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			const bullets = skillsCatalogBullets(result)
 			expect(bullets).toHaveLength(30)
@@ -640,13 +562,13 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			const scaled = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 				contextWindow: 1_000_000,
 			})
 			const fullBullets = (result: string) => skillsCatalogBullets(result).filter((b) => b.includes("—"))
@@ -661,7 +583,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).not.toContain("name-only")
 			expect(result).not.toContain("oversized")
@@ -671,7 +593,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
 			expect(result).not.toContain(`OS release:`)
@@ -697,7 +619,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: gitEnv,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).toContain("Git repository: yes")
 			expect(result).toContain("Git branch: main")
@@ -708,7 +630,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).not.toContain("Git branch:")
 			expect(result).not.toContain("Git remote:")
@@ -720,126 +642,11 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				contextFiles,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			const envPos = result.indexOf("# Environment")
 			const contextPos = result.indexOf("# Project Guidelines")
 			expect(envPos).toBeLessThan(contextPos)
-		})
-
-		it("omits phase management when no phase tool or owned phase behaviour applies", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "orchestrator",
-			})
-			expect(result).not.toContain("## Phase Management")
-			expect(result).not.toContain("During **explore** phase")
-			expect(result).not.toContain("During **research** phase")
-			expect(result).not.toContain("During **plan** phase")
-			expect(result).not.toContain("During **build** phase")
-			expect(result).not.toContain("During **review** phase")
-		})
-
-		it("includes phase behaviour the orchestrator may perform directly", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "kimi-k3",
-				registry,
-				roles: DEFAULT_MODEL_ROLES,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("## Phase Management")
-			expect(result).not.toContain("During **plan** phase")
-			expect(result).not.toContain("During **explore** phase")
-			expect(result).not.toContain("During **research** phase")
-			expect(result).not.toContain("During **build** phase")
-			expect(result).toContain("During **review** phase")
-		})
-
-		it("uses orchestrator-specific core guidelines", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				roles: DEFAULT_MODEL_ROLES,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("Follow **Orchestration** for what to do yourself vs delegate")
-			expect(result).not.toContain("Provide complete, functional code")
-		})
-
-		it("suppresses conflicting superpowers skills in orchestrator mode", () => {
-			const skills = [
-				createSkill({ name: "brainstorming", description: "Brainstorm" }),
-				createSkill({ name: "subagent-driven-development", description: "Alternate delegation workflow" }),
-			]
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				skills,
-				roles: DEFAULT_MODEL_ROLES,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("brainstorming")
-			expect(result).not.toContain("subagent-driven-development")
-		})
-
-		it("documents the canonical names of suppressed orchestrator-conflicting skills", () => {
-			expect([...ORCHESTRATOR_SUPPRESSED_SKILL_NAMES].sort()).toEqual([
-				"dispatching-parallel-agents",
-				"executing-plans",
-				"finishing-a-development-branch",
-				"receiving-code-review",
-				"requesting-code-review",
-				"subagent-driven-development",
-				"systematic-debugging",
-				"test-driven-development",
-				"verification-before-completion",
-				"writing-plans",
-			])
-		})
-
-		it("includes thinking levels in orchestrator mode", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				registry,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("### Thinking levels")
-			expect(result).toContain("| Build chunk | Builder |")
-		})
-
-		it("includes model-specific orchestration notes when model is provided", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "minimax-m3",
-				registry,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("### Model-specific notes")
-			expect(result).toContain("MiniMax M2 family")
-		})
-
-		it("includes Phase Management section alongside model-specific orchestration notes", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "minimax-m3",
-				registry,
-				roles: {
-					...DEFAULT_MODEL_ROLES,
-					orchestrator: "kimchi-dev/minimax-m3",
-					planner: "kimchi-dev/minimax-m3",
-				},
-				mode: "orchestrator",
-			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **plan** phase")
-			expect(result).toContain("### Model-specific notes")
-			expect(result).not.toContain("include the matching `thinking` parameter")
 		})
 	})
 
@@ -887,7 +694,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
-		it("includes Phase Management section when phase and model are provided", () => {
+		it("includes Working Practices with role guidelines when a model is provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -895,8 +702,8 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "subagent",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **build** phase")
+			expect(result).toContain("## Working Practices")
+			expect(result).toContain("When implementing")
 			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
 		})
 
@@ -1013,24 +820,7 @@ describe("buildSystemPrompt", () => {
 			)
 		})
 
-		// Interactive single-model sessions expose set_phase — phase payloads are
-		// paid only when the tool is reachable.
-		const phaseTools = [...tools, { name: "set_phase", description: "Tag the current work phase" }]
-
-		it("includes Phase Management section when phase and model are provided", () => {
-			const result = buildSystemPrompt({
-				tools: phaseTools,
-				env: testEnv,
-				currentModelId: "minimax-m3",
-				registry,
-				mode: "single",
-			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **build** phase")
-			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
-		})
-
-		it("drops the entire phase payload in single-model sessions without set_phase", () => {
+		it("includes Working Practices with role guidelines when a model is provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -1038,10 +828,28 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "single",
 			})
-			expect(result).not.toContain("## Phase Management")
-			expect(result).not.toContain("During **build** phase")
-			expect(result).not.toContain("During **research** phase")
-			expect(result).not.toContain("Call `set_phase`")
+			expect(result).toContain("## Working Practices")
+			expect(result).toContain("When implementing")
+			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
+		})
+
+		it("drops Working Practices in plain --print single-model sessions", () => {
+			setPrintGate(true, false)
+			let result: string
+			try {
+				result = buildSystemPrompt({
+					tools,
+					env: testEnv,
+					currentModelId: "minimax-m3",
+					registry,
+					mode: "single",
+				})
+			} finally {
+				setPrintGate(false, false)
+			}
+			expect(result).not.toContain("## Working Practices")
+			expect(result).not.toContain("When implementing")
+			expect(result).not.toContain("When researching")
 			// The tool-independent safety rules that used to ride the phase payload
 			// are hoisted to CORE_GUIDELINES, so a --print session still sees them.
 			expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
@@ -1052,30 +860,34 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Never run interactive commands")
 		})
 
-		it("keeps phase guidelines in subagent mode even without set_phase", () => {
-			// Subagent personas derive their phase from the persona, so the payload
-			// stays useful without the interactive tool.
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "minimax-m3",
-				registry,
-				mode: "subagent",
-			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **build** phase")
+		it("keeps role guidelines in subagent mode even in --print sessions", () => {
+			setPrintGate(true, false)
+			let result: string
+			try {
+				result = buildSystemPrompt({
+					tools,
+					env: testEnv,
+					currentModelId: "minimax-m3",
+					registry,
+					mode: "subagent",
+				})
+			} finally {
+				setPrintGate(false, false)
+			}
+			expect(result).toContain("## Working Practices")
+			expect(result).toContain("When implementing")
 		})
 
 		it("includes default research nudges for a non-OSS model in research phase", () => {
 			const result = buildSystemPrompt({
-				tools: phaseTools,
+				tools,
 				env: testEnv,
 				currentModelId: "claude-opus-4-6-20250514",
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **research** phase")
+			expect(result).toContain("## Working Practices")
+			expect(result).toContain("When researching")
 			expect(result).toContain("version you are assuming")
 			expect(result).toContain("version/API assumption")
 			expect(result).toContain("do not bluff")
@@ -1085,32 +897,32 @@ describe("buildSystemPrompt", () => {
 
 		it("includes default research guidelines for an OSS model in research phase", () => {
 			const result = buildSystemPrompt({
-				tools: phaseTools,
+				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **research** phase")
+			expect(result).toContain("## Working Practices")
+			expect(result).toContain("When researching")
 			expect(result).toContain("version you are assuming")
 			// Family-specific override (MiniMax) must reach the prompt, not just
 			// the default research text. This is the regression the
-			// consolidation commit ababd67 introduced by dumping DEFAULT_PHASE_GUIDELINES
+			// consolidation commit ababd67 introduced by dumping DEFAULT_ROLE_GUIDELINES
 			// without resolving through the registry.
 			expect(result).toContain("hallucinating APIs")
 		})
 
 		it("includes build-phase default nudge for an OSS model in build phase", () => {
 			const result = buildSystemPrompt({
-				tools: phaseTools,
+				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **build** phase")
+			expect(result).toContain("## Working Practices")
+			expect(result).toContain("When implementing")
 			expect(result).toContain("uncertain about a library API")
 			expect(result).toContain("assume your knowledge may be stale")
 			// Family-specific build override (MiniMax M2 family):
@@ -1123,7 +935,7 @@ describe("buildSystemPrompt", () => {
 			for (const variant of [
 				{ mode: "single" as const },
 				{ mode: "single" as const, hasUserLoop: false },
-				{ mode: "orchestrator" as const },
+				{ mode: "subagent" as const },
 			]) {
 				const result = buildSystemPrompt({ tools, env: testEnv, ...variant })
 				expect(result).toContain(
@@ -1175,7 +987,14 @@ describe("buildSystemPrompt", () => {
 		})
 
 		it("replaces user-presence-only sections in userless sessions", () => {
-			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
+			// Userless sessions are typically --print runs, which also skip Working Practices.
+			setPrintGate(true, false)
+			let result: string
+			try {
+				result = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
+			} finally {
+				setPrintGate(false, false)
+			}
 			expect(result).not.toContain("## Consent & Irreversible Actions")
 			expect(result).not.toContain("## Harness Notes and Approval")
 			expect(result).not.toContain("## Documents")
@@ -1226,33 +1045,19 @@ describe("buildSystemPrompt", () => {
 			expect(gated).toContain("## Environment")
 		})
 
-		it("keeps Documents for userless orchestrator sessions and swaps the orient bullet", () => {
-			const result = buildSystemPrompt({ tools, env: testEnv, mode: "orchestrator", hasUserLoop: false })
-			// Multi-agent handoff artifacts still need the section even without a user.
-			expect(result).toContain("## Documents")
-			expect(result).not.toContain("Orient the user per Orchestration")
-			expect(result).toContain("Proceed autonomously per Orchestration")
-		})
-
 		it("keeps Documents for userless subagent sessions", () => {
 			const result = buildSystemPrompt({ tools, env: testEnv, mode: "subagent", hasUserLoop: false })
 			expect(result).toContain("## Documents")
 		})
 
-		it("keeps the orient bullet in interactive orchestrator sessions", () => {
-			const result = buildSystemPrompt({ tools, env: testEnv, mode: "orchestrator", hasUserLoop: true })
-			expect(result).toContain("Orient the user per Orchestration")
-			expect(result).not.toContain("Proceed autonomously per Orchestration")
-		})
-
-		it("keeps the phase payload in userless sessions when the phase tool is present", () => {
+		it("keeps Working Practices in userless sessions outside --print", () => {
 			const result = buildSystemPrompt({
-				tools: [...tools, { name: "set_phase", description: "Set the current work phase" }],
+				tools,
 				env: testEnv,
 				mode: "single",
 				hasUserLoop: false,
 			})
-			expect(result).toContain("## Phase Management")
+			expect(result).toContain("## Working Practices")
 		})
 
 		it("is significantly smaller in userless sessions", () => {

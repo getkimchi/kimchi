@@ -1,6 +1,7 @@
 /**
- * Regression tests for patch hunks that inject `sessionId` into upstream's
- * selector methods.
+ * Regression tests for patch hunks that injected `sessionId` into upstream's
+ * selector methods. The injection went away with the multi-model picker row;
+ * these tests keep a stray copy from coming back.
  *
  * Why: the `sessionId` injection belongs to `showModelSelector`, which declares
  * `const sessionId = this.sessionManager.getSessionId()` in scope. During the
@@ -61,12 +62,11 @@ function extractMethod(source: string, signature: string): string {
 }
 
 describe("sessionId injection is scoped to the method that declares it", () => {
-	it("showModelSelector both declares and uses sessionId", () => {
+	it("showModelSelector no longer injects sessionId", () => {
 		const body = extractMethod(readInteractiveModeSource(), "showModelSelector(initialSearchInput) {")
 
-		// The patch adds this declaration; without it the use below is unbound.
-		expect(body).toContain("const sessionId = this.sessionManager.getSessionId();")
-		expect(body).toContain("undefined, sessionId);")
+		// The injection only served the removed multi-model picker row.
+		expect(body).not.toContain("sessionId")
 	})
 
 	it("showLoginProviderSelector does not reference sessionId", () => {

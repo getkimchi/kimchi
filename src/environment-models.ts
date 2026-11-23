@@ -52,7 +52,6 @@ export async function discoverEnvironmentModels(
 	return {
 		providers,
 		models: [...models, ...ollamaModelsToMetadata(ollama.models)],
-		ollamaModels: ollama.models,
 		refreshed,
 	}
 }
