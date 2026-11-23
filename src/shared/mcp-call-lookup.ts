@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { getToolSessionScope } from "./planning/tool-session-scope.js"
 import type { McpCallFacts } from "../extensions/mcp/call-facts.js"
+import { getToolSessionScope } from "./planning/tool-session-scope.js"
 
 export type McpCallLookup = (toolName: string, input: unknown) => McpCallFacts
 

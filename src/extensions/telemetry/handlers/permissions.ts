@@ -33,6 +33,8 @@ const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = 
 	bundled_skill_cli: "config",
 	bundled_skill_dir_deny: "config",
 	readonly: "config",
+	mcp_gateway_readonly: "config",
+	mcp_readonly_annotation: "config",
 	ferment_internal: "config",
 	compound_rule: "config",
 	rule: "config",

@@ -16,6 +16,7 @@ import {
 import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
+import { registerMcpCallLookup } from "../../shared/mcp-call-lookup.js"
 import {
 	applyCooperativeTweak,
 	debugToolSurface,
@@ -30,7 +31,6 @@ import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { snapshotMcpCallCatalog } from "./call-catalog.js"
 import { describeMcpCall, describeMcpGatewayInput, type McpCallCatalog } from "./call-facts.js"
-import { registerMcpCallLookup } from "../../shared/mcp-call-lookup.js"
 import { DEFAULT_MCP_PROTOCOL_VERSION, getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"

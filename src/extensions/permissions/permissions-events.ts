@@ -110,6 +110,8 @@ export type PermissionDecisionSourceDetail =
 	| "bundled_skill_cli"
 	| "bundled_skill_dir_deny"
 	| "readonly"
+	| "mcp_gateway_readonly"
+	| "mcp_readonly_annotation"
 	| "ferment_internal"
 	| "compound_rule"
 	| "rule"

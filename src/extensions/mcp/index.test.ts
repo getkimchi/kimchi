@@ -188,8 +188,8 @@ vi.mock("./project-trust.js", () => ({
 	resolveMcpProjectTrust: vi.fn(async () => projectTrust.trusted),
 }))
 
-import { describeMcpCall, type McpCallCatalog } from "./call-facts.js"
 import { lookupMcpCall } from "../../shared/mcp-call-lookup.js"
+import { describeMcpCall, type McpCallCatalog } from "./call-facts.js"
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./index.js"
 
 function tool(name: string, label: string): ToolDefinition {

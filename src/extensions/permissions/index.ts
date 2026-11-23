@@ -9,6 +9,7 @@ import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
+import { lookupMcpCall } from "../../shared/mcp-call-lookup.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import { derivePlanTitle, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
@@ -65,6 +66,7 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
+import { decideAutoMcpCall } from "../mcp/auto-policy.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
@@ -1650,6 +1652,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					return undefined
 				}
 
+				const autoMcpDecision = mode === "auto" ? decideAutoMcpCall(lookupMcpCall(pi, toolName, input)) : undefined
+				if (autoMcpDecision?.action === "allow") {
+					emitToolDecision(pi, event, mode, "accept", autoMcpDecision.sourceDetail)
+					return undefined
+				}
+
 				// In default mode, a questionnaire call means the agent wants to plan —
 				// auto-promote the session to plan mode so the rest of the conversation
 				// runs under the right tool set instead of silently approving here.
@@ -1663,7 +1671,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					emitToolDecision(pi, event, mode, "accept", "questionnaire_promotion")
 					return undefined
 				}
-				if (isReadOnlyTool(toolName)) {
+				if (autoMcpDecision?.action !== "classify" && isReadOnlyTool(toolName)) {
 					emitToolDecision(pi, event, mode, "accept", "readonly")
 					return undefined
 				}
