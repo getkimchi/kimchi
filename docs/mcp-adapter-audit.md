@@ -357,6 +357,33 @@ Relevant code:
 - [`src/shared/planning/tool-profile-manager.ts`](../src/shared/planning/tool-profile-manager.ts)
 - [`src/extensions/permissions/index.ts`](../src/extensions/permissions/index.ts)
 
+### Auto-mode approval of read-only MCP calls
+
+In auto mode, the permission hook runs MCP calls without the classifier when
+the resolved tool has `annotations.readOnlyHint: true`. Gateway metadata
+operations (status, server, instructions, describe, search) are also approved.
+Auto mode treats `readOnlyHint: true` as an authorization assertion from the
+configured server. Kimchi does not verify it. A server that sets the hint on a
+tool that writes data gets that tool run without review.
+
+This trust is limited in the following ways:
+
+- Deny and allow rules are checked first, so a deny rule still blocks the call.
+- Auto mode is opt-in. Default and plan modes are not changed by this path.
+- A hint from the persistent cache counts only when the entry has the same
+  config hash as the current server definition and its TTL is still valid. A
+  cached hint therefore comes from the same configured server as a live
+  `tools/list` would.
+- Unknown, ambiguous, stale, and disabled-server calls fall back to the normal
+  auto-mode flow. Tools with `readOnlyHint: false` or no annotations go to the
+  classifier.
+
+Relevant code:
+
+- [`src/extensions/mcp/auto-policy.ts`](../src/extensions/mcp/auto-policy.ts)
+- [`src/extensions/mcp/call-facts.ts`](../src/extensions/mcp/call-facts.ts)
+- [`src/extensions/mcp/call-catalog.ts`](../src/extensions/mcp/call-catalog.ts)
+
 ### Conservative adapter defaults
 
 The facade disables the model-facing `mcpScript` tool and omits the MCP
