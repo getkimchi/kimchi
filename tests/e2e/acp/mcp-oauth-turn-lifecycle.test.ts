@@ -77,6 +77,19 @@ function authStartForPrompt(
 	)
 }
 
+type ToolCallUpdate = Extract<acp.SessionUpdate, { sessionUpdate: "tool_call_update" }>
+
+function oauthToolOutput(fixture: AcpMcpFixture, text: string): ToolCallUpdate["rawOutput"] {
+	const match = fixture.client.sessionUpdates.find(
+		({ update }) =>
+			update.sessionUpdate === "tool_call_update" && JSON.stringify(update.rawOutput ?? {}).includes(text),
+	)
+	if (match?.update.sessionUpdate !== "tool_call_update") {
+		throw new Error(`missing ACP tool_call_update containing ${text}`)
+	}
+	return match.update.rawOutput
+}
+
 it(
 	"keeps the originating prompt pending until OAuth and all resumed work complete",
 	async () => {
@@ -187,6 +200,88 @@ it(
 	STARTUP_TIMEOUT_MS,
 )
 
+it(
+	"captures an OAuth callback that completes during auth-start execution",
+	async () => {
+		const echo = gatewayMcpCall("echo", { message: "oauth-fast-callback" })
+		const fixture = await startAcpMcpFixture({
+			artifactName: "acp-mcp-oauth-turn-fast-callback",
+			extensionPath: LIFECYCLE_EXTENSION,
+			mcp: {
+				transport: "oauth",
+				oauthAutoComplete: true,
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-fast-callback" }] },
+							{ message: "oauth-fast-callback" },
+						),
+					],
+				},
+			},
+			responses: [
+				authStartForPrompt("fixture", OAUTH_PROMPT_TEXT, "oauth-fast-start"),
+				echo.response,
+				modelReply("The fast OAuth callback completed in the original run."),
+			],
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const result = await prompt(fixture, sessionId, OAUTH_PROMPT_TEXT)
+			expect(result.stopReason).toBe("end_turn")
+			expect(result.chunks).toContain("The fast OAuth callback completed in the original run.")
+			await fixture.mcp.waitForEvent("oauth_browser_completed")
+			await fixture.mcp.waitForEvent("oauth_token_issued", { where: { grantType: "authorization_code" } })
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-fast-callback" } },
+			})
+			expect(oauthToolOutput(fixture, "OAuth authentication successful")).toMatchObject({ isError: false })
+			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
+		} finally {
+			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it(
+	"returns immediately when auth-start finds an existing OAuth grant",
+	async () => {
+		const fixture = await startAcpMcpFixture({
+			artifactName: "acp-mcp-oauth-turn-existing-grant",
+			extensionPath: LIFECYCLE_EXTENSION,
+			mcp: { transport: "oauth", oauthAutoComplete: true },
+			responses: [
+				authStartForPrompt("fixture", OAUTH_PROMPT_TEXT, "oauth-existing-grant"),
+				modelReply("The existing grant completed without waiting for a watcher."),
+			],
+		})
+		try {
+			await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+				server: fixture.mcp.serverDefinition,
+				serverName: "fixture",
+				authenticate: true,
+			})
+			await fixture.mcp.waitForEvent("oauth_token_issued", { where: { grantType: "authorization_code" } })
+
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const result = await prompt(fixture, sessionId, OAUTH_PROMPT_TEXT)
+			expect(result.stopReason).toBe("end_turn")
+			expect(result.chunks).toContain("The existing grant completed without waiting for a watcher.")
+			expect(fixture.mcp.eventsOfType("oauth_browser_opened")).toHaveLength(1)
+			const grantOutput = oauthToolOutput(fixture, "OAuth authentication successful")
+			expect(grantOutput).toMatchObject({ details: { authenticated: true } })
+			expect(grantOutput).not.toHaveProperty("details.authorizationUrl")
+			expect(fixture.mcp.eventsOfType("tool_called")).toHaveLength(0)
+			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
+		} finally {
+			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
 async function verifySettledOAuthOutcome(scenario: "oauth-deny" | "oauth-token-failure"): Promise<void> {
 	const finalText = scenario === "oauth-deny" ? "The user cancelled OAuth." : "OAuth token issuance failed."
 	const fixture = await startAcpMcpFixture({
@@ -225,15 +320,7 @@ async function verifySettledOAuthOutcome(scenario: "oauth-deny" | "oauth-token-f
 		expect(response?.stopReason).toBe("end_turn")
 		expect(fixture.client.agentTextBySession().get(sessionId)).toContain(finalText)
 		expect(toolResultText(fixture.fake.requests, "oauth-start-negative")).toMatch(/OAuth authentication failed/i)
-		const failureUpdate = fixture.client.sessionUpdates.find(
-			({ update }) =>
-				update.sessionUpdate === "tool_call_update" &&
-				JSON.stringify(update.rawOutput ?? {}).includes("OAuth authentication failed"),
-		)
-		if (failureUpdate?.update.sessionUpdate !== "tool_call_update") {
-			throw new Error("missing ACP tool_call_update for failed MCP OAuth")
-		}
-		expect(failureUpdate.update.rawOutput).toMatchObject({ isError: true })
+		expect(oauthToolOutput(fixture, "OAuth authentication failed")).toMatchObject({ isError: true })
 		expect(fixture.mcp.eventsOfType("tool_called")).toHaveLength(0)
 		expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
 
@@ -341,6 +428,8 @@ it(
 			},
 		})
 		let fixture: AcpMcpFixture | undefined
+		const secondaryBaseUrl = secondary.url
+		if (!secondaryBaseUrl) throw new Error("secondary OAuth fixture has no URL")
 		try {
 			const promptA = "Start OAuth for session A"
 			const promptB = "Start OAuth for session B"
@@ -405,7 +494,7 @@ it(
 				},
 			)
 			const openedB = await fixture.mcp.waitForEvent("oauth_browser_opened", {
-				predicate: (event) => new URL(event.target).origin === new URL(secondary.url!).origin,
+				predicate: (event) => new URL(event.target).origin === new URL(secondaryBaseUrl).origin,
 				description: "session B's independent OAuth authorization",
 			})
 			await delay(OAUTH_SETTLE_QUIET_MS)

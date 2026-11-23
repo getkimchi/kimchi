@@ -321,9 +321,9 @@ function createUpstreamApi(
 				}
 			}
 			if (property === "sendMessage" && oauthTurnContinuation) {
-				return (message: Parameters<ExtensionAPI["sendMessage"]>[0]): void => {
-					if (oauthTurnContinuation.consumeStatusMessage(message)) return
-					target.sendMessage(message)
+				return (...args: Parameters<ExtensionAPI["sendMessage"]>): void => {
+					if (oauthTurnContinuation.consumeStatusMessage(args[0])) return
+					target.sendMessage(...args)
 				}
 			}
 			if (property === "getActiveTools") {

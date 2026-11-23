@@ -38,7 +38,15 @@ function abortError(signal: AbortSignal): Error {
 /** The adapter exposes auth-start as a background watch plus triggerTurn message.
  * ACP must instead keep the originating tool/model run alive until that watch
  * settles. One coordinator belongs to one installed (therefore one session's)
- * adapter facade; the server key separates independent connector flows. */
+ * adapter facade; the server key separates independent connector flows.
+ *
+ * Status correlation is session + server name because mcp-oauth-status has no
+ * per-flow id. That is sufficient only because the adapter has this contract
+ * today: backgroundAuthWatchers is one per McpExtensionState/server, and its
+ * pending authentication registry coalesces same-server/share-store starts.
+ * Isolated settings probes do not call this session's pi.sendMessage. If the
+ * adapter later permits genuinely independent same-server watchers, it MUST
+ * expose a flow id in mcp-oauth-status and this gate must match on that id. */
 export class McpOAuthTurnContinuation {
 	private readonly pending = new Map<string, PendingOAuth>()
 
@@ -108,8 +116,12 @@ export class McpOAuthTurnContinuation {
 			try {
 				outcome = await Promise.race([pending.completion, aborted])
 			} catch (error) {
-				// Retain a cancelled tombstone until the adapter's watcher reports.
-				// Its late status is consumed rather than becoming a new agent turn.
+				// Retain a cancelled tombstone, not a second timer or a stale grant:
+				// this stops the old outcome resuming a retry. The adapter bounds
+				// every watch by MANUAL_AUTH_TIMEOUT_MS (5m), rejects authenticate,
+				// and emits a terminal failed status, which clears this entry below.
+				// If upstream removes that bound, this coordinator needs an equivalent
+				// tombstone TTL plus status correlation before another start is allowed.
 				pending.cancelled = true
 				throw error
 			} finally {
@@ -132,9 +144,11 @@ export class McpOAuthTurnContinuation {
 		}
 	}
 
-	/** Consume a watcher status only when it belongs to an auth-start gated by
-	 * this session. Other OAuth sources (probes, settings, slash commands) pass
-	 * through the adapter's ordinary sendMessage behavior unchanged. */
+	/** Consume the sole same-server watcher status owned by this session. Other
+	 * OAuth sources keep the ordinary sendMessage path AND triggerTurn options;
+	 * see the class comment for the single-live-flow invariant that makes server
+	 * matching sufficient. A failed status is the adapter's bounded terminal
+	 * signal for both failed and abandoned/cancelled authorizations. */
 	consumeStatusMessage(message: OAuthStatusMessage): boolean {
 		const details = authStatusDetails(message)
 		if (!details) return false
