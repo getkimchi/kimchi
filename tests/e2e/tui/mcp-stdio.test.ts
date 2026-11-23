@@ -479,13 +479,16 @@ test("can call MCP after executing a plan started with --plan", async ({ termina
 			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.keyPress(Key.Enter)
 			trace.step("approved the plan and transitioned to execution")
-			await waitForText(terminal, "Allow the assistant to run this?", { timeoutMs: STREAM_TIMEOUT_MS })
-			terminal.keyPress(Key.Enter)
-			trace.step("approved the MCP call in auto mode")
 
 			await waitForText(terminal, "MCP remained available after plan approval.", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
+			const fullBuffer = terminal
+				.getBuffer()
+				.map((row: string[]) => row.join(""))
+				.join("\n")
+			expect(fullBuffer).not.toContain(ALLOW_PROMPT)
+			trace.step("annotated read-only MCP call executed without approval")
 			const called = await fixture.mcp.waitForEvent("tool_called", {
 				where: { name: "echo", arguments: { message: "after-plan" } },
 			})
