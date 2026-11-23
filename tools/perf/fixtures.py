@@ -733,7 +733,16 @@ def remap_warm_home(source_home, destination_home):
         validate_warm_home(destination_home)
         return
     validate_warm_home(source_home)
-    shutil.copytree(source, destination, dirs_exist_ok=True, copy_function=shutil.copy2)
+    shutil.copytree(source, destination,
+                    dirs_exist_ok=True,
+                    copy_function=shutil.copy2,
+                    ignore=shutil.ignore_patterns("ledger.db", "ledger.db-wal", "ledger.db-shm"))
+    source_db = os.path.join(source, "pr-cost-reporting", "ledger.db")
+    destination_db = os.path.join(destination, "pr-cost-reporting", "ledger.db")
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source_con, \
+            contextlib.closing(sqlite3.connect(destination_db)) as destination_con:
+        source_con.backup(destination_con)
+    os.chmod(destination_db, os.stat(source_db).st_mode & 0o777)
     prefix = source + "/"
     with sqlite3.connect(os.path.join(destination, "pr-cost-reporting", "ledger.db")) as con:
         with con:

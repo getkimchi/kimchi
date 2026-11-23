@@ -2,10 +2,12 @@
 
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import shutil
 import tempfile
+import threading
 import time
 import unittest.mock
 from types import SimpleNamespace
@@ -298,8 +300,73 @@ def check_zombie_cleanup():
         proc.wait(timeout=10)
 
 
+def check_remap_sqlite_atomicity():
+    import fixtures
+    source_home = tempfile.mkdtemp(prefix="perf-remap-source-")
+    destination_home = tempfile.mkdtemp(prefix="perf-remap-destination-")
+    source = os.path.join(source_home, ".config", "kimchi", "harness")
+    os.makedirs(os.path.join(source, "pr-cost-reporting"), exist_ok=True)
+    db = os.path.join(source, "pr-cost-reporting", "ledger.db")
+    writer = sqlite3.connect(db, check_same_thread=False)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA synchronous=FULL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.executescript(fixtures.LEDGER_SCHEMA)
+        sample = os.path.join(source, "sample.jsonl")
+        with open(sample, "w") as handle:
+            handle.write("{}\n")
+        writer.execute("INSERT INTO journal_cursor VALUES (?, 0, 0, 0, 0, '', 0)", (sample,))
+        writer.commit()
+        stop = threading.Event()
+        failures = []
+
+        def produce():
+            try:
+                for block in range(48):
+                    if stop.is_set():
+                        break
+                    with writer:
+                        writer.executemany(
+                            "INSERT INTO bookkeeping VALUES (?, ?, ?, ?)",
+                            [("remap", f"{block}-{index}-costs", f"{block}-{index}-" + ("x" * 1024), 0)
+                             for index in range(80)],
+                        )
+                        writer.execute("UPDATE journal_cursor SET offset = ?", (block + 1,))
+                    if block % 4 == 3:
+                        writer.execute("PRAGMA wal_checkpoint(RESTART)")
+            except Exception as error:
+                failures.append(repr(error))
+
+        thread = threading.Thread(target=produce, daemon=True)
+        thread.start()
+        original_validator = fixtures.validate_warm_home
+        try:
+            # Exercise atomicity, not the separately tested claim and shape guards.
+            fixtures.validate_warm_home = lambda _home: None
+            fixtures.remap_warm_home(source_home, destination_home)
+            destination_db = os.path.join(destination_home, ".config", "kimchi", "harness",
+                                          "pr-cost-reporting", "ledger.db")
+            with sqlite3.connect(destination_db) as con:
+                records = con.execute("SELECT COUNT(*) FROM bookkeeping").fetchone()[0]
+                cursor = con.execute("SELECT offset FROM journal_cursor").fetchone()[0]
+            assert records > 0 and cursor > 0, {"records": records, "cursor": cursor}
+            assert not failures, failures
+            assert os.stat(db).st_mode & 0o777 == os.stat(destination_db).st_mode & 0o777
+        finally:
+            fixtures.validate_warm_home = original_validator
+            stop.set()
+            thread.join(timeout=10)
+            assert not thread.is_alive(), "warm-copy writer remained active"
+    finally:
+        writer.close()
+        shutil.rmtree(source_home, ignore_errors=True)
+        shutil.rmtree(destination_home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     check_independent_grandchild_session()
+    check_remap_sqlite_atomicity()
     check_permission_errors_are_not_suppressed()
     check_zombie_cleanup()
     check_independent_grandchild_session(root_exits_first=True)
