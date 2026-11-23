@@ -7490,25 +7490,26 @@ describe("generated artifacts (live turns)", () => {
 		const finalReport = join(tmpDir, "code-reviewer-rebuild-prd.html")
 		const recorder = attachArtifactRecorder()
 		let promptNumber = 0
-		const settle = (text: string, id: string, toolName: string, args: Record<string, unknown>, output: string) => {
+		const settle = (
+			text: string,
+			calls: { id: string; toolName: string; args: Record<string, unknown>; output: string }[],
+		) => {
 			const message = makeAssistantMessage([
 				{ type: "text", text },
-				{ type: "toolCall", id, name: toolName, arguments: args },
+				...calls.map(({ id, toolName, args }) => ({ type: "toolCall" as const, id, name: toolName, arguments: args })),
 			])
 			fake.emit({ type: "message_end", message })
 			fake.emit({
 				type: "turn_end",
 				message,
-				toolResults: [
-					{
-						role: "toolResult" as const,
-						toolCallId: id,
-						toolName,
-						content: output ? [{ type: "text" as const, text: output }] : [],
-						isError: false,
-						timestamp: Date.now(),
-					},
-				],
+				toolResults: calls.map(({ id, toolName, output }) => ({
+					role: "toolResult" as const,
+					toolCallId: id,
+					toolName,
+					content: output ? [{ type: "text" as const, text: output }] : [],
+					isError: false,
+					timestamp: Date.now(),
+				})),
 			})
 			fake.emit(agentEnd())
 			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
@@ -7527,12 +7528,21 @@ describe("generated artifacts (live turns)", () => {
 					result: { content: [{ type: "text", text: "Wrote template." }] },
 					isError: false,
 				})
-				settle("Template ready.", "tc-row-template", "write", args, "Wrote template.")
+				settle("Template ready.", [{ id: "tc-row-template", toolName: "write", args, output: "Wrote template." }])
 				return
 			}
-			const args = { command: "node second-build.js" }
-			fake.emit({ type: "tool_execution_start", toolCallId: "tc-row-final", toolName: "bash", args })
-			writeFileSync(finalReport, "<h1>Final</h1>")
+			const writeArgs = { path: finalReport, content: "<h1>Final</h1>" }
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-row-write", toolName: "write", args: writeArgs })
+			writeFileSync(finalReport, writeArgs.content)
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-row-write",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote final." }] },
+				isError: false,
+			})
+			const bashArgs = { command: "node verify-report.js" }
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-row-final", toolName: "bash", args: bashArgs })
 			fake.emit({
 				type: "tool_execution_end",
 				toolCallId: "tc-row-final",
@@ -7540,7 +7550,10 @@ describe("generated artifacts (live turns)", () => {
 				result: { content: [] },
 				isError: false,
 			})
-			settle("Final ready.", "tc-row-final", "bash", args, "")
+			settle("Final ready.", [
+				{ id: "tc-row-write", toolName: "write", args: writeArgs, output: "Wrote final." },
+				{ id: "tc-row-final", toolName: "bash", args: bashArgs, output: "" },
+			])
 		}
 
 		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write the template" }] })
@@ -7548,10 +7561,12 @@ describe("generated artifacts (live turns)", () => {
 		expect(rows.map((row) => row.artifacts.map((artifact) => artifact.path))).toEqual([[template]])
 		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(template).href])
 
-		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build the final report" }] })
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write and verify the final report" }] })
 		rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
 		expect(rows).toHaveLength(2)
-		expect(rows[1].artifacts.map((artifact) => artifact.path)).toEqual([finalReport])
+		expect(rows[1].artifacts).toEqual([
+			{ path: finalReport, name: "code-reviewer-rebuild-prd.html", mimeType: "text/html", sniffed: false },
+		])
 		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([
 			pathToFileURL(template).href,
 			pathToFileURL(finalReport).href,
@@ -7570,16 +7585,18 @@ describe("generated artifacts (live turns)", () => {
 			),
 			toolResultEntry("tc-row-template", "write", "Wrote template.", false, "tr1", "a1"),
 			{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never,
-			userTextEntry("Build the final report", "u2", "tr1"),
+			userTextEntry("Write and verify the final report", "u2", "tr1"),
 			assistantBlocksEntry(
 				[
 					{ type: "text", text: "Final ready." },
-					{ type: "toolCall", id: "tc-row-final", name: "bash", arguments: { command: "node second-build.js" } },
+					{ type: "toolCall", id: "tc-row-write", name: "write", arguments: { path: finalReport } },
+					{ type: "toolCall", id: "tc-row-final", name: "bash", arguments: { command: "node verify-report.js" } },
 				],
 				"a2",
 				"u2",
 			),
-			toolResultEntry("tc-row-final", "bash", "", false, "tr2", "a2"),
+			toolResultEntry("tc-row-write", "write", "Wrote final.", false, "tr2", "a2"),
+			toolResultEntry("tc-row-final", "bash", "", false, "tr3", "tr2"),
 			{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[1] } as never,
 		]
 		const replay = makeRecordingConn()
