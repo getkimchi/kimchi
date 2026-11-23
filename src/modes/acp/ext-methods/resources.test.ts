@@ -6,7 +6,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { RequestError } from "@agentclientprotocol/sdk"
+import type { RequestError } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"

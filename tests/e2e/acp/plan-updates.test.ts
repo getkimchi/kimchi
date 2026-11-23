@@ -10,7 +10,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
-import type { ClientCapabilities } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, describe, expect, it } from "vitest"
 import { ADVERTISED_CAPABILITIES } from "../../../src/modes/acp/capabilities.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"

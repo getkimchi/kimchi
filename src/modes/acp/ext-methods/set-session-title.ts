@@ -4,7 +4,7 @@
 // delegates to pi's AgentSession.setSessionName, which persists a
 // session_info entry and emits session_info_changed.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 
 /**

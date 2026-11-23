@@ -40,7 +40,7 @@ it.each([
 					update.availableCommands.some(({ name }) => name === "pr-watch"),
 			),
 		).toBe(false)
-		const result = await fixture.conn.prompt({
+		const result = await fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "Reply briefly." }],
 		})
@@ -48,7 +48,7 @@ it.each([
 		expect(fixture.client.agentTextBySession().get(sessionId)).toContain("Normal conversation works.")
 		expect(chatRequests(fixture)).toHaveLength(1)
 		expect(chatRequests(fixture).some((request) => requestAdvertisesTool(request, "pr_watch"))).toBe(false)
-		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch" }] })
+		await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch" }] })
 		expect(fixture.client.agentTextBySession().get(sessionId)).toContain("This stays a regular user prompt.")
 		expect(chatRequests(fixture)).toHaveLength(2)
 		expect(
@@ -88,11 +88,14 @@ it("replays an opted-in session without restoring its saved watcher for an unsup
 		const initial = first
 		await expect
 			.poll(async () => {
-				await initial.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch status" }] })
+				await initial.conn.request("session/prompt", {
+					sessionId,
+					prompt: [{ type: "text", text: "/pr-watch status" }],
+				})
 				return initial.client.agentTextBySession().get(sessionId)
 			})
 			.toContain("Auto-fix on · CI only")
-		await first.conn.prompt({ sessionId, prompt: [{ type: "text", text: "Reply briefly." }] })
+		await first.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "Reply briefly." }] })
 		const sessions = join(home, ".config/kimchi/harness/sessions")
 		const log = readdirSync(sessions)
 			.flatMap((dir) => readdirSync(join(sessions, dir)).map((file) => join(sessions, dir, file)))
@@ -117,7 +120,7 @@ it("replays an opted-in session without restoring its saved watcher for an unsup
 			extraArgs: ["--yolo"],
 			responses: [{ stream: ["Normal conversation still works."] }],
 		})
-		await second.conn.loadSession({ sessionId, cwd: target.cwd, mcpServers: [] })
+		await second.conn.request("session/load", { sessionId, cwd: target.cwd, mcpServers: [] })
 		expect(second.client.agentTextBySession().get(sessionId)).toContain("Existing conversation.")
 		expect(
 			second.client.sessionUpdates.some(
@@ -130,7 +133,7 @@ it("replays an opted-in session without restoring its saved watcher for an unsup
 		await new Promise((resolve) => setTimeout(resolve, 31_000))
 		expect(chatRequests(second)).toHaveLength(0)
 		expect(savedWatches()).toEqual(before)
-		await second.conn.prompt({ sessionId, prompt: [{ type: "text", text: "Continue normally." }] })
+		await second.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "Continue normally." }] })
 		expect(second.client.agentTextBySession().get(sessionId)).toContain("Normal conversation still works.")
 		expect(chatRequests(second).some((request) => requestAdvertisesTool(request, "pr_watch"))).toBe(false)
 	} finally {

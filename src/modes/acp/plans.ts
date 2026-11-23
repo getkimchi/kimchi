@@ -6,7 +6,7 @@
  * state, and falls back when a narrower scope is cleared.
  */
 
-import type { Plan, PlanEntry, SessionNotification, SessionUpdate } from "@agentclientprotocol/sdk"
+import type { Plan, PlanEntry, SessionNotification, SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { getEffectivePendingCheckins, subscribeCheckinGate } from "../../extensions/todos/checkin-gate.js"
 import { getInputRevision } from "../../extensions/todos/reconciliation.js"
 import { parseTodoScopeKey } from "../../extensions/todos/scope.js"

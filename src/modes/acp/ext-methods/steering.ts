@@ -3,7 +3,7 @@
 // Wire name: `_kimchi.dev/steering` — the vendor-namespaced name from the
 // kimchi-native-chat ticket (#06), advertised via _meta["kimchi.dev"].steering.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { ImageContent } from "@earendil-works/pi-ai"
 import { buildSkillCommandPrompt, tryParseSkillCommand } from "../skill-commands.js"
 import type { SessionTurnTarget } from "../types.js"

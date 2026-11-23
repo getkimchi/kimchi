@@ -6,7 +6,7 @@
 // unknown/expired/consumed requestIds, port busy, per-region pinning, IdP
 // errors, and the one-flow-per-connection rule.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CallbackPortInUseError, type CallbackResult, type CallbackServer } from "../../../cli-auth/callback-server.js"

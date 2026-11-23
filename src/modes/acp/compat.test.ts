@@ -1,4 +1,4 @@
-// Regression tests for the 0.19.2 → 1.9.0 SDK migration.
+// Regression tests for the legacy Kimchi compatibility surface on ACP v1.
 //
 // Upstream removed model selectors from the schema (the `session/set_model`
 // wire method and the `models` field on session/new + session/load responses)
@@ -8,19 +8,23 @@
 //
 //   1. extMethod dispatch — raw `session/set_model` requests reach the same
 //      implementation as session/set_config_option.
-//   2. Wire level — a real AgentSideConnection/ClientSideConnection loopback
-//      proves session responses stay on the schema surface (no legacy
-//      `models` key; the spec forbids custom root fields), and that
-//      `session/set_model` succeeds over the wire.
+//   2. Wire level — a real agent()/client() loopback proves session responses
+//      stay on the schema surface (no legacy `models` key; the spec forbids
+//      custom root fields), and that `session/set_model` succeeds over the wire.
 
 import { PassThrough, Readable, Writable } from "node:stream"
 import {
-	AgentSideConnection,
-	ClientSideConnection,
+	type AgentContext,
+	agent,
+	type ClientConnection,
+	type ClientContext,
+	client as createClient,
+	methods,
 	ndJsonStream,
 	PROTOCOL_VERSION,
+	RequestError,
 	type Stream,
-} from "@agentclientprotocol/sdk"
+} from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import { BaseFakeAgentSession } from "./__mocks__/fake-agent-session.js"
@@ -40,7 +44,7 @@ function asSession(fake: BaseFakeAgentSession): AgentSession {
 	return fake as unknown as AgentSession
 }
 
-function makeAgent(fake: BaseFakeAgentSession, conn: AgentSideConnection): KimchiAcpAgent {
+function makeAgent(fake: BaseFakeAgentSession, conn: AgentContext): KimchiAcpAgent {
 	return new KimchiAcpAgent(conn, {
 		extensionFactories: [],
 		agentDir: "/tmp/fake-agent-dir",
@@ -48,12 +52,16 @@ function makeAgent(fake: BaseFakeAgentSession, conn: AgentSideConnection): Kimch
 	})
 }
 
-function stubConn(): AgentSideConnection {
+function stubConn(): AgentContext {
 	return {
-		sessionUpdate: async (_p: unknown) => {},
-		extNotification: async (_m: string, _p: unknown) => {},
-		requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
-	} as unknown as AgentSideConnection
+		notify: async (_method: string, _params: unknown) => {},
+		request: async (method: string) => {
+			if (method === methods.client.session.requestPermission) {
+				return { outcome: { outcome: "cancelled" } }
+			}
+			throw new Error(`Unexpected client request: ${method}`)
+		},
+	} as unknown as AgentContext
 }
 
 describe("session/set_model compat", () => {
@@ -99,15 +107,14 @@ describe("session/set_model compat", () => {
 })
 
 describe("wire compat", () => {
-	let client: ClientSideConnection | undefined
+	let connection: ClientConnection | undefined
 
-	afterEach(async () => {
-		// ClientSideConnection has no close(); dropping the reference lets the
-		// in-process streams be GC'd after each test.
-		client = undefined
+	afterEach(() => {
+		connection?.close()
+		connection = undefined
 	})
 
-	function wireUp(fake: BaseFakeAgentSession): ClientSideConnection {
+	function wireUp(fake: BaseFakeAgentSession): ClientContext {
 		const agentToClient = new PassThrough()
 		const clientToAgent = new PassThrough()
 		const agentStream: Stream = ndJsonStream(
@@ -118,22 +125,31 @@ describe("wire compat", () => {
 			Writable.toWeb(clientToAgent) as WritableStream<Uint8Array>,
 			Readable.toWeb(agentToClient) as ReadableStream<Uint8Array>,
 		)
-		new AgentSideConnection(
-			(conn) =>
-				new KimchiAcpAgent(conn, {
-					extensionFactories: [],
-					agentDir: "/tmp/fake-agent-dir",
-					sessionFactory: async () => asSession(fake),
-				}),
-			agentStream,
-		)
-		return new ClientSideConnection(
-			() => ({
-				sessionUpdate: async () => {},
-				requestPermission: async () => ({ outcome: { outcome: "cancelled" as const } }),
-			}),
-			clientStream,
-		)
+		let kimchi: KimchiAcpAgent
+		const agentApp = agent()
+			.onConnect(({ client }) => {
+				kimchi = makeAgent(fake, client)
+			})
+			.onRequest(methods.agent.initialize, ({ params }) => kimchi.initialize(params))
+			.onRequest(methods.agent.session.new, ({ params }) => kimchi.newSession(params))
+			.onRequest(
+				"session/set_model",
+				(params) => params,
+				({ params }) => {
+					if (!params || typeof params !== "object" || Array.isArray(params)) {
+						throw RequestError.invalidParams("expected an object")
+					}
+					return kimchi.extMethod("session/set_model", params as Record<string, unknown>)
+				},
+			)
+		agentApp.connect(agentStream)
+		const clientApp = createClient()
+			.onNotification(methods.client.session.update, () => {})
+			.onRequest(methods.client.session.requestPermission, () => ({
+				outcome: { outcome: "cancelled" as const },
+			}))
+		connection = clientApp.connect(clientStream)
+		return connection.agent
 	}
 
 	it("session/new response stays on the schema surface (no legacy `models` key)", async () => {
@@ -142,12 +158,18 @@ describe("wire compat", () => {
 		// field was dropped; both Studio and the VS Code extension read the
 		// model catalogue from the `model` config option instead.
 		const fake = new CompatFakeSession("wire-session")
-		client = wireUp(fake)
+		const client = wireUp(fake)
 
-		const init = await client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+		const init = await client.request(methods.agent.initialize, {
+			protocolVersion: PROTOCOL_VERSION,
+			clientCapabilities: {},
+		})
 		expect(init.agentInfo?.name).toBe("kimchi")
 
-		const response = (await client.newSession({ cwd: "/tmp", mcpServers: [] })) as unknown as Record<string, unknown>
+		const response = (await client.request(methods.agent.session.new, {
+			cwd: "/tmp",
+			mcpServers: [],
+		})) as unknown as Record<string, unknown>
 		expect(response.sessionId).toBe("wire-session")
 		expect(response).not.toHaveProperty("models")
 		expect(response.configOptions).toBeDefined()
@@ -155,13 +177,13 @@ describe("wire compat", () => {
 
 	it("session/set_model succeeds over the wire for old clients", async () => {
 		const fake = new CompatFakeSession("wire-set-model-session")
-		client = wireUp(fake)
+		const client = wireUp(fake)
 
-		await client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
-		const { sessionId } = await client.newSession({ cwd: "/tmp", mcpServers: [] })
+		await client.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+		const { sessionId } = await client.request(methods.agent.session.new, { cwd: "/tmp", mcpServers: [] })
 		expect(sessionId).toBe("wire-set-model-session")
 
-		const result = await client.extMethod("session/set_model", {
+		const result = await client.request("session/set_model", {
 			sessionId,
 			modelId: "test/test-model",
 		})

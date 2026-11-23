@@ -18,7 +18,7 @@
 // through the session-keyed registry in shared/run-reason-registry.js —
 // see that module for the hand-off lifetime argument.
 
-import type { AgentSideConnection } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import type { RunStartReason } from "../../shared/run-reason-registry.js"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 import { emitExtNotification } from "./ext-notifications.js"
@@ -30,11 +30,11 @@ import { emitExtNotification } from "./ext-notifications.js"
  * prompt-owned turns) plus "error", which v1 has no literal for. */
 export type RunEndStopReason = "end_turn" | "cancelled" | "refusal" | "error"
 
-export function emitRunStart(conn: AgentSideConnection, sessionId: string, reason: RunStartReason): void {
+export function emitRunStart(conn: AgentContext, sessionId: string, reason: RunStartReason): void {
 	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.background_run_start, { sessionId, state: "running", reason })
 }
 
-export function emitRunEnd(conn: AgentSideConnection, sessionId: string, stopReason: RunEndStopReason): void {
+export function emitRunEnd(conn: AgentContext, sessionId: string, stopReason: RunEndStopReason): void {
 	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.background_run_end, { sessionId, state: "idle", stopReason })
 }
 

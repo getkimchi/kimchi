@@ -9,7 +9,7 @@
 // leave the session immediately usable — the compaction-specific cancellation
 // affordance Zed asks external agents to expose (zed discussion 57947).
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 
 export type CompactAbortStatus = "aborted" | "notCompacting"

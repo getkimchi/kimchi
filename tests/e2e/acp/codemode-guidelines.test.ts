@@ -39,8 +39,8 @@ it.each(SCENARIOS)(
 			settings,
 		})
 		try {
-			const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-			const result = await fixture.conn.prompt({
+			const session = await fixture.conn.request("session/new", { cwd: fixture.workDir, mcpServers: [] })
+			const result = await fixture.conn.request("session/prompt", {
 				sessionId: session.sessionId,
 				prompt: [{ type: "text", text: "Hello." }],
 			})

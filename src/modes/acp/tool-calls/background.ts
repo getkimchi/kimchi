@@ -10,7 +10,7 @@
  * class only pays for wiring; this module owns the whole lifecycle.
  */
 
-import type { SessionNotification, ToolCallContent } from "@agentclientprotocol/sdk"
+import type { SessionNotification, ToolCallContent } from "@agentclientprotocol/sdk/unstable"
 import type { BackgroundBashToolDetails } from "../../../extensions/bash-background/bash-background-tool.js"
 import { getSessionState } from "../../../extensions/bash-background/session-registry.js"
 import {

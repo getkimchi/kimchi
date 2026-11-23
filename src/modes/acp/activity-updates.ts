@@ -8,7 +8,7 @@
 // carrying the sessionId explicitly (ext notifications are not session-scoped
 // on the wire) so the client can pin the activity to the running stream.
 
-import type { AgentSideConnection } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 import { emitExtNotification } from "./ext-notifications.js"
@@ -33,7 +33,7 @@ const FORWARDED_KINDS: ReadonlySet<string> = new Set([
  * they render. The envelope keys are set LAST so a future pi field named
  * `sessionId` or `kind` can never clobber the routing values.
  */
-export function emitAgentActivityUpdate(conn: AgentSideConnection, sessionId: string, event: AgentSessionEvent): void {
+export function emitAgentActivityUpdate(conn: AgentContext, sessionId: string, event: AgentSessionEvent): void {
 	if (!FORWARDED_KINDS.has(event.type)) return
 	const { type, ...fields } = event as { type: string } & Record<string, unknown>
 	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.agent_activity, { ...fields, sessionId, kind: type })

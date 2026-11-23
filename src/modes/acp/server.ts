@@ -7,11 +7,11 @@ import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
 	type SessionInfo as AcpSessionInfo,
-	type Agent,
-	AgentSideConnection,
+	type AgentContext,
 	type AuthenticateRequest,
 	type AuthenticateResponse,
 	type AuthMethod,
+	agent,
 	type CancelNotification,
 	type ClientCapabilities,
 	type CloseSessionRequest,
@@ -26,6 +26,7 @@ import {
 	type LogoutRequest,
 	type LogoutResponse,
 	type McpServer,
+	methods,
 	type NewSessionRequest,
 	type NewSessionResponse,
 	ndJsonStream,
@@ -43,7 +44,7 @@ import {
 	type SetSessionConfigOptionRequest,
 	type SetSessionConfigOptionResponse,
 	type ToolCallContent,
-} from "@agentclientprotocol/sdk"
+} from "@agentclientprotocol/sdk/unstable"
 import type { Api, AssistantMessage, ImageContent, Model } from "@earendil-works/pi-ai"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
@@ -634,7 +635,7 @@ export type SetSessionModelResponse = Record<string, never>
 /** Wire name of the upstream-removed set-model method, kept for old clients. */
 const SET_MODEL_COMPAT_METHOD = "session/set_model"
 
-export class KimchiAcpAgent implements Agent {
+export class KimchiAcpAgent {
 	private sessions = new Map<string, SessionRecord>()
 	private readonly commandsRefresher = createCommandsRefresher({
 		sessions: () => this.sessions,
@@ -683,7 +684,7 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	constructor(
-		private readonly conn: AgentSideConnection,
+		private readonly conn: AgentContext,
 		options: RunAcpOptions,
 		/** Test seam: production always builds the default manager. Shared by
 		 * the `kimchi-sso*` authenticate() path and the `_kimchi.dev/sso_*` ext
@@ -3472,12 +3473,12 @@ export class KimchiAcpAgent implements Agent {
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
 		// acp.js#sendMessage), so two consecutive sessionUpdate() calls are
 		// written to the stream in the order we invoked them even though we
-		// don't await. Do NOT "fix" this into `await this.conn.sessionUpdate(...)`
-		// in onSessionEvent — the subscriber is called synchronously from the
+		// don't await. Do NOT "fix" this into awaiting the notification in
+		// onSessionEvent — the subscriber is called synchronously from the
 		// AgentSession event emitter, and awaiting inside it would back-pressure
 		// every subsequent event through the event loop, which pi-mono's
 		// _processAgentEvent does not expect.
-		this.conn.sessionUpdate(params).catch((err: unknown) => {
+		this.conn.notify(methods.client.session.update, params).catch((err: unknown) => {
 			process.stderr.write(`acp sessionUpdate failed: ${String(err)}\n`)
 		})
 	}
@@ -4453,7 +4454,10 @@ async function createSessionSettings(
 	// sessions in one process, the last-configured session's value governs
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
-	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
+	// The converter still exposes the stable-v1 schema surface. Keep that
+	// cross-module migration at this boundary; all ACP production types here
+	// stay on the unstable entrypoint, which is a runtime-compatible superset.
+	const callerServers = convertAcpMcpServers((params.mcpServers ?? []) as Parameters<typeof convertAcpMcpServers>[0])
 	// Only negotiated ACP clients keep the OAuth watcher inside the originating
 	// tool/model run. Every other client retains the ordinary follow-up run.
 	const mcpExtension = options.mcpExtensionFactory?.({
@@ -5014,10 +5018,29 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	const stream = ndJsonStream(writable, readable)
 
 	let agentInstance: KimchiAcpAgent | undefined
-	const conn = new AgentSideConnection((c) => {
-		agentInstance = new KimchiAcpAgent(c, options)
+	const getAgent = (): KimchiAcpAgent => {
+		if (!agentInstance) throw new Error("ACP agent connection is not initialized")
 		return agentInstance
-	}, stream)
+	}
+	const app = agent()
+		.onConnect((connection) => {
+			agentInstance = new KimchiAcpAgent(connection.client, options)
+		})
+		.onRequest(methods.agent.initialize, ({ params }) => getAgent().initialize(params))
+		.onRequest(methods.agent.authenticate, ({ params }) => getAgent().authenticate(params))
+		.onRequest(methods.agent.logout, ({ params }) => getAgent().logout(params))
+		.onRequest(methods.agent.session.new, ({ params }) => getAgent().newSession(params))
+		.onRequest(methods.agent.session.load, ({ params }) => getAgent().loadSession(params))
+		.onRequest(methods.agent.session.list, ({ params }) => getAgent().listSessions(params))
+		.onRequest(methods.agent.session.resume, ({ params }) => getAgent().resumeSession(params))
+		.onRequest(methods.agent.session.close, ({ params }) => getAgent().closeSession(params))
+		.onRequest(methods.agent.session.setConfigOption, ({ params }) => getAgent().setSessionConfigOption(params))
+		.onRequest(methods.agent.session.prompt, ({ params }) => getAgent().prompt(params))
+		.onNotification(methods.agent.session.cancel, ({ params }) => getAgent().cancel(params))
+		.onRequest("*", ({ method, params }) => getAgent().extMethod(method, params as Record<string, unknown>))
+		// Unknown extension notifications were ignored by the legacy connection.
+		.onNotification("*", () => {})
+	const conn = app.connect(stream)
 
 	const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP", "SIGINT"]
 	let shuttingDown = false

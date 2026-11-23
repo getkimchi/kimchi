@@ -1,4 +1,4 @@
-import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
+import type { AgentContext, SessionNotification } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { ServerEntry } from "pi-mcp-adapter/types"
 import { describe, expect, it, vi } from "vitest"
@@ -25,8 +25,8 @@ class FakeAgentSession {
 	dispose(): void {}
 }
 
-function createConnection(): AgentSideConnection {
-	return { sessionUpdate: async (_params: SessionNotification) => {} } as unknown as AgentSideConnection
+function createConnection(): AgentContext {
+	return { notify: async (_method: string, _params: SessionNotification) => {} } as unknown as AgentContext
 }
 
 function createProbe(result: ProbeResult): McpProbe {

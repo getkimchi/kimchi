@@ -11,20 +11,21 @@
 // extensions probe `setStatus`/`setWidget` on every model token.
 
 import { randomUUID } from "node:crypto"
-import type {
-	AgentSideConnection,
-	ClientCapabilities,
-	CreateElicitationRequest,
-	CreateElicitationResponse,
-	ElicitationAcceptAction,
-	ElicitationContentValue,
-	ElicitationSchema,
-	PermissionOption,
-	RequestPermissionOutcome,
-	RequestPermissionRequest,
-	SessionNotification,
-	ToolCallUpdate,
-} from "@agentclientprotocol/sdk"
+import {
+	type AgentContext,
+	type ClientCapabilities,
+	type CreateElicitationRequest,
+	type CreateElicitationResponse,
+	type ElicitationAcceptAction,
+	type ElicitationContentValue,
+	type ElicitationSchema,
+	methods,
+	type PermissionOption,
+	type RequestPermissionOutcome,
+	type RequestPermissionRequest,
+	type SessionNotification,
+	type ToolCallUpdate,
+} from "@agentclientprotocol/sdk/unstable"
 import type { ExtensionUIContext, Theme as ThemeType } from "@earendil-works/pi-coding-agent"
 import {
 	type AcpExtMethod,
@@ -54,7 +55,7 @@ const NOOP_THEME = createNoopTheme()
  * semantics where a closed/dismissed dialog never throws.
  */
 export function createAcpUIContext(
-	conn: AgentSideConnection,
+	conn: AgentContext,
 	sessionId: string,
 	clientCapabilities: ClientCapabilities | undefined,
 	send: (params: SessionNotification) => void,
@@ -69,12 +70,12 @@ export function createAcpUIContext(
 	): Promise<T | "aborted"> {
 		try {
 			return await requestWithAbort(
-				conn.extMethod(AVAILABLE_EXT_METHODS[acpMethod], {
+				conn.request<T>(AVAILABLE_EXT_METHODS[acpMethod], {
 					type: REQUEST_TYPE,
 					id: randomUUID(),
 					sessionId,
 					...payload,
-				}) as Promise<T>,
+				}),
 				signal,
 			)
 		} catch (err) {
@@ -90,7 +91,7 @@ export function createAcpUIContext(
 	): void {
 		const acpMethod = AVAILABLE_EXT_NOTIFICATIONS.pi_notify
 		conn
-			.extNotification(acpMethod, {
+			.notify(acpMethod, {
 				type: REQUEST_TYPE,
 				id: randomUUID(),
 				sessionId,
@@ -134,7 +135,10 @@ export function createAcpUIContext(
 			// `unstable_createElicitation` was stabilized to `createElicitation` in
 			// SDK 1.4+ (wire name `elicitation/create` unchanged since 0.19.x), so
 			// both old and new clients reach the same handler.
-			const response = await requestWithAbort<CreateElicitationResponse>(conn.createElicitation(params), signal)
+			const response = await requestWithAbort<CreateElicitationResponse>(
+				conn.request(methods.client.elicitation.create, params),
+				signal,
+			)
 			if (response === "aborted") {
 				throw Error("aborted")
 			}
@@ -189,7 +193,7 @@ export function createAcpUIContext(
 			options,
 		}
 		try {
-			const response = await requestWithAbort(conn.requestPermission(params), signal)
+			const response = await requestWithAbort(conn.request(methods.client.session.requestPermission, params), signal)
 			if (response === "aborted" || response.outcome.outcome === "cancelled") {
 				return { outcome: "cancelled" }
 			}

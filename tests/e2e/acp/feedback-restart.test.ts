@@ -18,7 +18,7 @@ function rate(
 	sessionId: string,
 	params: { sentiment: string; reason?: string },
 ): Promise<unknown> {
-	return fixture.conn.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+	return fixture.conn.request(AVAILABLE_EXT_METHODS.feedback, {
 		sessionId,
 		action: "rate_response",
 		...params,
@@ -51,7 +51,7 @@ describe("ACP integration — rating after a CLI restart", () => {
 			let sessionId: string
 			try {
 				sessionId = await newSession(first, first.workDir)
-				const promptResult = await first.conn.prompt({
+				const promptResult = await first.conn.request("session/prompt", {
 					sessionId,
 					prompt: [{ type: "text", text: "hello" }],
 				})
@@ -72,7 +72,7 @@ describe("ACP integration — rating after a CLI restart", () => {
 				pretrustWorkDir: true,
 			})
 			try {
-				await second.conn.loadSession({ sessionId, cwd: workDir, mcpServers: [] })
+				await second.conn.request("session/load", { sessionId, cwd: workDir, mcpServers: [] })
 
 				const result = await rate(second, sessionId, { sentiment: "positive", reason: "Solved my task" })
 				expect(result).toEqual({ status: "recorded" })
@@ -111,9 +111,12 @@ describe("ACP integration — rating after a CLI restart", () => {
 			let sessionId: string
 			try {
 				sessionId = await newSession(first, first.workDir)
-				const promptPromise = first.conn.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+				const promptPromise = first.conn.request("session/prompt", {
+					sessionId,
+					prompt: [{ type: "text", text: "go" }],
+				})
 				await waitForSessionUpdate(first, sessionId, (u) => u.sessionUpdate === "agent_message_chunk")
-				await first.conn.cancel({ sessionId })
+				await first.conn.notify("session/cancel", { sessionId })
 				const promptResult = await promptPromise
 				expect(promptResult.stopReason).toBe("cancelled")
 			} finally {
@@ -131,7 +134,7 @@ describe("ACP integration — rating after a CLI restart", () => {
 				pretrustWorkDir: true,
 			})
 			try {
-				await second.conn.loadSession({ sessionId, cwd: workDir, mcpServers: [] })
+				await second.conn.request("session/load", { sessionId, cwd: workDir, mcpServers: [] })
 				await expect(rate(second, sessionId, { sentiment: "positive" })).rejects.toMatchObject({
 					code: -32600,
 					message: "Invalid request: no settled response to rate",
@@ -147,7 +150,10 @@ describe("ACP integration — rating after a CLI restart", () => {
 				)
 				expect(assistantEntries.at(-1)?.message?.stopReason).toBe("aborted")
 
-				const next = await second.conn.prompt({ sessionId, prompt: [{ type: "text", text: "try again" }] })
+				const next = await second.conn.request("session/prompt", {
+					sessionId,
+					prompt: [{ type: "text", text: "try again" }],
+				})
 				expect(next.stopReason).toBe("end_turn")
 				const result = await rate(second, sessionId, { sentiment: "positive", reason: "Recovered" })
 				expect(result).toEqual({ status: "recorded" })
@@ -175,7 +181,9 @@ describe("ACP integration — rating after a CLI restart", () => {
 			try {
 				sessionId = await newSession(first, first.workDir)
 				// A terminal provider error fails the prompt call on the wire.
-				await expect(first.conn.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })).rejects.toThrow()
+				await expect(
+					first.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "go" }] }),
+				).rejects.toThrow()
 			} finally {
 				await first.stop()
 			}
@@ -190,7 +198,7 @@ describe("ACP integration — rating after a CLI restart", () => {
 				pretrustWorkDir: true,
 			})
 			try {
-				await second.conn.loadSession({ sessionId, cwd: workDir, mcpServers: [] })
+				await second.conn.request("session/load", { sessionId, cwd: workDir, mcpServers: [] })
 				await expect(rate(second, sessionId, { sentiment: "positive" })).rejects.toMatchObject({
 					code: -32600,
 					message: "Invalid request: no settled response to rate",

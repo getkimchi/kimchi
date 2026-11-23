@@ -8,7 +8,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { RequestError } from "@agentclientprotocol/sdk"
+import type { RequestError } from "@agentclientprotocol/sdk/unstable"
 import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"

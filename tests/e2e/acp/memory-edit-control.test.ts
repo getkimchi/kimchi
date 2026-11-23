@@ -36,14 +36,14 @@ describe("ACP integration — precise memory inspection and editing", () => {
 			await newSession(fixture, fixture.workDir)
 			seedMemoryHome(fixture.homeDir, [{ id: "e2e-fred", text: "the user's dog is named Fred" }])
 
-			const listed = (await fixture.conn.extMethod(MEMORY_LIST, { scope: "personal" })) as {
+			const listed = (await fixture.conn.request(MEMORY_LIST, { scope: "personal" })) as {
 				total: number
 				facts: Array<{ id: string }>
 			}
 			expect(listed.total).toBe(1)
 			expect(listed.facts[0]?.id).toBe("e2e-fred")
 
-			const inspected = (await fixture.conn.extMethod(MEMORY_GET, { id: "e2e-fred", scope: "personal" })) as {
+			const inspected = (await fixture.conn.request(MEMORY_GET, { id: "e2e-fred", scope: "personal" })) as {
 				fact: { memory: string; scope: string; supportCount: number }
 			}
 			expect(inspected).toMatchObject({
@@ -51,7 +51,7 @@ describe("ACP integration — precise memory inspection and editing", () => {
 				fact: { memory: "the user's dog is named Fred", scope: "personal", supportCount: 0 },
 			})
 
-			const updated = (await fixture.conn.extMethod(MEMORY_UPDATE, {
+			const updated = (await fixture.conn.request(MEMORY_UPDATE, {
 				id: "e2e-fred",
 				scope: "personal",
 				kind: "procedural",
@@ -79,7 +79,7 @@ describe("ACP integration — precise memory inspection and editing", () => {
 				confidence: 0,
 				attributes: { note: "reviewed" },
 			})
-			expect(await fixture.conn.extMethod(MEMORY_GET, { id: "e2e-fred", scope: "personal" })).toMatchObject({
+			expect(await fixture.conn.request(MEMORY_GET, { id: "e2e-fred", scope: "personal" })).toMatchObject({
 				id: "e2e-fred",
 				fact: { memory: "the user's dog is named Fred", scope: "personal" },
 			})
@@ -87,12 +87,12 @@ describe("ACP integration — precise memory inspection and editing", () => {
 				fixture.fake.requests.some((request) => request.method === "POST" && request.url.endsWith("/embeddings")),
 			).toBe(true)
 
-			expect(await fixture.conn.extMethod(MEMORY_GET, { id: "missing", scope: "personal" })).toEqual({
+			expect(await fixture.conn.request(MEMORY_GET, { id: "missing", scope: "personal" })).toEqual({
 				id: "missing",
 				fact: null,
 			})
 			await expect(
-				fixture.conn.extMethod(MEMORY_UPDATE, { id: "e2e-fred", scope: "personal", text: "Use pnpm" }),
+				fixture.conn.request(MEMORY_UPDATE, { id: "e2e-fred", scope: "personal", text: "Use pnpm" }),
 			).rejects.toMatchObject({
 				code: -32602,
 			})

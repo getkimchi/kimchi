@@ -49,12 +49,12 @@ describe("ACP export boundary (process cwd ≠ session cwd)", () => {
 	})
 
 	it("prompt text '/export' is model input, not a command: the turn completes and no export file appears in either directory", async () => {
-		const ns = await fixture.conn.newSession({
+		const ns = await fixture.conn.request("session/new", {
 			cwd: fixture.workDir,
 			mcpServers: [],
 		})
 
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId: ns.sessionId,
 			prompt: [{ type: "text", text: "/export" }],
 		})

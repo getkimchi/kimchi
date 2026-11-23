@@ -12,7 +12,7 @@ import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import type {
-	AgentSideConnection,
+	AgentContext,
 	ContentChunk,
 	ListSessionsRequest,
 	LoadSessionRequest,
@@ -20,8 +20,8 @@ import type {
 	RequestPermissionRequest,
 	SessionNotification,
 	TextContent,
-} from "@agentclientprotocol/sdk"
-import { RequestError } from "@agentclientprotocol/sdk"
+} from "@agentclientprotocol/sdk/unstable"
+import { methods, RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -570,19 +570,19 @@ function asSession(fake: FakeAgentSession): AgentSession {
 	return fake as unknown as AgentSession
 }
 
-function makeConn(): AgentSideConnection {
+function makeConn(): AgentContext {
 	const stub = {
-		sessionUpdate: async (_p: SessionNotification) => {},
-		extNotification: async (_method: string, _params: unknown) => {},
+		notify: async (_method: string, _params: unknown) => {},
+		request: vi.fn(),
 	}
-	return stub as unknown as AgentSideConnection
+	return stub as unknown as AgentContext
 }
 
 // Recording variant of makeConn: captures every sessionUpdate the agent emits
 // so tests can assert on the full notification stream (tool_call, partial
 // tool_call_update, terminal tool_call_update, etc.).
 function makeRecordingConn(): {
-	conn: AgentSideConnection
+	conn: AgentContext
 	updates: SessionNotification[]
 	extNotifications: Array<{ method: string; params: unknown }>
 	trace: Array<{ channel: "session-update" | "ext-notification"; label: string }>
@@ -594,18 +594,20 @@ function makeRecordingConn(): {
 	// updates and ext notifications read this instead.
 	const trace: Array<{ channel: "session-update" | "ext-notification"; label: string }> = []
 	const stub = {
-		sessionUpdate: async (p: SessionNotification) => {
-			updates.push(p)
-			trace.push({ channel: "session-update", label: p.update.sessionUpdate })
-		},
-		extNotification: async (method: string, params: unknown) => {
+		notify: async (method: string, params: unknown) => {
+			if (method === "session/update") {
+				const notification = params as SessionNotification
+				updates.push(notification)
+				trace.push({ channel: "session-update", label: notification.update.sessionUpdate })
+				return
+			}
 			extNotifications.push({ method, params })
 			const kind = (params as { kind?: string }).kind
 			trace.push({ channel: "ext-notification", label: kind ? `${method}:${kind}` : method })
 		},
-		requestPermission: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
+		request: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
 	}
-	return { conn: stub as unknown as AgentSideConnection, updates, extNotifications, trace }
+	return { conn: stub as unknown as AgentContext, updates, extNotifications, trace }
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -767,7 +769,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const startup = new FakeAgentSession("startup-todos")
 		const updates: SessionNotification[] = []
 		const conn = makeConn()
-		conn.sessionUpdate = async (notification) => {
+		conn.notify = async (_method: string, notification: SessionNotification) => {
 			updates.push(notification)
 		}
 		startup.bindExtensionsImpl = async () => {
@@ -3443,13 +3445,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	it("registers an ACP permission prompter that maps allow_once through requestPermission", async () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
-			sessionUpdate: async (_p: SessionNotification) => {},
-			extNotification: async (_method: string, _params: unknown) => {},
-			requestPermission: async (params: RequestPermissionRequest) => {
+			notify: async (_method: string, _params: unknown) => {},
+			request: async (_method: string, params: RequestPermissionRequest) => {
 				requests.push(params)
 				return { outcome: { outcome: "selected", optionId: "choice-0" } }
 			},
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		const localFake = new FakeAgentSession("session-permission")
 		const localAgent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
@@ -3496,15 +3497,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	it("maps ACP permission cancellation to a client-denial outcome", async () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
-			sessionUpdate: async (_p: SessionNotification) => {},
-			extNotification: async (_method: string, _params: unknown) => {},
-			requestPermission: async (params: RequestPermissionRequest) => {
+			notify: async (_method: string, _params: unknown) => {},
+			request: async (_method: string, params: RequestPermissionRequest) => {
 				requests.push(params)
 				return {
 					outcome: { outcome: "cancelled" },
 				}
 			},
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		const localFake = new FakeAgentSession("session-permission-cancel")
 		const localAgent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
@@ -8187,7 +8187,7 @@ describe("generated artifacts (live turns)", () => {
 // artifacts flush once, attached to the turn's last text block id (before
 // the next user message, or at branch end). Existence check skipped.
 describe("generated artifacts (replay)", () => {
-	function makeAgent(loader: AcpSessionLoader, conn: AgentSideConnection): KimchiAcpAgent {
+	function makeAgent(loader: AcpSessionLoader, conn: AgentContext): KimchiAcpAgent {
 		return new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
@@ -9301,7 +9301,7 @@ describe("routed model notifications", () => {
 		}
 	}
 
-	async function startRoutedTestSession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+	async function startRoutedTestSession(fake: FakeAgentSession, conn: AgentContext): Promise<KimchiAcpAgent> {
 		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
@@ -9507,7 +9507,7 @@ describe("run boundary notifications", () => {
 	const RUN_START = "_kimchi.dev/background_run_start"
 	const RUN_END = "_kimchi.dev/background_run_end"
 
-	async function startRunBoundarySession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+	async function startRunBoundarySession(fake: FakeAgentSession, conn: AgentContext): Promise<KimchiAcpAgent> {
 		// Background-runs opt-in: these tests exercise run boundaries, which
 		// only fire for clients that opted in at initialize. The unit fabric
 		// skips initialize, so set the same process flag it would set there.
@@ -11606,15 +11606,16 @@ describe("setSessionConfigOption", () => {
 
 		// Create a connection that splits notifications by sessionId
 		const conn = {
-			sessionUpdate: async (msg: SessionNotification) => {
+			notify: async (method: string, params: unknown) => {
+				if (method !== methods.client.session.update) return
+				const msg = params as SessionNotification
 				if (msg.sessionId === "multi-session-1") {
 					updates1.push(msg)
 				} else if (msg.sessionId === "multi-session-2") {
 					updates2.push(msg)
 				}
 			},
-			extNotification: async (_method: string, _params: unknown) => {},
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 
 		let callCount = 0
 		const fake1 = new FakeAgentSession("multi-session-1")
@@ -12750,7 +12751,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		writeFileSync(sessionFile, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`)
 		return sessionFile
 	}
-	function makeAgent(loader: AcpSessionLoader, opts?: { conn?: AgentSideConnection }): KimchiAcpAgent {
+	function makeAgent(loader: AcpSessionLoader, opts?: { conn?: AgentContext }): KimchiAcpAgent {
 		return new KimchiAcpAgent(opts?.conn ?? makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
@@ -13392,19 +13393,6 @@ describe("KimchiAcpAgent loadSession", () => {
 		// Capture the order: replay notifications must land BEFORE the response
 		// resolves so Zed sees a coherent transcript on the load promise.
 		const updatesAtResolve: (typeof updates)[number][] = []
-		const original = (
-			conn as unknown as {
-				sessionUpdate: (p: SessionNotification) => Promise<void>
-			}
-		).sessionUpdate
-		;(
-			conn as unknown as {
-				sessionUpdate: (p: SessionNotification) => Promise<void>
-			}
-		).sessionUpdate = async (p: SessionNotification) => {
-			await original(p)
-		}
-
 		const res = await agent.loadSession({
 			sessionId: "loaded-1",
 			cwd: "/tmp",
