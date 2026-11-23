@@ -37,7 +37,6 @@ function catalog(overrides: Partial<McpCallCatalog> = {}): McpCallCatalog {
 		candidates: [read, write],
 		registeredToolNames: new Set(["mcp", "docs_get_issue", "docs_create_issue"]),
 		staleServers: new Set<string>(),
-		disabledServers: new Set<string>(),
 		...overrides,
 	}
 }
@@ -305,7 +304,10 @@ describe("describeMcpCall unresolved calls", () => {
 	})
 
 	it("returns disabled for a call scoped to a disabled server", () => {
-		const disabled = catalog({ candidates: [read], disabledServers: new Set(["docs"]) })
+		const disabled = catalog({
+			config: { mcpServers: { ...config.mcpServers, docs: { ...config.mcpServers.docs, disabled: true } } },
+			candidates: [read],
+		})
 		expect(describeMcpCall("mcp", { tool: "get_issue", server: "docs" }, disabled)).toEqual(
 			unresolved("gateway", "disabled"),
 		)

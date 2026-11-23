@@ -86,10 +86,9 @@ export interface McpToolCandidate {
 
 export function collectMcpToolCandidates(
 	config: McpConfig,
+	cache: MetadataCache | null,
 	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
-	persistentCache?: MetadataCache | null,
 ): McpToolCandidate[] {
-	const cache = persistentCache === undefined ? loadMetadataCache() : persistentCache
 	if (!cache?.servers && !privateCatalogs?.size) return []
 	const candidates: McpToolCandidate[] = []
 	const reserved = new Set([
@@ -163,7 +162,7 @@ export function collectReadOnlyMcpWireNames(
 	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
 ): string[] {
 	const qualified = new Map<string, boolean>()
-	for (const { serverName, tool, evidence } of collectMcpToolCandidates(config, privateCatalogs)) {
+	for (const { serverName, tool, evidence } of collectMcpToolCandidates(config, loadMetadataCache(), privateCatalogs)) {
 		qualified.set(
 			tool.name,
 			(server === undefined || serverName === server) && !qualified.has(tool.name) && isReadOnlyEvidence(evidence),
@@ -214,7 +213,7 @@ export function isReadOnlyQualifiedMcpGatewayTool(
 	server?: string,
 	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
 ): boolean {
-	const candidates = collectMcpToolCandidates(config, privateCatalogs)
+	const candidates = collectMcpToolCandidates(config, loadMetadataCache(), privateCatalogs)
 	if (server !== undefined) return resolveServerGatewayTool(candidates, toolName, server)
 
 	const exact = candidates.filter((candidate) => candidate.tool.name === toolName)

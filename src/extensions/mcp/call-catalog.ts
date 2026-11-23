@@ -14,12 +14,8 @@ export function snapshotMcpCallCatalog(
 ): McpCallCatalog {
 	const cache = loadMetadataCache()
 	const staleServers = new Set<string>()
-	const disabledServers = new Set<string>()
 	for (const [serverName, definition] of Object.entries(config.mcpServers)) {
-		if (isServerDisabled(definition)) {
-			disabledServers.add(serverName)
-			continue
-		}
+		if (isServerDisabled(definition)) continue
 		const privateEntry = privateCatalogs.get(serverName)
 		if (privateEntry !== undefined) {
 			if (!isPrivateEntryUsable(privateEntry, definition)) staleServers.add(serverName)
@@ -32,9 +28,8 @@ export function snapshotMcpCallCatalog(
 	}
 	return {
 		config,
-		candidates: collectMcpToolCandidates(config, privateCatalogs, cache ?? null),
-		registeredToolNames: new Set(registeredToolNames),
+		candidates: collectMcpToolCandidates(config, cache, privateCatalogs),
+		registeredToolNames,
 		staleServers,
-		disabledServers,
 	}
 }

@@ -12,37 +12,34 @@ export type UnresolvedReason = "unknown" | "ambiguous" | "stale" | "disabled" | 
 export type McpCallVia = "direct" | "gateway" | "namespace"
 export type McpMetadataOperation = "status" | "server" | "instructions" | "describe" | "search"
 
-export type McpCallFacts =
-	| { kind: "not_mcp" }
-	| { kind: "metadata"; op: McpMetadataOperation }
-	| {
-			kind: "tool"
-			via: McpCallVia
-			server: string
-			tool: string
-			evidence: ReadOnlyEvidence
-	  }
-	| { kind: "unresolved"; via: McpCallVia; why: UnresolvedReason }
+type MetadataFacts = { kind: "metadata"; op: McpMetadataOperation }
+type ToolFacts<V extends McpCallVia> = {
+	kind: "tool"
+	via: V
+	server: string
+	tool: string
+	evidence: ReadOnlyEvidence
+}
+type UnresolvedFacts<V extends McpCallVia> = { kind: "unresolved"; via: V; why: UnresolvedReason }
+type ResolvedFacts<V extends McpCallVia> = ToolFacts<V> | UnresolvedFacts<V>
 
-export type McpGatewayInputFacts =
-	| { kind: "metadata"; op: McpMetadataOperation }
-	| {
-			kind: "tool"
-			via: "gateway"
-			server: string
-			tool: string
-			evidence: ReadOnlyEvidence
-	  }
-	| { kind: "unresolved"; via: "gateway"; why: UnresolvedReason }
+export type McpCallFacts = { kind: "not_mcp" } | MetadataFacts | ResolvedFacts<McpCallVia>
+export type McpGatewayInputFacts = MetadataFacts | ResolvedFacts<"gateway">
+
+/** Gateway input after shape validation, before any catalog lookup. */
+export type McpGatewayCall =
+	| MetadataFacts
+	| { kind: "tool"; tool: string; server?: string }
+	| UnresolvedFacts<"gateway">
 
 export interface McpCallCatalog {
 	config: McpConfig
 	candidates: readonly McpToolCandidate[]
 	registeredToolNames: ReadonlySet<string>
 	staleServers: ReadonlySet<string>
-	disabledServers: ReadonlySet<string>
 }
 
+const DESCRIBE_KEYS = new Set(["describe", "server"])
 const SEARCH_KEYS = new Set(["search", "searchMode", "regex", "includeSchemas", "limit", "offset", "server"])
 const TOOL_KEYS = new Set(["tool", "args", "server"])
 const NESTED_TOOL_KEYS = new Set(["tool", "args"])
@@ -65,46 +62,38 @@ function hasValidNestedArgs(input: Record<string, unknown>): boolean {
 	return input.args === undefined || typeof input.args === "string" || isObject(input.args)
 }
 
-function unresolved<T extends McpCallVia>(via: T, why: UnresolvedReason) {
-	return { kind: "unresolved" as const, via, why }
+function unresolved<V extends McpCallVia>(via: V, why: UnresolvedReason): UnresolvedFacts<V> {
+	return { kind: "unresolved", via, why }
 }
 
-function resolved(candidate: McpToolCandidate, via: McpCallVia): McpCallFacts {
-	return {
-		kind: "tool",
-		via,
-		server: candidate.serverName,
-		tool: candidate.tool.originalName,
-		evidence: candidate.evidence,
-	}
-}
-
-function resolveMatches(
+function resolveMatches<V extends McpCallVia>(
 	catalog: McpCallCatalog,
 	candidates: readonly McpToolCandidate[],
-	via: McpCallVia,
-): McpCallFacts {
-	if (candidates.length === 1 && candidates[0] !== undefined) {
-		const problem = serverProblem(catalog, candidates[0].serverName)
-		return problem === undefined ? resolved(candidates[0], via) : unresolved(via, problem)
+	via: V,
+): ResolvedFacts<V> {
+	const [match] = candidates
+	if (candidates.length !== 1 || match === undefined) {
+		return unresolved(via, candidates.length === 0 ? "unknown" : "ambiguous")
 	}
-	return unresolved(via, candidates.length === 0 ? "unknown" : "ambiguous")
+	const problem = serverProblem(catalog, match.serverName)
+	if (problem !== undefined) return unresolved(via, problem)
+	return { kind: "tool", via, server: match.serverName, tool: match.tool.originalName, evidence: match.evidence }
 }
 
 function serverProblem(catalog: McpCallCatalog, serverName: string): UnresolvedReason | undefined {
 	const definition = catalog.config.mcpServers[serverName]
 	if (definition === undefined) return "unknown"
-	if (catalog.disabledServers.has(serverName) || isServerDisabled(definition)) return "disabled"
+	if (isServerDisabled(definition)) return "disabled"
 	if (catalog.staleServers.has(serverName)) return "stale"
 	return undefined
 }
 
-function resolveOnServer(
+function resolveOnServer<V extends "gateway" | "namespace">(
 	catalog: McpCallCatalog,
 	toolName: string,
 	serverName: string,
-	via: "gateway" | "namespace",
-): McpCallFacts {
+	via: V,
+): ResolvedFacts<V> {
 	const problem = serverProblem(catalog, serverName)
 	if (problem !== undefined) return unresolved(via, problem)
 	const scoped = catalog.candidates.filter((candidate) => candidate.serverName === serverName)
@@ -138,36 +127,28 @@ function prefixedServerScope(config: McpConfig, toolName: string): PrefixedServe
 		: { kind: "ambiguous" }
 }
 
-function resolveGatewayTool(input: Record<string, unknown>, catalog: McpCallCatalog): McpGatewayInputFacts {
-	if (
-		typeof input.tool !== "string" ||
-		input.tool.length === 0 ||
-		!hasOnlyKeys(input, TOOL_KEYS) ||
-		!hasValidServer(input) ||
-		!hasValidNestedArgs(input)
-	)
-		return unresolved("gateway", "malformed")
-
-	const toolName = input.tool
-	const serverName = typeof input.server === "string" ? input.server : undefined
-	if (serverName !== undefined) return resolveOnServer(catalog, toolName, serverName, "gateway") as McpGatewayInputFacts
+function resolveMcpGatewayTool(
+	call: { tool: string; server?: string },
+	catalog: McpCallCatalog,
+): ResolvedFacts<"gateway"> {
+	const { tool: toolName, server: serverName } = call
+	if (serverName !== undefined) return resolveOnServer(catalog, toolName, serverName, "gateway")
 
 	const exact = catalog.candidates.filter((candidate) => candidate.tool.name === toolName)
-	if (exact.length > 0) return resolveMatches(catalog, exact, "gateway") as McpGatewayInputFacts
+	if (exact.length > 0) return resolveMatches(catalog, exact, "gateway")
 	const original = catalog.candidates.filter((candidate) => candidate.tool.originalName === toolName)
-	if (original.length > 0) return resolveMatches(catalog, original, "gateway") as McpGatewayInputFacts
+	if (original.length > 0) return resolveMatches(catalog, original, "gateway")
 
 	const scope = prefixedServerScope(catalog.config, toolName)
 	if (scope.kind === "ambiguous") return unresolved("gateway", "ambiguous")
-	if (scope.kind === "server")
-		return resolveOnServer(catalog, toolName, scope.serverName, "gateway") as McpGatewayInputFacts
+	if (scope.kind === "server") return resolveOnServer(catalog, toolName, scope.serverName, "gateway")
 	return resolveMatches(
 		catalog,
 		catalog.candidates.filter((candidate) =>
 			getToolNameCandidates(candidate.tool.originalName, candidate.serverName, candidate.prefix).has(toolName),
 		),
 		"gateway",
-	) as McpGatewayInputFacts
+	)
 }
 
 function isNonnegativeInteger(input: unknown): input is number {
@@ -185,7 +166,8 @@ function hasValidSearchOptions(input: Record<string, unknown>): boolean {
 	)
 }
 
-export function describeMcpGatewayInput(input: unknown, catalog: McpCallCatalog): McpGatewayInputFacts {
+/** Validates the gateway input shape without consulting any catalog. */
+export function parseMcpGatewayInput(input: unknown): McpGatewayCall {
 	if (!isObject(input)) return unresolved("gateway", "malformed")
 	const keys = Object.keys(input)
 	if (keys.length === 0) return { kind: "metadata", op: "status" }
@@ -202,7 +184,7 @@ export function describeMcpGatewayInput(input: unknown, catalog: McpCallCatalog)
 		return hasValidServer(input) ? { kind: "metadata", op: "server" } : unresolved("gateway", "malformed")
 	}
 	if (typeof input.describe === "string") {
-		return hasOnlyKeys(input, new Set(["describe", "server"])) && hasValidServer(input)
+		return hasOnlyKeys(input, DESCRIBE_KEYS) && hasValidServer(input)
 			? { kind: "metadata", op: "describe" }
 			: unresolved("gateway", "malformed")
 	}
@@ -211,14 +193,27 @@ export function describeMcpGatewayInput(input: unknown, catalog: McpCallCatalog)
 			? { kind: "metadata", op: "search" }
 			: unresolved("gateway", "malformed")
 	}
-	if (keys.includes("tool")) return resolveGatewayTool(input, catalog)
+	if (
+		typeof input.tool === "string" &&
+		input.tool.length > 0 &&
+		hasOnlyKeys(input, TOOL_KEYS) &&
+		hasValidServer(input) &&
+		hasValidNestedArgs(input)
+	) {
+		return { kind: "tool", tool: input.tool, server: typeof input.server === "string" ? input.server : undefined }
+	}
 	return unresolved("gateway", "malformed")
+}
+
+export function describeMcpGatewayInput(input: unknown, catalog: McpCallCatalog): McpGatewayInputFacts {
+	const call = parseMcpGatewayInput(input)
+	return call.kind === "tool" ? resolveMcpGatewayTool(call, catalog) : call
 }
 
 function resolveDirect(toolName: string, catalog: McpCallCatalog): McpCallFacts | undefined {
 	const exact = catalog.candidates.filter((candidate) => candidate.tool.name === toolName)
 	if (exact.length > 1) return unresolved("direct", "ambiguous")
-	if (exact.length === 1 && exact[0] !== undefined) {
+	if (exact.length === 1) {
 		return catalog.registeredToolNames.has(toolName)
 			? resolveMatches(catalog, exact, "direct")
 			: unresolved("direct", "unknown")
@@ -248,16 +243,12 @@ function resolveNamespace(toolName: string, input: unknown, catalog: McpCallCata
 	const owners = Object.entries(catalog.config.mcpServers).filter(
 		([serverName]) => namespaceProxyName(serverName) === toolName,
 	)
-	const enabled = owners.filter(
-		([serverName, definition]) => !catalog.disabledServers.has(serverName) && !isServerDisabled(definition),
-	)
+	const enabled = owners.filter(([, definition]) => !isServerDisabled(definition))
 	if (enabled.length > 1) return unresolved("namespace", "ambiguous")
 	if (enabled.length === 1 && enabled[0] !== undefined) {
 		return resolveOnServer(catalog, input.tool, enabled[0][0], "namespace")
 	}
-	if (owners.some(([serverName]) => catalog.staleServers.has(serverName))) return unresolved("namespace", "stale")
-	if (owners.length > 0) return unresolved("namespace", "disabled")
-	return unresolved("namespace", "unknown")
+	return unresolved("namespace", owners.length > 0 ? "disabled" : "unknown")
 }
 
 export function describeMcpCall(toolName: string, input: unknown, catalog: McpCallCatalog): McpCallFacts {

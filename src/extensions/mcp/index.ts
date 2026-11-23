@@ -30,7 +30,7 @@ import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { snapshotMcpCallCatalog } from "./call-catalog.js"
-import { describeMcpCall, describeMcpGatewayInput, type McpCallCatalog } from "./call-facts.js"
+import { describeMcpCall, parseMcpGatewayInput } from "./call-facts.js"
 import { DEFAULT_MCP_PROTOCOL_VERSION, getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
@@ -104,25 +104,15 @@ function isHiddenFromPlanning(toolName: string, isReadOnlyTool: (wireName: strin
 	return toolName === MCP_SCRIPT_TOOL || (toolName !== MCP_PROXY_TOOL && !isReadOnlyTool(toolName))
 }
 
-// Plan keeps its existing read-only qualifier while the shared parser owns shape validation.
-const PLAN_GATEWAY_SHAPE_CATALOG: McpCallCatalog = {
-	config: { mcpServers: {} },
-	candidates: [],
-	registeredToolNames: new Set(),
-	staleServers: new Set(),
-	disabledServers: new Set(),
-}
-
 /** Positive allowlist for every adapter dispatch shape that is read-only in plan mode. */
 function isAllowlistedGatewayCall(
 	params: unknown,
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): boolean {
-	const facts = describeMcpGatewayInput(params, PLAN_GATEWAY_SHAPE_CATALOG)
-	if (facts.kind === "metadata") return true
-	if (facts.kind !== "tool" && facts.why !== "unknown") return false
-	const input = params as { tool: string; server?: string }
-	return isReadOnlyGatewayTool(input.tool, input.server)
+	// Plan keeps its existing read-only qualifier; the shared parser owns shape validation.
+	const call = parseMcpGatewayInput(params)
+	if (call.kind === "metadata") return true
+	return call.kind === "tool" && isReadOnlyGatewayTool(call.tool, call.server)
 }
 
 /** Planning never uses the file-attribution heuristic to authorize gateway state changes. */
