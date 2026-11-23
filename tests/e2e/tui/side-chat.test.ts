@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { expect, test } from "@microsoft/tui-test"
+import { expect, Key, test } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { poll } from "@microsoft/tui-test/lib/utils/poll.js"
 import { viewText, waitForText } from "./support/assertions.js"
@@ -87,6 +87,9 @@ test("the add-to-chat pill follows the selection and hides when it scrolls out o
 		},
 		async (_fixture, trace) => {
 			terminal.submit("Write me a long report.")
+			// The output may finish a few rows above the latest message under
+			// parallel runners. Anchor the scroll assertion at the known endpoint.
+			terminal.keyPress(Key.End, { ctrl: true })
 			await waitForText(terminal, "Report line 40", { full: false })
 			trace.step("long assistant report streamed, viewport pinned at its end")
 
