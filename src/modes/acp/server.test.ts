@@ -6844,15 +6844,15 @@ describe("generated artifacts (live turns)", () => {
 		})
 	}
 
-	const attachArtifactRecorder = () => {
+	const attachArtifactRecorder = (source: FakeAgentSession = fake) => {
 		const recorder = createExtensionApi()
 		artifactRecorderExtension(recorder.api)
-		const sessionManager = asSession(fake).sessionManager
+		const sessionManager = asSession(source).sessionManager
 		const context = { ...createContext({ cwd: tmpDir }), sessionManager }
 		// Match production's shared execution snapshot and concurrency scope.
 		setSnapshotArtifactsOptIn(sessionManager, true)
 		onTestFinished(() => setSnapshotArtifactsOptIn(sessionManager, false))
-		fake.subscribe((event) => {
+		source.subscribe((event) => {
 			for (const handler of recorder.getHandlers(event.type)) void handler(event, context)
 		})
 		return recorder
@@ -7417,6 +7417,134 @@ describe("generated artifacts (live turns)", () => {
 			stopReason: "end_turn",
 		})
 		expect(artifactChunks()).toEqual([])
+	})
+
+	it("does not attribute a direct write from another session to a waiting Bash prompt", async () => {
+		const waitingSession = new FakeAgentSession("session-waiting-for-bash", tmpDir)
+		const writingSession = new FakeAgentSession("session-direct-writer", tmpDir)
+		const sessionQueue = [waitingSession, writingSession]
+		const sessionFactory: AcpSessionFactory = async () => {
+			const next = sessionQueue.shift()
+			if (!next) throw new Error("Unexpected extra session")
+			return asSession(next)
+		}
+		const rec = makeRecordingConn()
+		const concurrentAgent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+		await concurrentAgent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
+		const waitingId = (await concurrentAgent.newSession({ cwd: tmpDir, mcpServers: [] })).sessionId
+		const writingId = (await concurrentAgent.newSession({ cwd: tmpDir, mcpServers: [] })).sessionId
+		const waitingRecorder = attachArtifactRecorder(waitingSession)
+		const writingRecorder = attachArtifactRecorder(writingSession)
+		const otherPromptReport = join(tmpDir, "other-prompt.html")
+		let signalBashStarted!: () => void
+		let signalWriterFinished!: () => void
+		const bashStarted = new Promise<void>((resolve) => {
+			signalBashStarted = resolve
+		})
+		const writerFinished = new Promise<void>((resolve) => {
+			signalWriterFinished = resolve
+		})
+		const finishRecordedPrompt = (
+			source: FakeAgentSession,
+			toolCallId: string,
+			toolName: string,
+			args: Record<string, unknown>,
+			text: string,
+			output: string,
+		) => {
+			const message = makeAssistantMessage([
+				{ type: "text", text },
+				{ type: "toolCall", id: toolCallId, name: toolName, arguments: args },
+			])
+			source.emit({ type: "message_end", message })
+			source.emit({
+				type: "turn_end",
+				message,
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId,
+						toolName,
+						content: output ? [{ type: "text", text: output }] : [],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			source.emit(agentEnd())
+			source.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+		const waitArgs = { command: "node wait.js" }
+		waitingSession.promptImpl = async () => {
+			waitingSession.emit({ type: "agent_start" })
+			waitingSession.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-other-prompt-bash",
+				toolName: "bash",
+				args: waitArgs,
+			})
+			signalBashStarted()
+			await writerFinished
+			waitingSession.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-other-prompt-bash",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			finishRecordedPrompt(waitingSession, "tc-other-prompt-bash", "bash", waitArgs, "Bash done.", "")
+		}
+		const writeArgs = { path: otherPromptReport, content: "<h1>Other prompt</h1>" }
+		writingSession.promptImpl = async () => {
+			writingSession.emit({ type: "agent_start" })
+			writingSession.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-other-prompt-write",
+				toolName: "write",
+				args: writeArgs,
+			})
+			writeFileSync(otherPromptReport, writeArgs.content)
+			writingSession.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-other-prompt-write",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote other prompt." }] },
+				isError: false,
+			})
+			finishRecordedPrompt(
+				writingSession,
+				"tc-other-prompt-write",
+				"write",
+				writeArgs,
+				"Other prompt done.",
+				"Wrote other prompt.",
+			)
+			signalWriterFinished()
+		}
+
+		const waitingPrompt = concurrentAgent.prompt({
+			sessionId: waitingId,
+			prompt: [{ type: "text", text: "Wait for a silent command" }],
+		})
+		await bashStarted
+		await concurrentAgent.prompt({ sessionId: writingId, prompt: [{ type: "text", text: "Write directly" }] })
+		await waitingPrompt
+
+		expect(artifactChunks(rec.updates).map((chunk) => chunk.uri)).toEqual([pathToFileURL(otherPromptReport).href])
+		expect(writingRecorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)).toEqual([
+			{
+				v: 1,
+				artifacts: [{ path: otherPromptReport, name: "other-prompt.html", mimeType: "text/html", sniffed: false }],
+			},
+		])
+		expect(waitingRecorder.getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
 	})
 
 	it("keeps a first prompt's template out of a second prompt that writes the final report and runs Bash", async () => {

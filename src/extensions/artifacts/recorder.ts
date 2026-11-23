@@ -20,6 +20,7 @@ import {
 	type ArtifactFileSnapshot,
 	type ArtifactSnapshotClaim,
 	artifactsFromToolCall,
+	observeDirectArtifactWrite,
 	releaseArtifactSnapshot,
 	snapshotArtifactFiles,
 } from "./detect.js"
@@ -158,6 +159,9 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 	const completedShellCalls = new Map<string, Artifact[]>()
 
 	pi.on("tool_execution_start", (event, ctx) => {
+		// Explicit writers retain their own paths even when execution and result
+		// events from another session overlap. Nested snapshot capture is untouched.
+		observeDirectArtifactWrite(event.toolName, event.args, ctx.cwd)
 		if (event.parentToolCallId || !snapshotArtifactsOptedIn(ctx.sessionManager)) return
 		try {
 			const startedAt = Date.now()

@@ -13,7 +13,7 @@
 // the user's own environment.
 
 import { type Dirent, readdirSync, realpathSync, statSync } from "node:fs"
-import { basename, extname, join, resolve } from "node:path"
+import { basename, dirname, extname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { parseCommandSegments } from "../permissions/taxonomy.js"
 import { resolveToolPath } from "./paths.js"
@@ -236,7 +236,12 @@ export type ArtifactSnapshotClaim = {
 	consumer: "acp" | "recorder"
 }
 
-type CwdExecutionObservation = { cwd: string; active: number; ambiguous: boolean }
+type CwdExecutionObservation = {
+	cwd: string
+	active: number
+	ambiguous: boolean
+	directWritePaths: Set<string>
+}
 type SharedSnapshot = {
 	snapshot: ArtifactFileSnapshot | undefined
 	consumers: Set<ArtifactSnapshotClaim["consumer"]>
@@ -300,6 +305,23 @@ function canonicalCwd(cwd: string): string {
 	}
 }
 
+function rememberDirectArtifactPath(path: string): void {
+	const cwd = canonicalCwd(dirname(path))
+	cwdExecutions.get(cwd)?.directWritePaths.add(join(cwd, basename(path)))
+}
+
+/** Keep direct write/edit ownership ahead of any active shell snapshot. */
+export function observeDirectArtifactWrite(toolName: string, args: unknown, cwd: string): void {
+	try {
+		if (toolName !== "write" && toolName !== "edit") return
+		const rawPath = (args as { path?: unknown } | null | undefined)?.path
+		if (typeof rawPath !== "string" || !isArtifactExtension(rawPath)) return
+		rememberDirectArtifactPath(resolveToolPath(rawPath, cwd))
+	} catch {
+		// Provenance tracking must never prevent the tool from executing.
+	}
+}
+
 function observeExecution(snapshot: ArtifactFileSnapshot | undefined): CwdExecutionObservation | undefined {
 	if (!snapshot) return undefined
 	const cwd = canonicalCwd(snapshot.cwd)
@@ -310,7 +332,7 @@ function observeExecution(snapshot: ArtifactFileSnapshot | undefined): CwdExecut
 		// The shared object keeps the interval ambiguous after either one ends.
 		observation.ambiguous = true
 	} else {
-		observation = { cwd, active: 0, ambiguous: false }
+		observation = { cwd, active: 0, ambiguous: false, directWritePaths: new Set() }
 		cwdExecutions.set(cwd, observation)
 	}
 	observation.active++
@@ -373,13 +395,18 @@ export function releaseArtifactSnapshot(claim: ArtifactSnapshotClaim): void {
 }
 
 function changedSnapshotArtifacts(snapshot: ArtifactFileSnapshot, opts: DetectOpts): Artifact[] {
-	if (snapshotExecutions.get(snapshot)?.ambiguous) return []
+	const observation = snapshotExecutions.get(snapshot)
+	if (observation?.ambiguous) return []
 	const out: Artifact[] = []
 	const current = [...supportedDirectoryFiles(snapshot.cwd).entries()].sort(([a], [b]) => a.localeCompare(b))
 	for (const [path, stamp] of current) {
 		if (out.length >= MAX_BASH_ARTIFACTS) break
 		const before = snapshot.files.get(path)
 		if (before && before.mtimeMs === stamp.mtimeMs && before.size === stamp.size) continue
+		// Direct writes may belong to another prompt in the same directory.
+		// Their known provenance excludes only that path; other shell-created
+		// files can still be attached to this command.
+		if (observation?.directWritePaths.has(join(observation.cwd, basename(path)))) continue
 		const artifact = artifactFromPath(path, snapshot.cwd, opts, "snapshot")
 		if (artifact) out.push(artifact)
 	}
@@ -541,7 +568,9 @@ export function artifactsFromToolCall(
 			if (typeof path !== "string") return []
 			// No mtime window here: the write/edit tool authored the file itself.
 			const artifact = artifactFromPath(path, cwd, {}, "write")
-			return artifact ? [artifact] : []
+			if (!artifact) return []
+			rememberDirectArtifactPath(artifact.path)
+			return [artifact]
 		}
 		if (toolName === "bash" || toolName === "powershell") {
 			const context = shellCommandContext(toolName, args, cwd)

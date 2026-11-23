@@ -371,6 +371,21 @@ describe("artifactsFromToolCall", () => {
 			releaseArtifactSnapshot(claimA)
 		})
 
+		it("does not attribute another prompt's direct write to a waiting Bash snapshot", () => {
+			const claim = { scope: {}, toolCallId: "waiting-bash", consumer: "acp" as const }
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claim)
+			const otherPromptReport = touch("other-prompt.html")
+			expect(
+				artifactsFromToolCall("write", { path: otherPromptReport }, textResult("Wrote other prompt."), cwd).map(
+					({ path, origin }) => ({ path, origin }),
+				),
+			).toEqual([{ path: otherPromptReport, origin: "write" }])
+			expect(artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, { fileSnapshot })).toEqual(
+				[],
+			)
+			releaseArtifactSnapshot(claim)
+		})
+
 		it("shares ACP and recorder snapshots until both consumers release them", () => {
 			const scope = {}
 			const acpClaim = { scope, toolCallId: "shared-call", consumer: "acp" as const }

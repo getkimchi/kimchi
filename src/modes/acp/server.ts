@@ -94,7 +94,11 @@ import {
 	prepareCredentialForLogin,
 } from "../../credential-staleness.js"
 import { markDeclaredArtifactsEmitted } from "../../extensions/artifacts/declared-emissions.js"
-import { releaseArtifactSnapshot, snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
+import {
+	observeDirectArtifactWrite,
+	releaseArtifactSnapshot,
+	snapshotArtifactFiles,
+} from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import { setSnapshotArtifactsOptIn, snapshotArtifactsOptedIn } from "../../extensions/artifacts/snapshot-policy.js"
@@ -2797,6 +2801,7 @@ export class KimchiAcpAgent implements Agent {
 				// tool_call notifications the client would have to reconcile against
 				// a turn it already considers over.
 				if (!turn) return
+				observeDirectArtifactWrite(event.toolName, event.args, entry.cwd)
 				if (isHiddenToolCall(event.toolName, event.args)) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					// A hidden call may already have an allocated ACP id if the permission
