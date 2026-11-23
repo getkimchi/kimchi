@@ -34,6 +34,7 @@ import {
 	getClientSupportsElicitation,
 	getClientSupportsMethod,
 } from "./capabilities.js"
+import { withAcpInteraction } from "./child-interaction-registry.js"
 import { requestWithAbort } from "./utils.js"
 
 type DialogResponse = {
@@ -70,12 +71,17 @@ export function createAcpUIContext(
 	): Promise<T | "aborted"> {
 		try {
 			return await requestWithAbort(
-				conn.request<T>(AVAILABLE_EXT_METHODS[acpMethod], {
-					type: REQUEST_TYPE,
-					id: randomUUID(),
-					sessionId,
-					...payload,
-				}),
+				(requestOptions) =>
+					conn.request<T>(
+						AVAILABLE_EXT_METHODS[acpMethod],
+						{
+							type: REQUEST_TYPE,
+							id: randomUUID(),
+							sessionId,
+							...payload,
+						},
+						requestOptions,
+					),
 				signal,
 			)
 		} catch (err) {
@@ -131,23 +137,25 @@ export function createAcpUIContext(
 			message: message ? `${title}: ${message}` : title,
 			requestedSchema,
 		}
-		try {
-			// `unstable_createElicitation` was stabilized to `createElicitation` in
-			// SDK 1.4+ (wire name `elicitation/create` unchanged since 0.19.x), so
-			// both old and new clients reach the same handler.
-			const response = await requestWithAbort<CreateElicitationResponse>(
-				conn.request(methods.client.elicitation.create, params),
-				signal,
-			)
-			if (response === "aborted") {
-				throw Error("aborted")
+		return withAcpInteraction(sessionId, async () => {
+			try {
+				// `unstable_createElicitation` was stabilized to `createElicitation` in
+				// SDK 1.4+ (wire name `elicitation/create` unchanged since 0.19.x), so
+				// both old and new clients reach the same handler.
+				const response = await requestWithAbort<CreateElicitationResponse>(
+					(requestOptions) => conn.request(methods.client.elicitation.create, params, requestOptions),
+					signal,
+				)
+				if (response === "aborted") {
+					throw Error("aborted")
+				}
+				if (response.action !== "accept") return undefined
+				return normalizeElicitationContent(response.content)
+			} catch (err) {
+				logError("elicitation/create", err)
+				return "aborted"
 			}
-			if (response.action !== "accept") return undefined
-			return normalizeElicitationContent(response.content)
-		} catch (err) {
-			logError("elicitation/create", err)
-			return "aborted"
-		}
+		})
 	}
 
 	// Dual-shape compat: clients on 0.19-era SDKs may return loose
@@ -192,16 +200,21 @@ export function createAcpUIContext(
 			toolCall,
 			options,
 		}
-		try {
-			const response = await requestWithAbort(conn.request(methods.client.session.requestPermission, params), signal)
-			if (response === "aborted" || response.outcome.outcome === "cancelled") {
+		return withAcpInteraction(sessionId, async () => {
+			try {
+				const response = await requestWithAbort(
+					(requestOptions) => conn.request(methods.client.session.requestPermission, params, requestOptions),
+					signal,
+				)
+				if (response === "aborted" || response.outcome.outcome === "cancelled") {
+					return { outcome: "cancelled" }
+				}
+				return { outcome: "selected", optionId: response.outcome.optionId }
+			} catch (err) {
+				logError(`request_permission(${kind})`, err)
 				return { outcome: "cancelled" }
 			}
-			return { outcome: "selected", optionId: response.outcome.optionId }
-		} catch (err) {
-			logError(`request_permission(${kind})`, err)
-			return { outcome: "cancelled" }
-		}
+		})
 	}
 
 	const ui: ExtensionUIContext = {

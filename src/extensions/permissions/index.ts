@@ -7,7 +7,7 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
-import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { resolveAcpInteractionPrompter } from "../../modes/acp/child-interaction-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
@@ -197,23 +197,20 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 export { notifyFermentActive }
 
 function canPrompt(ctx: ExtensionContext, worker = false): boolean {
-	if (worker || isAgentWorker()) return false
-
-	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
+	// Local announced children use their own ACP session. Unexposed workers
+	// use their owning ACP root. Neither path assumes the client opted in.
+	const acpPrompter = resolveAcpInteractionPrompter(ctx.sessionManager.getSessionId())
 	if (ctx.mode === "rpc" && acpPrompter) return true
-
-	if (ctx.hasUI) return true
-	return false
+	if (worker || isAgentWorker()) return false
+	return ctx.hasUI
 }
 
 function resolvePrompter(ctx: ExtensionContext, worker = false): ToolPermissionPrompter | undefined {
+	const acpPrompter = resolveAcpInteractionPrompter(ctx.sessionManager.getSessionId())
+	if (ctx.mode === "rpc" && acpPrompter) return acpPrompter
 	if (worker || isAgentWorker()) return undefined
 
-	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
-	if (ctx.mode === "rpc" && acpPrompter) return acpPrompter
-
-	if (ctx.hasUI) return terminalPrompter(ctx)
-	return undefined
+	return ctx.hasUI ? terminalPrompter(ctx) : undefined
 }
 
 /**

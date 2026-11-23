@@ -204,6 +204,7 @@ import {
 	MCP_OAUTH_TURN_CAPABILITY,
 	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
+import { registerAcpChildInteraction, registerAcpRootUIContext } from "./child-interaction-registry.js"
 import {
 	COMPACT_COMMAND_ENTRY_TYPE,
 	composeAvailableCommands,
@@ -622,6 +623,7 @@ type SubagentRoute = {
 	parentSessionId: string
 	parentToolCallId: string
 	record: SessionRecord
+	cleanupInteraction: () => void
 }
 
 function createProjectionSessionRecord(session: AgentSession, cwd: string, parentSessionId: string): SessionRecord {
@@ -680,6 +682,7 @@ export class KimchiAcpAgent {
 	/** Announced native children are readable projections, not directly addressable ACP sessions. */
 	private subagentRoutes = new Map<string, SubagentRoute>()
 	private subagentIdsByParentTool = new Map<string, Map<string, string>>()
+	private rootUiCleanups = new Map<string, () => void>()
 	private readonly commandsRefresher = createCommandsRefresher({
 		sessions: () => this.sessions,
 		broadcast: (sessionId) => this.scheduleAvailableCommandsUpdate(sessionId),
@@ -1179,7 +1182,12 @@ export class KimchiAcpAgent {
 		// Build the ExtensionUIContext that pi's runner routes `ctx.ui.*` calls
 		// through. Bound to a single session for its lifetime — the connection,
 		// capabilities, and `send` callback are all session-scoped state.
-		return createAcpUIContext(this.conn, session.sessionId, this.clientCapabilities, (params) => this.send(params))
+		const context = createAcpUIContext(this.conn, session.sessionId, this.clientCapabilities, (params) =>
+			this.send(params),
+		)
+		this.rootUiCleanups.get(session.sessionId)?.()
+		this.rootUiCleanups.set(session.sessionId, registerAcpRootUIContext(session.sessionId, context))
+		return context
 	}
 
 	private async bindAcpExtensions(session: AgentSession, uiContext: ExtensionUIContext): Promise<void> {
@@ -1228,6 +1236,7 @@ export class KimchiAcpAgent {
 	// the removed wire name via the extMethod fallback); the name's `unstable_`
 	// prefix intentionally signals "not part of the current spec".
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
+		this.rejectSubagentMutation(params.sessionId)
 		const record = this.sessions.get(params.sessionId)
 		if (!record) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
@@ -1237,6 +1246,7 @@ export class KimchiAcpAgent {
 	}
 
 	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
+		this.rejectSubagentMutation(params.sessionId)
 		const record = this.sessions.get(params.sessionId)
 		if (!record) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
@@ -1360,6 +1370,7 @@ export class KimchiAcpAgent {
 
 	private async loadSessionInternal(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		const sessionId = params.sessionId
+		this.rejectSubagentMutation(sessionId)
 		const existing = this.sessions.get(sessionId)
 		if (existing) {
 			// Mid-turn attach is opt-in; clients passing the flag declared the
@@ -1511,6 +1522,7 @@ export class KimchiAcpAgent {
 	}
 
 	async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+		this.rejectSubagentMutation(params.sessionId)
 		await this.closeSessionRecord(params.sessionId)
 		return {}
 	}
@@ -1530,6 +1542,7 @@ export class KimchiAcpAgent {
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
+		this.rejectSubagentMutation(params.sessionId)
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
@@ -1867,6 +1880,9 @@ export class KimchiAcpAgent {
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
+		// Child cancellation is not advertised in this wave. The draft requires
+		// unsupported child cancellation to be an ignored notification.
+		if (this.subagentRoutes.has(params.sessionId)) return
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
@@ -1898,6 +1914,7 @@ export class KimchiAcpAgent {
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+		this.rejectSubagentMutation(params.sessionId)
 		switch (method) {
 			case AVAILABLE_EXT_METHODS.probe_mcp_server: {
 				const result = await handleProbeMcpServer(this.mcpProbe, params)
@@ -2085,6 +2102,7 @@ export class KimchiAcpAgent {
 		// resolves — in that window a pending PromptResponse would otherwise hang
 		// until process exit. Reject symmetrically so the caller's await settles.
 		for (const entry of this.sessions.values()) {
+			this.cleanupSubagentsForParent(entry.session.sessionId)
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			cancelPendingPrompts(entry)
 			unregisterAcpPrompter(entry.session.sessionId, entry.ownPrompter)
@@ -2103,6 +2121,7 @@ export class KimchiAcpAgent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		this.sessions.delete(sessionId)
+		this.cleanupSubagentsForParent(sessionId)
 		clearRatingWindow(sessionId)
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
@@ -2461,7 +2480,15 @@ export class KimchiAcpAgent {
 	 * event, and disposing without emitting it would leak extension state
 	 * (token vaults, etc.) for a session that did start.
 	 */
+	private rejectSubagentMutation(sessionId: unknown): void {
+		if (typeof sessionId === "string" && this.subagentRoutes.has(sessionId)) {
+			throw RequestError.invalidParams(undefined, `subagent session ${sessionId} is read-only`)
+		}
+	}
+
 	private async disposeOrphanSession(session: AgentSession): Promise<void> {
+		this.rootUiCleanups.get(session.sessionId)?.()
+		this.rootUiCleanups.delete(session.sessionId)
 		try {
 			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		} catch {
@@ -2477,6 +2504,8 @@ export class KimchiAcpAgent {
 		if (entry.turn) releaseTurnArtifactSnapshots(entry.turn)
 		if (entry.unsolicitedTurn) releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 		entry.planTracker?.stop()
+		this.rootUiCleanups.get(entry.session.sessionId)?.()
+		this.rootUiCleanups.delete(entry.session.sessionId)
 		// Stop the adapter from publishing skill-refresh results: a discovery
 		// pass still in flight must not commit an obsolete snapshot (or
 		// rebuild prompt options) after the session is gone.
@@ -2542,11 +2571,6 @@ export class KimchiAcpAgent {
 
 		const cwd = absoluteSubagentCwd(event.cwd, parent.cwd)
 		const record = createProjectionSessionRecord(session, cwd, event.parentSessionId)
-		this.subagentRoutes.set(event.sessionId, {
-			parentSessionId: event.parentSessionId,
-			parentToolCallId: event.toolCallId,
-			record,
-		})
 		let byTool = this.subagentIdsByParentTool.get(event.parentSessionId)
 		if (!byTool) {
 			byTool = new Map()
@@ -2557,9 +2581,56 @@ export class KimchiAcpAgent {
 		// Ordering is part of the protocol: every child notification and every
 		// parent link is downstream of this parent-envelope announcement.
 		this.send(subagentAnnouncement(event.parentSessionId, event, cwd))
+
+		const childUiContext = createAcpUIContext(this.conn, event.sessionId, this.clientCapabilities, (params) =>
+			this.send(params),
+		)
+		const cleanupInteraction = registerAcpChildInteraction({
+			childSessionId: event.sessionId,
+			parentSessionId: event.parentSessionId,
+			uiContext: childUiContext,
+			permissionPrompter: createAcpPermissionPrompter(
+				this.conn,
+				event.sessionId,
+				childUiContext,
+				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				record.cwd,
+			),
+			onRequiresActionChange: (waiting) => {
+				if (waiting) {
+					this.send({
+						sessionId: event.parentSessionId,
+						update: {
+							sessionUpdate: "subagent_update",
+							sessionId: event.sessionId,
+							state: { state: "requires_action" },
+						},
+					})
+				} else if (record.turn || record.unsolicitedTurn) {
+					this.send(subagentStateUpdate(event.parentSessionId, event.sessionId, "running"))
+				}
+			},
+		})
+		this.subagentRoutes.set(event.sessionId, {
+			parentSessionId: event.parentSessionId,
+			parentToolCallId: event.toolCallId,
+			record,
+			cleanupInteraction,
+		})
 		for (const message of subagentPromptMessages(event.parentSessionId, event)) this.send(message)
 		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
 		this.startPlanTracker(record, event.sessionId)
+	}
+
+	private cleanupSubagentsForParent(parentSessionId: string): void {
+		for (const [childSessionId, route] of this.subagentRoutes) {
+			if (route.parentSessionId !== parentSessionId) continue
+			route.record.planTracker?.stop()
+			route.record.unsubscribe()
+			route.cleanupInteraction()
+			this.subagentRoutes.delete(childSessionId)
+		}
+		this.subagentIdsByParentTool.delete(parentSessionId)
 	}
 
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {

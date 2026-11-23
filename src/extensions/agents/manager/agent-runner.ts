@@ -16,6 +16,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
+import { createAcpWorkerUIContext, registerAcpWorkerSession } from "../../../modes/acp/child-interaction-registry.js"
 import { isResourceEnabled } from "../../../resources/store.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
@@ -33,6 +34,7 @@ import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { ModelRole } from "../../orchestration/model-registry/types.js"
+import permissionsExtension from "../../permissions/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { pinnedLanguageSection } from "../../prompt-construction/system-prompt.js"
 import requestTimingExtension from "../../request-timing.js"
@@ -780,14 +782,24 @@ ${skillLines}`
 
 	const { session } = await createAgentSession(sessionOpts)
 
-	await session.bindExtensions({
-		onError: (err) => {
-			options.onToolActivity?.({
-				status: "completed",
-				toolName: `extension-error:${err.extensionPath}`,
-			})
-		},
-	})
+	// Capture ownership before session_start: permission hooks may run during
+	// binding, and later announcement must not retarget an in-flight request.
+	const unregisterAcpWorker = registerAcpWorkerSession(session.sessionId, ctx.sessionManager.getSessionId())
+	const acpUiContext = createAcpWorkerUIContext(session.sessionId)
+	try {
+		await session.bindExtensions({
+			...(acpUiContext ? { uiContext: acpUiContext, mode: "rpc" as const } : {}),
+			onError: (err) => {
+				options.onToolActivity?.({
+					status: "completed",
+					toolName: `extension-error:${err.extensionPath}`,
+				})
+			},
+		})
+	} catch (error) {
+		unregisterAcpWorker()
+		throw error
+	}
 
 	// Requested-but-unregistered tool names (e.g. a `tools:` list naming a tool
 	// no extension registered in the child session) — filled during tool
@@ -991,7 +1003,12 @@ ${skillLines}`
 		clearInterval(inactivityInterval)
 		inactivityInterval = undefined
 	}
-	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
+	// The manager owns hard-fallback disposal of resumable workers. Keep the
+	// parent association alive across runAgent/resumeAgent until that cleanup.
+	options.onRuntimeCleanupRegistered?.(() => {
+		cleanupInactivityInterval()
+		unregisterAcpWorker()
+	})
 
 	const durationTimer = effectiveMaxDuration
 		? setTimeout(() => {
@@ -1181,6 +1198,10 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 		bashExtension,
 		infrastructureBreakerExtension,
 		codexCorrelationExtension,
+		// Root CLI sessions load this in cli.ts. Workers construct their own
+		// loader, so the same safety gate must be installed explicitly before
+		// the ACP child/root prompter can ever be consulted.
+		permissionsExtension,
 	]
 	if (shouldRegisterDapForTools(deps.toolNames)) {
 		extensionFactories.push(dapExtension)

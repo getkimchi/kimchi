@@ -195,6 +195,7 @@ import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import permissionsExtension from "../../permissions/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import requestTimingExtension from "../../request-timing.js"
 import telemetryExtension from "../../telemetry/index.js"
@@ -886,7 +887,7 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[6]
+				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[7]
 				const childApi = createExtensionApi()
 				await runInlineExtension(factory, childApi.api)
 				const tool = childApi.getRegisteredTool("submit_agent_report")
@@ -3221,6 +3222,7 @@ describe("buildInlineExtensionFactories", () => {
 			clampFactory,
 			infrastructureBreakerExtension,
 			codexCorrelationExtension,
+			permissionsExtension,
 			dapExtension,
 			workerReportFactory,
 			mockCreateKimchiMcpAdapterExtension.mock.results[0].value,
