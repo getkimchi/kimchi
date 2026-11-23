@@ -19,9 +19,15 @@
  * fork and resume), so rule edits are picked up without restarting Kimchi.
  * Files with malformed frontmatter are skipped with a console warning —
  * they never break the session.
+ *
+ * Trust: `.agents/rules/` ships with the repo and rule bodies reach the
+ * system prompt and steers, so discovery is gated on project trust
+ * (`isProjectScopeAllowed`, fail-closed) like every other reader of project
+ * scope — an untrusted cwd gets no rules, no block, no steers.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { survivingSteerNames } from "../steer-survival.js"
@@ -84,6 +90,14 @@ export default function agentsRulesExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		const cwd = ctx.cwd
+		// Project-trust gate (fail-closed: no recorded decision means
+		// untrusted): rule files ship with the repo, so their bodies must not
+		// reach the system prompt or steers before the folder is trusted.
+		if (!isProjectScopeAllowed(cwd)) {
+			engine = undefined
+			pendingSteer.length = 0
+			return
+		}
 		const { rules, diagnostics } = discoverAgentRules(cwd)
 		for (const diagnostic of diagnostics) {
 			console.warn(`agents-rules: skipping rule ${diagnostic.path}: ${diagnostic.message}`)

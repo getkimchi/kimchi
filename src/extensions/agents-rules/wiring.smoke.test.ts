@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { renderSystemPromptBlocks } from "../prompt-construction/system-prompt-blocks.js"
 import { SYSTEM_REMINDER_CLOSE, SYSTEM_REMINDER_OPEN } from "../steer-marker.js"
@@ -34,6 +35,10 @@ beforeEach(() => {
 	// every pi bound to the session id, and module state persists across tests
 	// within this file — a shared id would leak earlier tests' blocks.
 	SESSION_ID = `${SESSION_PREFIX}${Math.random().toString(36).slice(2)}`
+	// The extension gates discovery on project trust (fail-closed): default
+	// every test's temp cwd to trusted; the trust-gate test opts back out.
+	resetProjectScopeTrustForTests()
+	setProjectScopeTrusted(dir, true)
 })
 
 afterEach(() => {
@@ -185,5 +190,38 @@ describe("agents-rules extension wiring", () => {
 		await mock.emit("session_start", { type: "session_start" }, makeCtx())
 		blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
 		expect(blocks.map((b) => b.content).join("\n")).toContain("SECOND RULE")
+	})
+
+	it("loads no rules, block or steers while the cwd is untrusted", async () => {
+		writeRule("always.mdc", "alwaysApply: true", "ALWAYS BODY")
+		writeRule("onfile.mdc", 'globs: "src/api/**"', "GLOB BODY")
+
+		// No trust decision for this cwd: a cloned repo's .agents/rules must
+		// not reach the system prompt or steers before the folder is trusted.
+		setProjectScopeTrusted(dir, false)
+
+		const mock = createExtensionApi()
+		agentsRulesExtension(mock.api)
+		await mock.emit("session_start", { type: "session_start" }, makeCtx())
+
+		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
+		expect(blocks.filter((b) => b.owner === "agents-rules")).toEqual([])
+
+		await mock.emit(
+			"tool_call",
+			{ type: "tool_call", toolName: "edit", input: { path: join(dir, "src/api/x.ts") } },
+			makeCtx(),
+		)
+		await mock.emit("tool_result", { type: "tool_result" }, makeCtx())
+		expect(mock.sendMessage).not.toHaveBeenCalled()
+
+		// Trust granted later re-fires discovery on the next session_start.
+		setProjectScopeTrusted(dir, true)
+		await mock.emit("session_start", { type: "session_start" }, makeCtx())
+		expect(
+			renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
+				.map((b) => b.content)
+				.join("\n"),
+		).toContain("ALWAYS BODY")
 	})
 })

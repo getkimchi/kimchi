@@ -25,6 +25,12 @@ rules refine them) and deduplicated by absolute path.
 Rules are re-discovered on every session start (including `/reload`, fork, and
 resume), so edits to rule files are picked up without restarting Kimchi.
 
+Because rule files ship with the repository and their bodies reach the system
+prompt (always-apply rules) or steers (glob rules), `.agents/rules/` is a
+trust-requiring project resource: a folder that contains it triggers the
+project-trust prompt, and until the folder is trusted no rules are loaded at
+all (fail closed, see [project trust](project-trust.md)).
+
 ## File format
 
 ```markdown
