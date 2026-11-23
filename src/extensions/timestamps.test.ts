@@ -41,6 +41,7 @@ function createFakeChat(): FakeChat {
 	const container = new Container()
 	Reflect.set(host, "chatContainer", container)
 	Reflect.set(host, "toolOutputExpanded", false)
+	Reflect.set(host, "ui", { requestRender: () => {} })
 	Reflect.set(host, "getUserMessageText", (message: { content?: unknown }) => message.content ?? "")
 	Reflect.set(host, "getMarkdownThemeWithSettings", () => undefined)
 	Reflect.set(host, "runtimeHost", {
@@ -297,5 +298,29 @@ describe("tool and bash completion timestamps", () => {
 		expect(rendered.slice(1).join("\n")).toContain("hello")
 		expect(component.getCommand()).toBe("printf hello")
 		expect(component.getOutput()).toBe("hello")
+	})
+
+	it("preserves a replayed bash completion across later duplicate completion calls", () => {
+		const chat = createFakeChat()
+		vi.useFakeTimers()
+		vi.setSystemTime(FIXED_MS + 100_000)
+		addMessage(chat, {
+			role: "bashExecution",
+			command: "printf replay",
+			output: "replayed output",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			excludeFromContext: false,
+			timestamp: FIXED_MS,
+		})
+		const component = chat.container.children.find((child) => child instanceof BashExecutionComponent)
+		expect(component).toBeInstanceOf(BashExecutionComponent)
+		if (!(component instanceof BashExecutionComponent)) return
+
+		expectTimestampRow(component.render(80), "bash completed")
+		component.setComplete(0, false)
+		expectTimestampRow(component.render(80), "bash completed")
+		expect(component.render(80).join("\n")).toContain("replayed output")
 	})
 })

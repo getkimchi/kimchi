@@ -79,3 +79,5 @@ Datetime labels appear above these settled transcript blocks:
 Tool labels show **completion time**. Live tool start times are transient, while final tool-result timestamps are persisted, so completion time works consistently during both live execution and session replay.
 
 Transient spinners, notifications, dialogs, menus, and the input editor do not get labels. Timestamps are presentation-only: they are not added to model messages, tool inputs or results, session files, ACP/client output, print output, or exported HTML. ACP behavior is unchanged in the main turn, between turns, and during replay.
+
+**ACP deferral:** `/timestamps` is intentionally not advertised in the ACP available-commands palette because it controls Kimchi's interactive TUI renderer only. ACP clients such as Studio and Zed own their own transcript presentation, so any future timestamp display there belongs in the client rather than in timestamps injected into agent message text.

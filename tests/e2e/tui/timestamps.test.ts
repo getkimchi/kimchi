@@ -41,7 +41,7 @@ function persistHistoricalTimes(agentDir: string): void {
 	for (const entry of entries) {
 		entry.timestamp = HISTORICAL_ISO
 		const message = entry.message as { role?: string; timestamp?: number } | undefined
-		if (message && ["user", "assistant", "toolResult"].includes(message.role ?? "")) {
+		if (message && ["user", "assistant", "toolResult", "bashExecution"].includes(message.role ?? "")) {
 			message.timestamp = HISTORICAL_MS
 		}
 	}
@@ -93,6 +93,12 @@ test("UTC timestamps surround live activity and preserve historical time on repl
 			expect(live.indexOf("timestamp-target.txt")).toBeGreaterThan(-1)
 			trace.step("live prompt, completed tool, and response render with UTC datetime labels")
 
+			terminal.submit("!printf replay-bash-output")
+			await waitForText(terminal, (text) => text.split("replay-bash-output").length - 1 >= 2, {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			trace.step("bash execution completed and was persisted for replay")
+
 			terminal.submit("/quit")
 			await waitForText(terminal, EXIT_MARKER, { timeoutMs: STARTUP_TIMEOUT_MS })
 			persistHistoricalTimes(fixture.agentDir)
@@ -104,7 +110,9 @@ test("UTC timestamps surround live activity and preserve historical time on repl
 			expect(replayed).toContain(HISTORICAL_LABEL)
 			expect(replayed).toContain("Timestamped response.")
 			expect(replayed).toContain("timestamp-target.txt")
-			trace.step("--continue replays stored message/result times rather than resume time")
+			expect(replayed).toContain("replay-bash-output")
+			expect(replayed).toContain("bash completed ·")
+			trace.step("--continue replays stored message, tool-result, and bash times rather than resume time")
 		},
 	)
 })

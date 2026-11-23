@@ -35,7 +35,9 @@ const displayConfig: Required<TranscriptTimestampConfig> = {
 const componentTimestamps = new WeakMap<object, number>()
 const formatterCache = new Map<string, Intl.DateTimeFormat>()
 const patchedRenderers = new WeakSet<object>()
+const patchedAdapters = new WeakSet<object>()
 const installedAdapterRoots = new WeakSet<object>()
+const missingPatchDiagnostics = new Set<string>()
 
 /** Resolve "local" through the host's Intl implementation; invalid values use local. */
 export function resolveTranscriptTimezone(value?: string): string {
@@ -48,8 +50,12 @@ export function resolveTranscriptTimezone(value?: string): string {
 export function formatTranscriptTimestamp(timestampMs: number, timezone?: string): string | undefined {
 	if (!Number.isFinite(timestampMs)) return undefined
 	if (timezone !== undefined && normalizeTuiTimezone(timezone) === undefined) return undefined
+	return formatResolvedTimestamp(timestampMs, resolveTranscriptTimezone(timezone))
+}
 
-	const resolvedTimezone = resolveTranscriptTimezone(timezone)
+/** Render-time path: configuration already resolved and validated this zone. */
+function formatResolvedTimestamp(timestampMs: number, resolvedTimezone: string): string | undefined {
+	if (!Number.isFinite(timestampMs)) return undefined
 	try {
 		let formatter = formatterCache.get(resolvedTimezone)
 		if (!formatter) {
@@ -88,6 +94,12 @@ export function configureTranscriptTimestamps(config: TranscriptTimestampConfig)
 	displayConfig.timezone = resolveTranscriptTimezone(config.timezone)
 }
 
+function warnMissingPatch(target: string): void {
+	if (missingPatchDiagnostics.has(target)) return
+	missingPatchDiagnostics.add(target)
+	console.warn(`transcript timestamps: ${target} not found; timestamp rendering is unavailable for this component`)
+}
+
 function validTimestamp(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
@@ -108,7 +120,10 @@ interface TimestampRenderable {
 function patchTimestampRenderer(prototype: TimestampRenderable, label: string): void {
 	if (patchedRenderers.has(prototype)) return
 	const originalRender = prototype.render
-	if (typeof originalRender !== "function") return
+	if (typeof originalRender !== "function") {
+		warnMissingPatch(`${prototype.constructor.name}.render`)
+		return
+	}
 	patchedRenderers.add(prototype)
 
 	prototype.render = function timestampedRender(width: number): string[] {
@@ -116,7 +131,7 @@ function patchTimestampRenderer(prototype: TimestampRenderable, label: string): 
 		if (!displayConfig.enabled || lines.length === 0) return lines
 		const timestamp = messageTimestamp(this)
 		if (timestamp === undefined) return lines
-		const text = formatTranscriptTimestamp(timestamp, displayConfig.timezone)
+		const text = formatResolvedTimestamp(timestamp, displayConfig.timezone)
 		if (!text) return lines
 
 		const theme = liveTheme()
@@ -135,8 +150,12 @@ interface InteractiveModeAdapter {
 function patchAddMessageToChat(): void {
 	const prototype = InteractiveMode.prototype as unknown as InteractiveModeAdapter
 	const original = prototype.addMessageToChat
-	if (typeof original !== "function" || patchedRenderers.has(prototype)) return
-	patchedRenderers.add(prototype)
+	if (typeof original !== "function") {
+		warnMissingPatch("InteractiveMode.addMessageToChat")
+		return
+	}
+	if (patchedAdapters.has(prototype)) return
+	patchedAdapters.add(prototype)
 
 	prototype.addMessageToChat = function timestampedAddMessage(message, options) {
 		const children = this.chatContainer?.children
@@ -195,6 +214,8 @@ export function installTranscriptTimestampAdapters(): void {
 			if (isPartial !== true) componentTimestamps.set(this, validTimestamp(result.timestamp) ?? Date.now())
 			return output
 		}
+	} else {
+		warnMissingPatch("ToolExecutionComponent.updateResult")
 	}
 
 	const bashPrototype = BashExecutionComponent.prototype as unknown as BashExecutionAdapter
@@ -207,9 +228,13 @@ export function installTranscriptTimestampAdapters(): void {
 			fullOutputPath,
 		) {
 			const output = originalBashComplete.call(this, exitCode, cancelled, truncationResult, fullOutputPath)
-			componentTimestamps.set(this, Date.now())
+			// A replay may have supplied a historical time before calling this
+			// method again. Only live, previously-unstamped executions use now.
+			if (!componentTimestamps.has(this)) componentTimestamps.set(this, Date.now())
 			return output
 		}
+	} else {
+		warnMissingPatch("BashExecutionComponent.setComplete")
 	}
 }
 
