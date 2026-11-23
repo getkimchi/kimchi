@@ -25,7 +25,18 @@ Source of truth: `src/extensions/artifacts/detect.ts`. Three inputs per tool cal
 
 1. `details.artifacts` declarations (above).
 2. `write`/`edit` tool args (`args.path`).
-3. Bash/powershell detection — two sources per call, merged and deduped: redirect targets taken from `args.command` (`>`out.csv``, `>>`, via the taxonomy segmenter; stderr/fd forms excluded), and file-path tokens sniffed from the result text. Candidates must pass an extension allowlist, path resolution (a leading `cd`/`Set-Location` segment redirects relative paths), a live existence check, and an mtime window: the file must have been touched at-or-after the tool call started. Tree-materializing git commands (checkout/merge/pull/…) are excluded — they refresh mtimes of files the agent did not author; invocations are unwrapped through common launchers (sudo/doas/env/time/…) first, and anything unrecognized degrades to plain sniffing.
+3. Bash/powershell detection — three sources per call, merged and deduped: redirect targets taken from `args.command` (`>`out.csv``, `>>`, via the taxonomy segmenter; stderr/fd forms excluded), file-path tokens sniffed from the result text, and command-scoped file snapshots. The snapshots cover allowlisted files directly in the effective working directory at execution start and end; newly created files and files whose size or mtime changed are candidates even when stdout is empty. Unchanged pre-existing files are excluded. If two claimed shell commands overlap in the same canonical working directory, both snapshots are ambiguous and none of their filesystem deltas are attributed; redirect and output-sniffed sources are unaffected. Known producer paths from direct write/edit calls, validated redirect targets and output-sniffed paths, and valid tool declarations in the same canonical directory are excluded from other active snapshots, without suppressing other deltas. Direct writers retain their exact known paths from execution start, even when the writer starts before a shell snapshot. A non-snapshot producer with unknown output paths, including nested, non-opted, or custom tool executions, makes overlapping same-directory filesystem deltas ambiguous regardless of completion order. ACP and the recorder share this execution observation, release it at tool completion or settlement, and never capture an ineligible filesystem snapshot. Legacy calls retain their own detections, including when nested or not opted into snapshots. The scope is deliberately shallow — no recursive tree or filesystem monitoring. Candidates from every source must pass an extension allowlist, path resolution (a leading `cd`/`Set-Location` segment redirects relative paths), a live existence check, and an mtime window: the file must have been touched at-or-after the tool call started. Tree-materializing git commands (checkout/merge/pull/…) are excluded — they refresh mtimes of files the agent did not author; invocations are unwrapped through common launchers (sudo/doas/env/time/…) first, and anything unrecognized degrades to plain sniffing. A pre-exit background handoff (`details.handoff === true`) skips only the
+filesystem-snapshot source; redirect and output-sniffed detection remains
+unchanged, since background commands do not contribute snapshot-derived
+artifacts. Nested tool executions with a `parentToolCallId` skip only
+filesystem-snapshot capture and detection. Their declared, write/edit,
+redirect, and output-sniffed artifacts retain their existing live,
+recorded, and replayed behavior; their tool-call UI is unchanged.
+Only the filesystem-snapshot source requires an explicit
+`clientCapabilities._meta["kimchi.dev"].artifacts: true` opt-in. With no
+opt-in, live ACP and the recorder skip snapshot capture and replay omits
+snapshot-marked entries. Existing write/edit, declared, redirect, and
+output-sniffed artifacts retain their prior behavior on every surface.
 
 ## Emission and replay
 
@@ -36,20 +47,28 @@ Source of truth: `src/extensions/artifacts/detect.ts`. Three inputs per tool cal
 ## Replay from recorded rows
 
 The artifact-recorder extension (`src/extensions/artifacts/recorder.ts`, both
-surfaces) runs the same detection at every turn end, accumulates across the
-agent run, and appends the result once at `agent_settled` (once per prompt —
+surfaces) runs the same detection at every turn end. For foreground shell
+calls it claims the same cached pre-execution snapshot as live ACP through
+the shared SessionManager and tool-call ID. The startup directory scan runs
+once; each consumer releases its claim after diffing at tool execution end.
+Turn-end detection remains the backward-compatible fallback for events without
+execution-start captures. Results accumulate across the
+agent run, and the recorder appends one row at `agent_settled` (once per prompt —
 `agent_end` may fire multiple times per prompt across auto-retry/compaction
 chains) — so the row lands after the prompt's last assistant message in the
 session log, the same position the live ACP flush emits artifact chunks. The
 row is a session custom entry: `{ customType: "kimchi-artifacts", data: { v: 1,
-artifacts: [{ path, name, mimeType, sniffed }] } }` (`sniffed: true` =
-bash/powershell-sniffed, eviction-eligible at the cap the way live is) —
+artifacts: [{ path, name, mimeType, sniffed, snapshot? }] } }` (`sniffed: true` =
+output- or snapshot-derived, eviction-eligible at the cap the way live is;
+optional `snapshot: true` marks filesystem-delta entries and is absent on
+legacy rows) —
 already stat-gated, deduped, label-resolved and capped (32). `pi.appendEntry` persists it into the
 session log, so rows travel with branch trees (kill-branch, intersections)
 exactly like the turns that produced them.
 
-On replay, sighting a row adopts it verbatim (`TurnArtifactBuffer
-.adoptRecorded`): replay shows exactly what the live turn emitted,
+On replay, sighting a row adopts it through the same capability filter
+(`TurnArtifactBuffer.adoptRecorded`): replay shows exactly what that client
+was allowed to see live, while legacy and non-snapshot rows replay verbatim,
 including links to files since deleted or renamed, and never ghosts that
 never existed (candidates were stat-gated at record time). Replay does NOT
 re-run detection — detection is live-only, stat-verified by construction;

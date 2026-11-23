@@ -12,8 +12,8 @@
 // is an explicit user action. Script-capable types (.html/.svg) open in
 // the user's own environment.
 
-import { statSync } from "node:fs"
-import { basename, extname } from "node:path"
+import { type Dirent, readdirSync, realpathSync, statSync } from "node:fs"
+import { basename, dirname, extname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { parseCommandSegments } from "../permissions/taxonomy.js"
 import { resolveToolPath } from "./paths.js"
@@ -30,11 +30,11 @@ export type Artifact = {
 	/**
 	 * Provenance, assigned once here in detect: "declared" (tool's own
 	 * details.artifacts — mid-turn emission trigger), "write" (write/edit
-	 * args — intentional), "sniffed" (bash/powershell output —
-	 * eviction-eligible at the turn cap). Recorded rows serialize it as
-	 * the sniffed boolean.
+	 * args — intentional), "sniffed" (bash/powershell output), or
+	 * "snapshot" (a filesystem delta hidden behind the client's artifact
+	 * opt-in). Sniffed/snapshot entries are eviction-eligible at the cap.
 	 */
-	origin: "declared" | "write" | "sniffed"
+	origin: "declared" | "write" | "sniffed" | "snapshot"
 }
 
 /** Lowercase extension → MIME type. Fixed allowlist for v1 (not configurable). */
@@ -219,6 +219,239 @@ function navigatedCwd(segments: CommandSegments, cwd: string): string {
 
 type CommandSegments = ReturnType<typeof parseCommandSegments>
 
+type FileStamp = { mtimeMs: number; size: number }
+
+/**
+ * Pre-execution view of allowlisted files directly in a shell command's
+ * effective working directory. A delta is an authorship candidate, not
+ * proof that this command wrote the file. The deliberately shallow scope
+ * avoids whole-tree/filesystem monitoring.
+ */
+export type ArtifactFileSnapshot = { cwd: string; files: ReadonlyMap<string, FileStamp> }
+
+/** One consumer of a shared execution claim (live ACP or recorder). */
+export type ArtifactSnapshotClaim = {
+	scope: object
+	toolCallId: string
+	consumer: "acp" | "recorder"
+	/** Ineligible calls retain producer tracking without capturing a file snapshot. */
+	capture?: boolean
+}
+
+type ExecutionObservationKind = "snapshot" | "direct-path" | "opaque"
+type CwdExecutionObservation = {
+	cwd: string
+	active: number
+	activeSnapshots: number
+	activeOpaqueProducers: number
+	ambiguous: boolean
+	knownWriterPaths: Set<string>
+}
+type SharedSnapshot = {
+	snapshot: ArtifactFileSnapshot | undefined
+	consumers: Set<ArtifactSnapshotClaim["consumer"]>
+	observation: CwdExecutionObservation
+	observationKind: ExecutionObservationKind
+	executionReleased: boolean
+}
+
+const sharedSnapshots = new WeakMap<object, Map<string, SharedSnapshot>>()
+const cwdExecutions = new Map<string, CwdExecutionObservation>()
+const snapshotExecutions = new WeakMap<ArtifactFileSnapshot, CwdExecutionObservation>()
+
+function isArtifactExtension(path: string): boolean {
+	return extname(path).toLowerCase() in ARTIFACT_EXTENSIONS
+}
+
+function supportedDirectoryFiles(cwd: string): Map<string, FileStamp> {
+	const files = new Map<string, FileStamp>()
+	let entries: Dirent[]
+	try {
+		entries = readdirSync(cwd, { withFileTypes: true })
+	} catch {
+		return files
+	}
+	for (const entry of entries) {
+		if (!isArtifactExtension(entry.name)) continue
+		try {
+			const path = join(cwd, entry.name)
+			const stats = statSync(path)
+			if (stats.isFile()) files.set(path, { mtimeMs: stats.mtimeMs, size: stats.size })
+		} catch {
+			// A concurrently removed or unreadable entry is a conservative miss.
+		}
+	}
+	return files
+}
+
+function shellCommandContext(toolName: string, args: unknown, cwd: string) {
+	if (toolName !== "bash" && toolName !== "powershell") return undefined
+	const command = (args as { command?: unknown } | null | undefined)?.command
+	if (typeof command !== "string") return undefined
+	const segments = parseCommandSegments(command)
+	if (isTreeMaterializingGit(segments)) return null
+	return { segments, cwd: navigatedCwd(segments, cwd) }
+}
+
+function captureArtifactSnapshot(toolName: string, args: unknown, cwd: string): ArtifactFileSnapshot | undefined {
+	try {
+		const context = shellCommandContext(toolName, args, cwd)
+		if (!context) return undefined
+		return { cwd: context.cwd, files: supportedDirectoryFiles(context.cwd) }
+	} catch {
+		return undefined
+	}
+}
+
+function canonicalCwd(cwd: string): string {
+	try {
+		return realpathSync(cwd)
+	} catch {
+		return resolve(cwd)
+	}
+}
+
+function rememberArtifactPath(path: string): void {
+	const cwd = canonicalCwd(dirname(path))
+	cwdExecutions.get(cwd)?.knownWriterPaths.add(join(cwd, basename(path)))
+}
+
+/** Shared bookkeeping for every non-snapshot source; snapshot candidates never call this. */
+function rememberProducedArtifacts(artifacts: readonly Artifact[]): void {
+	for (const artifact of artifacts) rememberArtifactPath(artifact.path)
+}
+
+/** Keep direct write/edit ownership ahead of any active shell snapshot. */
+export function observeDirectArtifactWrite(toolName: string, args: unknown, cwd: string): void {
+	try {
+		if (toolName !== "write" && toolName !== "edit") return
+		const rawPath = (args as { path?: unknown } | null | undefined)?.path
+		if (typeof rawPath !== "string" || !isArtifactExtension(rawPath)) return
+		rememberArtifactPath(resolveToolPath(rawPath, cwd))
+	} catch {
+		// Provenance tracking must never prevent the tool from executing.
+	}
+}
+
+function observeExecution(
+	cwd: string,
+	snapshot: ArtifactFileSnapshot | undefined,
+	kind: ExecutionObservationKind,
+): CwdExecutionObservation {
+	const canonical = canonicalCwd(cwd)
+	let observation = cwdExecutions.get(canonical)
+	if (!observation) {
+		observation = {
+			cwd: canonical,
+			active: 0,
+			activeSnapshots: 0,
+			activeOpaqueProducers: 0,
+			ambiguous: false,
+			knownWriterPaths: new Set(),
+		}
+		cwdExecutions.set(canonical, observation)
+	}
+	// Unknown producer outputs make overlapping filesystem deltas ambiguous,
+	// regardless of which call finishes first. Precise direct-write paths do
+	// not suppress the rest of the directory. Ambiguity stays through its interval.
+	if (kind === "snapshot") {
+		if (observation.activeSnapshots > 0 || observation.activeOpaqueProducers > 0) observation.ambiguous = true
+		observation.activeSnapshots++
+	} else if (kind === "opaque") {
+		if (observation.activeSnapshots > 0) observation.ambiguous = true
+		observation.activeOpaqueProducers++
+	}
+	observation.active++
+	if (snapshot) snapshotExecutions.set(snapshot, observation)
+	return observation
+}
+
+/**
+ * Capture eligible file state before a tool runs and share producer ownership.
+ * ACP and the recorder pass the same SessionManager as `claim.scope`, so
+ * they share one execution observation (and at most one directory scan).
+ */
+export function snapshotArtifactFiles(
+	toolName: string,
+	args: unknown,
+	cwd: string,
+	claim?: ArtifactSnapshotClaim,
+): ArtifactFileSnapshot | undefined {
+	if (!claim) return captureArtifactSnapshot(toolName, args, cwd)
+	let calls = sharedSnapshots.get(claim.scope)
+	if (!calls) {
+		calls = new Map()
+		sharedSnapshots.set(claim.scope, calls)
+	}
+	const existing = calls.get(claim.toolCallId)
+	if (existing) {
+		existing.consumers.add(claim.consumer)
+		return existing.snapshot
+	}
+	const snapshot = claim.capture === false ? undefined : captureArtifactSnapshot(toolName, args, cwd)
+	let executionCwd = snapshot?.cwd ?? cwd
+	if (!snapshot) {
+		try {
+			executionCwd = shellCommandContext(toolName, args, cwd)?.cwd ?? cwd
+		} catch {
+			// A malformed command can still run through its legacy fallback.
+		}
+	}
+	const observationKind: ExecutionObservationKind = snapshot
+		? "snapshot"
+		: toolName === "write" || toolName === "edit"
+			? "direct-path"
+			: "opaque"
+	calls.set(claim.toolCallId, {
+		snapshot,
+		consumers: new Set([claim.consumer]),
+		observation: observeExecution(executionCwd, snapshot, observationKind),
+		observationKind,
+		executionReleased: false,
+	})
+	return snapshot
+}
+
+/** Release one consumer; the snapshot dies after its last user finishes. */
+export function releaseArtifactSnapshot(claim: ArtifactSnapshotClaim): void {
+	const calls = sharedSnapshots.get(claim.scope)
+	const existing = calls?.get(claim.toolCallId)
+	if (!calls || !existing?.consumers.delete(claim.consumer)) return
+	if (!existing.executionReleased) {
+		// The consumers finish at the same execution boundary. Only one ends
+		// the claim's ownership; cache retention must not prolong its lifetime.
+		existing.executionReleased = true
+		const { observation, observationKind } = existing
+		observation.active--
+		if (observationKind === "snapshot") observation.activeSnapshots--
+		if (observationKind === "opaque") observation.activeOpaqueProducers--
+		if (observation.active === 0 && cwdExecutions.get(observation.cwd) === observation) {
+			cwdExecutions.delete(observation.cwd)
+		}
+	}
+	if (existing.consumers.size > 0) return
+	calls.delete(claim.toolCallId)
+	if (calls.size === 0) sharedSnapshots.delete(claim.scope)
+}
+
+function changedSnapshotArtifacts(snapshot: ArtifactFileSnapshot, opts: DetectOpts): Artifact[] {
+	const observation = snapshotExecutions.get(snapshot)
+	if (observation?.ambiguous) return []
+	const out: Artifact[] = []
+	const current = [...supportedDirectoryFiles(snapshot.cwd).entries()].sort(([a], [b]) => a.localeCompare(b))
+	for (const [path, stamp] of current) {
+		if (out.length >= MAX_BASH_ARTIFACTS) break
+		const before = snapshot.files.get(path)
+		if (before && before.mtimeMs === stamp.mtimeMs && before.size === stamp.size) continue
+		// Another prompt's validated non-snapshot producer may own this path.
+		// Exclude only that path; other shell-created files remain eligible.
+		if (observation?.knownWriterPaths.has(join(observation.cwd, basename(path)))) continue
+		const artifact = artifactFromPath(path, snapshot.cwd, opts, "snapshot")
+		if (artifact) out.push(artifact)
+	}
+	return out
+}
+
 // Tool-declared artifact entry, shaped after ACP's ToolCallLocation.
 // `name` falls back to the file basename.
 type DeclaredArtifactEntry = { path?: unknown; name?: unknown }
@@ -251,13 +484,15 @@ type DetectOpts = {
 	 * and skip the check.
 	 */
 	windowStart?: number
+	/** State captured at tool_execution_start for silent shell side effects. */
+	fileSnapshot?: ArtifactFileSnapshot
 }
 
 // Candidates always have to exist on disk — this is live detection; replay
 // reads recorded rows instead of re-running this pipeline.
 function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts, origin: Artifact["origin"]): Artifact | null {
+	if (!isArtifactExtension(rawPath)) return null
 	const mimeType = ARTIFACT_EXTENSIONS[extname(rawPath).toLowerCase()]
-	if (mimeType === undefined) return null
 	let path: string
 	try {
 		path = resolveToolPath(rawPath, cwd)
@@ -341,7 +576,7 @@ function redirectArtifacts(segments: CommandSegments, cwd: string, opts: DetectO
 	for (const segment of segments) {
 		for (const op of segment.ops) {
 			if ((op.op !== ">" && op.op !== ">>") || typeof op.target !== "string") continue
-			if (!(extname(op.target).toLowerCase() in ARTIFACT_EXTENSIONS)) continue
+			if (!isArtifactExtension(op.target)) continue
 			const artifact = artifactFromPath(op.target, cwd, opts, "sniffed")
 			if (!artifact || seen.has(artifact.path)) continue
 			seen.add(artifact.path)
@@ -366,23 +601,39 @@ export function artifactsFromToolCall(
 	try {
 		if (isErrorResult(result)) return []
 		const declared = parseDeclaredArtifacts(result, cwd)
-		if (declared.handled) return declared.artifacts
+		if (declared.handled) {
+			rememberProducedArtifacts(declared.artifacts)
+			return declared.artifacts
+		}
 		if (toolName === "write" || toolName === "edit") {
 			const path = (args as { path?: unknown } | null | undefined)?.path
 			if (typeof path !== "string") return []
 			// No mtime window here: the write/edit tool authored the file itself.
 			const artifact = artifactFromPath(path, cwd, {}, "write")
-			return artifact ? [artifact] : []
+			if (!artifact) return []
+			rememberArtifactPath(artifact.path)
+			return [artifact]
 		}
 		if (toolName === "bash" || toolName === "powershell") {
-			const command = (args as { command?: unknown } | null | undefined)?.command
-			if (typeof command !== "string") return bashArtifacts(result, cwd, opts)
-			const segments = parseCommandSegments(command)
-			if (isTreeMaterializingGit(segments)) return []
-			const effectiveCwd = navigatedCwd(segments, cwd)
-			const out = redirectArtifacts(segments, effectiveCwd, opts)
-			for (const artifact of bashArtifacts(result, effectiveCwd, opts)) {
+			const context = shellCommandContext(toolName, args, cwd)
+			if (context === null) return []
+			const outputArtifacts = bashArtifacts(result, context?.cwd ?? cwd, opts)
+			rememberProducedArtifacts(outputArtifacts)
+			if (!context) return outputArtifacts
+			const out = redirectArtifacts(context.segments, context.cwd, opts)
+			rememberProducedArtifacts(out)
+			for (const artifact of outputArtifacts) {
 				if (!out.some((a) => a.path === artifact.path)) out.push(artifact)
+			}
+			const isBackgroundHandoff =
+				(result as { details?: { handoff?: unknown } } | null | undefined)?.details?.handoff === true
+			// A handoff is pre-exit, not the completed foreground command whose
+			// filesystem delta we can conservatively attribute.
+			if (!isBackgroundHandoff && opts.fileSnapshot?.cwd === context.cwd) {
+				for (const artifact of changedSnapshotArtifacts(opts.fileSnapshot, opts)) {
+					if (out.length >= MAX_BASH_ARTIFACTS) break
+					if (!out.some((a) => a.path === artifact.path)) out.push(artifact)
+				}
 			}
 			return out
 		}

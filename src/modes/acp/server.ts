@@ -93,8 +93,15 @@ import {
 	markCredentialStale,
 	prepareCredentialForLogin,
 } from "../../credential-staleness.js"
+import { markDeclaredArtifactsEmitted } from "../../extensions/artifacts/declared-emissions.js"
+import {
+	observeDirectArtifactWrite,
+	releaseArtifactSnapshot,
+	snapshotArtifactFiles,
+} from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
+import { setSnapshotArtifactsOptIn, snapshotArtifactsOptedIn } from "../../extensions/artifacts/snapshot-policy.js"
 import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
@@ -187,6 +194,7 @@ import {
 	ADVERTISED_CAPABILITIES,
 	AVAILABLE_EXT_METHODS,
 	BACKGROUND_RUNS_CAPABILITY,
+	getClientOptedIntoArtifacts,
 	getClientOptedIntoBackgroundRuns,
 	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
@@ -374,6 +382,11 @@ export interface RunAcpOptions {
  * Prompt turns pass the resolve/reject pair that settles their PromptRequest;
  * unsolicited runs pass no-ops — nothing awaits their outcome.
  */
+function releaseTurnArtifactSnapshots(turn: TurnContext): void {
+	for (const stashed of turn.toolCallArgs.values()) releaseArtifactSnapshot(stashed.snapshotClaim)
+	turn.toolCallArgs.clear()
+}
+
 function createTurnContext(
 	resolve: (res: PromptResponse) => void = () => {},
 	reject: (err: unknown) => void = () => {},
@@ -1029,6 +1042,7 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionModelHasAuth(session)
 
 			const sessionId = session.sessionId
+			setSnapshotArtifactsOptIn(session.sessionManager, getClientOptedIntoArtifacts(this.clientCapabilities))
 			const uiContext = this.createUiContext(session)
 			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
@@ -1345,6 +1359,7 @@ export class KimchiAcpAgent implements Agent {
 				)
 			}
 			assertSessionHasModel(session)
+			setSnapshotArtifactsOptIn(session.sessionManager, getClientOptedIntoArtifacts(this.clientCapabilities))
 
 			const uiContext = this.createUiContext(session)
 			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
@@ -1595,6 +1610,7 @@ export class KimchiAcpAgent implements Agent {
 			// Defensive reset (settled-run path only): agent_settled already
 			// clears it after the full run chain — anything left here is stale
 			// state, never this prompt's turn.
+			releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 			entry.unsolicitedTurn = undefined
 		}
 		// A prompt consisting of exactly one text block that starts with
@@ -2390,6 +2406,9 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
+		setSnapshotArtifactsOptIn(entry.session.sessionManager, false)
+		if (entry.turn) releaseTurnArtifactSnapshots(entry.turn)
+		if (entry.unsolicitedTurn) releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 		entry.planTracker?.stop()
 		// Stop the adapter from publishing skill-refresh results: a discovery
 		// pass still in flight must not commit an obsolete snapshot (or
@@ -2523,6 +2542,7 @@ export class KimchiAcpAgent implements Agent {
 				// turn-target gating and new prompts.
 				if (!entry.turn && entry.unsolicitedTurn) {
 					const unsolicited = entry.unsolicitedTurn
+					releaseTurnArtifactSnapshots(unsolicited)
 					entry.unsolicitedTurn = undefined
 					for (const update of unsolicited.artifactBuffer.flush(entry.emittedModelMeta)) {
 						this.send({ sessionId: entry.session.sessionId, update })
@@ -2781,7 +2801,26 @@ export class KimchiAcpAgent implements Agent {
 				// tool_call notifications the client would have to reconcile against
 				// a turn it already considers over.
 				if (!turn) return
-				if (isHiddenToolCall(event.toolName, event.args)) {
+				const hidden = isHiddenToolCall(event.toolName, event.args)
+				const startedAt = Date.now()
+				const snapshotClaim = {
+					scope: entry.session.sessionManager,
+					toolCallId: event.toolCallId,
+					consumer: "acp" as const,
+					capture: !event.parentToolCallId && snapshotArtifactsOptedIn(entry.session.sessionManager),
+				}
+				// Nested/non-opted calls track ambiguity without file snapshots. ACP
+				// and the recorder share one observation for the execution.
+				const fileSnapshot = snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim)
+				turn.toolCallArgs.set(event.toolCallId, {
+					toolName: event.toolName,
+					args: event.args,
+					startedAt,
+					fileSnapshot,
+					snapshotClaim,
+				})
+				observeDirectArtifactWrite(event.toolName, event.args, entry.cwd)
+				if (hidden) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					// A hidden call may already have an allocated ACP id if the permission
 					// prompter ran before we knew it was hidden — retire its state.
@@ -2795,11 +2834,6 @@ export class KimchiAcpAgent implements Agent {
 				if (fileChanges.length > 0) {
 					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
 				}
-				// tool_execution_end carries no args — stash them so artifact
-				// detection can pair args with the result there.
-				// startedAt anchors the artifact mtime window (see
-				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
-				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
@@ -2860,6 +2894,9 @@ export class KimchiAcpAgent implements Agent {
 				// would strand the prompt forever.
 				if (event.toolName === "submit_plan" && !event.isError) turn.planReviewHeld = true
 				if (turn.hiddenToolCallIds.has(event.toolCallId)) {
+					const stashed = turn.toolCallArgs.get(event.toolCallId)
+					if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
+					turn.toolCallArgs.delete(event.toolCallId)
 					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
 					return
 				}
@@ -2892,13 +2929,17 @@ export class KimchiAcpAgent implements Agent {
 					}
 				}
 				if (!event.isError && stashed) {
-					turn.artifactBuffer.collectFromToolCall({
-						toolName: stashed.toolName,
-						args: stashed.args,
-						result: event.result,
-						cwd: entry.cwd,
-						windowStart: stashed.startedAt,
-					})
+					turn.artifactBuffer.collectFromToolCall(
+						{
+							toolName: stashed.toolName,
+							args: stashed.args,
+							result: event.result,
+							cwd: entry.cwd,
+							windowStart: stashed.startedAt,
+							fileSnapshot: stashed.fileSnapshot,
+						},
+						{ includeSnapshotArtifacts: snapshotArtifactsOptedIn(entry.session.sessionManager) },
+					)
 					// Tool-declared artifacts are deliverables the user may need
 					// MID-turn (a submitted plan chips before its review
 					// questionnaire opens) — emit immediately. emitNow marks them
@@ -2906,10 +2947,12 @@ export class KimchiAcpAgent implements Agent {
 					// keys come from this one collect (no re-parse).
 					const paths = turn.artifactBuffer.getDeclaredPaths()
 					if (paths.length > 0) {
-						for (const update of turn.artifactBuffer.emitNow(paths, entry.emittedModelMeta))
-							this.send({ sessionId, update })
+						const emitted = turn.artifactBuffer.emitNow(paths, entry.emittedModelMeta)
+						if (emitted.length > 0) markDeclaredArtifactsEmitted(entry.session.sessionManager, paths)
+						for (const update of emitted) this.send({ sessionId, update })
 					}
 				}
+				if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
 				const preWrite = turn.preWriteContents.get(event.toolCallId)
 				turn.preWriteContents.delete(event.toolCallId)
 				// Diffs are additional content blocks, appended after the existing
@@ -3091,7 +3134,11 @@ export class KimchiAcpAgent implements Agent {
 				// (exact: live detection was stat-gated).
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
-				if (data?.v === 1 && Array.isArray(data.artifacts)) artifactBuffer.adoptRecorded(data.artifacts)
+				if (data?.v === 1 && Array.isArray(data.artifacts)) {
+					artifactBuffer.adoptRecorded(data.artifacts, {
+						includeSnapshotArtifacts: snapshotArtifactsOptedIn(session.sessionManager),
+					})
+				}
 				continue
 			}
 			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
@@ -3449,6 +3496,8 @@ export class KimchiAcpAgent implements Agent {
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
 		turn.lastStreamedContent.delete(piToolCallId)
+		const stashed = turn.toolCallArgs.get(piToolCallId)
+		if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
 		turn.toolCallArgs.delete(piToolCallId)
 		if (opts.removeFromHidden) {
 			turn.hiddenToolCallIds.delete(piToolCallId)
@@ -3865,6 +3914,7 @@ export class KimchiAcpAgent implements Agent {
 		// This is the original prompt's full run boundary, including tool calls,
 		// retries, cancellation, and held plan-review continuations.
 		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
+		releaseTurnArtifactSnapshots(turn)
 		entry.turn = undefined
 		// Non-end_turn terminal outcomes (cancelled, refusal, …) never produce a
 		// rated settled response — clear the rating window armed at settle time.
@@ -3927,6 +3977,7 @@ export class KimchiAcpAgent implements Agent {
 		// window (agent_settled fires before prompt() resolves) must not survive
 		// into a rate call for an error the client saw as a JSON-RPC failure.
 		clearRatingWindow(entry.session.sessionId)
+		releaseTurnArtifactSnapshots(turn)
 		entry.turn = undefined
 		turn.reject(err)
 	}
