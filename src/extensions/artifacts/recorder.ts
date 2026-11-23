@@ -166,6 +166,9 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 			const pending = pendingShellCalls.get(event.toolCallId)
 			pendingShellCalls.delete(event.toolCallId)
 			if (!pending) return
+			// Match live ACP and the legacy detector: failed calls produce no
+			// artifacts. Consume an explicit empty result so turn_end cannot
+			// fall back and re-admit a file created before the failure.
 			completedShellCalls.set(
 				event.toolCallId,
 				event.isError

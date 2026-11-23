@@ -262,6 +262,66 @@ describe("artifact-recorder", () => {
 		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
 	})
 
+	it("does not record a file created by a failed silent foreground build", async () => {
+		const finalReport = join(cwd, "failed-build.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-failed-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Created before exit 1</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-failed-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: true,
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [
+						{
+							type: "toolCall",
+							id: "tc-failed-build",
+							name: "bash",
+							arguments: { command: "node build.js" },
+						},
+					],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-failed-build",
+						toolName: "bash",
+						content: [],
+						isError: true,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+	})
+
 	it("writes one row per run when several turns produced artifacts", async () => {
 		const abs1 = touch("one.md")
 		const abs2 = touch("two.md")

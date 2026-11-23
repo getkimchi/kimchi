@@ -7361,6 +7361,33 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactChunks()).toEqual([])
 	})
 
+	it("ignores a file created by a failed silent foreground build", async () => {
+		const target = join(tmpDir, "failed-build.html")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-bash-fail",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			})
+			writeFileSync(target, "<h1>Created before exit 1</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-bash-fail",
+				toolName: "bash",
+				result: { content: [], isError: true },
+				isError: true,
+			})
+			fake.emit(assistantMessageEnd("Build failed."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks()).toEqual([])
+	})
+
 	it("advertises artifacts support in the initialize capabilities _meta", async () => {
 		const { conn } = makeRecordingConn()
 		const initAgent = new KimchiAcpAgent(conn, {
