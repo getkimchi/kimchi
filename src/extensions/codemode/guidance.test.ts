@@ -31,8 +31,8 @@ it("prepends the selection rule to Pi's generated codemode description", () => {
 })
 
 it("steers filtering and mechanical chains to codemode, independent full-result calls to direct tools", () => {
-	expect(CODEMODE_SELECTION_GUIDANCE).toContain("filter large output")
-	expect(CODEMODE_SELECTION_GUIDANCE).toContain("chain calls whose arguments follow mechanically")
+	expect(CODEMODE_SELECTION_GUIDANCE).toContain("filter large results")
+	expect(CODEMODE_SELECTION_GUIDANCE).toContain("chain calls whose arguments depend on earlier results")
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain("call tools directly in one turn")
 	// No worked example script: it cost ~250 tokens per request without moving adoption.
 	expect(codemodeDescription()).not.toContain("const hits")
@@ -42,7 +42,7 @@ it("steers filtering and mechanical chains to codemode, independent full-result 
 
 it("places required @options before the optional purpose in model-facing guidance", () => {
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain(
-		"If you use `@options`, place it first; put `// @description:` immediately after it",
+		"Source order: `@options` when used → `// @description: <short purpose>` → executable code.",
 	)
 })
 
