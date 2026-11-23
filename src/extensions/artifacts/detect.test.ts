@@ -485,6 +485,37 @@ describe("artifactsFromToolCall", () => {
 			releaseArtifactSnapshot(writerClaim)
 		})
 
+		it("excludes files changed before a background handoff result", () => {
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			touch("final.html")
+			const result = {
+				...textResult("Command handed off; still running."),
+				details: { handoff: true, handle: "bg1" },
+			}
+			expect(artifactsFromToolCall("bash", { command: "node build.js" }, result, cwd, { fileSnapshot })).toEqual([])
+		})
+
+		it("retains redirect and output detection for a background handoff result", () => {
+			const args = { command: "printf csv > redirected.csv && node build.js" }
+			const fileSnapshot = snapshotArtifactFiles("bash", args, cwd)
+			const redirected = touch("redirected.csv")
+			const reported = touch("reported.md")
+			touch("silent.html")
+			const result = {
+				...textResult("Generated reported.md"),
+				details: { handoff: true, handle: "bg1" },
+			}
+			expect(
+				artifactsFromToolCall("bash", args, result, cwd, { fileSnapshot }).map(({ path, origin }) => ({
+					path,
+					origin,
+				})),
+			).toEqual([
+				{ path: redirected, origin: "sniffed" },
+				{ path: reported, origin: "sniffed" },
+			])
+		})
+
 		it("shares ACP and recorder snapshots until both consumers release them", () => {
 			const scope = {}
 			const acpClaim = { scope, toolCallId: "shared-call", consumer: "acp" as const }

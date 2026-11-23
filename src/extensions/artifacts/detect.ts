@@ -625,7 +625,11 @@ export function artifactsFromToolCall(
 			for (const artifact of outputArtifacts) {
 				if (!out.some((a) => a.path === artifact.path)) out.push(artifact)
 			}
-			if (opts.fileSnapshot?.cwd === context.cwd) {
+			const isBackgroundHandoff =
+				(result as { details?: { handoff?: unknown } } | null | undefined)?.details?.handoff === true
+			// A handoff is pre-exit, not the completed foreground command whose
+			// filesystem delta we can conservatively attribute.
+			if (!isBackgroundHandoff && opts.fileSnapshot?.cwd === context.cwd) {
 				for (const artifact of changedSnapshotArtifacts(opts.fileSnapshot, opts)) {
 					if (out.length >= MAX_BASH_ARTIFACTS) break
 					if (!out.some((a) => a.path === artifact.path)) out.push(artifact)

@@ -7363,6 +7363,97 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactChunks(replay.updates)).toEqual([])
 	})
 
+	it("does not expose or record a silent file change at background handoff", async () => {
+		const command = "node build.js"
+		const report = join(tmpDir, "background-final.html")
+		const recorder = attachArtifactRecorder()
+		const ops = createFakeOps()
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, command, tmpDir, undefined, { limitSeconds: 600 })
+		const state: BashSessionState = {
+			registry,
+			coordinator: createReviewCoordinator({ registry, handoffSeconds: 2 }),
+			delivery: createTerminalDelivery(),
+			limitSeconds: 600,
+			sessionKind: "user-facing",
+			cwd: tmpDir,
+		}
+		setSessionState(sessionId, state)
+		const details = { handle, exited: false, exitCode: null, handoff: true }
+		const args = { command }
+		const message = makeAssistantMessage([
+			{ type: "text", text: "The build is still running." },
+			{ type: "toolCall", id: "tc-handoff-silent", name: "bash", arguments: args },
+		])
+		onTestFinished(async () => {
+			setSessionState(sessionId, undefined)
+			await registry.shutdown().catch(() => {})
+		})
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-handoff-silent", toolName: "bash", args })
+			// Pre-exit side effects are not the final artifact of a background command.
+			writeFileSync(report, "<h1>Build still running</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-handoff-silent",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "Command handed off; still running." }], details },
+				isError: false,
+			})
+			fake.emit({ type: "message_end", message })
+			fake.emit({
+				type: "turn_end",
+				message,
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "tc-handoff-silent",
+						toolName: "bash",
+						content: [{ type: "text", text: "Command handed off; still running." }],
+						details,
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			fake.emit(agentEnd())
+			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build in the background" }] })
+		const handoff = updates.find(
+			(update) =>
+				update.update.sessionUpdate === "tool_call_update" &&
+				(update.update as { rawOutput?: { details?: { handoff?: unknown } } }).rawOutput?.details?.handoff === true,
+		)
+		expect(handoff?.update).toMatchObject({ status: "in_progress" })
+		const rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		const loaded = new FakeAgentSession("loaded-background-handoff", tmpDir)
+		loaded.branch = [
+			userTextEntry("Build in the background", "u1", null),
+			assistantTextEntry("The build is still running.", "a1", "u1"),
+			...(rows.length > 0 ? [{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never] : []),
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect({
+			live: artifactChunks().map((chunk) => chunk.uri),
+			recorded: rows.flatMap((row) => row.artifacts.map((artifact) => pathToFileURL(artifact.path).href)),
+			replayed: artifactChunks(replay.updates).map((chunk) => chunk.uri),
+		}).toEqual({ live: [], recorded: [], replayed: [] })
+	})
+
 	it("refreshes a snapshot when cancellation drops a call and the next prompt reuses its ID", async () => {
 		const target = join(tmpDir, "cancelled.html")
 		writeFileSync(target, "before")
