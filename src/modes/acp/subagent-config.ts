@@ -1,4 +1,8 @@
-import type { SessionConfigOption, SessionNotification } from "@agentclientprotocol/sdk/unstable"
+import type {
+	SessionConfigOption,
+	SessionConfigSelectOption,
+	SessionNotification,
+} from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, SessionPermissionFlagController } from "../../extensions/permissions/types.js"
@@ -42,6 +46,18 @@ function permissionController(
 	return (dependencies.getPermissionFlagController ?? getSessionPermissionFlagController)(sessionId)
 }
 
+function currentSelectOptions(option: Extract<SessionConfigOption, { type: "select" }>): typeof option.options {
+	const flat = option.options.filter(
+		(choice): choice is SessionConfigSelectOption => "value" in choice && choice.value === option.currentValue,
+	)
+	if (flat.length > 0) return flat
+	return option.options.flatMap((choice) => {
+		if ("value" in choice) return []
+		const selected = choice.options.filter((entry) => entry.value === option.currentValue)
+		return selected.length > 0 ? [{ ...choice, options: selected }] : []
+	})
+}
+
 /** Build the complete replacement list for one child. Every value is read
  * from that child (or its own controller); an absent value omits its option.
  * In particular, no parent session or default permission mode is consulted. */
@@ -69,7 +85,12 @@ export function buildSubagentConfigOptions(
 		const thinking = dependencies.buildThinkingConfigOption({ model: thinkingModel, thinkingLevel })
 		if (thinking) options.push(thinking)
 	}
-	return options
+	// Configuration is a read-only child snapshot. Its currentValue is
+	// authoritative even when no catalog entry matches it; never offer a
+	// client choices that it cannot select on the read-only child session.
+	return options.map((option) =>
+		option.type === "select" ? { ...option, options: currentSelectOptions(option) } : option,
+	)
 }
 
 export function subagentConfigNotification(

@@ -207,6 +207,57 @@ describe("buildSubagentConfigOptions", () => {
 		})
 	})
 
+	it("keeps selectable alternatives out of read-only child snapshots", () => {
+		const dependencies = makeDependencies()
+		const modelOption: SessionConfigOption = {
+			id: "model",
+			name: "model",
+			type: "select",
+			currentValue: "persona/child-model",
+			options: [
+				{ name: "persona/child-model", value: "persona/child-model" },
+				{ name: "other", value: "other" },
+			],
+		}
+		dependencies.buildModelConfigOption.mockReturnValue(modelOption)
+
+		const modelSnapshot = buildSubagentConfigOptions(makeSession("readonly-child"), dependencies).find(
+			(option) => option.id === "model",
+		)
+		if (modelSnapshot?.type !== "select") throw new Error("missing model snapshot")
+		expect(modelSnapshot.currentValue).toBe("persona/child-model")
+		expect(modelSnapshot.options).toEqual([{ name: "persona/child-model", value: "persona/child-model" }])
+	})
+
+	it("preserves only the current value inside grouped select options", () => {
+		const dependencies = makeDependencies()
+		const modelOption: SessionConfigOption = {
+			id: "model",
+			name: "model",
+			type: "select",
+			currentValue: "current-model",
+			options: [
+				{
+					name: "child-provider",
+					group: "child-provider",
+					options: [
+						{ name: "current-model", value: "current-model" },
+						{ name: "other-model", value: "other-model" },
+					],
+				},
+			],
+		}
+		dependencies.buildModelConfigOption.mockReturnValue(modelOption)
+
+		const snapshot = buildSubagentConfigOptions(makeSession("grouped-child"), dependencies).find(
+			(option) => option.id === "model",
+		)
+		if (snapshot?.type !== "select") throw new Error("missing grouped model snapshot")
+		expect(snapshot.options).toEqual([
+			{ name: "child-provider", group: "child-provider", options: [{ name: "current-model", value: "current-model" }] },
+		])
+	})
+
 	it("omits unconfirmed model, thinking and mode values instead of consulting a parent", () => {
 		const dependencies = makeDependencies(new Map([["parent", makeController("yolo")]]))
 		const child = makeSession("empty-child", {
