@@ -33,7 +33,12 @@ import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { notifyUser } from "../../utils/notify-user.js"
 import { isInSandboxCluster } from "../../utils/sandbox.js"
-import { holdAgentWorkerInactivity, isAgentWorker, runOutsideWorkerContext } from "../agent-worker-context.js"
+import {
+	getLaunchAgentPersona,
+	holdAgentWorkerInactivity,
+	isAgentWorker,
+	runOutsideWorkerContext,
+} from "../agent-worker-context.js"
 import { WORKER_REPORT_TOOL_NAME } from "../agents/worker-report.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -1971,9 +1976,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			}
 		}
 
-		// Main sessions retain the launch environment contract; workers use their
-		// captured persona so parallel children cannot affect one another.
-		const agentPersona = options.role === "worker" ? options.persona : process.env.KIMCHI_AGENT_PERSONA
+		// A main session keeps the persona it was launched with: the value a
+		// running subagent puts in the environment is that subagent's, not this
+		// session's. Workers use their captured persona so parallel children
+		// cannot affect one another.
+		const agentPersona = options.role === "worker" ? options.persona : getLaunchAgentPersona()
 		if (agentPersona?.toLowerCase() === "plan") {
 			if (toolName === "write" || toolName === "edit") {
 				const outside = writeEditTargetPaths(input).find((target) => !isWithinKimchiPlans(target, ctx.cwd))

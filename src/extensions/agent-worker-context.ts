@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { PARENT_SESSION_ID_ENV_KEY } from "./agents/manager/constants.js"
 
-/** Per-run state for an in-process subagent worker, isolated across parallel runs. */
 /**
  * Lets a worker pause its runner's inactivity watchdog during an interactive
  * wait (an escalated permission prompt the user may think about for
@@ -13,6 +12,7 @@ export interface AgentWorkerInactivityHold {
 	acquire(): () => void
 }
 
+/** Per-run state for an in-process subagent worker, isolated across parallel runs. */
 export interface AgentWorkerInfo {
 	/** Watchdog pause for interactive waits, installed by the runner. */
 	inactivityHold?: AgentWorkerInactivityHold
@@ -84,4 +84,50 @@ export function holdAgentWorkerInactivity(): () => void {
  */
 export function runOutsideWorkerContext<T>(fn: () => T): T {
 	return workerContext.exit(fn)
+}
+
+const AGENT_PERSONA_ENV_KEY = "KIMCHI_AGENT_PERSONA"
+
+/**
+ * In-process subagent runs that have their persona in the process
+ * environment right now, oldest first. The variable is one slot for the whole
+ * process: the commands and hooks a subagent starts read it there.
+ */
+const personaRuns: Array<{ persona: string }> = []
+/** The variable as it was before the first of those runs started. */
+let launchAgentPersona: string | undefined
+
+/**
+ * Put a subagent run's persona in the process environment, for the commands
+ * and hooks the run starts. Returns the function that takes it out again.
+ *
+ * Runs overlap, so a run cannot put back "the value it found": that value may
+ * belong to a sibling that has ended in the meantime, and would then stay in
+ * the environment for good. When a run leaves, the variable goes to the
+ * latest run that is still active, or back to the launch value after the last.
+ */
+export function enterAgentPersonaEnv(persona: string): () => void {
+	if (personaRuns.length === 0) launchAgentPersona = process.env[AGENT_PERSONA_ENV_KEY]
+	const run = { persona }
+	personaRuns.push(run)
+	process.env[AGENT_PERSONA_ENV_KEY] = persona
+	return () => {
+		const index = personaRuns.indexOf(run)
+		if (index < 0) return
+		personaRuns.splice(index, 1)
+		const latest = personaRuns.at(-1)
+		if (latest) process.env[AGENT_PERSONA_ENV_KEY] = latest.persona
+		else if (launchAgentPersona === undefined) Reflect.deleteProperty(process.env, AGENT_PERSONA_ENV_KEY)
+		else process.env[AGENT_PERSONA_ENV_KEY] = launchAgentPersona
+	}
+}
+
+/**
+ * The persona this process was launched with. While subagent runs have their
+ * own persona in the variable this is still the value from before them: a
+ * running Plan subagent must not turn the session that started it into a
+ * Plan session.
+ */
+export function getLaunchAgentPersona(): string | undefined {
+	return personaRuns.length > 0 ? launchAgentPersona : process.env[AGENT_PERSONA_ENV_KEY]
 }

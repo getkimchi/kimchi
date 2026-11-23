@@ -30,7 +30,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { seedOrgPolicy } from "../__mocks__/org-policy.js"
-import { isAgentWorker, runAsAgentWorker } from "../agent-worker-context.js"
+import { enterAgentPersonaEnv, isAgentWorker, runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { BUILTIN_TOOL_NAMES } from "../agents/personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
@@ -5752,6 +5752,29 @@ describe("Plan persona path scope in the main session", () => {
 		})
 		// Unchanged: a write inside the scope is allowed before rules are read.
 		expect(await fire({ path: ".kimchi/plans/design.md", content: "x" })).toBeUndefined()
+	})
+
+	// A running subagent's persona is in the same environment variable. It is
+	// that subagent's persona, not the session's.
+	it("is not applied to the session while a Plan subagent runs", async () => {
+		const harness = createPermissionsHarness(["write"], { yolo: true, "deny-tool": "write(.kimchi/plans/**)" })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+		const fire = (input: Record<string, unknown>) =>
+			harness.fire("tool_call", { type: "tool_call", toolCallId: "tc-main", toolName: "write", input }, ctx)
+
+		const leavePlanRun = enterAgentPersonaEnv("Plan")
+		try {
+			// Not restricted to .kimchi/plans/ …
+			expect(await fire({ path: "src/code.ts", content: "x" })).toBeUndefined()
+			// … and a write inside it still goes through the session's rules.
+			expect(await fire({ path: ".kimchi/plans/design.md", content: "x" })).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("Denied by rule"),
+			})
+		} finally {
+			leavePlanRun()
+		}
 	})
 })
 

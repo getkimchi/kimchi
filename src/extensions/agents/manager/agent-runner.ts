@@ -21,6 +21,7 @@ import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
 import {
+	enterAgentPersonaEnv,
 	getRegisteredWorkerParentSession,
 	registerWorkerParentSession,
 	runAsAgentWorker,
@@ -1066,12 +1067,10 @@ ${skillLines}`
 		}
 	}
 
-	// Propagate agent persona to child environment so permission rules can
-	// apply persona-specific path scopes (e.g. plan persona → .kimchi/plans/).
-	const prevPersona = process.env.KIMCHI_AGENT_PERSONA
-	if (agentConfig?.name) {
-		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
-	}
+	// The commands and hooks this run starts read its persona from the
+	// environment. The child's own gate gets it as an argument, and the
+	// session that started the run keeps the persona it was launched with.
+	const leavePersonaEnv = agentConfig?.name ? enterAgentPersonaEnv(agentConfig.name) : undefined
 
 	try {
 		await session.prompt(effectivePrompt)
@@ -1084,14 +1083,7 @@ ${skillLines}`
 		// Emit session_shutdown so extensions (e.g. telemetry) can flush and
 		// clear timers. Mirrors the ACP server pattern in modes/acp/server.ts.
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-		if (agentConfig?.name) {
-			// Restore persona env — important for sequential runs in the same process.
-			if (prevPersona === undefined) {
-				delete process.env.KIMCHI_AGENT_PERSONA
-			} else {
-				process.env.KIMCHI_AGENT_PERSONA = prevPersona
-			}
-		}
+		leavePersonaEnv?.()
 	}
 
 	const finalUsageDelta = usageDelta(getSessionUsage(session), windowObservedUsage)

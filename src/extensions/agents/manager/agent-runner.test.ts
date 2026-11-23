@@ -3656,4 +3656,50 @@ describe("runAgent — worker permission role", () => {
 
 		expect(process.env.KIMCHI_AGENT_PERSONA).toBeUndefined()
 	})
+
+	it("does not leave a finished sibling's persona in the environment when runs overlap", async () => {
+		mockGetAgentConfig.mockImplementation((type: string) => makeAgentConfig({ name: type }))
+		// Start a run and wait until its turn is in flight; `finish` ends the turn.
+		const startRun = async (type: string) => {
+			let finish = () => {}
+			let started = () => {}
+			const turnStarted = new Promise<void>((resolve) => {
+				started = resolve
+			})
+			const session = makeFakeSession({
+				promptAction: () => {
+					started()
+					return new Promise<void>((resolve) => {
+						finish = resolve
+					})
+				},
+			})
+			mockCreateAgentSession.mockResolvedValueOnce({
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+			const done = runAgent(ctx as unknown as Parameters<typeof runAgent>[0], type, "look around", {
+				pi: pi as unknown as RunOptions["pi"],
+			}).catch(() => undefined)
+			await turnStarted
+			return { done, finish: () => finish() }
+		}
+
+		const older = await startRun("Explore")
+		const newer = await startRun("Builder")
+		expect(process.env.KIMCHI_AGENT_PERSONA).toBe("Builder")
+
+		// The older run ends first: the variable stays with the run still active.
+		older.finish()
+		await older.done
+		expect(process.env.KIMCHI_AGENT_PERSONA).toBe("Builder")
+
+		// The later run found "Explore" when it started. Putting that back would
+		// leave a finished run's persona in the environment for good.
+		newer.finish()
+		await newer.done
+		expect(process.env.KIMCHI_AGENT_PERSONA).toBeUndefined()
+	})
 })

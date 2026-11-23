@@ -1,7 +1,9 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+	enterAgentPersonaEnv,
 	getAgentWorkerParentSessionId,
+	getLaunchAgentPersona,
 	getRegisteredWorkerParentSession,
 	holdAgentWorkerInactivity,
 	isAgentWorker,
@@ -132,5 +134,73 @@ describe("agent worker context", () => {
 			expect(await runOutsideWorkerContext(async () => isAgentWorker())).toBe(false)
 			expect(isAgentWorker()).toBe(true)
 		})
+	})
+})
+
+describe("agent persona in the process environment", () => {
+	const KEY = "KIMCHI_AGENT_PERSONA"
+
+	afterEach(() => {
+		Reflect.deleteProperty(process.env, KEY)
+	})
+
+	it("holds a run's persona for the run and removes it afterwards", () => {
+		const leave = enterAgentPersonaEnv("Explore")
+		expect(process.env[KEY]).toBe("Explore")
+		leave()
+		expect(process.env[KEY]).toBeUndefined()
+	})
+
+	it("puts the launch value back after the last run", () => {
+		process.env[KEY] = "Reviewer"
+		const leave = enterAgentPersonaEnv("Explore")
+		expect(process.env[KEY]).toBe("Explore")
+		leave()
+		expect(process.env[KEY]).toBe("Reviewer")
+	})
+
+	it("does not leave a finished sibling's persona behind when runs overlap", () => {
+		const leavePlan = enterAgentPersonaEnv("Plan")
+		const leaveExplore = enterAgentPersonaEnv("Explore")
+		// The older run ends first. Restoring "what the later run found" would
+		// bring Plan back for good.
+		leavePlan()
+		expect(process.env[KEY]).toBe("Explore")
+		leaveExplore()
+		expect(process.env[KEY]).toBeUndefined()
+	})
+
+	it("hands the variable back to the run that is still active", () => {
+		const leavePlan = enterAgentPersonaEnv("Plan")
+		const leaveExplore = enterAgentPersonaEnv("Explore")
+		leaveExplore()
+		expect(process.env[KEY]).toBe("Plan")
+		leavePlan()
+		expect(process.env[KEY]).toBeUndefined()
+	})
+
+	it("leaves once", () => {
+		const leavePlan = enterAgentPersonaEnv("Plan")
+		leavePlan()
+		const leaveExplore = enterAgentPersonaEnv("Explore")
+		leavePlan()
+		expect(process.env[KEY]).toBe("Explore")
+		leaveExplore()
+		expect(process.env[KEY]).toBeUndefined()
+	})
+
+	it("reports the launch persona, not a running subagent's", () => {
+		expect(getLaunchAgentPersona()).toBeUndefined()
+		const leavePlan = enterAgentPersonaEnv("Plan")
+		expect(getLaunchAgentPersona()).toBeUndefined()
+		leavePlan()
+
+		// A process started with the variable set is that persona throughout.
+		process.env[KEY] = "Plan"
+		expect(getLaunchAgentPersona()).toBe("Plan")
+		const leaveExplore = enterAgentPersonaEnv("Explore")
+		expect(getLaunchAgentPersona()).toBe("Plan")
+		leaveExplore()
+		expect(getLaunchAgentPersona()).toBe("Plan")
 	})
 })
