@@ -4,8 +4,7 @@ import { dirname, resolve } from "node:path"
  * Project-local entries (relative to a directory) whose presence makes a
  * folder trust-requiring for the Kimchi harness: config, permissions, hooks
  * (bash, kimchi-native, claude), skills, agents, memory, MCP servers, tags,
- * plans, ferments, and agent rules (.agents/rules — rule bodies reach the
- * system prompt and steers, so they inject prompts like skills do).
+ * plans, ferments, and agent rules (`.agents/rules`).
  *
  * This is the single source of truth for kimchi-side detection. The pi patch
  * (patches/@earendil-works__pi-coding-agent@1.3.0.patch) embeds the same

@@ -20,10 +20,8 @@
  * Files with malformed frontmatter are skipped with a console warning —
  * they never break the session.
  *
- * Trust: `.agents/rules/` ships with the repo and rule bodies reach the
- * system prompt and steers, so discovery is gated on project trust
- * (`isProjectScopeAllowed`, fail-closed) like every other reader of project
- * scope — an untrusted cwd gets no rules, no block, no steers.
+ * Rule files ship with the repo and their bodies reach the system prompt
+ * and steers, so discovery is gated on project trust (fail-closed).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -90,9 +88,8 @@ export default function agentsRulesExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		const cwd = ctx.cwd
-		// Project-trust gate (fail-closed: no recorded decision means
-		// untrusted): rule files ship with the repo, so their bodies must not
-		// reach the system prompt or steers before the folder is trusted.
+		// Project-trust gate: rule files ship with the repo, so their bodies
+		// must not reach the system prompt or steers before it is trusted.
 		if (!isProjectScopeAllowed(cwd)) {
 			engine = undefined
 			pendingSteer.length = 0

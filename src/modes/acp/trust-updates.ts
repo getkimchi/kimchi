@@ -61,9 +61,8 @@ export const CATEGORY_PATHS: Record<BlockedTrustCategory, readonly string[]> = {
  * finding), permissions/hooks/agents/memory are project_config-adjacent
  * kimchi state, `.claude/settings*.json` is Claude Code config,
  * tags/plans/ferments are workflow state Studio does not render banners for,
- * and `.agents/rules` wants an `agent_rules` category once Studio has a
- * banner vocabulary for it (until then the coarse `skills` category would
- * mislabel it).
+ * and `.agents/rules` wants an `agent_rules` category (deferred, like
+ * `mcp_servers`).
  */
 export const UNCLASSIFIED_TRUST_PATHS: readonly string[] = [
 	join(".kimchi", "permissions.json"),

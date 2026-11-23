@@ -35,8 +35,7 @@ beforeEach(() => {
 	// every pi bound to the session id, and module state persists across tests
 	// within this file — a shared id would leak earlier tests' blocks.
 	SESSION_ID = `${SESSION_PREFIX}${Math.random().toString(36).slice(2)}`
-	// The extension gates discovery on project trust (fail-closed): default
-	// every test's temp cwd to trusted; the trust-gate test opts back out.
+	// Default the temp cwd to trusted; the trust-gate test opts out.
 	resetProjectScopeTrustForTests()
 	setProjectScopeTrusted(dir, true)
 })
