@@ -34,6 +34,7 @@ import {
 	getToolNameCandidates,
 	isServerDisabled,
 	type McpConfig,
+	type MetadataCache,
 	resolveToolPrefix,
 	type ServerCacheEntry,
 	type ToolMetadata,
@@ -86,8 +87,9 @@ export interface McpToolCandidate {
 export function collectMcpToolCandidates(
 	config: McpConfig,
 	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+	persistentCache?: MetadataCache | null,
 ): McpToolCandidate[] {
-	const cache = loadMetadataCache()
+	const cache = persistentCache === undefined ? loadMetadataCache() : persistentCache
 	if (!cache?.servers && !privateCatalogs?.size) return []
 	const candidates: McpToolCandidate[] = []
 	const reserved = new Set([

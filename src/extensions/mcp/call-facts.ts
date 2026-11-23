@@ -119,7 +119,9 @@ function resolveOnServer(
 	)
 }
 
-function prefixedServerScope(config: McpConfig, toolName: string): string | undefined {
+type PrefixedServerScope = { kind: "none" } | { kind: "server"; serverName: string } | { kind: "ambiguous" }
+
+function prefixedServerScope(config: McpConfig, toolName: string): PrefixedServerScope {
 	const candidates = Object.entries(config.mcpServers)
 		.filter(([, definition]) => !isServerDisabled(definition))
 		.map(([serverName, definition]) => ({
@@ -128,10 +130,12 @@ function prefixedServerScope(config: McpConfig, toolName: string): string | unde
 		}))
 		.filter(({ prefix }) => prefix.length > 0 && toolName.startsWith(`${prefix}_`))
 		.sort((a, b) => b.prefix.length - a.prefix.length)
-	if (candidates.length === 0) return undefined
+	if (candidates.length === 0) return { kind: "none" }
 	const longest = candidates[0]?.prefix.length
 	const best = candidates.filter(({ prefix }) => prefix.length === longest)
-	return best.length === 1 ? best[0]?.serverName : undefined
+	return best.length === 1 && best[0] !== undefined
+		? { kind: "server", serverName: best[0].serverName }
+		: { kind: "ambiguous" }
 }
 
 function resolveGatewayTool(input: Record<string, unknown>, catalog: McpCallCatalog): McpGatewayInputFacts {
@@ -153,9 +157,10 @@ function resolveGatewayTool(input: Record<string, unknown>, catalog: McpCallCata
 	const original = catalog.candidates.filter((candidate) => candidate.tool.originalName === toolName)
 	if (original.length > 0) return resolveMatches(catalog, original, "gateway") as McpGatewayInputFacts
 
-	const scopedServer = prefixedServerScope(catalog.config, toolName)
-	if (scopedServer !== undefined)
-		return resolveOnServer(catalog, toolName, scopedServer, "gateway") as McpGatewayInputFacts
+	const scope = prefixedServerScope(catalog.config, toolName)
+	if (scope.kind === "ambiguous") return unresolved("gateway", "ambiguous")
+	if (scope.kind === "server")
+		return resolveOnServer(catalog, toolName, scope.serverName, "gateway") as McpGatewayInputFacts
 	return resolveMatches(
 		catalog,
 		catalog.candidates.filter((candidate) =>
@@ -222,9 +227,9 @@ function resolveDirect(toolName: string, catalog: McpCallCatalog): McpCallFacts 
 }
 
 function resolveRegisteredDirect(toolName: string, catalog: McpCallCatalog): McpCallFacts {
-	const serverName = prefixedServerScope(catalog.config, toolName)
-	if (serverName !== undefined) {
-		const problem = serverProblem(catalog, serverName)
+	const scope = prefixedServerScope(catalog.config, toolName)
+	if (scope.kind === "server") {
+		const problem = serverProblem(catalog, scope.serverName)
 		if (problem !== undefined) return unresolved("direct", problem)
 	}
 	return unresolved("direct", "unknown")

@@ -32,7 +32,7 @@ export function snapshotMcpCallCatalog(
 	}
 	return {
 		config,
-		candidates: collectMcpToolCandidates(config, privateCatalogs),
+		candidates: collectMcpToolCandidates(config, privateCatalogs, cache ?? null),
 		registeredToolNames: new Set(registeredToolNames),
 		staleServers,
 		disabledServers,

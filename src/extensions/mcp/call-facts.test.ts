@@ -267,6 +267,23 @@ describe("describeMcpCall unresolved calls", () => {
 		expect(describeMcpCall("mcp", { tool: "docs_write" }, aliasedCatalog)).toEqual(unresolved("gateway", "unknown"))
 	})
 
+	it("returns ambiguous instead of using global legacy aliases for a colliding sanitized prefix", () => {
+		const collidingConfig: McpConfig = {
+			mcpServers: {
+				"my-server": { url: "https://dash.example/mcp" },
+				my_server: { url: "https://underscore.example/mcp" },
+			},
+		}
+		const legacyCandidate = candidate("my_server_get-issue", "get-issue", "annotation_true", "my-server")
+		expect(
+			describeMcpCall(
+				"mcp",
+				{ tool: "my_server_get_issue" },
+				catalog({ config: collidingConfig, candidates: [legacyCandidate] }),
+			),
+		).toEqual(unresolved("gateway", "ambiguous"))
+	})
+
 	it("returns ambiguous for colliding namespace owners", () => {
 		const collidingConfig: McpConfig = {
 			mcpServers: {

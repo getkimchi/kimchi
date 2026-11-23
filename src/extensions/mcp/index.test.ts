@@ -5,7 +5,7 @@ import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { MCP_RUNTIME_REGISTER_EVENT, type McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
 import { computeServerHash } from "pi-mcp-adapter/metadata-cache"
-import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
+import type { McpAdapterOptions, McpConfig, MetadataCache, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
@@ -29,6 +29,9 @@ const upstream = vi.hoisted(() => ({
 }))
 const callResolution = vi.hoisted(() => ({
 	describeMcpCall: vi.fn(),
+}))
+const metadataCache = vi.hoisted(() => ({
+	loadMetadataCache: vi.fn<() => MetadataCache | null>(),
 }))
 const configState = vi.hoisted(() => ({
 	config: { mcpServers: {} } as McpConfig,
@@ -76,6 +79,11 @@ const gatewayState = vi.hoisted(() => ({
 vi.mock("./call-facts.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("./call-facts.js")>()),
 	describeMcpCall: callResolution.describeMcpCall,
+}))
+
+vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => ({
+	...(await importOriginal<typeof import("pi-mcp-adapter/metadata-cache")>()),
+	loadMetadataCache: metadataCache.loadMetadataCache,
 }))
 
 vi.mock("pi-mcp-adapter", () => ({
@@ -225,6 +233,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.sessionMetadataObserver = undefined
 		upstream.sessionObserverFactory = undefined
 		callResolution.describeMcpCall.mockReset().mockReturnValue({ kind: "metadata", op: "status" })
+		metadataCache.loadMetadataCache.mockReset().mockReturnValue(null)
 		configState.config = { mcpServers: {} }
 		configState.userConfig = { mcpServers: {} }
 		configState.configPath = undefined
@@ -984,6 +993,20 @@ describe("upstream MCP adapter facade", () => {
 			const catalog = lastLookupCatalog()
 			expect(catalog.config).toEqual({ mcpServers: { docs, [gateway.name]: gateway.entry } })
 			expect([...catalog.registeredToolNames].sort()).toEqual(["docs_get_issue", "mcp"])
+		})
+
+		it("returns not_mcp for unregistered names without loading metadata or resolving", async () => {
+			configState.config = { mcpServers: { docs: { command: "docs" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			metadataCache.loadMetadataCache.mockClear()
+			callResolution.describeMcpCall.mockClear()
+
+			expect(lookupMcpCall(harness.api, "bash", { command: "pwd" })).toEqual({ kind: "not_mcp" })
+			expect(metadataCache.loadMetadataCache).not.toHaveBeenCalled()
+			expect(describeMcpCall).not.toHaveBeenCalled()
 		})
 
 		it("resolves caller-supplied ACP servers through their own lookup without sharing them", async () => {

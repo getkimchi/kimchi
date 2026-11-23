@@ -534,9 +534,10 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		}
 		if (lookupConfig !== undefined) {
 			const config = lookupConfig
-			unregisterMcpCallLookup = registerMcpCallLookup(pi, (toolName, input) =>
-				describeMcpCall(toolName, input, snapshotMcpCallCatalog(config, privateCatalogs, registeredToolNames)),
-			)
+			unregisterMcpCallLookup = registerMcpCallLookup(pi, (toolName, input) => {
+				if (!registeredToolNames.has(toolName)) return { kind: "not_mcp" }
+				return describeMcpCall(toolName, input, snapshotMcpCallCatalog(config, privateCatalogs, registeredToolNames))
+			})
 		}
 
 		for (const warning of warnings) {

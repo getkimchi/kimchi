@@ -4,11 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { snapshotMcpCallCatalog } from "./call-catalog.js"
 import { describeMcpCall } from "./call-facts.js"
 
-const cacheState = vi.hoisted(() => ({ cache: undefined as MetadataCache | undefined }))
+const cacheState = vi.hoisted(() => ({
+	cache: undefined as MetadataCache | undefined,
+	loadMetadataCache: vi.fn<() => MetadataCache | undefined>(),
+}))
 
 vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => ({
 	...(await importOriginal<typeof import("pi-mcp-adapter/metadata-cache")>()),
-	loadMetadataCache: () => cacheState.cache,
+	loadMetadataCache: cacheState.loadMetadataCache,
 }))
 
 function privateEntry(config: McpConfig, server: string, readOnlyHint: boolean): ServerCacheEntry {
@@ -33,6 +36,16 @@ function persistentEntry(config: McpConfig, server: string): ServerCacheEntry {
 describe("snapshotMcpCallCatalog", () => {
 	beforeEach(() => {
 		cacheState.cache = { version: 1, servers: {} }
+		cacheState.loadMetadataCache.mockReset().mockImplementation(() => cacheState.cache)
+	})
+
+	it("loads persistent metadata at most once per snapshot", () => {
+		const config: McpConfig = { mcpServers: { docs: { url: "https://docs.example/mcp", directTools: true } } }
+		cacheState.cache = { version: 1, servers: { docs: persistentEntry(config, "docs") } }
+
+		snapshotMcpCallCatalog(config, new Map(), new Set(["mcp", "docs_get_issue"]))
+
+		expect(cacheState.loadMetadataCache).toHaveBeenCalledTimes(1)
 	})
 
 	it("keeps private catalog candidates isolated between session snapshots", () => {
