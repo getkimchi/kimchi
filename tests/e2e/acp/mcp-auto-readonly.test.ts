@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import { mcpToolResult } from "../tui/support/mcp-fixture.js"
 import { gatewayMcpCall, modelReply, toolResultText } from "../tui/support/mcp-model-script.js"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { newSession, prompt } from "./support/scenarios.js"
+import { newSession, prompt, waitFor } from "./support/scenarios.js"
 
 const MAIN_MODEL = {
 	slug: "basic",
@@ -154,14 +154,45 @@ describe("ACP auto MCP approval", () => {
 			})
 			const mcp = fixture.mcp
 			if (!mcp) throw new Error("Seeded MCP fixture was not created")
-			fixture.client.answerNextPermissionWith({ kind: "allow_once" })
+			const client = fixture.client
+			client.answerNextPermissionWith({ kind: "allow_once" })
+			let releaseApproval!: () => void
+			const approvalReleased = new Promise<void>((resolve) => {
+				releaseApproval = resolve
+			})
+			const selectedOptionIds: string[] = []
+			const requestPermission = client.requestPermission.bind(client)
+			client.requestPermission = async (params) => {
+				const response = await requestPermission(params)
+				await approvalReleased
+				if (response.outcome.outcome === "selected") selectedOptionIds.push(response.outcome.optionId)
+				return response
+			}
 
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const result = await prompt(fixture, sessionId, "Update LLM-4358 through the MCP gateway")
-			expect(result.stopReason).toBe("end_turn")
-			expect(result.chunks).toContain("The annotated gateway write completed after approval.")
+			const pendingResult = prompt(fixture, sessionId, "Update LLM-4358 through the MCP gateway")
+			const permissionRequests = await waitFor(
+				() => client.permissionRequests,
+				(requests) => requests.length === 1,
+			)
+			expect(classifierRequests(fixture)).toHaveLength(1)
+			const modelsBeforeApproval = fixture.fake.requests.flatMap((request) => {
+				if (
+					!request.url.startsWith("/openai/v1/chat/completions") ||
+					request.body === null ||
+					typeof request.body !== "object" ||
+					!("model" in request.body)
+				) {
+					return []
+				}
+				return [request.body.model]
+			})
+			expect(modelsBeforeApproval).toEqual([MAIN_MODEL.slug, CLASSIFIER_MODEL.slug])
+			expect(mcp.hasEvent("tool_called", { name: "updateJiraIssue" })).toBe(false)
+			const allowOnce = permissionRequests[0]?.options.find((option) => option.kind === "allow_once")
+			if (!allowOnce) throw new Error("Permission request did not contain allow_once")
 
-			const called = await mcp.waitForEvent("tool_called", {
+			const calledPromise = mcp.waitForEvent("tool_called", {
 				where: {
 					name: "updateJiraIssue",
 					arguments: {
@@ -171,6 +202,11 @@ describe("ACP auto MCP approval", () => {
 				},
 				description: "approved ACP Jira write",
 			})
+			releaseApproval()
+			const [result, called] = await Promise.all([pendingResult, calledPromise])
+			expect(selectedOptionIds).toEqual([allowOnce.optionId])
+			expect(result.stopReason).toBe("end_turn")
+			expect(result.chunks).toContain("The annotated gateway write completed after approval.")
 			expect(called.arguments).toEqual({
 				issueIdOrKey: "LLM-4358",
 				fields: { summary: "Updated through the MCP gateway" },
