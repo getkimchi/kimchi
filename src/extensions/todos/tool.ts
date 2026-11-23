@@ -148,7 +148,7 @@ function blockedWorkReminder(sessionId: string): string {
 	const shown = blocked.slice(0, 5).join("; ")
 	const more = blocked.length > 5 ? `; and ${blocked.length - 5} more` : ""
 	const singular = blocked.length === 1
-	return ` ${blocked.length} tool call${singular ? " was" : "s were"} blocked by this check-in and never executed (${shown}${more}). Re-issue ${singular ? "it" : "them"} now${singular ? "" : " (or their updated equivalents)"} — the gate does not replay blocked calls.`
+	return ` ${blocked.length} tool call${singular ? " was" : "s were"} blocked by this check-in and never executed (${shown}${more}). Re-issue ${singular ? "it (or its updated equivalent)" : "them (or their updated equivalents)"} now — the gate does not replay blocked calls.`
 }
 
 /** Validate an explicit scope, then auto-route if omitted. Rejects malformed

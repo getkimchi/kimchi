@@ -89,7 +89,7 @@ describe("confirm_todos", () => {
 		expect(text).toContain("2 tool calls were blocked by this check-in and never executed")
 		expect(text).toContain("bash(git status -sb)")
 		expect(text).toContain("write(README.md)")
-		expect(text).toContain("Re-issue them now")
+		expect(text).toContain("Re-issue them (or their updated equivalents) now")
 
 		// The ledger drains once: a later confirm does not repeat the reminder.
 		const again = await tools.confirm_todos.execute(
@@ -123,7 +123,7 @@ describe("confirm_todos", () => {
 		expect(text).toContain("6 tool calls were blocked by this check-in and never executed")
 		expect(text).toContain("bash(echo 5); and 1 more")
 		expect(text).not.toContain("bash(echo 6)")
-		expect(text).toContain("Re-issue them now")
+		expect(text).toContain("Re-issue them (or their updated equivalents) now")
 	})
 
 	it("rejects a stale input revision with the actual state and current revision", async () => {

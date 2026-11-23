@@ -15,6 +15,7 @@ import {
 	CHECKIN_HARD_THRESHOLD,
 	type CheckinPending,
 	canOpenStalenessGate,
+	clearGateBlockedWork,
 	disposeCheckinGateSession,
 	dropIrrelevantPending,
 	getPendingCheckins,
@@ -682,6 +683,13 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			// which do not reconcile — so neither surface keeps reporting an
 			// obsolete pause until the next work call re-evaluates relevance.
 			dropIrrelevantPending(emitterSessionId, getRelevantCheckinScopes(emitterSessionId))
+			// A close without a model-facing todo result cannot claim the ledger:
+			// the model may already have re-issued on the block reason alone, and
+			// a later claim would prompt a second execution. Forfeit the reminder
+			// instead — the block reason carries the re-issue duty on this path.
+			if (context?.origin !== "tool" && getPendingCheckins(emitterSessionId).length === 0) {
+				clearGateBlockedWork(emitterSessionId)
+			}
 			// One outcome per opening: emitted when the LAST pending list closes,
 			// not once per list. A list emptied by the write closes silently —
 			// the opening's steer_id is not left behind for a later opening to

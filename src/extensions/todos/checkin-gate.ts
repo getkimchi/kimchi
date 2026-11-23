@@ -357,6 +357,17 @@ export function recordGateBlockedToolCall(sessionId: string, toolCallId: string,
 	if (description !== undefined) state.blockedWork.push(description)
 }
 
+/** Drop all unclaimed blocked-work descriptions. Called when a check closes
+ *  with no model-facing todo result to claim the ledger on (a command write
+ *  or an unattributed background write): the model saw the block reason and
+ *  may already have re-issued on its own, so a later claim would prompt a
+ *  second execution of work that already ran. The block reason remains the
+ *  carrier of the re-issue duty on that path. */
+export function clearGateBlockedWork(sessionId: string): void {
+	const state = gateStates.get(sessionId)
+	if (state) state.blockedWork = []
+}
+
 /** Take the work calls blocked while checks were pending, for the closing
  *  surface's re-issue reminder. Returns nothing while any check is still
  *  pending (work remains gated; the reminder belongs to the close that
