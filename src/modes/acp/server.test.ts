@@ -44,6 +44,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import { createContext } from "../../extensions/__mocks__/context.js"
 import { createExtensionApi } from "../../extensions/__mocks__/extension-api.js"
 import { releaseArtifactSnapshot, snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
 import {
@@ -51,6 +52,7 @@ import {
 	type ArtifactsEntry,
 	artifactRecorderExtension,
 } from "../../extensions/artifacts/recorder.js"
+import { setSnapshotArtifactsOptIn } from "../../extensions/artifacts/snapshot-policy.js"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
 import { createFakeOps, type FakeOps } from "../../extensions/bash-background/__mocks__/fake-bash-ops.js"
 import { createProcessRegistry, type ProcessRegistry } from "../../extensions/bash-background/process-registry.js"
@@ -6842,12 +6844,13 @@ describe("generated artifacts (live turns)", () => {
 		})
 	}
 
-	// The recorder only consumes cwd, SessionManager identity, and these events.
-	// Keep the deliberately partial test context in one place for these flows.
 	const attachArtifactRecorder = () => {
 		const recorder = createExtensionApi()
 		artifactRecorderExtension(recorder.api)
-		const context = { cwd: tmpDir, sessionManager: fake.sessionManager } as unknown as ExtensionContext
+		const context = createContext({ cwd: tmpDir })
+		// The recorder needs SessionManager only as a cache/policy scope.
+		setSnapshotArtifactsOptIn(context.sessionManager, true)
+		onTestFinished(() => setSnapshotArtifactsOptIn(context.sessionManager, false))
 		fake.subscribe((event) => {
 			for (const handler of recorder.getHandlers(event.type)) void handler(event, context)
 		})
