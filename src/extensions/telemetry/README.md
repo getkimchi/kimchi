@@ -105,7 +105,7 @@ Fired from `pre-session.ts` via `sendPreSessionEvent()`. Sent to the **logs endp
 | Event | When | Attributes |
 |-------|------|------------|
 | `app_started` | CLI binary starts | `subcommand` |
-| `harness_launched` | Agent harness launched | `version` |
+| `harness_launched` | Agent harness launched | `version`, `config.memory_enabled` *(whether `extensions.memory` is enabled at launch; available from consented launches only)* |
 | `setup_aborted` | Setup wizard cancelled | `step` |
 | `tool_configured` | Tool enabled in setup wizard | `tool_name` |
 | `setup_completed` | Setup wizard finished | `tools_count`, `scope` |
@@ -171,6 +171,58 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `loop_guard.subagent_abort` | Subagent terminated after a loop-guard steer | `model`, `detector`, `count`, `is_subagent` |
 
 > **Privacy:** Loop-guard events carry only structured fields — `detector` (which loop detector fired), `count` (per-session warn count), and `is_subagent`. Raw tool args, command text, and the human-readable reason string are intentionally **not** emitted, to avoid leaking user data or secrets.
+
+## Memory Events
+
+Persistent-memory analytics use the shared `memory:telemetry` bus for live sessions and `sendPreSessionEvent()` for detached capture workers. `handlers/memory.ts` validates the discriminated payloads and copies only allowlisted fields. Live records carry `turn_index` (`0` before the first LLM turn). Delivery is best-effort and never changes memory behavior.
+
+| Record | Emission | Attributes beyond the common set |
+|-------|----------|----------------------------------|
+| `memory.session_state` | Once on initial active-state evaluation and each toggle | `active`, `authored_enabled`, `reason` (`initial` / `toggle`) |
+| `memory.capture.schedule` | At an actual job scheduling decision, not harmless polling | `outcome` (`enqueued` / `coalesced` / `deferred` / `already_captured` / `failed`), `message_count`, `pending_count`, optional `oldest_pending_ms` |
+| `memory.capture.spawn` | On the child process's `spawn` or `error` signal | `outcome` (`started` / `failed`) |
+| `memory.capture.wave` | After every bounded worker wave, including partial/deferred waves | `outcome` (`completed` / `partial` / `deferred`), `duration_ms`, `job_count`, `stored_count`, `triaged_window_count`, `non_durable_count`, `valuation_discard_count`, `redacted_count`, `oversized_count`, `failed_job_count`, `add_quarantined_count`, `poison_quarantined_count`, `pending_count`, optional `oldest_pending_ms` |
+| `memory.capture.failed` | Fatal worker failure after a non-empty wave cannot fully represent it | `failure_class` (`startup` / `watchdog` / `drain` / `unknown`), `duration_ms` |
+| `memory.recall.completed` | Exactly once per digest/progressive evaluation | `kind` (`digest_init` / `digest_progressive`), `trigger` (`before_agent_start` / `user_turn` / `step_budget` / `state_revisit`), `outcome` (`delivered` / `no_hits` / `covered` / `gate_skip` / `no_searcher` / `failed` / `cancelled` / `timed_out` / `dropped_stale`), `delivery` (`attached` / `steered` / `none`), `gate_status` (`not_run` / `passed` / `skipped` / `degraded`), `duration_ms`, `search_count`, `considered_count`, `selected_count`, `delivered_count`, `below_threshold_count`, `selector_skipped_count`, `over_cap_count`, `over_budget_count`, `estimated_tokens` |
+| `memory.tool.completed` | Once per explicit `memory_search` or `save_memory` call | `tool`, `outcome` (search: `hits` / `no_hits` / `disabled` / `failed`; save: `saved` / `duplicate` / `too_short` / `too_long` / `disabled` / `failed`), `duration_ms`, `retrieved_count`, `returned_count` |
+
+Digest delivery is reported only after its first actual attachment; cached prefix reuse emits no additional delivery. `selected_count` is never treated as `delivered_count`. Store/search failure is `failed`, not `no_hits`. Empty stores, coverage skips, timeouts, and stale generations remain distinct outcomes. `memory.capture.wave` and `memory.capture.failed` use pre-session identity: `session.id` is the **device ID**, never an originating pi session, and their custom properties have the standard `event.` prefix.
+
+> **Privacy:** payloads contain only the enums, booleans, durations, and counts above. Fact/query/prompt text, fact IDs, project names, local paths, PID, job names, tool arguments/results, raw errors, and model-authored text are not exported. The allowlist also rejects extra payload fields and cross-tool outcome vocabularies.
+
+### Memory destinations
+
+- **ClickHouse / Grafana:** ai-optimizer stores complete typed records in `memory_events`, a monthly-partitioned `ReplicatedReplacingMergeTree` family with deterministic event IDs / `cityHash64(id)` sharding, pinned-hot storage, and a 90-day move-to-cold TTL. Event-variant numeric/boolean columns are nullable so absent is not confused with zero. Live identity goes to `session_id`; worker identity goes to `device_id`. Use `FINAL` or deduplicate by `id` to avoid pre-merge duplicate counts.
+- **PostHog / product monitoring:** `posthog_mapping.go` forwards reduced summaries only. `harness_launched` adds `config_memory_enabled`; `memory_session_state` includes the full state; `memory_capture_schedule` has outcome/message count; `memory_capture_wave` has outcome/job/stored counts; `memory_capture_failed` has failure class; `memory_recall_completed` has kind/trigger/outcome/delivered count; `memory_tool_completed` has tool/outcome/returned count. `memory.capture.spawn` is not forwarded. Queue ages/depth, spawn details, latency/filter/gate diagnostics, and candidate/discard/quarantine counts stay out of PostHog. Worker summaries use `device_id`, not `session_id`.
+- **Model spend:** existing gateway tags (`memory:extraction`, `memory:decision`, `memory:embedding`) and the local memory usage ledger remain authoritative; no second token/cost series is emitted.
+
+Stored facts and delivered search results are utility proxies, not proof of memory answer quality. Grafana dashboard JSON/provisioning is a human/ops follow-up once samples exist. Deploy ai-optimizer's migration and receiver before emitting clients.
+
+Representative Grafana queries:
+
+```sql
+SELECT sum(stored_count) / nullIf(sum(job_count), 0) AS capture_yield
+FROM memory_events FINAL
+WHERE event_name = 'memory.capture.wave'
+  AND organization_id = {organization_id:UUID}
+  AND created_at >= {from:DateTime} AND created_at < {to:DateTime};
+
+SELECT kind, trigger, outcome, sum(delivered_count) AS delivered
+FROM memory_events FINAL
+WHERE event_name = 'memory.recall.completed'
+  AND organization_id = {organization_id:UUID}
+  AND created_at >= {from:DateTime} AND created_at < {to:DateTime}
+GROUP BY kind, trigger, outcome
+ORDER BY kind, trigger, outcome;
+
+SELECT tool, outcome, count() AS calls, sum(returned_count) AS returned
+FROM memory_events FINAL
+WHERE event_name = 'memory.tool.completed'
+  AND organization_id = {organization_id:UUID}
+  AND created_at >= {from:DateTime} AND created_at < {to:DateTime}
+GROUP BY tool, outcome
+ORDER BY tool, outcome;
+```
 
 ## Side Chat Events
 

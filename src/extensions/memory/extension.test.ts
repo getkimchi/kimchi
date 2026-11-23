@@ -11,9 +11,11 @@ import { createCommandContext, createContext, createToolContext } from "../__moc
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
 import { MEMORY_PRE_REQUEST_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
-import { createMemoryExtension, type MemorySearcher } from "./index.js"
+import { createMemoryExtension, type MemorySearcher, memoryEnabledNotice } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
+import { createMemorySaveTool } from "./tools.js"
+import { createRecallRecorder } from "./trace.js"
 
 // The /memory command handler delegates to the admin core; the backend-
 // touching functions are mocked so arg threading, panel mounting, and
@@ -30,6 +32,11 @@ vi.mock("./admin.js", async (importOriginal) => {
 	}
 })
 
+vi.mock("./trace.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./trace.js")>()
+	return { ...actual, createRecallRecorder: vi.fn(() => null) }
+})
+
 // Unit tests never hit the real gateway: the default gate resolution path
 // reads the env, so tests that don't inject a decision dep must see
 // "everything off". Gate-logic tests inject their own decision dep, which
@@ -41,6 +48,7 @@ beforeEach(() => {
 	vi.mocked(adminListFacts).mockReset()
 	vi.mocked(adminSearchFacts).mockReset()
 	vi.mocked(adminDeleteFacts).mockReset()
+	vi.mocked(createRecallRecorder).mockReset().mockReturnValue(null)
 })
 
 const BASE_PROMPT = "You are kimchi."
@@ -262,6 +270,109 @@ describe("memory extension", () => {
 		expect(turn3?.systemPrompt).toBe(turn1?.systemPrompt)
 	})
 
+	it("emits initial digest delivery once despite cached reattachments", async () => {
+		const { api, start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => hits({ memory: "stable fact", score: 0.9 }),
+			}),
+		)
+		const initial = () =>
+			vi
+				.mocked(api.events.emit)
+				.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+				.filter((payload) => payload.event === "recall.completed" && payload.kind === "digest_init")
+		await start(startEvent("initial request"), fakeCtx)
+		expect(initial()).toEqual([
+			expect.objectContaining({
+				outcome: "delivered",
+				delivery: "attached",
+				selectedCount: 1,
+				deliveredCount: 1,
+				searchCount: 1,
+				trigger: "before_agent_start",
+			}),
+		])
+
+		await start(startEvent("next request"), fakeCtx)
+		await start(startEvent("third request"), fakeCtx)
+		expect(initial()).toHaveLength(1)
+	})
+
+	it("distinguishes empty digest results from failed digest searches", async () => {
+		const empty = await setup(
+			createMemoryExtension({ createSearcher: async () => hits({ memory: "weak", score: 0.1 }) }),
+		)
+		await empty.start(startEvent("nothing relevant"), fakeCtx)
+		const emptyOutcome = vi
+			.mocked(empty.api.events.emit)
+			.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+			.find((payload) => payload.event === "recall.completed")
+		expect(emptyOutcome).toMatchObject({ outcome: "no_hits", deliveredCount: 0 })
+
+		const failure = await setup(
+			createMemoryExtension({
+				createSearcher: async () => ({
+					search: async () => {
+						throw new Error("store down")
+					},
+				}),
+			}),
+		)
+		await failure.start(startEvent("search failure"), fakeCtx)
+		const failureOutcome = vi
+			.mocked(failure.api.events.emit)
+			.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+			.find((payload) => payload.event === "recall.completed")
+		expect(failureOutcome).toMatchObject({ outcome: "failed", deliveredCount: 0 })
+	})
+
+	it("maps progressive recall delivery to the shared telemetry contract", async () => {
+		let n = 0
+		const search = vi.fn(async () => [{ memory: `distinct recalled fact ${++n}`, score: 0.7 }])
+		const { api, start } = await setup(createMemoryExtension({ createSearcher: async () => ({ search }) }))
+		const ctx = createContext()
+		await start(startEvent("set up the project"), ctx)
+		await start(startEvent("bake a completely unrelated cake"), ctx)
+		const progressive = () =>
+			vi
+				.mocked(api.events.emit)
+				.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+				.filter((payload) => payload.event === "recall.completed" && payload.kind === "digest_progressive")
+		await flushRecall(() => expect(progressive()).toHaveLength(1))
+		expect(progressive()[0]).toMatchObject({
+			trigger: "user_turn",
+			outcome: "delivered",
+			delivery: "steered",
+			selectedCount: 1,
+			deliveredCount: 1,
+			searchCount: 1,
+		})
+	})
+
+	it("traces selection once and attachment only when digest bytes are returned", async () => {
+		const events: Array<Record<string, unknown>> = []
+		vi.mocked(createRecallRecorder).mockReturnValue({ file: "recall-test.jsonl", emit: (event) => events.push(event) })
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => hits({ memory: "stable fact", score: 0.9 }),
+			}),
+		)
+		const first = await start(startEvent("initial request"), fakeCtx)
+		const replay = await start(startEvent("next request"), fakeCtx)
+		expect(replay?.systemPrompt).toBe(first?.systemPrompt)
+
+		const selected = events.filter((event) => event.conclusion === "selected")
+		const attached = events.filter((event) => event.conclusion === "attachedToTurn")
+		expect(selected).toHaveLength(1)
+		expect(attached).toHaveLength(2)
+		expect(selected[0]?.selected).toEqual(["stable fact"])
+		expect(selected[0]?.injected).toEqual([])
+		expect(attached.every((event) => event.recall_id === selected[0]?.recall_id && event.attachedToTurn)).toBe(true)
+		expect(attached.every((event) => String(event.phase) === "before_agent_start")).toBe(true)
+	})
+
 	it("an empty digest injects no facts — only the always-on notice (drift keeps re-evaluating)", async () => {
 		const search = vi.fn(async () => [{ memory: "weak", score: 0.1 }])
 		const { start } = await setup(
@@ -328,6 +439,8 @@ describe("memory extension", () => {
 
 	it("degrades to no-memory when the digest search hangs — and retries the digest next turn", async () => {
 		vi.useFakeTimers()
+		const events: Array<Record<string, unknown>> = []
+		vi.mocked(createRecallRecorder).mockReturnValue({ file: "timeout.jsonl", emit: (event) => events.push(event) })
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
 			// Only the first search hangs; later calls resolve. A timeout must
@@ -345,6 +458,10 @@ describe("memory extension", () => {
 			// Degraded to no facts — the notice is still present.
 			expect(result?.systemPrompt).toContain("captured automatically")
 			expect(result?.systemPrompt).not.toContain("fact for")
+			expect(events.some((event) => event.conclusion === "attachedToTurn" || event.conclusion === "selected")).toBe(
+				false,
+			)
+			expect(events.some((event) => event.conclusion === "timed-out")).toBe(true)
 			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
 			// Retry: turn 2 recomputes the digest into the prefix (no recall —
 			// the digest search already used this prompt).
@@ -824,8 +941,12 @@ describe("memory extension", () => {
 		}
 		// Turn 1 (digest) + one drift retrieval per follow-up turn — every user
 		// message is fresh signal, so recall keeps running for the whole session.
-		expect(search).toHaveBeenCalledTimes(8)
-		expect(sendMessage).toHaveBeenCalledTimes(7)
+		// Turn 1 (digest) + one drift retrieval per follow-up turn — every user
+		// message is fresh signal, so recall keeps running for the whole session.
+		// The final SEND lands one settle hop after the last search: poll it
+		// too (the search-flush above only proves retrieval, not delivery).
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(8))
+		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(7))
 	})
 
 	it("the drift recall runs detached — the turn never waits on retrieval", async () => {
@@ -878,12 +999,13 @@ describe("memory extension", () => {
 		await start(startEvent("turn 3 - more fresh territory"), fakeCtx)
 		expect(search).toHaveBeenCalledTimes(2)
 		releaseSearch?.()
-		await flushRecall(() => {
-			expect(sendMessage).toHaveBeenCalledTimes(1)
-			expect(search).toHaveBeenCalledTimes(3)
-		})
-		// Settle → turn-2 delivery went out, and the coalesced turn-3 drift
-		// fired its OWN search (its prompt, which the earlier query never saw).
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(3))
+		// The pending generation in this session may deliver once. Its return
+		// records the fact in the ledger, so the coalesced generation does not
+		// inject a duplicate.
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+		releaseSearch?.()
+		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(1))
 		expect(String(search.mock.calls[2]?.[0])).toContain("turn 3 - more fresh territory")
 		// Release the coalesced recall too — the valve opens again, and turn
 		// 4's drift fires its own recall.
@@ -894,7 +1016,7 @@ describe("memory extension", () => {
 		await flushRecall(() => expect(search).toHaveBeenCalledTimes(4))
 	})
 
-	it("compaction during a pending recall doesn't break delivery", async () => {
+	it("compaction invalidates the pending recall before the next digest begins", async () => {
 		let releaseSearch: (() => void) | undefined
 		const search = vi
 			.fn()
@@ -915,7 +1037,8 @@ describe("memory extension", () => {
 		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
 		compact({ type: "session_compact" }, fakeCtx)
 		releaseSearch?.()
-		await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+		await settle()
+		expect(sendMessage).toHaveBeenCalledTimes(0)
 
 		// Post-interleaving state: the reset is respected — turn 3 recomputes
 		// the digest against the post-compaction store (a fresh search), the
@@ -950,6 +1073,32 @@ describe("memory extension", () => {
 		const back = await start(startEvent("turn 3"), ctx)
 		expect(back?.systemPrompt).toContain("flag fact")
 		expect(search).toHaveBeenCalledTimes(2)
+	})
+
+	it("reports initial and toggle session state exactly once per transition", async () => {
+		const { api, start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() }),
+		)
+		const ctx = createContext()
+		const states = () =>
+			vi
+				.mocked(api.events.emit)
+				.mock.calls.filter(([, payload]) => (payload as { event?: string }).event === "session_state")
+				.map(([, payload]) => payload)
+
+		await start(startEvent("turn 1"), ctx)
+		await start(startEvent("turn 2 - same state"), ctx)
+		expect(states()).toEqual([{ event: "session_state", active: true, authoredEnabled: false, reason: "initial" }])
+
+		setSessionMemoryOverride(ctx.sessionManager, false)
+		await start(startEvent("turn 3"), ctx)
+		setSessionMemoryOverride(ctx.sessionManager, true)
+		await start(startEvent("turn 4"), ctx)
+		expect(states()).toEqual([
+			{ event: "session_state", active: true, authoredEnabled: false, reason: "initial" },
+			{ event: "session_state", active: false, authoredEnabled: false, reason: "toggle" },
+			{ event: "session_state", active: true, authoredEnabled: false, reason: "toggle" },
+		])
 	})
 
 	it("the session toggle is scoped per session", async () => {
@@ -1012,6 +1161,13 @@ describe("memory extension", () => {
 		expect(result.content[0]?.text).toContain("/memory enable")
 		// Only the turn-1 digest ran — the tool did not search.
 		expect(search).toHaveBeenCalledTimes(1)
+		const toolTelemetry = vi
+			.mocked(api.events.emit)
+			.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+			.filter((payload) => payload.event === "tool.completed")
+		expect(toolTelemetry).toEqual([
+			expect.objectContaining({ tool: "memory_search", outcome: "disabled", retrievedCount: 0, returnedCount: 0 }),
+		])
 	})
 
 	it("the /memory command's toggle gates the very next agent start (identity seam)", async () => {
@@ -1109,7 +1265,7 @@ describe("memory extension — digest selection gate", () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
 			const down = async () => new Response(JSON.stringify({ error: "quota" }), { status: 401 })
-			const { start } = await setup(
+			const { api, start } = await setup(
 				createMemoryExtension({
 					isEnabled: () => true,
 					createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
@@ -1129,9 +1285,71 @@ describe("memory extension — digest selection gate", () => {
 			expect(turn1?.systemPrompt).toContain("greplier")
 			expect(turn1?.systemPrompt).toContain("Freya")
 			expect(consoleError.mock.calls.some((call) => String(call[0]).includes("digest selection failed"))).toBe(true)
+			const recall = vi
+				.mocked(api.events.emit)
+				.mock.calls.map(([, payload]) => payload as Record<string, unknown>)
+				.find((payload) => payload.event === "recall.completed")
+			expect(recall).toMatchObject({ outcome: "delivered", gateStatus: "degraded", delivery: "attached" })
 		} finally {
 			consoleError.mockRestore()
 		}
+	})
+
+	it("the digest floor widens the search to floor+1 (topK threads through) and selection runs above the floor", async () => {
+		process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES = "1"
+		const decisionFetch = selectorFetchImpl(["the user's dog is named Freya"])
+		const searchCalls: Array<number | undefined> = []
+		const searcher = {
+			search: vi.fn(async (_q: string, topK?: number) => {
+				searchCalls.push(topK)
+				return searchable()
+			}),
+		}
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => searcher,
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(["digest"]),
+				}),
+			}),
+		)
+		const turn1 = await start(startEvent("digest floor pin"), fakeCtx)
+		// 3 candidates strictly exceed the floor (1): the selection call ran.
+		expect(turn1?.systemPrompt).toContain("the user's dog is named Freya")
+		expect(turn1?.systemPrompt).not.toContain("greplier")
+		// Searched with the widened cap, not the store default (8) nor floor itself.
+		expect(searchCalls[0]).toBe(2)
+		delete process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES
+	})
+
+	it("at/under the floor the selector never runs (small stores keep recall)", async () => {
+		process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES = "3"
+		const decisionFetch = vi.fn(async () => {
+			throw new Error("must not be called")
+		})
+		const searchCalls: Array<number | undefined> = []
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({
+					search: vi.fn(async (_q: string, topK?: number) => {
+						searchCalls.push(topK)
+						return searchable()
+					}),
+				}),
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(["digest"]),
+				}),
+			}),
+		)
+		const turn1 = await start(startEvent("digest floor pin"), fakeCtx)
+		// 3 candidates == floor 3: threshold rule keeps all.
+		expect(turn1?.systemPrompt).toContain("greplier")
+		expect(searchCalls[0]).toBe(4)
+		delete process.env.KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES
 	})
 
 	it("the digest gate off (subset env): no selector call, threshold rule applies", async () => {
@@ -1144,7 +1362,7 @@ describe("memory extension — digest selection gate", () => {
 				createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
 				decision: () => ({
 					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
-					enabled: new Set(["triage"]), // digest NOT enabled
+					enabled: new Set(["valuation"]), // digest NOT enabled
 				}),
 			}),
 		)
@@ -1332,7 +1550,6 @@ describe("memory saved feedback (completion record)", () => {
 		writeRecord(3)
 		await start(startEvent("fourth turn"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
-
 		// Saves never announce — the segment half is the only surface.
 		expect(vi.mocked(ctx.ui.notify).mock.calls.every((call) => !String(call[0]).startsWith("Saved"))).toBe(true)
 	})
@@ -1414,5 +1631,261 @@ describe("memory saved feedback (completion record)", () => {
 		writeRecord(3)
 		await start(startEvent("turn 2"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
+	})
+})
+
+describe("authored lane wiring (KIMCHI_MEMORY_AUTHORED)", () => {
+	afterEach(() => {
+		delete process.env.KIMCHI_MEMORY_AUTHORED
+	})
+
+	it("flag OFF: save_memory is not registered", () => {
+		const { api, getRegisteredTool } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
+		expect(() => getRegisteredTool("save_memory")).toThrow(/not registered/)
+	})
+
+	it("flag ON: save_memory is registered (only then can the model write)", () => {
+		process.env.KIMCHI_MEMORY_AUTHORED = "1"
+		const { api, getRegisteredTool } = createExtensionApi()
+		createMemoryExtension({ isEnabled: () => true, createSearcher: async () => hits() })(api)
+		expect(getRegisteredTool("save_memory")).toBeDefined()
+		expect(getRegisteredTool("save_memory")?.name).toBe("save_memory")
+	})
+
+	it("the system-prompt notice never contradicts the registered tool surface", () => {
+		process.env.KIMCHI_MEMORY_AUTHORED = "1"
+		expect(memoryEnabledNotice()).toContain("save_memory")
+		expect(memoryEnabledNotice()).not.toContain("there is no write tool")
+		delete process.env.KIMCHI_MEMORY_AUTHORED
+		expect(memoryEnabledNotice()).toContain("there is no write tool to call")
+		expect(memoryEnabledNotice()).not.toContain("save_memory")
+	})
+})
+
+describe("authored lane redaction parity", () => {
+	it("save_memory redacts credential-shaped facts before persisting", async () => {
+		const stored: string[] = []
+		const tool = createMemorySaveTool({
+			write: async (text) => {
+				stored.push(text)
+			},
+			existing: async () => [],
+			isEnabled: () => true,
+		})
+		await tool.execute(
+			"call-1",
+			{ fact: "The gateway key is sk-proj-AbCdEf1234567890GhIjKlMnOpQrStUvWx in the shared config." },
+			undefined,
+			undefined,
+			{} as never,
+		)
+		expect(stored).toHaveLength(1)
+		expect(stored[0]).toContain("[authored]")
+		expect(stored[0]).toContain("[REDACTED-")
+		expect(stored[0]).not.toContain("sk-proj-")
+	})
+})
+
+describe("mid-loop recall (step-budget trigger)", () => {
+	const K = 25 // MEMORY_STEP_RECALL_INTERVAL — the tool steps between evaluations
+
+	const toolResultEvent = (text: string) => ({
+		type: "tool_result",
+		toolCallId: "t1",
+		toolName: "bash",
+		input: {},
+		content: [{ type: "text", text }],
+		isError: false,
+	})
+
+	function fireToolResults(handler: ReturnType<RigBundle["getHandler"]>, n: number, label: string) {
+		for (let i = 0; i < n; i++) {
+			handler(toolResultEvent(`${label} step state ${i}`) as never, fakeCtx)
+		}
+	}
+	type RigBundle = Awaited<ReturnType<typeof setup>>
+	// One combined tool_result handler in the capture-enabled wiring (producer + increment).
+	const getToolResultHandler = (r: RigBundle) => r.getHandler("tool_result")
+
+	function freshFactSearcher() {
+		let n = 0
+		let first = true
+		return {
+			search: vi.fn(async () => {
+				if (first) {
+					first = false
+					return [] // turn-1 digest finds nothing: no seeds, no pre-turn injection
+				}
+				n++
+				return [{ memory: `durable loop tactic ${n}`, score: 0.95 }]
+			}),
+		}
+	}
+
+	async function flushChain() {
+		// The step trigger's evaluation chains microtasks after the
+		// tool_result handler returns; a few macrotask ticks drain the whole
+		// microtask queue, including chained catch-up evaluations.
+		for (let i = 0; i < 5; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 0))
+		}
+	}
+
+	it("evaluates the first loop need without re-embedding identical tool steps", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run the episode"), fakeCtx)
+		fireToolResults(tri, 2 * K + K / 2, "arc")
+		await flushChain()
+		// Repeated identical needs make one evaluation, not one injection per
+		// K-window. An in-flight result must not cause redundant old deliveries.
+		expect(sendMessage.mock.calls.length).toBe(1)
+		expect(searcher.search.mock.calls.length).toBe(2)
+		// A new state alone is not a reason to spend an embedding every step.
+		fireToolResults(tri, K - 1, "tail")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+	})
+
+	it("a user-turn injection suppresses the step trigger for one full window", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("entry"), fakeCtx)
+		// Second user turn: progressive recall injects at loop step 0 —
+		// delivery is detached from the turn (#1701 semantics), so poll the
+		// settle before counting.
+		await start(startEvent("new topic, please adjust"), fakeCtx)
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
+		// K-1 tool steps: inside the suppression window — no step injection.
+		fireToolResults(tri, K - 1, "suppressed")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		// At K steps since the user-turn injection the trigger shoulders in.
+		fireToolResults(tri, 1, "crossing")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(2)
+	})
+
+	it("compaction resets the step counter and budget window", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		fireToolResults(tri, K - 1, "pre-compact")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+		await start(startEvent("continuation after compact"), fakeCtx) // has hits now: user-turn injects (1)
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
+		rig.getHandler("session_compact")({}, fakeCtx)
+		// Counter zeroed: K-1 further steps stay inside the fresh window,
+		// NOT crossing an old boundary at K total.
+		fireToolResults(tri, K - 2, "post-compact")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+	})
+
+	it("disabled memory session: step trigger no-ops and a flip resets counters", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		setSessionMemoryOverride(fakeCtx.sessionManager, false)
+		fireToolResults(tri, K, "disabled")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+		// Flip back on → the flip is processed at the next agent start; that
+		// turn's progressive recall legitimately injects (user-turn path),
+		// and the flip ALSO resets the step counters, so the following K-1
+		// steps stay within the fresh window: only the crossing step fires.
+		setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
+		await start(startEvent("memory back on"), fakeCtx) // user-turn injects: 1
+		await flushRecall(() => expect(sendMessage.mock.calls.length).toBe(1))
+		fireToolResults(tri, K - 1, "after-flip")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		fireToolResults(tri, 1, "after-flip-crossing")
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(2)
+	})
+
+	it("state-revisit: a repeated state fires one revisit evaluation exactly once", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		const state = (room: string, step: number) => `step ${step}\nroom: ${room}\ninventory: key`
+		fireToolResults(tri, 1, "")
+		tri(toolResultEvent(state("grey hall", 1)) as never, fakeCtx)
+		tri(toolResultEvent(state("white cell", 2)) as never, fakeCtx)
+		tri(toolResultEvent(state("grey hall", 3)) as never, fakeCtx) // revisit
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+		// A third pass through the same room fires nothing — once per state.
+		tri(toolResultEvent(state("grey hall", 4)) as never, fakeCtx)
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(1)
+	})
+
+	it("state-revisit: strictly-unique states fire nothing", async () => {
+		populateCliArgs(["--memory"])
+		const searcher = freshFactSearcher()
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => searcher }))
+		const { sendMessage, start } = rig
+		const tri = getToolResultHandler(rig)
+		await start(startEvent("run"), fakeCtx)
+		fireToolResults(tri, 1, "")
+		tri(toolResultEvent("room: alpha\ninventory: key") as never, fakeCtx)
+		tri(toolResultEvent("room: beta\ninventory: key") as never, fakeCtx)
+		tri(toolResultEvent("room: gamma\ninventory: key") as never, fakeCtx)
+		await flushChain()
+		expect(sendMessage.mock.calls.length).toBe(0)
+	})
+
+	it("context facets carry recent message texts into the embedding facets", async () => {
+		populateCliArgs(["--memory"])
+		const search = vi.fn(async (query: string) => [{ memory: `fact for ${query.slice(0, 20)}`, score: 0.95 }])
+		const rig = await setup(createMemoryExtension({ createSearcher: async () => ({ search }) }))
+		const { start } = rig
+		const tri = getToolResultHandler(rig)
+		const assistant = (text: string) =>
+			({
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text }] },
+			}) as unknown as SessionEntry
+		const user = (text: string) =>
+			({ type: "message", message: { role: "user", content: [{ type: "text", text }] } }) as unknown as SessionEntry
+		const entries = [
+			user("objective: reach the lab"),
+			assistant("the northern gate is blocked by a trigger script"),
+			assistant("heading north from the gate"),
+		]
+		const ctx = createContext({ sessionManager: { getEntries: () => entries } })
+		await start(startEvent("run"), fakeCtx)
+		// K tool steps with the seeded ctx → one step-budget evaluation whose
+		// facets embed the recent message texts (the latest assistant entry
+		// is the reasoning head; earlier turns are context facets).
+		for (let i = 0; i < K; i++) tri(toolResultEvent(`state ${i}`) as never, ctx)
+		await flushChain()
+		expect(search).toHaveBeenCalled()
+		// The first call is the separate one-shot turn-1 digest, not part of
+		// this evaluation's three-facet budget.
+		const facetTexts = search.mock.calls.slice(1).map((call) => call[0] as string)
+		expect(facetTexts.length).toBeLessThanOrEqual(3)
+		expect(facetTexts.some((t) => t.includes("heading north from the gate"))).toBe(true)
+		expect(facetTexts.some((t) => t.includes("objective: reach the lab"))).toBe(true)
+		expect(facetTexts.some((t) => t.includes("the northern gate is blocked"))).toBe(false)
 	})
 })

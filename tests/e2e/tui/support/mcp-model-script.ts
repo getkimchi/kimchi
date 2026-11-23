@@ -103,6 +103,23 @@ export function emptyMcpCall(options: Pick<McpCallOptions, "id"> = {}): Scripted
 	return { id, modelToolName: "mcp", response: modelToolCall("mcp", {}, id) }
 }
 
+export function describeMcpTool(
+	toolName: string,
+	options: Pick<McpCallOptions, "id" | "serverName" | "toolPrefix"> = {},
+): ScriptedModelToolCall {
+	const serverName = options.serverName ?? "fixture"
+	const id = options.id ?? nextCallId(`describe_${serverName}_${toolName}`)
+	return {
+		id,
+		modelToolName: "mcp",
+		response: modelToolCall(
+			"mcp",
+			{ describe: prefixedToolName(serverName, toolName, options.toolPrefix), server: serverName },
+			id,
+		),
+	}
+}
+
 export function mcpUiMessages(options: Pick<McpCallOptions, "id"> = {}): ScriptedModelToolCall {
 	const id = options.id ?? nextCallId("ui_messages")
 	return { id, modelToolName: "mcp", response: modelToolCall("mcp", { action: "ui-messages" }, id) }

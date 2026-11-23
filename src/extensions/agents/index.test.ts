@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -8,7 +8,6 @@ import {
 	buildAgentToolGuidelines,
 	buildAutoResumeNote,
 	buildRunInBackgroundParameterDescription,
-	resolveRoleModelRef,
 	setActiveManagerForTest,
 	shouldAutoResumeFermentWorker,
 	spawnGraderAgent,
@@ -165,6 +164,30 @@ vi.mock("./manager/agent-manager.js", () => {
 				hasRunning: vi.fn().mockReturnValue(false),
 				detachToBackground: vi.fn().mockReturnValue(false),
 				detachRemoteRuns: vi.fn(),
+				countAbortableBackground: vi.fn(
+					// Mirror the real accounting well enough for notice tests:
+					// only background-flagged records count; transients don't.
+					() => [...records.values()].filter((r) => (r as { isBackground?: boolean }).isBackground === true).length,
+				),
+				extractRunningLocal: vi.fn(() => {
+					const active = [...records.values()].filter((r) => {
+						const status = (r as { status?: string }).status
+						return status === "running" || status === "queued"
+					})
+					for (const r of active) records.delete((r as { id: string }).id)
+					return { records: active, queued: [], midResumeIds: new Set() }
+				}),
+				adoptRecords: vi.fn(
+					(
+						adopted: Array<Record<string, unknown>>,
+						_queued: unknown,
+						_midResumeIds: unknown,
+						_pi: unknown,
+						_ctx: unknown,
+					) => {
+						for (const r of adopted) records.set(r.id as string, r)
+					},
+				),
 			}
 			return manager
 		}),
@@ -194,7 +217,6 @@ vi.mock("../../cli-args.js", async (importActual) => {
 	const actual = await importActual<typeof import("../../cli-args.js")>()
 	return { ...actual, getParsedCliArgs: vi.fn(actual.getParsedCliArgs) }
 })
-vi.mock("../multi-model.js", () => ({ getMultiModelEnabled: vi.fn().mockReturnValue(false) }))
 vi.mock("../model-guard.js", () => ({ sessionHasImages: vi.fn().mockReturnValue(false) }))
 vi.mock("../shared-input.js", () => ({ isRawInputCaptureActive: vi.fn().mockReturnValue(false) }))
 vi.mock("../hide-thinking.js", () => ({ filterThinkingForDisplay: vi.fn().mockReturnValue("") }))
@@ -210,40 +232,21 @@ vi.mock("../../project-scope-trust.js", async (importOriginal) => ({
 	isProjectScopeAllowed: vi.fn().mockReturnValue(true),
 }))
 
-vi.mock("../orchestration/model-roles.js", () => ({
-	getAllowedMultiModelRefs: vi
-		.fn()
-		.mockReturnValue(["kimchi-dev/kimi-k2.7", "kimchi-dev/minimax-m3", "kimchi-dev/nemotron-3-ultra-fp4"]),
-	getModelRoles: vi.fn().mockReturnValue({
-		orchestrator: "kimchi-dev/kimi-k2.7",
-		planner: "kimchi-dev/kimi-k2.7",
-		builder: "kimchi-dev/minimax-m3",
-		reviewer: "kimchi-dev/kimi-k2.7",
-		explorer: "kimchi-dev/nemotron-3-ultra-fp4",
-		researcher: "kimchi-dev/minimax-m3",
-	}),
-	normalizeRoleModels: vi.fn((assignment: unknown) => {
-		if (typeof assignment === "string") return [assignment]
-		if (Array.isArray(assignment)) return assignment
-		return []
-	}),
-}))
-
-import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
+import type { EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { AUTO_MODEL_PROVIDER } from "../auto-model/constants.js"
 import { sessionHasImages } from "../model-guard.js"
-import { getMultiModelEnabled } from "../multi-model.js"
-import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
 import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { RemoteAgentSession } from "./manager/remote-agent-session.js"
+import { clearHandoff, peekHandoff, stageHandoff } from "./manager/subagent-handoff.js"
 import type { RemoteRunState } from "./remote-run-persistence.js"
 import { applyAndEmitLoaded } from "./settings.js"
 import type { Theme } from "./ui/agent-widget.js"
+import { SKIPPED_AGENT_FILES_ENTRY, type SkippedAgentFilesEntryData } from "./ui/skipped-agent-files-entry.js"
 
 type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>
 
@@ -291,7 +294,8 @@ function makeMockPi(): ExtensionAPI & {
 		_handlers: handlers,
 		sendMessage,
 		fireShutdown: async () => {
-			for (const handler of handlers.get("session_shutdown") ?? []) await handler({})
+			for (const handler of handlers.get("session_shutdown") ?? [])
+				await handler({}, { sessionManager: { getSessionFile: () => "/tmp/session.json" } })
 		},
 	}
 	return stub as unknown as ExtensionAPI & {
@@ -403,11 +407,7 @@ describe("session_shutdown nudge race (integration)", () => {
 	})
 })
 
-// ---- Multi-mode model guard ----
-//
-// These tests exercise the registered Agent tool's execute() handler to
-// verify the multi-model guard: when multi-model mode is active, explicit
-// model parameters must belong to the configured role pool.
+// ---- Agent tool execute() fixtures ----
 
 interface MockModelEntry {
 	id: string
@@ -515,472 +515,14 @@ describe("Agent tool renderer", () => {
 	})
 })
 
-describe("Agent tool multi-mode model guard", () => {
-	beforeEach(() => {
-		vi.useRealTimers()
-		vi.clearAllMocks()
-		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
-		vi.mocked(sessionHasImages).mockReturnValue(false)
-		vi.mocked(getAllowedMultiModelRefs).mockReturnValue([
-			"kimchi-dev/kimi-k2.7",
-			"kimchi-dev/minimax-m3",
-			"kimchi-dev/nemotron-3-ultra-fp4",
-		])
-	})
-
-	it("calls spawn when multi-mode is enabled and the model is allowed", async () => {
-		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
-			{ id: "gpt-4o", name: "GPT-4o", provider: "openai", input: ["text", "image"] },
-		])
-		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
-		const tool = getRegisteredAgentTool(pi)
-
-		const result = await tool.execute(
-			"call-1",
-			{
-				prompt: "do work",
-				description: "test",
-				subagent_type: "general-purpose",
-				model: "kimchi-dev/kimi-k2.7",
-				run_in_background: true,
-			},
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
-		const text = result.content[0]?.text ?? ""
-		expect(text).not.toContain("not allowed in multi-model mode")
-	})
-
-	it("rejects a disallowed model when multi-mode is enabled and does not spawn", async () => {
-		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
-			{ id: "gpt-4o", name: "GPT-4o", provider: "openai", input: ["text", "image"] },
-		])
-		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
-		const tool = getRegisteredAgentTool(pi)
-
-		const result = await tool.execute(
-			"call-2",
-			{
-				prompt: "do work",
-				description: "test",
-				subagent_type: "general-purpose",
-				model: "openai/gpt-4o",
-				run_in_background: true,
-			},
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		expect(managerInstance.spawn).not.toHaveBeenCalled()
-		const text = result.content[0]?.text ?? ""
-		expect(text).toContain("not allowed in multi-model mode")
-		expect(text).toContain("openai/gpt-4o")
-		// Allowed models should be listed in the rejection message.
-		expect(text).toContain("kimchi-dev/kimi-k2.7")
-		expect(text).toContain("kimchi-dev/minimax-m3")
-		expect(text).toContain("kimchi-dev/nemotron-3-ultra-fp4")
-	})
-
-	it("calls spawn when multi-mode is disabled even for a disallowed model (existing behavior)", async () => {
-		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{ id: "gpt-4o", name: "GPT-4o", provider: "openai", input: ["text", "image"] },
-		])
-		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
-		const tool = getRegisteredAgentTool(pi)
-
-		const result = await tool.execute(
-			"call-3",
-			{
-				prompt: "do work",
-				description: "test",
-				subagent_type: "general-purpose",
-				model: "openai/gpt-4o",
-				run_in_background: true,
-			},
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
-		const text = result.content[0]?.text ?? ""
-		expect(text).not.toContain("not allowed in multi-model mode")
-	})
-
-	it("calls spawn when no model parameter is supplied regardless of multi-mode", async () => {
-		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
-		])
-		const parentModel = { id: "kimi-k2.7", provider: "kimchi-dev", name: "Kimi K2.7" }
-		const ctx = makeMockCtx(registry, parentModel)
-		const tool = getRegisteredAgentTool(pi)
-
-		const result = await tool.execute(
-			"call-4",
-			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: true },
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
-		const text = result.content[0]?.text ?? ""
-		expect(text).not.toContain("not allowed in multi-model mode")
-	})
-
-	it("forwards parent image context to an Auto child's prompt", async () => {
-		vi.mocked(sessionHasImages).mockReturnValue(true)
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{
-				id: "auto",
-				name: "Auto",
-				provider: AUTO_MODEL_PROVIDER,
-				input: ["text", "image"],
-			},
-		])
-		const branch = [
-			{
-				type: "message",
-				message: {
-					role: "assistant",
-					content: [{ type: "toolCall", id: "read-image", name: "read", arguments: { path: "/tmp/reference.png" } }],
-				},
-			},
-			{
-				type: "message",
-				message: {
-					role: "toolResult",
-					toolCallId: "read-image",
-					content: [{ type: "image", data: "abc", mimeType: "image/png" }],
-				},
-			},
-		]
-		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }, branch)
-		const tool = getRegisteredAgentTool(pi)
-
-		await tool.execute(
-			"call-with-image",
-			{
-				prompt: "inspect the reference",
-				description: "test",
-				subagent_type: "general-purpose",
-				model: "kimchi-dev/auto",
-				run_in_background: true,
-			},
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		expect(managerInstance.spawn).toHaveBeenCalledWith(
-			pi,
-			ctx,
-			"General-Purpose",
-			expect.stringContaining("Context images from parent session: /tmp/reference.png"),
-			// Spawn options carry no model-dependent flags anymore; this test's
-			// subject is the forwarded prompt above.
-			expect.anything(),
-		)
-	})
-
-	it("defaults to background when run_in_background is omitted in TUI sessions", async () => {
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
-		])
-		// Background-by-default is TUI-only; other surfaces fail safe to
-		// foreground regardless of hasUI.
-		const ctx = {
-			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
-			hasUI: true,
-			mode: "tui",
-		}
-		const tool = getRegisteredAgentTool(pi)
-
-		const result = await tool.execute(
-			"call-default-bg",
-			{ prompt: "do work", description: "test", subagent_type: "general-purpose" },
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
-		expect(managerInstance.spawn).toHaveBeenCalledWith(
-			pi,
-			ctx,
-			"General-Purpose",
-			expect.any(String),
-			expect.objectContaining({ isBackground: true }),
-		)
-		const text = result.content[0]?.text ?? ""
-		expect(text).toContain("background")
-	})
-
-	it("defaults to foreground in ACP/rpc sessions even with hasUI true", async () => {
-		// Regression: ACP sets hasUI true, which landed it in the interactive
-		// background-by-default bucket — but ACP clients only see in-turn
-		// tool-call updates, so a backgrounded agent silently outlived the turn.
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
-		])
-		const ctx = {
-			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
-			hasUI: true,
-			mode: "rpc",
-		}
-		const tool = getRegisteredAgentTool(pi)
-
-		await tool.execute(
-			"call-acp-default-fg",
-			{ prompt: "do work", description: "test", subagent_type: "general-purpose" },
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
-		expect(managerInstance.spawn).toHaveBeenCalledWith(
-			pi,
-			ctx,
-			"General-Purpose",
-			expect.any(String),
-			expect.objectContaining({ isBackground: false }),
-		)
-	})
-
-	it("still honors an explicit run_in_background: true in ACP/rpc sessions", async () => {
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
-		])
-		const ctx = {
-			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
-			hasUI: true,
-			mode: "rpc",
-		}
-		const tool = getRegisteredAgentTool(pi)
-
-		await tool.execute(
-			"call-acp-explicit-bg",
-			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: true },
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		expect(managerInstance.spawn).toHaveBeenCalledWith(
-			pi,
-			ctx,
-			"General-Purpose",
-			expect.any(String),
-			expect.objectContaining({ isBackground: true }),
-		)
-	})
-
-	it("background spawn result in rpc mode requires joining before the turn ends", async () => {
-		const pi = makeMockPi()
-		agentsExtension(pi)
-
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		const registry = makeMockModelRegistry([
-			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
-		])
-		const ctx = {
-			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
-			hasUI: true,
-			mode: "rpc",
-		}
-		const tool = getRegisteredAgentTool(pi)
-
-		const result = await tool.execute(
-			"call-acp-bg-text",
-			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: true },
-			undefined,
-			undefined,
-			ctx,
-		)
-
-		const text = result.content[0]?.text ?? ""
-		expect(text).toContain("join it with get_subagent_result wait: true")
-		expect(text).not.toContain("stop your turn")
-		expect(text).not.toContain("You will be notified when this agent completes")
-	})
-})
-
-describe("resolveRoleModelRef", () => {
-	// These tests verify the agent-type-to-role mapping used when the orchestrator
-	// omits the model parameter. Without this, sub-agents default to the
-	// orchestrator's model instead of the configured role model.
-
-	it("maps Builder to builder role", () => {
-		const ref = resolveRoleModelRef("Builder")
-		expect(ref).toBeDefined()
-		expect(typeof ref).toBe("string")
-	})
-
-	it("maps Fixer to builder role (same model pool)", () => {
-		const builderRef = resolveRoleModelRef("Builder")
-		const fixerRef = resolveRoleModelRef("Fixer")
-		expect(fixerRef).toBeDefined()
-		expect(fixerRef).toBe(builderRef)
-	})
-
-	it("maps General-Purpose to builder role (cheaper model)", () => {
-		const builderRef = resolveRoleModelRef("Builder")
-		const gpRef = resolveRoleModelRef("General-Purpose")
-		expect(gpRef).toBeDefined()
-		expect(gpRef).toBe(builderRef)
-	})
-
-	it("maps Explore to explorer role", () => {
-		const explorerRef = resolveRoleModelRef("Explore")
-		expect(explorerRef).toBeDefined()
-		expect(typeof explorerRef).toBe("string")
-	})
-
-	it("returns undefined for unknown agent types", () => {
-		expect(resolveRoleModelRef("Unknown")).toBeUndefined()
-	})
-})
-
 describe("spawnGraderAgent", () => {
-	// The file mocks model-roles.js; control the judge role explicitly through
-	// the mock rather than relying on the real settings.json/defaults.
 	const JUDGE_MODEL = { provider: "kimchi-dev", id: "judge-model", name: "judge-model" }
 	const PARENT_MODEL = { provider: "kimchi-dev", id: "parent-model", name: "Parent" }
-	const baseRoles = getModelRoles()
-	const rolesWithJudge = { ...baseRoles, judge: ["kimchi-dev/judge-model"] } as ReturnType<typeof getModelRoles>
-
-	beforeEach(() => {
-		vi.mocked(getModelRoles).mockReturnValue(rolesWithJudge)
-		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
-	})
 	afterEach(() => {
-		vi.mocked(getModelRoles).mockReturnValue(baseRoles)
-		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
 		setActiveManagerForTest(undefined)
 	})
 
-	it("spawns the Grader with the configured judge model, not the parent session model", async () => {
-		const registry = {
-			find: (provider: string, modelId: string) =>
-				[JUDGE_MODEL, PARENT_MODEL].find((m) => m.provider === provider && m.id === modelId),
-			// resolveModel prefers getAvailable; the Model<Api> mock type requires
-			// full models under getAll, so keep it shape-minimal via getAvailable.
-			getAvailable: () => [JUDGE_MODEL, PARENT_MODEL],
-		}
-		const ctx = createContext({ model: { id: "parent-model" }, modelRegistry: registry })
-		const spawnAndWait = vi.fn(
-			async (
-				_pi: unknown,
-				_ctx: unknown,
-				_type: string,
-				_prompt: string,
-				_options: { model?: unknown },
-			): Promise<{ result: string; status: string }> => ({ result: '{"grade":"A"}', status: "completed" }),
-		)
-		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
-
-		const pi = makeMockPi()
-		await spawnGraderAgent(pi, ctx, "grade this ferment")
-
-		expect(spawnAndWait).toHaveBeenCalledTimes(1)
-		const [, , type, prompt, options] = spawnAndWait.mock.calls[0] as unknown[]
-		expect(type).toBe("Grader")
-		expect(prompt).toBe("grade this ferment")
-		// Provenance fix: the grader subagent must run on the judge-role model so
-		// the grade label (describeJudgeModel) matches the model that graded.
-		expect((options as { model?: unknown }).model).toBe(JUDGE_MODEL)
-	})
-
-	it("omits the model option when the judge role does not resolve in the registry", async () => {
-		const registry = {
-			find: () => undefined,
-			getAvailable: () => [],
-		}
-		const ctx = createContext({ modelRegistry: registry })
-		const spawnAndWait = vi.fn(
-			async (
-				_pi: unknown,
-				_ctx: unknown,
-				_type: string,
-				_prompt: string,
-				_options: { model?: unknown },
-			): Promise<{ result: string; status: string }> => ({ result: "", status: "completed" }),
-		)
-		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
-
-		const pi = makeMockPi()
-		await spawnGraderAgent(pi, ctx, "grade this ferment")
-
-		expect(spawnAndWait).toHaveBeenCalledTimes(1)
-		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
-		// Undefined lets the agent runner fall back to the parent session model —
-		// the same fallback describeJudgeModel reports.
-		expect(options.model).toBeUndefined()
-	})
-
-	it("omits the model in single-model mode — the judge IS the session model", async () => {
-		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+	it("runs the Grader on the session model (no model option)", async () => {
 		const registry = {
 			find: (provider: string, modelId: string) =>
 				[JUDGE_MODEL, PARENT_MODEL].find((m) => m.provider === provider && m.id === modelId),
@@ -1003,7 +545,6 @@ describe("spawnGraderAgent", () => {
 
 		expect(spawnAndWait).toHaveBeenCalledTimes(1)
 		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
-		// Even though the judge role resolves, single-model mode must not use it.
 		expect(options.model).toBeUndefined()
 	})
 })
@@ -1494,7 +1035,14 @@ function getRegisteredTool(
 type MockManagerInstance = {
 	_records: Map<string, Record<string, unknown>>
 	onComplete: (record: Record<string, unknown>) => void
-	spawn: ReturnType<typeof vi.fn>
+	spawn: ReturnType<
+		typeof vi.fn<(pi: unknown, ctx: unknown, type: string, prompt: string, options: Record<string, unknown>) => string>
+	>
+	getRecord: (id: string) => Record<string, unknown> | undefined
+	adoptRecords: ReturnType<typeof vi.fn>
+	countAbortableBackground: ReturnType<typeof vi.fn>
+	abortAll: ReturnType<typeof vi.fn>
+	dispose: ReturnType<typeof vi.fn>
 }
 
 function latestManagerInstance(): MockManagerInstance {
@@ -1774,7 +1322,6 @@ describe("Agent tool background spawn result contract", () => {
 	beforeEach(() => {
 		vi.useRealTimers()
 		vi.clearAllMocks()
-		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
 		vi.mocked(sessionHasImages).mockReturnValue(false)
 	})
 
@@ -1818,7 +1365,6 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 	beforeEach(() => {
 		vi.useRealTimers()
 		vi.clearAllMocks()
-		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
 		vi.mocked(sessionHasImages).mockReturnValue(false)
 	})
 
@@ -1948,31 +1494,6 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		// timer into later tests).
 		run.resolve("")
 		await execPromise
-	})
-
-	it("freezes the completion instruction's multi-model state at spawn time", async () => {
-		const { piMock, manager, run, live, tool } = setupDeferredForeground()
-
-		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-mm-freeze")
-		// Model cycling toggles the flag mid-run WITHOUT invalidating the ctx
-		// (ui.ts calls setMultiModelEnabled on toggle) — the old post-await read
-		// would observe this flipped value.
-		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
-
-		const record = [...manager._records.values()][0]
-		record.status = "aborted"
-		record.abortReason = "max_turns"
-		record.completedAt = Date.now()
-		run.resolve("partial work")
-
-		const result = await execPromise
-		const text = result.content[0]?.text ?? ""
-		// Entry-time flag was false → relaxed instruction; the strict
-		// multi-model delegation reminder must NOT appear.
-		expect(text).not.toContain("Do NOT implement the remaining work yourself")
-		// Fresh runtime → the record entry IS appended (contrast with the
-		// invalidated scenarios above).
-		expect(piMock.getAppendedEntries("subagents:record")).toHaveLength(1)
 	})
 
 	it("the manager completion handler drops events and records instead of throwing after invalidation", async () => {
@@ -2162,11 +1683,281 @@ describe("remote completion ownership during session replacement", () => {
 	})
 })
 
+describe("local agents survive session replacement (fork/new)", () => {
+	let inheritedParentSessionId: string | undefined
+
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+		// These tests must run as the main session: a kimchi process spawned
+		// as a subagent exports KIMCHI_PARENT_SESSION_ID, which trips the
+		// adoption guard (the ACP suite deletes it for the same reason).
+		inheritedParentSessionId = process.env[PARENT_SESSION_ID_ENV_KEY]
+		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+	})
+
+	afterEach(() => {
+		// The handoff slot is module-level state — never leak it across tests.
+		clearHandoff()
+		if (inheritedParentSessionId === undefined) {
+			Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+		} else {
+			process.env[PARENT_SESSION_ID_ENV_KEY] = inheritedParentSessionId
+		}
+	})
+
+	it("stages running agents on fork and adopts them in the replacement session", async () => {
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+		})
+		agentsExtension(pi1.api)
+		const manager1 = latestManagerInstance()
+		const id = manager1.spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "fork", targetSessionFile: "/tmp/new-session.json" },
+			live1.ctx,
+		)
+
+		// fork hands off instead of aborting
+		expect(manager1.abortAll).not.toHaveBeenCalled()
+		expect(manager1.getRecord(id)).toBeUndefined()
+		expect(peekHandoff("/tmp/old-session.json")).toMatchObject({ fromSessionFile: "/tmp/old-session.json" })
+		expect(peekHandoff("/tmp/old-session.json")?.records.map((r) => r.id)).toEqual([id])
+
+		// the replacement session claims the handoff by lineage
+		const pi2 = createExtensionApi()
+		const notify2 = vi.fn()
+		const live2 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/new-session.json" },
+			ui: { notify: notify2 },
+		})
+		agentsExtension(pi2.api)
+		const manager2 = latestManagerInstance()
+		await pi2.emit(
+			"session_start",
+			{ type: "session_start", reason: "fork", previousSessionFile: "/tmp/old-session.json" },
+			live2.ctx,
+		)
+
+		expect(peekHandoff("/tmp/old-session.json")).toBeUndefined()
+		expect(notify2).toHaveBeenCalledWith("1 background agent continue running from the previous session", "info")
+		expect(manager2.adoptRecords).toHaveBeenCalledWith(
+			[expect.objectContaining({ id })],
+			[],
+			expect.any(Set),
+			pi2.api,
+			live2.ctx,
+		)
+		expect(manager2.getRecord(id)).toMatchObject({ id, status: "running" })
+
+		// the adopted agent's completion reaches the replacement's notification surface
+		manager2.onComplete(
+			makeRunningRecord({
+				id,
+				status: "completed",
+				result: "done",
+				completedAt: Date.now(),
+				toolUses: 2,
+				lastTurnCount: 3,
+			}),
+		)
+		await vi.waitFor(() =>
+			expect(pi2.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "subagent-notification" }),
+				expect.objectContaining({ deliverAs: "followUp" }),
+			),
+		)
+
+		// no double adoption: the claimed slot is empty — a replayed
+		// session_start with the same lineage claims nothing
+		await pi2.emit(
+			"session_start",
+			{ type: "session_start", reason: "fork", previousSessionFile: "/tmp/old-session.json" },
+			live2.ctx,
+		)
+		expect(manager2.adoptRecords).toHaveBeenCalledTimes(1)
+	})
+
+	it("aborts on reason new (plain /new): a clean slate carries no agents over", async () => {
+		// /new starts an EMPTY conversation — completion notifications landing
+		// there would reference agent ids the new session never spawned
+		// (reviewer call, 2026-11-17). Same terminal path as resume.
+		const notify = vi.fn()
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+			ui: { notify },
+		})
+		agentsExtension(pi1.api)
+		const manager1 = latestManagerInstance()
+		manager1.spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+		await pi1.emit("tool_execution_start", { toolCallId: "t1", toolName: "read" }, live1.ctx)
+
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "new", targetSessionFile: "/tmp/new-session.json" },
+			live1.ctx,
+		)
+		expect(manager1.abortAll).toHaveBeenCalledWith({ skipRemote: true })
+		expect(manager1.countAbortableBackground).toHaveBeenCalled()
+		expect(peekHandoff("/tmp/old-session.json")).toBeUndefined()
+		expect(notify).toHaveBeenCalledWith("Aborted 1 background agent — starting a new session", "warning")
+		expect(manager1.dispose).toHaveBeenCalled()
+	})
+
+	it("keeps the terminal path for quit: abortAll + dispose, nothing staged", async () => {
+		const pi = createExtensionApi()
+		const live = createLiveContext({ mode: "tui" })
+		agentsExtension(pi.api)
+		const manager = latestManagerInstance()
+		manager.spawn(pi.api, live.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+
+		await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, live.ctx)
+
+		expect(manager.abortAll).toHaveBeenCalledWith({ skipRemote: true })
+		expect(manager.dispose).toHaveBeenCalled()
+		expect(peekHandoff("/tmp/session.json")).toBeUndefined()
+	})
+
+	it("aborts and notifies on resume to an unrelated session", async () => {
+		const notify = vi.fn()
+		const pi = createExtensionApi()
+		const live = createLiveContext({ mode: "tui", ui: { notify } })
+		agentsExtension(pi.api)
+		const manager = latestManagerInstance()
+		manager.spawn(pi.api, live.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+		// A transient visual record: abortAll counts it, but it must not
+		// inflate the resume notice.
+		manager._records.set("transient-1", { id: "transient-1", status: "running" })
+		// currentUi is wired by tool_execution_start — fire one so the
+		// resume notice has a surface to land on.
+		await pi.emit("tool_execution_start", { toolCallId: "t1", toolName: "read" }, live.ctx)
+
+		await pi.emit("session_shutdown", { type: "session_shutdown", reason: "resume" }, live.ctx)
+
+		expect(manager.abortAll).toHaveBeenCalledWith({ skipRemote: true })
+		expect(manager.dispose).toHaveBeenCalled()
+		expect(notify).toHaveBeenCalledWith("Aborted 1 background agent — switching sessions", "warning")
+		expect(peekHandoff("/tmp/session.json")).toBeUndefined()
+	})
+
+	it("does not claim the handoff for a child-style session start (no lineage)", async () => {
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+		})
+		agentsExtension(pi1.api)
+		latestManagerInstance().spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "fork", targetSessionFile: "/tmp/new-session.json" },
+			live1.ctx,
+		)
+		expect(peekHandoff("/tmp/old-session.json")).toBeDefined()
+
+		// A subagent session starts fresh — reason "startup", no
+		// previousSessionFile — so it never claims the previous session's
+		// agents. (An env-var child check would be wrong here: the runner
+		// keeps KIMCHI_PARENT_SESSION_ID set on the process for the whole
+		// lifetime of a running background agent.)
+		const pi2 = createExtensionApi()
+		const live2 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/new-session.json" },
+		})
+		agentsExtension(pi2.api)
+		const manager2 = latestManagerInstance()
+		await pi2.emit("session_start", { type: "session_start", reason: "startup" }, live2.ctx)
+
+		expect(manager2.adoptRecords).not.toHaveBeenCalled()
+		// the slot survives for a real main-session replacement
+		expect(peekHandoff("/tmp/old-session.json")).toBeDefined()
+	})
+
+	it("aborts a never-claimed staged handoff on the terminal path", async () => {
+		const pi = createExtensionApi()
+		const live = createLiveContext({ mode: "tui" })
+		agentsExtension(pi.api)
+
+		// a stale handoff staged by an earlier runtime that no replacement
+		// ever claimed — its records must not keep running headless
+		const abort = vi.fn()
+		stageHandoff({
+			fromSessionFile: "/tmp/gone-session.json",
+			records: [makeRunningRecord({ abortController: { abort } }) as never],
+			queued: [],
+			midResumeIds: new Set(),
+			activity: [],
+		})
+
+		await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, live.ctx)
+
+		expect(abort).toHaveBeenCalledTimes(1)
+		expect(peekHandoff("/tmp/gone-session.json")).toBeUndefined()
+	})
+
+	it("retains the staged handoff when the replacement's lineage does not match", async () => {
+		const pi1 = createExtensionApi()
+		const live1 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/old-session.json" },
+		})
+		agentsExtension(pi1.api)
+		latestManagerInstance().spawn(pi1.api, live1.ctx, "Explore", "work", {
+			description: "work",
+			isBackground: true,
+		})
+		await pi1.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "fork", targetSessionFile: "/tmp/unrelated.json" },
+			live1.ctx,
+		)
+
+		const pi2 = createExtensionApi()
+		const live2 = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/unrelated.json" },
+		})
+		agentsExtension(pi2.api)
+		const manager2 = latestManagerInstance()
+		await pi2.emit(
+			"session_start",
+			{ type: "session_start", reason: "resume", previousSessionFile: "/tmp/somewhere-else.json" },
+			live2.ctx,
+		)
+
+		expect(manager2.adoptRecords).not.toHaveBeenCalled()
+		expect(peekHandoff("/tmp/old-session.json")).toBeDefined()
+	})
+})
+
 describe("Agent tool session-cwd agent resolution", () => {
 	beforeEach(() => {
 		vi.useRealTimers()
 		vi.clearAllMocks()
-		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
 		vi.mocked(sessionHasImages).mockReturnValue(false)
 	})
 
@@ -2227,8 +2018,207 @@ describe("Agent tool session-cwd agent resolution", () => {
 		const sessionCwd = "/tmp/issue1677-session-project"
 
 		const ctx = { cwd: sessionCwd, sessionManager: { getBranch: () => [] } }
-		for (const handler of pi._handlers.get("session_start") ?? []) await handler(undefined, ctx)
+		for (const handler of pi._handlers.get("session_start") ?? [])
+			await handler({ type: "session_start", reason: "startup" } as never, ctx)
 
 		expect(vi.mocked(applyAndEmitLoaded).mock.calls.some((c) => c[2] === sessionCwd)).toBe(true)
+	})
+})
+
+describe("unparseable agent files", () => {
+	let projectDir: string
+
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+		projectDir = mkdtempSync(join(tmpdir(), "kimchi-agent-frontmatter-"))
+		mkdirSync(join(projectDir, ".kimchi", "agents"), { recursive: true })
+		writeFileSync(
+			join(projectDir, ".kimchi", "agents", "broken-agent.md"),
+			"---\ndescription: broken\ntools: [read, bash\n---\n\nPrompt.\n",
+		)
+		writeFileSync(
+			join(projectDir, ".kimchi", "agents", "valid-agent.md"),
+			"---\ndescription: valid\ntools: read\n---\n\nPrompt.\n",
+		)
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	const fireSessionStart = async (pi: ReturnType<typeof makeMockPi>, ctx: unknown) => {
+		const event = { type: "session_start", reason: "startup" }
+		for (const handler of pi._handlers.get("session_start") ?? []) await handler(event, ctx)
+	}
+
+	const skippedEntries = (pi: ReturnType<typeof makeMockPi>): SkippedAgentFilesEntryData[] =>
+		vi
+			.mocked(pi.appendEntry)
+			.mock.calls.filter(([customType]) => customType === SKIPPED_AGENT_FILES_ENTRY)
+			.map(([, data]) => data as SkippedAgentFilesEntryData)
+
+	// Render through the renderer the extension actually registered, so these
+	// tests cover the wiring and not just the entry module.
+	const renderNotice = (
+		pi: ReturnType<typeof makeMockPi>,
+		data: SkippedAgentFilesEntryData,
+		expanded = false,
+	): string[] | undefined => {
+		const registered = vi
+			.mocked(pi.registerEntryRenderer)
+			.mock.calls.find(([customType]) => customType === SKIPPED_AGENT_FILES_ENTRY)?.[1]
+		if (!registered) throw new Error("no skipped-agent-files renderer registered")
+		const renderer = registered as EntryRenderer<SkippedAgentFilesEntryData>
+		const theme = { fg: (_color: string, text: string) => text } as unknown as Parameters<EntryRenderer>[2]
+		return renderer(
+			{
+				type: "custom",
+				id: "notice-1",
+				parentId: null,
+				timestamp: "2026-11-18T00:00:00.000Z",
+				customType: SKIPPED_AGENT_FILES_ENTRY,
+				data,
+			},
+			{ expanded },
+			theme,
+		)?.render(120)
+	}
+
+	it("does not fail extension load when the launch directory has one", () => {
+		// Regression: the factory loads agents from process.cwd(), and a throw
+		// there is a failed extension load — which exits the harness at startup.
+		vi.spyOn(process, "cwd").mockReturnValue(projectDir)
+
+		expect(() => agentsExtension(makeMockPi())).not.toThrow()
+	})
+
+	it("collapses to one transcript entry in the TUI and keeps the other agents", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const ctx = createContext({ cwd: projectDir })
+
+		await fireSessionStart(pi, ctx)
+
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		const entries = skippedEntries(pi)
+		expect(entries).toHaveLength(1)
+		expect(entries[0].files).toEqual([
+			{ path: join(".kimchi", "agents", "broken-agent.md"), reason: expect.any(String) },
+		])
+		expect(renderNotice(pi, entries[0])?.[0]).toContain("Warning: Skipped 1 agent file")
+		expect(renderNotice(pi, entries[0])?.[0]).toContain("with invalid frontmatter (not loaded)")
+
+		// The Agent tool reloads agents on every call: no repeat notice, and
+		// the valid neighbour of the broken file is still spawnable.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		await getRegisteredAgentTool(pi).execute(
+			"call-frontmatter",
+			{ prompt: "go", description: "frontmatter test", subagent_type: "valid-agent", run_in_background: true },
+			undefined,
+			undefined,
+			{ ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), cwd: projectDir },
+		)
+
+		expect(managerInstance.spawn.mock.calls[0][2]).toBe("valid-agent")
+		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("broken-agent.md"))
+		expect(skippedEntries(pi)).toHaveLength(1)
+	})
+
+	it("keeps the plain warning on surfaces without a transcript", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const ctx = createContext({ cwd: projectDir, mode: "rpc" })
+
+		await fireSessionStart(pi, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining(join(".kimchi", "agents", "broken-agent.md")),
+			"warning",
+		)
+		expect(skippedEntries(pi)).toHaveLength(0)
+
+		// The dedupe and per-session reset must hold on this branch too: a
+		// reload from the Agent tool stays quiet, and the next session start
+		// reports the file again.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		await getRegisteredAgentTool(pi).execute(
+			"call-rpc-frontmatter",
+			{ prompt: "go", description: "frontmatter rpc", subagent_type: "valid-agent", run_in_background: true },
+			undefined,
+			undefined,
+			{ ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), cwd: projectDir },
+		)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("broken-agent.md"))
+		expect(skippedEntries(pi)).toHaveLength(0)
+
+		await fireSessionStart(pi, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(2)
+	})
+
+	it("shows one notice per session start and hides the previous one", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const ctx = createContext({ cwd: projectDir })
+
+		await fireSessionStart(pi, ctx)
+		await fireSessionStart(pi, ctx)
+
+		const entries = skippedEntries(pi)
+		expect(entries).toHaveLength(2)
+		expect(entries[0].token).not.toBe(entries[1].token)
+		// Resuming must not stack notices: only today's start is visible.
+		expect(renderNotice(pi, entries[0])).toBeUndefined()
+		expect(renderNotice(pi, entries[1])?.[0]).toContain("Warning: Skipped 1 agent file")
+	})
+
+	it("reports a file that breaks mid-session under the same token", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const ctx = createContext({ cwd: projectDir })
+		await fireSessionStart(pi, ctx)
+
+		writeFileSync(
+			join(projectDir, ".kimchi", "agents", "late-broken.md"),
+			"---\ndescription: late\ntools: [grep\n---\n\nPrompt.\n",
+		)
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		await getRegisteredAgentTool(pi).execute(
+			"call-late-break",
+			{ prompt: "go", description: "late break", subagent_type: "valid-agent", run_in_background: true },
+			undefined,
+			undefined,
+			{
+				...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
+				cwd: projectDir,
+				mode: "tui" as const,
+			},
+		)
+
+		const entries = skippedEntries(pi)
+		expect(entries).toHaveLength(2)
+		expect(entries[1].token).toBe(entries[0].token)
+		expect(entries[1].files).toEqual([
+			{ path: join(".kimchi", "agents", "late-broken.md"), reason: expect.any(String) },
+		])
+		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("late-broken.md"))
+		expect(renderNotice(pi, entries[0])).toBeDefined()
+		expect(renderNotice(pi, entries[1])).toBeDefined()
 	})
 })

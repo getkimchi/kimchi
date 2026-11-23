@@ -42,39 +42,7 @@ export function isPreDispatchValueFlag(arg: string): boolean {
 	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
 }
 
-/**
- * Strip virtual multi-model CLI arguments from the args list before passing
- * them upstream. Upstream pi-mono does not recognize "multi-model" as a model
- * id, so we translate these flags into the multi-model side-channel instead.
- *
- * Recognizes:
- *   --multi-model
- *   --model multi-model
- *   --model=multi-model
- */
-export function stripMultiModelArgs(args: string[]): string[] {
-	const result: string[] = []
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === "--multi-model") {
-			continue
-		}
-		if (arg === "--model" && i + 1 < args.length && args[i + 1] === MULTI_MODEL_ID) {
-			i += 1
-			continue
-		}
-		if (arg === `--model=${MULTI_MODEL_ID}`) {
-			continue
-		}
-		result.push(arg)
-	}
-	return result
-}
-
 export type CliOptionType = "string" | "boolean"
-
-/** Virtual model id that enables multi-model orchestration mode. */
-export const MULTI_MODEL_ID = "multi-model"
 
 export interface CliOptionDef {
 	type: CliOptionType
@@ -104,8 +72,7 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	model: {
 		type: "string",
-		description:
-			"Model id or pattern, optionally `provider/id` and/or `:<thinking>`. Use `multi-model` for orchestrated multi-model mode.",
+		description: "Model id or pattern, optionally `provider/id` and/or `:<thinking>`.",
 		placeholder: "<pattern>",
 	},
 	models: {
@@ -113,13 +80,9 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		description: "Comma-separated model ids the auto model picks from",
 		placeholder: "<a,b>",
 	},
-	"multi-model": {
-		type: "boolean",
-		description: "Explicitly select multi-model orchestration (same as `--model multi-model`)",
-	},
 	"enable-experimental-features": {
 		type: "boolean",
-		description: "Enable experimental features, including the kimchi-dev/auto model",
+		description: "Enable experimental features, such as kimchi-experimental models and the background daemon",
 	},
 	thinking: {
 		type: "string",
@@ -183,6 +146,10 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	plan: {
 		type: "boolean",
 		description: "Start in plan mode (read-only)",
+	},
+	"pr-watch": {
+		type: "boolean",
+		description: "Watch the PR for this session's branch (read-only; /pr-watch enables fixes)",
 	},
 	auto: {
 		type: "boolean",
@@ -251,7 +218,6 @@ export interface SessionCliArgs {
 		provider?: string
 		model?: string
 		models?: string
-		"multi-model"?: boolean
 		memory?: boolean
 		thinking?: string
 		mode?: string
@@ -260,6 +226,7 @@ export interface SessionCliArgs {
 		"allow-tool"?: string[]
 		"deny-tool"?: string[]
 		plan?: boolean
+		"pr-watch"?: boolean
 		auto?: boolean
 		yolo?: boolean
 		"dangerously-skip-permissions"?: boolean
@@ -332,7 +299,6 @@ export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
 	"models",
-	"multi-model",
 	"thinking",
 	"mode",
 	"print",
@@ -340,6 +306,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"allow-tool",
 	"deny-tool",
 	"plan",
+	"pr-watch",
 	"auto",
 	"yolo",
 	"dangerously-skip-permissions",
@@ -462,4 +429,22 @@ export function hasFermentOneshotArg(args: readonly string[]): boolean {
 
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
 	return args.filter((a) => a !== "--enable-experimental-features")
+}
+
+/** Kimchi Studio still starts new terminal sessions with `--model multi-model`.
+ *  Dropping that pair lets those launches start on the default model instead
+ *  of failing with "model not found".
+ *  ponytail: one-release bridge; remove once Studio stops passing it
+ *  (kimchi-studio `ptyHandlers.ts` `buildModelArgs`). */
+export function dropRetiredMultiModelArg(args: string[]): string[] {
+	const kept: string[] = []
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--model" && args[i + 1] === "multi-model") {
+			i += 1
+			continue
+		}
+		if (args[i] === "--model=multi-model") continue
+		kept.push(args[i])
+	}
+	return kept
 }

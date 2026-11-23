@@ -244,6 +244,13 @@ describe("classifyLLMGatewayError", () => {
 			reason: "context_window_exceeded",
 		},
 		{
+			name: "nginx HTML request body overflow",
+			message:
+				"Internal error: 413 <html><head><title>413 Request Entity Too Large</title></head><body>nginx</body></html>",
+			reason: "context_window_exceeded",
+			httpStatusCode: 413,
+		},
+		{
 			name: "generic hosted vLLM bad request",
 			message: "BadRequestError: Hosted_vllmException - BadRequest, code 400",
 			reason: "bad_request",

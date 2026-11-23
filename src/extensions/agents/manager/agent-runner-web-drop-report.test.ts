@@ -95,11 +95,6 @@ vi.mock("../personas/default-agents.js", () => ({
 	DEFAULT_AGENTS: new Map(),
 }))
 
-vi.mock("../../tags.js", () => ({
-	getCurrentPhase: vi.fn().mockReturnValue(undefined),
-	setCurrentPhase: vi.fn(),
-}))
-
 vi.mock("../../memory/memory.js", () => ({
 	buildMemoryBlock: vi.fn().mockReturnValue(""),
 	buildReadOnlyMemoryBlock: vi.fn().mockReturnValue(""),
@@ -127,7 +122,7 @@ vi.mock("../../../config.js", () => ({
 }))
 
 vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
-	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
+	buildRoleGuidelinesSection: vi.fn().mockReturnValue(""),
 }))
 
 vi.mock("../../auto-model/index.js", () => ({
@@ -154,9 +149,8 @@ import { createAgentSession, DefaultResourceLoader, type InlineExtension } from 
 import { readTelemetryConfig } from "../../../config.js"
 import { isResourceEnabled } from "../../../resources/store.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
@@ -172,14 +166,12 @@ const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const _mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const _mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 const _mockScanBriefSkills = vi.mocked(scanBriefSkills)
-const _mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
+const _mockBuildRoleGuidelinesSection = vi.mocked(buildRoleGuidelinesSection)
 const _mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const _mockTelemetryExtension = vi.mocked(telemetryExtension)
 const _mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
-const _mockGetCurrentPhase = vi.mocked(getCurrentPhase)
 const mockIsResourceEnabled = vi.mocked(isResourceEnabled)
-const _mockSetCurrentPhase = vi.mocked(setCurrentPhase)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void

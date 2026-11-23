@@ -82,6 +82,8 @@ export const AVAILABLE_EXT_METHODS = {
 	// Sessionless inbound, resources and memory store ops.
 	list_resources: `_${CAPABILITIES_KEY}/list_resources`,
 	set_resource_enabled: `_${CAPABILITIES_KEY}/set_resource_enabled`,
+	memory_get: `_${CAPABILITIES_KEY}/memory_get`,
+	memory_update: `_${CAPABILITIES_KEY}/memory_update`,
 	memory_list: `_${CAPABILITIES_KEY}/memory_list`,
 	memory_search: `_${CAPABILITIES_KEY}/memory_search`,
 	memory_delete: `_${CAPABILITIES_KEY}/memory_delete`,
@@ -135,6 +137,15 @@ export const BACKGROUND_RUNS_CAPABILITY = "backgroundRuns"
 export function getClientOptedIntoBackgroundRuns(capabilities: ClientCapabilities | undefined): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
 	return flags?.[BACKGROUND_RUNS_CAPABILITY] === true
+}
+
+// Kimchi-specific PR controls have no dedicated RFD. Runs reuse the existing
+// v1 backgroundRuns bridge to https://agentclientprotocol.com/rfds/v2/background-work.
+export const PR_MONITORING_CAPABILITY = "prMonitoring"
+
+export function getClientOptedIntoPRMonitoring(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[PR_MONITORING_CAPABILITY] === true && getClientOptedIntoBackgroundRuns(capabilities)
 }
 
 /**

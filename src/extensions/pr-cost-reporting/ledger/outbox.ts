@@ -8,6 +8,7 @@ import {
 	encodeBatch,
 	encodeEvent,
 	eventHash,
+	eventHashEncoded,
 	eventKind,
 	normalizeIngestTimes,
 	stableID,
@@ -148,17 +149,22 @@ export function validateClaimUpdate(next: Event, previous?: Event): void {
 export function effectiveClaim(backend: RecordBackend, accountKey: string, entityId: string): Event | undefined {
 	let effective: Event | undefined
 	for (const row of backend.outboxEntityEvents(accountKey, entityId))
-		if (!row.blocked) effective = projectClaim(unpack(row), effective)
+		if (!row.blocked) effective = projectClaim(unpack(row, false), effective)
 	return effective
 }
 
-function unpack(row: OutboxEvent): Event {
+/** Verified event from a stored row. Deep mode (default) re-runs every semantic check, including the
+ * transport comparison; the hot claim-read path passes deep=false because the body hash and the
+ * stored identity columns already prove the row against the database, and the same semantics were
+ * validated before the row was ever inserted. */
+function unpack(row: OutboxEvent, deep = true): Event {
 	const body = Buffer.from(row.body)
 	if (createHash("sha256").update(body).digest("hex") !== row.hash) throw new Error("Outbox event hash mismatch")
 	const event: Event = JSON.parse(body.toString("utf8"))
-	validateIngestEvent(event)
 	if (event.id !== row.id || event.entityId !== row.entityId || eventKind(event) !== row.kind)
 		throw new Error("Outbox event identity mismatch")
+	if (!deep) return event
+	validateIngestEvent(event)
 	if (encodeEvent(event) !== encodeEvent(normalizeIngestTimes(event)))
 		throw new Error("Outbox event differs from protobuf transport")
 	return event
@@ -166,6 +172,48 @@ function unpack(row: OutboxEvent): Event {
 
 function neutral(event: Event): Event {
 	return { ...event, id: "", revision: "0", baseRevision: "0", baseEventId: "", observeTime: "0001-01-01T00:00:00Z" }
+}
+
+/** Effective claims for a translated request batch. History and duplicates retain insertion order. */
+export function effectiveClaims(
+	backend: RecordBackend,
+	accountKey: string,
+	entityIds: readonly string[],
+): Map<string, Event | undefined> {
+	const claims = new Map<string, Event | undefined>(entityIds.map((entityId) => [entityId, undefined]))
+	for (const row of backend.outboxClaims(accountKey, entityIds))
+		if (!row.blocked) claims.set(row.entityId, projectClaim(unpack(row, false), claims.get(row.entityId)))
+	return claims
+}
+
+/**
+ * The same claim resolution, breathing: rows page through bounded reads and the caller's
+ * stretcher runs between pages, so a big production claim history cannot hold the UI loop
+ * for one multi-second burst. Each entity's history stays ordered because an entity's rows
+ * never cross a page boundary out of order — pages are consumed in rowid order per chunk.
+ */
+export async function effectiveClaimsAsync(
+	backend: RecordBackend,
+	accountKey: string,
+	entityIds: readonly string[],
+	stretch: () => Promise<void>,
+	check: () => void,
+): Promise<Map<string, Event | undefined>> {
+	const claims = new Map<string, Event | undefined>(entityIds.map((entityId) => [entityId, undefined]))
+	for (let offset = 0; offset < entityIds.length; offset += 500) {
+		const chunk = entityIds.slice(offset, offset + 500)
+		let after = 0
+		for (;;) {
+			const { rows, nextAfter } = backend.outboxClaimRows(accountKey, chunk, after, 256)
+			if (!rows.length) break
+			for (const row of rows)
+				if (!row.blocked) claims.set(row.entityId, projectClaim(unpack(row, false), claims.get(row.entityId)))
+			after = nextAfter
+			await stretch()
+			check()
+		}
+	}
+	return claims
 }
 
 /** Event CAS and its fulfilled capture intents commit together; unknown or failed translations do not call this. */
@@ -184,7 +232,10 @@ export function observeEvents(
 		for (const fact of facts) {
 			const event = normalizeIngestTimes({ ...fact, id: "", revision: "1", baseRevision: "0", baseEventId: "" })
 			event.id = stableID(accountKey, event.entityId, eventHash(event))
-			validateIngestEvent(event)
+			// One encoding per content state serves the validation bound check, the CAS round trip and
+			// the stored body: every consumer of this event derives from the same text.
+			const encoded = encodeEvent(event)
+			validateIngestEvent(event, encoded)
 			// The entity's last event the server may hold; one it refused as a conflict is set aside.
 			const previous = backend.latestOutboxEvent(accountKey, event.entityId)
 			let old: Event | undefined
@@ -194,7 +245,7 @@ export function observeEvents(
 				// The stored revision already passed every check below.
 				if (eventHash(neutral(old)) === eventHash(neutral(event))) continue
 			}
-			const raw: Event = JSON.parse(encodeEvent(event))
+			const raw: Event = JSON.parse(encoded)
 			validateClaimUpdate(
 				raw,
 				old && (old.source === "kimchi" || raw.source === "kimchi")
@@ -210,15 +261,15 @@ export function observeEvents(
 			event.id = stableID(accountKey, event.entityId, eventHash(event))
 			// The server refused this exact event once; it is never sent again.
 			if (backend.getOutboxEvent(accountKey, event.id)) continue
-			validateIngestEvent(event)
-			const body = Buffer.from(encodeEvent(event))
+			const stored = encodeEvent(event)
+			validateIngestEvent(event, stored)
 			backend.insertOutboxEvent({
 				id: event.id,
 				accountKey,
 				entityId: event.entityId,
 				kind: eventKind(event),
-				body,
-				hash: eventHash(event),
+				body: Buffer.from(stored),
+				hash: eventHashEncoded(stored),
 				createdAt: Date.now(),
 				ackedAt: null,
 				blocked: "",

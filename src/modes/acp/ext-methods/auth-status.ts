@@ -5,9 +5,16 @@
 // _meta["kimchi.dev"].auth_status. Sessionless on purpose: identity is
 // global, not session-scoped, so the request carries no sessionId.
 
-import { ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
+import {
+	type RefreshAwareCredentialResolution,
+	resolveRefreshAwareKimchiAuth,
+} from "../../../auth/refresh-aware-credential.js"
+import { isInvalidGrantError } from "../../../cli-auth/oauth.js"
 import { loadConfig } from "../../../config.js"
-import { isCredentialStale } from "../../../credential-staleness.js"
+import { clearRefreshedCredentialStale, isCredentialStale } from "../../../credential-staleness.js"
+import { installKimchiOAuth } from "../../../extensions/login/flow.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 
 export type AuthStatusResponse = {
@@ -29,6 +36,11 @@ export type AuthStatusPaths = {
 	configPath?: string
 }
 
+/** Kimchi OAuth registration for the standalone runtime; injectable for local fake-provider tests. */
+export type AuthStatusDeps = {
+	installOAuth: (runtime: ModelRuntime) => void
+}
+
 /**
  * Auth status handler for `_kimchi.dev/auth_status`.
  *
@@ -37,34 +49,48 @@ export type AuthStatusPaths = {
  * live ACP connection without attempting a session.
  *
  * Both halves of the credential store are re-read per call — config.json's
- * apiKey, then a fresh credential listing from auth.json — so state written
- * by authenticate()/unstable_logout() on this connection (which write/clear
- * both halves), or by other Kimchi surfaces sharing the store (terminal
- * `kimchi login`, the VS Code extension), is reflected immediately on the
- * next call.
- *
- * The check is `listCredentials()` rather than `getProviderAuthStatus()` on
- * purpose: ModelRuntime only populates its stored-providers snapshot during
- * an availability refresh (skipped here via refreshOnCreate: false), so the
- * status getter would be stale for freshly written or externally changed
- * credentials. Only the base kimchi-dev credential is authoritative —
- * unstable_logout() removes exactly it, so it defines "logged in".
+ * apiKey, then the canonical auth.json credential through ModelRuntime — so
+ * state written by authenticate()/unstable_logout() on this connection or by
+ * other Kimchi surfaces is reflected immediately on the next call. OAuth
+ * credentials inside the five-minute validity window are refreshed and
+ * persisted before the response. This can perform token-endpoint network I/O,
+ * bounded by the Kimchi OAuth token-request timeout. Only the base kimchi-dev
+ * credential is authoritative — unstable_logout() removes exactly it, so it defines
+ * "logged in".
  */
-export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
+export async function handleAuthStatus(
+	paths: AuthStatusPaths,
+	deps: AuthStatusDeps = {
+		installOAuth: (runtime) => installKimchiOAuth(runtime, paths.authPath),
+	},
+): Promise<AuthStatusResponse> {
 	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
-	// A 401 mark (key-level or provider-level — credential-staleness.ts)
-	// means logged-out, even though the key exists on disk.
-	if (isCredentialStale(apiKey, KIMCHI_PROVIDER_ID)) {
-		return { authenticated: false }
-	}
 	if (apiKey) {
+		// API-key precedence also preserves its observed-rejection behavior.
+		return { authenticated: !isCredentialStale(apiKey, KIMCHI_PROVIDER_ID) }
+	}
+	let resolution: RefreshAwareCredentialResolution
+	try {
+		// An access-token 401 must not block refresh: the grant itself determines
+		// whether this credential can recover. An unchanged stale OAuth credential
+		// is still rejected after resolution below.
+		resolution = await resolveRefreshAwareKimchiAuth(paths, deps.installOAuth)
+	} catch (error) {
+		if (error instanceof ModelsError && error.code === "oauth" && isInvalidGrantError(error.cause)) {
+			return { authenticated: false }
+		}
+		// Transient refresh and store failures reject as unknown; an older 401
+		// mark cannot turn this new failed operation into a definitive sign-out.
+		throw error
+	}
+	const { auth } = resolution
+	if (!auth) return { authenticated: false }
+	if (resolution.refreshed) {
+		if (!auth.auth.apiKey) return { authenticated: false }
+		// The persisted refresh is an authenticated success. Retire only the
+		// provider and rotated OAuth values, never unrelated API-key marks.
+		clearRefreshedCredentialStale(resolution.previousAccessToken, auth.auth.apiKey, KIMCHI_PROVIDER_ID)
 		return { authenticated: true }
 	}
-	const modelRuntime = await ModelRuntime.create({
-		authPath: paths.authPath,
-		modelsPath: paths.modelsPath,
-		refreshOnCreate: false,
-	})
-	const credentials = await modelRuntime.listCredentials()
-	return { authenticated: credentials.some((credential) => credential.providerId === KIMCHI_PROVIDER_ID) }
+	return { authenticated: !isCredentialStale(auth.auth.apiKey, KIMCHI_PROVIDER_ID) }
 }

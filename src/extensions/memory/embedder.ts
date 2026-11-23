@@ -27,6 +27,7 @@ import {
 	resolveEmbeddingEndpoint,
 	tagEmbeddingRequests,
 } from "./backend.js"
+import { currentRecallSignal } from "./deadline.js"
 
 /** The langchain-Embeddings shape mem0's LangchainEmbedder delegates to. */
 export interface SharedEmbedder {
@@ -60,6 +61,22 @@ const MEMO_LIMIT = 32
 export function dedupeEmbedder(underlying: UnderlyingEmbedder): SharedEmbedder {
 	const memo = new Map<string, Promise<number[]>>()
 	const batchMemo = new Map<string, Promise<number[][]>>()
+	// An in-flight request belongs to the invocation that created it. Reusing
+	// it across generations would let cancelling the older invocation cancel
+	// a newer session's query. Settled work is likewise scoped to its exact
+	// query+generation; unscoped capture embeddings retain the old dedupe.
+	const generationIds = new WeakMap<AbortSignal, number>()
+	let nextGenerationId = 0
+	const keyFor = (text: string): string => {
+		const signal = currentRecallSignal()
+		if (!signal) return text
+		let id = generationIds.get(signal)
+		if (id === undefined) {
+			id = ++nextGenerationId
+			generationIds.set(signal, id)
+		}
+		return `${id}:${text}`
+	}
 	// Unresolved promises across both memos (identity-keyed, so a query text
 	// and a single-text batch cannot alias). Each promise removes itself on
 	// settle, so the set is bounded by the in-flight count.
@@ -93,8 +110,8 @@ export function dedupeEmbedder(underlying: UnderlyingEmbedder): SharedEmbedder {
 		return promise
 	}
 	return {
-		embedQuery: (text) => track(memo, text, () => underlying.embed(text)),
-		embedDocuments: (texts) => track(batchMemo, texts.join("\u0000"), () => underlying.embedBatch(texts)),
+		embedQuery: (text) => track(memo, keyFor(text), () => underlying.embed(text)),
+		embedDocuments: (texts) => track(batchMemo, keyFor(texts.join("\u0000")), () => underlying.embedBatch(texts)),
 	}
 }
 

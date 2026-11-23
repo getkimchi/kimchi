@@ -4,19 +4,19 @@ Kimchi's `agents` extension brings Claude-Code-style subagents to the harness. T
 LLM can spawn specialized agents via the `Agent` tool — each runs as a focused
 child session with its own system prompt, model, and tool restrictions.
 
-## Phase model
+## Permission modes
 
-Kimchi has a separate phase system that gates the **parent session's** autonomy
-(read-only vs full edit, etc.). Phases and agents are independent:
+Kimchi's permission modes (`default`, `plan`, `auto`, `yolo`) gate the **parent
+session's** autonomy (read-only vs full edit, etc.). Permission modes and agents
+are independent:
 
-- **Phases** (managed by kimchi's `behaviours` extension and `set_phase` tool)
-  control what the parent session is allowed to do.
+- **Permission modes** control what the parent session is allowed to do.
 - **Agents** (this extension) handle delegation. Each persona declares its own
-  tool set independently of the parent's phase.
+  tool set independently of the parent's mode.
 
-A `plan`-phase parent (read-only) can still spawn an `expert-coder` agent that
+A parent in `plan` mode (read-only) can still spawn an `expert-coder` agent that
 edits files — that's by design. Agents are isolated child sessions; their
-authority is scoped to the persona's `tools` field, not the parent's phase.
+authority is scoped to the persona's `tools` field, not the parent's mode.
 
 ## How it works
 
@@ -89,6 +89,27 @@ enabled: <bool>                  # false to hide this agent without deleting the
 You are a senior X engineer who...
 (persona body — markdown, becomes the subagent's system prompt)
 ```
+
+### Invalid frontmatter
+
+The frontmatter must be valid YAML, with one exception: a single-line
+`description` or `display_name` may be written unquoted even when it contains
+`: ` or other YAML-special text. The whole line after the key is taken as the
+value, so agent files written for other tools usually load as they are.
+
+A file whose frontmatter still cannot be parsed is skipped. The other agents
+load, and kimchi reports the file and the YAML error once per session — when
+the session starts, when the `Agent` tool runs, and when `/agents` opens. In
+the TUI that report is a one-line warning in the warning colour
+(`Warning: Skipped N agent files with invalid frontmatter (not loaded)`) that
+lists the files with ctrl+o and collapses again the same way; a `▸` / `▾`
+marker after the sentence shows whether it is closed or open. In fullscreen mode a click
+on the notice toggles it alone. A file that
+breaks later in the same session adds a second notice for the new file, while
+notices from earlier session starts stay hidden — resuming a session never
+stacks them. ACP and headless sessions get the plain warning text. A skipped
+file overrides nothing: a user, extension, or built-in agent with the same name
+stays active.
 
 ### Built-in tool names
 
@@ -308,10 +329,29 @@ preventing fork-bombs and runaway delegation chains.
 
 ## Remote runs and session replacement
 
-Starting a new session, resuming another session, or reloading extensions detaches
-local observation of remote agents. It does not cancel their work on the worker.
-Local subagents are stopped during shutdown. Explicitly stopping a remote agent
-still cancels its remote turn.
+Forking the session (`/branch`, `/clone`) hands running local subagents over
+to the replacement session instead of aborting them: the agents extension
+extracts the running records at `session_shutdown` (reason `fork`) and adopts
+them on the replacement's `session_start`, keyed by the outgoing session file
+(per-session-keyed staging: a multi-session host never aborts one session's
+handoff on another session's teardown). Agent ids stay stable —
+`get_subagent_result` on a pre-fork id keeps working in the branch, and agents
+that were still queued re-spawn under the replacement's concurrency cap.
+Delivery semantics are preserved, not upgraded: background completions arrive
+as notifications in the branch (including from a foreground agent detached
+with Ctrl+B after the branch), while foreground and resumed agents keep their
+usual surface — no completion notification, result reachable via
+`get_subagent_result`. A Ferment worker's `submit_agent_report` is documented
+against its record, so a report submitted after the branch is still accepted.
+
+Starting a fresh session with `/new` behaves like switching to an unrelated
+session (resume, the session picker): local subagents are stopped because a
+clean-slate conversation never spawned them, with a notification naming how
+many were stopped. The count names exactly what was aborted — queued and
+running local background agents, never cloud agents that keep running on the
+worker. Quitting the process aborts all local agents. In all cases remote
+agents are only detached locally — their work on the worker continues and is
+resumable; explicitly stopping a remote agent still cancels its remote turn.
 
 Remote runs belong to their originating session. Resuming that session reattaches
 to work still running on the worker, or restores a saved result and its completion

@@ -1,6 +1,6 @@
-# Session Phase Quality & Cost Audit
+# Session Delegation Quality & Cost Audit
 
-You are auditing session **{sessionId}** from file `{sessionFile}`. Your job is to produce a comprehensive, honest, evidence-based quality report analyzing how each phase (explore, research, plan, build, review) was used. You are not here to celebrate — you are here to find what worked, what didn't, and what to improve.
+You are auditing session **{sessionId}** from file `{sessionFile}`. Your job is to produce a comprehensive, honest, evidence-based quality report analyzing how work was delegated and executed across model roles. You are not here to celebrate — you are here to find what worked, what didn't, and what to improve.
 
 ## Instructions
 
@@ -16,26 +16,46 @@ Run these commands and read these files to build your evidence base. Do NOT skip
 1. Read the session JSONL file: {sessionFile}
    - Parse the header line (type: "session") for session metadata (id, cwd, timestamp)
    - Extract all entries, noting their type, id, parentId, and timestamp
-2. Build the phase timeline:
-   a. The initial phase is always "explore" (set at session_start)
-   b. Scan all "message" entries for assistant tool_use blocks with name: "set_phase"
-   c. Extract the phase parameter from each set_phase call and its timestamp
-   d. Build a chronological map: [timestamp_range] -> phase
+2. Build the delegation timeline:
+   a. Scan assistant content for type: "toolCall", name: "Agent", with parameters in
+      arguments (legacy provider tool_use blocks use input). Record id, subagent_type,
+      model, thinking, token_budget, run_in_background, timestamp, and turn index.
+   b. Join each call id to the message with role: "toolResult" and matching toolCallId.
+      Record details.agentId and any details.sessionFile. A result with status
+      "background", "running", or "queued" is NOT completion, even if agentOutcome exists.
+   c. For background agents, join subsequent get_subagent_result/resume_subagent calls
+      by arguments.agent_id to details.agentId and require a terminal status:
+      completed, steered, aborted, stopped, or error. Record outcome separately:
+      a terminal failure is not successful completion. If no terminal result is
+      recorded, leave the end unknown. Runtime agent_start/agent_end events are not
+      persisted session entries and must not be assumed to exist in JSONL.
+   d. agentOutcome.duration_ms/details.durationMs measure cumulative lifetime from
+      the worker's original start, including resumes; do not count them as each
+      attempt's duration. Derive resume spans from recorded attempt timestamps.
+      Otherwise leave attempt duration unknown, or label the resume-call-to-terminal-
+      result interval as an observed upper bound (polling may occur after completion).
+      Retain overlapping worker spans; do not collapse concurrent workers into one timeline.
+   e. Attribute parent turns to parent work even while a background worker runs.
+      Attribute child turns to their own agent/persona using recorded session links.
+      If a child session is unavailable, report its detailed usage as unavailable,
+      not zero, and do not assign parent usage to it by timestamp overlap.
 3. Extract model changes:
    - Scan for all "model_change" entries (type: "model_change")
    - Record: timestamp, provider, modelId
-   - Correlate model changes with the phase timeline
+   - Correlate model changes with the delegation timeline
 4. Extract per-turn usage data:
    - For each "message" entry with role: "assistant", extract:
      usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.cost.total
-   - Tag each turn with its active phase (from the timeline in step 2)
-   - Tag each turn with its active model (from model_change entries in step 3)
+   - Tag each turn with its owning session/agent segment (parent or delegated persona).
+     Read linked child sessions when available; deduplicate sessions and count each
+     assistant message once, including when worker spans overlap.
+   - Tag each turn with its active model (from model_change entries in its own session)
 5. Extract tool usage:
-   - For each assistant message, scan content blocks for type: "tool_use"
-   - Record tool name, frequency, and which phase each tool call occurred in
+   - For each assistant message, scan content blocks for type: "toolCall" (legacy: "tool_use")
+   - Record tool name, frequency, and which segment each tool call occurred in
 6. Extract behaviour data (if present):
    - Scan for "behaviour_loaded", "behaviour_eval", "behaviour_session_summary" entries
-   - Note which behaviours fired and in which phases
+   - Note which behaviours fired and in which segments
 7. Read project context files (if they exist in the session's cwd):
    - README.md
    - CLAUDE.md
@@ -66,23 +86,34 @@ For production code evidence:
 
 Score each dimension on a **letter grade scale: A, A-, B+, B, B-, C+, C, C-, D, F**.
 
-Provide the grade, 2-4 bullet strengths, and 2-4 bullet weaknesses with specific evidence (timestamps, turn numbers, phase names, cost figures, file names). No hand-waving.
+Provide the grade, 2-4 bullet strengths, and 2-4 bullet weaknesses with specific evidence (timestamps, turn numbers, persona names, cost figures, file names). No hand-waving.
 
-#### 2.1 Phase Discipline
+#### 2.1 Delegation Discipline
+
+First establish the session's delegation policy from recorded mode/configuration,
+prompt, and user instructions. Main sessions and Ferment normally execute directly;
+ordinary subagents remain available when requested or required by the recorded
+instructions. For historical sessions, use their recorded policy rather than
+applying current defaults retroactively. If the policy cannot
+be established, mark it unknown and do not infer a delegation requirement.
 
 Evaluate:
-- Was the session started in "explore" and did it progress through phases in a logical order?
-- Were phase transitions timely? (e.g., not staying in "explore" while already writing code)
-- Was the "plan" phase actually used before "build"? Did it produce a meaningful plan?
-- Was "review" used at the end? Did it catch anything?
-- Were there unnecessary phase transitions or phase churn?
-- Did the phase labels accurately reflect the work being done? (e.g., was exploration happening during "build"?)
-- Was time allocation across phases proportional to session goals?
+- Did execution follow that policy and the user's instructions? Do not penalize zero
+  delegations, direct execution, or a fixed model when those are the prescribed behavior.
+- Where delegation was required or requested, were the right personas used at the right time?
+- Where delegation was required, did the parent keep self-performed work within
+  its allowed responsibilities?
+- Were delegations useful relative to their overhead? Without a delegation requirement, unnecessary
+  delegation can be the mistake; fewer delegations alone is not a defect.
+- Did each delegated segment produce a meaningful result that was used?
+- Were there unnecessary delegation churn or redundant subagent invocations?
+- Did the personas chosen match the work being done? (e.g., was a research persona used for code exploration instead of an explorer?)
+- Was time allocation across segments proportional to session goals?
 
 #### 2.2 Architecture & Design Decisions
 
 Evaluate:
-- Were design decisions made during "plan" or "research" phases (not ad-hoc during "build")?
+- Were design decisions made before implementation began (through direct research/planning or delegation, as the session policy requires)?
 - Are module boundaries clean? (single-responsibility, clear public API)
 - Are cross-module dependencies sensible? (no circular imports, no god modules)
 - Does the code follow established project patterns? (check CLAUDE.md, existing conventions)
@@ -112,15 +143,19 @@ Evaluate:
 - Are test cases organized using maps? (per CLAUDE.md)
 - Are there deprecation warnings or test smells? (hardcoded counts, fragile assertions)
 
-#### 2.5 Phase-Model Alignment
+#### 2.5 Role-Model Alignment
+
+Judge model choices against the recorded policy and user-selected models. A required
+single-model run is not deficient for lacking cheaper workers or model switches.
 
 Evaluate:
-- Were expensive models (Opus) used primarily for complex phases (plan, review)?
+- Were expensive models (Opus) used primarily for complex work (planning, review)?
 - Were cheaper models (Sonnet, Haiku) used for routine execution (build)?
-- Were model switches correlated with phase transitions or arbitrary?
-- Did model capabilities match phase requirements? (e.g., was a weak model used for planning?)
-- Were there missed opportunities to use a cheaper model?
-- Were there phases where a stronger model would have prevented rework?
+- Did each delegated persona use the expected model for its role? (e.g., did the builder use a cost-effective model?)
+- Were model switches correlated with delegation boundaries or arbitrary?
+- Did model capabilities match the delegated task requirements? (e.g., was a weak model used for complex planning?)
+- Were there missed opportunities to use a cheaper model for a delegated segment?
+- Were there segments where a stronger model would have prevented rework?
 
 #### 2.6 Cost Efficiency
 
@@ -149,47 +184,47 @@ When matching model IDs from session data, use substring matching (e.g., "kimi-k
 
 Compute and present:
 
-**A. Actual cost breakdown by phase and model:**
+**A. Actual cost breakdown by segment and model:**
 
-| Phase | Model | Turns | Input Tokens | Output Tokens | Cache Read | Cache Write | Cost |
-|-------|-------|-------|-------------|---------------|------------|-------------|------|
-| explore | (from session data) | | | | | | |
-| research | | | | | | | |
-| plan | | | | | | | |
-| build | | | | | | | |
-| review | | | | | | | |
+| Segment | Model | Turns | Input Tokens | Output Tokens | Cache Read | Cache Write | Cost |
+|---------|-------|-------|-------------|---------------|------------|-------------|------|
+| self-performed | (from session data) | | | | | | |
+| delegated: explorer | | | | | | | |
+| delegated: researcher | | | | | | | |
+| delegated: builder | | | | | | | |
+| delegated: reviewer | | | | | | | |
 | **TOTAL** | | | | | | | |
 
-**B. Phase cost distribution:**
+**B. Segment cost distribution:**
 
-| Phase | Cost | % of Total | Turns | Avg Cost/Turn |
-|-------|------|------------|-------|---------------|
-| explore | $X | X% | N | $X |
-| research | $X | X% | N | $X |
-| plan | $X | X% | N | $X |
-| build | $X | X% | N | $X |
-| review | $X | X% | N | $X |
+| Segment | Cost | % of Total | Turns | Avg Cost/Turn |
+|---------|------|------------|-------|---------------|
+| self-performed | $X | X% | N | $X |
+| delegated: explorer | $X | X% | N | $X |
+| delegated: researcher | $X | X% | N | $X |
+| delegated: builder | $X | X% | N | $X |
+| delegated: reviewer | $X | X% | N | $X |
 | **TOTAL** | $X | 100% | N | $X |
 
 **C. Counterfactual: Opus-only cost**
-- Apply Opus pricing ($15/M input, $75/M output) to ALL tokens across all phases
+- Apply Opus pricing ($15/M input, $75/M output) to ALL tokens across all segments
 
-**D. Counterfactual: Phase-optimized cost**
-- Opus for plan + review phases, Sonnet ($3/M input, $15/M output) for explore + research + build
+**D. Counterfactual: Role-optimized cost**
+- Opus for planning + review delegations, Sonnet ($3/M input, $15/M output) for exploration + research + build
 
 **E. Summary table:**
 
 | Approach | Cost | vs Actual |
 |----------|------|-----------|
-| Actual (multi-model) | $X | baseline |
-| Phase-optimized (Opus plan/review, Sonnet rest) | $X | X.Xx vs actual |
+| Actual | $X | baseline |
+| Role-optimized (Opus plan/review, Sonnet rest) | $X | X.Xx vs actual |
 | Opus only | $X | X.Xx vs actual |
 
 **F. Cost-quality tradeoff assessment:**
-- Did cheaper models in any phase miss things that a stronger model would have caught?
-- Was the planning phase's model cost proportional to the value of its output?
-- Were there build turns that were unnecessarily expensive or cheap?
-- Could any explore/research turns have been skipped entirely?
+- Did cheaper models in any delegated segment miss things that a stronger model would have caught?
+- Was the planning delegation's model cost proportional to the value of its output?
+- Were there build segments that were unnecessarily expensive or cheap?
+- Could any exploration/research turns have been skipped entirely?
 
 ---
 
@@ -201,18 +236,18 @@ Create the `.kimchi/audits/` directory if it does not exist.
 
 **IMPORTANT — Write in chunks:** Do NOT attempt to write the entire report in a single tool call. Large writes can cause socket timeouts. Instead, write the report across multiple sequential tool calls:
 
-1. **Write** the file with the header, summary table, and phase timeline (Step 3a)
+1. **Write** the file with the header, summary table, and delegation timeline (Step 3a)
 2. **Append** the detailed findings for each dimension (Step 3b)
 3. **Append** tool usage, improvements, and recommendations (Step 3c)
 
 Use the following format, split across the writes described above.
 
-#### Step 3a — Write header, summary, and phase timeline
+#### Step 3a — Write header, summary, and delegation timeline
 
 Write a new file at `.kimchi/audits/{auditFilename}` containing:
 
 ```markdown
-# Session Phase Audit: {sessionId}
+# Session Delegation Audit: {sessionId}
 
 **Session file:** {sessionFile}
 **Date:** {session_start_timestamp}
@@ -231,22 +266,22 @@ Write a new file at `.kimchi/audits/{auditFilename}` containing:
 
 | Dimension | Grade | Key Finding |
 |-----------|-------|-------------|
-| Phase Discipline | X | one line |
+| Delegation Discipline | X | one line |
 | Architecture | X | one line |
 | Code Quality | X | one line |
 | Testing | X | one line |
-| Phase-Model Alignment | X | one line |
+| Role-Model Alignment | X | one line |
 | Cost Efficiency | — | $X actual ($X Opus-only = X.Xx savings) |
 
 **Overall Grade: X**
-(Weighted: Phase Discipline 15%, Architecture 20%, Code Quality 20%, Testing 20%, Phase-Model Alignment 10%, Cost Efficiency 15%)
+(Weighted: Delegation Discipline 15%, Architecture 20%, Code Quality 20%, Testing 20%, Role-Model Alignment 10%, Cost Efficiency 15%)
 
-## Phase Timeline
+## Delegation Timeline
 
-| # | Phase | Start | End | Duration | Model(s) | Turns | Cost |
-|---|-------|-------|-----|----------|----------|-------|------|
-| 1 | explore | HH:MM | HH:MM | Xm | model-id | N | $X |
-| 2 | plan | HH:MM | HH:MM | Xm | model-id | N | $X |
+| # | Segment | Start | End | Duration | Model(s) | Turns | Cost |
+|---|---------|-------|-----|----------|----------|-------|------|
+| 1 | self-performed | HH:MM | HH:MM | Xm | model-id | N | $X |
+| 2 | delegated: builder | HH:MM | HH:MM | Xm | model-id | N | $X |
 | ... | | | | | | | |
 ```
 
@@ -257,7 +292,7 @@ Append to the same file. Write one section per dimension:
 ```markdown
 ## Detailed Findings
 
-### Phase Discipline — Grade: X
+### Delegation Discipline — Grade: X
 **Strengths:**
 - ...
 **Weaknesses:**
@@ -281,7 +316,7 @@ Append to the same file. Write one section per dimension:
 **Weaknesses:**
 - ...
 
-### Phase-Model Alignment — Grade: X
+### Role-Model Alignment — Grade: X
 **Strengths:**
 - ...
 **Weaknesses:**
@@ -297,10 +332,10 @@ Append to the same file. Write one section per dimension:
 Append to the same file:
 
 ```markdown
-## Tool Usage by Phase
+## Tool Usage by Segment
 
-| Tool | explore | research | plan | build | review | Total |
-|------|---------|----------|------|-------|--------|-------|
+| Tool | self-performed | delegated: explorer | delegated: researcher | delegated: builder | delegated: reviewer | Total |
+|------|----------------|---------------------|----------------------|-------------------|---------------------|-------|
 | Read | N | N | N | N | N | N |
 | Edit | N | N | N | N | N | N |
 | Bash | N | N | N | N | N | N |
@@ -314,15 +349,15 @@ Append to the same file:
 
 ## Model Usage Observations
 
-- Which model performed well in which phase? Which underperformed?
-- Any recommendations for model-phase assignment changes?
-- Were there phases where model switching mid-phase caused context loss?
+- Which model performed well in which segment? Which underperformed?
+- Any recommendations for model-role assignment changes?
+- Were there segments where model switching mid-segment caused context loss?
 
-## Phase Workflow Recommendations
+## Delegation Workflow Recommendations
 
-- Should the phase order have been different for this type of task?
-- Were any phases skipped that should have been used?
-- Were any phases used that added no value?
+- Should the delegation order have been different for this type of task?
+- Were any personas skipped that should have been used?
+- Were any personas used that added no value?
 ```
 
 ---
@@ -345,13 +380,13 @@ For the first turn of each model, annotate that this is a **switch boundary**.
 
 ### Step 5: Routing Decision Rationale
 
-When a new model appears (model_change), look backward for the preceding assistant message that contains clues about why the switch happened (e.g. tool calls `Agent`/`set_phase`, deployment rules in system prompts, explicit orchestration text).
+When a new model appears (model_change), look backward for the preceding assistant message that contains clues about why the switch happened (e.g. tool calls `Agent`, deployment rules in system prompts, explicit orchestration text).
 
 Record:
 
-| Switch # | From | To | Trigger (phase, tool call, or explicit text) | Evidence (message ID or turn #) |
-|----------|------|----|----------------------------------------------|--------------------------------|
-| 1 | model-a | model-b | phase: plan | turn #4 |
+| Switch # | From | To | Trigger (delegation, tool call, or explicit text) | Evidence (message ID or turn #) |
+|----------|------|----|--------------------------------------------------|--------------------------------|
+| 1 | model-a | model-b | Agent delegation to builder | turn #4 |
 | 2 | model-b | model-c | Agent delegation to kimi-k2.6 | turn #12 |
 
 If no evidence is found, note "inferred from session bootstrap".
@@ -385,8 +420,9 @@ Per-model-pair breakdown:
 Search for all `Agent` tool calls within assistant turns. For each, capture:
 - The `turnIndex` when invoked
 - The model delegated to (from tool arguments: `model` field)
-- The `tokenBudget` requested
-- Whether a `get_subagent_result` or `steer_subagent` appears later in the session (indicating lifecycle completion or intervention)
+- The `token_budget` requested
+- The linked terminal outcome and any steer_subagent/resume_subagent intervention,
+  using the agent-ID joins from Step 1; a polling call alone is not completion
 
 Count subagent loops: # of `Agent` calls that precede a `steer_subagent` for the same subagent.
 
@@ -399,8 +435,10 @@ Output table:
 
 Definitions:
 - **Looped**: a `steer_subagent` was sent to this subagent before it completed
-- **Completed**: a `get_subagent_result` was received for this subagent
-- **Context-Complete**: no `steer_subagent` was needed (subagent self-completed)
+- **Completed**: a terminal result reports agentOutcome.outcome = "completed";
+  background acknowledgements and running/queued polls do not qualify
+- **Context-Complete**: assess the worker report and follow-up requests; absence of
+  steer_subagent alone does not establish that the worker had sufficient context
 
 ---
 
@@ -411,11 +449,11 @@ Map each assistant turn to a **task class** based on the dominant activity in th
 | Task Class | Detection heuristics |
 |------------|---------------------|
 | `explore` | `read`, `grep`, `find`, `ls` tool calls dominate |
-| `plan` | `edit`/`write` of `.md` spec files, `set_phase("plan")`, or explicit planning tool calls |
+| `plan` | `edit`/`write` of `.md` spec files, or explicit planning tool calls |
 | `build` | `edit`, `write`, `bash` (compilation / test execution) dominates |
-| `review` | `lsp_diagnostics`, review comments, `set_phase("review")` |
+| `review` | `lsp_diagnostics`, review comments |
 | `research` | `web_search`, `web_fetch` calls |
-| `orchestration` | `Agent`, `set_phase`, `start_ferment_step`, `complete_ferment_step`, `get_subagent_result` |
+| `orchestration` | `Agent`, `start_ferment_step`, `complete_ferment_step`, `get_subagent_result` |
 
 If a turn has mixed tools, classify by the most frequent tool family. If tie, prefer: orchestration > plan > build > review > research > explore.
 
@@ -436,19 +474,20 @@ Aggregate token usage per class across all turns and per-model:
 ### Step 9: Cost per Completed Task
 
 A "task" is defined as a contiguous block of turns bounded by:
-- A phase switch (set_phase to a different phase), OR
+- A delegation attempt boundary established by the agent-ID and terminal-result joins in Step 1, OR
 - A terminal outcome (all tests passing, human-explicit completion, or branch commit/push)
 
-Compute cost per task = sum of `usage.cost.total` for all turns within the block.
+Compute cost per task from the owning session's turns. Keep parallel worker tasks
+separate; do not count the same parent or child usage in multiple overlapping blocks.
 
 Only count tasks that reach a terminal state (tests pass, user confirms done, branch commit/push, etc.).
 
 Output:
 
-| Task # | Label | Phase | Turn Range | Cost | Terminal State |
-|--------|-------|-------|------------|------|----------------|
-| 1 | fix-auth-bug | build | 3–7 | $X.XX | tests pass |
-| 2 | add-tests | build | 8–14 | $X.XX | PR created |
+| Task # | Label | Segment | Turn Range | Cost | Terminal State |
+|--------|-------|---------|------------|------|----------------|
+| 1 | fix-auth-bug | delegated: builder | 3–7 | $X.XX | tests pass |
+| 2 | add-tests | delegated: builder | 8–14 | $X.XX | PR created |
 
 If a task does not reach a terminal state, note "incomplete" and exclude from efficiency analysis.
 

@@ -95,12 +95,7 @@ export interface FermentRuntime {
 	nowIso(): string
 	markHumanInput(): void
 	getLastHumanInputAt(): Date | undefined
-	captureJudgeContext(
-		model?: Model<Api>,
-		registry?: ModelRegistry,
-		multiModelEnabled?: boolean,
-		context?: WorkContext,
-	): void
+	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry, context?: WorkContext): void
 	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
 	clearStepStart(fermentId: string, phaseId: string, stepId: string): void
 	clearAllStepStarts(): void

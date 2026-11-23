@@ -43,6 +43,7 @@ const TOOL_NAMES = {
 		"skill",
 		"web_fetch",
 		"web_search",
+		"pr_watch",
 		...WORKFLOW_OUTPUT_TOOL_NAMES,
 		"mcp",
 		...DAP_TOOL_NAMES,
@@ -51,7 +52,6 @@ const TOOL_NAMES = {
 	],
 	adhocOnly: ["questionnaire"],
 	fermentPlanningTools: [
-		"set_phase",
 		"propose_ferment_scoping",
 		"scope_ferment",
 		"update_ferment_scope_field",
@@ -94,7 +94,7 @@ describe("ADHOC_MODE_TOOLS", () => {
 	})
 
 	it("does not contain ferment-mode tools", () => {
-		const fermentTools = ["ask_user", "confirm_ferment_completion_criteria", "set_phase", "activate_ferment_phase"]
+		const fermentTools = ["ask_user", "confirm_ferment_completion_criteria", "activate_ferment_phase"]
 		for (const name of fermentTools) {
 			expect(namesOf(ADHOC_MODE_TOOLS)).not.toContain(name)
 		}
@@ -105,7 +105,6 @@ describe("FERMENT_MODE_TOOLS", () => {
 	const allNames = namesOf(FERMENT_MODE_TOOLS)
 
 	const expectedPlanningTools = [
-		"set_phase",
 		"propose_ferment_scoping",
 		"scope_ferment",
 		"update_ferment_scope_field",
@@ -150,7 +149,6 @@ describe("FERMENT_MODE_TOOLS", () => {
 		}
 
 		// planning-only
-		expect(byName("set_phase").phases).toEqual(["planning"])
 		expect(byName("propose_ferment_scoping").phases).toEqual(["planning"])
 		expect(byName("confirm_ferment_completion_criteria").phases).toEqual(["planning"])
 		expect(byName("activate_ferment_phase").phases).toEqual(["planning"])
@@ -231,6 +229,12 @@ describe("getToolsForProfile", () => {
 			expect(names).toContain("bash")
 		})
 
+		it("keeps PR watch controls visible without exposing file writes", () => {
+			expect(names).toContain("pr_watch")
+			expect(names).not.toContain("edit")
+			expect(names).not.toContain("write")
+		})
+
 		it("includes bash_control wherever bash is (the pair moves together)", () => {
 			expect(names).toContain("bash_control")
 			// The ferment implementation profile keeps the pair too.
@@ -258,7 +262,6 @@ describe("getToolsForProfile", () => {
 			const fermentOnly = [
 				"ask_user",
 				"confirm_ferment_completion_criteria",
-				"set_phase",
 				"propose_ferment_scoping",
 				"scope_ferment",
 				"activate_ferment_phase",

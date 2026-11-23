@@ -18,7 +18,7 @@ vi.mock("../package-resources.js", () => ({
 
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../../project-scope-trust.js"
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
-import { loadCustomAgents } from "./custom-agents.js"
+import { formatSkippedAgentFiles, loadCustomAgents } from "./custom-agents.js"
 
 function writeAgentMd(dir: string, name: string, frontmatter: string, body = "System prompt."): void {
 	mkdirSync(dir, { recursive: true })
@@ -41,7 +41,7 @@ describe("AgentConfig.tokenBudget parsing", () => {
 	it("parses token_budget: 50000 into tokenBudget === 50000", () => {
 		writeAgentMd(projectAgentsDir, "budgeted-agent", "description: budgeted\ntoken_budget: 50000")
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("budgeted-agent")
 
 		expect(agent).toBeDefined()
@@ -51,7 +51,7 @@ describe("AgentConfig.tokenBudget parsing", () => {
 	it("leaves tokenBudget undefined when token_budget is not present", () => {
 		writeAgentMd(projectAgentsDir, "no-budget-agent", "description: no budget here")
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("no-budget-agent")
 
 		expect(agent).toBeDefined()
@@ -61,7 +61,7 @@ describe("AgentConfig.tokenBudget parsing", () => {
 	it("leaves tokenBudget undefined when token_budget is a non-numeric string", () => {
 		writeAgentMd(projectAgentsDir, "bad-budget-agent", "description: bad budget\ntoken_budget: abc")
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("bad-budget-agent")
 
 		expect(agent).toBeDefined()
@@ -71,7 +71,7 @@ describe("AgentConfig.tokenBudget parsing", () => {
 	it("leaves tokenBudget undefined when token_budget is negative", () => {
 		writeAgentMd(projectAgentsDir, "negative-budget-agent", "description: negative budget\ntoken_budget: -5")
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("negative-budget-agent")
 
 		expect(agent).toBeDefined()
@@ -81,7 +81,7 @@ describe("AgentConfig.tokenBudget parsing", () => {
 	it("leaves tokenBudget undefined when token_budget is 0", () => {
 		writeAgentMd(projectAgentsDir, "zero-budget-agent", "description: zero budget\ntoken_budget: 0")
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("zero-budget-agent")
 
 		expect(agent).toBeDefined()
@@ -134,7 +134,7 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 			"---\ndescription: budget agent\ntoken_budget: 300\n---\nProject prompt.",
 		)
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("budget-agent")
 
 		expect(agent).toBeDefined()
@@ -152,7 +152,7 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 			"---\ndescription: budget agent\ntoken_budget: 200\n---\nGlobal prompt.",
 		)
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("budget-agent")
 
 		expect(agent).toBeDefined()
@@ -166,7 +166,7 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 			"---\ndescription: budget agent\ntoken_budget: 100\n---\nPackage prompt.",
 		)
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("budget-agent")
 
 		expect(agent).toBeDefined()
@@ -195,7 +195,7 @@ describe("custom agents — include_context_files and include_core_guidelines pa
 			"description: ctx\ninclude_context_files: true\ninclude_core_guidelines: true",
 		)
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("ctx-agent")
 
 		expect(agent).toBeDefined()
@@ -206,11 +206,92 @@ describe("custom agents — include_context_files and include_core_guidelines pa
 	it("defaults includeContextFiles and includeCoreGuidelines to undefined when not present", () => {
 		writeAgentMd(projectAgentsDir, "no-ctx-agent", "description: no ctx")
 
-		const agents = loadCustomAgents(projectDir)
+		const { agents } = loadCustomAgents(projectDir)
 		const agent = agents.get("no-ctx-agent")
 
 		expect(agent).toBeDefined()
 		expect(agent?.includeContextFiles).toBeUndefined()
 		expect(agent?.includeCoreGuidelines).toBeUndefined()
+	})
+})
+
+describe("custom agents — invalid frontmatter", () => {
+	// Unquoted prose with ": " inside — common in agent files written for other
+	// tools, and rejected by strict YAML.
+	const PROSE = 'Tidies imports. <example>Context: a file was edited. user: "clean it up"</example>'
+
+	let tmpRoot: string
+	let globalAgentsDir: string
+	let projectDir: string
+	let projectAgentsDir: string
+
+	beforeEach(() => {
+		tmpRoot = join(tmpdir(), `kimchi-invalid-frontmatter-${Date.now()}`)
+		globalAgentsDir = join(tmpRoot, "global", "agents")
+		mkdirSync(globalAgentsDir, { recursive: true })
+		mockGetAgentDir.mockReturnValue(join(tmpRoot, "global"))
+		projectDir = join(tmpRoot, "project")
+		projectAgentsDir = join(projectDir, ".kimchi", "agents")
+		resetProjectScopeTrustForTests()
+		setProjectScopeTrusted(projectDir, true)
+	})
+
+	afterEach(() => {
+		rmSync(tmpRoot, { recursive: true, force: true })
+	})
+
+	it("loads an agent whose unquoted description is not strict YAML", () => {
+		writeAgentMd(projectAgentsDir, "tidy", `name: tidy\ndescription: ${PROSE}`, "You tidy imports.")
+
+		const { agents, skipped } = loadCustomAgents(projectDir)
+
+		expect(skipped).toEqual([])
+		expect(agents.get("tidy")?.description).toBe(PROSE)
+		expect(agents.get("tidy")?.systemPrompt).toBe("You tidy imports.")
+	})
+
+	it("skips an unparseable file and still loads the others", () => {
+		writeAgentMd(projectAgentsDir, "broken", "description: broken\ntools: [read, bash")
+		writeAgentMd(projectAgentsDir, "valid", "description: valid")
+
+		const { agents, skipped } = loadCustomAgents(projectDir)
+
+		expect(agents.has("valid")).toBe(true)
+		expect(agents.has("broken")).toBe(false)
+		expect(skipped).toHaveLength(1)
+		expect(skipped[0].path).toBe(join(projectAgentsDir, "broken.md"))
+		expect(skipped[0].reason).toMatch(/flow sequence/i)
+		expect(skipped[0].reason).not.toContain("\n")
+	})
+
+	it("keeps the global agent when the project override is unparseable", () => {
+		writeAgentMd(globalAgentsDir, "reviewer", "description: global reviewer")
+		writeAgentMd(projectAgentsDir, "reviewer", "description: project reviewer\ntools: [read, bash")
+
+		const { agents, skipped } = loadCustomAgents(projectDir)
+
+		expect(agents.get("reviewer")?.source).toBe("global")
+		expect(skipped).toHaveLength(1)
+	})
+
+	it("formats the warning with paths relative to the project", () => {
+		const inside = { path: join(projectAgentsDir, "a.md"), reason: "bad a" }
+		const outside = { path: join(globalAgentsDir, "b.md"), reason: "bad b" }
+
+		expect(formatSkippedAgentFiles([inside], projectDir)).toBe(
+			[
+				"Skipped 1 agent file with invalid frontmatter (not loaded):",
+				`  ${join(".kimchi", "agents", "a.md")} — bad a`,
+				"Fix the YAML frontmatter to load them.",
+			].join("\n"),
+		)
+		expect(formatSkippedAgentFiles([inside, outside], projectDir)).toBe(
+			[
+				"Skipped 2 agent files with invalid frontmatter (not loaded):",
+				`  ${join(".kimchi", "agents", "a.md")} — bad a`,
+				`  ${outside.path} — bad b`,
+				"Fix the YAML frontmatter to load them.",
+			].join("\n"),
+		)
 	})
 })

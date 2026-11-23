@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { buildSkillCommandPrompt } from "../modes/acp/skill-commands.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { backendFor } from "./pr-cost-reporting/ledger/records.js"
@@ -201,6 +202,134 @@ describe("extractFirstUserMessage", () => {
 	})
 })
 
+describe("skill invocation title input", () => {
+	// Shaped like upstream _expandSkillCommand's output, including the
+	// references line it always inserts inside the block.
+	const nativeSkillBlock = (args?: string) => {
+		const body = "Long skill instructions. ".repeat(80) // > 500 chars
+		const block = `<skill name="gatekeeper" location="/skills/gatekeeper/SKILL.md">\nReferences are relative to /skills/gatekeeper.\n\n${body.trim()}\n</skill>`
+		return args ? `${block}\n\n${args}` : block
+	}
+
+	it("uses only the user arguments from a native CLI skill block", () => {
+		const args = "Explain what a closure is in JavaScript"
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: nativeSkillBlock(args) } }])
+		const hint = extractFirstUserMessage(ctx as never)
+		expect(hint).toBe(args)
+	})
+
+	it("falls back to the skill name when a native CLI skill block has no arguments", () => {
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: nativeSkillBlock() } }])
+		expect(extractFirstUserMessage(ctx as never)).toBe("gatekeeper")
+	})
+
+	it("keeps the header and trailing arguments from a real ACP skill expansion", () => {
+		const args = "Explain what a closure is in JavaScript"
+		// Numbered so the body's head ("Instruction 0") cannot recur in the tail.
+		const skillContent = Array.from({ length: 200 }, (_, i) => `Instruction ${i}.`).join(" ")
+		const expanded = buildSkillCommandPrompt({
+			skillName: "diagnosing-bugs",
+			remainingText: args,
+			skillContent,
+		})
+		expect(expanded.length).toBeGreaterThan(500)
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: expanded } }])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		expect(hint).toContain("Invoking skill: diagnosing-bugs")
+		expect(hint).toContain(args)
+		// The body's head is gone; only its tail can remain ahead of the args.
+		expect(hint).not.toContain("Instruction 0.")
+		expect(hint.length).toBeLessThanOrEqual(500)
+	})
+
+	it("names an ACP skill invocation that has no arguments", () => {
+		const skillContent = "Skill instructions. ".repeat(200)
+		const expanded = buildSkillCommandPrompt({
+			skillName: "gatekeeper",
+			remainingText: "",
+			skillContent,
+		})
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: expanded } }])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		expect(hint).toContain("Invoking skill: gatekeeper")
+		// The hint stays within the cap: invocation header plus at most a
+		// bounded tail — never the raw expansion.
+		expect(hint.length).toBeLessThanOrEqual(500)
+	})
+
+	it("keeps an argument-less ACP invocation stand-alone even behind user context", () => {
+		// The persisted ACP rewrite exposes no body/args boundary, so a no-args
+		// expansion cannot be told apart from one carrying arguments at the end;
+		// both must stand alone to keep that trailing text inside the cap.
+		const expanded = buildSkillCommandPrompt({
+			skillName: "gatekeeper",
+			remainingText: "",
+			skillContent: "Skill instructions. ".repeat(200),
+		})
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "Fix the resume menu jumping on scroll" } },
+			{ type: "message", message: { role: "user", content: expanded } },
+		])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		expect(hint).toContain("Invoking skill: gatekeeper")
+		expect(hint).not.toContain("Fix the resume menu jumping on scroll")
+		expect(hint.length).toBeLessThanOrEqual(500)
+	})
+
+	it("lets a skill invocation dominate the bundled hint so its arguments survive the cap", () => {
+		const args = "Explain what a closure is in JavaScript"
+		const expanded = buildSkillCommandPrompt({
+			skillName: "diagnosing-bugs",
+			remainingText: args,
+			skillContent: "Skill instructions. ".repeat(200),
+		})
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "First task about refactoring the parser module" } },
+			{ type: "message", message: { role: "user", content: expanded } },
+		])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		// The bundled join would exceed the 500-char cap and cut the trailing
+		// arguments, so the invocation must stand alone as the hint.
+		expect(hint).toContain(args)
+		expect(hint.length).toBeLessThanOrEqual(500)
+	})
+
+	it("bundles a name-only skill invocation with neighbouring user context", () => {
+		// No args: the hint is the bare skill name, so a task stated in the
+		// previous message must survive bundling instead of being discarded.
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "Fix the resume menu jumping on scroll" } },
+			{ type: "message", message: { role: "user", content: nativeSkillBlock() } },
+		])
+		const hint = extractFirstUserMessage(ctx as never) ?? ""
+		expect(hint).toContain("Fix the resume menu jumping on scroll")
+		expect(hint).toContain("gatekeeper")
+	})
+
+	it("leaves ordinary text byte-faithful, including CRLF line endings", () => {
+		const ctx = createMockCtx([
+			{ type: "message", message: { role: "user", content: "Fix the parser\r\nand also the lexer" } },
+		])
+		expect(extractFirstUserMessage(ctx as never)).toBe("Fix the parser\r\nand also the lexer")
+	})
+
+	it("sends no concrete example title in the naming system prompt", async () => {
+		const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => {
+			return new Response(JSON.stringify({ choices: [{ message: { content: "Some Title" } }] }), { status: 200 })
+		})
+		vi.stubGlobal("fetch", fetchMock)
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "uai como voce ta" } }])
+		await suggestSessionName(ctx as never, undefined, true)
+		const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as {
+			messages: Array<{ role: string; content: string }>
+		}
+		const systemPrompt = body.messages.find((m) => m.role === "system")?.content ?? ""
+		expect(systemPrompt).not.toContain("Fix resume menu jumping")
+		expect(systemPrompt).not.toContain("For example")
+	})
+})
+
 describe("suggestSessionName", () => {
 	it("persists each naming retry before dispatch and pins original work and session", async () => {
 		vi.useFakeTimers()
@@ -337,6 +466,18 @@ describe("suggestSessionName", () => {
 		expect(body.model).toBe("deepseek-v4-flash-0731")
 	})
 
+	it("uses default retries when retry settings omit maxRetries", async () => {
+		mockGetRetrySettings.mockReturnValue({ enabled: true, baseDelayMs: 0 })
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: "Generated caption" } }] }))),
+		)
+		const ctx = createMockCtx([])
+
+		await expect(suggestSessionName(ctx as never, "Task", true)).resolves.toBe("Generated caption")
+	})
+
 	it("should truncate long user messages", async () => {
 		const ctx = createMockCtx([
 			{
@@ -388,25 +529,215 @@ describe("suggestSessionName", () => {
 })
 
 describe("sessionNameExtension turn_end handler", () => {
-	it("waits past a greeting and names the task on the next turn", async () => {
+	const prompt = "How do I center a div?"
+	const generatedTitle = "Center a div with flexbox"
+
+	function generatedResponse(title = generatedTitle): Response {
+		return new Response(JSON.stringify({ choices: [{ message: { content: title } }] }), { status: 200 })
+	}
+
+	function createTurnHarness(initialPrompt = prompt) {
+		mockGetRetrySettings.mockReturnValue({ enabled: true, maxRetries: 0, baseDelayMs: 0 })
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
 		const { api, getHandler } = createExtensionApi()
-		api.setSessionName = vi.fn()
-		const entries = [{ type: "message", message: { role: "user", content: "Hi!" } }]
+		const setSessionName = vi.fn()
+		api.setSessionName = setSessionName
+		const entries = [{ type: "message", message: { role: "user", content: initialPrompt } }]
+		const name = vi.fn<() => string | undefined>(() => undefined)
 		const ctx = createContext({
+			cwd: attributionDir,
 			hasUI: false,
 			sessionManager: {
-				getSessionName: vi.fn(() => undefined),
+				getSessionName: name,
 				getBranch: vi.fn().mockImplementation(() => entries),
 				getEntries: vi.fn().mockImplementation(() => entries),
 			},
 		})
 		sessionNameExtension()(api)
-		await getHandler("turn_end")({}, ctx)
-		expect(api.setSessionName).not.toHaveBeenCalled()
-		entries.push({ type: "message", message: { role: "user", content: "Fix resume menu jumping" } })
-		await getHandler("turn_end")({}, ctx)
-		await getHandler("session_shutdown")({}, ctx)
-		expect(api.setSessionName).toHaveBeenCalledWith("Fix resume menu jumping")
+		return {
+			api,
+			ctx,
+			entries,
+			getHandler,
+			name,
+			setSessionName,
+			async endTurn() {
+				await getHandler("turn_end")({}, ctx)
+				await getHandler("session_shutdown")({}, ctx)
+			},
+		}
+	}
+
+	it("keeps the successful generated-caption control", async () => {
+		const fetchMock = vi.fn(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+
+		await harness.endTurn()
+
+		expect(fetchMock).toHaveBeenCalledOnce()
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+	})
+
+	it("retries a non-2xx response without publishing the prompt as a completed caption", async () => {
+		const warnMock = vi.fn()
+		vi.stubGlobal("console", { ...console, warn: warnMock })
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("secret response body", { status: 503 }))
+			.mockImplementation(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+
+		await harness.endTurn()
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+		expect(warnMock).toHaveBeenCalledWith(
+			"[session-name] auto-caption failed category=http_error status=503 attempt=1 credentials=present",
+		)
+
+		await harness.endTurn()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+		const logs = warnMock.mock.calls.flat().join(" ")
+		expect(logs).not.toContain(prompt)
+		expect(logs).not.toContain("test-key")
+		expect(logs).not.toContain("secret response body")
+	})
+
+	it("makes no request without credentials and can name after credentials become available", async () => {
+		const warnMock = vi.fn()
+		vi.stubGlobal("console", { ...console, warn: warnMock })
+		let apiKey = ""
+		const fetchMock = vi.fn(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+		mockLoadConfig.mockImplementation(() => ({ apiKey, llmEndpoint: "https://llm.test/openai/v1" }))
+
+		for (let attempt = 0; attempt < 3; attempt++) await harness.endTurn()
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+		expect(warnMock).toHaveBeenCalledExactlyOnceWith(
+			"[session-name] auto-caption failed category=missing_credentials attempt=1 credentials=absent",
+		)
+
+		apiKey = "credentials-now-available"
+		await harness.endTurn()
+		expect(fetchMock).toHaveBeenCalledOnce()
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+	})
+
+	it.each([
+		["transport failure", new Error("connection reset")],
+		["empty model response", new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }))],
+	])("does not publish prompt text after %s and retries on the next turn", async (_label, failure) => {
+		vi.stubGlobal("console", { ...console, warn: vi.fn() })
+		const fetchMock = vi.fn().mockImplementationOnce(async () => {
+			if (failure instanceof Error) throw failure
+			return failure
+		})
+		fetchMock.mockImplementation(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+
+		await harness.endTurn()
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+
+		await harness.endTurn()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+	})
+
+	it("deduplicates overlapping turn_end events while a caption is in flight", async () => {
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const fetchMock = vi.fn(async () => {
+			await gate
+			return generatedResponse()
+		})
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+
+		await harness.getHandler("turn_end")({}, harness.ctx)
+		await harness.getHandler("turn_end")({}, harness.ctx)
+		expect(fetchMock).toHaveBeenCalledOnce()
+
+		release()
+		await harness.getHandler("session_shutdown")({}, harness.ctx)
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+	})
+
+	it("stops requesting captions after three failed model attempts", async () => {
+		vi.stubGlobal("console", { ...console, warn: vi.fn() })
+		const fetchMock = vi.fn(async () => new Response("unavailable", { status: 503 }))
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+
+		for (let attempt = 0; attempt < 4; attempt++) await harness.endTurn()
+
+		expect(fetchMock).toHaveBeenCalledTimes(3)
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+	})
+
+	it("resets the retry budget for a new session", async () => {
+		vi.stubGlobal("console", { ...console, warn: vi.fn() })
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+			.mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+			.mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+			.mockImplementation(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+
+		for (let attempt = 0; attempt < 3; attempt++) await harness.endTurn()
+		expect(fetchMock).toHaveBeenCalledTimes(3)
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+
+		await harness.getHandler("session_start")({}, harness.ctx)
+		await harness.endTurn()
+
+		expect(fetchMock).toHaveBeenCalledTimes(4)
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+	})
+
+	it("counts configuration exceptions toward the retry cap and names after recovery", async () => {
+		vi.stubGlobal("console", { ...console, warn: vi.fn() })
+		const fetchMock = vi.fn(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+		let configAttempts = 0
+		mockLoadConfig.mockImplementation(() => {
+			configAttempts += 1
+			if (configAttempts <= 2) throw new Error("configuration unavailable")
+			return { apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" }
+		})
+
+		await harness.endTurn()
+		await harness.endTurn()
+		await harness.endTurn()
+
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith(generatedTitle)
+		expect(fetchMock).toHaveBeenCalledOnce()
+
+		await harness.endTurn()
+		expect(fetchMock).toHaveBeenCalledOnce()
+	})
+
+	it("waits past a greeting and names the task on the next turn", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => generatedResponse("Fix resume menu jumping")),
+		)
+		const harness = createTurnHarness("Hi!")
+
+		await harness.endTurn()
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+		harness.entries.push({ type: "message", message: { role: "user", content: "Fix resume menu jumping" } })
+		await harness.endTurn()
+
+		expect(harness.setSessionName).toHaveBeenCalledExactlyOnceWith("Fix resume menu jumping")
 	})
 
 	it("does not apply a late title after switching sessions or overwrite a manual title", async () => {
@@ -418,30 +749,52 @@ describe("sessionNameExtension turn_end handler", () => {
 			"fetch",
 			vi.fn(async () => {
 				await gate
-				return new Response(JSON.stringify({ choices: [{ message: { content: "Old task" } }] }))
+				return generatedResponse("Old task")
 			}),
 		)
-		mockLoadConfig.mockReturnValue({ apiKey: "test", llmEndpoint: "https://llm.test/openai/v1" })
-		const { api, getHandler } = createExtensionApi()
-		api.setSessionName = vi.fn()
-		const name = vi.fn<() => string | undefined>(() => undefined)
-		const ctx = createContext({
-			hasUI: false,
-			sessionManager: {
-				getSessionName: name,
-				getBranch: vi.fn().mockReturnValue([{ type: "message", message: { role: "user", content: "Fix a bug" } }]),
-			},
-		})
-		sessionNameExtension()(api)
-		await getHandler("turn_end")({}, ctx)
-		await getHandler("session_start")({}, ctx)
+		const harness = createTurnHarness()
+
+		await harness.getHandler("turn_end")({}, harness.ctx)
+		await harness.getHandler("session_start")({}, harness.ctx)
 		release()
-		await getHandler("session_shutdown")({}, ctx)
-		expect(api.setSessionName).not.toHaveBeenCalled()
-		name.mockReturnValue("My title")
-		await getHandler("turn_end")({}, ctx)
-		await getHandler("session_shutdown")({}, ctx)
-		expect(api.setSessionName).not.toHaveBeenCalled()
+		await harness.getHandler("session_shutdown")({}, harness.ctx)
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+
+		harness.name.mockReturnValue("My title")
+		await harness.endTurn()
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+	})
+
+	it("does not overwrite a manual rename made while a caption is in flight", async () => {
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const fetchMock = vi.fn(async () => {
+			await gate
+			return generatedResponse()
+		})
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+
+		await harness.getHandler("turn_end")({}, harness.ctx)
+		harness.name.mockReturnValue("My title")
+		release()
+		await harness.getHandler("session_shutdown")({}, harness.ctx)
+
+		expect(harness.setSessionName).not.toHaveBeenCalled()
+	})
+
+	it("skips auto-captioning when the session already has a name", async () => {
+		const fetchMock = vi.fn(async () => generatedResponse())
+		vi.stubGlobal("fetch", fetchMock)
+		const harness = createTurnHarness()
+		harness.name.mockReturnValue("My title")
+
+		await harness.endTurn()
+
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(harness.setSessionName).not.toHaveBeenCalled()
 	})
 })
 

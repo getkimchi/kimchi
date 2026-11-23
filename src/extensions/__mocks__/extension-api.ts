@@ -23,6 +23,7 @@ export function createExtensionApi(): {
 	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
 	getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1]
 	registerCommand: ReturnType<typeof vi.fn<ExtensionAPI["registerCommand"]>>
+	registerProvider: ReturnType<typeof vi.fn>
 	emitEvent: ReturnType<typeof vi.fn<(channel: string, data: unknown) => void>>
 	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
 	setActiveTools: ReturnType<typeof vi.fn<ExtensionAPI["setActiveTools"]>>
@@ -67,6 +68,9 @@ export function createExtensionApi(): {
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
 	const getCommands = vi.fn<ExtensionAPI["getCommands"]>(() => [])
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
+	// Both overloads are captured; narrowing to the name+config overload would
+	// incorrectly report the single Provider object overload as a string.
+	const registerProvider = vi.fn()
 	const registerFlag = vi.fn<ExtensionAPI["registerFlag"]>()
 	const getFlag = vi.fn<ExtensionAPI["getFlag"]>(() => undefined)
 	const registeredTools = new Map<string, ToolDefinition>()
@@ -119,6 +123,7 @@ export function createExtensionApi(): {
 		api: {
 			on,
 			registerCommand,
+			registerProvider,
 			registerFlag,
 			getFlag,
 			registerTool,
@@ -178,6 +183,7 @@ export function createExtensionApi(): {
 		emitEvent: busEmit,
 		registerTool,
 		registerCommand,
+		registerProvider,
 		setActiveTools,
 		getRegisteredTools: () => [...registeredTools.values()],
 		/** Access to the registered markdown transformers (TUI paint path). */

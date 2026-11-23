@@ -65,11 +65,14 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
-import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
+import {
+	createToolVisibility,
+	getDisabledToolNames,
+	type ToolVisibilityAPI,
+} from "../prompt-construction/tool-visibility.js"
 import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
@@ -157,17 +160,16 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((tool) => tool.name))
 
 /**
- * Appended to the system prompt on each plan-mode agent run when MCP tools
- * are hidden. Without it the model reports "no MCP tools are accessible",
- * which users read as a connector/auth failure and start re-authorizing.
+ * Explains the live MCP surface on each plan-mode agent run. Without this the
+ * model can mistake deliberately restricted writes for connector/auth failure.
  */
 const PLAN_MODE_MCP_NOTE =
-	"\n\nPlan mode is active: the `mcp` gateway and all non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Hidden tools work again after the user leaves plan mode. If the user's request needs an MCP tool, prefer a read-only one if it does the job; otherwise say it is unavailable in plan mode instead of reporting a connection or login problem."
+	"\n\nPlan mode is active: the `mcp` gateway is restricted to read-only operations (status, search, describe, server instructions, and read-only-qualified tool calls). All non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Install/auth actions, explicit reconnects, and write-capable gateway calls are blocked. Hidden tools and mutating operations work again after the user leaves plan mode. If the user's request needs a mutating MCP operation, say it is unavailable in plan mode instead of reporting a connection or login problem."
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
-// `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
-// are the agents-extension surface — `agent` is the canonical delegation tool,
-// the other two are read-only/control-plane operations on already-approved spawns.
+// `agent`/`get_subagent_result`/`steer_subagent` are the agents-extension
+// surface — `agent` is the canonical delegation tool, the other two are
+// read-only/control-plane operations on already-approved spawns.
 // `bash_control` is the control-plane companion of a background `bash` call: the
 // originating command already passed the permission gate (prompt/classifier), so
 // checking its state or stopping it needs no second approval.
@@ -176,7 +178,6 @@ const PLAN_MODE_MCP_NOTE =
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
 
 const BUILTIN_ALLOW_TOOL_NAMES = [
-	"set_phase",
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
@@ -294,6 +295,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	const planStopNudgeCounts = new Map<string, number>()
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
+	let restoreMcpAfterPlan = false
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
@@ -369,7 +371,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// can re-enable them. Without this snapshot, restore would be a no-op
 			// because `ToolProfileManager.apply` (via `pi.setActiveTools`) does
 			// not preserve the prior active-tool set.
-			planModeHiddenTools = pi.getActiveTools().filter((name) => !isPlanModeTool(name))
+			restoreMcpAfterPlan = pi.getActiveTools().includes("mcp")
+			planModeHiddenTools = pi.getActiveTools().filter((name) => name !== "mcp" && !isPlanModeTool(name))
 			// Register the disable vote with the cooperative visibility layer so
 			// `restoreToolsFromPlanMode`'s `planToolVisibility.enable(...)` call
 			// matches the matching disable vote (and so the snapshot below does
@@ -390,6 +393,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		} catch {
 			// best-effort restore
 		}
+		if (restoreMcpAfterPlan && !getDisabledToolNames(pi).has("mcp")) {
+			pi.setActiveTools([...new Set([...pi.getActiveTools(), "mcp"])])
+		}
+		restoreMcpAfterPlan = false
 		planModeHiddenTools = []
 		planModeApplied = false
 	}
@@ -860,16 +867,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// the snapshot immediately before every model request so late
 		// registration cannot widen the restricted tool surface.
 		ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
-		// Every MCP tool plan mode hides (the gateway and direct server tools).
-		// Read-only MCP tools stay usable, so they must not fire the note.
-		// Computed fresh per request because late-registered direct tools are
-		// absent from the enter-time planModeHiddenTools snapshot. The gateway
+		// Computed fresh per request because the gateway and direct tools can
+		// register after the enter-time planModeHiddenTools snapshot. The gateway
 		// only registers when at least one server is configured (mcp/index.ts),
-		// so "mcp" alone guarantees a real MCP setup.
-		const hidesMcpTools = pi
+		// so "mcp" alone guarantees a real MCP setup. A read-only direct tool by
+		// itself needs no special gateway guidance.
+		const needsMcpNote = pi
 			.getAllTools()
-			.some((tool) => (tool.name === "mcp" || tool.name.startsWith("mcp__")) && !isPlanModeTool(tool.name))
-		if (!hidesMcpTools) return undefined
+			.some((tool) => tool.name === "mcp" || (tool.name.startsWith("mcp__") && !isPlanModeTool(tool.name)))
+		if (!needsMcpNote) return undefined
 		return { systemPrompt: `${event.systemPrompt}${PLAN_MODE_MCP_NOTE}` }
 	})
 
@@ -918,7 +924,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// For ferment, the model should call propose_ferment_scoping first (to
 	// populate the structured scope), then submit_plan to trigger the review.
 	// The review is a TUI flow, so the tool is dead surface in plain --print
-	// runs — suppress it there like the ferment-mode gate does for set_phase.
+	// runs — suppress it there like the ferment-mode gate does for the ferment suite.
 	// ferment-oneshot print runs keep it (submit_plan is part of their
 	// planning catalog).
 	if (!shouldSuppressFermentModeTools()) {
@@ -1237,7 +1243,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			//   - ask_user               (interactive routing — TUI in interactive mode,
 			//                              judge model in oneshot via ferment/ask-user.ts)
 			//   - confirm_ferment_completion_criteria (interactive routing, planning)
-			//   - set_phase              (planning — phase tracker)
 			//   - propose_ferment_scoping / scope_ferment / update_ferment_scope_field
 			//                            (planning — scoping surface)
 			//   - list_ferments          (always-both discovery)
@@ -1374,7 +1379,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// already scoped/active and what the immediate next action is, so "Start
 				// as ferment" goes straight to execution.
 				const activePhase = activated.ferment.phases.find((p) => p.status === "active")
-				const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
+				const nextActionHint = formatNextActionHint(activated.ferment)
 				safeSendMessage(
 					pi,
 					{

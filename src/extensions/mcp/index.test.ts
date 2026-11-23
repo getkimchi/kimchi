@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { MCP_RUNTIME_REGISTER_EVENT, type McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
-import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
+import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
@@ -21,6 +21,8 @@ vi.mock("../work-attribution/file-observations.js", { spy: true })
 const upstream = vi.hoisted(() => ({
 	api: undefined as ExtensionAPI | undefined,
 	options: undefined as McpAdapterOptions | undefined,
+	sessionMetadataObserver: undefined as McpAdapterOptions["onSessionMetadata"],
+	sessionObserverFactory: undefined as McpAdapterOptions["createSessionMetadataObserver"],
 	input: vi.fn(),
 	sessionStart: vi.fn(),
 }))
@@ -57,7 +59,11 @@ const oauthBranding = vi.hoisted(() => ({
 	brandedContext: vi.fn(<T>(ctx: T): T => ctx),
 }))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
-const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
+const readOnlyState = vi.hoisted(() => ({
+	wireNames: new Set<string>(),
+	authorizationConfigs: [] as McpConfig[],
+	privateCatalogs: [] as Array<ReadonlyMap<string, ServerCacheEntry> | undefined>,
+}))
 const gatewayState = vi.hoisted(() => ({
 	server: undefined as { name: string; entry: ServerEntry } | undefined,
 	addresses: ["https://api.cast.ai/mcp"],
@@ -68,7 +74,10 @@ vi.mock("pi-mcp-adapter", () => ({
 	MCP_RUNTIME_REGISTER_EVENT: "pi-mcp-adapter:runtime-register:v1",
 	MCP_RUNTIME_REGISTER_VERSION: 1,
 	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
-		upstream.options = options
+		const { onSessionMetadata, createSessionMetadataObserver, ...adapterOptions } = options
+		upstream.options = adapterOptions
+		upstream.sessionMetadataObserver = createSessionMetadataObserver?.() ?? onSessionMetadata
+		upstream.sessionObserverFactory = createSessionMetadataObserver
 		upstream.api = api
 		api.on("session_start", upstream.sessionStart)
 		api.on("input", upstream.input)
@@ -125,8 +134,25 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 
 // Wire names carry their server's prefix, as with the adapter's default "server" prefix mode.
 vi.mock("./read-only.js", () => ({
-	collectReadOnlyMcpWireNames: (_config: McpConfig, server?: string) =>
-		[...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`)),
+	collectReadOnlyMcpWireNames: (
+		_config: McpConfig,
+		server?: string,
+		privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+	) => {
+		readOnlyState.privateCatalogs.push(privateCatalogs)
+		return [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
+	},
+	isReadOnlyQualifiedMcpGatewayTool: (
+		config: McpConfig,
+		toolName: string,
+		server?: string,
+		privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+	) => {
+		readOnlyState.authorizationConfigs.push(config)
+		readOnlyState.privateCatalogs.push(privateCatalogs)
+		const names = [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
+		return names.includes(toolName) || (server !== undefined && names.includes(`${server}_${toolName}`))
+	},
 }))
 
 vi.mock("../permissions/mode-controller.js", () => ({
@@ -178,6 +204,8 @@ describe("upstream MCP adapter facade", () => {
 		upstream.options = undefined
 		upstream.input.mockReset()
 		upstream.sessionStart.mockReset()
+		upstream.sessionMetadataObserver = undefined
+		upstream.sessionObserverFactory = undefined
 		configState.config = { mcpServers: {} }
 		configState.userConfig = { mcpServers: {} }
 		configState.configPath = undefined
@@ -197,6 +225,8 @@ describe("upstream MCP adapter facade", () => {
 		planning.currentProfile = undefined
 		permissionState.mode = undefined
 		readOnlyState.wireNames.clear()
+		readOnlyState.authorizationConfigs.length = 0
+		readOnlyState.privateCatalogs.length = 0
 		planning.applyCooperativeTweak.mockClear()
 		planning.reapplyCurrentProfile.mockReset().mockReturnValue(false)
 	})
@@ -494,6 +524,49 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.applyCooperativeTweak).not.toHaveBeenCalled()
 	})
 
+	it("keeps the gateway visible and executable when planning reconciliation omits it", async () => {
+		const profiles = await vi.importActual<typeof ToolProfileManager>("../../shared/planning/tool-profile-manager.js")
+		profiles.resetAll()
+		planning.reapplyCurrentProfile.mockImplementation(profiles.reapplyCurrentProfile)
+		planning.registerReadOnlyToolProvider.mockImplementation(profiles.registerReadOnlyToolProvider)
+		planning.currentProfile = "planning-adhoc"
+		cliState.plan = true
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		readOnlyState.wireNames.add("docs_get_issue")
+		const harness = createExtensionApi()
+		harness.api.registerTool(tool("read", "Read"))
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		const api = upstream.api
+		if (!api) throw new Error("Adapter was not installed")
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		api.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+
+		profiles.apply("planning-adhoc", "adhoc", harness.api)
+		api.setActiveTools(api.getActiveTools().filter((name) => name !== "mcp"))
+		profiles.reapplyCurrentProfile(harness.api)
+		expect(harness.getActiveToolNames()).toContain("mcp")
+		const result = await harness
+			.getRegisteredTool("mcp")
+			.execute(
+				"gateway",
+				{ tool: "docs_get_issue", server: "docs", args: {} },
+				undefined,
+				undefined,
+				createToolContext(),
+			)
+		expect(gatewayExecute).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
+
+		planning.currentProfile = undefined
+		cliState.plan = false
+		profiles.apply("idle", "adhoc", harness.api)
+		api.setActiveTools(api.getActiveTools().filter((name) => name !== "mcp"))
+		profiles.reapplyCurrentProfile(harness.api)
+		expect(harness.getActiveToolNames()).not.toContain("mcp")
+		profiles.resetAll()
+	})
+
 	it.each([
 		"idle",
 		"planning-adhoc",
@@ -679,13 +752,34 @@ describe("upstream MCP adapter facade", () => {
 		})
 	})
 
-	it("admits read-only-qualified direct tools while planning, keeping the gateway blocked", async () => {
+	it("blocks namespace proxies even when their nested tool is read-only-qualified", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		planning.currentProfile = "planning-adhoc"
+		permissionState.mode = "plan"
+		readOnlyState.wireNames.add("docs_get_issue")
+		const namespaceExecute = vi.fn(tool("mcp__docs", "MCP namespace").execute)
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		upstream.api?.registerTool({ ...tool("mcp__docs", "MCP namespace"), execute: namespaceExecute })
+
+		const result = await harness
+			.getRegisteredTool("mcp__docs")
+			.execute("namespace", { tool: "docs_get_issue", args: {} }, undefined, undefined, createToolContext())
+
+		expect(namespaceExecute).not.toHaveBeenCalled()
+		expect(result).toMatchObject({
+			isError: true,
+			details: { error: "plan_mode_mcp_blocked", tool: "mcp__docs" },
+		})
+	})
+
+	it("admits read-only-qualified direct tools and the gateway in the planning surface", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		planning.currentProfile = "planning-adhoc"
 		permissionState.mode = "plan"
 		readOnlyState.wireNames.add("docs_get_issue")
 		readOnlyState.wireNames.add("docs_unregistered")
-		readOnlyState.wireNames.add("mcp")
 		const readOnlyExecute = vi.fn(tool("docs_get_issue", "MCP: get_issue").execute)
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		const harness = createExtensionApi()
@@ -696,25 +790,78 @@ describe("upstream MCP adapter facade", () => {
 
 		expect(planning.registerReadOnlyToolProvider).toHaveBeenCalledWith(harness.api, expect.any(Function))
 		const provider = planning.registerReadOnlyToolProvider.mock.calls.at(-1)?.[1]
-		expect(provider?.()).toEqual(["docs_get_issue"])
+		expect(provider?.()).toEqual(["docs_get_issue", "mcp"])
 
 		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_get_issue")
-		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
 		await direct?.execute("direct", {}, undefined, undefined, createToolContext())
-		const gatewayResult = await gateway?.execute(
-			"gateway",
-			{ tool: "get_issue", args: {} },
-			undefined,
-			undefined,
-			createToolContext(),
-		)
-
 		expect(readOnlyExecute).toHaveBeenCalledOnce()
 		expect(gatewayExecute).not.toHaveBeenCalled()
-		expect(gatewayResult).toMatchObject({
-			isError: true,
-			details: { error: "plan_mode_mcp_blocked", tool: "mcp" },
-		})
+	})
+
+	it("permits read-only gateway operations and blocks mutating calls while planning", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" }, other: { command: "other" } } }
+		planning.currentProfile = "planning-adhoc"
+		permissionState.mode = "plan"
+		readOnlyState.wireNames.add("docs_get_issue")
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+		const gateway = harness.getRegisteredTool("mcp")
+
+		const readOnlyCalls = [
+			["status", {}],
+			["search", { search: "issue" }],
+			[
+				"search-with-options",
+				{
+					search: "issue",
+					searchMode: "lexical",
+					regex: true,
+					includeSchemas: true,
+					limit: 5,
+					offset: 0,
+					server: "docs",
+				},
+			],
+			["describe", { describe: "docs_get_issue" }],
+			["instructions", { instructions: "docs" }],
+			["list", { server: "docs" }],
+			["read", { tool: "docs_get_issue", args: {} }],
+			["read-on-server", { tool: "docs_get_issue", server: "docs", args: {} }],
+			["read-original-on-server", { tool: "get_issue", server: "docs", args: {} }],
+		] as const
+		for (const [id, params] of readOnlyCalls) {
+			const result = await gateway.execute(id, params, undefined, undefined, createToolContext())
+			expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
+		}
+		expect(gatewayExecute).toHaveBeenCalledTimes(readOnlyCalls.length)
+
+		const blockedCalls = [
+			["another-server", { tool: "docs_get_issue", server: "other", args: {} }],
+			["write", { tool: "docs_write", args: {} }],
+			["install", { action: "install", url: "https://example.test/mcp" }],
+			["auth-start", { action: "auth-start", server: "docs" }],
+			["auth-complete", { action: "auth-complete", server: "docs" }],
+			["connect", { connect: "docs" }],
+			["action-connect", { action: "connect", server: "docs" }],
+			["ui-messages", { action: "ui-messages" }],
+			["unknown-action", { action: "future-state-change" }],
+			["unknown-parameter", { mode: "status" }],
+			["mixed-read-and-connect", { search: "issue", connect: "docs" }],
+			["mixed-read-operations", { search: "issue", describe: "docs_get_issue" }],
+			["undefined-action", { action: undefined }],
+			["install-without-action", { url: "https://example.test/mcp" }],
+		] as const
+		for (const [id, params] of blockedCalls) {
+			const result = await gateway.execute(id, params, undefined, undefined, createToolContext())
+			expect(result).toMatchObject({
+				isError: true,
+				details: { error: "plan_mode_mcp_blocked", tool: "mcp" },
+			})
+		}
+		expect(gatewayExecute).toHaveBeenCalledTimes(readOnlyCalls.length)
 	})
 
 	it("allows MCP after leaving plan mode even when startup and profile signals are stale", async () => {
@@ -804,6 +951,70 @@ describe("upstream MCP adapter facade", () => {
 			},
 			defaultProtocolVersion: "auto",
 		})
+
+		planning.currentProfile = "planning-adhoc"
+		readOnlyState.wireNames.add("callerOnly_get_issue")
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+		await harness
+			.getRegisteredTool("mcp")
+			.execute(
+				"gateway",
+				{ tool: "callerOnly_get_issue", server: "callerOnly", args: {} },
+				undefined,
+				undefined,
+				createToolContext(),
+			)
+		expect(gatewayExecute).toHaveBeenCalledOnce()
+		expect(readOnlyState.authorizationConfigs.at(-1)?.mcpServers).toMatchObject({
+			shared: { command: "from-acp" },
+			callerOnly: { command: "caller-only" },
+		})
+	})
+
+	it("isolates observed private catalogs to the adapter session that discovered them", async () => {
+		configState.config = { mcpServers: { jira: { command: "jira" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		planning.currentProfile = "planning-adhoc"
+		readOnlyState.wireNames.add("jira_get_issue")
+		await start(harness)
+
+		const entry: ServerCacheEntry = {
+			configHash: "jira-auth-context",
+			cachedAt: 1,
+			resources: [],
+			tools: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
+			cacheScope: "private",
+		}
+		upstream.sessionObserverFactory?.()?.("jira", entry)
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+		const gateway = harness.getRegisteredTool("mcp")
+		await gateway.execute(
+			"first",
+			{ tool: "jira_get_issue", server: "jira", args: {} },
+			undefined,
+			undefined,
+			createToolContext(),
+		)
+		expect(readOnlyState.privateCatalogs.at(-1)?.get("jira")).toBe(entry)
+
+		await start(harness)
+		const replacementObserver = upstream.sessionObserverFactory?.()
+		replacementObserver?.("jira", entry)
+		await gateway.execute(
+			"second",
+			{ tool: "jira_get_issue", server: "jira", args: {} },
+			undefined,
+			undefined,
+			createToolContext(),
+		)
+		expect(readOnlyState.privateCatalogs.at(-1)?.get("jira")).toBe(entry)
+		expect(gatewayExecute).toHaveBeenCalledTimes(2)
+		await harness.getHandler("session_shutdown")({ type: "session_shutdown" }, createContext())
+		replacementObserver?.("jira", entry)
+		expect(readOnlyState.privateCatalogs.at(-1)?.has("jira")).toBe(false)
 	})
 
 	it("keeps ACP caller servers while excluding an untrusted project's servers", async () => {

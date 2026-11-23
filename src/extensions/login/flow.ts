@@ -12,6 +12,7 @@ import {
 	readStoredCredential,
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
+import { shouldReusePreparedOAuthCredential } from "../../auth/short-lived-credential-handoff.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { kimchiSsoExtensionOAuth, loginWithKimchiOauth } from "../../cli-auth/oauth.js"
 import {
@@ -105,8 +106,11 @@ export type ExtensionOAuthConfig = NonNullable<Parameters<ExtensionAPI["register
  * `refreshToken`/`getApiKey` are credential-shape driven and shared by every
  * login method: real OAuth refresh against the region's Auth0 token endpoint.
  */
-export function createKimchiProviderOAuth(): ExtensionOAuthConfig {
+export function createKimchiProviderOAuth(authPath: string, owner?: object): ExtensionOAuthConfig {
 	const ssoOAuth = kimchiSsoExtensionOAuth(() => loadConfig().region, {
+		shouldReuseCredential: owner
+			? (credential) => shouldReusePreparedOAuthCredential(authPath, credential, owner)
+			: undefined,
 		onInvalidGrant: (credential) => {
 			// The refresh token is dead — requests will start 401ing. Mark the
 			// provider (and the concrete key) stale so auth_status and warnings
@@ -132,8 +136,8 @@ export function createKimchiProviderOAuth(): ExtensionOAuthConfig {
  * models on a bare runtime. Idempotent; wraps `refresh` so sub-providers
  * created by a catalog refresh (updateModelsConfig) get registered too.
  */
-export function installKimchiOAuth(runtime: ModelRuntime): void {
-	const kimchiOAuth = createKimchiProviderOAuth()
+export function installKimchiOAuth(runtime: ModelRuntime, authPath: string, owner: object = runtime): void {
+	const kimchiOAuth = createKimchiProviderOAuth(authPath, owner)
 	const registered = new Set<string>()
 	const ensureRegistered = (): void => {
 		const providerIds = new Set(

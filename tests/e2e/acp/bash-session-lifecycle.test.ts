@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, it } from "vitest"
+import { latestAgentChatRequest } from "../tui/support/fake-openai-server.js"
 import { STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitFor, waitForSessionUpdate } from "./support/scenarios.js"
 
@@ -71,18 +72,12 @@ for (const otherSession of [false, true]) {
 				if (otherSession) {
 					const b = await newSession(fixture, fixture.workDir)
 					expect((await prompt(fixture, b, "Inspect session B's Bash cohort")).stopReason).toBe("end_turn")
-					expect(
-						fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
-					).toMatchObject({
+					expect(latestAgentChatRequest(fixture.fake.requests)?.body).toMatchObject({
 						tools: expect.arrayContaining([
 							expect.objectContaining({ function: expect.objectContaining({ name: "bash_control" }) }),
 						]),
 					})
-					expect(
-						JSON.stringify(
-							fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
-						),
-					).not.toContain("lifecycle.pid")
+					expect(JSON.stringify(latestAgentChatRequest(fixture.fake.requests)?.body)).not.toContain("lifecycle.pid")
 				}
 				process.kill(pid, 0)
 				await fixture.conn.closeSession({ sessionId: a })
@@ -101,18 +96,14 @@ for (const otherSession of [false, true]) {
 				)
 				await fixture.conn.loadSession({ sessionId: a, cwd: fixture.workDir, mcpServers: [] })
 				expect((await prompt(fixture, a, "Inspect the resumed Bash cohort")).stopReason).toBe("end_turn")
-				expect(
-					fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
-				).toMatchObject({
+				expect(latestAgentChatRequest(fixture.fake.requests)?.body).toMatchObject({
 					tools: expect.arrayContaining([
 						expect.objectContaining({ function: expect.objectContaining({ name: "bash_control" }) }),
 					]),
 				})
-				expect(
-					JSON.stringify(
-						fixture.fake.requests.filter((request) => request.url.endsWith("/chat/completions")).at(-1)?.body,
-					),
-				).not.toContain("Task completion requires a disposition")
+				expect(JSON.stringify(latestAgentChatRequest(fixture.fake.requests)?.body)).not.toContain(
+					"Task completion requires a disposition",
+				)
 			} finally {
 				await fixture.stop()
 				if (pid) {

@@ -24,7 +24,7 @@ Edit `benchmark.json` to match your environment:
 
 Creates `session-01` (or the next number) with run scripts under `runs/`. Each task runs in one of two modes:
 
-- **Multi-model** — no `--model` flag; the orchestrator selects models per phase. Used by `simple`, `complex`, `research`, `explore`, and `mega`.
+- **Auto** — `--model kimchi-dev/auto`; the Auto router picks a model per request. Used by `simple`, `complex`, `research`, `explore`, and `mega`.
 - **Single-model** — `--model kimchi-dev/<model>` forces one model for the entire session. Used by `complex-single`, generated once per model in `benchmark.json`.
 
 ### 2. Run the scripts
@@ -99,7 +99,7 @@ See `tasks.md` for full prompts, baseline implementations, and expected behavior
 
 ```
 sessions/session-01/
-├── run-simple.sh                    # multi-model tasks (no --model flag)
+├── run-simple.sh                    # Auto-routed tasks
 ├── run-complex.sh
 ├── run-research.sh
 ├── run-explore.sh

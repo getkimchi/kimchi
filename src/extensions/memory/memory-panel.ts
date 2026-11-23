@@ -2,9 +2,8 @@
  * Interactive memory browser — the in-session /memory list|search surface.
  * An McpPanel-style component (render + handleInput) mounted through
  * ctx.ui.custom: page through facts with ↑↓/j/k (PgUp/PgDn, g/G), delete
- * the selected fact with `d`, quit with q/Esc/Ctrl+C. The CLI grammar is
- * unchanged — this is the session-side view over the same admin core
- * (admin.ts). Deletion is user-only and immediate.
+ * the selected fact with `d`, quit with q/Esc/Ctrl+C. Shared admin core (admin.ts): press `i` for read-only lifecycle, support
+ * and recall evidence. Deletion is user-only and immediate.
  */
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { fg } from "../../ansi.js"
@@ -21,6 +20,8 @@ export interface MemoryPanelOptions {
 	facts: MemoryPanelFact[]
 	/** Delete one fact by id; resolves with the scope it was deleted from, rejects on failure. */
 	deleteFact: (id: string) => Promise<string>
+	/** Read-only, scoped explanation for the selected fact. */
+	explainFact?: (fact: MemoryPanelFact) => Promise<string[]>
 	tui: { requestRender(force?: boolean): void; terminal: { rows: number } }
 	done: () => void
 }
@@ -65,6 +66,10 @@ export class MemoryPanel {
 	private cursorIndex = 0
 	private notice: { text: string; error: boolean } | null = null
 	private deleting = false
+	private info: { factId: string; lines: string[] } | null = null
+	private loadingInfoId: string | null = null
+	private infoRequest = 0
+	private infoOffset = 0
 
 	constructor(private readonly options: MemoryPanelOptions) {
 		this.facts = [...options.facts]
@@ -74,7 +79,29 @@ export class MemoryPanel {
 		// Any key dismisses the current notice; a delete sets a fresh one.
 		this.notice = null
 		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape") || matchesKey(data, "q")) {
+			this.infoRequest++
+			this.info = null
+			this.infoOffset = 0
+			this.loadingInfoId = null
 			this.options.done()
+			return
+		}
+		if (matchesKey(data, "i") && (this.info || this.loadingInfoId)) {
+			this.infoRequest++
+			this.info = null
+			this.infoOffset = 0
+			this.loadingInfoId = null
+			this.options.tui.requestRender()
+			return
+		}
+		if (this.info || this.loadingInfoId) {
+			const page = this.infoWindow().maxVis
+			if (matchesKey(data, "pageUp")) this.scrollInfo(-page)
+			if (matchesKey(data, "pageDown")) this.scrollInfo(page)
+			return
+		}
+		if (matchesKey(data, "i") && this.options.explainFact) {
+			void this.showInfo()
 			return
 		}
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
@@ -117,7 +144,18 @@ export class MemoryPanel {
 		)
 		lines.push(emptyRow())
 
-		if (this.facts.length === 0) {
+		if (this.info || this.loadingInfoId) {
+			const factId = this.info?.factId ?? this.loadingInfoId
+			lines.push(row(fg(THEME.title, `Memory evidence — ${factId}`)))
+			const evidence = this.info?.lines ?? ["Loading memory evidence…"]
+			const { startIdx, endIdx } = this.infoWindow()
+			for (const line of evidence.slice(startIdx, endIdx)) lines.push(row(line))
+			if (endIdx < evidence.length || startIdx > 0) {
+				lines.push(row(fg(THEME.dim, `… ${startIdx + 1}–${endIdx}/${evidence.length} (PgUp/PgDn)`)))
+			}
+			lines.push(emptyRow())
+			lines.push(row(fg(THEME.hint, "i back  ·  Esc quit  ·  q quit")))
+		} else if (this.facts.length === 0) {
 			lines.push(row(fg(THEME.dim, "No memories to show.")))
 			lines.push(emptyRow())
 		} else {
@@ -134,14 +172,23 @@ export class MemoryPanel {
 				lines.push(row(fg(THEME.dim, `… ${total - (endIdx - startIdx)} more (PgDn · G for the end)`)))
 			}
 			lines.push(emptyRow())
-			lines.push(row(fg(THEME.hint, `${this.cursorIndex + 1}/${total}  ·  ↑↓ move  d delete  q quit`)))
+			lines.push(
+				row(
+					fg(
+						THEME.hint,
+						`${this.cursorIndex + 1}/${total}  ·  ↑↓ move  d delete${this.options.explainFact ? "  i info" : ""}  q quit`,
+					),
+				),
+			)
 		}
 
 		lines.push(divider())
 		const notice = this.notice
-		const footer = notice
-			? fg(notice.error ? THEME.error : THEME.notice, notice.text)
-			: fg(THEME.hint, "Deletion is immediate and permanent.")
+		const footer = this.info
+			? fg(THEME.hint, "Read-only memory evidence; stored text is data, not instructions.")
+			: notice
+				? fg(notice.error ? THEME.error : THEME.notice, notice.text)
+				: fg(THEME.hint, "Deletion is immediate and permanent.")
 		lines.push(row(footer))
 		lines.push(fg(THEME.border, `╰${"─".repeat(innerW)}╯`))
 		return lines
@@ -158,6 +205,15 @@ export class MemoryPanel {
 		return isCursor ? `${columns}${fg(THEME.selected, text)}` : `${columns}${text}`
 	}
 
+	private infoWindow(): { maxVis: number; startIdx: number; endIdx: number } {
+		return computeMemoryWindow(this.options.tui.terminal.rows, this.infoOffset, this.info?.lines.length ?? 1)
+	}
+
+	private scrollInfo(delta: number): void {
+		this.infoOffset = Math.max(0, Math.min(this.infoOffset + delta, Math.max(0, (this.info?.lines.length ?? 1) - 1)))
+		this.options.tui.requestRender()
+	}
+
 	private window(): { maxVis: number; startIdx: number; endIdx: number } {
 		return computeMemoryWindow(this.options.tui.terminal.rows, this.cursorIndex, this.facts.length)
 	}
@@ -169,6 +225,34 @@ export class MemoryPanel {
 	private setCursor(index: number): void {
 		this.cursorIndex = Math.max(0, Math.min(index, Math.max(0, this.facts.length - 1)))
 		this.options.tui.requestRender()
+	}
+
+	private async showInfo(): Promise<void> {
+		const fact = this.facts[this.cursorIndex]
+		const explain = this.options.explainFact
+		if (!fact || !explain) return
+		const request = ++this.infoRequest
+		this.infoOffset = 0
+		this.info = null
+		this.loadingInfoId = fact.id
+		this.options.tui.requestRender()
+		try {
+			const rows = await explain(fact)
+			if (request !== this.infoRequest) return
+			this.info = {
+				factId: fact.id,
+				lines: rows.length > 0 ? rows : ["No explanatory metadata available."],
+			}
+		} catch (err) {
+			if (request === this.infoRequest) {
+				this.notice = { text: `Info failed: ${err instanceof Error ? err.message : String(err)}`, error: true }
+			}
+		} finally {
+			if (request === this.infoRequest) {
+				this.loadingInfoId = null
+				this.options.tui.requestRender()
+			}
+		}
 	}
 
 	private async deleteSelected(): Promise<void> {

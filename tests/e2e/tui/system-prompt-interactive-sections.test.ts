@@ -31,7 +31,7 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			expect(prompt).toContain("## Harness Notes and Approval")
 			expect(prompt).toContain("## Documents")
 			expect(prompt).toContain("orients the user")
-			expect(prompt).toContain("## Phase Management")
+			expect(prompt).toContain("## Working Practices")
 
 			// Codemode's selection rule reaches the model through both Tool
 			// Selection and the dynamic function declaration.

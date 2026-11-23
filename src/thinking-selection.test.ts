@@ -1,6 +1,7 @@
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { __clearModelThinkingLevelsForTest, registerModelThinkingLevels } from "./models.js"
-import { CANONICAL_THINKING_LEVELS } from "./thinking-levels.js"
+import { CANONICAL_THINKING_LEVELS, THINKING_LEVEL_DESCRIPTIONS } from "./thinking-levels.js"
 import {
 	__uninstallThinkingLevelAdvisorForTest,
 	clampToSelection,
@@ -98,7 +99,7 @@ describe("thinkingSelection", () => {
 })
 
 describe("clampToSelection", () => {
-	const curated = ["low", "high", "max"]
+	const curated: ModelThinkingLevel[] = ["low", "high", "max"]
 
 	it("keeps a level that is already selectable", () => {
 		expect(clampToSelection("high", { mode: "levels", selectable: curated })).toBe("high")
@@ -114,7 +115,11 @@ describe("clampToSelection", () => {
 	})
 
 	it("falls back to the first selectable level for unknown levels", () => {
-		expect(clampToSelection("turbo", { mode: "levels", selectable: curated })).toBe("low")
+		// Deliberately outside ModelThinkingLevel: wire-facing callers pass
+		// strings (selectable sets are string[]-typed), so the clamp must not
+		// trust the type at runtime.
+		const unknownLevel = "turbo" as ModelThinkingLevel
+		expect(clampToSelection(unknownLevel, { mode: "levels", selectable: curated })).toBe("low")
 	})
 
 	it("clamps to off when nothing is selectable, so no effort is derived", () => {
@@ -131,7 +136,11 @@ describe("installThinkingLevelAdvisor", () => {
 		expect(info?.selectable).toEqual(["low", "high", "max"])
 		expect(info?.noneReason).toBeNull()
 		expect(info?.levels).toEqual(
-			CANONICAL_THINKING_LEVELS.map((level) => ({ level, selectable: ["low", "high", "max"].includes(level) })),
+			CANONICAL_THINKING_LEVELS.map((level) => ({
+				level,
+				selectable: ["low", "high", "max"].includes(level),
+				description: THINKING_LEVEL_DESCRIPTIONS[level],
+			})),
 		)
 		expect(info?.clamp("medium")).toBe("high")
 		expect(info?.clamp("off")).toBe("low")

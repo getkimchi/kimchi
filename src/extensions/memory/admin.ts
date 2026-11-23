@@ -12,11 +12,16 @@ import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs
 import { join, relative, sep } from "node:path"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
+import { redactText } from "../pii-redaction/redactor.js"
 import { createMemoryBackend, defaultMemoryDir, normalizeMem0SearchResults } from "./backend.js"
 import { MEMORY_RESOURCE_ID, MEMORY_USER_ID, UNKNOWN_CAPTURE_SESSION_ID } from "./config.js"
 import { batchChoice, type DecisionGateOptions, systemoneEndpoint } from "./decision-gate.js"
+import { type DeferredOutageSummary, deferredOutageSummary } from "./decision-outage.js"
+import { type FactRecallEvidence, readFactRecallEvidence } from "./fact-evidence.js"
 import { consolidateQuestion, consolidateState } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
+import { dedupeMemory, maintainMemory, rollbackMaintenance, type SnapshotStore } from "./maintenance.js"
+import { isMemoryKind, type MemoryKind, type MemoryMetadata, readMemoryMetadata } from "./metadata.js"
 import { resolveProjectScope, sanitizeScopeId } from "./scope.js"
 
 /** Pluralized "memory"/"memories" for user-facing strings (the team's
@@ -33,14 +38,16 @@ export interface AdminMemoryItem {
 	memory: string
 	createdAt?: string
 	updatedAt?: string
+	metadata?: MemoryMetadata
 }
 
 /** The narrow store surface management needs — the real backend adapts mem0. */
 export interface AdminBackend {
-	getAll(): Promise<AdminMemoryItem[]>
+	getAll(options?: { metadata?: boolean }): Promise<AdminMemoryItem[]>
 	search(query: string): Promise<Array<AdminMemoryItem & { score?: number }>>
 	delete(id: string): Promise<void>
 	deleteAll(): Promise<void>
+	update?(id: string, options: { text?: string; metadata?: Record<string, unknown> }): Promise<void>
 }
 
 export interface AdminStore {
@@ -54,7 +61,9 @@ export interface AdminStore {
 export interface AdminDeps {
 	memoryRoot?: string
 	createBackend?: (dbPath: string) => Promise<AdminBackend>
-	acquireLock?: (memoryRoot: string) => Promise<() => Promise<void>>
+	acquireLock?: (memoryRoot: string) => Promise<(() => Promise<void>) | null>
+	snapshotStore?: (dbPath: string) => SnapshotStore
+	recallEvidence?: (fact: AdminFact) => FactRecallEvidence[]
 	/** Decision-gate context for consolidate; default resolves from config. */
 	decisionGate?: DecisionGateOptions | null
 }
@@ -66,6 +75,10 @@ export interface AdminResult {
 	code: number
 	/** The surface shows .json instead of .text when the --json flag was passed. */
 	useJson: boolean
+	/** The command's structured payload (e.g. consolidate's `applied` flag) —
+	 * callers that need to branch on outcome read this instead of parsing
+	 * display JSON. Absent for commands without a payload. */
+	data?: unknown
 }
 
 export type ScopeFilter =
@@ -82,10 +95,25 @@ export type AdminCommand =
 	| { op: "delete"; ids: string[] }
 	| { op: "reset"; scope: ScopeFilter; yes: boolean }
 	| { op: "consolidate"; scope: ScopeFilter; yes: boolean }
+	| { op: "dashboard"; port?: number; noOpen: boolean }
 	| { op: "set-enabled"; enabled: boolean }
+	| { op: "maintain"; action: "audit" | "dedupe" | "rollback"; scope: ScopeFilter; yes: boolean; manifest?: string }
+	| { op: "inspect"; id: string }
+	| { op: "correct"; id: string; text: string; yes: boolean }
+	| {
+			op: "edit"
+			id: string
+			text?: string
+			kind?: MemoryKind
+			confidence?: number
+			note?: string
+			canonical?: boolean
+			scope?: ScopeFilter
+			yes: boolean
+	  }
 	| { op: "usage-error"; message: string }
 
-export const USAGE = `usage: memory [list|search|delete|reset|consolidate|enable|disable]
+export const USAGE = `usage: memory [list|search|delete|reset|consolidate|maintain|explain|edit|enable|disable]
 
   (no arguments)   overview: storage path, per-store stats, pending jobs
   list    [--scope local|personal|project|all] [--project <owner/name>]
@@ -97,6 +125,19 @@ export const USAGE = `usage: memory [list|search|delete|reset|consolidate|enable
           One-shot d3-assisted cleanup: classifies every fact as unique /
           complementary / exact_twin / near_twin and deletes the redundant
           copies. Reports first; deletes only with --yes (or confirmed).
+  maintain [audit|dedupe] [--scope personal|project] [--project <owner/name>] [--yes]
+  maintain rollback <checkpoint.json> --scope personal|project [--project <owner/name>] --yes
+  explain <id>
+          Fact text, scope, lifecycle, support references and recent recalls
+  edit <id> [--text <replacement>] [--kind <kind>] [--confidence <0..1>]
+          [--note <note>] [pin|unpin] [--scope personal|project|all] [--project <owner/name>] --yes
+          Exact-ID, user-authored metadata/text edit; no fuzzy matching or deletion
+  dashboard [--port N] [--no-open]
+          Web dashboard for the capture pipeline: the pending queue, and
+          every drained job with per-phase detail — the full request text
+          and complete response for each extraction/supersede API call,
+          and every d3 decision question with its probabilities.
+          Terminal-only (runs a localhost server until Ctrl+C).
   enable | disable
           Toggle memory for the current interactive session only. Resets on
           restart; the persistent feature switch is
@@ -108,7 +149,21 @@ export const USAGE = `usage: memory [list|search|delete|reset|consolidate|enable
 
 // --- grammar ------------------------------------------------------------------
 
-const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset", "consolidate", "enable", "disable"])
+const KNOWN_SUBCOMMANDS = new Set([
+	"list",
+	"search",
+	"delete",
+	"reset",
+	"consolidate",
+	"maintain",
+	"inspect",
+	"explain",
+	"correct",
+	"edit",
+	"dashboard",
+	"enable",
+	"disable",
+])
 const DEFAULT_LIST_LIMIT = 50
 
 export { DEFAULT_LIST_LIMIT }
@@ -119,7 +174,40 @@ interface ParsedFlags {
 	positionals: string[]
 }
 
-const VALUE_FLAGS = new Set(["--scope", "--project", "--limit", "--offset"])
+const COMMAND_FLAGS: Record<string, { values: Set<string>; bools: Set<string> }> = {
+	maintain: { values: new Set(["scope", "project"]), bools: new Set(["yes"]) },
+	inspect: { values: new Set(), bools: new Set() },
+	explain: { values: new Set(), bools: new Set() },
+	correct: { values: new Set(), bools: new Set(["yes"]) },
+	edit: {
+		values: new Set(["scope", "project", "text", "kind", "confidence", "note"]),
+		bools: new Set(["yes"]),
+	},
+}
+
+function commandFlagError(sub: string, flags: ParsedFlags): string | undefined {
+	const allowed = COMMAND_FLAGS[sub]
+	if (!allowed) {
+		const editOnly = ["text", "kind", "confidence", "note"].find((flag) => flags.values[flag] !== undefined)
+		return editOnly ? `--${editOnly} is only supported by edit` : undefined
+	}
+	const unsupported = [...Object.keys(flags.values), ...flags.bools].find(
+		(flag) => !allowed.values.has(flag) && !allowed.bools.has(flag),
+	)
+	return unsupported ? `--${unsupported} is not supported by ${sub}` : undefined
+}
+
+const VALUE_FLAGS = new Set([
+	"--scope",
+	"--project",
+	"--limit",
+	"--offset",
+	"--port",
+	"--text",
+	"--kind",
+	"--confidence",
+	"--note",
+])
 
 function parseFlagTokens(rest: string[]): ParsedFlags | { error: string } {
 	const values: Record<string, string> = {}
@@ -135,6 +223,8 @@ function parseFlagTokens(rest: string[]): ParsedFlags | { error: string } {
 			bools.add("json")
 		} else if (token === "--yes") {
 			bools.add("yes")
+		} else if (token === "--no-open") {
+			bools.add("no-open")
 		} else if (token.startsWith("--")) {
 			return { error: `unknown flag ${token}` }
 		} else {
@@ -269,14 +359,32 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 		}
 		return { op: "set-enabled", enabled: sub === "enable" }
 	}
+	// Dashboard: sessionless store op (works with the feature disabled),
+	// no scope, no positionals — checked before the scope parse so it never
+	// pays the git probe either.
+	if (sub === "dashboard") {
+		if (flags.positionals.length > 0) {
+			return { op: "usage-error", message: "dashboard takes no positional arguments" }
+		}
+		const port = flags.values.port === undefined ? undefined : parseNonNegativeInt(flags.values.port, "--port")
+		if (typeof port === "object") {
+			return { op: "usage-error", message: port.error }
+		}
+		return { op: "dashboard", port, noOpen: flags.bools.has("no-open") }
+	}
 	// Only list, search, and consolidate consume the parsed scope — overview
 	// and delete get the unresolved local marker instead of paying the git
 	// probe.
 	const scope = parseScopeFilter(flags, opts, {
 		reset: sub === "reset",
-		usesScope: sub === "list" || sub === "search" || sub === "consolidate",
+		usesScope: sub === "list" || sub === "search" || sub === "consolidate" || sub === "maintain" || sub === "edit",
 	})
 	if ("error" in scope) return { op: "usage-error", message: scope.error }
+	const flagError = commandFlagError(sub, flags)
+	if (flagError) return { op: "usage-error", message: flagError }
+	if (sub === "maintain" && scope.kind === "all") {
+		return { op: "usage-error", message: "maintain requires one personal or project store, not --scope all" }
+	}
 
 	if (sub === "" || sub === "list") {
 		if (flags.positionals.length > 0) {
@@ -285,6 +393,87 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 	}
 
 	switch (sub) {
+		case "maintain": {
+			const action = flags.positionals[0] ?? "audit"
+			if (action === "audit" && flags.positionals.length > 1)
+				return { op: "usage-error", message: "audit takes no positional arguments" }
+			if (action !== "audit" && action !== "dedupe" && action !== "rollback")
+				return { op: "usage-error", message: "maintain expects audit, dedupe, or rollback" }
+			if (action === "dedupe" && (flags.positionals.length !== 1 || !flags.bools.has("yes")))
+				return { op: "usage-error", message: "dedupe takes one target scope and --yes" }
+			if (action === "rollback" && (!flags.bools.has("yes") || flags.positionals.length !== 2))
+				return { op: "usage-error", message: "rollback requires a checkpoint path and --yes" }
+			return {
+				op: "maintain",
+				action,
+				scope,
+				yes: flags.bools.has("yes"),
+				...(action === "rollback" ? { manifest: flags.positionals[1] } : {}),
+			}
+		}
+		case "inspect":
+		case "explain": {
+			if (flags.positionals.length !== 1 || flags.bools.has("yes")) {
+				return { op: "usage-error", message: "inspect requires exactly one memory id and no --yes flag" }
+			}
+			return { op: "inspect", id: flags.positionals[0] }
+		}
+		case "correct": {
+			const [id, ...textParts] = flags.positionals
+			const text = textParts.join(" ").trim()
+			if (!id || !text || !flags.bools.has("yes")) {
+				return { op: "usage-error", message: "correct requires <id> <corrected text> --yes" }
+			}
+			return { op: "correct", id, text, yes: true }
+		}
+		case "edit": {
+			const id = flags.positionals[0]
+			const action = flags.positionals[1]
+			if (!id || flags.positionals.length > 2 || !flags.bools.has("yes")) {
+				return { op: "usage-error", message: "edit requires <id>, at least one change, and --yes" }
+			}
+			if (action !== undefined && action !== "pin" && action !== "unpin") {
+				return { op: "usage-error", message: "edit action must be pin or unpin" }
+			}
+			const kind = flags.values.kind
+			if (kind !== undefined && !isMemoryKind(kind))
+				return { op: "usage-error", message: `invalid memory kind ${JSON.stringify(kind)}` }
+			const rawConfidence = flags.values.confidence
+			const confidence = rawConfidence === undefined ? undefined : Number(rawConfidence)
+			if (
+				rawConfidence !== undefined &&
+				(rawConfidence.trim() === "" ||
+					confidence === undefined ||
+					!Number.isFinite(confidence) ||
+					confidence < 0 ||
+					confidence > 1)
+			) {
+				return { op: "usage-error", message: "memory confidence must be between 0 and 1" }
+			}
+			if (flags.values.text !== undefined && flags.values.text.trim() === "")
+				return { op: "usage-error", message: "memory text cannot be empty" }
+			const canonical = action === "pin" ? true : action === "unpin" ? false : undefined
+			if (
+				flags.values.text === undefined &&
+				kind === undefined &&
+				confidence === undefined &&
+				flags.values.note === undefined &&
+				canonical === undefined
+			) {
+				return { op: "usage-error", message: "edit requires at least one change" }
+			}
+			return {
+				op: "edit",
+				id,
+				...(flags.values.text !== undefined ? { text: flags.values.text } : {}),
+				...(kind !== undefined ? { kind } : {}),
+				...(confidence !== undefined ? { confidence } : {}),
+				...(flags.values.note !== undefined ? { note: flags.values.note } : {}),
+				...(canonical !== undefined ? { canonical } : {}),
+				...(flags.values.scope !== undefined ? { scope } : {}),
+				yes: true,
+			}
+		}
 		case "search": {
 			const query = flags.positionals.join(" ")
 			if (!query) return { op: "usage-error", message: "search requires a query" }
@@ -375,12 +564,19 @@ function selectStores(stores: AdminStore[], filter: ScopeFilter): AdminStore[] {
 async function defaultCreateBackend(dbPath: string): Promise<AdminBackend> {
 	const mem0 = await createMemoryBackend({ dbPath })
 	return {
-		getAll: async () => {
+		getAll: async (options) => {
 			const { results } = await mem0.getAll({ filters: { user_id: MEMORY_USER_ID }, topK: 100_000 })
-			return results
+			if (!options?.metadata) return results.map(({ metadata: _metadata, ...item }) => item)
+			return results.map(({ metadata: rawMetadata, ...item }) => ({
+				...item,
+				...(rawMetadata !== undefined ? { metadata: readMemoryMetadata(rawMetadata, item.memory) } : {}),
+			}))
 		},
 		search: async (query) =>
 			normalizeMem0SearchResults(await mem0.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: 20 })),
+		update: async (id, options) => {
+			await mem0.update(id, options)
+		},
 		delete: async (id) => {
 			await mem0.delete(id)
 		},
@@ -393,7 +589,9 @@ async function defaultCreateBackend(dbPath: string): Promise<AdminBackend> {
 interface ResolvedDeps {
 	memoryRoot: string
 	createBackend: (dbPath: string) => Promise<AdminBackend>
-	acquireLock: (memoryRoot: string) => Promise<() => Promise<void>>
+	acquireLock: (memoryRoot: string) => Promise<(() => Promise<void>) | null>
+	snapshotStore?: (dbPath: string) => SnapshotStore
+	recallEvidence?: (fact: AdminFact) => FactRecallEvidence[]
 }
 
 /** Resolve the decision endpoint for consolidate. Explicitly null only for
@@ -422,6 +620,8 @@ function resolveDeps(deps?: AdminDeps): ResolvedDeps {
 		memoryRoot: deps?.memoryRoot ?? defaultMemoryDir(),
 		createBackend: deps?.createBackend ?? defaultCreateBackend,
 		acquireLock: deps?.acquireLock ?? acquireCaptureLock,
+		snapshotStore: deps?.snapshotStore,
+		recallEvidence: deps?.recallEvidence,
 	}
 }
 
@@ -480,6 +680,163 @@ export interface AdminFact extends AdminMemoryItem {
 	scopeId: string
 }
 
+/** A single explicit id is the safe unit of detailed maintenance. */
+async function lookupFact(
+	id: string,
+	deps: ResolvedDeps,
+	scope?: ScopeFilter,
+): Promise<{ backend: AdminBackend; fact: AdminFact } | null> {
+	const hits: Array<{ backend: AdminBackend; fact: AdminFact }> = []
+	for (const store of selectStores(listStores(deps.memoryRoot), scope ?? { kind: "all" })) {
+		const backend = await deps.createBackend(store.dbPath)
+		for (const item of await backend.getAll({ metadata: true })) {
+			if (item.id === id) hits.push({ backend, fact: { ...item, scopeId: store.scopeId } })
+		}
+	}
+	return hits.length === 1 ? (hits[0] ?? null) : null
+}
+
+/** Read provenance and lifecycle metadata without interpreting it. */
+export async function adminInspectFact(id: string, deps?: AdminDeps): Promise<AdminFact | null> {
+	return (await lookupFact(id, resolveDeps(deps)))?.fact ?? null
+}
+
+export interface AdminExplanation extends AdminFact {
+	supportCount: number
+	recentRecalls: FactRecallEvidence[]
+}
+
+/** Exact-ID explanation; evidence older than stable fact IDs stays labelled. */
+export async function adminExplainFact(
+	id: string,
+	scope?: ScopeFilter,
+	deps?: AdminDeps,
+): Promise<AdminExplanation | null> {
+	const resolved = resolveDeps(deps)
+	const found = await lookupFact(id, resolved, scope)
+	if (!found) return null
+	const recentRecalls =
+		resolved.recallEvidence?.(found.fact) ?? readFactRecallEvidence(found.fact, { root: resolved.memoryRoot })
+	return { ...found.fact, supportCount: found.fact.metadata?.supportIds?.length ?? 0, recentRecalls }
+}
+
+export interface AdminEditInput {
+	text?: string
+	kind?: MemoryKind
+	confidence?: number
+	note?: string
+	canonical?: boolean
+	scope?: ScopeFilter
+	/** Transport-level user confirmation, not an LLM request. */
+	confirmed: boolean
+}
+
+/** Exact-ID correction failures that clients can resolve without a backend outage. */
+export class AdminEditError extends Error {
+	constructor(
+		readonly reason: "unknown-id" | "busy",
+		message: string,
+	) {
+		super(message)
+		this.name = "AdminEditError"
+	}
+}
+
+/** Update only an exact fact ID through mem0's metadata-preserving update path.
+ * Authored edits are serialized with capture and remain protected from
+ * passive supersession; no near-match or broad deletion is involved. */
+export async function adminEditFact(
+	id: string,
+	input: AdminEditInput,
+	deps?: AdminDeps,
+): Promise<{ corrected: AdminFact; deleted: [] }> {
+	const text = input.text === undefined ? undefined : input.text.trim()
+	if (!input.confirmed) throw new Error("memory edit requires explicit user confirmation")
+	if (!id.trim()) throw new Error("memory id is required")
+	if (text !== undefined && text.length === 0) throw new Error("memory text cannot be empty")
+	if (
+		input.confidence !== undefined &&
+		(!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1)
+	) {
+		throw new Error("memory confidence must be between 0 and 1")
+	}
+	if (
+		text === undefined &&
+		input.kind === undefined &&
+		input.confidence === undefined &&
+		input.note === undefined &&
+		input.canonical === undefined
+	) {
+		throw new Error("memory edit requires at least one change")
+	}
+	const resolved = resolveDeps(deps)
+	const release = await resolved.acquireLock(resolved.memoryRoot)
+	if (!release) throw new AdminEditError("busy", "capture worker is active; defer memory edit")
+	try {
+		const found = await lookupFact(id, resolved, input.scope)
+		if (!found) throw new AdminEditError("unknown-id", `memory id not found or ambiguous: ${id}`)
+		const previous = readMemoryMetadata(found.fact.metadata, found.fact.memory)
+		if (!found.backend.update) throw new Error("this memory backend does not support exact corrections")
+		const kind = input.kind ?? previous.kind
+		if (input.canonical === true && kind === "hypothesis")
+			throw new Error("choose a verified kind before pinning a hypothesis")
+		const attributes = { ...previous.attributes }
+		let note = input.note
+		if (note !== undefined) {
+			note = (await redactText(note)).trim()
+			if (note.length > 512) throw new Error("memory note cannot exceed 512 characters")
+			if (note) attributes.note = note
+			else Reflect.deleteProperty(attributes, "note")
+		}
+		const updatedText = text === undefined ? found.fact.memory : await redactText(text)
+		const metadata = readMemoryMetadata(
+			{
+				...previous,
+				source: "authored",
+				kind,
+				canonical: input.canonical ?? kind !== "hypothesis",
+				confidence: input.confidence ?? previous.confidence,
+				attributes,
+			},
+			updatedText,
+		)
+		await found.backend.update(id, { text: updatedText, metadata: { ...metadata } })
+		const corrected = await lookupFact(id, resolved, input.scope)
+		if (!corrected) throw new Error("memory disappeared during correction")
+		return { corrected: corrected.fact, deleted: [] }
+	} finally {
+		await release()
+	}
+}
+
+/** Backward-compatible exact-text correction through the guarded edit path. */
+export async function adminCorrectFact(
+	id: string,
+	text: string,
+	deps?: AdminDeps,
+): Promise<{ corrected: AdminFact; deleted: [] }> {
+	return adminEditFact(id, { text, confirmed: true }, deps)
+}
+
+/** A compact, user-visible explanation for the CLI and MemoryPanel. */
+export function formatMemoryExplanation(explanation: AdminExplanation): string[] {
+	const metadata = explanation.metadata ?? readMemoryMetadata(undefined, explanation.memory)
+	const parts = [`scope=${explanation.scopeId}`, `kind=${metadata.kind}`, `source=${metadata.source}`]
+	if (metadata.canonical !== undefined) parts.push(`canonical=${metadata.canonical}`)
+	if (metadata.confidence !== undefined) parts.push(`confidence=${metadata.confidence.toFixed(2)}`)
+	const lines = [`${explanation.id}: ${explanation.memory.replace(/\s+/g, " ").trim()}`, parts.join(" · ")]
+	if (metadata.validAt || metadata.validOrder !== undefined)
+		lines.push(`validAt=${metadata.validAt ?? "unset"} · validOrder=${metadata.validOrder ?? "unset"}`)
+	if (metadata.attributes?.note !== undefined) lines.push(`Note: ${metadata.attributes.note}`)
+	lines.push(`Support references: ${explanation.supportCount}`)
+	for (const recall of explanation.recentRecalls) {
+		lines.push(
+			`${recall.timestamp} · ${recall.trigger ?? recall.kind} · ${recall.conclusion ?? (recall.delivered ? "delivered" : recall.selected ? "selected" : "candidate")} [${recall.identity}]`,
+		)
+	}
+	return lines
+}
+
 function renderFactLines(page: AdminFact[]): string[] {
 	const scopeWidth = Math.max(8, ...page.map((p) => p.scopeId.length))
 	return page.map((p) => {
@@ -513,8 +870,126 @@ export interface AdminRunOptions {
 	 *  "Last session" line. Omitted by sessionless surfaces (CLI, ACP
 	 *  store overview). */
 	captureSessionId?: string
+	/** Terminal-only dashboard launcher — supplied by the CLI surface
+	 * (commands/memory.ts); in-session callers omit it and /memory
+	 * dashboard answers with the terminal-only hint. */
+	launchDashboard?: (options: { port?: number; openBrowser: boolean }) => Promise<Omit<AdminResult, "useJson">>
 	/** Test seams. */
 	deps?: AdminDeps
+}
+
+async function opInspect(
+	parsed: Extract<AdminCommand, { op: "inspect" }>,
+	deps: ResolvedDeps,
+): Promise<Omit<AdminResult, "useJson">> {
+	const found = await adminExplainFact(parsed.id, undefined, deps)
+	if (!found)
+		return result({ text: `memory id not found or ambiguous: ${parsed.id}`, code: 1, data: { id: parsed.id } })
+	return result({ text: formatMemoryExplanation(found).join("\n"), data: found })
+}
+
+async function opCorrect(
+	parsed: Extract<AdminCommand, { op: "correct" }>,
+	options: AdminRunOptions,
+	deps: ResolvedDeps,
+): Promise<Omit<AdminResult, "useJson">> {
+	if (!parsed.yes && options.confirm) {
+		if (!(await options.confirm(`Correct memory ${parsed.id} with user-supplied text?`))) {
+			return result({ text: "Correction cancelled.", code: 1, data: { cancelled: true } })
+		}
+	}
+	const corrected = await adminCorrectFact(parsed.id, parsed.text, deps)
+	return result({ text: `Corrected memory ${parsed.id}.`, data: corrected })
+}
+
+async function opEdit(
+	parsed: Extract<AdminCommand, { op: "edit" }>,
+	deps: ResolvedDeps,
+): Promise<Omit<AdminResult, "useJson">> {
+	const outcome = await adminEditFact(
+		parsed.id,
+		{
+			text: parsed.text,
+			kind: parsed.kind,
+			confidence: parsed.confidence,
+			note: parsed.note,
+			canonical: parsed.canonical,
+			scope: parsed.scope,
+			confirmed: parsed.yes,
+		},
+		deps,
+	)
+	return result({ text: `Edited memory ${parsed.id}.`, data: outcome })
+}
+
+function maintainBackendAdapter(backend: AdminBackend) {
+	return {
+		getAll: async () => ({ results: await backend.getAll({ metadata: true }) }),
+		delete: (id: string) => backend.delete(id),
+		search: (query: string) => backend.search(query),
+		update: backend.update?.bind(backend),
+	}
+}
+
+async function opMaintain(
+	parsed: Extract<AdminCommand, { op: "maintain" }>,
+	deps: ResolvedDeps,
+): Promise<Omit<AdminResult, "useJson">> {
+	if (parsed.action === "dedupe" && !parsed.yes)
+		return result({ text: "dedupe requires --yes", code: 1, data: { error: "confirmation required" } })
+	if (parsed.action === "rollback" && (!parsed.yes || !parsed.manifest))
+		return result({
+			text: "rollback requires a checkpoint path and --yes",
+			code: 1,
+			data: { error: "checkpoint required" },
+		})
+	const scope = parsed.scope.kind === "local" ? { kind: "personal" as const } : parsed.scope
+	const stores = selectStores(listStores(deps.memoryRoot), scope)
+	if (stores.length !== 1)
+		return result({
+			text: "maintenance requires exactly one personal or project store",
+			code: 1,
+			data: { error: "one store required" },
+		})
+	const store = stores[0]
+	if (!store) return result({ text: "memory store is not initialized", code: 1, data: { error: "no store" } })
+	const backend = await deps.createBackend(store.dbPath)
+	const snapshotStore = deps.snapshotStore?.(store.dbPath)
+	const adapter = maintainBackendAdapter(backend)
+	if (parsed.action === "audit") {
+		const maintained = await maintainMemory({
+			backend: adapter,
+			dbPath: store.dbPath,
+			memoryRoot: deps.memoryRoot,
+			acquireLock: deps.acquireLock,
+			snapshotStore,
+		})
+		return result({ text: JSON.stringify(maintained, null, 2), data: maintained })
+	}
+	if (parsed.action === "dedupe") {
+		const outcome = await dedupeMemory({
+			backend: adapter,
+			dbPath: store.dbPath,
+			memoryRoot: deps.memoryRoot,
+			acquireLock: deps.acquireLock,
+			snapshotStore,
+		})
+		return result({ text: JSON.stringify(outcome, null, 2), data: outcome })
+	}
+	const manifest = parsed.manifest
+	if (!manifest)
+		return result({
+			text: "rollback requires a checkpoint path and --yes",
+			code: 1,
+			data: { error: "checkpoint required" },
+		})
+	await rollbackMaintenance(manifest, adapter, {
+		dbPath: store.dbPath,
+		memoryRoot: deps.memoryRoot,
+		acquireLock: deps.acquireLock,
+		snapshotStore,
+	})
+	return result({ text: `Restored snapshot ${manifest}`, data: { restored: true } })
 }
 
 /**
@@ -549,6 +1024,25 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 				return withMode(await opReset(parsed, options, deps), false)
 			case "consolidate":
 				return withMode(await opConsolidate(parsed, options, deps, options.deps), false)
+			case "maintain":
+				return withMode(await opMaintain(parsed, deps), false)
+			case "inspect":
+				return withMode(await opInspect(parsed, deps), false)
+			case "correct":
+				return withMode(await opCorrect(parsed, options, deps), false)
+			case "edit":
+				return withMode(await opEdit(parsed, deps), false)
+			case "dashboard":
+				return withMode(
+					options.launchDashboard
+						? await options.launchDashboard({ port: parsed.port, openBrowser: !parsed.noOpen })
+						: result({
+								text: "`memory dashboard` is terminal-only: run `kimchi memory dashboard [--port N] [--no-open]` in a terminal.",
+								code: 1,
+								data: { error: "dashboard is terminal-only" },
+							}),
+					false,
+				)
 			case "set-enabled":
 				return withMode(opSetEnabled(parsed, options), false)
 		}
@@ -572,6 +1066,7 @@ function result(payload: { text: string; code?: number; data: unknown }): Omit<A
 		text: payload.text,
 		json: JSON.stringify(payload.data, null, 2),
 		code: payload.code ?? 0,
+		data: payload.data,
 	}
 }
 
@@ -579,7 +1074,7 @@ async function loadAllScoped(deps: ResolvedDeps, scope: ScopeFilter): Promise<Ad
 	const items: AdminFact[] = []
 	for (const store of selectStores(listStores(deps.memoryRoot), scope)) {
 		const backend = await deps.createBackend(store.dbPath)
-		for (const item of await backend.getAll()) items.push({ ...item, scopeId: store.scopeId })
+		for (const item of await backend.getAll({ metadata: true })) items.push({ ...item, scopeId: store.scopeId })
 	}
 	return items
 }
@@ -635,14 +1130,17 @@ export interface MemoryOverview {
 	root: string
 	stores: Array<{ scope: string; facts: number; sizeBytes: number }>
 	pendingJobs: number
-	/** Quarantined poison capture jobs (deterministic extraction failures,
-	 * moved aside after POISON_JOB_MAX_ATTEMPTS drains). */
+	/** Quarantined capture jobs — deterministic extraction poison and
+	 * add-failed commits (both moved aside after their attempt caps;
+	 * requeue by mv back into pending/). */
 	failedJobs: number
 	ledgerEntries: number
 	/** The most recent capture completion from ANOTHER session — the
 	 *  "Last session: stored N memories" line. Null when no other session
 	 *  has recorded a capture. */
 	lastCapture: { factsAdded: number; updatedAt: number } | null
+	/** Present when d3 degradation has left deferred supersession work/state. */
+	degraded?: DeferredOutageSummary
 }
 
 /** The most recent other-session entry in the worker's completion record —
@@ -697,6 +1195,7 @@ export async function adminOverview(deps?: AdminDeps, captureSessionId?: string)
 		failedJobs: countDirEntries(join(resolved.memoryRoot, "failed")),
 		ledgerEntries: ledgerEntryCount(join(resolved.memoryRoot, "captured-hashes.json")),
 		lastCapture: lastCaptureExcluding(resolved.memoryRoot, captureSessionId),
+		degraded: deferredOutageSummary(resolved.memoryRoot),
 	}
 }
 
@@ -731,6 +1230,11 @@ async function opOverview(
 	lines.push("", `Pending capture jobs: ${data.pendingJobs}`)
 	if (data.failedJobs > 0) {
 		lines.push(`Quarantined poison jobs: ${data.failedJobs} (in failed/ — requeue one with: mv failed/<file> pending/)`)
+	}
+	if (data.degraded) {
+		lines.push(
+			`d3 degradation: ${data.degraded.deferredSupersedes} deferred supersede fact(s) across ${data.degraded.deferredStores} store(s)${data.degraded.invalidFiles > 0 ? `, ${data.degraded.invalidFiles} unreadable state file(s)` : ""}`,
+		)
 	}
 	lines.push("", `Captured-message ledger entries: ${data.ledgerEntries}`, "", USAGE)
 	return result({ text: lines.join("\n"), data })
@@ -815,6 +1319,7 @@ export type AdminResetOutcome =
 	/** Client-side failures — the caller renders them or surfaces them as params problems. */
 	| { ok: false; reason: "cancelled" | "confirmation-required" }
 	| { ok: false; reason: "no-such-store"; scopeId: string }
+	| { ok: false; reason: "busy" }
 
 export interface AdminResetOptions {
 	/** Skip the confirm gate (the grammar's --yes; the ACP method's confirm:true). */
@@ -855,6 +1360,7 @@ export async function adminResetScope(scope: ScopeFilter, options: AdminResetOpt
 			return { ok: false, reason: "cancelled" }
 		}
 		const release = await deps.acquireLock(deps.memoryRoot)
+		if (release === null) return { ok: false, reason: "busy" }
 		try {
 			// The held lock lives on capture.lock (+ its .lock directory) —
 			// wiping them under the lock would break release. The migration
@@ -890,6 +1396,7 @@ export async function adminResetScope(scope: ScopeFilter, options: AdminResetOpt
 		return { ok: false, reason: "cancelled" }
 	}
 	const release = await deps.acquireLock(deps.memoryRoot)
+	if (release === null) return { ok: false, reason: "busy" }
 	try {
 		await backend.deleteAll()
 	} finally {
@@ -927,6 +1434,13 @@ async function opReset(
 		return result({
 			text: `No memory store for ${outcome.scopeId} — nothing to reset.`,
 			data: { scope: outcome.scopeId, error: "no such store" },
+			code: 1,
+		})
+	}
+	if (outcome.reason === "busy") {
+		return result({
+			text: "A capture drain is currently running — retry shortly.",
+			data: { error: "busy" },
 			code: 1,
 		})
 	}
@@ -972,6 +1486,15 @@ async function opConsolidate(
 	if (stores.length === 0) {
 		return result({ text: "No memory stores in this scope — nothing to consolidate.", data: { scans: [] } })
 	}
+	// Busy probe BEFORE the classification batch — a running drain would
+	// fail the mutation acquire below anyway; checking now avoids burning
+	// the multi-minute d3 classification for nothing. Not held across the
+	// classification: classification is read-only against the stores.
+	const probe = await deps.acquireLock(deps.memoryRoot)
+	if (probe === null) {
+		return result({ text: "A capture drain is currently running — retry shortly.", data: { error: "busy" }, code: 1 })
+	}
+	await probe()
 	const lines: string[] = []
 	const deletions: ConsolidateDeletion[] = []
 	const scans: Array<Record<string, unknown>> = []
@@ -990,6 +1513,9 @@ async function opConsolidate(
 				consolidateState(items.map((item) => item.memory)),
 				items.map((item) => item.memory),
 				consolidateQuestion,
+				undefined,
+				undefined,
+				"admin",
 			)
 		} catch (err) {
 			lines.push(
@@ -1050,6 +1576,11 @@ async function opConsolidate(
 		}
 	}
 	const release = await deps.acquireLock(deps.memoryRoot)
+	if (release === null) {
+		lines.push("")
+		lines.push("A capture drain is currently running — nothing deleted; retry shortly.")
+		return result({ text: lines.join("\n"), data: { scans, deletions, applied: false } })
+	}
 	try {
 		const backends = new Map<string, AdminBackend>()
 		for (const d of deletions) {

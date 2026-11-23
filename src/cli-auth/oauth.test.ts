@@ -186,6 +186,7 @@ beforeEach(async () => {
 	mock = await startMockTokenServer()
 })
 afterEach(async () => {
+	vi.restoreAllMocks()
 	await mock.close()
 })
 
@@ -659,6 +660,37 @@ describe("refreshKimchiOauth", () => {
 		// The organization selection survives token refreshes.
 		expect(next.orgId).toBe("org-default")
 		expect(next.orgName).toBe("Default Org")
+	})
+
+	it("logs secret-free refresh diagnostics for attempts and success", async () => {
+		const diagnostics = vi.spyOn(console, "info").mockImplementation(() => {})
+		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
+
+		await refreshKimchiOauth(credential, new AbortController().signal)
+
+		expect(diagnostics.mock.calls).toEqual([
+			[{ event: "kimchi.oauth.refresh", outcome: "started" }],
+			[{ event: "kimchi.oauth.refresh", outcome: "succeeded" }],
+		])
+		const logged = JSON.stringify(diagnostics.mock.calls)
+		for (const secret of ["id-1", "rt-1", "at-2", "id-2", "rt-2", "authorization"]) {
+			expect(logged).not.toContain(secret)
+		}
+	})
+
+	it("logs a secret-free refresh failure category", async () => {
+		mock.setResponder(() => ({ status: 500, body: { error: "server_error" } }))
+		const info = vi.spyOn(console, "info").mockImplementation(() => {})
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {})
+		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
+
+		await expect(refreshKimchiOauth(credential, new AbortController().signal)).rejects.toMatchObject({
+			status: 500,
+		})
+		expect(info).toHaveBeenCalledWith({ event: "kimchi.oauth.refresh", outcome: "started" })
+		expect(errors).toHaveBeenCalledWith({ event: "kimchi.oauth.refresh", outcome: "failed", category: "http_5xx" })
+		const logged = JSON.stringify([...info.mock.calls, ...errors.mock.calls])
+		for (const secret of ["id-1", "rt-1", "authorization"]) expect(logged).not.toContain(secret)
 	})
 
 	it("keeps the existing refresh token when the server rotates silently (no refresh_token in response)", async () => {

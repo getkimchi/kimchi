@@ -9,38 +9,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { RequestError } from "@agentclientprotocol/sdk"
-import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
-import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { InMemoryModelsStore } from "@earendil-works/pi-ai"
+import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeApiKey } from "../../../config.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
+import { fakeOAuthDeps } from "./oauth-test-utils.js"
 import { handleSsoCredential, type SsoCredentialPaths } from "./sso-credential.js"
-
-/** The oauth-config slice of `registerProvider`'s input (pi-coding-agent does
- * not export `ExtensionOAuthConfig` — derive it the same way flow.ts does). */
-type ExtensionOAuthConfig = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]>["oauth"]
-type ExtensionProviderConfig = Parameters<ExtensionAPI["registerProvider"]>[1]
-
-/** Build the deps with an injectable fake OAuth handler, recording every
- * refresh call so tests can assert on the lazy-refresh discipline. */
-function fakeOAuthDeps(refresh?: (credential: OAuthCredentials) => OAuthCredentials) {
-	const refreshCalls: Array<Record<string, unknown>> = []
-	const oauth: ExtensionOAuthConfig = {
-		name: "test-sso",
-		login: () => Promise.reject(new Error("login is not part of the credential export contract")),
-		refreshToken: (credentials) => {
-			refreshCalls.push(credentials as unknown as Record<string, unknown>)
-			return Promise.resolve(refresh?.(credentials) ?? credentials)
-		},
-		getApiKey: (credentials) => credentials.access,
-	}
-	return {
-		refreshCalls,
-		installOAuth: (runtime: ModelRuntime): void => {
-			runtime.registerProvider(KIMCHI_PROVIDER_ID, { oauth } satisfies ExtensionProviderConfig)
-		},
-	}
-}
 
 describe("handleSsoCredential", () => {
 	let dir: string
@@ -62,7 +37,9 @@ describe("handleSsoCredential", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
-		rmSync(dir, { recursive: true, force: true })
+		vi.restoreAllMocks()
+		// Credential-store initialization can leave asynchronous file cleanup pending on CI.
+		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 	})
 
 	function writeSsoEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -91,6 +68,13 @@ describe("handleSsoCredential", () => {
 		}
 		throw new Error("expected the handler to throw")
 	}
+
+	it("uses an in-memory dynamic model cache for credential-only resolution", async () => {
+		const create = vi.spyOn(ModelRuntime, "create")
+		writeSsoEntry()
+		await handleSsoCredential(fakeOAuthDeps(), paths)
+		expect(create.mock.calls[0]?.[0]?.modelsStore).toBeInstanceOf(InMemoryModelsStore)
+	})
 
 	it("returns the org-scoped credential for a fresh SSO entry", async () => {
 		const entry = writeSsoEntry()
@@ -183,6 +167,20 @@ describe("handleSsoCredential", () => {
 		writeFileSync(paths.authPath, "{corrupt")
 		const error = await errorFrom(() => handleSsoCredential(fakeOAuthDeps(), paths))
 		expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE" })
+	})
+
+	it("maps ModelRuntime.create failures to SSO_STORE_UNAVAILABLE", async () => {
+		const create = vi.spyOn(ModelRuntime, "create").mockRejectedValueOnce(new Error("runtime construction failed"))
+		const deps = { installOAuth: vi.fn() }
+
+		try {
+			const error = await errorFrom(() => handleSsoCredential(deps, paths))
+
+			expect(error.data).toMatchObject({ code: "SSO_STORE_UNAVAILABLE", detail: "runtime construction failed" })
+			expect(deps.installOAuth).not.toHaveBeenCalled()
+		} finally {
+			create.mockRestore()
+		}
 	})
 
 	// The store is intentionally tolerant: a missing models.json does not break

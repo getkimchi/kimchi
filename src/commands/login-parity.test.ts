@@ -218,7 +218,7 @@ async function runTuiSide(run: (host: KimchiBrowserLoginHost) => Promise<unknown
 	// pi.registerProvider("kimchi-dev", { oauth }) + per-sub-provider, which is
 	// what activates OAuth-stored credentials for Kimchi providers on the
 	// session runtime.
-	installKimchiOAuth(runtime)
+	installKimchiOAuth(runtime, join(agentDir, "auth.json"))
 	const settings = SettingsManager.create(process.cwd(), agentDir)
 	const host: KimchiBrowserLoginHost = {
 		modelRegistry: new ModelRegistry(runtime),

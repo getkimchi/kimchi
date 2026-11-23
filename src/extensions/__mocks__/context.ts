@@ -119,8 +119,12 @@ export function createContext(
 		// (pi's ExtensionContext.getSystemPrompt); the empty default keeps
 		// event firers working without forcing every test to spell it out.
 		getSystemPrompt: vi.fn(() => ""),
-		modelRegistry: createModelRegistry(),
 		...overrides,
+		// Merge over the default: stubbing one member must not drop the rest.
+		modelRegistry: {
+			...createModelRegistry(),
+			...overrides?.modelRegistry,
+		} as unknown as ModelRegistry,
 		model: overrides?.model
 			? {
 					provider: "kimchi-dev",

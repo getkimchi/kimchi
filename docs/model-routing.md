@@ -54,7 +54,13 @@ attribution `_meta` (see [ACP model attribution](./acp-model-attribution.md))
 and the session's model list, so `requestedId` compares directly against
 `SessionModelState.currentModelId`. The requested ref is the virtual id
 (`kimchi-dev/auto`); `routedId` is the served model's ref, or
-`provider/raw-id` when the catalog doesn't know the pick. Like all
+`provider/raw-id` when the catalog doesn't know the pick. For a known pick
+the routed ref carries the block that actually serves it — e.g.
+`kimchi-dev/anthropic/claude-haiku-5-5` rather than the requested
+`kimchi-dev/claude-haiku-5-5` — so it joins directly to the advertised model
+list. The persisted entry records that block as `routedProvider` (omitted
+when it equals the requested provider), and replay consumers fall back to
+`provider` for older entries and unknown picks. Like all
 kimchi.dev ext notifications it is
 not advertised in `_meta`; clients that don't know it ignore it per JSON-RPC
 rules.
@@ -107,8 +113,6 @@ For the main session (not subagents), the auto-model extension additionally:
   explicit launch-time `--model` still wins.
 - **Persists explicit choices** — an explicit launch-time `--model` over an
   auto session is user-initiated and persists.
-- **Unwraps saved defaults** — a persisted default is never wrapped in
-  multi-model.
 
 ## Attribution
 

@@ -134,11 +134,12 @@ describe("help — slash command list", () => {
 		"ferment-v2",
 		// feature-gated: the command only exists when extensions.memory is enabled
 		"memory",
-		// deprecated since the Auto default (#1357); kept for role configuration
-		"multi-model",
 		// matched by the constant scan but not slash commands
 		"mcp-keyring-helper",
 		"plannotator-review",
+		// transcript entry type (persisted /compact invocation), not a command;
+		// swept up by the `const *_COMMAND*` constant scan
+		"compact-command",
 	])
 
 	/** Every command name registered anywhere in src/ (non-test `.ts` files).

@@ -20,12 +20,13 @@ export function frameOf(width: number, height: number, children: FrameBox[]): Fr
 export function createSideChatHost(): {
 	host: SideChatHost
 	setFrame(frame: Frame | undefined): void
-	setSelection(selection: { bounds: SelectionBounds; text: string } | undefined): void
+	/** Set the active selection; omit `text` to simulate extraction that is temporarily unavailable. */
+	setSelection(selection: { bounds: SelectionBounds; text?: string } | undefined): void
 	setModal(modal: Component | undefined): void
 	lastFocus(): Component | undefined
 } {
 	let frame: Frame | undefined
-	let selection: { bounds: SelectionBounds; text: string } | undefined
+	let selection: { bounds: SelectionBounds; text?: string } | undefined
 	let modal: Component | undefined
 	let focused: Component | undefined
 	const host = {
@@ -42,7 +43,8 @@ export function createSideChatHost(): {
 		setSidePanel: vi.fn(),
 		clearSidePanel: vi.fn(),
 		frame: vi.fn(() => frame),
-		settledSelection: vi.fn(() => selection),
+		settledSelection: vi.fn(() => (selection?.text ? { bounds: selection.bounds, text: selection.text } : undefined)),
+		selectionBounds: vi.fn(() => selection?.bounds),
 		clearSelection: vi.fn(() => {
 			selection = undefined
 		}),

@@ -19,10 +19,10 @@ describe("printMergedHelp", () => {
 		teardownFakeAgentDir(agentDir)
 	})
 
-	it("includes the multi-model, model, and provider flags", async () => {
+	it("includes the model and provider flags, and no multi-model flag", async () => {
 		await printMergedHelp()
 		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
-		expect(output).toContain("--multi-model")
+		expect(output).not.toContain("--multi-model")
 		expect(output).toContain("--model <pattern>")
 		expect(output).toContain("--provider <name>")
 	})

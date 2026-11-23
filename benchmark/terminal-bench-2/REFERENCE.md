@@ -44,7 +44,7 @@ than the Kimchi gateway. Replace `--model` and pass the matching key with
 
 | Model route | Credential |
 | --- | --- |
-| `kimchi-dev/*`, `multi-model` | `KIMCHI_API_KEY` |
+| `kimchi-dev/*` | `KIMCHI_API_KEY` |
 | `openrouter/*` | `OPENROUTER_API_KEY` |
 | `anthropic/*` | `ANTHROPIC_API_KEY` |
 | `moonshotai/*` | `MOONSHOT_API_KEY` |
@@ -70,18 +70,12 @@ allowed routes before Harbor starts.
 
 ## Kimchi modes
 
-### Single model and multi-model
+### Models
 
-An explicit `--model kimchi-dev/<id>` runs Kimchi in single-model mode. Use the
-virtual model below to benchmark Kimchi's configured orchestration:
-
-```bash
---model multi-model
---ae "KIMCHI_API_KEY=$KIMCHI_API_KEY"
-```
-
-The adapter intentionally omits Kimchi's CLI model flag for `multi-model`, so
-the benchmark exercises the role configuration supplied by the tested build.
+Pass `--model kimchi-dev/<id>` for a concrete model or `--model kimchi-dev/auto`
+for the Auto router. Multi-model mode was removed: `--model multi-model` or a
+truthy `multi-model` agent kwarg fails at startup, and the legacy
+`disable-multi-model` kwarg is ignored.
 
 ### Compaction
 

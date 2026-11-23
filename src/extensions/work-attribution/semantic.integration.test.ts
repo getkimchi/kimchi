@@ -43,10 +43,6 @@ import type * as Semantic from "./semantic.js"
 import { classifyWorkIntent, rememberWorkIntent as persistWorkIntent, WORK_MATCHING_DEADLINE_MS } from "./semantic.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
-vi.mock("../orchestration/model-roles.js", () => ({
-	getModelRoles: () => ({ judge: ["selected/chat"] }),
-	normalizeRoleModels: (value: string[]) => value,
-}))
 vi.mock("./semantic.js", async (original) => ({ ...(await original<typeof Semantic>()), classifyWorkIntent: vi.fn() }))
 vi.mock("../../config/settings.js", async (original) => ({
 	...(await original<typeof Settings>()),

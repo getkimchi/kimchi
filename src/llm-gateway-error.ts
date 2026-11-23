@@ -96,6 +96,7 @@ const HTTP_STATUS_RES = [
 	/\b(504)\s+gateway timeout\b/i,
 	/\b(?:cloudflare\s+)?(524)\s+timeout\b/i,
 	/\b(529)\s+overloaded\b/i,
+	/\b(413)\s+(?:<html\b|request entity too large|content too large|payload too large)/i,
 ]
 
 const FIVE_XX_STATUS_CODES = new Set([500, 502, 503, 504, 524, 529])
@@ -103,7 +104,7 @@ const FIVE_XX_STATUS_CODES = new Set([500, 502, 503, 504, 524, 529])
 const INVALID_REQUEST_PAYLOAD_RE = /tools must not be an empty array/i
 const CONTENT_FILTER_RE = /\bfinish_reason:\s*content_filter\b|\bcontent[- ]?filter\b/i
 const CONTEXT_WINDOW_RE =
-	/ContextWindowExceeded|context(?:\s|-)?(?:window|length|overflow)|maximum context|prompt too long|longer than the model'?s context length/i
+	/ContextWindowExceeded|context(?:\s|-)?(?:window|length|overflow)|maximum context|prompt too long|longer than the model'?s context length|request[_ ]entity[_ ]too[_ ]large|request_too_large/i
 const NON_GATEWAY_PROVIDER_VERDICT_RE =
 	/unauthorized|authentication[_\s]?(?:error|failed)|invalid api key|\b401\b|\b403\b|permission denied|account.{0,40}\b(?:terminated|suspended|deactivated|disabled)\b|quota|billing|insufficient_quota|out of budget|usage limit/i
 

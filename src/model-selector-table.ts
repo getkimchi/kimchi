@@ -1,9 +1,10 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { humanizeContextWindow } from "./extensions/vision-support.js"
 import { getModelLabel, getModelThinkingLevels } from "./models.js"
 import { thinkingColumnValue } from "./thinking-levels.js"
+import { truncateLineToWidth } from "./truncate-lines.js"
 
 export interface ModelTableRow {
 	model: Model<Api>
@@ -31,11 +32,11 @@ export function renderModelTable(
 ): string[] {
 	if (rows.length === 0) return []
 	// A model offered by several providers shows one labelled entry per provider.
-	// Rows whose id is not the model id (the virtual multi-model row) keep theirs.
+	// Rows whose id is not the model id keep theirs.
 	rows = rows.map((row) =>
 		row.id === row.model.id ? { ...row, id: getLabel(`${row.model.provider}/${row.model.id}`) ?? row.id } : row,
 	)
-	const clip = (text: string, cells: number) => truncateToWidth(text, Math.max(0, cells), "…")
+	const clip = (text: string, cells: number) => truncateLineToWidth(text, Math.max(0, cells), "…")
 	const pad = (text: string, cells: number) => {
 		const clipped = clip(text, cells)
 		return clipped + " ".repeat(Math.max(0, cells - visibleWidth(clipped)))
@@ -45,7 +46,7 @@ export function renderModelTable(
 	const context = (row: ModelTableRow) => humanizeContextWindow(row.model.contextWindow)
 	const contextW = Math.max(7, ...rows.map((row) => visibleWidth(context(row))))
 	// Capabilities always come from the underlying model: `row.id` is a display
-	// label and becomes "multi-model" for the virtual orchestrator row.
+	// label.
 	const thinking = (row: ModelTableRow) =>
 		thinkingColumnValue(getLevels(`${row.model.provider}/${row.model.id}`), row.model.reasoning)
 	const thinkingW = Math.max(8, ...rows.map((row) => visibleWidth(thinking(row))))
@@ -62,7 +63,11 @@ export function renderModelTable(
 			clip(dim(`${" ".repeat(gutter)}MODEL`), width),
 			...rows.map((row) => {
 				const marker = row.warning ? ` ${theme.fg("warning", "⚠")}` : ""
-				return truncateToWidth(cursor(row) + clip(row.id, width - gutter - visibleWidth(marker)) + marker, width, "")
+				return truncateLineToWidth(
+					cursor(row) + clip(row.id, width - gutter - visibleWidth(marker)) + marker,
+					width,
+					"",
+				)
 			}),
 		]
 	}
@@ -90,9 +95,7 @@ export function renderModelTable(
 			description = `  ${theme.fg("warning", "⚠")}`
 		} else if (showDesc) {
 			// The annotation comes from the row producer: the pi-coding-agent
-			// patch annotates the virtual multi-model row with the deprecation
-			// label (outranking "Default for new sessions.") and defaults with
-			// "Default for new sessions.".
+			// patch annotates defaults with "Default for new sessions.".
 			const annotation = row.annotation ?? ""
 			if (row.warning && annotation) {
 				const annotationW = Math.min(visibleWidth(annotation), descW)
@@ -120,7 +123,7 @@ export function renderModelTable(
 				description,
 		)
 	}
-	return lines.map((line) => truncateToWidth(line, width, ""))
+	return lines.map((line) => truncateLineToWidth(line, width, ""))
 }
 
 /** The patched dependency cannot import harness source; this adapter is loaded

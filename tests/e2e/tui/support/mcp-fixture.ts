@@ -22,6 +22,8 @@ interface McpFixtureEventBase {
 interface McpFixtureEventDetails {
 	initialized: { clientName?: string; extensionCapabilities: string[] }
 	tools_listed: Record<string, never>
+	prompts_listed: Record<string, never>
+	prompts_get: { name: string | null }
 	tool_list_changed_sent: Record<string, never>
 	resources_listed: Record<string, never>
 	resource_read: { uri: string }
@@ -127,6 +129,7 @@ export type McpFixtureScenario =
 	| "oauth-rotating-refresh"
 	| "oauth-manual-revoke"
 	| "tools-change"
+	| "cache-private-scope"
 	| "ui-app"
 
 export type McpFixtureToolResponse =
@@ -192,6 +195,8 @@ export interface McpServerFixtureOptions {
 	lifecycle?: "keep-alive" | "lazy" | "eager"
 	idleTimeout?: number
 	toolPrefix?: McpSettings["toolPrefix"]
+	/** Extra environment values for this stdio server definition. */
+	serverEnv?: Record<string, string>
 	autoAuth?: boolean
 	oauthPreauthorized?: boolean
 	/** Spec-strict gateway mode: OAuth metadata/DCR endpoints 406 unless Accept advertises text/event-stream. */
@@ -388,6 +393,7 @@ function seedStdioServer(
 			command: process.execPath,
 			args: [FIXTURE_SERVER_PATH],
 			env: {
+				...options.serverEnv,
 				KIMCHI_MCP_FIXTURE_EVENTS: eventPath,
 				KIMCHI_MCP_FIXTURE_SCENARIO: scenario,
 				...fixtureBehaviorEnv(options.behavior),

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-works/pi-ai"
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { resetResourceOverride, setResourceOverride } from "../../resources/store.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
 import {
@@ -19,11 +20,10 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import explorationGuardExtension from "../exploration-guard.js"
-import * as multiModelModule from "../multi-model.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
-import * as modelRolesModule from "../orchestration/model-roles.js"
 import { isHarnessSteer } from "../steer-marker.js"
+import { CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID } from "./claude-code-instructions-resource.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
@@ -618,13 +618,12 @@ describe("prompt enrichment skills", () => {
 			| { skillPaths?: string[] }
 			| undefined
 
-		// Bundled skills not already in the harness dir are contributed via a
-		// filtered temp copy (e.g. dap-debugging). Skills already in the harness
-		// dir (e.g. improve if previously deployed) are silently skipped.
+		// Bundled skills not already in the harness dir are contributed through
+		// their individual directories. Skills already in the harness dir (e.g.
+		// improve if previously deployed) are silently skipped.
 		const paths = result?.skillPaths ?? []
 		expect(paths.length).toBeGreaterThan(0)
-		// At least one contributed path should contain a bundled skill dir.
-		expect(paths.some((p) => existsSync(join(p, "dap-debugging")) || existsSync(join(p, "improve")))).toBe(true)
+		expect(paths.every((path) => existsSync(join(path, "SKILL.md")))).toBe(true)
 		const loaded = paths.map((path) => loadSkillsFromDir({ dir: path, source: "path" }))
 		const creator = loaded.flatMap((result) => result.skills).find((skill) => skill.name === "create-skill")
 		expect(creator).toBeDefined()
@@ -749,6 +748,87 @@ describe("append system prompt", () => {
 
 		// Whitespace-only should be skipped — prompt unchanged
 		expect(resultBaseline.systemPrompt).toBe(resultWhitespace.systemPrompt)
+	})
+})
+
+describe("Claude Code global instructions resource", () => {
+	const MARKER = "CLAUDE-CODE-GLOBAL-MARKER"
+	let dir: string
+	let oldAgentDir: string | undefined
+	let oldClaudeConfigDir: string | undefined
+
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-instructions-"))
+		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		oldClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent")
+		process.env.CLAUDE_CONFIG_DIR = join(dir, "claude")
+		mkdirSync(join(dir, "claude"), { recursive: true })
+		writeFileSync(join(dir, "claude", "CLAUDE.md"), `# Global\n\n${MARKER}\n`, "utf-8")
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	afterEach(() => {
+		resetResourceOverride(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID)
+		if (oldAgentDir === undefined) {
+			delete process.env.KIMCHI_CODING_AGENT_DIR
+		} else {
+			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
+		}
+		if (oldClaudeConfigDir === undefined) {
+			delete process.env.CLAUDE_CONFIG_DIR
+		} else {
+			process.env.CLAUDE_CONFIG_DIR = oldClaudeConfigDir
+		}
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("puts the Claude Code CLAUDE.md into the system prompt by default", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain(MARKER)
+	})
+
+	it("puts the Claude Code CLAUDE.md in once when a project file links to it", async () => {
+		const project = join(dir, "project")
+		mkdirSync(project)
+		symlinkSync(join(dir, "claude", "CLAUDE.md"), join(project, "CLAUDE.md"))
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false, cwd: project }))) as {
+			systemPrompt: string
+		}
+
+		expect(result.systemPrompt.split(MARKER)).toHaveLength(2)
+	})
+
+	it("tells the user at session start that the Claude Code file loads with AGENTS.md", async () => {
+		const project = join(dir, "project")
+		mkdirSync(project)
+		writeFileSync(join(project, "AGENTS.md"), "project rules", "utf-8")
+		const sessionStart = buildPromptExtensionWithHandlers().handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		const ctx = createContext({ cwd: project })
+
+		await sessionStart({}, ctx)
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Claude Code instructions"), "info")
+	})
+
+	it("leaves the Claude Code CLAUDE.md out when the resource is disabled", async () => {
+		setResourceOverride(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID, false)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
+
+		expect(result.systemPrompt).not.toContain(MARKER)
 	})
 })
 
@@ -954,80 +1034,6 @@ describe("export prompt capture", () => {
 	})
 })
 
-describe("model role startup warnings", () => {
-	beforeEach(() => {
-		vi.restoreAllMocks()
-	})
-
-	function modelMetadata(slug: string): ModelMetadata {
-		return {
-			slug,
-			display_name: slug,
-			provider: "kimchi-dev",
-			reasoning: false,
-			input_modalities: ["text"],
-			is_serverless: true,
-			limits: { context_window: 128000, max_output_tokens: 8192 },
-		}
-	}
-
-	it("does not print unavailable role warnings when no models are available yet", () => {
-		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const pi = {
-			registerFlag: () => {},
-			registerCommand: () => {},
-			on: () => {},
-			getAllTools: () => [],
-			getActiveTools: () => [],
-			getFlag: () => false,
-		} as unknown as ExtensionAPI
-
-		promptEnrichmentExtension(() => [])(pi)
-
-		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning:"))
-	})
-
-	it("does not print unavailable role warnings from cached metadata before auth is configured", () => {
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
-		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([modelMetadata("cached-model")])
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const pi = {
-			registerFlag: () => {},
-			registerCommand: () => {},
-			on: () => {},
-			getAllTools: () => [],
-			getActiveTools: () => [],
-			getFlag: () => false,
-		} as unknown as ExtensionAPI
-
-		promptEnrichmentExtension(() => [])(pi)
-
-		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning:"))
-	})
-
-	it("keeps unavailable role warnings when Kimchi auth is already configured", () => {
-		vi.spyOn(config, "loadConfig").mockReturnValue({
-			apiKey: "test-key",
-			agentConfigDir: "",
-		} as ReturnType<typeof config.loadConfig>)
-		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([modelMetadata("different-model")])
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const pi = {
-			registerFlag: () => {},
-			registerCommand: () => {},
-			on: () => {},
-			getAllTools: () => [],
-			getActiveTools: () => [],
-			getFlag: () => false,
-		} as unknown as ExtensionAPI
-
-		promptEnrichmentExtension(() => [])(pi)
-
-		expect(warn).toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning: orchestrator"))
-	})
-})
-
 function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 	const pi = {
@@ -1069,12 +1075,6 @@ describe("deprecated model notification", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
 		_resetDeprecatedNotificationTracking()
-		// Default to single-model mode: the ambient multiModel default is true,
-		// which would redirect session_start warnings to the orchestrator role
-		// model instead of ctx.model. Tests here control the context explicitly.
-		vi.spyOn(multiModelModule, "setAndPersistMultiModelEnabled").mockReturnValue({
-			value: false,
-		} as unknown as ReturnType<typeof multiModelModule.setAndPersistMultiModelEnabled>)
 	})
 
 	const deprecatedModelId = "kimi-k2.6-old"
@@ -1433,42 +1433,6 @@ describe("deprecated model notification", () => {
 		await modelSelect({ source: "cycle" }, switchBackCtx)
 		expect((switchBackCtx.ui.notify as Mock).mock.calls.length).toBe(0)
 	})
-	it("warns at session start for the deprecated multi-model orchestrator model", async () => {
-		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
-			provider: "kimchi-dev",
-			reasoning: false,
-			input_modalities: ["text"],
-			is_serverless: true,
-			limits: { context_window: 128000, max_output_tokens: 8192 },
-		}
-		const models: ModelMetadata[] = [
-			{
-				slug: deprecatedModelId,
-				display_name: "Kimi K2.6 Old",
-				deprecated_at: isoWithinDays(14),
-				...modelProps,
-			},
-			{ slug: "active-model", display_name: "Active Model", ...modelProps },
-		]
-		setupAvailableModels(models)
-		// Multi-model mode: the session starts on an active model but the
-		// orchestrator role model is announced-deprecated. The warning must
-		// still fire — it targets the model the session will actually run on.
-		vi.spyOn(multiModelModule, "setAndPersistMultiModelEnabled").mockReturnValue({
-			value: true,
-		} as unknown as ReturnType<typeof multiModelModule.setAndPersistMultiModelEnabled>)
-		vi.spyOn(modelRolesModule, "getOrchestratorModelRef").mockReturnValue(`kimchi-dev/${deprecatedModelId}`)
-
-		const { sessionStart } = buildExtensionWithHandlers()
-		if (!sessionStart) throw new Error("session_start handler not registered")
-		const ctx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
-		await sessionStart({}, ctx)
-
-		expect(ctx.ui.notify as Mock).toHaveBeenCalledWith(
-			`Model "${deprecatedModelId}" is deprecated and will be retired on ${isoWithinDays(14).slice(0, 10)}. Pick a replacement using your client's model selector (/model in the terminal).`,
-			"warning",
-		)
-	})
 
 	it("does not warn when the retirement date is beyond the 30-day notice window", async () => {
 		const modelProps: Omit<ModelMetadata, "slug" | "display_name" | "status" | "replacement"> = {
@@ -1574,150 +1538,6 @@ describe("deprecated model notification", () => {
 	})
 })
 
-describe("orchestrator default remap on session_start", () => {
-	let dir: string
-
-	beforeEach(() => {
-		dir = mkdtempSync(join(tmpdir(), "kimchi-remap-"))
-		vi.restoreAllMocks()
-	})
-
-	afterEach(() => {
-		rmSync(dir, { recursive: true, force: true })
-	})
-
-	function setupAvailableModels(models: readonly ModelMetadata[]) {
-		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue(models)
-	}
-
-	function buildExtensionWithHandlers() {
-		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
-		const pi = {
-			appendEntry: () => {},
-			registerFlag: () => {},
-			registerCommand: () => {},
-			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
-				composeHandlerRegistration(handlers, event, handler)
-			},
-			getAllTools: () => [],
-			getActiveTools: () => [],
-			getFlag: () => false,
-		} as unknown as ExtensionAPI
-		promptEnrichmentExtension(() => [])(pi)
-		return {
-			handlers,
-			sessionStart: handlers.get("session_start"),
-		}
-	}
-
-	function remapConfigMock(agentDir: string) {
-		vi.spyOn(config, "loadConfig").mockReturnValue({
-			apiKey: "test-key",
-			agentConfigDir: agentDir,
-			region: "us",
-			selfHostedEndpoints: undefined,
-			llmEndpoint: "",
-			customLlmEndpoint: undefined,
-			maxToolResultChars: 0,
-			mcpSearchLimit: 5,
-			mcpSearch: {
-				strategy: "bm25" as const,
-				bm25K1: 1.2,
-				bm25B: 0.75,
-				fieldWeights: { name: 6, description: 2, schemaKey: 1 },
-			},
-			onboarding: {},
-			deviceId: "test",
-		})
-	}
-
-	function availableMetadata(slug: string): ModelMetadata {
-		return {
-			slug,
-			display_name: slug,
-			provider: "kimchi-dev",
-			reasoning: false,
-			input_modalities: ["text"],
-			is_serverless: true,
-			limits: { context_window: 128000, max_output_tokens: 8192 },
-		}
-	}
-
-	it("remaps the default orchestrator to the sidecar replacement when the default is unavailable", async () => {
-		writeFileSync(
-			join(dir, "model-deprecations.json"),
-			JSON.stringify({ "kimi-k3": { deprecated_at: "2025-01-01T00:00:00Z", replacement_model: "kimi-k4" } }),
-		)
-		remapConfigMock(dir)
-		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({ ...modelRolesModule.DEFAULT_MODEL_ROLES })
-		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
-		setupAvailableModels([availableMetadata("kimi-k4"), availableMetadata("minimax-m3")])
-
-		const { sessionStart } = buildExtensionWithHandlers()
-		if (!sessionStart) throw new Error("session_start handler not registered")
-		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k3" } })
-		await sessionStart({}, ctx)
-
-		expect(saveSpy).toHaveBeenCalledTimes(1)
-		expect(saveSpy.mock.calls[0][0].orchestrator).toBe("kimchi-dev/kimi-k4")
-		const notifyMock = ctx.ui.notify as Mock
-		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining('Remapped to "kimchi-dev/kimi-k4"'), "warning")
-	})
-
-	it("respects a user-configured orchestrator override", async () => {
-		writeFileSync(
-			join(dir, "model-deprecations.json"),
-			JSON.stringify({ "kimi-k2.7": { deprecated_at: "2025-01-01T00:00:00Z", replacement_model: "kimi-k3" } }),
-		)
-		remapConfigMock(dir)
-		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({
-			...modelRolesModule.DEFAULT_MODEL_ROLES,
-			orchestrator: "kimchi-dev/custom-model",
-		})
-		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
-		setupAvailableModels([availableMetadata("kimi-k3")])
-
-		const { sessionStart } = buildExtensionWithHandlers()
-		if (!sessionStart) throw new Error("session_start handler not registered")
-		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.7" } })
-		await sessionStart({}, ctx)
-
-		expect(saveSpy).not.toHaveBeenCalled()
-	})
-
-	it("does nothing when the default orchestrator is still available", async () => {
-		remapConfigMock(dir)
-		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({ ...modelRolesModule.DEFAULT_MODEL_ROLES })
-		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
-		setupAvailableModels([availableMetadata("kimi-k2.7")])
-
-		const { sessionStart } = buildExtensionWithHandlers()
-		if (!sessionStart) throw new Error("session_start handler not registered")
-		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.7" } })
-		await sessionStart({}, ctx)
-
-		expect(saveSpy).not.toHaveBeenCalled()
-	})
-
-	it("does nothing when the sidecar records no available replacement", async () => {
-		writeFileSync(
-			join(dir, "model-deprecations.json"),
-			JSON.stringify({ "kimi-k2.7": { deprecated_at: "2025-01-01T00:00:00Z" } }),
-		)
-		remapConfigMock(dir)
-		vi.spyOn(modelRolesModule, "getModelRoles").mockReturnValue({ ...modelRolesModule.DEFAULT_MODEL_ROLES })
-		const saveSpy = vi.spyOn(modelRolesModule, "saveModelRoles").mockImplementation(() => {})
-		setupAvailableModels([availableMetadata("kimi-k3")])
-
-		const { sessionStart } = buildExtensionWithHandlers()
-		if (!sessionStart) throw new Error("session_start handler not registered")
-		const ctx = createContext({ model: { provider: "kimchi-dev", id: "kimi-k2.7" } })
-		await sessionStart({}, ctx)
-
-		expect(saveSpy).not.toHaveBeenCalled()
-	})
-})
-
 describe("retired model substitution notification", () => {
 	// The gateway annotates transparently rewritten responses with
 	// X-Model-Requested / X-Model-Actual (+ Deprecation/Sunset HTTP-dates).
@@ -1757,10 +1577,13 @@ describe("retired model substitution notification", () => {
 		}
 	}
 
-	async function fireSubstitutedResponse(headers: Record<string, string> | Headers) {
+	async function fireSubstitutedResponse(
+		headers: Record<string, string> | Headers,
+		model: { provider: string; id: string } = { provider: "kimchi-dev", id: retiredModelId },
+	) {
 		const { afterProviderResponse } = buildExtensionWithHandlers()
 		if (!afterProviderResponse) throw new Error("after_provider_response handler not registered")
-		const ctx = createContext({ model: { provider: "kimchi-dev", id: retiredModelId } })
+		const ctx = createContext({ model })
 		await afterProviderResponse({ type: "after_provider_response", status: 200, headers }, ctx)
 		return ctx.ui.notify as Mock
 	}
@@ -1796,6 +1619,11 @@ describe("retired model substitution notification", () => {
 			"X-Model-Requested": retiredModelId,
 			"X-Model-Actual": retiredModelId,
 		})
+		expect(notifyMock).not.toHaveBeenCalled()
+	})
+
+	it("stays silent when the request was served by the auto virtual model", async () => {
+		const notifyMock = await fireSubstitutedResponse(substitutionHeaders(), { provider: "kimchi-dev", id: "auto" })
 		expect(notifyMock).not.toHaveBeenCalled()
 	})
 

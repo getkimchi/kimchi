@@ -1,12 +1,9 @@
-import type { Api, Context, Model, Usage } from "@earendil-works/pi-ai"
+import type { Context, Usage } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { CODEX_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError } from "../../llm-gateway-error.js"
 import { INTERNAL_SESSION_ENTRY } from "../../session-visibility.js"
-import { findModelByRef } from "../../shared/model-ref.js"
-import { getMultiModelEnabled } from "../multi-model.js"
-import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import { isRedactionEnabled } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
@@ -147,13 +144,6 @@ type RenderedTranscriptEntry = {
 	prefix: string
 	content: string
 	evidence: boolean
-}
-
-export function resolveFermentV2EvaluatorModel(ctx: ExtensionContext): Model<Api> | undefined {
-	const sessionModel = ctx.model
-	if (!getMultiModelEnabled(ctx.sessionManager)) return sessionModel
-	const assignment = normalizeRoleModels(getModelRoles().judge)[0]
-	return (assignment ? findModelByRef(ctx.modelRegistry, assignment) : undefined) ?? sessionModel
 }
 
 export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2EvaluatorOutput | undefined {
@@ -303,7 +293,7 @@ export async function evaluateFermentV2(
 	try {
 		const inheritedWorkId = tryWorkAttribution(() => getWorkId(ctx))
 		const objective = objectiveText(input.objective, ctx.cwd)
-		const model = resolveFermentV2EvaluatorModel(ctx)
+		const model = ctx.model
 		if (!model) return unavailable("No evaluator model is available.", "no_model")
 		modelRef = `${model.provider}/${model.id}`
 		const todoState = renderTodoState(input.todos)

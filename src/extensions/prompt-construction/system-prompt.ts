@@ -2,23 +2,17 @@
  * Generic system prompt assembler.
  *
  * Mode-aware: drives intro selection, tool filtering, and which mode-specific
- * instruction payload to embed (orchestrator / subagent / single-model).
- * Orchestration content lives in `orchestration/orchestration-instructions.ts`;
- * subagent and single-model content lives in this file.
+ * instruction payload to embed (subagent / single-model).
  */
 
 import type { Skill, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { getVersion } from "../../utils.js"
-import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
-import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { resolveRoleGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
-import type { Phase } from "../orchestration/model-registry/types.js"
-import type { ModelRoles } from "../orchestration/model-roles.js"
-import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
-import { orchestratorShouldReceivePhaseGuidelines } from "../orchestration/orchestrator-roles.js"
+import type { ModelRole } from "../orchestration/model-registry/types.js"
+import { isFermentOneshotRequested, isPrintModeEnabled } from "../print-mode.js"
 import { escapeClosingMarker } from "../steer-marker.js"
 import type { ContextFile } from "./context-files.js"
-import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
 
 export interface EnvironmentInfo {
@@ -39,7 +33,7 @@ export interface EnvironmentInfo {
 
 type PromptTool = Pick<ToolInfo, "name" | "description" | "promptGuidelines">
 
-export type PromptMode = "orchestrator" | "subagent" | "single"
+export type PromptMode = "subagent" | "single"
 
 export interface SystemPromptBuildOptions {
 	tools: readonly PromptTool[]
@@ -52,10 +46,6 @@ export interface SystemPromptBuildOptions {
 	 *  catalog budget (~1% of the window). Omitted in tests/SDK sessions. */
 	contextWindow?: number
 	mode: PromptMode
-	/** Role-based model assignments for orchestrator mode. */
-	roles?: ModelRoles
-	/** Custom model metadata for non-registry models. */
-	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
 	/** Session ID for the active pi-mono session. Used to scope extension prompt blocks
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
@@ -65,11 +55,6 @@ export interface SystemPromptBuildOptions {
 	 *  (Consent, Harness Notes, Documents, the orient-the-user ritual) are replaced by
 	 *  a short autonomous-session note. Default: true. */
 	hasUserLoop?: boolean
-	/** Whether background-subagent completion notifications reach the user
-	 *  after the turn ends (TUI only; see session-user-loop.ts). When
-	 *  false, orchestrator delegation guidance requires joining backgrounded
-	 *  agents before turn end. Default: true. */
-	backgroundNotificationsReachUser?: boolean
 	/** Pinned reply language from the `language` config key (already validated
 	 *  by normalizeLanguageSetting). When set, the Language section becomes a
 	 *  hard rule ("always answer in X") instead of "mirror the user". Unset =
@@ -77,30 +62,20 @@ export interface SystemPromptBuildOptions {
 	language?: string
 }
 
-export const SET_PHASE = "set_phase"
-
 export const DELEGATION_TOOL_NAMES = new Set(["Agent", "resume_subagent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { tools, env, contextFiles, skills, currentModelId, registry, mode, roles, sessionId } = options
+	const { tools, env, contextFiles, skills, currentModelId, registry, mode, sessionId } = options
 
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
-	const filteredSkills = filterSkillsForMode(skills, mode)
 
 	const hasUserLoop = options.hasUserLoop ?? true
-	const orchestrationSection = resolveModeInstructions({
-		mode,
-		currentModelId,
-		registry,
-		roles,
-		customConfigs: options.customConfigs,
-		hasUserLoop,
-		backgroundNotificationsReachUser: options.backgroundNotificationsReachUser ?? true,
-	})
+	const modeInstructions =
+		mode === "subagent" ? SUBAGENT_INSTRUCTIONS : buildSingleModelInstructions(currentModelId, hasUserLoop)
 
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
@@ -115,13 +90,12 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		toolGuidelinesSection: formatToolGuidelinesSection(effectiveTools),
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkillsSection(filteredSkills, effectiveTools, options.contextWindow),
-		orchestrationSection,
+		skillsSection: formatSkillsSection(skills, effectiveTools, options.contextWindow),
+		modeInstructions,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
 		currentModelId,
 		registry,
-		roles,
 		hasUserLoop,
 		language: options.language,
 	})
@@ -139,12 +113,11 @@ interface PromptParts {
 	environmentSection: string
 	projectContext: string
 	skillsSection: string
-	orchestrationSection: string
+	modeInstructions: string
 	systemPromptBlocks: string
 	suppressed: ReadonlySet<SuppressibleSection>
 	currentModelId?: string
 	registry?: ModelRegistry
-	roles?: ModelRoles
 	hasUserLoop: boolean
 	language?: string
 }
@@ -228,38 +201,6 @@ function buildLanguageSection(language: string | undefined): string {
 	return language === undefined ? LANGUAGE_SECTION : pinnedLanguageSection(language)
 }
 
-/**
- * Resolve the mode-specific instruction payload for the system prompt.
- *
- * Only the orchestrator branch touches `roles`/`registry`/`customConfigs` —
- * subagent and single-model payloads are mode-shaped but orchestration-free.
- * Lives here (not in `orchestration-instructions.ts`) because mode selection
- * is the assembler's concern.
- */
-function resolveModeInstructions(args: {
-	mode: PromptMode
-	currentModelId?: string
-	registry?: ModelRegistry
-	roles?: ModelRoles
-	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
-	hasUserLoop: boolean
-	backgroundNotificationsReachUser: boolean
-}): string {
-	if (args.mode === "orchestrator") {
-		return resolveOrchestrationInstructions({
-			currentModelId: args.currentModelId,
-			registry: args.registry,
-			roles: args.roles,
-			customConfigs: args.customConfigs,
-			backgroundNotificationsReachUser: args.backgroundNotificationsReachUser,
-		}).instructionsSection
-	}
-	if (args.mode === "subagent") {
-		return SUBAGENT_INSTRUCTIONS
-	}
-	return buildSingleModelInstructions(args.currentModelId, args.hasUserLoop)
-}
-
 // ---------------------------------------------------------------------------
 // Subagent instructions
 // ---------------------------------------------------------------------------
@@ -288,15 +229,14 @@ function buildSingleModelInstructions(currentModelId?: string, hasUserLoop = tru
 		: ""
 	return `## Single-Model Mode
 
-${orientation}Single-model session.${modelClause} All work runs on this model — handle tasks directly yourself. Only spawn \`Agent\` subagents when the user explicitly asks; when you do, pass your own model ID in \`model\`.`
+${orientation}Single-model session.${modelClause} By default, handle tasks directly yourself. Only spawn \`Agent\` subagents when the user explicitly asks; pass your own model ID in \`model\` unless the user or their skill/workflow specifies otherwise.`
 }
 
 export const DOCUMENTS_SECTION =
 	"Use the Documents directory (see Environment) for transient working files: research notes, findings, verification reports, inter-agent handoffs. Final plans and specs go to .kimchi/plans/<slug>.md. Never write working documents to the project root or temp directories."
 
-/** Tool-call discipline shared by single-model and orchestrator guidelines so
- *  the two variants cannot drift (regression: silent tool turns rose when the
- *  rewrite kept these rules only in the orchestrator payload). */
+/** Tool-call discipline embedded in the core guidelines (regression: silent
+ *  tool turns rose when a rewrite dropped these rules from one prompt variant). */
 export const TOOL_CALL_DISCIPLINE = `- After every tool result, ALWAYS produce text — the next tool call with explicit reasoning, or a final summary. Never re-issue the same call after a successful result.
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a call fails to advance the task after 3 attempts, stop, summarize what is broken, and reassess in plain text.`
 
@@ -310,37 +250,6 @@ export const CORE_GUIDELINES = `- Be concise; act and move on without restating 
 ${TOOL_CALL_DISCIPLINE}
 - Bash has a harness-owned safety limit and two-second handoff; use \`bash_control\` to inspect, stop, or wait. Legacy \`timeout\` inputs are ignored; never wrap commands in the GNU \`timeout\` binary (missing on macOS/Windows). Never run interactive commands: use \`--yes\`, \`GIT_EDITOR=true\`, or stdin from \`/dev/null\`.
 - **Git commits**: end the message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
-
-/** The orient-the-user bullet, swapped for a proceed-autonomously variant in
- *  userless orchestrator sessions so it never contradicts
- *  AUTONOMOUS_SESSION_NOTE ("no human available"). */
-const ORCHESTRATOR_ORIENTATION_BULLETS = {
-	userLoop:
-		"- Orient the user per Orchestration before starting — use the phased pipeline, not ad-hoc exploration or inline implementation.",
-	autonomous:
-		"- Proceed autonomously per Orchestration — use the phased pipeline, not ad-hoc exploration or inline implementation. No human is available to orient; do not pause for confirmation.",
-} as const
-
-function buildOrchestratorGuidelines(hasUserLoop: boolean): string {
-	return `- Be concise. Do not restate completed steps — act and move on.
-- Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
-${hasUserLoop ? ORCHESTRATOR_ORIENTATION_BULLETS.userLoop : ORCHESTRATOR_ORIENTATION_BULLETS.autonomous}
-- Follow existing conventions; use only libraries/frameworks present in the codebase; never add dependencies without explicit instruction.
-- Use absolute file paths.
-- Do NOT introduce security vulnerabilities.
-${TOOL_CALL_DISCIPLINE}
-- Summarize from delegated artifacts (spec, review, verification files); do not re-verify implementation yourself unless Orchestration assigns it to you.`
-}
-
-function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptMode): readonly Skill[] | undefined {
-	if (!skills || mode !== "orchestrator") return skills
-	return skills.filter((skill) => !ORCHESTRATOR_SUPPRESSED_SKILL_NAMES.has(skill.name))
-}
-
-function resolveCoreGuidelines(mode: PromptMode, hasUserLoop: boolean): string {
-	if (mode !== "orchestrator") return CORE_GUIDELINES
-	return buildOrchestratorGuidelines(hasUserLoop)
-}
 
 export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate. Claims must rest on data concretely obtained this session. Do not over-escalate minor issues or blame the user for request phrasing.
 - Never invent people's names, roles, or contact details — ask the user if human input is needed.
@@ -362,10 +271,9 @@ const FACTUAL_ACCURACY_AUTONOMOUS = `- Never guess, assume, or fabricate. Claims
  * Includes the consolidated `## Tool Selection`, `## Output & Truncation`,
  * and `## Consent & Irreversible Actions` sections so replace-mode
  * subagents (e.g. General-Purpose) receive the same tool-substitution,
- * output-capping, and consent rules as the main thread. `## Phase
- * Management` is deliberately omitted: subagents do not manage phase
- * lifecycle — their persona fixes their phase, and they never call
- * `set_phase`.
+ * output-capping, and consent rules as the main thread. `## Working
+ * Practices` is deliberately omitted: a subagent's persona role selects its
+ * role guidelines instead.
  *  Pass `hasUserLoop: false` for headless subagents: the consent section is
  *  then swapped for the Autonomous Session note, mirroring the headless main
  *  thread (nobody is reachable to grant consent).
@@ -386,7 +294,7 @@ export function buildCoreGuidelinesSections(activeToolNames?: readonly string[],
 
 // ---------------------------------------------------------------------------
 // Consolidated core sections (Output & Truncation, Tool Selection,
-// Phase Management, Consent & Irreversible Actions)
+// Working Practices, Consent & Irreversible Actions)
 // ---------------------------------------------------------------------------
 
 function hasTool(toolNames: ReadonlySet<string> | undefined, name: string): boolean {
@@ -461,48 +369,17 @@ export function buildToolSelectionSection(toolNames?: ReadonlySet<string>): stri
 ${lines.join("\n")}`
 }
 
-export const PHASE_MANAGEMENT_INTRO = `## Phase Management
-
-The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.`
-
-const PHASE_ORDER: readonly Phase[] = ["explore", "research", "plan", "build", "review"]
+const ROLE_ORDER: readonly ModelRole[] = ["explore", "research", "plan", "build", "review"]
 
 /**
- * Build the consolidated ## Phase Management section, resolving each phase's
- * guideline through the model registry so family-specific overrides (e.g.
- * MiniMax M2's "STAY IN SCOPE" / "do NOT hallucinate APIs") reach the prompt.
- *
- * Applicable phases are embedded (not just the active one) to keep the prompt
- * static across phase transitions. Single-model and subagent prompts receive
- * all phases; orchestrators receive only phases allowed by their stable role
- * assignments. Swapping content on `set_phase` would invalidate the provider's
- * KV cache, while role and model resolution remain cache-stable for the session.
+ * Build the ## Working Practices section: every role's guideline, resolved
+ * through the model registry so family-specific overrides (e.g. MiniMax M2's
+ * "STAY IN SCOPE" / "do NOT hallucinate APIs") reach the prompt. All roles are
+ * embedded so the prompt stays static and the provider's KV cache stays warm.
  */
-export function buildPhaseManagementSection(
-	modelId?: string,
-	registry?: ModelRegistry,
-	phaseToolReachable = true,
-	mode: PromptMode = "single",
-	roles?: ModelRoles,
-): string {
-	// Single-mode agents that cannot call set_phase never tag phases, so the
-	// phase-tagging guidance is inert. When set_phase is unreachable (e.g. plain
-	// --print sessions, where the print-mode gate suppresses it), drop the
-	// payload to save ~2,100 est. Tool-independent safety rules that used to ride
-	// this payload (commit trailer, shell timeouts, non-interactive-command
-	// flags) now live in CORE_GUIDELINES, which is always emitted — so --print
-	// still gets them. Interactive single-model sessions keep set_phase and
-	// therefore the full payload. Orchestrator/subagent modes are unaffected
-	// (persona/role phase behaviour applies regardless of the tool).
-	if (mode === "single" && !phaseToolReachable) return ""
-	const applicablePhases =
-		mode === "orchestrator"
-			? PHASE_ORDER.filter((phase) => orchestratorShouldReceivePhaseGuidelines(phase, modelId, roles))
-			: PHASE_ORDER
-	const guidelines = applicablePhases.map((phase) => resolvePhaseGuideline(phase, modelId, registry)).join("\n\n")
-	const intro = phaseToolReachable ? PHASE_MANAGEMENT_INTRO : "## Phase Management"
-	if (!guidelines) return phaseToolReachable ? intro : ""
-	return `${intro}\n\n### Phase-specific behaviour\n\n${guidelines}`
+export function buildWorkingPracticesSection(modelId?: string, registry?: ModelRegistry): string {
+	const guidelines = ROLE_ORDER.map((role) => resolveRoleGuideline(role, modelId, registry)).join("\n\n")
+	return guidelines ? `## Working Practices\n\n${guidelines}` : ""
 }
 
 export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
@@ -531,35 +408,33 @@ function buildPrompt(parts: PromptParts): string {
 	sections.push(intro)
 	sections.push(buildLanguageSection(parts.language))
 
-	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
-	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
-		sections.push(parts.orchestrationSection)
+	// 2. Mode instructions (single-model or subagent protocol). The section key
+	//    stays "orchestration" for existing prompt-block suppressions.
+	if (!parts.suppressed.has("orchestration") && parts.modeInstructions) {
+		sections.push(parts.modeInstructions)
 	}
 
 	// 4. Guidelines
-	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode, parts.hasUserLoop)}`)
+	sections.push(`## Guidelines\n\n${CORE_GUIDELINES}`)
 	sections.push(`## Factual Accuracy\n\n${parts.hasUserLoop ? FACTUAL_ACCURACY : FACTUAL_ACCURACY_AUTONOMOUS}`)
 
-	// 5. Documents (a human reads artifacts in interactive sessions; multi-agent
-	//    flows write handoffs there even without a user loop — keep the section
-	//    for orchestrator/subagent so subagent result contracts stay grounded)
-	if (parts.hasUserLoop || parts.mode === "orchestrator" || parts.mode === "subagent") {
+	// 5. Documents (a human reads artifacts in interactive sessions; subagents
+	//    write handoffs there even without a user loop — keep the section for
+	//    them so subagent result contracts stay grounded)
+	if (parts.hasUserLoop || parts.mode === "subagent") {
 		sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
 	}
 
-	// 6. Consolidated core sections: output, tool selection, phase, consent
+	// 6. Consolidated core sections: output, tool selection, working practices, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
 	sections.push(buildToolSelectionSection(parts.toolNames))
 	sections.push(parts.toolGuidelinesSection)
-	sections.push(
-		buildPhaseManagementSection(
-			parts.currentModelId,
-			parts.registry,
-			parts.toolNames.has(SET_PHASE),
-			parts.mode,
-			parts.roles,
-		),
-	)
+	// Plain --print sessions skip the ~2,100-token practices payload; the
+	// tool-independent safety rules live in CORE_GUIDELINES, which is always
+	// emitted.
+	if (parts.mode === "subagent" || !isPrintModeEnabled() || isFermentOneshotRequested()) {
+		sections.push(buildWorkingPracticesSection(parts.currentModelId, parts.registry))
+	}
 	if (parts.hasUserLoop) {
 		sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
 		sections.push(HARNESS_NOTES_AND_APPROVAL)
@@ -594,7 +469,7 @@ function buildPrompt(parts: PromptParts): string {
 /** Pi-shipped tools whose `promptGuidelines` kimchi deliberately does not
  *  render. Each was reviewed in the 2026-11 curation pass:
  *  - read duplicates the Tool Selection rule (not cat/head/tail/sed -n);
- *  - write duplicates the build-phase guideline (new files / full rewrites);
+ *  - write duplicates the build role guideline (new files / full rewrites);
  *  - edit's four bullets duplicate the edit tool's own schema description
  *    (exact match, original-file matching, no overlapping/nested edits,
  *    merge nearby, keep oldText small) nearly verbatim;

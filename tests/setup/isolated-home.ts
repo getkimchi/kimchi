@@ -30,6 +30,10 @@ process.env.KIMCHI_CODING_AGENT_DIR = join(testHome, "agent")
 // otherwise hydrate() imports the developer's real work-history journals
 // into unit tests and background imports can stall past the hook timeout.
 process.env.PI_CODING_AGENT_DIR = join(testHome, "agent-legacy")
+// Claude Code exports CLAUDE_CONFIG_DIR, and the prompt loader reads the user's
+// CLAUDE.md from it before the HOME fallback. Tests run from inside Claude Code
+// would otherwise put the developer's real instructions into built prompts.
+delete process.env.CLAUDE_CONFIG_DIR
 // The enclosing harness exports git tracing hooks for commit attribution.
 // The GIT_TRACE_REFS debug ref backend crashes some git binaries (a plain
 // `git pack-refs --all` segfaults on broken builds), and traces from scratch

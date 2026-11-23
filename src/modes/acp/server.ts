@@ -59,11 +59,14 @@ import {
 	ModelRuntime,
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
+	readStoredCredential,
 	type SessionHeader,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import open from "open"
+import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
+import { releasePreparedOAuthCredential } from "../../auth/short-lived-credential-handoff.js"
 import { getParsedCliArgs } from "../../cli-args.js"
 import {
 	authMethodRegion,
@@ -84,14 +87,18 @@ import {
 	writeApiKey,
 	writeRegion,
 } from "../../config.js"
-import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
+import {
+	clearCredentialStale,
+	isAuthRejectedMessage,
+	markCredentialStale,
+	prepareCredentialForLogin,
+} from "../../credential-staleness.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
 	isAutoRoutedModel,
-	MULTI_MODEL_DEPRECATION_LABEL,
 	splitModelDisplayName,
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
@@ -108,8 +115,6 @@ import { installKimchiOAuth } from "../../extensions/login/flow.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
-import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import {
 	PERMISSION_MODES,
@@ -141,10 +146,14 @@ import {
 	substituteTokensDeep,
 	vaultForSession,
 } from "../../extensions/pii-redaction/vault.js"
+import { prWatchCommandArgs, runPRWatchCommand } from "../../extensions/pr-watch/command.js"
+import { getPRWatcher } from "../../extensions/pr-watch/index.js"
+import { formatPRWatchStatus } from "../../extensions/pr-watch/presentation.js"
+import { setPRMonitoringPermitted } from "../../extensions/pr-watch/session-policy.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
-import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "../../llm-gateway-error.js"
 import { collectDeprecationMarkers } from "../../model-deprecation.js"
 import { applyOrganizationHeader, updateModelsConfig } from "../../models.js"
@@ -167,6 +176,8 @@ import {
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { takePendingRunReason } from "../../shared/run-reason-registry.js"
+import { CANONICAL_THINKING_LEVELS, thinkingLevelDescription, thinkingLevelName } from "../../thinking-levels.js"
+import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -177,12 +188,21 @@ import {
 	AVAILABLE_EXT_METHODS,
 	BACKGROUND_RUNS_CAPABILITY,
 	getClientOptedIntoBackgroundRuns,
+	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
+	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
-import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
+import {
+	COMPACT_COMMAND_ENTRY_TYPE,
+	composeAvailableCommands,
+	createCommandsRefresher,
+	discoverSkillCommandsMap,
+	isCompactCommandEntryData,
+	tryParseCompactCommand,
+} from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
-import { handleCompact } from "./ext-methods/compact.js"
+import { type CompactResponse, handleCompact } from "./ext-methods/compact.js"
 import { handleCompactAbort } from "./ext-methods/compact-abort.js"
 import { handleFeedback } from "./ext-methods/feedback.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
@@ -190,10 +210,12 @@ import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import {
 	handleMemoryDelete,
+	handleMemoryGet,
 	handleMemoryList,
 	handleMemoryReset,
 	handleMemorySearch,
 	handleMemoryStatus,
+	handleMemoryUpdate,
 	handleSetMemoryEnabled,
 } from "./ext-methods/memory.js"
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
@@ -669,6 +691,7 @@ export class KimchiAcpAgent implements Agent {
 		// live commands vs. the completion guard) for every session this
 		// server creates.
 		setBackgroundRunsPermitted(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
+		setPRMonitoringPermitted(getClientOptedIntoPRMonitoring(request.clientCapabilities))
 
 		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
@@ -748,6 +771,7 @@ export class KimchiAcpAgent implements Agent {
 					// button. Note the agent NEEDS this flag advertised only so
 					// clients feature-detect the gate; emission is opt-in gated.
 					[BACKGROUND_RUNS_CAPABILITY]: true,
+					[PR_MONITORING_CAPABILITY]: true,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
@@ -838,8 +862,9 @@ export class KimchiAcpAgent implements Agent {
 		const persist: WriteApiKeyOptions = { region }
 		if (selfHostedEndpoints) persist.selfHostedEndpoints = selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
-		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		// A replacement invalidates earlier marks, but a repeated key retains its
+		// observed rejection through a cached refresh until authentication succeeds.
+		prepareCredentialForLogin(token, KIMCHI_PROVIDER_ID)
 
 		// Eagerly refresh the model cache so the subsequent newSession() call
 		// finds available models without another round-trip.
@@ -935,14 +960,17 @@ export class KimchiAcpAgent implements Agent {
 	 *    auth.json and would overwrite the OAuth entries at the next launch.
 	 * 2. Persist the signed-in region so endpoint derivation matches the
 	 *    tenant the user authenticated against.
-	 * 3. Refresh models metadata with the fresh bearer (cached fallback
+	 * 3. Store the org-scoped credential durably before clearing rejection
+	 *    state for the credential it replaces.
+	 * 4. Refresh models metadata with the fresh bearer (cached fallback
 	 *    allowed, like the browser-key flow) and stamp the org header on every
 	 *    Kimchi provider — the gateway routes SSO requests by
 	 *    X-CastAi-Organization-Id (covers the cached-fallback path too).
-	 * 4. Fan the org-scoped credential out to every Kimchi-managed provider in
+	 * 5. Fan the org-scoped credential out to every Kimchi-managed provider in
 	 *    models.json (sub-providers resolve auth per provider id).
-	 * 5. Clear stale marks — auth_status flips back — and refresh every OPEN
-	 *    session's ModelRuntime snapshot (same rationale as authenticate()).
+	 * 6. Refresh every OPEN session's ModelRuntime snapshot (same rationale as
+	 *    authenticate()). updateModelsConfig already clears stale marks only
+	 *    after an authenticated fetch; the settle tail must not clear a cached-401 fallback.
 	 */
 	private async settleSsoCredential(credential: OAuthCredentials, org: KimchiOrganization): Promise<void> {
 		clearApiKey()
@@ -953,17 +981,20 @@ export class KimchiAcpAgent implements Agent {
 			writeRegion(credentialRegion)
 		}
 		const modelsPath = join(this.agentDir, "models.json")
+		const authPath = join(this.agentDir, "auth.json")
+		const orgScopedCredential = { ...credential, orgId: org.id, orgName: org.name }
+		// A failed refresh with no cached models must not leave old stored
+		// credentials with their rejection removed. Store the replacement first.
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
+		// Retire anonymous/replaced-credential state before refreshing. Preserve
+		// this bearer's known rejection through a transient cached fallback.
+		prepareCredentialForLogin(credential.access, KIMCHI_PROVIDER_ID)
 		await updateModelsConfig(modelsPath, credential.access, {
 			allowCachedFallback: true,
 			organizationId: org.id,
 		})
 		applyOrganizationHeader(modelsPath, org.id)
-		await syncOAuthCredentialToKimchiProviders(join(this.agentDir, "auth.json"), modelsPath, {
-			...credential,
-			orgId: org.id,
-			orgName: org.name,
-		})
-		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, orgScopedCredential)
 		await Promise.all(
 			[...this.sessions.values()].map((record) =>
 				record.session.modelRuntime.refresh({ allowNetwork: false }).catch(() => {}),
@@ -998,12 +1029,6 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionModelHasAuth(session)
 
 			const sessionId = session.sessionId
-			// A fresh ACP session has neither a process entry nor a session log, so
-			// multi-model would otherwise resolve to the global default (true) and
-			// report "multi-model" no matter which model the session actually
-			// resolved to. Anchor the flag to that resolved model instead, the same
-			// way setSessionModel does for an explicit client change.
-			setMultiModelEnabled(sessionId, isMultiModelOrchestrator(session))
 			const uiContext = this.createUiContext(session)
 			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
@@ -1149,6 +1174,10 @@ export class KimchiAcpAgent implements Agent {
 				await this.doSetModel(record, params.value ? `${params.value}` : "")
 				break
 			}
+			case "reasoning_effort": {
+				this.doSetThinkingLevel(record, params.value ? `${params.value}` : "")
+				break
+			}
 			default:
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
@@ -1176,6 +1205,27 @@ export class KimchiAcpAgent implements Agent {
 		return permissionMode
 	}
 
+	/** Apply a reasoning_effort set request; the value must be one of the
+	 *  advertised (model-curated) levels. */
+	private doSetThinkingLevel(record: SessionRecord, value: string): void {
+		const { session } = record
+		// The option is not advertised without a model, so a set in that state is invalid.
+		if (!session.model) {
+			throw RequestError.invalidParams(undefined, "no model is selected for this session")
+		}
+		const selection = thinkingSelection(session.model)
+		if (selection.mode !== "levels" || selection.selectable.length === 0) {
+			throw RequestError.invalidParams(undefined, "the current model offers no selectable thinking levels")
+		}
+		if (!isCanonicalThinkingLevel(value) || !selection.selectable.includes(value)) {
+			throw RequestError.invalidParams(
+				undefined,
+				`invalid thinking level "${value}". available levels: ${selection.selectable.join(", ")}`,
+			)
+		}
+		session.setThinkingLevel(value)
+	}
+
 	private async doSetModel(record: SessionRecord, value: string): Promise<string> {
 		if (record.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
@@ -1186,60 +1236,35 @@ export class KimchiAcpAgent implements Agent {
 		const { session } = record
 		const sessionId = session.sessionId
 		const modelRegistry = getSessionModelRegistry(session)
-		if (value === "multi-model") {
-			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, modelRegistry)
-			if (!orchestrator) {
-				// Orchestrator unresolvable: unknown ref → invalidParams; no
-				// credentials → authRequired (-32000 → client login UI).
-				// ModelRegistry.hasConfiguredAuth(model) delegates to
-				// ModelRuntime.hasConfiguredAuth(providerId) (model-registry.js).
-				const parsed = splitModelRef(orchRef)
-				if (parsed && !session.modelRuntime.hasConfiguredAuth(parsed.provider)) {
-					throw RequestError.authRequired(
-						undefined,
-						`multi-model orchestrator (${orchRef}) is not available: auth required. ${AUTH_REQUIRED_HINT}`,
-					)
-				}
-				throw RequestError.invalidParams(undefined, `multi-model orchestrator (${orchRef}) is not available`)
-			}
-			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
-			setMultiModelEnabled(sessionId, true)
-			try {
-				// An explicit client request to change the model, so save it as the default.
-				await session.setModel(orchestrator, { persist: true })
-			} catch {
-				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
-				// Pi's setModel only throws "if no auth is configured for the model"
-				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
-			}
-			return value
-		}
-
 		const parsed = splitModelRef(value)
 		if (!parsed) {
-			throw RequestError.invalidParams(
-				undefined,
-				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
-			)
+			throw RequestError.invalidParams(undefined, `invalid model format: "${value}". expected "provider/modelId".`)
 		}
 		const target = findModelByRef(modelRegistry, value)
 		if (!target) {
 			throw RequestError.invalidParams(
 				undefined,
-				`model not found: "${value}". available models: multi-model, ${availableModelRefs(modelRegistry).join(", ")}`,
+				`model not found: "${value}". available models: ${availableModelRefs(modelRegistry).join(", ")}`,
 			)
 		}
 
-		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
-		setMultiModelEnabled(sessionId, false)
 		try {
 			// An explicit client request to change the model, so save it as the default.
 			await session.setModel(target, { persist: true })
 		} catch {
-			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
 			// Pi's setModel only throws "if no auth is configured for the model"
 			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
 		}
+		// Both entry points advertise refreshed options here: the model-dependent
+		// reasoning_effort set changes with the model, and unstable_setSessionModel's
+		// legacy wire shape returns {}, so those clients can only learn it via push.
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "config_option_update",
+				configOptions: buildConfigOptions(session, this.getInitialPermissionMode(session).mode),
+			},
+		})
 		return value
 	}
 
@@ -1520,6 +1545,34 @@ export class KimchiAcpAgent implements Agent {
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
+		const prWatchArgs =
+			getClientOptedIntoPRMonitoring(this.clientCapabilities) && images.length === 0
+				? prWatchCommandArgs(text)
+				: undefined
+		if (prWatchArgs !== undefined) {
+			// Replies go back as agent text; requests that need checkouts continue as an ordinary prompt.
+			let reply: string | undefined
+			try {
+				const watcher = getPRWatcher(entry.session.sessionManager)
+				if (!watcher) throw new Error("PR watch is unavailable in this session.")
+				const result = await runPRWatchCommand(watcher, prWatchArgs)
+				if ("prompt" in result) text = result.prompt
+				else reply = formatPRWatchStatus(result.state)
+			} catch (error) {
+				reply = `PR watch: ${error instanceof Error ? error.message : String(error)}`
+			}
+			if (reply !== undefined) {
+				this.send({
+					sessionId: params.sessionId,
+					update: {
+						sessionUpdate: "agent_message_chunk",
+						messageId: `km.${randomUUID()}`,
+						content: { type: "text", text: `${reply}\n\n` },
+					},
+				})
+				return { stopReason: "end_turn" }
+			}
+		}
 		// An unsolicited run (e.g. a completion-notification wake) may still be
 		// streaming: the client's previous prompt already resolved, so it
 		// legitimately believes the session is free — but pi rejects a prompt
@@ -1544,6 +1597,19 @@ export class KimchiAcpAgent implements Agent {
 			// state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
 		}
+		// A prompt consisting of exactly one text block that starts with
+		// "/compact" invokes the locally-handled compaction command
+		// (advertised in availableCommands) instead of a model turn: parse per
+		// the ACP command contract (exact name, whitespace or end), then drive
+		// the same handler as the _kimchi.dev/compact ext method. A prompt
+		// carrying anything else — further text blocks, attachments — falls
+		// through to the model: silently dropping the extra content would
+		// leave the user with no signal it was ignored.
+		const singleTextBlock = params.prompt.length === 1 && params.prompt[0]?.type === "text"
+		const compactCommand = singleTextBlock ? tryParseCompactCommand(text) : undefined
+		if (compactCommand) {
+			return await this.runCompactCommand(params.sessionId, text, compactCommand, pending)
+		}
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
@@ -1551,6 +1617,53 @@ export class KimchiAcpAgent implements Agent {
 			turnReject = reject
 		})
 		entry.turn = createTurnContext(turnResolve, turnReject)
+		// This is the ACP counterpart of the TUI input preflight. Keep turn creation
+		// in its original position so steering, feedback, and cancellation observe
+		// an active turn during the auth await. Resolve revoked or incompletely
+		// synchronized credentials through the ordinary typed failure path without
+		// another model-request grant attempt.
+		const activeProviderId = entry.session.model?.provider
+		const preparation =
+			activeProviderId !== undefined && !isKimchiProvider(activeProviderId)
+				? "ready"
+				: await prepareActivePromptKimchiCredential(
+						{ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") },
+						(runtime, owner) => installKimchiOAuth(runtime, join(this.agentDir, "auth.json"), owner),
+						activeProviderId,
+						entry.session.modelRuntime,
+					)
+		if (!entry.turn) return result
+		if (entry.turn.cancelled) {
+			this.finalizeTurn(entry, "cancelled")
+			return result
+		}
+		if (preparation === "oauth_revoked") {
+			this.failTurn(
+				entry,
+				RequestError.authRequired(
+					{ kind: "auth" },
+					"OAuth refresh was rejected: auth required. Call session/authenticate to sign in again, then retry.",
+				),
+			)
+			return result
+		}
+		if (preparation === "oauth_refresh_failed") {
+			this.failTurn(
+				entry,
+				RequestError.internalError(undefined, "OAuth refresh failed. Retry this prompt; sign-in is not required."),
+			)
+			return result
+		}
+		if (preparation === "credential_sync_failed") {
+			this.failTurn(
+				entry,
+				RequestError.internalError(
+					undefined,
+					"OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
+				),
+			)
+			return result
+		}
 		// Kick off session.prompt but don't await inside the async function body —
 		// shutdown() needs to be able to reject `result` and have the caller's await
 		// on prompt() settle immediately, which can't happen while this body is
@@ -1583,11 +1696,32 @@ export class KimchiAcpAgent implements Agent {
 				// end_turn — the client would show a silent empty reply.
 				if (entry.turn.lastAssistantError && !entry.turn.cancelled) {
 					const terminal = entry.turn.lastAssistantError
-					// Turn-time 401 = first proof this key is dead. Blame the
-					// provider, not a key: the failing call may use config apiKey
-					// or auth.json OAuth.
+					// Turn-time 401 = first proof this credential is dead. Keep
+					// the anonymous provider mark for this process, and persist the
+					// concrete stored/configured key when it can be attributed.
 					if (isAuthRejectedMessage(terminal.errorMessage)) {
-						markCredentialStale(undefined, entry.session.model?.provider ?? KIMCHI_PROVIDER_ID)
+						const modelProviderId = entry.session.model?.provider ?? KIMCHI_PROVIDER_ID
+						// Kimchi sub-providers share one credential with the base provider;
+						// auth_status also reads this canonical rejection key.
+						const providerId = isKimchiProvider(modelProviderId) ? KIMCHI_PROVIDER_ID : modelProviderId
+						markCredentialStale(undefined, providerId)
+						try {
+							const configuredApiKey = isKimchiProvider(providerId) ? loadKimchiConfig().apiKey : undefined
+							const stored = readStoredCredential(providerId, join(this.agentDir, "auth.json"))
+							const storedApiKey =
+								stored?.type === "oauth" ? stored.access : stored?.type === "api_key" ? stored.key : undefined
+							const ambiguous =
+								configuredApiKey !== undefined &&
+								storedApiKey !== undefined &&
+								configuredApiKey !== "" &&
+								storedApiKey !== "" &&
+								configuredApiKey !== storedApiKey
+							const rejectedApiKey = ambiguous ? undefined : configuredApiKey || storedApiKey
+							if (rejectedApiKey) markCredentialStale(rejectedApiKey, providerId)
+						} catch {
+							// Attribution is best-effort. The provider mark must remain
+							// non-throwing so failTurn always delivers the original error.
+						}
 					}
 					this.failTurn(entry, toTurnError(terminal))
 				} else {
@@ -1610,6 +1744,44 @@ export class KimchiAcpAgent implements Agent {
 			},
 		)
 		return result
+	}
+
+	/** Run the locally-handled /compact command: persist the raw command text
+	 *  as a metadata-only custom entry so a session/load replay can re-surface
+	 *  it (the prompt is intercepted locally, so no session message records
+	 *  it — same pattern as the bash-background settle rows), drive the same
+	 *  handler as the _kimchi.dev/compact ext method (progress streams through
+	 *  agent_activity, the usage gauge refreshes via compaction_end) and report
+	 *  the outcome as an assistant message — the same locally-decided-outcome
+	 *  pattern as the vision gate. No live user_message_chunk echo: commands
+	 *  arrive as regular user messages, which clients render when the prompt
+	 *  is sent. */
+	private async runCompactCommand(
+		sessionId: string,
+		rawText: string,
+		args: { instructions?: string },
+		pending: PendingPrompt,
+	): Promise<PromptResponse> {
+		if (pending.cancelled) return { stopReason: "cancelled" }
+		// Written BEFORE the compaction runs so the record survives even if the
+		// session dies mid-compaction. Any outcome still belongs in the log: the
+		// user issued the command whether it compacted, failed, or was aborted.
+		this.sessions.get(sessionId)?.session.sessionManager.appendCustomEntry(COMPACT_COMMAND_ENTRY_TYPE, {
+			text: rawText,
+		})
+		const outcome = await handleCompact((id) => this.getSessionTurnTarget(id), {
+			sessionId,
+			instructions: args.instructions,
+		})
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "agent_message_chunk",
+				messageId: `km.${randomUUID()}`,
+				content: { type: "text", text: compactOutcomeText(outcome) },
+			},
+		})
+		return { stopReason: outcome.status === "cancelled" ? "cancelled" : "end_turn" }
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
@@ -1697,7 +1869,7 @@ export class KimchiAcpAgent implements Agent {
 					// (installKimchiOAuth registers the real refresh handler on the
 					// throwaway runtime; getAuth reuses it). See ext-methods/sso-credential.ts.
 					const response = await handleSsoCredential(
-						{ installOAuth: installKimchiOAuth },
+						{ installOAuth: (runtime) => installKimchiOAuth(runtime, join(this.agentDir, "auth.json")) },
 						{
 							authPath: join(this.agentDir, "auth.json"),
 							modelsPath: join(this.agentDir, "models.json"),
@@ -1768,6 +1940,10 @@ export class KimchiAcpAgent implements Agent {
 				// Session-scoped: flip the session's runtime memory toggle — the
 				// memory extension reads it at its next agent start.
 				return handleSetMemoryEnabled((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.memory_get:
+				return handleMemoryGet({}, params)
+			case AVAILABLE_EXT_METHODS.memory_update:
+				return handleMemoryUpdate({}, params)
 			case AVAILABLE_EXT_METHODS.memory_list:
 				// Sessionless store op: paginated facts across the selected scopes.
 				return handleMemoryList({}, params)
@@ -2533,6 +2709,13 @@ export class KimchiAcpAgent implements Agent {
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
 				turn.refused = isRefusal(msg)
+				const authenticatedResponse = turn.refused || (msg.stopReason !== "error" && msg.stopReason !== "aborted")
+				// Any completed provider response, including a refusal, proves the
+				// credential authenticated. Local no-op turns emit no assistant message.
+				const providerId = entry.session.model?.provider
+				if (authenticatedResponse && providerId && isKimchiProvider(providerId)) {
+					clearCredentialStale(KIMCHI_PROVIDER_ID)
+				}
 				if (turn.refused) {
 					// A refusal is a turn outcome, not a failure: report it as
 					// stopReason "refusal" with the reason the user can act on. The
@@ -2853,8 +3036,10 @@ export class KimchiAcpAgent implements Agent {
 	// instead of buildSessionContext() avoids surfacing compaction summaries
 	// as synthetic user messages. Custom entries: the artifact-recorder
 	// extension's rows are adopted as the turn's exact artifacts (recorded
-	// live, stat-gated), replacing replay-side re-derivation; other custom
-	// entries still emit nothing.
+	// live, stat-gated), replacing replay-side re-derivation; compact-command
+	// rows re-emit their persisted text as a user message (the locally-handled
+	// command never became a session message); other custom entries still emit
+	// nothing.
 	//
 	// Notifications go straight from this method to conn.sessionUpdate; we do
 	// NOT replay through the AgentSession event emitter, so extensions like
@@ -2883,11 +3068,27 @@ export class KimchiAcpAgent implements Agent {
 
 		for (const entry of entries) {
 			if (entry && entry.type === "custom") {
+				const custom = entry as { customType?: unknown; data?: unknown }
+				if (custom.customType === COMPACT_COMMAND_ENTRY_TYPE && isCompactCommandEntryData(custom.data)) {
+					// A locally-handled /compact command never became a session
+					// message, so re-surface it here as the user message the client
+					// rendered when it sent the prompt (no live echo — see
+					// runCompactCommand). Positioned like any user turn boundary:
+					// the previous turn's artifacts flush before it.
+					flushTurnArtifacts()
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "user_message_chunk",
+							content: { type: "text", text: this.displayText(sessionId, custom.data.text) },
+						},
+					})
+					continue
+				}
 				// Recorded artifact row (extension): adopt it for this turn — the
 				// row is written once per prompt (at agent_settled), after the
 				// prompt's last assistant message (live parity), and replaces what re-derivation sniffed
 				// (exact: live detection was stat-gated).
-				const custom = entry as { customType?: unknown; data?: unknown }
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
 				if (data?.v === 1 && Array.isArray(data.artifacts)) artifactBuffer.adoptRecorded(data.artifacts)
@@ -3284,7 +3485,10 @@ export class KimchiAcpAgent implements Agent {
 				sessionId,
 				update: {
 					sessionUpdate: "available_commands_update",
-					availableCommands: composeAvailableCommands(record.skillCommands),
+					availableCommands: composeAvailableCommands(
+						record.skillCommands,
+						getClientOptedIntoPRMonitoring(this.clientCapabilities),
+					),
 				},
 			})
 		})
@@ -3658,6 +3862,9 @@ export class KimchiAcpAgent implements Agent {
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
+		// This is the original prompt's full run boundary, including tool calls,
+		// retries, cancellation, and held plan-review continuations.
+		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
 		entry.turn = undefined
 		// Non-end_turn terminal outcomes (cancelled, refusal, …) never produce a
 		// rated settled response — clear the rating window armed at settle time.
@@ -3715,6 +3922,7 @@ export class KimchiAcpAgent implements Agent {
 	private failTurn(entry: SessionRecord, err: unknown): void {
 		const turn = entry.turn
 		if (!turn) return
+		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
 		// A terminally errored run is not a settled response — the armed rating
 		// window (agent_settled fires before prompt() resolves) must not survive
 		// into a rate call for an error the client saw as a JSON-RPC failure.
@@ -3754,24 +3962,10 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 
 /**
  * Builds a SessionConfigOption for the model setting.
- * Combines the orchestrator model with multi-model support into a single select UI.
  * Exported for testing.
  */
 type AgentSessionModelConfig = Pick<AgentSession, "model" | "modelRuntime" | "sessionId" | "sessionManager"> & {
 	modelRegistry?: ModelRegistry
-}
-
-/**
- * Whether a session's resolved model is the multi-model orchestrator.
- *
- * Compares the session's model against the configured orchestrator rather than
- * reading the multi-model flag, which is exactly what is unset for a fresh
- * session.
- */
-function isMultiModelOrchestrator(session: AgentSessionModelConfig): boolean {
-	if (!session.model) return false
-	const { model: orchestrator } = getOrchestratorModel(session.sessionId, getSessionModelRegistry(session))
-	return !!orchestrator && refFromModel(session.model) === refFromModel(orchestrator)
 }
 
 function getSessionModelRegistry(
@@ -3808,54 +4002,69 @@ function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSel
 }
 
 export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
-	const multiModelEnabled = getMultiModelEnabled(session.sessionManager)
 	const modelRegistry = getSessionModelRegistry(session)
-	const {
-		model: orchestrator,
-		modelRef: orchRef,
-		modelId: orchId,
-	} = getOrchestratorModel(session.sessionId, modelRegistry)
-	const orchName = orchestrator?.name ?? orchId ?? orchRef
-	// Multi-model's deprecation label is harness-side: the virtual selection has
-	// no platform-catalog entry to carry a backend marker.
-	// Ordering mirrors sortModels() in src/models.ts: active entries sorted by
-	// ref first, deprecated entries last — deprecated lands at the bottom by
-	// flag, not by pinning a specific value.
 	// Regular models carry no description today; deprecated ones get the
 	// picker marker (same gating as the session-start toast) so ACP clients
 	// see the deprecation before selecting, mirroring the TUI's /model column.
 	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
-	const options: Array<{ value: string; name: string; description?: string | null; deprecated?: boolean }> = [
-		...modelRegistry.getAvailable().map((m) => {
-			if (isAutoRoutedModel(m)) return autoModelOption(m, session.sessionId)
-			const marker = deprecationMarkers.get(m.id)
-			return marker
-				? { value: refFromModel(m), name: m.name, description: marker }
-				: { value: refFromModel(m), name: m.name }
-		}),
-		{
-			value: "multi-model",
-			name: `Multi-model (${orchName})`,
-			description: `${MULTI_MODEL_DEPRECATION_LABEL} Routes each task to the best model, with an orchestrator and workers.`,
-			deprecated: true,
-		},
-	]
-	options.sort(
-		(a, b) => Number(a.deprecated ?? false) - Number(b.deprecated ?? false) || a.value.localeCompare(b.value),
-	)
-	// `deprecated` is an internal ordering key — not part of SessionConfigSelectOption
-	// — so strip it before the list goes on the wire.
-	const wireOptions = options.map(({ deprecated: _, ...opt }) => opt)
+	const options: SessionConfigSelectOption[] = modelRegistry.getAvailable().map((m) => {
+		if (isAutoRoutedModel(m)) return autoModelOption(m, session.sessionId)
+		const marker = deprecationMarkers.get(m.id)
+		return marker
+			? { value: refFromModel(m), name: m.name, description: marker }
+			: { value: refFromModel(m), name: m.name }
+	})
+	options.sort((a, b) => a.value.localeCompare(b.value))
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
-	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
+	const currentValue = refFromModel(session.model!)
 	return {
 		id: "model",
 		name: "Model",
 		type: "select",
 		category: "model",
-		description: "Select the active AI model: single-model or multi-model (orchestrator + workers).",
+		description: "Select the active AI model.",
 		currentValue,
-		options: wireOptions,
+		options,
+	}
+}
+
+const CANONICAL_THINKING_LEVEL_SET = new Set<string>(CANONICAL_THINKING_LEVELS)
+
+/** Runtime proof that a requested thinking level is one of pi's canonical
+ *  levels. Selectable sets are built from curated levels and pi's map keys —
+ *  both canonical — but typed as plain strings, so narrowing to the
+ *  setThinkingLevel parameter needs this guard instead of a call-site cast. */
+function isCanonicalThinkingLevel(value: string): value is AgentSession["thinkingLevel"] {
+	return CANONICAL_THINKING_LEVEL_SET.has(value)
+}
+
+/**
+ * Builds the SessionConfigOption for the session's thinking level — the
+ * control ACP clients render as their reasoning-effort picker (JetBrains Air
+ * binds its native effort control to the `reasoning_effort` configId).
+ * Selectable values match the TUI's /thinking selector (thinking-selection.ts);
+ * a model with nothing selectable gets NO option rather than a dead one-value
+ * selector — clients hide what they are not given. currentValue is rank-clamped
+ * into the selection so the advertised value is always one of options.
+ */
+export type AgentSessionThinkingConfig = Pick<AgentSession, "model" | "thinkingLevel">
+
+export function buildThinkingConfigOption(session: AgentSessionThinkingConfig): SessionConfigOption | null {
+	if (!session.model) return null
+	const selection = thinkingSelection(session.model)
+	if (selection.mode !== "levels" || selection.selectable.length === 0) return null
+	return {
+		id: "reasoning_effort",
+		name: "Reasoning Effort",
+		type: "select",
+		category: "thought_level",
+		description: "How much the model reasons before answering. Available levels depend on the selected model.",
+		currentValue: clampToSelection(session.thinkingLevel, selection),
+		options: selection.selectable.map((level) => ({
+			value: level,
+			name: thinkingLevelName(level),
+			description: thinkingLevelDescription(level),
+		})),
 	}
 }
 
@@ -3878,7 +4087,32 @@ function autoOptionName(configOptions: SessionConfigOption[]): string | undefine
 
 function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
 	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
-	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+	const thinking = buildThinkingConfigOption(session)
+	if (thinking) options.push(thinking)
+	return options
+}
+
+/** The assistant-facing text for a /compact command outcome. Trailing blank
+ *  line keeps the message visually separate when a client concatenates
+ *  chunks — same convention as the vision-gate warning.
+ *
+ *  Deliberately omits the compaction summary: a completed compaction reports
+ *  a one-line status ("Context compacted from N tokens.") mirroring the
+ *  TUI's collapsed-by-default `[compaction]` row (Compacted from N tokens —
+ *  expand to read the summary). ACP chat surfaces have no expand affordance,
+ *  so printing the full summary inline would dump a long document into the
+ *  transcript on every manual compaction; neither Claude Code nor Studio do
+ *  that. The summary still reaches interested clients programmatically via
+ *  the _kimchi.dev/compact ext-method response, and the runtime keeps it in
+ *  the compaction entry itself. */
+function compactOutcomeText(outcome: CompactResponse): string {
+	if (outcome.status === "completed") {
+		const counts =
+			typeof outcome.tokensBefore === "number" ? ` from ${outcome.tokensBefore.toLocaleString("en-US")} tokens` : ""
+		return `Context compacted${counts}.\n\n`
+	}
+	return `Compaction ${outcome.status}${outcome.error ? `: ${outcome.error}` : ""}\n\n`
 }
 
 // Checks model PRESENCE only — pi resolves a non-null model object even on
@@ -4219,6 +4453,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				sessionManager,
 				modelRuntime,
 			})
+			bindSessionScopedOAuth(session, options.agentDir)
 			return session
 		}
 		let header: Pick<SessionHeader, "id" | "cwd"> | null
@@ -4272,6 +4507,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			sessionManager,
 			modelRuntime,
 		})
+		bindSessionScopedOAuth(session, options.agentDir)
 		return session
 	}
 }
@@ -4293,8 +4529,17 @@ async function createSsoAwareModelRuntime(agentDir: string) {
 		authPath: join(agentDir, "auth.json"),
 		modelsPath: join(agentDir, "models.json"),
 	})
-	installKimchiOAuth(modelRuntime)
+	installKimchiOAuth(modelRuntime, join(agentDir, "auth.json"))
 	return modelRuntime
+}
+
+/**
+ * Bind request-time callbacks to the same runtime identity as prompt preflight.
+ * The initial runtime install happens before createAgentSession loads the login
+ * extension's registrations, so bind again after construction completes.
+ */
+function bindSessionScopedOAuth(session: AgentSession, agentDir: string): void {
+	installKimchiOAuth(session.modelRuntime, join(agentDir, "auth.json"), session.modelRuntime)
 }
 
 /** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
@@ -4310,6 +4555,7 @@ export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory
 			resourceLoader,
 			modelRuntime,
 		})
+		bindSessionScopedOAuth(session, options.agentDir)
 		return session
 	}
 }

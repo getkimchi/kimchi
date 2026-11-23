@@ -205,4 +205,33 @@ describe("branchCommandExtension", () => {
 		expect(ctx.fork).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Nothing to branch yet", "info")
 	})
+
+	it("does not notify inside the branch callback (single toast: the adoption one)", async () => {
+		const { api, command } = makePi()
+		branchCommandExtension(api)
+		const branchCtx = {
+			sessionManager: {
+				getSessionId: vi.fn(() => "abcdef12-3456-7890-abcd-ef1234567890"),
+				appendSessionInfo: vi.fn(),
+			},
+			ui: { notify: vi.fn() },
+			sendMessage: vi.fn(async () => {}),
+		}
+		const ctx = {
+			waitForIdle: vi.fn(async () => {}),
+			sessionManager: {
+				getLeafId: vi.fn(() => "leaf-1"),
+				getSessionName: vi.fn(() => "hello"),
+			},
+			fork: vi.fn(async (_entryId: string, options?: { withSession?: (ctx: typeof branchCtx) => Promise<void> }) => {
+				await options?.withSession?.(branchCtx)
+				return { cancelled: false }
+			}),
+			ui: { notify: vi.fn() },
+		} as unknown as ExtensionCommandContext
+
+		await command().handler("", ctx)
+
+		expect(branchCtx.ui.notify).not.toHaveBeenCalled()
+	})
 })

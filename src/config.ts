@@ -115,6 +115,7 @@ export interface OnboardingConfig {
 	hideSessionModeDialog?: boolean
 	teleportHelpSeenAt?: string
 	studioOnboardingSeenAt?: string
+	claudeCodeInstructionsNoticeSeenAt?: string
 }
 
 export interface SurveyConfig {
@@ -587,12 +588,17 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 		typeof raw.studioOnboardingSeenAt === "string" && raw.studioOnboardingSeenAt.length > 0
 			? raw.studioOnboardingSeenAt
 			: undefined
+	const claudeCodeInstructionsNoticeSeenAt =
+		typeof raw.claudeCodeInstructionsNoticeSeenAt === "string" && raw.claudeCodeInstructionsNoticeSeenAt.length > 0
+			? raw.claudeCodeInstructionsNoticeSeenAt
+			: undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
 		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
 		...(teleportHelpSeenAt ? { teleportHelpSeenAt } : {}),
 		...(studioOnboardingSeenAt ? { studioOnboardingSeenAt } : {}),
+		...(claudeCodeInstructionsNoticeSeenAt ? { claudeCodeInstructionsNoticeSeenAt } : {}),
 	}
 }
 
@@ -1108,6 +1114,16 @@ export function writeTeleportHelpSeenAt(seenAt: string, configPath?: string): vo
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateOnboardingConfig(path, (onboarding) => {
 		onboarding.teleportHelpSeenAt = seenAt
+	})
+}
+
+export function readClaudeCodeInstructionsNoticeSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.claudeCodeInstructionsNoticeSeenAt
+}
+
+export function writeClaudeCodeInstructionsNoticeSeenAt(seenAt: string, configPath?: string): void {
+	updateOnboardingConfig(configPath ?? KIMCHI_CONFIG_PATH, (onboarding) => {
+		onboarding.claudeCodeInstructionsNoticeSeenAt = seenAt
 	})
 }
 

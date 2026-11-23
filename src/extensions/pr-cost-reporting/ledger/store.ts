@@ -21,7 +21,15 @@ import { closeSync, mkdirSync, openSync } from "node:fs"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
 import { reportingDirectory } from "../queue.js"
-import { LEDGER_SCHEMA, META_PROJECTION_VERSION, PROJECTION_VERSION, SCHEMA_VERSION } from "./schema.js"
+import {
+	LEDGER_ADDITIVE_SCHEMA,
+	LEDGER_REQUIRED_SCHEMA,
+	LEDGER_SCHEMA,
+	LEDGER_TRANSITION_BACKFILL,
+	META_PROJECTION_VERSION,
+	PROJECTION_VERSION,
+	SCHEMA_VERSION,
+} from "./schema.js"
 
 /** Thrown when the database cannot be opened in this runtime (no bun:sqlite). */
 export class LedgerUnavailableError extends Error {
@@ -67,6 +75,12 @@ export function classifyUserVersion(version: number): "create" | "open" | "forei
 export interface LedgerStore {
 	readonly db: Sqlite.Database
 	readonly path: string
+	/** True while the optional additive-index apply was skipped on a busy writer. Reads still work (the
+	 * windowed read probes and drops the index hint); readers retry the apply lazily until it lands,
+	 * so a cached backend self-heals without waiting for a fresh open. */
+	additiveDeferred: boolean
+	/** Retry a deferred additive apply on this live connection; true when the indexes are present after it. */
+	tryAdditiveSchema(): boolean
 	/** Run fn in an immediate transaction: all-or-nothing commit for capture/import/ACK points. */
 	tx<T>(fn: () => T): T
 	close(): void
@@ -87,6 +101,32 @@ function sleepSync(ms: number): void {
 
 function isBusy(error: unknown): boolean {
 	return String((error as { code?: unknown } | null)?.code ?? "").startsWith("SQLITE_BUSY")
+}
+
+/** Additive-schema apply errors that mean "another writer holds the lock": retriable, never fatal. */
+function isAdditiveBusy(error: unknown): boolean {
+	if (isBusy(error)) return true
+	const message = error instanceof Error ? error.message : String(error)
+	return /database is (locked|busy)/.test(message)
+}
+
+/** One additive-schema attempt on a live connection: a short busy timeout orders it against other
+ * writers, and a busy result is reported (not thrown) so the caller can retry later. */
+function applyAdditiveSchema(ledger: Sqlite.Database): boolean {
+	ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS / 20}`)
+	try {
+		ledger
+			.transaction(() => {
+				ledger.exec(LEDGER_ADDITIVE_SCHEMA)
+			})
+			.immediate()
+		return true
+	} catch (error) {
+		if (!isAdditiveBusy(error)) throw error
+		return false
+	} finally {
+		ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`)
+	}
 }
 
 /**
@@ -151,12 +191,52 @@ export function openStore(agentDir: string): LedgerStore {
 					})
 					.immediate()
 			}
-			return {
+			// Indexes added after SCHEMA_VERSION shipped still land on pre-existing ledgers: every statement is
+			// idempotent, so applying them on each open keeps older databases at size with fresh ones. These
+			// are optional — readers probe their presence — so a held writer lock skips the pass rather than
+			// stalling a reader. The store marks the skip, and readers retry the apply on this live connection
+			// (a cached backend self-heals; it does not wait for the next open).
+			const store: LedgerStore = {
 				db: ledger,
 				path,
+				additiveDeferred: false,
+				tryAdditiveSchema: () => {
+					if (!store.additiveDeferred) return true
+					store.additiveDeferred = !applyAdditiveSchema(ledger)
+					return !store.additiveDeferred
+				},
 				tx: <T>(fn: () => T): T => ledger.transaction(fn).immediate(),
 				close: () => ledger.close(),
 			}
+			if (!applyAdditiveSchema(ledger)) store.additiveDeferred = true
+			// Required objects: backend construction reads transition_repositories unconditionally, so
+			// this apply is never skipped on a busy writer — the busy error propagates to the open's
+			// retry loop (which re-attempts whole) instead of handing out a backend whose schema it cannot
+			// read. The lock-free probe keeps the steady-state open read-only, so WAL readers stay
+			// concurrent while nobody is migrating; only the one-time migration takes the write lock.
+			// A ledger that predates the materialized repository set backfills its existing rows the first
+			// time the table appears. Detection, creation, and population share one immediate
+			// transaction, so a crash leaves the table absent and the next open retries whole.
+			const requiredPresent = ledger
+				.query<{ count: number }, []>(
+					"SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'transition_repositories'",
+				)
+				.get()
+			if ((requiredPresent?.count ?? 0) === 0)
+				ledger
+					.transaction(() => {
+						// Re-read inside the write lock: another process may have finished the
+						// migration between the outer lock-free probe and this transaction.
+						const again = ledger
+							.query<{ count: number }, []>(
+								"SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'transition_repositories'",
+							)
+							.get()
+						ledger.exec(LEDGER_REQUIRED_SCHEMA)
+						if ((again?.count ?? 0) === 0) ledger.exec(LEDGER_TRANSITION_BACKFILL)
+					})
+					.immediate()
+			return store
 		} catch (error) {
 			try {
 				db?.close()

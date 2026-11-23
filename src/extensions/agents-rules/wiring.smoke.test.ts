@@ -58,7 +58,7 @@ describe("agents-rules extension wiring", () => {
 		agentsRulesExtension(mock.api)
 		await mock.emit("session_start", { type: "session_start" }, makeCtx())
 
-		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "orchestrator" })
+		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
 		const text = blocks.map((b) => b.content).join("\n")
 		expect(text).toContain("## Rules")
 		expect(text).toContain("ALWAYS BODY CONTENT")
@@ -74,7 +74,7 @@ describe("agents-rules extension wiring", () => {
 		agentsRulesExtension(mock.api)
 		await mock.emit("session_start", { type: "session_start" }, makeCtx())
 
-		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "orchestrator" })
+		const blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
 		expect(blocks.filter((b) => b.owner === "agents-rules")).toEqual([])
 	})
 
@@ -178,12 +178,12 @@ describe("agents-rules extension wiring", () => {
 		const mock = createExtensionApi()
 		agentsRulesExtension(mock.api)
 		await mock.emit("session_start", { type: "session_start" }, makeCtx())
-		let blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "orchestrator" })
+		let blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
 		expect(blocks.map((b) => b.content).join("\n")).toContain("FIRST RULE")
 
 		writeRule("always2.mdc", "alwaysApply: true", "SECOND RULE")
 		await mock.emit("session_start", { type: "session_start" }, makeCtx())
-		blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "orchestrator" })
+		blocks = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
 		expect(blocks.map((b) => b.content).join("\n")).toContain("SECOND RULE")
 	})
 })
