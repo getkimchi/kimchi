@@ -1,7 +1,6 @@
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 const MCP_OAUTH_STATUS_MESSAGE = "mcp-oauth-status"
-const OAUTH_GRANT_RECOVERY_POLL_MS = 50
 
 type OAuthStatusMessage = Parameters<ExtensionAPI["sendMessage"]>[0]
 type OAuthOutcome = { authenticated: boolean; message: string }
@@ -65,9 +64,6 @@ function abortError(signal: AbortSignal): Error {
  * expose a flow id in mcp-oauth-status and this gate must match on that id. */
 export class McpOAuthTurnContinuation {
 	private readonly pending = new Map<string, PendingOAuth>()
-	private readonly recoveredGrantServers = new Set<string>()
-
-	constructor(private readonly hasPersistedGrant: (serverName: string) => boolean) {}
 
 	static serverNameForAuthStart(params: unknown): string | undefined {
 		if (!isRecord(params) || params.action !== "auth-start" || typeof params.server !== "string") return undefined
@@ -104,7 +100,6 @@ export class McpOAuthTurnContinuation {
 			pending.cancelled = true
 		}
 		signal?.addEventListener("abort", markCancelled, { once: true })
-		const hadPersistedGrant = this.hasPersistedGrant(serverName)
 		try {
 			let result: AgentToolResult<unknown>
 			try {
@@ -124,8 +119,6 @@ export class McpOAuthTurnContinuation {
 				this.pending.delete(serverName)
 				return result
 			}
-
-			this.recoverPersistedGrant(pending, hadPersistedGrant)
 
 			let rejectAborted!: (error: Error) => void
 			const aborted = new Promise<never>((_, reject) => {
@@ -167,38 +160,6 @@ export class McpOAuthTurnContinuation {
 		}
 	}
 
-	/** A watcher can disappear after authenticate() persists a grant but before
-	 * emitAuthStatus (for example, manager.close() rejects cleanup). Treat that
-	 * persisted grant as terminal too. Never use this fallback for a grant that
-	 * already existed when auth-start began: it is not this flow's completion. */
-	private recoverPersistedGrant(pending: PendingOAuth, hadPersistedGrant: boolean): void {
-		if (hadPersistedGrant) return
-		const { serverName } = pending
-		let timer: ReturnType<typeof setInterval> | undefined
-		const poll = () => {
-			if (pending.cancelled || this.pending.get(serverName) !== pending) {
-				if (timer !== undefined) clearInterval(timer)
-				return
-			}
-			let present = false
-			try {
-				present = this.hasPersistedGrant(serverName)
-			} catch {
-				// The watcher remains the primary outcome when the store is unavailable.
-				return
-			}
-			if (!present) return
-			this.pending.delete(serverName)
-			this.recoveredGrantServers.add(serverName)
-			if (timer !== undefined) clearInterval(timer)
-			pending.resolve({ authenticated: true, message: `OAuth authentication successful for "${serverName}".` })
-		}
-		timer = setInterval(poll, OAUTH_GRANT_RECOVERY_POLL_MS)
-		void pending.completion.then(() => {
-			if (timer !== undefined) clearInterval(timer)
-		})
-	}
-
 	/** Consume the sole same-server watcher status owned by this session. Other
 	 * OAuth sources keep the ordinary sendMessage path AND triggerTurn options;
 	 * see the class comment for the single-live-flow invariant that makes server
@@ -208,10 +169,7 @@ export class McpOAuthTurnContinuation {
 		const details = authStatusDetails(message)
 		if (!details) return false
 		const pending = this.pending.get(details.serverName)
-		// A slower ordinary watcher may still report after recovery won the
-		// race. Consume that same flow's one late report rather than starting a
-		// duplicate turn. Single-live watcher ownership makes one marker enough.
-		if (!pending) return this.recoveredGrantServers.delete(details.serverName)
+		if (!pending) return false
 		this.pending.delete(details.serverName)
 		if (!pending.cancelled) {
 			pending.resolve({
@@ -227,7 +185,6 @@ export class McpOAuthTurnContinuation {
 	/** Release a tool wait during session disposal. The adapter's own runtime
 	 * shutdown rejects its browser watch; no late status can find this map. */
 	shutdown(): void {
-		this.recoveredGrantServers.clear()
 		const pending = [...this.pending.values()]
 		this.pending.clear()
 		for (const flow of pending) {

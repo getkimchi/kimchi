@@ -1,4 +1,3 @@
-import { resolve } from "node:path"
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -14,7 +13,6 @@ import {
 	MCP_RUNTIME_REGISTER_VERSION,
 	MCP_STATUS_EVENT,
 } from "pi-mcp-adapter"
-import { inspectMcpOAuthTokensForUrl, type McpOAuthStorageOptions } from "pi-mcp-adapter/oauth"
 import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
@@ -408,15 +406,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	}
 	let warnings: string[] = []
 	let sessionGeneration = 0
-	let oauthServers: Record<string, ServerEntry> = {}
-	let oauthStorageOptions: McpOAuthStorageOptions = {}
-	const oauthTurnContinuation = options.holdOAuthTurn
-		? new McpOAuthTurnContinuation((serverName) => {
-				const serverUrl = oauthServers[serverName]?.url
-				if (typeof serverUrl !== "string") return false
-				return inspectMcpOAuthTokensForUrl(serverName, serverUrl, oauthStorageOptions).status === "present"
-			})
-		: undefined
+	const oauthTurnContinuation = options.holdOAuthTurn ? new McpOAuthTurnContinuation() : undefined
 	// Only the adapter's current authenticated session may authorize private reads.
 	let privateCatalogs = new Map<string, ServerCacheEntry>()
 
@@ -518,14 +508,6 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 							mcpServers: { ...config.mcpServers, [gateway.name]: gateway.entry },
 						}
 					: config
-			oauthServers = effectiveConfig.mcpServers
-			const configuredOAuthDir = config.settings?.oauthDir?.trim()
-			oauthStorageOptions =
-				config.settings?.oauthCredentialStore === "encrypted-file"
-					? { credentialStore: "encrypted-file" }
-					: configuredOAuthDir
-						? { baseDir: resolve(cwd, configuredOAuthDir) }
-						: {}
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
 			// Lazy children register for initial runtime discovery without changing

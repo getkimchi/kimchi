@@ -2418,7 +2418,7 @@ index 0000000000000000000000000000000000000000..01bf2d87c50f03e0f1d7ea2ead1be8b4
 +  return null;
 +}
 diff --git a/proxy-modes.ts b/proxy-modes.ts
-index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98a070add7 100644
+index 453e728eaf6e76771aecb0e4386dbb1273aefe45..d961cd5ac713e8a93e7ad211e5520816572d4e37 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
 @@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
@@ -2439,7 +2439,23 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
  ): void {
    let watchers = backgroundAuthWatchers.get(state);
    if (!watchers) {
-@@ -278,11 +280,15 @@ function ensureBackgroundAuthWatcher(
+@@ -257,7 +259,14 @@ function ensureBackgroundAuthWatcher(
+   const watcher = authenticate(serverName, serverUrl, definition, authOptions).then(async (status) => {
+     throwIfAborted(state.owner.signal);
+     if (status !== "authenticated") throw new Error(`OAuth authentication ended with status: ${status}`);
+-    await state.manager.close(serverName);
++    try {
++      await state.manager.close(serverName);
++    } catch {
++      // authenticate() has already persisted this flow's grant. Connection
++      // cleanup is separate: lazy healing/reconnect can recover its failure,
++      // but this watcher must still deliver its own authenticated outcome.
++      state.ui?.notify(`MCP OAuth: connection cleanup failed after authenticating "${serverName}"; continuing with the persisted grant`, "warning");
++    }
+     throwIfAborted(state.owner.signal);
+     clearFailure(state, serverName, "auth-background-complete");
+     updateStatusBar(state);
+@@ -278,11 +287,15 @@ function ensureBackgroundAuthWatcher(
        if (isAbortError(statusError, state.owner.signal)) return;
      }
      if (state.owner.signal.aborted) return;
@@ -2456,7 +2472,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
      );
    }).finally(() => {
      if (watchers?.get(serverName) === watcher) watchers.delete(serverName);
-@@ -322,24 +328,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
+@@ -322,24 +335,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
    }
  }
  
@@ -2492,7 +2508,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
      `mcp({ action: "auth-complete", server: "${serverName}", args: { redirectUrl: "PASTE_REDIRECT_URL_HERE" } })`,
      "",
      redirect.remote
-@@ -626,7 +635,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -626,7 +642,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
        };
      }
  
@@ -2501,7 +2517,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
        ? ownedSignal
          ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
          : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
-@@ -641,17 +650,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -641,17 +657,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
      }
  
      if (getRedirectDetails(authorizationUrl).remote) {
@@ -2527,7 +2543,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
        details: { mode: "auth-start", server: serverName, authorizationUrl },
      };
    } catch (error) {
-@@ -1473,6 +1488,23 @@ export async function executeCall(
+@@ -1473,6 +1495,23 @@ export async function executeCall(
        }
      }
  
@@ -2551,7 +2567,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
      if (connection?.status === "needs-auth") {
        const message = getAuthRequiredMessage(state, serverName);
        return {
-@@ -1650,6 +1682,7 @@ export async function executeCall(
+@@ -1650,6 +1689,7 @@ export async function executeCall(
            config: state.config,
            ...(ownedSignal ? { signal: ownedSignal } : {}),
            onNeedsAuth: recoverAuthConnection,
@@ -2559,7 +2575,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..af02f32c8b22e5be620e532e811f9e98
          },
          serverName,
          async (conn) => {
-@@ -1695,6 +1728,7 @@ export async function executeCall(
+@@ -1695,6 +1735,7 @@ export async function executeCall(
          config: state.config,
          ...(ownedSignal ? { signal: ownedSignal } : {}),
          onNeedsAuth: recoverAuthConnection,
