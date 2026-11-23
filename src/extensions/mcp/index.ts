@@ -40,6 +40,7 @@ import {
 } from "./oauth-callback-branding.js"
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { installOfflineAccessAuthorizationUrlTransform } from "./oauth-offline-access.js"
+import { McpOAuthTurnContinuation } from "./oauth-turn-continuation.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
 import { collectReadOnlyMcpWireNames, isReadOnlyQualifiedMcpGatewayTool } from "./read-only.js"
 import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
@@ -200,6 +201,7 @@ function createUpstreamApi(
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
+	oauthTurnContinuation?: McpOAuthTurnContinuation,
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
 	const registeredToolNames = new Set<string>()
@@ -254,9 +256,18 @@ function createUpstreamApi(
 							) {
 								return blockedPlanningResult(brandedTool.name)
 							}
-							const result = canChangeFiles(brandedTool.name, args[1], getReadOnlyToolNames, isReadOnlyGatewayTool)
-								? await observeToolFiles(args[4], args[0], "mcp", () => execute(...args))
-								: await execute(...args)
+							const run = () =>
+								canChangeFiles(brandedTool.name, args[1], getReadOnlyToolNames, isReadOnlyGatewayTool)
+									? observeToolFiles(args[4], args[0], "mcp", () => execute(...args))
+									: execute(...args)
+							const oauthServer =
+								brandedTool.name === MCP_PROXY_TOOL
+									? McpOAuthTurnContinuation.serverNameForAuthStart(args[1])
+									: undefined
+							const result =
+								oauthTurnContinuation && oauthServer
+									? await oauthTurnContinuation.runAuthStart(oauthServer, args[2], run)
+									: await run()
 							return brandMcpAdapterOwnedToolResult(result)
 						},
 					})
@@ -307,6 +318,12 @@ function createUpstreamApi(
 			if (property === "registerFlag") {
 				return (name: string, flag: Parameters<ExtensionAPI["registerFlag"]>[1]): void => {
 					if (name !== "mcp-config") target.registerFlag(name, flag)
+				}
+			}
+			if (property === "sendMessage" && oauthTurnContinuation) {
+				return (message: Parameters<ExtensionAPI["sendMessage"]>[0]): void => {
+					if (oauthTurnContinuation.consumeStatusMessage(message)) return
+					target.sendMessage(message)
 				}
 			}
 			if (property === "getActiveTools") {
@@ -365,6 +382,8 @@ export interface KimchiMcpAdapterExtensionOptions {
 	 * sessions so every subagent spawn does not open an eager gateway connection.
 	 */
 	lazyGatewayConnect?: boolean
+	/** Keep agent-started OAuth watchers inside their existing ACP tool/model run. */
+	holdOAuthTurn?: boolean
 }
 
 export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensionOptions = {}): ExtensionFactory {
@@ -387,6 +406,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	}
 	let warnings: string[] = []
 	let sessionGeneration = 0
+	const oauthTurnContinuation = options.holdOAuthTurn ? new McpOAuthTurnContinuation() : undefined
 	// Only the adapter's current authenticated session may authorize private reads.
 	let privateCatalogs = new Map<string, ServerCacheEntry>()
 
@@ -534,6 +554,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					},
 					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server, privateCatalogs),
 					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server, privateCatalogs),
+					oauthTurnContinuation,
 				),
 			)
 			if (gateway !== undefined && !discoverGatewayAtStartup) registerGatewayRuntimeServer(pi, gateway)
@@ -572,6 +593,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		clearStatusResync()
 		sessionGeneration++
 		privateCatalogs.clear()
+		oauthTurnContinuation?.shutdown()
 	})
 }
 

@@ -4427,7 +4427,9 @@ async function createSessionSettings(
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
-	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers })
+	// The adapter's ordinary OAuth watcher starts a fresh trigger-turn after
+	// authorization. ACP keeps that work inside the originating tool/model run.
+	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers, holdOAuthTurn: true })
 	// The main loader carries the LIVE extension set (inline factories + MCP
 	// adapter) and is only reloaded on intentional full session reloads. The
 	// ACP adapter in front of it serves skills from per-session discovery
