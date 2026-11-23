@@ -615,6 +615,23 @@ describe("catalog-driven Auto default (main session)", () => {
 		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
 	})
 
+	it("installs Auto on a fresh startup with a pre-created session file", async () => {
+		populateCliArgs([])
+		const sessionFile = join(tempDir, "precreated-session.jsonl")
+		writeFileSync(sessionFile, '{"type":"session"}\n')
+		const { setModel, start } = runSessionStart(autoModelExtension, {
+			sessionManager: {
+				getSessionFile: () => sessionFile,
+				getSessionId: () => SESSION_ID,
+				getEntries: () => [],
+			},
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
+	})
+
 	it("does not notify when the fresh session already comes up on Auto", async () => {
 		// Auto is always the default now, so a fresh session starting on Auto
 		// must be silent — the notice is only for switching away from another

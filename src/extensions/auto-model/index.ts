@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
@@ -340,14 +340,11 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// command line is the only moment a saved default may be installed or
 			// unwrapped. Subagents are excluded so a child never rewrites the global
 			// default, and a resumed conversation keeps the model it was using.
-			const sessionFile = ctx.sessionManager.getSessionFile()
-			const hasPersistedSession = sessionFile !== undefined && existsSync(sessionFile)
+			// A pre-created session file alone is not a resumed conversation: launch
+			// wrappers may create one before startup, so freshness needs message content.
 			const freshSession =
 				event.reason === "new" ||
-				(event.reason === "startup" &&
-					!event.previousSessionFile &&
-					!hasPersistedSession &&
-					!entries.some((entry) => entry.type === "message"))
+				(event.reason === "startup" && !event.previousSessionFile && !entries.some((entry) => entry.type === "message"))
 			// An explicit CLI model belongs to this process, not only its startup event:
 			// /new and /clear replace the session with reason "new" and keep it too.
 			// Other launch options keep their existing startup-only exemption.
