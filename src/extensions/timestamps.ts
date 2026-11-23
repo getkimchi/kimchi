@@ -140,14 +140,15 @@ function patchAddMessageToChat(): void {
 
 	prototype.addMessageToChat = function timestampedAddMessage(message, options) {
 		const children = this.chatContainer?.children
-		const previousChildren = new Set(children ?? [])
+		const previousChildCount = children?.length ?? 0
 		const result = original.call(this, message, options)
 		const timestamp = validTimestamp(message.timestamp)
 		if (timestamp !== undefined && Array.isArray(children)) {
-			for (const child of children) {
-				if (!previousChildren.has(child) && child !== null && typeof child === "object") {
-					componentTimestamps.set(child, timestamp)
-				}
+			// Only decorate children appended by this message. Snapshotting every
+			// existing child made session resume quadratic as history grew.
+			for (let index = previousChildCount; index < children.length; index++) {
+				const child = children[index]
+				if (child !== null && typeof child === "object") componentTimestamps.set(child, timestamp)
 			}
 		}
 		return result

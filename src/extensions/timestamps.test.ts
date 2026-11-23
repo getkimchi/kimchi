@@ -162,6 +162,31 @@ describe("message timestamp rendering", () => {
 		expect(first.filter((line) => stripSgr(line).trimEnd().endsWith(UTC_LABEL))).toHaveLength(1)
 	})
 
+	it("does not traverse existing chat children while appending with timestamps disabled", () => {
+		const chat = createFakeChat()
+		for (let index = 0; index < 100; index++) chat.container.addChild(new Container())
+		// The old implementation built a Set from every existing child. That
+		// snapshot is forbidden by this proxy even before the message is added.
+		Reflect.set(
+			chat.container,
+			"children",
+			new Proxy(chat.container.children as unknown[], {
+				get(target, property, receiver) {
+					if (property === Symbol.iterator) throw new Error("existing children were traversed")
+					return Reflect.get(target, property, receiver)
+				},
+			}),
+		)
+		configureTranscriptTimestamps({ enabled: false, timezone: "UTC" })
+
+		expect(() => addMessage(chat, { role: "user", content: "Linear append", timestamp: FIXED_MS })).not.toThrow()
+		const children = Reflect.get(chat.container, "children") as unknown[]
+		const component = children[children.length - 1]
+		expect(component).toBeInstanceOf(UserMessageComponent)
+		configureTranscriptTimestamps({ enabled: true, timezone: "UTC" })
+		expectTimestampRow((component as UserMessageComponent).render(80), "user")
+	})
+
 	it("reads live and settled assistant timestamps without modifying content", () => {
 		const message = createAssistantMessage()
 		const component = new AssistantMessageComponent(message as never)
