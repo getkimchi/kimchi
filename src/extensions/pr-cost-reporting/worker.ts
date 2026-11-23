@@ -1007,13 +1007,12 @@ const PRELUDE_MS = 60_000
 /** The group translation in progress: units committed while its marked records stay unchanged. */
 const PROGRESS_NOTE = "translation-progress"
 
-/** The built plan of a translation pass's prelude lives in its own note, written once per input signature.
+/** The built plan of a translation pass's prelude lives in its own note, written once per round of a group.
  *
- * Deliberate single slot: only one group's plan and progress are retained at a time. When several groups
- * translate across interleaved passes, group B's rebuild overwrites group A's suspended plan — the
- * signature checks make the fallback correct (A re-runs its full prelude), so only the resume optimization
- * is lost, never correctness. Per-group keys (`translation-plan:<groupKey>`, cleaned on completion) are the
- * upgrade if that loss ever shows up in real interleaving. */
+ * Deliberate single slot: only one group's plan and progress are retained at a time. The group that owns a
+ * suspended plan resumes first in the next pass, so another group cannot take over the slot while it is
+ * unfinished. A plan whose group or covered markers no longer match reads as absent and the group rebuilds, so a
+ * lost slot costs only the resume, never correctness. */
 const PLAN_NOTE = "translation-plan"
 
 /** The persisted composition of a translation pass's prelude, JSON round-trippable through the plan note. */
@@ -1048,9 +1047,9 @@ function groupSignatureParts(works: readonly string[], changed: ReadonlyMap<stri
 	)
 }
 
-/** Stable key of a group's works: the plan and progress notes name the group they belong to. */
-function groupKeyOf(works: readonly string[]): string {
-	return createHash("sha256").update(works.join("\0")).digest("hex")
+/** SHA-256 of NUL-joined parts. Over a group's works it is the key the plan and progress notes carry. */
+function digestParts(parts: readonly string[]): string {
+	return createHash("sha256").update(parts.join("\0")).digest("hex")
 }
 
 /**
@@ -1063,10 +1062,10 @@ function groupKeyOf(works: readonly string[]): string {
  * the new markers stay for the next round. Rebuilding instead restarts a large group from its first unit on every
  * pass that sees a new record, so a group in active use never finishes.
  */
-function readPlanTail(value: unknown, group: string, changed: ReadonlyMap<string, string>): PlanTail | undefined {
+function readPlanTail(value: unknown, groupKey: string, changed: ReadonlyMap<string, string>): PlanTail | undefined {
 	if (!object(value)) return undefined
 	if (
-		value.group !== group ||
+		value.group !== groupKey ||
 		!Array.isArray(value.markers) ||
 		!value.markers.every((marker) => typeof marker === "string" && changed.has(marker)) ||
 		value.generation !== PLAN_GENERATION ||
@@ -1105,8 +1104,8 @@ function readPlanTail(value: unknown, group: string, changed: ReadonlyMap<string
 		if (!entities || !unit.entities.every((entity) => entities.has(entity))) return undefined
 	}
 	return {
-		group,
-		markers: value.markers as string[],
+		group: groupKey,
+		markers: value.markers,
 		generation: PLAN_GENERATION,
 		units,
 		accounts,
@@ -1125,10 +1124,10 @@ const STALLED_NOTE = "translation-stalled"
 
 /**
  * A group whose translation completed but left requests waiting for evidence larger than the records alone (a PR
- * merge, a repository lookup that failed then) resolves only when its inputs move: new markers, or external state
- * gathered during translation. Re-running the identical group every pass blocks the UI for its whole read cost; a
- * group with the identical signature waits this long between full retries. New markers flip the signature and the
- * group re-runs immediately.
+ * merge), or whose repository identities did not all resolve, keeps its markers and resolves only when its inputs
+ * move: new markers, or external state gathered during translation. Re-running the identical group every pass
+ * re-pays its whole prelude; a group with the identical signature waits this long between full retries. New
+ * markers flip the signature and the group re-runs immediately.
  */
 const STALLED_RETRY_MS = 5 * 60_000
 
@@ -1185,7 +1184,7 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 		}
 	})()
 	if (suspended !== undefined) {
-		const index = groups.findIndex((works) => groupKeyOf(works) === suspended)
+		const index = groups.findIndex((works) => digestParts(works) === suspended)
 		if (index > 0) groups.unshift(...groups.splice(index, 1))
 	}
 	const signatures = groups.map((works) => ({
@@ -1288,7 +1287,8 @@ function changedWorkGroups(backend: RecordBackend, changed: ReadonlySet<string>)
 
 /**
  * Rebuilds one group from all of its records and observes the units its changed records touch, in bounded
- * transactions. Returns whether any touched request still waits for evidence, or undefined when time ran out.
+ * transactions. Returns whether the group still waits for evidence or for a repository identity, or undefined when
+ * time ran out.
  */
 async function translateGroup(
 	agentDir: string,
@@ -1306,8 +1306,7 @@ async function translateGroup(
 		assertLease()
 		signal.throwIfAborted()
 	}
-	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
-	const groupKey = groupKeyOf(works)
+	const groupKey = digestParts(works)
 	// A note written by another version, or corrupted storage, never substitutes for a rebuild: it reads as absent.
 	const readNote = (note: string): unknown => {
 		try {
@@ -1317,10 +1316,8 @@ async function translateGroup(
 		}
 	}
 	const saved: unknown = readNote(PROGRESS_NOTE)
-	// A deadline that lands inside this function's prelude (reads, report, attribution) discards the built plan; on a
-	// large attributed group the prelude alone exceeds the pass budget, so the identical pass repeats the prelude on
-	// every interval and blocks the UI loop each time. The plan persists in its own note, written once per identical
-	// inputs, and a pass over the exact same works and markers resumes after the prelude instead of re-paying it.
+	// The plan persists in its own note once its prelude (reads, report, attribution) finishes. A later pass over
+	// the same works resumes after the prelude while every marker the plan covers is still pending.
 	const existingPlan = (() => {
 		if (!object(saved) || saved.group !== groupKey) return undefined
 		const plan = readPlanTail(readNote(PLAN_NOTE), groupKey, changed)
@@ -1348,10 +1345,9 @@ async function translateGroup(
 		serializedAccounts = existingPlan.accounts
 		facts = factsMapOf(serializedAccounts)
 	} else {
-		// The prelude runs under its own limit, not the pass deadline. A large group's read, report and event build
-		// exceed one pass; a deadline inside the prelude discarded all of it before the plan was saved, so the next
-		// pass started over and the group never translated. The prelude yields on its stretch cadence throughout,
-		// and finishes once: its saved plan lets later passes commit chunks under the pass deadline.
+		// The prelude runs under its own limit, not the pass deadline: a large group's read, report and event build
+		// take longer than one pass, and only a finished prelude saves a plan. It yields on its stretch cadence
+		// throughout and runs once per round; later passes commit the saved plan's chunks under the pass deadline.
 		const preludeSignal = AbortSignal.any([signal, AbortSignal.timeout(PRELUDE_MS)])
 		const preludeDeadline = Date.now() + PRELUDE_MS
 		const preludeCheck = () => {
@@ -1432,7 +1428,7 @@ async function translateGroup(
 	const progress = {
 		group: groupKey,
 		markers: markers.length,
-		plan: hash(builtUnits.map((unit) => unit.requestId ?? unit.recordHashes.join())),
+		plan: digestParts(builtUnits.map((unit) => unit.requestId ?? unit.recordHashes.join())),
 	}
 	const tail: PlanTail = {
 		group: groupKey,
@@ -1490,7 +1486,8 @@ async function translateGroup(
 		backend.deleteNote("agent", PROGRESS_NOTE)
 		backend.deleteNote("agent", PLAN_NOTE)
 	})
-	return unresolved > 0
+	// Unresolved requests and unsettled repository identities both keep the group waiting for external state.
+	return unresolved > 0 || !settled
 }
 
 /**

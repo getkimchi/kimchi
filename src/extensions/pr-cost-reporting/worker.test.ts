@@ -2001,7 +2001,8 @@ describe("repository identity for work without a PR", () => {
 		expect(posts()).toHaveLength(1)
 		await run()
 		expect(lookup).toHaveBeenCalledTimes(2)
-		const next = Date.now() + 31_000
+		// The group with the unresolved identity waits out its retry window before looking up again.
+		const next = Date.now() + 5 * 60_000 + 1_000
 		vi.spyOn(Date, "now").mockReturnValue(next)
 		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "team/slow", id: "99" })
 		await run()
@@ -2399,9 +2400,35 @@ describe("incremental translation", () => {
 		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
 	})
 
-	it("a later attempt that resolves the group lifts its stalled window", async () => {
+	it("a group whose repository identity stays unknown waits out the retry window instead of rebuilding each pass", async () => {
 		await seedLinked()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({ accounts: [], units: [], unresolved: [] })
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		try {
+			// The next 30 s tick, past the lookup cooldown: the unchanged group does not re-pay its prelude.
+			clock.mockReturnValue(start + 31_000)
+			await run()
+			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+			clock.mockReturnValue(start + 5 * 60_000 + 1_000)
+			await run()
+			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		} finally {
+			clock.mockRestore()
+		}
+		// Unsettled identities keep the markers for a later round.
+		expect(backendFor(directory).markedRecords()).not.toEqual([])
+	})
+
+	it("a later attempt that resolves the group lifts its stalled window", async () => {
+		await seedLinked()
+		const lookup = vi
+			.spyOn(providerApi, "lookupRepositoryIdentity")
+			.mockRejectedValue(new LookupError("offline", "retry"))
 		vi.mocked(eventBuilder.buildEvents).mockResolvedValueOnce({
 			accounts: [],
 			units: [],
@@ -2413,6 +2440,7 @@ describe("incremental translation", () => {
 		const backend = backendFor(directory)
 		const stamped = backend.getNote("agent", "translation-stalled")
 		expect(Object.keys(JSON.parse(stamped ?? "{}"))).toHaveLength(1)
+		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "example/repo", id: "42" })
 		const clock = vi.spyOn(Date, "now")
 		try {
 			clock.mockReturnValue(Date.now() + 5 * 60_000 + 1_000)
@@ -2600,6 +2628,45 @@ describe("incremental translation", () => {
 		const left = backend.markedRecords()
 		expect(left).toHaveLength(1)
 		expect(before.has(left[0].recordHash)).toBe(false)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("a suspended plan is rebuilt when a marker it covers is no longer pending", async () => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 250 }, (_, index) => `entity-${index}`)
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [
+				{
+					account: content.account,
+					facts: entities.map((entityId) => ({
+						entityId,
+						source: "kimchi",
+						sourceVersion: "test",
+						deviceId: requestId,
+						observeTime: "2026-10-04T12:00:00Z",
+						coverage: { code: "fixture", count: "1" },
+					})),
+					recordHashes: [],
+				},
+			],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		// Another process finished one of the plan's records in between: the plan no longer describes pending work.
+		const [first] = backend.markedRecords()
+		backend.tx(() => backend.clearTranslation(first.recordHash))
 		await run()
 		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
 		expect(backend.markedRecords()).toEqual([])
