@@ -319,6 +319,7 @@ def check_remap_sqlite_atomicity():
         writer.execute("INSERT INTO journal_cursor VALUES (?, 0, 0, 0, 0, '', 0)", (sample,))
         writer.commit()
         stop = threading.Event()
+        first_write = threading.Event()
         failures = []
 
         def produce():
@@ -333,6 +334,8 @@ def check_remap_sqlite_atomicity():
                              for index in range(80)],
                         )
                         writer.execute("UPDATE journal_cursor SET offset = ?", (block + 1,))
+                    if block == 0:
+                        first_write.set()
                     if block % 4 == 3:
                         writer.execute("PRAGMA wal_checkpoint(RESTART)")
             except Exception as error:
@@ -340,6 +343,7 @@ def check_remap_sqlite_atomicity():
 
         thread = threading.Thread(target=produce, daemon=True)
         thread.start()
+        assert first_write.wait(timeout=10), "warm fixture did not commit a first batch"
         original_validator = fixtures.validate_warm_home
         try:
             # Exercise atomicity, not the separately tested claim and shape guards.
