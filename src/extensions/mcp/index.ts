@@ -171,10 +171,19 @@ function registerGatewayRuntimeServer(pi: ExtensionAPI, gateway: BuiltInGatewayS
 	}
 }
 
+function isAdapterOwnedTool(
+	pi: ExtensionAPI,
+	toolName: string,
+	owned: ReadonlyMap<string, ToolDefinition["parameters"]>,
+): boolean {
+	return pi.getAllTools().some((tool) => tool.name === toolName && tool.parameters === owned.get(toolName))
+}
+
 function createUpstreamApi(
 	pi: ExtensionAPI,
 	policy: McpToolSurfacePolicy,
 	registeredToolNames: Set<string>,
+	ownedToolParameters: Map<string, ToolDefinition["parameters"]>,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
@@ -213,6 +222,7 @@ function createUpstreamApi(
 				return (tool: ToolDefinition): void => {
 					if (policy.suppressedToolNames.has(tool.name)) return
 					registeredToolNames.add(tool.name)
+					ownedToolParameters.set(tool.name, tool.parameters)
 					adapterActiveNames.add(tool.name)
 					const brandedTool = {
 						...tool,
@@ -361,6 +371,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	let lookupConfig: McpConfig | undefined
 	let unregisterMcpCallLookup: (() => void) | undefined
 	const registeredToolNames = new Set<string>()
+	const ownedToolParameters = new Map<string, ToolDefinition["parameters"]>()
 	const upstreamHandlers: Record<CapturedUpstreamEvent, UpstreamLifecycleHandler[]> = {
 		input: [],
 		session_start: [],
@@ -513,6 +524,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					pi,
 					installedPolicy,
 					registeredToolNames,
+					ownedToolParameters,
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
@@ -525,7 +537,10 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		if (lookupConfig !== undefined) {
 			const config = lookupConfig
 			unregisterMcpCallLookup = registerMcpCallLookup(pi, (toolName, input) => {
-				if (!registeredToolNames.has(toolName)) return { kind: "not_mcp" }
+				// Pi keeps the first registration per name, so a shadowed MCP name must not lend its annotation to another extension's tool.
+				if (!registeredToolNames.has(toolName) || !isAdapterOwnedTool(pi, toolName, ownedToolParameters)) {
+					return { kind: "not_mcp" }
+				}
 				return describeMcpCall(toolName, input, snapshotMcpCallCatalog(config, privateCatalogs, registeredToolNames))
 			})
 		}

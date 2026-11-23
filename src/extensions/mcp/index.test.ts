@@ -1009,6 +1009,47 @@ describe("upstream MCP adapter facade", () => {
 			expect(describeMcpCall).not.toHaveBeenCalled()
 		})
 
+		it("returns not_mcp when another extension owns the live definition of an MCP name", async () => {
+			configState.config = { mcpServers: { debug: { command: "debug" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			upstream.api?.registerTool(tool("debug_eval", "MCP: eval"))
+			// Pi keeps the first registration per name; DAP's tool wins the live slot.
+			harness.api.registerTool(tool("debug_eval", "DAP eval"))
+			callResolution.describeMcpCall.mockClear()
+
+			expect(lookupMcpCall(harness.api, "debug_eval", { expression: "1" })).toEqual({ kind: "not_mcp" })
+			expect(describeMcpCall).not.toHaveBeenCalled()
+		})
+
+		it("returns not_mcp when an MCP name is missing from pi's live tool registry", async () => {
+			configState.config = { mcpServers: { docs: { command: "docs" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
+			const { unregisterTool } = harness.api as ExtensionAPI & { unregisterTool(name: string): boolean }
+			unregisterTool("docs_get_issue")
+			callResolution.describeMcpCall.mockClear()
+
+			expect(lookupMcpCall(harness.api, "docs_get_issue", {})).toEqual({ kind: "not_mcp" })
+			expect(describeMcpCall).not.toHaveBeenCalled()
+		})
+
+		it("keeps resolving a name the adapter registers again with a new definition", async () => {
+			configState.config = { mcpServers: { docs: { command: "docs" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
+			upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue v2"))
+
+			expect(lookupMcpCall(harness.api, "docs_get_issue", {})).toEqual({ kind: "metadata", op: "status" })
+			expect(describeMcpCall).toHaveBeenCalled()
+		})
+
 		it("resolves caller-supplied ACP servers through their own lookup without sharing them", async () => {
 			const first = createExtensionApi()
 			createKimchiMcpAdapterExtension({ callerServers: { ide: { command: "first-ide" } } })(first.api)
