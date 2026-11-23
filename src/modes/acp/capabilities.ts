@@ -122,6 +122,8 @@ export function getClientSupportsMethod(capabilities: ClientCapabilities | undef
 /**
  * Client opt-in for filesystem-snapshot-derived artifact links. Existing
  * write/declared/output-sniffed artifacts retain their legacy behavior.
+ * No ACP v2 RFD covers generated-artifact links: this is an own-design,
+ * no-spec-track surface.
  */
 export const ARTIFACTS_CAPABILITY = "artifacts"
 
