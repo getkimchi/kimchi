@@ -25,7 +25,9 @@ Source of truth: `src/extensions/artifacts/detect.ts`. Three inputs per tool cal
 
 1. `details.artifacts` declarations (above).
 2. `write`/`edit` tool args (`args.path`).
-3. Bash/powershell detection — three sources per call, merged and deduped: redirect targets taken from `args.command` (`>`out.csv``, `>>`, via the taxonomy segmenter; stderr/fd forms excluded), file-path tokens sniffed from the result text, and command-scoped file snapshots. The snapshots cover allowlisted files directly in the effective working directory at execution start and end; newly created files and files whose size or mtime changed are candidates even when stdout is empty. Unchanged pre-existing files are excluded. The scope is deliberately shallow — no recursive tree or filesystem monitoring. Candidates from every source must pass an extension allowlist, path resolution (a leading `cd`/`Set-Location` segment redirects relative paths), a live existence check, and an mtime window: the file must have been touched at-or-after the tool call started. Tree-materializing git commands (checkout/merge/pull/…) are excluded — they refresh mtimes of files the agent did not author; invocations are unwrapped through common launchers (sudo/doas/env/time/…) first, and anything unrecognized degrades to plain sniffing.
+3. Bash/powershell detection — three sources per call, merged and deduped: redirect targets taken from `args.command` (`>`out.csv``, `>>`, via the taxonomy segmenter; stderr/fd forms excluded), file-path tokens sniffed from the result text, and command-scoped file snapshots. The snapshots cover allowlisted files directly in the effective working directory at execution start and end; newly created files and files whose size or mtime changed are candidates even when stdout is empty. Unchanged pre-existing files are excluded. The scope is deliberately shallow — no recursive tree or filesystem monitoring. Candidates from every source must pass an extension allowlist, path resolution (a leading `cd`/`Set-Location` segment redirects relative paths), a live existence check, and an mtime window: the file must have been touched at-or-after the tool call started. Tree-materializing git commands (checkout/merge/pull/…) are excluded — they refresh mtimes of files the agent did not author; invocations are unwrapped through common launchers (sudo/doas/env/time/…) first, and anything unrecognized degrades to plain sniffing. Nested tool executions with a
+`parentToolCallId` are excluded from both live detection and recording so
+subagent work cannot create live-only links; their tool-call UI is unchanged.
 
 ## Emission and replay
 
@@ -40,8 +42,7 @@ surfaces) runs the same detection at every turn end. For foreground shell
 calls it claims the same cached pre-execution snapshot as live ACP through
 the shared SessionManager and tool-call ID. The startup directory scan runs
 once; each consumer releases its claim after diffing at tool execution end.
-Turn-end
-detection remains the backward-compatible fallback for events without
+Turn-end detection remains the backward-compatible fallback for events without
 execution-start captures. Results accumulate across the
 agent run, and the recorder appends one row at `agent_settled` (once per prompt —
 `agent_end` may fire multiple times per prompt across auto-retry/compaction

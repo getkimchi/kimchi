@@ -44,6 +44,13 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import { createExtensionApi } from "../../extensions/__mocks__/extension-api.js"
+import { releaseArtifactSnapshot, snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
+import {
+	ARTIFACTS_ENTRY_TYPE,
+	type ArtifactsEntry,
+	artifactRecorderExtension,
+} from "../../extensions/artifacts/recorder.js"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
 import { createFakeOps, type FakeOps } from "../../extensions/bash-background/__mocks__/fake-bash-ops.js"
 import { createProcessRegistry, type ProcessRegistry } from "../../extensions/bash-background/process-registry.js"
@@ -6831,10 +6838,22 @@ describe("generated artifacts (live turns)", () => {
 		})
 	}
 
+	// The recorder only consumes cwd, SessionManager identity, and these events.
+	// Keep the deliberately partial test context in one place for these flows.
+	const attachArtifactRecorder = () => {
+		const recorder = createExtensionApi()
+		artifactRecorderExtension(recorder.api)
+		const context = { cwd: tmpDir, sessionManager: fake.sessionManager } as unknown as ExtensionContext
+		fake.subscribe((event) => {
+			for (const handler of recorder.getHandlers(event.type)) void handler(event, context)
+		})
+		return recorder
+	}
+
 	// Artifact link chunks, narrowed to messageId + link content + kimchi.dev
 	// meta blob (tests assert both link fields and merged attribution fields).
-	const artifactChunks = () =>
-		updates.flatMap((u) => {
+	const artifactChunks = (notifications = updates) =>
+		notifications.flatMap((u) => {
 			if (u.update.sessionUpdate !== "agent_message_chunk") return []
 			const meta = (u.update as { _meta?: { "kimchi.dev"?: Record<string, unknown> } })._meta?.["kimchi.dev"]
 			if (meta?.type !== "artifact") return []
@@ -7050,6 +7069,113 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(finalReport).href])
 	})
 
+	it("ignores nested silent builds without hiding their tool-call UI or recording replay artifacts", async () => {
+		const nestedReport = join(tmpDir, "nested-final.html")
+		const recorder = attachArtifactRecorder()
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-nested-build",
+				toolName: "bash",
+				args: { command: "node nested-build.js" },
+				parentToolCallId: "tc-subagent",
+			})
+			writeFileSync(nestedReport, "<h1>Nested</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-nested-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+				parentToolCallId: "tc-subagent",
+			})
+			fake.emit(assistantMessageEnd("Nested build finished."))
+			fake.emit(agentEnd())
+			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build in a subagent" }] })
+		expect(artifactChunks()).toEqual([])
+		expect(
+			updates.some(
+				(update) => update.update.sessionUpdate === "tool_call" && update.update.title.includes("node nested-build.js"),
+			),
+		).toBe(true)
+		expect(recorder.getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+
+		const loaded = new FakeAgentSession("loaded-nested-build", tmpDir)
+		loaded.branch = [
+			userTextEntry("Build in a subagent", "u1", null),
+			assistantTextEntry("Nested build finished.", "a1", "u1"),
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect(artifactChunks(replay.updates)).toEqual([])
+	})
+
+	it("refreshes a snapshot when cancellation drops a call and the next prompt reuses its ID", async () => {
+		const target = join(tmpDir, "cancelled.html")
+		writeFileSync(target, "before")
+		let promptNumber = 0
+		let cancelSeen = false
+		let markToolStarted!: () => void
+		const toolStarted = new Promise<void>((resolve) => {
+			markToolStarted = resolve
+		})
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+		fake.promptImpl = async () => {
+			promptNumber++
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			})
+			if (promptNumber === 1) {
+				writeFileSync(target, "after")
+				markToolStarted()
+				while (!cancelSeen) await delay(5)
+				fake.emit(agentEnd())
+				fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+				return
+			}
+			// The second invocation is read-only. A stale first-prompt snapshot
+			// would mistake the cancelled command's modification for this call.
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Done."))
+			fake.emit(agentEnd())
+		}
+
+		const first = agent.prompt({ sessionId, prompt: [{ type: "text", text: "Cancel an unfinished build" }] })
+		await toolStarted
+		await agent.cancel({ sessionId })
+		expect(await first).toMatchObject({ stopReason: "cancelled" })
+		const claim = { scope: fake.sessionManager, toolCallId: "tc-reused", consumer: "acp" as const }
+		const cached = snapshotArtifactFiles("bash", { command: "node build.js" }, tmpDir, claim)
+		expect(cached?.files.get(target)?.size).toBe(Buffer.byteLength("after"))
+		releaseArtifactSnapshot(claim)
+		expect(await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Reuse the call ID" }] })).toMatchObject({
+			stopReason: "end_turn",
+		})
+		expect(artifactChunks()).toEqual([])
+	})
+
 	it("keeps a first prompt's template out of a second prompt that writes the final report and runs Bash", async () => {
 		const template = join(tmpDir, "_code-reviewer-prd.template.html")
 		const finalReport = join(tmpDir, "code-reviewer-rebuild-prd.html")
@@ -7111,6 +7237,117 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(template).href])
 		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write and verify final" }] })
 		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([
+			pathToFileURL(template).href,
+			pathToFileURL(finalReport).href,
+		])
+	})
+
+	it("records each prompt separately and replays only its recorded final files", async () => {
+		const template = join(tmpDir, "_code-reviewer-prd.template.html")
+		const finalReport = join(tmpDir, "code-reviewer-rebuild-prd.html")
+		const recorder = attachArtifactRecorder()
+		let promptNumber = 0
+		const settle = (text: string, id: string, toolName: string, args: Record<string, unknown>, output: string) => {
+			const message = makeAssistantMessage([
+				{ type: "text", text },
+				{ type: "toolCall", id, name: toolName, arguments: args },
+			])
+			fake.emit({ type: "message_end", message })
+			fake.emit({
+				type: "turn_end",
+				message,
+				toolResults: [
+					{
+						role: "toolResult" as const,
+						toolCallId: id,
+						toolName,
+						content: output ? [{ type: "text" as const, text: output }] : [],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			fake.emit(agentEnd())
+			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+		fake.promptImpl = async () => {
+			promptNumber++
+			fake.emit({ type: "agent_start" })
+			if (promptNumber === 1) {
+				const args = { path: template, content: "<template>" }
+				fake.emit({ type: "tool_execution_start", toolCallId: "tc-row-template", toolName: "write", args })
+				writeFileSync(template, args.content)
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId: "tc-row-template",
+					toolName: "write",
+					result: { content: [{ type: "text", text: "Wrote template." }] },
+					isError: false,
+				})
+				settle("Template ready.", "tc-row-template", "write", args, "Wrote template.")
+				return
+			}
+			const args = { command: "node second-build.js" }
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-row-final", toolName: "bash", args })
+			writeFileSync(finalReport, "<h1>Final</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-row-final",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			settle("Final ready.", "tc-row-final", "bash", args, "")
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write the template" }] })
+		let rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows.map((row) => row.artifacts.map((artifact) => artifact.path))).toEqual([[template]])
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(template).href])
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build the final report" }] })
+		rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(2)
+		expect(rows[1].artifacts.map((artifact) => artifact.path)).toEqual([finalReport])
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([
+			pathToFileURL(template).href,
+			pathToFileURL(finalReport).href,
+		])
+
+		const loaded = new FakeAgentSession("loaded-two-prompt-artifacts", tmpDir)
+		loaded.branch = [
+			userTextEntry("Write the template", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Template ready." },
+					{ type: "toolCall", id: "tc-row-template", name: "write", arguments: { path: template } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-row-template", "write", "Wrote template.", false, "tr1", "a1"),
+			{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never,
+			userTextEntry("Build the final report", "u2", "tr1"),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Final ready." },
+					{ type: "toolCall", id: "tc-row-final", name: "bash", arguments: { command: "node second-build.js" } },
+				],
+				"a2",
+				"u2",
+			),
+			toolResultEntry("tc-row-final", "bash", "", false, "tr2", "a2"),
+			{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[1] } as never,
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect(artifactChunks(replay.updates).map((chunk) => chunk.uri)).toEqual([
 			pathToFileURL(template).href,
 			pathToFileURL(finalReport).href,
 		])

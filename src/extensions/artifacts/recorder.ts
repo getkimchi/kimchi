@@ -6,8 +6,9 @@
 // docs/artifacts.md — "Replay from recorded rows".
 //
 // Runs on both surfaces (TUI + ACP): sessions authored anywhere carry
-// rows. ctx.sessionManager.getCwd() is the (possibly cd-navigated)
-// session cwd, mirroring what the ACP server's live path tracks. ACP
+// rows. ctx.cwd is the session-relative path anchor, mirroring what the ACP
+// server's live path tracks; the SessionManager is only the shared-snapshot
+// scope. ACP
 // replay hydrates these rows (never re-derives from output): sessions
 // without rows emit no artifacts on reload.
 
@@ -153,7 +154,7 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 		if (event.parentToolCallId) return
 		try {
 			const startedAt = Date.now()
-			const cwd = ctx.sessionManager.getCwd()
+			const cwd = ctx.cwd
 			const snapshotClaim = {
 				scope: ctx.sessionManager,
 				toolCallId: event.toolCallId,
@@ -206,7 +207,7 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 
 	pi.on("turn_end", (event, ctx: ExtensionContext) => {
 		try {
-			detectTurnArtifacts(event, ctx.sessionManager.getCwd(), acc, completedShellCalls)
+			detectTurnArtifacts(event, ctx.cwd, acc, completedShellCalls)
 		} catch {
 			// Persistence must never break a turn; partial state stays buffered.
 		}

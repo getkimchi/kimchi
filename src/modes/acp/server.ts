@@ -375,6 +375,11 @@ export interface RunAcpOptions {
  * Prompt turns pass the resolve/reject pair that settles their PromptRequest;
  * unsolicited runs pass no-ops — nothing awaits their outcome.
  */
+function releaseTurnArtifactSnapshots(turn: TurnContext): void {
+	for (const stashed of turn.toolCallArgs.values()) releaseArtifactSnapshot(stashed.snapshotClaim)
+	turn.toolCallArgs.clear()
+}
+
 function createTurnContext(
 	resolve: (res: PromptResponse) => void = () => {},
 	reject: (err: unknown) => void = () => {},
@@ -1596,6 +1601,7 @@ export class KimchiAcpAgent implements Agent {
 			// Defensive reset (settled-run path only): agent_settled already
 			// clears it after the full run chain — anything left here is stale
 			// state, never this prompt's turn.
+			releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 			entry.unsolicitedTurn = undefined
 		}
 		// A prompt consisting of exactly one text block that starts with
@@ -2391,6 +2397,8 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
+		if (entry.turn) releaseTurnArtifactSnapshots(entry.turn)
+		if (entry.unsolicitedTurn) releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 		entry.planTracker?.stop()
 		// Stop the adapter from publishing skill-refresh results: a discovery
 		// pass still in flight must not commit an obsolete snapshot (or
@@ -2524,6 +2532,7 @@ export class KimchiAcpAgent implements Agent {
 				// turn-target gating and new prompts.
 				if (!entry.turn && entry.unsolicitedTurn) {
 					const unsolicited = entry.unsolicitedTurn
+					releaseTurnArtifactSnapshots(unsolicited)
 					entry.unsolicitedTurn = undefined
 					for (const update of unsolicited.artifactBuffer.flush(entry.emittedModelMeta)) {
 						this.send({ sessionId: entry.session.sessionId, update })
@@ -2796,10 +2805,10 @@ export class KimchiAcpAgent implements Agent {
 				if (fileChanges.length > 0) {
 					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
 				}
-				// tool_execution_end carries no args — stash them so artifact
-				// detection can pair args with the result there.
-				// startedAt anchors the artifact mtime window (see
-				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
+				// tool_execution_end carries no args — stash them for artifact
+				// detection and existing completion bookkeeping. Nested calls keep
+				// their UI/lifecycle state, but only top-level calls capture or
+				// collect artifacts so replay matches the recorder's scope.
 				const startedAt = Date.now()
 				const snapshotClaim = {
 					scope: entry.session.sessionManager,
@@ -2810,7 +2819,9 @@ export class KimchiAcpAgent implements Agent {
 					toolName: event.toolName,
 					args: event.args,
 					startedAt,
-					fileSnapshot: snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim),
+					fileSnapshot: event.parentToolCallId
+						? undefined
+						: snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim),
 					snapshotClaim,
 				})
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
@@ -2904,7 +2915,7 @@ export class KimchiAcpAgent implements Agent {
 						console.error("bash-control wait targets persist failed:", err)
 					}
 				}
-				if (!event.isError && stashed) {
+				if (!event.isError && !event.parentToolCallId && stashed) {
 					turn.artifactBuffer.collectFromToolCall({
 						toolName: stashed.toolName,
 						args: stashed.args,
@@ -3882,6 +3893,7 @@ export class KimchiAcpAgent implements Agent {
 		// This is the original prompt's full run boundary, including tool calls,
 		// retries, cancellation, and held plan-review continuations.
 		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
+		releaseTurnArtifactSnapshots(turn)
 		entry.turn = undefined
 		// Non-end_turn terminal outcomes (cancelled, refusal, …) never produce a
 		// rated settled response — clear the rating window armed at settle time.
@@ -3944,6 +3956,7 @@ export class KimchiAcpAgent implements Agent {
 		// window (agent_settled fires before prompt() resolves) must not survive
 		// into a rate call for an error the client saw as a JSON-RPC failure.
 		clearRatingWindow(entry.session.sessionId)
+		releaseTurnArtifactSnapshots(turn)
 		entry.turn = undefined
 		turn.reject(err)
 	}

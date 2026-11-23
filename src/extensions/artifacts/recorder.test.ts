@@ -17,13 +17,43 @@ describe("artifact-recorder", () => {
 	beforeEach(() => mkdirSync(cwd, { recursive: true }))
 	afterEach(() => rmSync(cwd, { recursive: true, force: true }))
 
-	const ctx = { sessionManager: { getCwd: () => cwd } } as ExtensionContext
+	const ctx = { cwd, sessionManager: { getCwd: () => join(cwd, "different-session-cwd") } } as ExtensionContext
 
 	const touch = (rel: string) => {
 		const abs = join(cwd, rel)
 		writeFileSync(abs, "x")
 		return abs
 	}
+
+	it("anchors detection to the extension context cwd rather than another session path source", async () => {
+		const abs = touch("context.md")
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: Date.now(),
+					content: [{ type: "toolCall", id: "tc-context", name: "write", arguments: { path: "context.md" } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-context",
+						toolName: "write",
+						content: [{ type: "text", text: "ok" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)[0]?.artifacts[0]?.path).toBe(abs)
+	})
 
 	it("records a row with detected artifacts after a turn with a write tool call", async () => {
 		const abs = touch("out.md")
