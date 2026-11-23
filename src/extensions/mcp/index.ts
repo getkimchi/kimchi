@@ -28,6 +28,7 @@ import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
+import { describeMcpGatewayInput, type McpCallCatalog } from "./call-facts.js"
 import { DEFAULT_MCP_PROTOCOL_VERSION, getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
@@ -101,14 +102,13 @@ function isHiddenFromPlanning(toolName: string, isReadOnlyTool: (wireName: strin
 	return toolName === MCP_SCRIPT_TOOL || (toolName !== MCP_PROXY_TOOL && !isReadOnlyTool(toolName))
 }
 
-const PLAN_SEARCH_KEYS = new Set(["search", "searchMode", "regex", "includeSchemas", "limit", "offset", "server"])
-
-function hasOnlyKeys(params: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
-	return Object.keys(params).every((key) => allowed.has(key))
-}
-
-function hasValidServer(params: Record<string, unknown>): boolean {
-	return params.server === undefined || (typeof params.server === "string" && params.server.length > 0)
+// Plan keeps its existing read-only qualifier while the shared parser owns shape validation.
+const PLAN_GATEWAY_SHAPE_CATALOG: McpCallCatalog = {
+	config: { mcpServers: {} },
+	candidates: [],
+	registeredToolNames: new Set(),
+	staleServers: new Set(),
+	disabledServers: new Set(),
 }
 
 /** Positive allowlist for every adapter dispatch shape that is read-only in plan mode. */
@@ -116,26 +116,11 @@ function isAllowlistedGatewayCall(
 	params: unknown,
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): boolean {
-	if (typeof params !== "object" || params === null || Array.isArray(params)) return false
-	const input = params as Record<string, unknown>
-	const keys = Object.keys(input)
-	if (keys.length === 0) return true
-	if (keys.length === 1 && keys[0] === "instructions") return typeof input.instructions === "string"
-	if (keys.length === 1 && keys[0] === "server") return hasValidServer(input)
-	if (typeof input.describe === "string")
-		return hasOnlyKeys(input, new Set(["describe", "server"])) && hasValidServer(input)
-	if (typeof input.search === "string") return hasOnlyKeys(input, PLAN_SEARCH_KEYS) && hasValidServer(input)
-	if (
-		typeof input.tool === "string" &&
-		input.tool.length > 0 &&
-		hasOnlyKeys(input, new Set(["tool", "args", "server"]))
-	) {
-		return (
-			hasValidServer(input) &&
-			isReadOnlyGatewayTool(input.tool, typeof input.server === "string" ? input.server : undefined)
-		)
-	}
-	return false
+	const facts = describeMcpGatewayInput(params, PLAN_GATEWAY_SHAPE_CATALOG)
+	if (facts.kind === "metadata") return true
+	if (facts.kind !== "tool" && facts.why !== "unknown") return false
+	const input = params as { tool: string; server?: string }
+	return isReadOnlyGatewayTool(input.tool, input.server)
 }
 
 /** Planning never uses the file-attribution heuristic to authorize gateway state changes. */
