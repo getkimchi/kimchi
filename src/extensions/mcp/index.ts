@@ -28,7 +28,9 @@ import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
-import { describeMcpGatewayInput, type McpCallCatalog } from "./call-facts.js"
+import { snapshotMcpCallCatalog } from "./call-catalog.js"
+import { describeMcpCall, describeMcpGatewayInput, type McpCallCatalog } from "./call-facts.js"
+import { registerMcpCallLookup } from "./call-lookup.js"
 import { DEFAULT_MCP_PROTOCOL_VERSION, getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
@@ -182,12 +184,12 @@ function registerGatewayRuntimeServer(pi: ExtensionAPI, gateway: BuiltInGatewayS
 function createUpstreamApi(
 	pi: ExtensionAPI,
 	policy: McpToolSurfacePolicy,
+	registeredToolNames: Set<string>,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
-	const registeredToolNames = new Set<string>()
 	const adapterActiveNames = new Set<string>()
 	registerReadOnlyToolProvider(pi, () => {
 		const readOnlyNames = new Set(getReadOnlyToolNames())
@@ -366,6 +368,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	installMcpOAuthCallbackBranding()
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
 	let policy: McpToolSurfacePolicy | undefined
+	let lookupConfig: McpConfig | undefined
+	let unregisterMcpCallLookup: (() => void) | undefined
+	const registeredToolNames = new Set<string>()
 	const upstreamHandlers: Record<CapturedUpstreamEvent, UpstreamLifecycleHandler[]> = {
 		input: [],
 		session_start: [],
@@ -399,6 +404,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	})
 
 	pi.on("session_start", async (event, ctx) => {
+		unregisterMcpCallLookup?.()
+		unregisterMcpCallLookup = undefined
 		sessionGeneration++
 		privateCatalogs = new Map()
 		// A replacement path (new/fork/switch/resume) just invalidated the old pi;
@@ -475,6 +482,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					: config
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
+			lookupConfig = effectiveConfig
 			// Lazy children register for initial runtime discovery without changing
 			// file-backed config, plugin paths, installs, or resume reloads.
 			const discoverGatewayAtStartup = options.lazyGatewayConnect === true && gateway !== undefined
@@ -514,6 +522,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				createUpstreamApi(
 					pi,
 					installedPolicy,
+					registeredToolNames,
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
@@ -522,6 +531,12 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				),
 			)
 			if (gateway !== undefined && !discoverGatewayAtStartup) registerGatewayRuntimeServer(pi, gateway)
+		}
+		if (lookupConfig !== undefined) {
+			const config = lookupConfig
+			unregisterMcpCallLookup = registerMcpCallLookup(pi, (toolName, input) =>
+				describeMcpCall(toolName, input, snapshotMcpCallCatalog(config, privateCatalogs, registeredToolNames)),
+			)
 		}
 
 		for (const warning of warnings) {
@@ -554,6 +569,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		}, STATUS_RESYNC_DEBOUNCE_MS)
 	})
 	pi.on("session_shutdown", () => {
+		unregisterMcpCallLookup?.()
+		unregisterMcpCallLookup = undefined
 		clearStatusResync()
 		sessionGeneration++
 		privateCatalogs.clear()

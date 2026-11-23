@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { MCP_RUNTIME_REGISTER_EVENT, type McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
+import { computeServerHash } from "pi-mcp-adapter/metadata-cache"
 import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
@@ -25,6 +26,9 @@ const upstream = vi.hoisted(() => ({
 	sessionObserverFactory: undefined as McpAdapterOptions["createSessionMetadataObserver"],
 	input: vi.fn(),
 	sessionStart: vi.fn(),
+}))
+const callResolution = vi.hoisted(() => ({
+	describeMcpCall: vi.fn(),
 }))
 const configState = vi.hoisted(() => ({
 	config: { mcpServers: {} } as McpConfig,
@@ -67,6 +71,11 @@ const readOnlyState = vi.hoisted(() => ({
 const gatewayState = vi.hoisted(() => ({
 	server: undefined as { name: string; entry: ServerEntry } | undefined,
 	addresses: ["https://api.cast.ai/mcp"],
+}))
+
+vi.mock("./call-facts.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./call-facts.js")>()),
+	describeMcpCall: callResolution.describeMcpCall,
 }))
 
 vi.mock("pi-mcp-adapter", () => ({
@@ -133,7 +142,8 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 }))
 
 // Wire names carry their server's prefix, as with the adapter's default "server" prefix mode.
-vi.mock("./read-only.js", () => ({
+vi.mock("./read-only.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./read-only.js")>()),
 	collectReadOnlyMcpWireNames: (
 		_config: McpConfig,
 		server?: string,
@@ -178,6 +188,8 @@ vi.mock("./project-trust.js", () => ({
 	resolveMcpProjectTrust: vi.fn(async () => projectTrust.trusted),
 }))
 
+import { describeMcpCall, type McpCallCatalog } from "./call-facts.js"
+import { lookupMcpCall } from "./call-lookup.js"
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./index.js"
 
 function tool(name: string, label: string): ToolDefinition {
@@ -188,6 +200,12 @@ function tool(name: string, label: string): ToolDefinition {
 		parameters: Type.Object({}),
 		execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 	}
+}
+
+function lastLookupCatalog(): McpCallCatalog {
+	const catalog = vi.mocked(describeMcpCall).mock.calls.at(-1)?.[2]
+	if (!catalog) throw new Error("MCP call resolver was not invoked")
+	return catalog
 }
 
 async function start(
@@ -206,6 +224,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.sessionStart.mockReset()
 		upstream.sessionMetadataObserver = undefined
 		upstream.sessionObserverFactory = undefined
+		callResolution.describeMcpCall.mockReset().mockReturnValue({ kind: "metadata", op: "status" })
 		configState.config = { mcpServers: {} }
 		configState.userConfig = { mcpServers: {} }
 		configState.configPath = undefined
@@ -926,6 +945,147 @@ describe("upstream MCP adapter facade", () => {
 
 		expect(gatewayExecute).toHaveBeenCalledOnce()
 		expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
+	})
+
+	describe("session-scoped call lookups", () => {
+		function privateEntry(toolName: string, cachedAt = 1): ServerCacheEntry {
+			return {
+				configHash: computeServerHash({ command: "jira" }),
+				cachedAt,
+				resources: [],
+				tools: [{ name: toolName, annotations: { readOnlyHint: true } }],
+				cacheScope: "private",
+			}
+		}
+
+		it("registers a lookup with the effective config including the Studio gateway", async () => {
+			const docs = { command: "docs" }
+			const gateway = {
+				name: "kimchi-mcp-gateway",
+				entry: { url: "https://api.cast.ai/mcp", lifecycle: "keep-alive" as const },
+			}
+			configState.config = { mcpServers: { docs } }
+			gatewayState.server = gateway
+			const harness = createExtensionApi()
+			harness.api.events.on(MCP_RUNTIME_REGISTER_EVENT, (raw: unknown) => {
+				;(raw as McpRuntimeRegistrationRequest).result = { ok: true, registration: { dispose: async () => {} } }
+			})
+			mcpAdapterExtension(harness.api)
+
+			expect(lookupMcpCall(harness.api, "mcp", {})).toEqual({ kind: "not_mcp" })
+			expect(describeMcpCall).not.toHaveBeenCalled()
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			expect(lookupMcpCall(harness.api, "mcp", { search: "issue" })).toEqual({ kind: "metadata", op: "status" })
+			expect([...lastLookupCatalog().registeredToolNames]).toEqual(["mcp"])
+
+			upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
+			expect(lookupMcpCall(harness.api, "docs_get_issue", {})).toEqual({ kind: "metadata", op: "status" })
+			const catalog = lastLookupCatalog()
+			expect(catalog.config).toEqual({ mcpServers: { docs, [gateway.name]: gateway.entry } })
+			expect([...catalog.registeredToolNames].sort()).toEqual(["docs_get_issue", "mcp"])
+		})
+
+		it("resolves caller-supplied ACP servers through their own lookup without sharing them", async () => {
+			const first = createExtensionApi()
+			createKimchiMcpAdapterExtension({ callerServers: { ide: { command: "first-ide" } } })(first.api)
+			await start(first)
+			const firstUpstream = upstream.api
+			firstUpstream?.registerTool(tool("mcp", "MCP"))
+			const second = createExtensionApi()
+			createKimchiMcpAdapterExtension({ callerServers: { ide: { command: "second-ide" } } })(second.api)
+			await start(second)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+
+			lookupMcpCall(first.api, "mcp", { server: "ide" })
+			const firstCatalog = lastLookupCatalog()
+			lookupMcpCall(second.api, "mcp", { server: "ide" })
+			const secondCatalog = lastLookupCatalog()
+
+			expect(firstCatalog.config).toEqual({ mcpServers: { ide: { command: "first-ide" } } })
+			expect(secondCatalog.config).toEqual({ mcpServers: { ide: { command: "second-ide" } } })
+			expect(firstCatalog.registeredToolNames).not.toBe(secondCatalog.registeredToolNames)
+		})
+
+		it("uses replaced private catalogs only in their owning session", async () => {
+			configState.config = { mcpServers: { jira: { command: "jira" } } }
+			const first = createExtensionApi()
+			mcpAdapterExtension(first.api)
+			await start(first)
+			const firstObserver = upstream.sessionObserverFactory?.()
+			const firstUpstream = upstream.api
+			firstUpstream?.registerTool(tool("mcp", "MCP"))
+			const second = createExtensionApi()
+			mcpAdapterExtension(second.api)
+			await start(second)
+			const secondObserver = upstream.sessionObserverFactory?.()
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			const firstEntry = privateEntry("get_first")
+			const secondEntry = privateEntry("get_second")
+			firstObserver?.("jira", firstEntry)
+			secondObserver?.("jira", secondEntry)
+
+			lookupMcpCall(first.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_first"])
+			lookupMcpCall(second.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_second"])
+
+			const replacement = privateEntry("get_replacement", 2)
+			firstObserver?.("jira", replacement)
+			lookupMcpCall(first.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_replacement"])
+			lookupMcpCall(second.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_second"])
+			firstObserver?.("jira", { ...replacement, cacheScope: undefined })
+			lookupMcpCall(first.api, "mcp", {})
+			expect(lastLookupCatalog().candidates).toEqual([])
+			lookupMcpCall(second.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_second"])
+		})
+
+		it("refreshes the lookup on session replacement and clears it on shutdown", async () => {
+			configState.config = { mcpServers: { jira: { command: "jira" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			upstream.sessionObserverFactory?.()?.("jira", privateEntry("get_old"))
+			lookupMcpCall(harness.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_old"])
+
+			await start(harness)
+			const replacementObserver = upstream.sessionObserverFactory?.()
+			lookupMcpCall(harness.api, "mcp", {})
+			expect(lastLookupCatalog().candidates).toEqual([])
+			const currentEntry = privateEntry("get_current", 2)
+			replacementObserver?.("jira", currentEntry)
+			lookupMcpCall(harness.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_current"])
+
+			await harness.getHandler("session_shutdown")({ type: "session_shutdown" }, createContext())
+			const callsBeforeClearedLookup = vi.mocked(describeMcpCall).mock.calls.length
+			expect(lookupMcpCall(harness.api, "mcp", {})).toEqual({ kind: "not_mcp" })
+			expect(describeMcpCall).toHaveBeenCalledTimes(callsBeforeClearedLookup)
+		})
+
+		it("ignores late private-catalog updates from a replaced session", async () => {
+			configState.config = { mcpServers: { jira: { command: "jira" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			const staleObserver = upstream.sessionObserverFactory?.()
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			await start(harness)
+			const currentObserver = upstream.sessionObserverFactory?.()
+			const currentEntry = privateEntry("get_current", 2)
+			currentObserver?.("jira", currentEntry)
+
+			expect(staleObserver).toBeDefined()
+			staleObserver?.("jira", privateEntry("get_stale"))
+			lookupMcpCall(harness.api, "mcp", {})
+
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_current"])
+		})
 	})
 
 	it("creates an isolated caller-wins configuration for ACP sessions", async () => {
