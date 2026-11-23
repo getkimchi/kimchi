@@ -115,6 +115,52 @@ describe("AgentManager", () => {
 		vi.clearAllMocks()
 	})
 
+	it.each([
+		false,
+		true,
+	])("publishes assigned local session metadata before activity callbacks (background=%s)", async (isBackground) => {
+		const session = {
+			sessionId: "child-native-session",
+			sessionManager: { getHeader: () => ({ cwd: "/work/child" }) },
+			steer: vi.fn().mockResolvedValue(undefined),
+			dispose: vi.fn(),
+		} as unknown as AgentSession
+		const calls: string[] = []
+		let hookedRecord: AgentRecord | undefined
+		mockRunAgent.mockImplementationOnce(async (_ctx, _type, _prompt, options) => {
+			options.onSessionCreated?.(session)
+			return { responseText: "done", session, aborted: false, steered: false }
+		})
+		manager = new AgentManager(undefined, undefined, undefined, undefined, (record, created) => {
+			calls.push("manager")
+			expect(record.session).toBe(created)
+			hookedRecord = record
+		})
+		const ctx = fakeCtx()
+		Object.defineProperty(ctx, "cwd", { value: "/work/parent" })
+		Object.defineProperty(ctx.sessionManager, "getSessionId", { value: () => "parent-native-session" })
+		Object.defineProperty(ctx.sessionManager, "getSessionFile", { value: () => "/work/parent/session.jsonl" })
+
+		const id = manager.spawn(fakePi(), ctx, "Explore", "full delegated prompt", {
+			description: "short description",
+			isBackground,
+			toolCallId: "tool-call-123",
+			onSessionCreated: () => calls.push("activity"),
+		})
+		const record = manager.getRecord(id)
+		expect(record).toMatchObject({
+			toolCallId: "tool-call-123",
+			prompt: "full delegated prompt",
+			parentSessionId: "parent-native-session",
+			parentSessionFile: "/work/parent/session.jsonl",
+			sessionId: "child-native-session",
+			cwd: "/work/child",
+		})
+		expect(hookedRecord).toBe(record)
+		expect(calls).toEqual(["manager", "activity"])
+		await record?.promise
+	})
+
 	it("marks a run as aborted when runAgent reports an abort", async () => {
 		mockRunAgent.mockResolvedValueOnce({
 			responseText: "partial output",

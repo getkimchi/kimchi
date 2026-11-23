@@ -1163,12 +1163,29 @@ export default function (pi: ExtensionAPI) {
 		widget.update()
 	}, 30_000)
 
+	function buildAgentLifecycleData(record: AgentRecord) {
+		return {
+			agentId: record.id,
+			sessionId: record.sessionId ?? "",
+			parentSessionId: record.parentSessionId ?? "",
+			toolCallId: record.toolCallId,
+			prompt: record.prompt ?? "",
+			description: record.description,
+			cwd: record.cwd ?? "",
+			visibility: record.visibility,
+			remote: record.remote ?? false,
+			status: record.status,
+			background: record.isBackground ?? false,
+		}
+	}
+
 	function buildEventData(record: AgentRecord) {
 		const durationMs = record.completedAt ? record.completedAt - record.startedAt : Date.now() - record.startedAt
 		const u = record.lifetimeUsage
 		const total = getLifetimeTotal(u)
 		const tokens = total > 0 ? { input: u.input, output: u.output, total } : undefined
 		return {
+			...buildAgentLifecycleData(record),
 			id: record.id,
 			type: record.type,
 			description: record.description,
@@ -1185,6 +1202,7 @@ export default function (pi: ExtensionAPI) {
 
 	function appendSubagentRecord(record: AgentRecord): void {
 		pi.appendEntry("subagents:record", {
+			...buildAgentLifecycleData(record),
 			id: record.id,
 			type: record.type,
 			description: record.description,
@@ -1201,6 +1219,7 @@ export default function (pi: ExtensionAPI) {
 			outputFile: record.outputFile,
 			sessionFile: record.sessionFile,
 			systemPrompt: record.systemPrompt,
+			parentSessionFile: record.parentSessionFile,
 		})
 	}
 
@@ -1462,6 +1481,7 @@ export default function (pi: ExtensionAPI) {
 		undefined,
 		(record, ctx) => {
 			emitSubagentEvent("subagents:started", {
+				...buildAgentLifecycleData(record),
 				id: record.id,
 				type: record.type,
 				description: record.description,
@@ -1471,6 +1491,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		(record, info) => {
 			emitSubagentEvent("subagents:compacted", {
+				...buildAgentLifecycleData(record),
 				id: record.id,
 				type: record.type,
 				description: record.description,
@@ -1478,6 +1499,16 @@ export default function (pi: ExtensionAPI) {
 				reason: info.reason,
 				tokensBefore: info.tokensBefore,
 				compactionCount: record.compactionCount,
+			})
+		},
+		(record, session) => {
+			emitSubagentEvent("subagents:session_created", {
+				...buildAgentLifecycleData(record),
+				sessionId: session.sessionId,
+				// The event bus is already scoped to this parent runtime. Carry the
+				// existing child session directly so consumers never resolve through
+				// the process-global active manager (which another root can replace).
+				agentSession: session,
 			})
 		},
 	)
@@ -2273,6 +2304,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 					try {
 						id = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
+							toolCallId,
 							description: params.description as string,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
@@ -2296,7 +2328,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					const record = manager.getRecord(id)
 					if (record && joinMode) {
 						record.joinMode = joinMode
-						record.toolCallId = toolCallId
 						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
 					}
@@ -2320,6 +2351,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					widget.update()
 
 					pi.events.emit("subagents:created", {
+						...(record ? buildAgentLifecycleData(record) : {}),
 						id,
 						type: subagentType,
 						description: params.description,
@@ -2425,6 +2457,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				let spawnedId: string
 				try {
 					spawnedId = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
+						toolCallId,
 						description: params.description as string,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
@@ -2452,7 +2485,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				record.detachResolver = detachResolve
 				if (fgOutputFile) {
 					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
-					record.toolCallId = toolCallId
 					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
 				}
 
