@@ -225,6 +225,15 @@ async function verifySettledOAuthOutcome(scenario: "oauth-deny" | "oauth-token-f
 		expect(response?.stopReason).toBe("end_turn")
 		expect(fixture.client.agentTextBySession().get(sessionId)).toContain(finalText)
 		expect(toolResultText(fixture.fake.requests, "oauth-start-negative")).toMatch(/OAuth authentication failed/i)
+		const failureUpdate = fixture.client.sessionUpdates.find(
+			({ update }) =>
+				update.sessionUpdate === "tool_call_update" &&
+				JSON.stringify(update.rawOutput ?? {}).includes("OAuth authentication failed"),
+		)
+		if (failureUpdate?.update.sessionUpdate !== "tool_call_update") {
+			throw new Error("missing ACP tool_call_update for failed MCP OAuth")
+		}
+		expect(failureUpdate.update.rawOutput).toMatchObject({ isError: true })
 		expect(fixture.mcp.eventsOfType("tool_called")).toHaveLength(0)
 		expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
 

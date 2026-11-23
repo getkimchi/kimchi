@@ -120,6 +120,7 @@ export class McpOAuthTurnContinuation {
 			return {
 				...result,
 				content: [{ type: "text", text: outcome.message }],
+				isError: !outcome.authenticated,
 				details: {
 					...details,
 					authenticated: outcome.authenticated,
