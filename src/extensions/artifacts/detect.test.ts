@@ -393,12 +393,27 @@ describe("artifactsFromToolCall", () => {
 				args: { command: "printf html > nested-redirect.html" },
 				origin: "sniffed",
 			},
+			{
+				fileName: "nested-sniff.html",
+				toolName: "bash",
+				args: { command: "node build.js" },
+				origin: "sniffed",
+				output: "Created nested-sniff.html",
+			},
+			{
+				fileName: "fallback-sniff.html",
+				toolName: "bash",
+				args: {},
+				origin: "sniffed",
+				output: "Created fallback-sniff.html",
+			},
 			{ fileName: "declared.html", toolName: "render_report", args: {}, origin: "declared" },
 		])("does not attribute another prompt's $origin legacy source to a waiting Bash snapshot", ({
 			fileName,
 			toolName,
 			args,
 			origin,
+			output,
 		}) => {
 			const claim = { scope: {}, toolCallId: "waiting-bash", consumer: "acp" as const }
 			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claim)
@@ -406,7 +421,7 @@ describe("artifactsFromToolCall", () => {
 			const result =
 				origin === "declared"
 					? { ...textResult("Generated."), details: { artifacts: [{ path: report, name: fileName }] } }
-					: textResult("")
+					: textResult(output ?? "")
 			expect(
 				artifactsFromToolCall(toolName, args, result, cwd).map(({ path, origin: detectedOrigin }) => ({
 					path,

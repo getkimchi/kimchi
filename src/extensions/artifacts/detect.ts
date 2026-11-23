@@ -310,7 +310,7 @@ function rememberArtifactPath(path: string): void {
 	cwdExecutions.get(cwd)?.knownWriterPaths.add(join(cwd, basename(path)))
 }
 
-/** Only intentional write/edit, parsed redirect, or validated declaration outputs. */
+/** Shared bookkeeping for every non-snapshot source; snapshot candidates never call this. */
 function rememberProducedArtifacts(artifacts: readonly Artifact[]): void {
 	for (const artifact of artifacts) rememberArtifactPath(artifact.path)
 }
@@ -408,9 +408,8 @@ function changedSnapshotArtifacts(snapshot: ArtifactFileSnapshot, opts: DetectOp
 		if (out.length >= MAX_BASH_ARTIFACTS) break
 		const before = snapshot.files.get(path)
 		if (before && before.mtimeMs === stamp.mtimeMs && before.size === stamp.size) continue
-		// Direct writes, redirects, and declarations may belong to another
-		// prompt in the same directory. Their known provenance excludes only
-		// that path; other shell-created files remain eligible here.
+		// Another prompt's validated non-snapshot producer may own this path.
+		// Exclude only that path; other shell-created files remain eligible.
 		if (observation?.knownWriterPaths.has(join(observation.cwd, basename(path)))) continue
 		const artifact = artifactFromPath(path, snapshot.cwd, opts, "snapshot")
 		if (artifact) out.push(artifact)
@@ -583,10 +582,12 @@ export function artifactsFromToolCall(
 		if (toolName === "bash" || toolName === "powershell") {
 			const context = shellCommandContext(toolName, args, cwd)
 			if (context === null) return []
-			if (!context) return bashArtifacts(result, cwd, opts)
+			const outputArtifacts = bashArtifacts(result, context?.cwd ?? cwd, opts)
+			rememberProducedArtifacts(outputArtifacts)
+			if (!context) return outputArtifacts
 			const out = redirectArtifacts(context.segments, context.cwd, opts)
 			rememberProducedArtifacts(out)
-			for (const artifact of bashArtifacts(result, context.cwd, opts)) {
+			for (const artifact of outputArtifacts) {
 				if (!out.some((a) => a.path === artifact.path)) out.push(artifact)
 			}
 			if (opts.fileSnapshot?.cwd === context.cwd) {

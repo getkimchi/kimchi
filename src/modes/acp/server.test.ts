@@ -7422,6 +7422,7 @@ describe("generated artifacts (live turns)", () => {
 	it.each([
 		{ kind: "direct write", fileName: "other-prompt.html" },
 		{ kind: "non-opted redirect", fileName: "nested-redirect.html" },
+		{ kind: "non-opted output sniff", fileName: "nested-sniff.html" },
 		{ kind: "declaration", fileName: "declared.html" },
 	])("does not attribute another session's $kind to a waiting Bash prompt", async ({ kind, fileName }) => {
 		const waitingSession = new FakeAgentSession("session-waiting-for-bash", tmpDir)
@@ -7508,14 +7509,16 @@ describe("generated artifacts (live turns)", () => {
 			})
 			finishRecordedPrompt(waitingSession, "tc-other-prompt-bash", "bash", waitArgs, "Bash done.", "")
 		}
-		const producerToolName =
-			kind === "direct write" ? "write" : kind === "non-opted redirect" ? "bash" : "render_report"
+		const producerToolName = kind === "direct write" ? "write" : kind === "declaration" ? "render_report" : "bash"
 		const producerArgs =
 			kind === "direct write"
 				? { path: otherPromptReport, content: "<h1>Other prompt</h1>" }
 				: kind === "non-opted redirect"
 					? { command: `printf html > ${fileName}` }
-					: {}
+					: kind === "non-opted output sniff"
+						? { command: "node build.js" }
+						: {}
+		const producerStdout = kind === "non-opted output sniff" ? `Generated ${fileName}` : "Produced other prompt."
 		const producerDetails =
 			kind === "declaration" ? { artifacts: [{ path: otherPromptReport, name: fileName }] } : undefined
 		writingSession.promptImpl = async () => {
@@ -7532,7 +7535,7 @@ describe("generated artifacts (live turns)", () => {
 				toolCallId: "tc-other-prompt-producer",
 				toolName: producerToolName,
 				result: {
-					content: [{ type: "text", text: "Produced other prompt." }],
+					content: [{ type: "text", text: producerStdout }],
 					...(producerDetails ? { details: producerDetails } : {}),
 				},
 				isError: false,
@@ -7543,7 +7546,7 @@ describe("generated artifacts (live turns)", () => {
 				producerToolName,
 				producerArgs,
 				"Other prompt done.",
-				"Produced other prompt.",
+				producerStdout,
 				producerDetails,
 			)
 			signalWriterFinished()
@@ -7562,7 +7565,12 @@ describe("generated artifacts (live turns)", () => {
 			{
 				v: 1,
 				artifacts: [
-					{ path: otherPromptReport, name: fileName, mimeType: "text/html", sniffed: kind === "non-opted redirect" },
+					{
+						path: otherPromptReport,
+						name: fileName,
+						mimeType: "text/html",
+						sniffed: kind === "non-opted redirect" || kind === "non-opted output sniff",
+					},
 				],
 			},
 		])
