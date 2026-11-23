@@ -386,6 +386,39 @@ describe("artifactsFromToolCall", () => {
 			releaseArtifactSnapshot(claim)
 		})
 
+		it.each([
+			{
+				fileName: "nested-redirect.html",
+				toolName: "bash",
+				args: { command: "printf html > nested-redirect.html" },
+				origin: "sniffed",
+			},
+			{ fileName: "declared.html", toolName: "render_report", args: {}, origin: "declared" },
+		])("does not attribute another prompt's $origin legacy source to a waiting Bash snapshot", ({
+			fileName,
+			toolName,
+			args,
+			origin,
+		}) => {
+			const claim = { scope: {}, toolCallId: "waiting-bash", consumer: "acp" as const }
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claim)
+			const report = touch(fileName)
+			const result =
+				origin === "declared"
+					? { ...textResult("Generated."), details: { artifacts: [{ path: report, name: fileName }] } }
+					: textResult("")
+			expect(
+				artifactsFromToolCall(toolName, args, result, cwd).map(({ path, origin: detectedOrigin }) => ({
+					path,
+					origin: detectedOrigin,
+				})),
+			).toEqual([{ path: report, origin }])
+			expect(artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, { fileSnapshot })).toEqual(
+				[],
+			)
+			releaseArtifactSnapshot(claim)
+		})
+
 		it("shares ACP and recorder snapshots until both consumers release them", () => {
 			const scope = {}
 			const acpClaim = { scope, toolCallId: "shared-call", consumer: "acp" as const }

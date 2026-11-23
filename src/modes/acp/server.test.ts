@@ -7419,7 +7419,11 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactChunks()).toEqual([])
 	})
 
-	it("does not attribute a direct write from another session to a waiting Bash prompt", async () => {
+	it.each([
+		{ kind: "direct write", fileName: "other-prompt.html" },
+		{ kind: "non-opted redirect", fileName: "nested-redirect.html" },
+		{ kind: "declaration", fileName: "declared.html" },
+	])("does not attribute another session's $kind to a waiting Bash prompt", async ({ kind, fileName }) => {
 		const waitingSession = new FakeAgentSession("session-waiting-for-bash", tmpDir)
 		const writingSession = new FakeAgentSession("session-direct-writer", tmpDir)
 		const sessionQueue = [waitingSession, writingSession]
@@ -7442,7 +7446,8 @@ describe("generated artifacts (live turns)", () => {
 		const writingId = (await concurrentAgent.newSession({ cwd: tmpDir, mcpServers: [] })).sessionId
 		const waitingRecorder = attachArtifactRecorder(waitingSession)
 		const writingRecorder = attachArtifactRecorder(writingSession)
-		const otherPromptReport = join(tmpDir, "other-prompt.html")
+		setSnapshotArtifactsOptIn(writingSession.sessionManager, false)
+		const otherPromptReport = join(tmpDir, fileName)
 		let signalBashStarted!: () => void
 		let signalWriterFinished!: () => void
 		const bashStarted = new Promise<void>((resolve) => {
@@ -7458,6 +7463,7 @@ describe("generated artifacts (live turns)", () => {
 			args: Record<string, unknown>,
 			text: string,
 			output: string,
+			details?: { artifacts: Array<{ path: string; name: string }> },
 		) => {
 			const message = makeAssistantMessage([
 				{ type: "text", text },
@@ -7473,6 +7479,7 @@ describe("generated artifacts (live turns)", () => {
 						toolCallId,
 						toolName,
 						content: output ? [{ type: "text", text: output }] : [],
+						details,
 						isError: false,
 						timestamp: Date.now(),
 					},
@@ -7501,30 +7508,43 @@ describe("generated artifacts (live turns)", () => {
 			})
 			finishRecordedPrompt(waitingSession, "tc-other-prompt-bash", "bash", waitArgs, "Bash done.", "")
 		}
-		const writeArgs = { path: otherPromptReport, content: "<h1>Other prompt</h1>" }
+		const producerToolName =
+			kind === "direct write" ? "write" : kind === "non-opted redirect" ? "bash" : "render_report"
+		const producerArgs =
+			kind === "direct write"
+				? { path: otherPromptReport, content: "<h1>Other prompt</h1>" }
+				: kind === "non-opted redirect"
+					? { command: `printf html > ${fileName}` }
+					: {}
+		const producerDetails =
+			kind === "declaration" ? { artifacts: [{ path: otherPromptReport, name: fileName }] } : undefined
 		writingSession.promptImpl = async () => {
 			writingSession.emit({ type: "agent_start" })
 			writingSession.emit({
 				type: "tool_execution_start",
-				toolCallId: "tc-other-prompt-write",
-				toolName: "write",
-				args: writeArgs,
+				toolCallId: "tc-other-prompt-producer",
+				toolName: producerToolName,
+				args: producerArgs,
 			})
-			writeFileSync(otherPromptReport, writeArgs.content)
+			writeFileSync(otherPromptReport, "<h1>Other prompt</h1>")
 			writingSession.emit({
 				type: "tool_execution_end",
-				toolCallId: "tc-other-prompt-write",
-				toolName: "write",
-				result: { content: [{ type: "text", text: "Wrote other prompt." }] },
+				toolCallId: "tc-other-prompt-producer",
+				toolName: producerToolName,
+				result: {
+					content: [{ type: "text", text: "Produced other prompt." }],
+					...(producerDetails ? { details: producerDetails } : {}),
+				},
 				isError: false,
 			})
 			finishRecordedPrompt(
 				writingSession,
-				"tc-other-prompt-write",
-				"write",
-				writeArgs,
+				"tc-other-prompt-producer",
+				producerToolName,
+				producerArgs,
 				"Other prompt done.",
-				"Wrote other prompt.",
+				"Produced other prompt.",
+				producerDetails,
 			)
 			signalWriterFinished()
 		}
@@ -7541,7 +7561,9 @@ describe("generated artifacts (live turns)", () => {
 		expect(writingRecorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)).toEqual([
 			{
 				v: 1,
-				artifacts: [{ path: otherPromptReport, name: "other-prompt.html", mimeType: "text/html", sniffed: false }],
+				artifacts: [
+					{ path: otherPromptReport, name: fileName, mimeType: "text/html", sniffed: kind === "non-opted redirect" },
+				],
 			},
 		])
 		expect(waitingRecorder.getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])

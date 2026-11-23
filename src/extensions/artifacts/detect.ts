@@ -240,7 +240,7 @@ type CwdExecutionObservation = {
 	cwd: string
 	active: number
 	ambiguous: boolean
-	directWritePaths: Set<string>
+	knownWriterPaths: Set<string>
 }
 type SharedSnapshot = {
 	snapshot: ArtifactFileSnapshot | undefined
@@ -305,9 +305,14 @@ function canonicalCwd(cwd: string): string {
 	}
 }
 
-function rememberDirectArtifactPath(path: string): void {
+function rememberArtifactPath(path: string): void {
 	const cwd = canonicalCwd(dirname(path))
-	cwdExecutions.get(cwd)?.directWritePaths.add(join(cwd, basename(path)))
+	cwdExecutions.get(cwd)?.knownWriterPaths.add(join(cwd, basename(path)))
+}
+
+/** Only intentional write/edit, parsed redirect, or validated declaration outputs. */
+function rememberProducedArtifacts(artifacts: readonly Artifact[]): void {
+	for (const artifact of artifacts) rememberArtifactPath(artifact.path)
 }
 
 /** Keep direct write/edit ownership ahead of any active shell snapshot. */
@@ -316,7 +321,7 @@ export function observeDirectArtifactWrite(toolName: string, args: unknown, cwd:
 		if (toolName !== "write" && toolName !== "edit") return
 		const rawPath = (args as { path?: unknown } | null | undefined)?.path
 		if (typeof rawPath !== "string" || !isArtifactExtension(rawPath)) return
-		rememberDirectArtifactPath(resolveToolPath(rawPath, cwd))
+		rememberArtifactPath(resolveToolPath(rawPath, cwd))
 	} catch {
 		// Provenance tracking must never prevent the tool from executing.
 	}
@@ -332,7 +337,7 @@ function observeExecution(snapshot: ArtifactFileSnapshot | undefined): CwdExecut
 		// The shared object keeps the interval ambiguous after either one ends.
 		observation.ambiguous = true
 	} else {
-		observation = { cwd, active: 0, ambiguous: false, directWritePaths: new Set() }
+		observation = { cwd, active: 0, ambiguous: false, knownWriterPaths: new Set() }
 		cwdExecutions.set(cwd, observation)
 	}
 	observation.active++
@@ -403,10 +408,10 @@ function changedSnapshotArtifacts(snapshot: ArtifactFileSnapshot, opts: DetectOp
 		if (out.length >= MAX_BASH_ARTIFACTS) break
 		const before = snapshot.files.get(path)
 		if (before && before.mtimeMs === stamp.mtimeMs && before.size === stamp.size) continue
-		// Direct writes may belong to another prompt in the same directory.
-		// Their known provenance excludes only that path; other shell-created
-		// files can still be attached to this command.
-		if (observation?.directWritePaths.has(join(observation.cwd, basename(path)))) continue
+		// Direct writes, redirects, and declarations may belong to another
+		// prompt in the same directory. Their known provenance excludes only
+		// that path; other shell-created files remain eligible here.
+		if (observation?.knownWriterPaths.has(join(observation.cwd, basename(path)))) continue
 		const artifact = artifactFromPath(path, snapshot.cwd, opts, "snapshot")
 		if (artifact) out.push(artifact)
 	}
@@ -562,14 +567,17 @@ export function artifactsFromToolCall(
 	try {
 		if (isErrorResult(result)) return []
 		const declared = parseDeclaredArtifacts(result, cwd)
-		if (declared.handled) return declared.artifacts
+		if (declared.handled) {
+			rememberProducedArtifacts(declared.artifacts)
+			return declared.artifacts
+		}
 		if (toolName === "write" || toolName === "edit") {
 			const path = (args as { path?: unknown } | null | undefined)?.path
 			if (typeof path !== "string") return []
 			// No mtime window here: the write/edit tool authored the file itself.
 			const artifact = artifactFromPath(path, cwd, {}, "write")
 			if (!artifact) return []
-			rememberDirectArtifactPath(artifact.path)
+			rememberArtifactPath(artifact.path)
 			return [artifact]
 		}
 		if (toolName === "bash" || toolName === "powershell") {
@@ -577,6 +585,7 @@ export function artifactsFromToolCall(
 			if (context === null) return []
 			if (!context) return bashArtifacts(result, cwd, opts)
 			const out = redirectArtifacts(context.segments, context.cwd, opts)
+			rememberProducedArtifacts(out)
 			for (const artifact of bashArtifacts(result, context.cwd, opts)) {
 				if (!out.some((a) => a.path === artifact.path)) out.push(artifact)
 			}
