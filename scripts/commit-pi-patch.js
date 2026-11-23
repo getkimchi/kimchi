@@ -27,7 +27,14 @@ if (headerAdditionsPath) {
 	// without editing generated patch hunks by hand.
 	const additions = JSON.parse(readFileSync(resolve(headerAdditionsPath), "utf8"))
 	for (const field of ["tracking", "changes"]) {
-		if (typeof additions[field] !== "string" || !additions[field].startsWith("# ")) {
+		const block = additions[field]
+		const isCommentBlock =
+			typeof block === "string" &&
+			block
+				.trimEnd()
+				.split(/\r\n?|\n/)
+				.every((line) => line.startsWith("#"))
+		if (!isCommentBlock) {
 			throw new Error(`Header addition ${field} must be a text block containing comment lines`)
 		}
 	}
