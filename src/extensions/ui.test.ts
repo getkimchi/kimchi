@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
@@ -10,6 +10,9 @@ import uiExtension, {
 	holdWorkedForMessage,
 	withWorkingHidden,
 } from "./ui.js"
+
+type NewSessionOptions = NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>
+type ReplacementSessionContext = Parameters<NonNullable<NewSessionOptions["withSession"]>>[0]
 
 // Helper to create a minimal Model mock
 function makeModel(id: string, contextWindow: number, input: string[] = ["text", "image"]) {
@@ -71,6 +74,26 @@ describe("bare exit input handler", () => {
 		const result = await harness.getHandler("input")({ type: "input", text: "hello" } as never, ctx)
 		expect(shutdown).not.toHaveBeenCalled()
 		expect(result).toBeUndefined()
+	})
+})
+
+describe("clear command", () => {
+	it("announces completion through the replacement session context", async () => {
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const originalNotify = vi.fn()
+		const replacementNotify = vi.fn()
+		const replacementCtx = { ui: { notify: replacementNotify } } as unknown as ReplacementSessionContext
+		const newSession: ExtensionCommandContext["newSession"] = vi.fn(async (options) => {
+			await options?.withSession?.(replacementCtx)
+			return { cancelled: false }
+		})
+		const ctx = { ui: { notify: originalNotify }, newSession } as unknown as ExtensionCommandContext
+
+		await harness.getRegisteredCommand("clear").handler("", ctx)
+
+		expect(replacementNotify).toHaveBeenCalledWith("New session started", "info")
+		expect(originalNotify).not.toHaveBeenCalled()
 	})
 })
 

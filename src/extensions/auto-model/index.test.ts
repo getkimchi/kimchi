@@ -1133,6 +1133,45 @@ describe("self-heal — persisted default no longer served", () => {
 })
 
 describe("main-session CLI model selection", () => {
+	beforeEach(() => {
+		settingsStubs.getDefaultModel.mockReturnValue(undefined)
+		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
+	})
+
+	it("preserves an explicit CLI model on a new session", async () => {
+		populateCliArgs(["--model", "kimi-k2.5"])
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const autoModel = model("auto", { name: "Auto" })
+		const c = createContext({
+			model: model("kimi-k2.5"),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => autoModel },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, c)
+
+		expect(extension.setModel).not.toHaveBeenCalled()
+	})
+
+	it("keeps Auto rollback on new sessions for --models-only launches", async () => {
+		populateCliArgs(["--models", "kimchi-dev/auto,kimchi-dev/kimi-k2.5"])
+		settingsStubs.getDefaultModel.mockReturnValue("auto")
+		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const autoModel = model("auto", { name: "Auto" })
+		const c = createContext({
+			model: model("kimi-k2.5"),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => autoModel },
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, c)
+
+		expect(extension.setModel).toHaveBeenCalledWith(autoModel, { persist: true })
+	})
+
 	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
 		populateCliArgs(["--model", "kimchi-dev/auto"])
 		const extension = createExtensionApi()

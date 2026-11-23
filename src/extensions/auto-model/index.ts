@@ -348,9 +348,11 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 					!event.previousSessionFile &&
 					!hasPersistedSession &&
 					!entries.some((entry) => entry.type === "message"))
-			// CLI launch choices belong to this process, not only its startup event:
-			// /new and /clear replace the session with reason "new" and keep them too.
-			const explicitLaunchChoice = cliOptions?.model || cliOptions?.provider || cliOptions?.models
+			// An explicit CLI model belongs to this process, not only its startup event:
+			// /new and /clear replace the session with reason "new" and keep it too.
+			// Other launch options keep their existing startup-only exemption.
+			const explicitLaunchChoice =
+				event.reason === "startup" ? cliOptions?.model || cliOptions?.provider || cliOptions?.models : cliOptions?.model
 			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !explicitLaunchChoice
 
 			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()

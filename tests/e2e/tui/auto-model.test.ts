@@ -404,17 +404,16 @@ for (const command of ["/new", "/clear"] as const) {
 				providerId: "kimchi-dev",
 				initialModel: "override",
 				models: MODELS_WITH_OVERRIDE,
-				responses: [],
+				responses: [{ stream: ["Session reset sentinel."] }],
 			},
-			async (_fixture, trace) => {
+			async (fixture, trace) => {
 				await waitForText(terminal, "override → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				terminal.submit("Render the session reset sentinel")
+				await waitForText(terminal, "Session reset sentinel.", { timeoutMs: STREAM_TIMEOUT_MS })
+				await waitForTurnToSettle(fixture.fake.requests)
 				terminal.submit(command)
-				if (command === "/new") {
-					await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				} else {
-					// The local /clear alias replaces the session without adding a transcript marker.
-					await new Promise((resolve) => setTimeout(resolve, 1_000))
-				}
+				await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				await expect(terminal.getByText("Session reset sentinel.", { full: false })).not.toBeVisible()
 				expect(viewText(terminal)).toContain("override → ctrl+p")
 				trace.step("explicit CLI model survived the new session")
 			},
@@ -429,18 +428,18 @@ for (const command of ["/new", "/clear"] as const) {
 				providerId: "kimchi-dev",
 				initialModel: false,
 				models: MODELS_WITH_OVERRIDE,
-				responses: [],
+				responses: [{ stream: ["Session reset sentinel."] }],
 			},
-			async (_fixture, trace) => {
+			async (fixture, trace) => {
 				await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 				terminal.submit("/model kimchi-dev/override")
 				await waitForText(terminal, "override → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				terminal.submit("Render the session reset sentinel")
+				await waitForText(terminal, "Session reset sentinel.", { timeoutMs: STREAM_TIMEOUT_MS })
+				await waitForTurnToSettle(fixture.fake.requests)
 				terminal.submit(command)
-				if (command === "/new") {
-					await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				} else {
-					await new Promise((resolve) => setTimeout(resolve, 1_000))
-				}
+				await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+				await expect(terminal.getByText("Session reset sentinel.", { full: false })).not.toBeVisible()
 				expect(viewText(terminal)).toContain("auto → ctrl+p")
 				trace.step("session-scoped model returned to the Auto default")
 			},
