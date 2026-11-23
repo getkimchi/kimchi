@@ -92,6 +92,9 @@ jobs:
       - name: Test
         run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test
 
+      - name: Script tests
+        run: pnpm run test:scripts
+
       - name: Ensure native node-pty for smoke tests
         run: |
           node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')" ||
@@ -178,6 +181,9 @@ jobs:
 
       - name: Test
         run: pnpm run test
+
+      - name: Script tests
+        run: pnpm run test:scripts
 
       - name: Ensure native node-pty for smoke tests
         run: |
