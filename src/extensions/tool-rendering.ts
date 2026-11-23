@@ -4163,6 +4163,7 @@ function renderCodemodeOutcome(
 			),
 		)
 	}
+	const detailsStart = lines.length
 	for (const call of codemodeNestedCalls(result.details)) {
 		const callColor = call.status === "ok" ? "success" : call.status === "error" ? "error" : "muted"
 		const callIcon =
@@ -4174,10 +4175,20 @@ function renderCodemodeOutcome(
 		)
 		if (call.error) lines.push(...call.error.split("\n").map((line) => theme.fg("error", `  ${line}`)))
 	}
-	const raw = getTextContent(result).trim()
+	// Pi keeps this header in the model's context, but it duplicates our status
+	// and timing line in the TUI. Strip it only for presentation.
+	const raw = getTextContent(result)
+		.trim()
+		.replace(/^Script (?:completed|failed)\r?\nWall time [\d.]+ seconds\r?\nOutput:\r?\n/, "")
+		.trim()
 	if (raw) {
 		lines.push(...raw.split("\n").map((line) => theme.fg(ctx.isError ? "error" : "dim", line || " ")))
 	}
+	const details = lines.splice(detailsStart)
+	const preview = buildPreviewText(details, true, theme, previewLimit())
+	if (preview) lines.push(preview)
+	const fullOutputPath = getStringArg(result.details, "fullOutputPath")
+	if (fullOutputPath) lines.push(theme.fg("muted", `Full output: ${fullOutputPath}`))
 	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme))
 }
 

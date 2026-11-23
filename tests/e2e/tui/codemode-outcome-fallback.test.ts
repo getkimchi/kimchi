@@ -39,7 +39,7 @@ test("Codemode without a valid purpose or positive context reduction retains the
 
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, "Intermediate ≈", { full: false })
-			expect(viewText(terminal)).toContain("Output:")
+			expect(viewText(terminal)).not.toContain("Wall time")
 			expect(viewText(terminal)).toContain("tiny")
 		},
 	)
@@ -84,7 +84,7 @@ test("Codemode shows a complete context estimate for a failed script", async ({ 
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, "intentional-codemode-failure", { full: false })
 			expect(viewText(terminal)).toContain("Actions: read 1 file")
-			expect(viewText(terminal)).toContain("Script failed")
+			expect(viewText(terminal)).not.toContain("Wall time")
 		},
 	)
 })

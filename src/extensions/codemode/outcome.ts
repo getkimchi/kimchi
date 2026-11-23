@@ -82,6 +82,8 @@ export function readCodemodeContextReduction(details: unknown): CodemodeContextR
 
 export function resultTextChars(result: unknown): number {
 	if (!isRecord(result) || !Array.isArray(result.content)) return 0
+	// Include Pi's script header: unlike the TUI, the model still receives it,
+	// so it is part of the returned context rather than free presentation text.
 	let chars = 0
 	for (const block of result.content) {
 		if (isRecord(block) && block.type === "text" && typeof block.text === "string") chars += block.text.length
@@ -96,6 +98,7 @@ function contextKey(ctx: ExtensionContext, toolCallId: string): string {
 interface PendingOutcome {
 	sessionId: string
 	pendingNestedCalls: Set<string>
+	endedNestedCalls: Set<string>
 	intermediateTextChars: number
 	complete: boolean
 }
@@ -126,6 +129,7 @@ export function createCodemodeOutcomeTracker() {
 			pending.set(key, {
 				sessionId: ctx.sessionManager.getSessionId(),
 				pendingNestedCalls: new Set(),
+				endedNestedCalls: new Set(),
 				intermediateTextChars: 0,
 				complete: true,
 			})
@@ -145,7 +149,8 @@ export function createCodemodeOutcomeTracker() {
 			const rootKey = rootFor(ctx, event.parentToolCallId)
 			if (!rootKey) return
 			const outcome = pending.get(rootKey)
-			if (!outcome) return
+			if (!outcome || outcome.endedNestedCalls.has(event.toolCallId)) return
+			outcome.endedNestedCalls.add(event.toolCallId)
 			if (!outcome.pendingNestedCalls.delete(event.toolCallId)) outcome.complete = false
 			outcome.intermediateTextChars += resultTextChars(event.result)
 		},
@@ -155,10 +160,11 @@ export function createCodemodeOutcomeTracker() {
 			const outcome = pending.get(key)
 			release(key)
 			if (!outcome) {
+				const returnedTextChars = resultTextChars(result)
 				return {
 					intermediateTextChars: 0,
-					returnedTextChars: resultTextChars(result),
-					estimatedTokensKeptOut: 0,
+					returnedTextChars,
+					estimatedTokensKeptOut: Math.round(-returnedTextChars / 4),
 					complete: false,
 				}
 			}
@@ -261,7 +267,7 @@ export function estimatedTokens(chars: number): number {
 export function formatEstimatedTokenCount(tokens: number): string {
 	const absolute = Math.abs(tokens)
 	if (absolute < 1_000) return String(tokens)
-	if (absolute < 1_000_000) {
+	if (absolute < 999_500) {
 		const value = tokens / 1_000
 		return `${value.toFixed(Math.abs(value) < 100 ? 1 : 0).replace(/\.0$/, "")}k`
 	}
