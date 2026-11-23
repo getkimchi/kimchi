@@ -190,7 +190,6 @@ export function getParent(component: object): Container | undefined {
 }
 
 export function patchAddChild(): void {
-	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 	const proto = Container.prototype as any
 	if (proto[ADDCHILD_PATCH_FLAG]) return
 	const original = proto.addChild
@@ -221,7 +220,6 @@ function isToolLike(
 
 function isFailedTool(v: unknown): boolean {
 	if (!isToolLike(v)) return false
-	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
 	const c = v as any
 	return c.result?.isError === true
 }
@@ -405,7 +403,6 @@ function runTimeBounds(run: object[]): { startedAt: number | undefined; endedAt:
 	let startedAt: number | undefined
 	let endedAt: number | undefined
 	for (const tool of run) {
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
 		const rendererState = (tool as any)?.rendererState
 		if (!rendererState || typeof rendererState !== "object") continue
 		const s = rendererState._executionStartedAt
@@ -424,10 +421,8 @@ function countFailedTools(run: object[]): number {
 	return failed
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: theme comes from untyped external package
 export function buildGroupView(run: object[], theme: any): ToolBlockView {
 	const view = new ToolBlockView()
-	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
 	const running = run.find((member) => (member as any).isPartial === true) as any
 	const isInProgress = running !== undefined
 	const summaryText = buildGroupSummaryText(run, isInProgress)
@@ -482,7 +477,6 @@ const TOOL_RENDER_CACHE_KEY = Symbol.for("pi-claude-style-tools:tool-render-cach
 // Render the tool's call (header) region only — suppress the result region —
 // using the same temporary contentBox swap + cache bust as the group view.
 export function renderHeaderOnly(
-	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 	self: any,
 	originalRender: (this: unknown, width: number) => string[],
 	width: number,
@@ -529,7 +523,6 @@ const TRAILING_FILL_RE = /(?:[ \t]+|\x1b\[[0-9;]*m)+$/
  * not painted over by the region background. Truncated to the render width —
  * pi-tui crashes on over-wide lines.
  */
-// biome-ignore lint/suspicious/noExplicitAny: theme comes from untyped external package
 export function appendExpandHint(lines: string[], theme: any, width: number): string[] {
 	if (!Array.isArray(lines) || lines.length === 0) return lines
 	let hint = EXPAND_HINT
@@ -575,7 +568,6 @@ function restoreGroupCosmetics(self: any): void {
  * This helper owns the ownership check, so every call site just calls it:
  * there is no separately-readable "is a swap applied?" state afterwards.
  */
-// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 export function ensureOriginalChildren(self: any): void {
 	// Self-shell path: upstream rebuilds selfRenderContainer.children on every
 	// updateDisplay(), so dropping the swap marker is enough. If the rebuild
@@ -609,7 +601,6 @@ export function ensureOriginalChildren(self: any): void {
 }
 
 export function patchToolGroupRendering(): void {
-	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 	const proto = ToolExecutionComponent.prototype as any
 	if (proto[GROUP_RENDER_PATCH_FLAG]) return
 
@@ -622,12 +613,10 @@ export function patchToolGroupRendering(): void {
 	proto.handleMouse = function patchedGroupHandleMouse(event: { type?: string; button?: string | number }) {
 		// Self-shell groups swap selfRenderContainer.children; the regular path
 		// swaps contentBox.children. Both register in groupSwapOriginals.
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const selfContainer = (this as any)?.selfRenderContainer
 		const contentBox = (this as any)?.contentBox
 		const showingGroupRow =
-			(selfContainer && groupSwapOriginals.has(selfContainer)) ||
-			(contentBox && groupSwapOriginals.has(contentBox))
+			(selfContainer && groupSwapOriginals.has(selfContainer)) || (contentBox && groupSwapOriginals.has(contentBox))
 		if (
 			showingGroupRow &&
 			(this as any).result &&
@@ -666,7 +655,6 @@ export function patchToolGroupRendering(): void {
 		// A lone tool folds to its header line once a later tool call exists
 		// ("collapse work when the next tool call starts").
 		if (run.length < 2) {
-			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 			const self = this as any
 			if (
 				run.length === 1 &&
@@ -684,7 +672,6 @@ export function patchToolGroupRendering(): void {
 
 		// ctrl+o wires to component.setExpanded() on ALL tools globally.
 		// Use the last tool's .expanded field as the group's expand state.
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const lastTool = run[run.length - 1] as any
 		if (lastTool.expanded === true) {
 			ensureOriginalChildren(this)
@@ -697,25 +684,20 @@ export function patchToolGroupRendering(): void {
 		// (watching a long command must never require expanding the group).
 		// While EVERY member is still running there is nothing completed to
 		// summarize — show the real rows instead of a folded shell.
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const firstNonPartial = run.find((member) => (member as any).isPartial !== true)
 		if (!firstNonPartial) return originalRender.call(this, width)
 		const rowTool = firstNonPartial
 		if (rowTool !== this) {
-			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 			if ((this as any).isPartial === true) return originalRender.call(this, width)
 			return []
 		}
 
-		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
 		const theme = (this as any).ui?.theme
 		const groupView = buildGroupView(run, theme)
 
 		// Inject groupView into contentBox so the full render pipeline applies the
 		// ▍ stroke (Box) and spacing/border wrapper (patchedContainerRender).
-		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
 		const contentBox = (this as any).contentBox
-		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
 		const usingSelf = typeof (this as any).getRenderShell === "function" && (this as any).getRenderShell() === "self"
 
 		if (!contentBox || usingSelf) {
@@ -725,29 +707,27 @@ export function patchToolGroupRendering(): void {
 			// a MouseRegion, and the swap markers the tool-level click handler and
 			// `ensureOriginalChildren` use. contentBox ALWAYS exists but must not be
 			// used here — upstream takes its self path, not contentBox.
-			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 			const selfContainer = (this as any).selfRenderContainer
 			if (!usingSelf || !selfContainer || !Array.isArray(selfContainer.children)) {
 				return ["", ...groupView.render(width)]
 			}
 
-			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 			const selfState = selfContainer
 			if (!groupSwapOriginals.has(selfState)) {
 				groupSwapOriginals.set(selfState, { bgFn: (selfState as any).bgFn, paddingY: 0 })
 			}
-			selfState.children = [new MouseRegion(groupView, (event: any) => {
-				if (!lastTool.result || event.type !== "click" || event.button !== "left") return undefined
-				lastTool.setExpanded(!lastTool.expanded)
-				return { handled: true }
-			})]
+			selfState.children = [
+				new MouseRegion(groupView, (event: any) => {
+					if (!lastTool.result || event.type !== "click" || event.button !== "left") return undefined
+					lastTool.setExpanded(!lastTool.expanded)
+					return { handled: true }
+				}),
+			]
 			const lines = originalRender.call(this, width)
-			// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 			delete (this as any)[TOOL_RENDER_CACHE_KEY]
 			return ["", ...lines]
 		}
 
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instances
 		const isInProgress = run.some((member) => (member as any).isPartial === true)
 
 		// Capture the pre-fold cosmetics once. The children swap is intentionally
@@ -767,7 +747,6 @@ export function patchToolGroupRendering(): void {
 		// Swap in group view with the appropriate accent color and no vertical padding
 		// so the group summary takes a single content line instead of three.
 		contentBox.children = [groupRow]
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instances
 		const failedInRun = run.some((member) => isFailedTool(member))
 		contentBox.bgFn = isInProgress
 			? (s: string) => theme?.fg?.("accent", s) ?? s
@@ -779,7 +758,6 @@ export function patchToolGroupRendering(): void {
 		// The folded row is rebuilt from live state every frame (the timer
 		// advances), so exactly one bust before rendering is enough — the next
 		// frame busts again and can never be served a stale cache entry.
-		// biome-ignore lint/suspicious/noExplicitAny: Symbol-keyed cache busting on untyped prototype
 		delete (this as any)[TOOL_RENDER_CACHE_KEY]
 		contentBox.invalidate()
 
@@ -910,7 +888,6 @@ export function muteAssistantLines(lines: string[], fg: string): string[] {
 }
 
 function patchAssistantTextFolding(): void {
-	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 	const proto = AssistantMessageComponent.prototype as any
 	if (proto[ASSISTANT_FOLD_PATCH_FLAG]) return
 	const originalRender = proto.render
@@ -923,7 +900,6 @@ function patchAssistantTextFolding(): void {
 		// Resolved once per render: this is both the opportunistic calibration
 		// pass (the label shows up in any message's thinking widget, fold-eligible
 		// or not) and the muted colour this frame uses.
-		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
 		const mutedFg = resolveMutedFg(lines, (this as any).ui?.theme)
 		const parent = getParent(this)
 		if (!parent) return lines
@@ -933,16 +909,13 @@ function patchAssistantTextFolding(): void {
 
 		// A completed turn's answer stays on screen when the next prompt starts —
 		// only the current turn's interstitial commentary folds.
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on AssistantMessageComponent
 		const messageTimestamp = (this as any)?.lastMessage?.timestamp
 		if (typeof messageTimestamp === "number" && messageTimestamp < lastTurnStartTimestamp) return lines
 		const decision = decideAssistantTextFold(children, selfIdx)
 		if (!decision.fold) return lines
 		// Live narration while work is still running must stay visible — keeping
 		// the user oriented matters more than compressing in-flight steps.
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instances
 		if ((decision.prevTool as any)?.isPartial === true) return lines
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const controller = decision.expandController as any
 		if (controller?.expanded === true) return lines
 		if (controller?.isPartial === true) return lines
@@ -965,7 +938,6 @@ const SET_EXPANDED_PATCH_FLAG = Symbol.for("pi-tool-grouping:patched-set-expande
 const propagationGuard = new WeakSet<object>()
 
 function patchSetExpandedPropagation(): void {
-	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 	const proto = ToolExecutionComponent.prototype as any
 	if (proto[SET_EXPANDED_PATCH_FLAG]) return
 	const original = proto.setExpanded
@@ -978,7 +950,6 @@ function patchSetExpandedPropagation(): void {
 		const parent = getParent(this)
 		if (!parent) return
 		const run = findToolGroup(this, parent.children as object[])
-		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const targets = computeExpandPropagation(run, this as any, expanded)
 		if (targets.length === 0) return
 		propagationGuard.add(this)
@@ -1082,7 +1053,6 @@ export function maybeInjectCollapseWorkSetting(list: unknown): boolean {
 }
 
 function patchSettingsSelectorEntry(): void {
-	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 	const proto = Container.prototype as any
 	if (proto[SETTINGS_ENTRY_PATCH_FLAG]) return
 	const original = proto.addChild

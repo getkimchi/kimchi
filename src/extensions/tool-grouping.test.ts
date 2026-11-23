@@ -199,9 +199,7 @@ describe("patchAddChild / getParent", () => {
 		// turned that into a fatal TypeError. Tracking must never throw.
 		patchAddChild()
 		const parent = new Container()
-		// biome-ignore lint/suspicious/noExplicitAny: deliberately breaking the addChild contract
 		expect(() => parent.addChild(undefined as any)).not.toThrow()
-		// biome-ignore lint/suspicious/noExplicitAny: deliberately breaking the addChild contract
 		expect(() => parent.addChild("not-a-component" as any)).not.toThrow()
 	})
 })
@@ -530,7 +528,6 @@ describe("buildGroupView", () => {
 		vi.useFakeTimers()
 		vi.setSystemTime(now)
 		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("read", { path: "b.ts" }, { isPartial: true })]
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(run[1] as any).rendererState = { _executionStartedAt: now.getTime() - 5000 }
 		const view = buildGroupView(run, plainTheme)
 		const lines = view.render(120)
@@ -544,7 +541,6 @@ describe("buildGroupView", () => {
 		vi.useFakeTimers()
 		vi.setSystemTime(now)
 		const run = [mockToolFull("read", { path: "a.ts" }, { isPartial: true })]
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(run[0] as any).rendererState = { _executionStartedAt: now.getTime() - 500 }
 		const view = buildGroupView(run, plainTheme)
 		const lines = view.render(120)
@@ -583,7 +579,6 @@ describe("buildGroupView", () => {
 			mockToolFull("read", { path: "a.ts" }),
 			mockToolFull("bash", { command: "cargo build" }, { isPartial: true }),
 		]
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(run[1] as any).rendererState = { _executionStartedAt: now.getTime() - 5000 }
 		const view = buildGroupView(run, plainTheme)
 		const headerLine = view.render(120)[0]
@@ -601,7 +596,6 @@ describe("buildGroupView", () => {
 
 	it("renders an error glyph and an error-coloured failure count for failed runs", () => {
 		const run = [mockToolFull("read", { path: "a.ts" }), mockTool("b", { isError: true })]
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(run[0] as any).rendererState = { _executionStartedAt: Date.now() - 5000, _executionEndedAt: Date.now() }
 		const view = buildGroupView(run, plainTheme)
 		const headerLine = view.render(120)[0]
@@ -621,10 +615,8 @@ describe("buildGroupView live timer on mixed runs", () => {
 		vi.setSystemTime(new Date("2026-01-01T00:00:10.000Z"))
 		const now = Date.now()
 		const completed = mockToolFull("read", { path: "a.ts" })
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(completed as any).rendererState = { _executionStartedAt: now - 8000, _executionEndedAt: now - 7000 }
 		const running = mockToolFull("bash", { command: "cargo build" }, { isPartial: true })
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(running as any).rendererState = { _executionStartedAt: now - 1000 }
 
 		const header = buildGroupView([completed, running], plainTheme).render(120)[0]
@@ -643,7 +635,6 @@ describe("buildGroupView live timer on mixed runs", () => {
 		vi.setSystemTime(new Date("2026-01-01T00:00:10.000Z"))
 		const now = Date.now()
 		const completed = mockToolFull("read", { path: "a.ts" })
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(completed as any).rendererState = { _executionStartedAt: now - 8000, _executionEndedAt: now - 7000 }
 		vi.advanceTimersByTime(3000)
 		const header = buildGroupView([completed], plainTheme).render(120)[0]
@@ -657,9 +648,7 @@ describe("buildGroupView live timer on mixed runs", () => {
 // ---------------------------------------------------------------------------
 
 interface FakeToolHarness {
-	// biome-ignore lint/suspicious/noExplicitAny: fake ToolExecutionComponent instance
 	fake: any
-	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
 	callRegion: any
 	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
 	resultRegion: any

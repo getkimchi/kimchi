@@ -33,7 +33,12 @@ function makeHandoff(fromSessionFile: string | undefined): AgentHandoff {
 }
 
 function withAbort(handoff: AgentHandoff, abort: () => void): AgentHandoff {
-	handoff.records = [{ ...handoff.records[0]!, abortController: { abort, signal: undefined } as never }]
+	handoff.records = [
+		{
+			...(handoff.records[0] as NonNullable<(typeof handoff.records)[0]>),
+			abortController: { abort, signal: undefined } as never,
+		},
+	]
 	return handoff
 }
 
