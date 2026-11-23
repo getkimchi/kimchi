@@ -253,6 +253,20 @@ describe("describeMcpCall unresolved calls", () => {
 		expect(describeMcpCall("mcp", { tool: "get_issue" }, collisionCatalog)).toEqual(unresolved("gateway", "ambiguous"))
 	})
 
+	it("does not fall through from a prefixed gateway miss to global legacy aliases", () => {
+		const aliased = candidate("docs-write", "docs-write", "annotation_true", "other", "none")
+		const aliasedCatalog = catalog({
+			config: {
+				mcpServers: {
+					docs: config.mcpServers.docs,
+					other: { ...config.mcpServers.other, toolPrefix: "none" },
+				},
+			},
+			candidates: [read, write, aliased],
+		})
+		expect(describeMcpCall("mcp", { tool: "docs_write" }, aliasedCatalog)).toEqual(unresolved("gateway", "unknown"))
+	})
+
 	it("returns ambiguous for colliding namespace owners", () => {
 		const collidingConfig: McpConfig = {
 			mcpServers: {
@@ -267,16 +281,19 @@ describe("describeMcpCall unresolved calls", () => {
 	})
 
 	it("returns stale for expired or config-mismatched metadata", () => {
-		const stale = catalog({ candidates: [], staleServers: new Set(["docs"]) })
+		const stale = catalog({ candidates: [read], staleServers: new Set(["docs"]) })
 		expect(describeMcpCall("mcp", { tool: "get_issue", server: "docs" }, stale)).toEqual(unresolved("gateway", "stale"))
+		expect(describeMcpCall("mcp", { tool: "docs_get_issue" }, stale)).toEqual(unresolved("gateway", "stale"))
 		expect(describeMcpCall("docs_get_issue", {}, stale)).toEqual(unresolved("direct", "stale"))
 	})
 
 	it("returns disabled for a call scoped to a disabled server", () => {
-		const disabled = catalog({ candidates: [], disabledServers: new Set(["docs"]) })
+		const disabled = catalog({ candidates: [read], disabledServers: new Set(["docs"]) })
 		expect(describeMcpCall("mcp", { tool: "get_issue", server: "docs" }, disabled)).toEqual(
 			unresolved("gateway", "disabled"),
 		)
+		expect(describeMcpCall("mcp", { tool: "docs_get_issue" }, disabled)).toEqual(unresolved("gateway", "disabled"))
+		expect(describeMcpCall("docs_get_issue", {}, disabled)).toEqual(unresolved("direct", "disabled"))
 		expect(describeMcpCall("mcp__docs", { tool: "get_issue" }, disabled)).toEqual(unresolved("namespace", "disabled"))
 	})
 

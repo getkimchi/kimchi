@@ -79,8 +79,15 @@ function resolved(candidate: McpToolCandidate, via: McpCallVia): McpCallFacts {
 	}
 }
 
-function resolveMatches(candidates: readonly McpToolCandidate[], via: McpCallVia): McpCallFacts {
-	if (candidates.length === 1 && candidates[0] !== undefined) return resolved(candidates[0], via)
+function resolveMatches(
+	catalog: McpCallCatalog,
+	candidates: readonly McpToolCandidate[],
+	via: McpCallVia,
+): McpCallFacts {
+	if (candidates.length === 1 && candidates[0] !== undefined) {
+		const problem = serverProblem(catalog, candidates[0].serverName)
+		return problem === undefined ? resolved(candidates[0], via) : unresolved(via, problem)
+	}
 	return unresolved(via, candidates.length === 0 ? "unknown" : "ambiguous")
 }
 
@@ -102,8 +109,9 @@ function resolveOnServer(
 	if (problem !== undefined) return unresolved(via, problem)
 	const scoped = catalog.candidates.filter((candidate) => candidate.serverName === serverName)
 	const exact = scoped.filter((candidate) => candidate.tool.name === toolName)
-	if (exact.length > 0) return resolveMatches(exact, via)
+	if (exact.length > 0) return resolveMatches(catalog, exact, via)
 	return resolveMatches(
+		catalog,
 		scoped.filter((candidate) =>
 			getToolNameCandidates(candidate.tool.originalName, serverName, candidate.prefix).has(toolName),
 		),
@@ -141,16 +149,14 @@ function resolveGatewayTool(input: Record<string, unknown>, catalog: McpCallCata
 	if (serverName !== undefined) return resolveOnServer(catalog, toolName, serverName, "gateway") as McpGatewayInputFacts
 
 	const exact = catalog.candidates.filter((candidate) => candidate.tool.name === toolName)
-	if (exact.length > 0) return resolveMatches(exact, "gateway") as McpGatewayInputFacts
+	if (exact.length > 0) return resolveMatches(catalog, exact, "gateway") as McpGatewayInputFacts
 	const original = catalog.candidates.filter((candidate) => candidate.tool.originalName === toolName)
-	if (original.length > 0) return resolveMatches(original, "gateway") as McpGatewayInputFacts
+	if (original.length > 0) return resolveMatches(catalog, original, "gateway") as McpGatewayInputFacts
 
 	const scopedServer = prefixedServerScope(catalog.config, toolName)
-	if (scopedServer !== undefined) {
-		const scoped = resolveOnServer(catalog, toolName, scopedServer, "gateway") as McpGatewayInputFacts
-		if (scoped.kind === "tool" || (scoped.kind === "unresolved" && scoped.why !== "unknown")) return scoped
-	}
+	if (scopedServer !== undefined) return resolveOnServer(catalog, toolName, scopedServer, "gateway") as McpGatewayInputFacts
 	return resolveMatches(
+		catalog,
 		catalog.candidates.filter((candidate) =>
 			getToolNameCandidates(candidate.tool.originalName, candidate.serverName, candidate.prefix).has(toolName),
 		),
@@ -207,7 +213,9 @@ function resolveDirect(toolName: string, catalog: McpCallCatalog): McpCallFacts 
 	const exact = catalog.candidates.filter((candidate) => candidate.tool.name === toolName)
 	if (exact.length > 1) return unresolved("direct", "ambiguous")
 	if (exact.length === 1 && exact[0] !== undefined) {
-		return catalog.registeredToolNames.has(toolName) ? resolved(exact[0], "direct") : unresolved("direct", "unknown")
+		return catalog.registeredToolNames.has(toolName)
+			? resolveMatches(catalog, exact, "direct")
+			: unresolved("direct", "unknown")
 	}
 	return undefined
 }
