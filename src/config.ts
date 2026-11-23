@@ -235,6 +235,27 @@ export type MigrationState = "done" | "skip-forever"
 export interface TuiConfig {
 	/** Wheel-scroll step (lines) for fullscreen (alt-screen) mode. Min 1; synced into pi settings.json \`fullscreenWheelScrollLines\` at startup. */
 	wheelScrollLines?: number
+	/** Show datetimes above interactive transcript blocks. Disabled when unset. */
+	timestamps?: boolean
+	/** Display timezone for transcript timestamps: "local" (default), "UTC", or an IANA zone. */
+	timezone?: string
+}
+
+/**
+ * Normalize a TUI display timezone. Invalid values are ignored by config loading
+ * so a malformed hand-edited file safely falls back to the system timezone.
+ */
+export function normalizeTuiTimezone(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined
+	const timezone = value.trim()
+	if (!timezone || timezone.length > 100) return undefined
+	if (timezone.toLowerCase() === "local") return "local"
+	try {
+		new Intl.DateTimeFormat("en-GB", { timeZone: timezone }).format(0)
+		return timezone
+	} catch {
+		return undefined
+	}
 }
 
 export interface KimchiConfig {
@@ -484,10 +505,10 @@ function readConfigExtras(configPath: string): {
 			memoryExtraction = { model: mx.model }
 		}
 
-		// Read TUI config. Invalid values are ignored (fall back to the
-		// pi-tui default of 1), matching the memoryEmbedding
-		// parse conventions. Fractional values pass through here — the pi-tui
-		// clamp floors them.
+		// Read TUI config. Invalid values are ignored, matching the other
+		// optional config parse conventions. Fractional wheel values pass through
+		// here — the pi-tui clamp floors them. Timestamps default to off and an
+		// absent/invalid timezone resolves to the system zone at render time.
 		let tui: TuiConfig | undefined
 		const tc = parsed.tui
 		if (tc && typeof tc === "object") {
@@ -495,8 +516,14 @@ function readConfigExtras(configPath: string): {
 				typeof tc.wheelScrollLines === "number" && Number.isFinite(tc.wheelScrollLines) && tc.wheelScrollLines >= 1
 					? tc.wheelScrollLines
 					: undefined
-			if (wheelScrollLines !== undefined) {
-				tui = { wheelScrollLines }
+			const timestamps = typeof tc.timestamps === "boolean" ? tc.timestamps : undefined
+			const timezone = normalizeTuiTimezone(tc.timezone)
+			if (wheelScrollLines !== undefined || timestamps !== undefined || timezone !== undefined) {
+				tui = {
+					...(wheelScrollLines !== undefined ? { wheelScrollLines } : {}),
+					...(timestamps !== undefined ? { timestamps } : {}),
+					...(timezone !== undefined ? { timezone } : {}),
+				}
 			}
 		}
 
@@ -1274,13 +1301,30 @@ export function writeTelemetryEnabled(enabled: boolean, configPath?: string): vo
 	})
 }
 
-export function writeTuiWheelScrollLines(lines: number, configPath?: string): void {
+function writeTuiConfigValue(
+	key: "wheelScrollLines" | "timestamps" | "timezone",
+	value: number | boolean | string,
+	configPath?: string,
+): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {
-		const tui = raw.tui && typeof raw.tui === "object" && !Array.isArray(raw.tui) ? { ...raw.tui } : {}
-		;(tui as Record<string, unknown>).wheelScrollLines = lines
+		const tui: Record<string, unknown> =
+			raw.tui && typeof raw.tui === "object" && !Array.isArray(raw.tui) ? { ...raw.tui } : {}
+		tui[key] = value
 		raw.tui = tui
 	})
+}
+
+export function writeTuiWheelScrollLines(lines: number, configPath?: string): void {
+	writeTuiConfigValue("wheelScrollLines", lines, configPath)
+}
+
+export function writeTuiTimestamps(enabled: boolean, configPath?: string): void {
+	writeTuiConfigValue("timestamps", enabled, configPath)
+}
+
+export function writeTuiTimezone(timezone: string, configPath?: string): void {
+	writeTuiConfigValue("timezone", timezone, configPath)
 }
 
 /**
