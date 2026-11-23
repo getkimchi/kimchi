@@ -32,6 +32,7 @@ function makeConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 const EXPECTED_KEYS = [
 	"config.agents_enabled",
 	"config.mcp_server_count",
+	"config.memory_enabled",
 	"config.model",
 	"config.permission_mode",
 	"config.provider",
@@ -42,7 +43,7 @@ const EXPECTED_KEYS = [
 describe("buildConfigSnapshot", () => {
 	let savedEnv: NodeJS.ProcessEnv
 	// biome-ignore lint/suspicious/noExplicitAny: mock spy refs typed loosely to avoid vitest MockInstance generic friction
-	let agentsSpy: any
+	let resourceSpy: any
 
 	beforeEach(() => {
 		savedEnv = { ...process.env }
@@ -50,7 +51,7 @@ describe("buildConfigSnapshot", () => {
 		process.env.KIMCHI_CODING_AGENT_DIR = undefined
 		process.env.KIMCHI_PERMISSIONS = "plan"
 
-		agentsSpy = vi.spyOn(resourceStore, "isResourceEnabled").mockReturnValue(true)
+		resourceSpy = vi.spyOn(resourceStore, "isResourceEnabled").mockReturnValue(true)
 		// Mock discoverAgent to return 1 server named "evil-corp-server" per definition.
 		const fakeDiscovery: AgentDiscovery = {
 			id: "test",
@@ -73,7 +74,7 @@ describe("buildConfigSnapshot", () => {
 	})
 
 	describe("safe keys present with correct values", () => {
-		it("returns exactly the 7 expected config.* keys", () => {
+		it("returns exactly the 8 expected config.* keys", () => {
 			const snapshot = buildConfigSnapshot(makeConfig(), true)
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 		})
@@ -92,7 +93,8 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.telemetry_enabled"]).toBe(true)
 			expect(snapshot["config.permission_mode"]).toBe("plan")
 			expect(snapshot["config.agents_enabled"]).toBe(true)
-			expect(agentsSpy).toHaveBeenCalledWith("extensions.agents")
+			expect(resourceSpy).toHaveBeenCalledWith("extensions.agents")
+			expect(snapshot["config.memory_enabled"]).toBe(true)
 			// model unknown when no settings.json present
 			expect(snapshot["config.model"]).toBe("unknown")
 			expect(snapshot["config.provider"]).toBe("cast-ai")
@@ -100,12 +102,19 @@ describe("buildConfigSnapshot", () => {
 
 		it("flows through alternate mocked values when telemetry disabled", () => {
 			process.env.KIMCHI_PERMISSIONS = "yolo"
-			agentsSpy.mockReturnValue(false)
+			resourceSpy.mockReturnValue(false)
 			const snapshot = buildConfigSnapshot(makeConfig({ mcpSearch: { ...SEARCH_STRATEGY, strategy: "regex" } }), false)
 			expect(snapshot["config.telemetry_enabled"]).toBe(false)
 			expect(snapshot["config.permission_mode"]).toBe("yolo")
 			expect(snapshot["config.agents_enabled"]).toBe(false)
 			expect(snapshot["config.search_provider"]).toBe("weighted")
+		})
+
+		it("mirrors the memory resource enablement, including the off state", () => {
+			expect(buildConfigSnapshot(makeConfig(), true)["config.memory_enabled"]).toBe(true)
+			expect(resourceSpy).toHaveBeenCalledWith("extensions.memory")
+			resourceSpy.mockReturnValue(false)
+			expect(buildConfigSnapshot(makeConfig(), true)["config.memory_enabled"]).toBe(false)
 		})
 
 		it("mcp_server_count equals total mocked server count across agent definitions", () => {
@@ -142,7 +151,7 @@ describe("buildConfigSnapshot", () => {
 			}
 		})
 
-		it("emits exactly the 7 safe keys even when config carries secrets", () => {
+		it("emits exactly the 8 safe keys even when config carries secrets", () => {
 			const configWithSecrets = makeConfig({
 				apiKey: "secret-key-123",
 				llmEndpoint: "https://secret.example.com",
@@ -150,7 +159,7 @@ describe("buildConfigSnapshot", () => {
 			const snapshot = buildConfigSnapshot(configWithSecrets, true)
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 			// No extra key smuggles a secret value through.
-			expect(Object.keys(snapshot)).toHaveLength(7)
+			expect(Object.keys(snapshot)).toHaveLength(8)
 		})
 	})
 
@@ -163,7 +172,7 @@ describe("buildConfigSnapshot", () => {
 
 			const snapshot = buildConfigSnapshot(makeConfig(), true)
 
-			// Must still have exactly the 7 expected keys.
+			// Must still have exactly the 8 expected keys.
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 			// Fallback values are safe defaults.
 			expect(snapshot["config.model"]).toBe("unknown")
@@ -173,6 +182,7 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.permission_mode"]).toBe("default")
 			expect(snapshot["config.agents_enabled"]).toBe(false)
 			expect(snapshot["config.mcp_server_count"]).toBe(0)
+			expect(snapshot["config.memory_enabled"]).toBe(false)
 		})
 	})
 })

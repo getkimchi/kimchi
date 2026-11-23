@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { KimchiConfig } from "../../config.js"
+import { RecallDeadline, withRecallDeadline } from "./deadline.js"
 import { createSharedEmbedder, dedupeEmbedder, type UnderlyingEmbedder } from "./embedder.js"
 
 /** A controllable underlying embedder counting its calls. */
@@ -25,6 +26,24 @@ describe("dedupeEmbedder", () => {
 		])
 		expect(underlying.embed).toHaveBeenCalledTimes(1)
 		expect(a).toEqual(b)
+	})
+
+	it("reuses settled work within a generation, but never across generations", async () => {
+		const underlying = makeUnderlying()
+		const shared = dedupeEmbedder(underlying)
+		const first = new RecallDeadline({ scheduledStep: "first", generation: 1, timeoutMs: 100 })
+		const second = new RecallDeadline({ scheduledStep: "second", generation: 2, timeoutMs: 100 })
+		try {
+			await withRecallDeadline(first, () => shared.embedQuery("same prompt"))
+			const firstAgain = await withRecallDeadline(first, () => shared.embedQuery("same prompt"))
+			const secondResult = await withRecallDeadline(second, () => shared.embedQuery("same prompt"))
+			await withRecallDeadline(second, () => shared.embedQuery("same prompt"))
+			expect(underlying.embed).toHaveBeenCalledTimes(2)
+			expect(firstAgain).toEqual(secondResult)
+		} finally {
+			first.dispose()
+			second.dispose()
+		}
 	})
 
 	it("different texts each embed", async () => {

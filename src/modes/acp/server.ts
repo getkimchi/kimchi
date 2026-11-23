@@ -65,6 +65,8 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import open from "open"
+import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
+import { releasePreparedOAuthCredential } from "../../auth/short-lived-credential-handoff.js"
 import { getParsedCliArgs } from "../../cli-args.js"
 import {
 	authMethodRegion,
@@ -208,10 +210,12 @@ import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import {
 	handleMemoryDelete,
+	handleMemoryGet,
 	handleMemoryList,
 	handleMemoryReset,
 	handleMemorySearch,
 	handleMemoryStatus,
+	handleMemoryUpdate,
 	handleSetMemoryEnabled,
 } from "./ext-methods/memory.js"
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
@@ -1613,6 +1617,53 @@ export class KimchiAcpAgent implements Agent {
 			turnReject = reject
 		})
 		entry.turn = createTurnContext(turnResolve, turnReject)
+		// This is the ACP counterpart of the TUI input preflight. Keep turn creation
+		// in its original position so steering, feedback, and cancellation observe
+		// an active turn during the auth await. Resolve revoked or incompletely
+		// synchronized credentials through the ordinary typed failure path without
+		// another model-request grant attempt.
+		const activeProviderId = entry.session.model?.provider
+		const preparation =
+			activeProviderId !== undefined && !isKimchiProvider(activeProviderId)
+				? "ready"
+				: await prepareActivePromptKimchiCredential(
+						{ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") },
+						(runtime, owner) => installKimchiOAuth(runtime, join(this.agentDir, "auth.json"), owner),
+						activeProviderId,
+						entry.session.modelRuntime,
+					)
+		if (!entry.turn) return result
+		if (entry.turn.cancelled) {
+			this.finalizeTurn(entry, "cancelled")
+			return result
+		}
+		if (preparation === "oauth_revoked") {
+			this.failTurn(
+				entry,
+				RequestError.authRequired(
+					{ kind: "auth" },
+					"OAuth refresh was rejected: auth required. Call session/authenticate to sign in again, then retry.",
+				),
+			)
+			return result
+		}
+		if (preparation === "oauth_refresh_failed") {
+			this.failTurn(
+				entry,
+				RequestError.internalError(undefined, "OAuth refresh failed. Retry this prompt; sign-in is not required."),
+			)
+			return result
+		}
+		if (preparation === "credential_sync_failed") {
+			this.failTurn(
+				entry,
+				RequestError.internalError(
+					undefined,
+					"OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
+				),
+			)
+			return result
+		}
 		// Kick off session.prompt but don't await inside the async function body —
 		// shutdown() needs to be able to reject `result` and have the caller's await
 		// on prompt() settle immediately, which can't happen while this body is
@@ -1818,7 +1869,7 @@ export class KimchiAcpAgent implements Agent {
 					// (installKimchiOAuth registers the real refresh handler on the
 					// throwaway runtime; getAuth reuses it). See ext-methods/sso-credential.ts.
 					const response = await handleSsoCredential(
-						{ installOAuth: installKimchiOAuth },
+						{ installOAuth: (runtime) => installKimchiOAuth(runtime, join(this.agentDir, "auth.json")) },
 						{
 							authPath: join(this.agentDir, "auth.json"),
 							modelsPath: join(this.agentDir, "models.json"),
@@ -1889,6 +1940,10 @@ export class KimchiAcpAgent implements Agent {
 				// Session-scoped: flip the session's runtime memory toggle — the
 				// memory extension reads it at its next agent start.
 				return handleSetMemoryEnabled((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.memory_get:
+				return handleMemoryGet({}, params)
+			case AVAILABLE_EXT_METHODS.memory_update:
+				return handleMemoryUpdate({}, params)
 			case AVAILABLE_EXT_METHODS.memory_list:
 				// Sessionless store op: paginated facts across the selected scopes.
 				return handleMemoryList({}, params)
@@ -3807,6 +3862,9 @@ export class KimchiAcpAgent implements Agent {
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
+		// This is the original prompt's full run boundary, including tool calls,
+		// retries, cancellation, and held plan-review continuations.
+		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
 		entry.turn = undefined
 		// Non-end_turn terminal outcomes (cancelled, refusal, …) never produce a
 		// rated settled response — clear the rating window armed at settle time.
@@ -3864,6 +3922,7 @@ export class KimchiAcpAgent implements Agent {
 	private failTurn(entry: SessionRecord, err: unknown): void {
 		const turn = entry.turn
 		if (!turn) return
+		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
 		// A terminally errored run is not a settled response — the armed rating
 		// window (agent_settled fires before prompt() resolves) must not survive
 		// into a rate call for an error the client saw as a JSON-RPC failure.
@@ -4394,6 +4453,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				sessionManager,
 				modelRuntime,
 			})
+			bindSessionScopedOAuth(session, options.agentDir)
 			return session
 		}
 		let header: Pick<SessionHeader, "id" | "cwd"> | null
@@ -4447,6 +4507,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			sessionManager,
 			modelRuntime,
 		})
+		bindSessionScopedOAuth(session, options.agentDir)
 		return session
 	}
 }
@@ -4468,8 +4529,17 @@ async function createSsoAwareModelRuntime(agentDir: string) {
 		authPath: join(agentDir, "auth.json"),
 		modelsPath: join(agentDir, "models.json"),
 	})
-	installKimchiOAuth(modelRuntime)
+	installKimchiOAuth(modelRuntime, join(agentDir, "auth.json"))
 	return modelRuntime
+}
+
+/**
+ * Bind request-time callbacks to the same runtime identity as prompt preflight.
+ * The initial runtime install happens before createAgentSession loads the login
+ * extension's registrations, so bind again after construction completes.
+ */
+function bindSessionScopedOAuth(session: AgentSession, agentDir: string): void {
+	installKimchiOAuth(session.modelRuntime, join(agentDir, "auth.json"), session.modelRuntime)
 }
 
 /** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
@@ -4485,6 +4555,7 @@ export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory
 			resourceLoader,
 			modelRuntime,
 		})
+		bindSessionScopedOAuth(session, options.agentDir)
 		return session
 	}
 }

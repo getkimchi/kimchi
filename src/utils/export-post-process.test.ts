@@ -70,6 +70,7 @@ function mockMetadata(): SessionStartMetadata {
 			"config.permission_mode": "default",
 			"config.agents_enabled": true,
 			"config.mcp_server_count": 2,
+			"config.memory_enabled": true,
 		},
 		capturedAt: 1700000000000,
 	}
@@ -262,7 +263,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(header["config.agents_enabled"]).toBe(true)
 		expect(header["config.mcp_server_count"]).toBe(2)
 		const configKeys = Object.keys(header).filter((k) => k.startsWith("config."))
-		expect(configKeys.length).toBe(7)
+		expect(configKeys.length).toBe(8)
 	})
 
 	it("appends config-change entries as custom entries", async () => {

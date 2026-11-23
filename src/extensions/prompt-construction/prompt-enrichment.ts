@@ -31,6 +31,7 @@ import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isWithinDeprecationNotifyWindow } from "../../model-deprecation.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import {
 	collectBundledDisabledSkillNames,
 	resolveSkillPathsForDiscovery,
@@ -59,7 +60,9 @@ import {
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { watchSteerOutcome } from "../steer-outcome-watcher.js"
-import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { notifyClaudeCodeInstructionsOnce } from "./claude-code-instructions-notice.js"
+import { CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID } from "./claude-code-instructions-resource.js"
+import { type ContextFile, loadContextFiles } from "./context-files.js"
 import { applyLanguageHint } from "./language-hint.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import { hasUserLoop } from "./session-user-loop.js"
@@ -377,6 +380,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 
 			pi.on("session_start", async (_event, ctx) => {
 				notifyIfDeprecated(ctx, ctx.model?.id)
+				notifyClaudeCodeInstructionsOnce(ctx)
 			})
 
 			pi.on("model_select", async (event, ctx) => {
@@ -743,7 +747,9 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
-			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
+			cachedContextFiles ??= loadContextFiles(ctx.cwd, {
+				includeClaudeCodeInstructions: isResourceEnabled(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID),
+			})
 			// Read skills from pi's resolved resource inventory (system prompt
 			// options) so the rebuilt prompt advertises exactly what pi
 			// loaded — honoring settings.json, --skill/--no-skills, trust,

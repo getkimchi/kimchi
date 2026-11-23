@@ -70,6 +70,8 @@ export interface AcpFixtureOptions {
 	/** Seed expiring canonical OAuth credentials and serve their fake replacement. */
 	oauth?: { refreshedAccessToken: string }
 	responses: FakeResponseScript[]
+	/** Enable deterministic local embeddings for memory-edit tests. */
+	enableMemoryEmbeddings?: boolean
 	models?: FakeModel[]
 	providerId?: string
 	defaultProvider?: string
@@ -104,6 +106,8 @@ export interface AcpFixtureOptions {
 	 * a custom extension that exercises those calls.
 	 */
 	extensionPath?: string
+	/** Mutate the isolated fixture after its default config/models/settings are written and before the harness starts. */
+	seedHome?: (homeDir: string, workDir: string, fakeBaseUrl: string) => void
 	/** Seed the isolated Kimchi config with the shared repository-owned MCP fixture. */
 	mcp?: McpFixtureOptions
 	/** Org policy served by the fake platform endpoints (api-keys:verify +
@@ -302,6 +306,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	const keepHomeDir = options.homeDirOverride !== undefined || options.keepDirsOnStop
 	const keepWorkDir = options.workDirOverride !== undefined || options.keepDirsOnStop
 	const fake = await startFakeOpenAiServer({
+		enableMemoryEmbeddings: options.enableMemoryEmbeddings,
 		responses,
 		models: configuredModels,
 		refreshedOAuthAccessToken: options.oauth?.refreshedAccessToken,
@@ -375,6 +380,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				{
 					...(options.oauth ? {} : { apiKey: "fake" }),
 					llmEndpoint: fake.baseUrl,
+					...(options.enableMemoryEmbeddings ? { memoryEmbedding: { model: "fake-embedding" } } : {}),
 					telemetry: { endpoint: `${fake.baseUrl}/logs`, metricsEndpoint: `${fake.baseUrl}/metrics` },
 					skillPaths: [],
 					migrationState: "done",
@@ -453,6 +459,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			)
 		}
 		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
+		options.seedHome?.(homeDir, workDir, fake.baseUrl)
 
 		// pi-coding-agent auto-loads `${agentDir}/extensions/*.js` on every session.
 		const extPath = extensionPath ?? TEST_EXTENSION_PATH

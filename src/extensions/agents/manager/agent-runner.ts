@@ -1078,8 +1078,8 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 			(deps.effectiveExtensions !== false && deps.effectiveExtensions.some((ext) => ext.startsWith("mcp"))))
 	) {
 		// Headless children: drop config warnings (no UI; console output is noise
-		// in the parent process) and connect the built-in gateway lazily so a
-		// subagent spawn never opens an eager gateway connection.
+		// in the parent process) and use lazy gateway discovery so a subagent
+		// never retains an eager gateway connection.
 		extensionFactories.push(
 			createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd, suppressWarnings: true, lazyGatewayConnect: true }),
 		)

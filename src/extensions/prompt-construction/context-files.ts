@@ -1,6 +1,6 @@
 /**
- * Discover project context files (AGENTS.md, CLAUDE.md) by walking up
- * the directory tree from cwd to root.
+ * Discover context files (AGENTS.md, CLAUDE.md): global ones, then project
+ * ones found by walking up from cwd to root.
  *
  * This replicates the discovery logic from Pi's internal
  * `loadProjectContextFiles()` (resource-loader.ts) which is not exported
@@ -16,7 +16,8 @@
  * Files are returned in root → cwd order (ancestors first).
  */
 
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
+import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 
@@ -41,7 +42,13 @@ function localVariant(filename: string): string {
 	return filename.replace(/\.md$/, ".local.md")
 }
 
-function loadContextFileFromDir(dir: string): ContextFile | null {
+/** Same real path or same trimmed text. */
+function isAlreadyLoaded(filePath: string, content: string, alreadyLoaded: readonly ContextFile[]): boolean {
+	const trimmed = content.trim()
+	return alreadyLoaded.some((file) => sameRealPath(file.path, filePath) || file.content.trim() === trimmed)
+}
+
+function loadContextFileFromDir(dir: string, alreadyLoaded: readonly ContextFile[]): ContextFile | null {
 	for (const filename of CONTEXT_FILE_NAMES) {
 		const filePath = join(dir, filename)
 		const localPath = join(dir, localVariant(filename))
@@ -49,6 +56,10 @@ function loadContextFileFromDir(dir: string): ContextFile | null {
 		const local = tryReadFile(localPath)
 
 		if (primary !== null) {
+			// Check before the merge so .local.md survives. The duplicate still claims the dir.
+			if (isAlreadyLoaded(filePath, primary, alreadyLoaded)) {
+				return local !== null ? { path: localPath, content: local } : null
+			}
 			const content = local !== null ? `${primary}\n\n${local}` : primary
 			return { path: filePath, content }
 		}
@@ -62,15 +73,16 @@ function loadContextFileFromDir(dir: string): ContextFile | null {
 /**
  * Walk from `cwd` up to the filesystem root, collecting one context file
  * per directory. Returns them in ancestor-first order (root → cwd).
+ * Primary files that repeat one of `alreadyLoaded` are skipped.
  */
-export function loadProjectContextFiles(cwd: string): ContextFile[] {
+export function loadProjectContextFiles(cwd: string, alreadyLoaded: readonly ContextFile[] = []): ContextFile[] {
 	const files: ContextFile[] = []
 
 	let dir = resolve(cwd)
 	const root = resolve("/")
 
 	while (true) {
-		const found = loadContextFileFromDir(dir)
+		const found = loadContextFileFromDir(dir, alreadyLoaded)
 		if (found) {
 			files.unshift(found)
 		}
@@ -84,28 +96,71 @@ export function loadProjectContextFiles(cwd: string): ContextFile[] {
 	return files
 }
 
+export interface GlobalContextFileOptions {
+	includeClaudeCodeInstructions: boolean
+}
+
+/** Matches Claude Code, which honors CLAUDE_CONFIG_DIR. */
+export function claudeCodeInstructionsPath(): string {
+	return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "CLAUDE.md")
+}
+
+function sameRealPath(a: string, b: string): boolean {
+	try {
+		return realpathSync(a) === realpathSync(b)
+	} catch {
+		return false
+	}
+}
+
 /**
- * Discover the global context file (AGENTS.md) from the agent
- * configuration directory (~/.config/kimchi/harness/).
- *
- * Only AGENTS.md is checked globally. If a `.local.md` variant
- * (AGENTS.local.md) exists, it is appended.
- *
- * Returns an array of at most one ContextFile, or empty if none found.
+ * Global context files, in prompt order:
+ * 1. `~/.claude/CLAUDE.md` (or `$CLAUDE_CONFIG_DIR`), if enabled. Skipped when it repeats AGENTS.md.
+ * 2. Kimchi's AGENTS.md (+ AGENTS.local.md).
  */
-export function loadGlobalContextFiles(): ContextFile[] {
+export function loadGlobalContextFiles(options: GlobalContextFileOptions): ContextFile[] {
+	return readGlobalContextFiles(options).files
+}
+
+/**
+ * `sources` holds each global file before the .local.md merge. Project files
+ * are compared against it, so a project copy of AGENTS.md still matches when
+ * a global AGENTS.local.md exists.
+ */
+function readGlobalContextFiles(options: GlobalContextFileOptions): { files: ContextFile[]; sources: ContextFile[] } {
+	const files: ContextFile[] = []
 	const dir = getAgentDir()
-	if (!dir) return []
-	const filePath = join(dir, "AGENTS.md")
+	const agentsPath = dir ? join(dir, "AGENTS.md") : undefined
+	const agentsPrimary = agentsPath ? tryReadFile(agentsPath) : null
+
+	if (options.includeClaudeCodeInstructions) {
+		const claudePath = claudeCodeInstructionsPath()
+		const claude = tryReadFile(claudePath)
+		const duplicate =
+			claude !== null &&
+			agentsPath !== undefined &&
+			agentsPrimary !== null &&
+			(sameRealPath(claudePath, agentsPath) || claude.trim() === agentsPrimary.trim())
+		if (claude !== null && !duplicate) files.push({ path: claudePath, content: claude })
+	}
+
+	const sources = [...files]
+	if (!dir || !agentsPath) return { files, sources }
 	const localPath = join(dir, localVariant("AGENTS.md"))
-	const primary = tryReadFile(filePath)
 	const local = tryReadFile(localPath)
-	if (primary !== null) {
-		const content = local !== null ? `${primary}\n\n${local}` : primary
-		return [{ path: filePath, content }]
+	if (agentsPrimary !== null) {
+		const content = local !== null ? `${agentsPrimary}\n\n${local}` : agentsPrimary
+		files.push({ path: agentsPath, content })
+		sources.push({ path: agentsPath, content: agentsPrimary })
+	} else if (local !== null) {
+		files.push({ path: localPath, content: local })
+		sources.push({ path: localPath, content: local })
 	}
-	if (local !== null) {
-		return [{ path: localPath, content: local }]
-	}
-	return []
+	return { files, sources }
+}
+
+/** Global files, then project files that do not repeat them. */
+export function loadContextFiles(cwd: string, options: GlobalContextFileOptions): ContextFile[] {
+	const { files, sources } = readGlobalContextFiles(options)
+	return [...files, ...loadProjectContextFiles(cwd, sources)]
 }

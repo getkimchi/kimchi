@@ -159,7 +159,11 @@ function startNativeProcess(command: "summary-writer" | "summary-reader", argume
 		child.once("error", reject)
 		child.once("close", (code) => (code === 0 ? resolve() : reject(new Error(`${label} exited ${code}: ${errors}`))))
 	})
-	const timeout = setTimeout(() => child.kill("SIGKILL"), 10000)
+	let timeout = setTimeout(() => child.kill("SIGKILL"), 10_000)
+	const resetWatchdog = () => {
+		clearTimeout(timeout)
+		timeout = setTimeout(() => child.kill("SIGKILL"), 10_000)
+	}
 	void done.finally(() => clearTimeout(timeout)).catch(() => {})
 	return {
 		child,
@@ -168,6 +172,8 @@ function startNativeProcess(command: "summary-writer" | "summary-reader", argume
 			const line = await messages.next()
 			if (line.done) throw new Error(`${label} ended before its barrier: ${errors}`)
 			const message: { phase: string; state?: NativeSummaryState } = JSON.parse(line.value)
+			// Progressing multi-barrier tests may take longer than one stall budget.
+			resetWatchdog()
 			return message
 		},
 		async stop() {
@@ -1247,6 +1253,25 @@ describe("readable work summaries", () => {
 			await owner.stop()
 		}
 	}, 15000)
+
+	it("keeps a responding reader beyond its cumulative watchdog deadline", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] })
+		const workId = randomUUID()
+		expect(native<WorkRecord[]>("records", workId)).toEqual([])
+		const reader = startNativeProcess("summary-reader", workId)
+		try {
+			expect((await reader.next()).phase).toBe("ready")
+			for (let index = 0; index < 12; index++) {
+				// Each fake pause is below the real 10-second stall budget, but their sum exceeds it.
+				vi.advanceTimersByTime(1000)
+				reader.child.stdin.write("read\n")
+				expect((await reader.next()).phase).toBe("snapshot")
+			}
+			expect(reader.child.exitCode).toBeNull()
+		} finally {
+			await reader.stop()
+		}
+	})
 
 	it("serializes three native writers while a reader sees coherent authority, markers and projection", async () => {
 		const workId = randomUUID()

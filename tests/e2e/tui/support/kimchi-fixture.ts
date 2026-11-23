@@ -25,6 +25,7 @@ export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as 
 
 /** Prompt shown once the TUI is ready for input. */
 export const PROMPT_READY = "ask anything or type / for commands"
+export const PROMPT_PREFIX = "❯ "
 
 // Env from run-tui-e2e.js, else derive from file location (stable regardless of cwd).
 export const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
@@ -132,6 +133,8 @@ export interface CreateKimchiFixtureOptions {
 	rejectedApiKeys?: string[]
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	/** Deterministic local embeddings for memory metadata-edit workflows. */
+	enableMemoryEmbeddings?: boolean
 	/** Provider id written to models.json and used for the initial CLI selection. */
 	providerId?: string
 	/** Initial CLI model id. Set false to exercise the model saved in settings.json. */
@@ -232,6 +235,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 				{
 					apiKey: "fake",
 					llmEndpoint: fake.baseUrl,
+					...(options.enableMemoryEmbeddings ? { memoryEmbedding: { model: "fake-embedding" } } : {}),
 					skillPaths: [],
 					migrationState: "done",
 					onboarding: { hideSessionModeDialog: true },
@@ -739,12 +743,25 @@ function formatTuiArtifact({ name, outcome, terminal, fixture, steps, error }: W
 		].join("\n"),
 		error ? `## Error\n\n${formatError(error)}` : undefined,
 		`## Scenario Steps\n\n${formatSteps(steps)}`,
-		`## Fake OpenAI Requests\n\n${formatJson(fixture.fake.requests)}`,
+		`## Fake OpenAI Requests\n\n${formatJson(redactedRequests(fixture))}`,
 		`## Final Viewable Terminal\n\n${viewText(terminal)}`,
 		`## Final Full Terminal Buffer\n\n${fullText(terminal)}`,
 	]
 		.filter((section): section is string => Boolean(section))
 		.join("\n\n")
+}
+
+/** Keep credentials out of failure artifacts while preserving the live request records used by assertions. */
+function redactedRequests(fixture: KimchiFixture): KimchiFixture["fake"]["requests"] {
+	return fixture.fake.requests.map((request) => ({
+		...request,
+		headers: Object.fromEntries(
+			Object.entries(request.headers).map(([name, value]) => [
+				name,
+				name.toLowerCase() === "authorization" && value !== undefined ? "[redacted]" : value,
+			]),
+		),
+	}))
 }
 
 function formatSteps(steps: TuiStepSnapshot[]): string {

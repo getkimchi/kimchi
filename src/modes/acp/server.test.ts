@@ -118,6 +118,12 @@ vi.mock("../../pi-auth.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../pi-auth.js")>()),
 	syncOAuthCredentialToKimchiProviders: vi.fn(),
 }))
+// Keep the actual preparation by default. Individual prompt tests can replace
+// it once to exercise the adapter's failure-to-typed-error mapping.
+vi.mock("../../auth/active-prompt-refresh.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof ActivePromptRefresh>()
+	return { ...actual, prepareActivePromptKimchiCredential: vi.fn(actual.prepareActivePromptKimchiCredential) }
+})
 // Pin getVersion() so initialize() agentInfo assertions are deterministic
 // and don't depend on the repo's package.json.
 const getVersionMock = vi.fn(() => "1.2.3-test")
@@ -171,6 +177,8 @@ const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import type { Model } from "@earendil-works/pi-ai"
+import type * as ActivePromptRefresh from "../../auth/active-prompt-refresh.js"
+import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, loadConfig, resolveEndpoints, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
@@ -3186,6 +3194,28 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			mimeType: "image/png",
 		})
 		expect(messageChunks(updates).filter((chunk) => chunk.text.includes("does not accept image input"))).toHaveLength(0)
+	})
+
+	it("stops a Kimi prompt on credential-sync failure without requesting sign-in", async () => {
+		const {
+			agent: localAgent,
+			fake: localFake,
+			sessionId: sid,
+		} = await startRecordingSession({
+			provider: "kimchi-dev/openai",
+			id: "test-model",
+			input: ["text"],
+		})
+		vi.mocked(prepareActivePromptKimchiCredential).mockResolvedValueOnce("credential_sync_failed")
+
+		await expect(
+			localAgent.prompt({ sessionId: sid, prompt: [{ type: "text", text: "hello" }] }),
+		).rejects.toMatchObject({
+			code: -32603,
+			message:
+				"Internal error: OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
+		})
+		expect(localFake.promptCalls).toHaveLength(0)
 	})
 
 	// Defensive: once a turn is finalized (short-circuit, shutdown, cancel),

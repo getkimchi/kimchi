@@ -273,7 +273,7 @@ async function createCliLoginHost(signal?: AbortSignal): Promise<KimchiBrowserLo
 		// { oauth }) so an SSO credential activates the Kimchi providers on this
 		// standalone runtime — pi's auth resolution skips providers that do not
 		// declare auth.oauth.
-		installKimchiOAuth(runtime)
+		installKimchiOAuth(runtime, join(agentDir, "auth.json"))
 		const settings = SettingsManager.create(process.cwd(), agentDir)
 		return {
 			modelRegistry: new ModelRegistry(runtime),

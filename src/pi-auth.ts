@@ -63,7 +63,8 @@ export async function clearPiAuth(authPath: string): Promise<void> {
  * Fan an OAuth credential out to every Kimchi-managed provider in models.json
  * (kimchi-dev + kimchi-dev/* sub-providers), mirroring how syncPiAuth fans out
  * API keys: sub-providers resolve auth per provider id, so each needs an
- * auth.json entry.
+ * auth.json entry. An optional protected active provider retains its existing
+ * OAuth or API-key identity while the other providers receive the rotation.
  *
  * Rotation safety: every fanned-out entry shares one refresh token. This is
  * only safe while the Kimchi Auth0 app does NOT rotate refresh tokens —
@@ -77,6 +78,7 @@ export async function syncOAuthCredentialToKimchiProviders(
 	authPath: string,
 	modelsPath: string,
 	credential: Record<string, unknown>,
+	protectedProviderId?: string,
 ): Promise<void> {
 	mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 })
 	const release = await lock(authPath, { realpath: false, retries: 10 })
@@ -94,7 +96,7 @@ export async function syncOAuthCredentialToKimchiProviders(
 		])
 
 		for (const providerId of kimchiProviderIds) {
-			nextCredentials[providerId] = credential
+			if (providerId !== protectedProviderId) nextCredentials[providerId] = credential
 		}
 
 		if (authExists && isDeepStrictEqual(credentials, nextCredentials)) {

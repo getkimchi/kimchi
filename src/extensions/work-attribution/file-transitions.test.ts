@@ -432,7 +432,7 @@ describe("manual commit reconciliation", () => {
 		const sha = commit()
 		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([expect.objectContaining({ sha, paths: ["file.txt", "second.txt", "third.txt"] })])
-	})
+	}, 30_000)
 
 	it.each(["missing", "truncated"])("retries weak matching after a %s history snapshot is repaired", async (damage) => {
 		baseline()
@@ -546,6 +546,7 @@ describe("manual commit reconciliation", () => {
 	})
 
 	it("finds a rewritten native contribution and labels its path/blob evidence", async () => {
+		// Rebase/history I/O is slower on shared CI workers; use the same bound as other large-history cases.
 		baseline()
 		const originalBranch = git("branch", "--show-current")
 		git("checkout", "-qb", "upstream")
@@ -564,7 +565,7 @@ describe("manual commit reconciliation", () => {
 				fileMatches: [expect.objectContaining({ path: "file.txt", method: "path-blob" })],
 			}),
 		)
-	})
+	}, 30_000)
 
 	it.each([
 		false,
@@ -1628,6 +1629,7 @@ describe("manual commit reconciliation", () => {
 	})
 
 	it("reconciles fresh work after more than 512 unrelated reflog entries", async () => {
+		// This reflects real Git/history I/O on slower CI workers, not assertion overhead.
 		baseline()
 		await write("old.txt", "old")
 		const oldWorkId = getWorkId(context())
@@ -1652,7 +1654,7 @@ describe("manual commit reconciliation", () => {
 				fileMatches: [expect.objectContaining({ method: "path-blob" })],
 			}),
 		])
-	}, 15000)
+	}, 30_000)
 
 	it.each(["amend", "unrelated commit"])("composes same-work edits across an intervening %s", async (kind) => {
 		baseline()

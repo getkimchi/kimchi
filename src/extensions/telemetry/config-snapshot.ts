@@ -22,6 +22,7 @@ export interface ConfigSnapshot {
 	"config.permission_mode": string
 	"config.agents_enabled": boolean
 	"config.mcp_server_count": number
+	"config.memory_enabled": boolean
 }
 
 /** Default provider for this harness. */
@@ -107,6 +108,7 @@ function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
 		"config.permission_mode": "default",
 		"config.agents_enabled": false,
 		"config.mcp_server_count": 0,
+		"config.memory_enabled": false,
 	}
 }
 
@@ -131,6 +133,7 @@ export function buildConfigSnapshot(_config: KimchiConfig, telemetryEnabled: boo
 			"config.permission_mode": getDefaultPermissionMode(),
 			"config.agents_enabled": isResourceEnabled("extensions.agents"),
 			"config.mcp_server_count": countMcpServers(),
+			"config.memory_enabled": isResourceEnabled("extensions.memory"),
 		}
 	} catch {
 		return fallbackSnapshot(telemetryEnabled)

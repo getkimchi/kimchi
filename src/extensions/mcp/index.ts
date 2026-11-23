@@ -48,6 +48,8 @@ const MCP_PROXY_TOOL = "mcp"
 const MCP_SCRIPT_TOOL = "mcpScript"
 const MCP_SCRIPT_RECOMMENDATION = "When one request needs several MCP calls with logic between them, use mcpScript. "
 const MCP_MANUAL_SETUP = "Add your servers to .mcp.json (project) or ~/.config/mcp/mcp.json (global), then run /reload."
+const LAZY_GATEWAY_IDLE_TIMEOUT_MINUTES = 1
+const LAZY_GATEWAY_REQUEST_TIMEOUT_MS = 10_000
 
 function legacyMcpConfigWarning(cwd: string): string | undefined {
 	const keys = getConfiguredLegacyMcpKeys({ cwd })
@@ -441,11 +443,19 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			// holding the built-in's name at any address (the adapter refuses
 			// runtime registration for name collisions as well).
 			const gatewayServer = options.builtinGateway ?? buildBuiltinGatewayServer()
-			// Children connect the gateway lazily: dropping the keep-alive lifecycle
-			// spares every subagent an eager connection; first tool use reconnects.
+			// Children use startup metadata discovery without keep-alive; the
+			// discovery connection closes, and first tool use reconnects.
 			const adjustedGatewayServer =
 				options.lazyGatewayConnect && gatewayServer !== undefined
-					? { name: gatewayServer.name, entry: { url: gatewayServer.entry.url, headers: gatewayServer.entry.headers } }
+					? {
+							name: gatewayServer.name,
+							entry: {
+								...gatewayServer.entry,
+								lifecycle: undefined,
+								directTools: false,
+								idleTimeout: gatewayServer.entry.idleTimeout ?? LAZY_GATEWAY_IDLE_TIMEOUT_MINUTES,
+							},
+						}
 					: gatewayServer
 			const gateway =
 				adjustedGatewayServer === undefined ||
@@ -468,10 +478,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				...(legacyConfigWarning === undefined ? [] : [legacyConfigWarning]),
 				...(projectTrusted ? [] : [MCP_PROJECT_TRUST_WARNING]),
 			]
-			// The gateway registers with the adapter right after install; count it
-			// toward the tool-surface policy and plan-mode read-only classification,
-			// or an otherwise-empty config would suppress the proxy tool and strand
-			// the gateway's tools.
+			// Count the gateway toward the tool-surface policy and plan-mode
+			// read-only classification, or an otherwise-empty config would suppress
+			// the proxy tool and strand the gateway's tools.
 			const effectiveConfig =
 				gateway !== undefined
 					? {
@@ -481,6 +490,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					: config
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
+			// Lazy children register for initial runtime discovery without changing
+			// file-backed config, plugin paths, installs, or resume reloads.
+			const discoverGatewayAtStartup = options.lazyGatewayConnect === true && gateway !== undefined
 			const adapterOptions: McpAdapterOptions = {
 				createSessionMetadataObserver: () => {
 					const generation = sessionGeneration
@@ -490,6 +502,12 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						else privateCatalogs.delete(serverName)
 					}
 				},
+				...(discoverGatewayAtStartup && gateway
+					? {
+							initialRuntimeServers: { [gateway.name]: gateway.entry },
+							initialRuntimeDiscoveryTimeoutMs: gateway.entry.requestTimeoutMs ?? LAZY_GATEWAY_REQUEST_TIMEOUT_MS,
+						}
+					: {}),
 				...(options.callerServers || selectedResult.useProgrammaticConfig
 					? { config, defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION }
 					: // Default the adapter's global config to the Studio-shared file so
@@ -518,7 +536,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server, privateCatalogs),
 				),
 			)
-			if (gateway !== undefined) registerGatewayRuntimeServer(pi, gateway)
+			if (gateway !== undefined && !discoverGatewayAtStartup) registerGatewayRuntimeServer(pi, gateway)
 		}
 
 		for (const warning of warnings) {

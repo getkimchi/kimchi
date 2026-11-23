@@ -398,10 +398,14 @@ You can provide custom instructions that are injected into the system prompt on 
 **Global** — applied to every session, regardless of project:
 
 ```
+~/.claude/CLAUDE.md
 ~/.config/kimchi/harness/AGENTS.md
 ```
 
-Place rules that apply everywhere (e.g., your name, code style preferences, or global tool defaults) in this file. It is loaded before any project-level files.
+Place rules that apply everywhere (e.g., your name, code style preferences, or global tool defaults) in these files. They are loaded in the order shown, before any project-level files.
+
+- `~/.claude/CLAUDE.md` is your Claude Code global file (`$CLAUDE_CONFIG_DIR/CLAUDE.md` if that is set). Turn it off with `kimchi resources disable extensions.claude-code-instructions`.
+- An `AGENTS.local.md` next to `AGENTS.md` is appended to it.
 
 **Project-level** — applied when working in a specific directory tree. Kimchi walks from the working directory up to the filesystem root and collects one context file per directory:
 
