@@ -552,22 +552,41 @@ describe("native provider credentials", () => {
 		for (const [, options] of http.mock.calls)
 			expect(new Headers(options.headers).get("authorization")).toBe("Bearer renewed-token")
 	})
+	const inAnHour = new Date(Date.now() + 60 * 60_000).toISOString()
+	const aMinuteAgo = new Date(Date.now() - 60_000).toISOString()
 	it.each([
-		["leaves an unexpired OAuth login alone", 60 * 60_000, "stored-token"],
-		["reads a renewed plaintext OAuth token", -60_000, "renewed-token"],
-	])("%s", async (_case, expiresIn, expected) => {
+		["leaves an unexpired OAuth login alone", inAnHour, false, "writes", "stored-token"],
+		["reads a renewed plaintext OAuth token", aMinuteAgo, true, "writes", "renewed-token"],
+		[
+			"renews a login whose expiry an older glab wrote as RFC822",
+			"20 Nov 26 17:19 EET",
+			true,
+			"writes",
+			"renewed-token",
+		],
+		["keeps the stored login when renewal fails", aMinuteAgo, true, "fails", "stored-token"],
+		["keeps the stored login when glab leaves a half-written config", aMinuteAgo, true, "truncates", "stored-token"],
+	])("%s", async (_case, expiry, renews, renewal, expected) => {
 		seed()
 		useProvider("gitlab")
-		const login = (token: string, expiry: number) =>
-			`hosts:\n  gitlab.com:\n    token: ${token}\n    use_keyring: "false"\n    is_oauth2: "true"\n    oauth2_expiry_date: "${new Date(expiry).toISOString()}"\n`
-		const path = gitlabConfig(login("stored-token", Date.now() + expiresIn))
+		const login = (token: string, date: string) =>
+			`hosts:\n  gitlab.com:\n    token: ${token}\n    use_keyring: "false"\n    is_oauth2: "true"\n    oauth2_expiry_date: "${date}"\n`
+		const path = gitlabConfig(login("stored-token", expiry))
 		cli.auth.mockImplementation(async (_command, args) => {
 			if (args[1] === "path") return path
-			if (args[0] === "auth") writeFileSync(path, login("renewed-token", Date.now() + 2 * 60 * 60_000))
+			if (args[0] === "auth") {
+				if (renewal === "fails") throw Object.assign(new Error("refresh token revoked"), { code: 1 })
+				writeFileSync(
+					path,
+					renewal === "truncates"
+						? "hosts:\n  gitlab.com:\n"
+						: login("renewed-token", new Date(Date.now() + 2 * 60 * 60_000).toISOString()),
+				)
+			}
 			return undefined
 		})
 		await lookup()
-		expect(cli.auth.mock.calls.some(([, args]) => args[0] === "auth")).toBe(expiresIn < 0)
+		expect(cli.auth.mock.calls.some(([, args]) => args[0] === "auth")).toBe(renews)
 		expect(http).toHaveBeenCalled()
 		for (const [, options] of http.mock.calls)
 			expect(new Headers(options.headers).get("authorization")).toBe(`Bearer ${expected}`)
