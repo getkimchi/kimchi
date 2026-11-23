@@ -44,6 +44,24 @@ function persistentEntry(config: McpConfig, server: string): ServerCacheEntry {
 	}
 }
 
+function staleCollisionSnapshot(stalePrefix: "none" | "server" = "none") {
+	const config: McpConfig = {
+		mcpServers: {
+			x: { url: "https://x.example/mcp", directTools: true, toolPrefix: stalePrefix },
+			a: { url: "https://a.example/mcp", directTools: true },
+		},
+	}
+	const stale = persistentEntry(config, "x")
+	stale.ttlMs = 1000
+	stale.cachedAt = Date.now() - 2000
+	stale.tools = [{ name: "get_issue", annotations: { readOnlyHint: false } }]
+	cacheState.cache = { version: 1, servers: { x: stale, a: persistentEntry(config, "a") } }
+	const catalog = snapshotMcpCallCatalog(config, new Map(), new Set(["mcp", "a_get_issue"]))
+	expect(catalog.staleServers).toEqual(new Set(["x"]))
+	expect(catalog.candidates.map((candidate) => candidate.serverName)).toEqual(["a"])
+	return catalog
+}
+
 describe("snapshotMcpCallCatalog", () => {
 	beforeEach(() => {
 		cacheState.cache = { version: 1, servers: {} }
@@ -100,6 +118,53 @@ describe("snapshotMcpCallCatalog", () => {
 			via: "gateway",
 			why: "stale",
 		})
+	})
+
+	it("fails closed when a stale unprefixed server can own an unscoped gateway original name", () => {
+		const catalog = staleCollisionSnapshot()
+
+		expect(describeMcpCall("mcp", { tool: "get_issue" }, catalog)).toEqual({
+			kind: "unresolved",
+			via: "gateway",
+			why: "stale",
+		})
+	})
+
+	it("fails closed when a stale unprefixed server can shadow an exact gateway name", () => {
+		const catalog = staleCollisionSnapshot()
+
+		expect(describeMcpCall("mcp", { tool: "a_get_issue" }, catalog)).toEqual({
+			kind: "unresolved",
+			via: "gateway",
+			why: "stale",
+		})
+	})
+
+	it("fails closed when a stale unprefixed server can shadow an exact direct name", () => {
+		const catalog = staleCollisionSnapshot()
+
+		expect(describeMcpCall("a_get_issue", {}, catalog)).toEqual({
+			kind: "unresolved",
+			via: "direct",
+			why: "stale",
+		})
+	})
+
+	it("preserves healthy scoped and exact resolutions when a stale prefix cannot collide", () => {
+		const catalog = staleCollisionSnapshot("server")
+		const resolved = {
+			kind: "tool",
+			server: "a",
+			tool: "get_issue",
+			evidence: "annotation_true",
+		}
+
+		expect(describeMcpCall("mcp", { tool: "get_issue", server: "a" }, catalog)).toEqual({
+			...resolved,
+			via: "gateway",
+		})
+		expect(describeMcpCall("mcp", { tool: "a_get_issue" }, catalog)).toEqual({ ...resolved, via: "gateway" })
+		expect(describeMcpCall("a_get_issue", {}, catalog)).toEqual({ ...resolved, via: "direct" })
 	})
 
 	it("treats a server whose config hash throws as stale without failing other servers", () => {

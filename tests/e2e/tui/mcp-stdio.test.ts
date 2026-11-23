@@ -443,6 +443,8 @@ test("can call MCP after executing a plan started with --plan", async ({ termina
 		terminal,
 		{
 			artifactName: "mcp-stdio-after-plan",
+			providerId: "kimchi-dev",
+			models: [MAIN_MODEL, CLASSIFIER_MODEL],
 			extraArgs: ["--plan=true"],
 			extraEnv: { KIMCHI_PERMISSIONS: "plan" },
 			mcp: {
@@ -488,6 +490,15 @@ test("can call MCP after executing a plan started with --plan", async ({ termina
 				.map((row: string[]) => row.join(""))
 				.join("\n")
 			expect(fullBuffer).not.toContain(ALLOW_PROMPT)
+			const classifierRequests = fixture.fake.requests.filter(
+				(request) =>
+					request.url.startsWith("/openai/v1/chat/completions") &&
+					request.body !== null &&
+					typeof request.body === "object" &&
+					"model" in request.body &&
+					request.body.model === CLASSIFIER_MODEL.slug,
+			)
+			expect(classifierRequests).toHaveLength(0)
 			trace.step("annotated read-only MCP call executed without approval")
 			const called = await fixture.mcp.waitForEvent("tool_called", {
 				where: { name: "echo", arguments: { message: "after-plan" } },

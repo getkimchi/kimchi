@@ -1,5 +1,6 @@
 import { namespaceProxyName } from "pi-mcp-adapter"
 import {
+	formatToolName,
 	getServerPrefix,
 	getToolNameCandidates,
 	isServerDisabled,
@@ -88,6 +89,18 @@ function serverProblem(catalog: McpCallCatalog, serverName: string): UnresolvedR
 	return undefined
 }
 
+function hasStaleDisplayedNameMatch(catalog: McpCallCatalog, toolName: string): boolean {
+	return [...catalog.staleServers].some((serverName) => {
+		const definition = catalog.config.mcpServers[serverName]
+		if (definition === undefined) return true
+		if (isServerDisabled(definition)) return false
+		const prefix = resolveToolPrefix(definition, catalog.config.settings?.toolPrefix)
+		// The stale tool may have had this original name. Formatting it tells us
+		// whether its live metadata can join the adapter's exact-name matches.
+		return formatToolName(toolName, serverName, prefix) === toolName
+	})
+}
+
 function resolveOnServer<V extends "gateway" | "namespace">(
 	catalog: McpCallCatalog,
 	toolName: string,
@@ -135,7 +148,13 @@ export function resolveMcpGatewayTool(
 	if (serverName !== undefined) return resolveOnServer(catalog, toolName, serverName, "gateway")
 
 	const exact = catalog.candidates.filter((candidate) => candidate.tool.name === toolName)
-	if (exact.length > 0) return resolveMatches(catalog, exact, "gateway")
+	if (exact.length > 0) {
+		if (hasStaleDisplayedNameMatch(catalog, toolName)) return unresolved("gateway", "stale")
+		return resolveMatches(catalog, exact, "gateway")
+	}
+	// Original names precede prefix-scoped and legacy matches during execution.
+	// Any stale server could supply that original name or an exact displayed match.
+	if (catalog.staleServers.size > 0) return unresolved("gateway", "stale")
 	const original = catalog.candidates.filter((candidate) => candidate.tool.originalName === toolName)
 	if (original.length > 0) return resolveMatches(catalog, original, "gateway")
 
@@ -214,9 +233,9 @@ function resolveDirect(toolName: string, catalog: McpCallCatalog): McpCallFacts 
 	const exact = catalog.candidates.filter((candidate) => candidate.tool.name === toolName)
 	if (exact.length > 1) return unresolved("direct", "ambiguous")
 	if (exact.length === 1) {
-		return catalog.registeredToolNames.has(toolName)
-			? resolveMatches(catalog, exact, "direct")
-			: unresolved("direct", "unknown")
+		if (!catalog.registeredToolNames.has(toolName)) return unresolved("direct", "unknown")
+		if (hasStaleDisplayedNameMatch(catalog, toolName)) return unresolved("direct", "stale")
+		return resolveMatches(catalog, exact, "direct")
 	}
 	return undefined
 }
