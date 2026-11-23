@@ -93,11 +93,13 @@ function authStartForPrompt(
 
 type ToolCallUpdate = Extract<acp.SessionUpdate, { sessionUpdate: "tool_call_update" }>
 
-function oauthToolOutput(fixture: AcpMcpFixture, text: string): ToolCallUpdate["rawOutput"] {
-	const match = fixture.client.sessionUpdates.find(
-		({ update }) =>
-			update.sessionUpdate === "tool_call_update" && JSON.stringify(update.rawOutput ?? {}).includes(text),
-	)
+function oauthToolOutput(fixture: AcpMcpFixture, text: string, startIndex = 0): ToolCallUpdate["rawOutput"] {
+	const match = fixture.client.sessionUpdates
+		.slice(startIndex)
+		.find(
+			({ update }) =>
+				update.sessionUpdate === "tool_call_update" && JSON.stringify(update.rawOutput ?? {}).includes(text),
+		)
 	if (match?.update.sessionUpdate !== "tool_call_update") {
 		throw new Error(`missing ACP tool_call_update containing ${text}`)
 	}
@@ -788,6 +790,53 @@ it(
 			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
 		} finally {
 			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it(
+	"preserves the legacy remote manual rawOutput on live delivery and replay",
+	async () => {
+		const promptText = "Start remote manual OAuth with a legacy client"
+		const releaseCallbackPort = await occupyOAuthCallbackPort()
+		const fixture = await startAcpMcpFixture({
+			// Deliberately no mcpOAuthTurn capability. The structured handoff is
+			// host coordination data, not a new default rawOutput field.
+			artifactName: "acp-mcp-oauth-turn-legacy-manual-result",
+			mcp: {
+				transport: "oauth",
+				oauthAutoComplete: false,
+				oauth: { scope: "mcp:tools", redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2" },
+			},
+			responses: [
+				authStartForPrompt("fixture", promptText, "oauth-legacy-manual-start"),
+				modelReplyForPrompt(promptText, "Follow the remote OAuth instructions."),
+			],
+		}).catch(async (error: unknown) => {
+			await releaseCallbackPort()
+			throw error
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			expect((await withTimeout(prompt(fixture, sessionId, promptText), "legacy remote manual OAuth")).stopReason).toBe(
+				"end_turn",
+			)
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened")
+			const authorization = await fetch(opened.target, {
+				redirect: "manual",
+				signal: AbortSignal.timeout(OAUTH_ACTION_TIMEOUT_MS),
+			})
+			expect(authorization.status).toBe(302)
+			const expectedDetails = { mode: "auth-start", server: "fixture", authorizationUrl: opened.target }
+			expect(oauthToolOutput(fixture, opened.target)?.details).toEqual(expectedDetails)
+
+			const replayStart = fixture.client.sessionUpdates.length
+			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			expect(oauthToolOutput(fixture, opened.target, replayStart)?.details).toEqual(expectedDetails)
+		} finally {
+			await fixture.stop()
+			await releaseCallbackPort()
 		}
 	},
 	STARTUP_TIMEOUT_MS,

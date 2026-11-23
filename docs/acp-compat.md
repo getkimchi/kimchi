@@ -113,7 +113,10 @@ when v2 stabilizes.)
    Remote HTTPS redirects without loopback capture are the deliberate
    exception even for opted-in clients: there is no watcher to hold, so the
    first prompt returns paste instructions and a later prompt performs
-   `auth-complete`. See `mcp-oauth-turn-lifecycle.test.ts` for both negotiated
+   `auth-complete`. The `details.handoff: "manual"` marker is gated by
+   `mcpOAuthTurn` on live results and replay: other clients retain the previous
+   details shape, while host-side detection retains the original result.
+   See `mcp-oauth-turn-lifecycle.test.ts` for both negotiated
    and default-client coverage. Studio's adoption is tracked by #798.
 2. **Schema-first.** *(Anchor: tool-calls §rawInput + patch semantics.)* New wire content
    names its field in the spec/SDK first; if it is not in the schema, it goes in `_meta`.

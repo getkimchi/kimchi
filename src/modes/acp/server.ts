@@ -3001,7 +3001,10 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: event.toolCallId,
 						status: "in_progress",
 						content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
-						rawOutput: this.displayOptionalRecord(sessionId, wireSafeToolResult(event.result)),
+						rawOutput: this.displayOptionalRecord(
+							sessionId,
+							wireSafeToolResult(event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
+						),
 					})
 					this.send({ sessionId, update: runningUpdate })
 					// Retire the upstream-id mapping exactly as a completed call would:
@@ -3054,7 +3057,10 @@ export class KimchiAcpAgent implements Agent {
 					piToolCallId: event.toolCallId,
 					status: event.isError ? "failed" : "completed",
 					content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
-					rawOutput: this.displayOptionalRecord(sessionId, wireSafeToolResult(event.result)),
+					rawOutput: this.displayOptionalRecord(
+						sessionId,
+						wireSafeToolResult(event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
+					),
 				})
 				this.send({ sessionId, update })
 				// Upstream ids can repeat after compaction or even within a turn. Retire
@@ -3424,7 +3430,12 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: tc.id,
 						status,
 						content: this.displayContent(sessionId, finalResult ? toolResultContent(finalResult) : []),
-						rawOutput: this.displayOptionalRecord(sessionId, finalResult ? wireSafeToolResult(finalResult) : undefined),
+						rawOutput: this.displayOptionalRecord(
+							sessionId,
+							finalResult
+								? wireSafeToolResult(finalResult, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities))
+								: undefined,
+						),
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -4950,14 +4961,28 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 
 /**
  * A tool result safe to place on the wire as `rawOutput`: content text blocks
- * with externalization markers resolved (see toolResultContent). The in-memory
- * result itself is never mutated — clients keying UI off rawOutput
- * (e.g. rawOutput.details) keep the same shape.
+ * with externalization markers resolved (see toolResultContent). The MCP
+ * adapter's manual-handoff marker is host coordination state, exposed only
+ * to clients that opted into mcpOAuthTurn. Unnegotiated live results and
+ * replay retain their previous details shape. The in-memory result is never
+ * mutated, so host-side handoff handling still sees the original marker.
  */
-function wireSafeToolResult(result: unknown): Record<string, unknown> | undefined {
+function wireSafeToolResult(result: unknown, exposeManualHandoff = false): Record<string, unknown> | undefined {
 	if (!result || typeof result !== "object") return undefined
-	const r = result as { content?: unknown }
-	if (!Array.isArray(r.content)) return result as Record<string, unknown>
+	let r = result as { content?: unknown; details?: unknown }
+	const details = r.details
+	if (
+		!exposeManualHandoff &&
+		details &&
+		typeof details === "object" &&
+		!Array.isArray(details) &&
+		"handoff" in details &&
+		details.handoff === "manual"
+	) {
+		const { handoff: _manualHandoff, ...visibleDetails } = details
+		r = { ...r, details: visibleDetails }
+	}
+	if (!Array.isArray(r.content)) return r as Record<string, unknown>
 	let changed = false
 	const content = r.content.map((block) => {
 		const b = block as { type?: string; text?: string } | null
@@ -4970,7 +4995,7 @@ function wireSafeToolResult(result: unknown): Record<string, unknown> | undefine
 		}
 		return block
 	})
-	return changed ? ({ ...r, content } as Record<string, unknown>) : (result as Record<string, unknown>)
+	return changed ? ({ ...r, content } as Record<string, unknown>) : (r as Record<string, unknown>)
 }
 
 export async function runAcpMode(options: RunAcpOptions): Promise<void> {
