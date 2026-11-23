@@ -1,6 +1,6 @@
 {
  "_meta": {
-  "ledger_generation": "ledger-heavy-v1",
+  "ledger_generation": "ledger-heavy-v2; limits derived from the ledger-heavy-v1-shaped master-heavy run 44729613634 (v2 calibration refused: keystroke p95 above the 100 ms guard)",
   "headroom": "per-metric, from measured run-to-run spread (see gate.py)",
   "calibrated": "master-heavy run 44729613634 (2026-11-20, canonical ubuntu-24.04-arm)",
   "git": "git version 2.56.1",
