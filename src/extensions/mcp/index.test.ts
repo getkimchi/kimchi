@@ -160,6 +160,10 @@ vi.mock("./read-only.js", async (importOriginal) => ({
 		readOnlyState.privateCatalogs.push(privateCatalogs)
 		return [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
 	},
+}))
+
+vi.mock("./call-catalog.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./call-catalog.js")>()),
 	isReadOnlyQualifiedMcpGatewayTool: (
 		config: McpConfig,
 		toolName: string,

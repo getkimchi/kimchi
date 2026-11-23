@@ -1,8 +1,9 @@
 import { computeServerHash } from "pi-mcp-adapter/metadata-cache"
-import type { McpConfig, MetadataCache, ServerCacheEntry } from "pi-mcp-adapter/types"
+import type { CachedTool, McpConfig, MetadataCache, ServerCacheEntry } from "pi-mcp-adapter/types"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { snapshotMcpCallCatalog } from "./call-catalog.js"
+import { isReadOnlyQualifiedMcpGatewayTool, snapshotMcpCallCatalog } from "./call-catalog.js"
 import { describeMcpCall } from "./call-facts.js"
+import { collectReadOnlyMcpWireNames } from "./read-only.js"
 
 const cacheState = vi.hoisted(() => ({
 	cache: undefined as MetadataCache | undefined,
@@ -137,5 +138,112 @@ describe("snapshotMcpCallCatalog", () => {
 			why: "disabled",
 		})
 		expect(snapshot.candidates).toEqual([])
+	})
+})
+
+describe("isReadOnlyQualifiedMcpGatewayTool", () => {
+	const config: McpConfig = {
+		mcpServers: {
+			alpha: { url: "https://a.example/mcp", directTools: true },
+			beta: { url: "https://b.example/mcp", directTools: true, toolPrefix: "none" },
+		},
+	}
+	function setCache(config: McpConfig, tools: Record<string, CachedTool[]>): MetadataCache {
+		const cache: MetadataCache = { version: 1, servers: {} }
+		for (const [name, definition] of Object.entries(config.mcpServers)) {
+			cache.servers[name] = {
+				configHash: computeServerHash(definition),
+				cachedAt: Date.now(),
+				resources: [],
+				tools: tools[name] ?? [],
+			}
+		}
+		cacheState.cache = cache
+		return cache
+	}
+
+	beforeEach(() => {
+		cacheState.loadMetadataCache.mockReset().mockImplementation(() => cacheState.cache)
+		setCache(config, {
+			alpha: [{ name: "get_issue" }, { name: "create_issue" }, { name: "stats", annotations: { readOnlyHint: true } }],
+			beta: [{ name: "fetch_items" }],
+		})
+	})
+
+	it("authorizes only the current session's matching private catalog", () => {
+		cacheState.cache = { version: 1, servers: {} }
+		const privateEntry = {
+			configHash: computeServerHash(config.mcpServers.alpha),
+			cachedAt: Date.now(),
+			resources: [],
+			tools: [{ name: "getJiraIssue", annotations: { readOnlyHint: true } }],
+			cacheScope: "private" as const,
+		}
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "getJiraIssue", "alpha")).toBe(false)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "getJiraIssue", "alpha", new Map([["alpha", privateEntry]]))).toBe(
+			true,
+		)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "alpha_getJiraIssue", "alpha", new Map())).toBe(false)
+		const currentCatalog = new Map([["alpha", privateEntry]])
+		expect(collectReadOnlyMcpWireNames(config, "alpha", currentCatalog)).toEqual(["alpha_getJiraIssue"])
+		expect(
+			isReadOnlyQualifiedMcpGatewayTool(
+				config,
+				"getJiraIssue",
+				"alpha",
+				new Map([["alpha", { ...privateEntry, configHash: "another-authorization-context" }]]),
+			),
+		).toBe(false)
+	})
+
+	it("accepts original names when they resolve to one read-only tool", () => {
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue", "alpha")).toBe(true)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue")).toBe(true)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "create_issue", "alpha")).toBe(false)
+	})
+
+	it("fails closed for ambiguous unscoped originals but allows server-scoped matches", () => {
+		const collisionConfig = { ...config, settings: { toolPrefix: "none" as const } }
+		setCache(collisionConfig, {
+			alpha: [{ name: "get_access", annotations: { readOnlyHint: false } }],
+			beta: [{ name: "get_access", annotations: { readOnlyHint: true } }],
+		})
+		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access")).toBe(false)
+		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access", "alpha")).toBe(false)
+		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access", "beta")).toBe(true)
+	})
+
+	it("qualifies cached resource-backed read tools", () => {
+		const resourceConfig: McpConfig = { mcpServers: { alpha: { ...config.mcpServers.alpha } } }
+		const cache = setCache(resourceConfig, { alpha: [] })
+		cache.servers.alpha.resources = [{ name: "figjam", uri: "file:///board" }]
+
+		expect(isReadOnlyQualifiedMcpGatewayTool(resourceConfig, "read_figjam", "alpha")).toBe(true)
+		expect(isReadOnlyQualifiedMcpGatewayTool(resourceConfig, "alpha_read_figjam", "alpha")).toBe(true)
+	})
+
+	it("preserves displayed-name precedence when an original alias names another tool", () => {
+		setCache(config, {
+			alpha: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
+			beta: [{ name: "get_issue", annotations: { readOnlyHint: false } }],
+		})
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue")).toBe(false)
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "alpha_get_issue")).toBe(true)
+	})
+
+	it("rejects a tool name that two servers' prefixes match with equal length", () => {
+		const config: McpConfig = {
+			// Under "short", both names strip to the prefix "jira".
+			mcpServers: {
+				jira: { command: "jira", toolPrefix: "short" },
+				"jira-mcp": { command: "jira-mcp", toolPrefix: "short" },
+			},
+		}
+		cacheState.cache = {
+			version: 1,
+			servers: { jira: persistentEntry(config, "jira"), "jira-mcp": persistentEntry(config, "jira-mcp") },
+		}
+
+		expect(isReadOnlyQualifiedMcpGatewayTool(config, "jira_get_issue")).toBe(false)
 	})
 })

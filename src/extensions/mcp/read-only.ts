@@ -1,11 +1,10 @@
 /**
  * Read-only qualification for MCP tools.
  *
- * Planning mode admits read-only MCP direct tools and uses this same
- * qualification for nested gateway calls. The gateway itself receives separate
- * argument-aware authorization in index.ts; script and namespace proxies stay
- * blocked. Direct-tool classification follows the MCP spec first and a name
- * convention second:
+ * Planning mode admits read-only MCP direct tools. Gateway resolution and
+ * nested-call authorization live in call-catalog.ts; this file supplies
+ * evidence classification and candidate collection. Direct-tool classification
+ * follows the MCP spec first and a name convention second:
  *
  * - `annotations.readOnlyHint === true` qualifies the tool, always.
  * - When the server publishes NO annotations at all, a name-prefix convention
@@ -30,8 +29,6 @@ import {
 import {
 	formatServerNamespace,
 	formatToolName,
-	getServerPrefix,
-	getToolNameCandidates,
 	isServerDisabled,
 	type McpConfig,
 	type MetadataCache,
@@ -70,7 +67,7 @@ export function getMcpReadOnlyEvidence(
 	return "name_convention"
 }
 
-function isReadOnlyEvidence(evidence: ReadOnlyEvidence): boolean {
+export function isReadOnlyEvidence(evidence: ReadOnlyEvidence): boolean {
 	return evidence === "annotation_true" || evidence === "name_convention" || evidence === "resource"
 }
 
@@ -174,63 +171,4 @@ export function collectReadOnlyMcpWireNames(
 		)
 	}
 	return [...qualified].filter(([, readOnly]) => readOnly).map(([name]) => name)
-}
-
-function hasSingleReadOnlyMatch(candidates: McpToolCandidate[]): boolean {
-	return candidates.length === 1 && candidates[0] !== undefined && isReadOnlyEvidence(candidates[0].evidence)
-}
-
-function resolveServerGatewayTool(candidates: McpToolCandidate[], toolName: string, serverName: string): boolean {
-	const scoped = candidates.filter((candidate) => candidate.serverName === serverName)
-	const exact = scoped.filter((candidate) => candidate.tool.name === toolName)
-	if (exact.length > 0) return hasSingleReadOnlyMatch(exact)
-	return hasSingleReadOnlyMatch(
-		scoped.filter((candidate) =>
-			getToolNameCandidates(candidate.tool.originalName, serverName, candidate.prefix).has(toolName),
-		),
-	)
-}
-
-function prefixedServerScope(config: McpConfig, toolName: string): string | undefined {
-	const candidates = Object.entries(config.mcpServers)
-		.filter(([, definition]) => !isServerDisabled(definition))
-		.map(([serverName, definition]) => ({
-			serverName,
-			prefix: getServerPrefix(serverName, resolveToolPrefix(definition, config.settings?.toolPrefix)),
-		}))
-		.filter(({ prefix }) => prefix.length > 0 && toolName.startsWith(`${prefix}_`))
-		.sort((a, b) => b.prefix.length - a.prefix.length)
-	if (candidates.length === 0) return undefined
-	const longest = candidates[0]?.prefix.length
-	const best = candidates.filter(({ prefix }) => prefix.length === longest)
-	return best.length === 1 ? best[0]?.serverName : undefined
-}
-
-/**
- * Whether a gateway tool argument resolves to one read-only tool using the
- * adapter's displayed/original/legacy name semantics. Exact displayed names
- * win over original names, followed by prefixed-server and candidate aliases;
- * every ambiguity, stale metadata entry, and cross-server collision fails closed.
- */
-export function isReadOnlyQualifiedMcpGatewayTool(
-	config: McpConfig,
-	toolName: string,
-	server?: string,
-	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
-): boolean {
-	const candidates = collectMcpToolCandidates(config, loadMetadataCache(), privateCatalogs)
-	if (server !== undefined) return resolveServerGatewayTool(candidates, toolName, server)
-
-	const exact = candidates.filter((candidate) => candidate.tool.name === toolName)
-	if (exact.length > 0) return hasSingleReadOnlyMatch(exact)
-	const original = candidates.filter((candidate) => candidate.tool.originalName === toolName)
-	if (original.length > 0) return hasSingleReadOnlyMatch(original)
-
-	const scopedServer = prefixedServerScope(config, toolName)
-	if (scopedServer !== undefined) return resolveServerGatewayTool(candidates, toolName, scopedServer)
-	return hasSingleReadOnlyMatch(
-		candidates.filter((candidate) =>
-			getToolNameCandidates(candidate.tool.originalName, candidate.serverName, candidate.prefix).has(toolName),
-		),
-	)
 }

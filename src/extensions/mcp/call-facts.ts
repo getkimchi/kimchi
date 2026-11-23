@@ -21,7 +21,7 @@ type ToolFacts<V extends McpCallVia> = {
 	evidence: ReadOnlyEvidence
 }
 type UnresolvedFacts<V extends McpCallVia> = { kind: "unresolved"; via: V; why: UnresolvedReason }
-type ResolvedFacts<V extends McpCallVia> = ToolFacts<V> | UnresolvedFacts<V>
+export type ResolvedFacts<V extends McpCallVia> = ToolFacts<V> | UnresolvedFacts<V>
 
 export type McpCallFacts = { kind: "not_mcp" } | MetadataFacts | ResolvedFacts<McpCallVia>
 export type McpGatewayInputFacts = MetadataFacts | ResolvedFacts<"gateway">
@@ -127,7 +127,7 @@ function prefixedServerScope(config: McpConfig, toolName: string): PrefixedServe
 		: { kind: "ambiguous" }
 }
 
-function resolveMcpGatewayTool(
+export function resolveMcpGatewayTool(
 	call: { tool: string; server?: string },
 	catalog: McpCallCatalog,
 ): ResolvedFacts<"gateway"> {

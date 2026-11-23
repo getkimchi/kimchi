@@ -1,7 +1,7 @@
 import { isServerCacheValid, loadMetadataCache } from "pi-mcp-adapter/metadata-cache"
 import { isServerDisabled, type McpConfig, type ServerCacheEntry } from "pi-mcp-adapter/types"
-import type { McpCallCatalog } from "./call-facts.js"
-import { collectMcpToolCandidates, isPrivateEntryUsable } from "./read-only.js"
+import { type McpCallCatalog, resolveMcpGatewayTool } from "./call-facts.js"
+import { collectMcpToolCandidates, isPrivateEntryUsable, isReadOnlyEvidence } from "./read-only.js"
 
 export function snapshotMcpCallCatalog(
 	config: McpConfig,
@@ -28,4 +28,23 @@ export function snapshotMcpCallCatalog(
 		registeredToolNames,
 		staleServers,
 	}
+}
+
+/**
+ * Whether a gateway tool argument resolves to one read-only tool using the
+ * adapter's displayed/original/legacy name semantics. Exact displayed names
+ * win over original names, followed by prefixed-server and candidate aliases;
+ * every ambiguity, stale metadata entry, and cross-server collision fails closed.
+ */
+export function isReadOnlyQualifiedMcpGatewayTool(
+	config: McpConfig,
+	toolName: string,
+	server?: string,
+	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+): boolean {
+	const facts = resolveMcpGatewayTool(
+		{ tool: toolName, server },
+		snapshotMcpCallCatalog(config, privateCatalogs ?? new Map(), new Set()),
+	)
+	return facts.kind === "tool" && isReadOnlyEvidence(facts.evidence)
 }
