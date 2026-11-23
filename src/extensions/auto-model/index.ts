@@ -340,17 +340,17 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// command line is the only moment a saved default may be installed or
 			// unwrapped. Subagents are excluded so a child never rewrites the global
 			// default, and a resumed conversation keeps the model it was using.
-			// A pre-created session file alone is not a resumed conversation: launch
-			// wrappers may create one before startup, so freshness needs message content.
+			// "Resumed" means the session has messages, matching upstream's own rule
+			// (sdk.js `hasExistingSession`): a session file without messages, such as
+			// one a launch wrapper pre-creates, gets no model restored upstream either.
 			const freshSession =
 				event.reason === "new" ||
 				(event.reason === "startup" && !event.previousSessionFile && !entries.some((entry) => entry.type === "message"))
-			// An explicit CLI model belongs to this process, not only its startup event:
-			// /new and /clear replace the session with reason "new" and keep it too.
-			// Other launch options keep their existing startup-only exemption.
-			const explicitLaunchChoice =
-				event.reason === "startup" ? cliOptions?.model || cliOptions?.provider || cliOptions?.models : cliOptions?.model
-			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !explicitLaunchChoice
+			// --model pins the model for the whole process, so /new and /clear
+			// (reason "new") keep it. --provider and --models only shape startup.
+			const pinnedCliModel = cliOptions?.model
+			const startupCliChoice = event.reason === "startup" && (cliOptions?.provider || cliOptions?.models)
+			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !pinnedCliModel && !startupCliChoice
 
 			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
 

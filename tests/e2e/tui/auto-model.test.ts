@@ -395,82 +395,77 @@ test("a session-scoped /model choice survives resume but not /new or restart", a
 	}
 })
 
+interface NewSessionModelCase {
+	artifact: string
+	/** Model passed as `--model`, or `false` for a default launch. */
+	initialModel: string | false
+	/** Model shown in the footer right after launch. */
+	launchModel: string
+	/** Optional session-scoped `/model` switch before the reset. */
+	switchTo?: string
+	/** Model the footer must show after the reset. */
+	expectedModel: string
+	step: string
+}
+
+const NEW_SESSION_MODEL_CASES: NewSessionModelCase[] = [
+	{
+		artifact: "explicit-cli",
+		initialModel: "override",
+		launchModel: "override",
+		expectedModel: "override",
+		step: "explicit CLI model survived the new session",
+	},
+	{
+		artifact: "explicit-after-switch",
+		initialModel: "override",
+		launchModel: "override",
+		switchTo: "routed",
+		expectedModel: "override",
+		step: "new session restored the original CLI model, not the session-scoped switch",
+	},
+	{
+		artifact: "default-launch",
+		initialModel: false,
+		launchModel: "auto",
+		switchTo: "override",
+		expectedModel: "auto",
+		step: "session-scoped model returned to the Auto default",
+	},
+]
+
 for (const command of ["/new", "/clear"] as const) {
-	test(`${command} preserves an explicit CLI model for the new session`, async ({ terminal }) => {
-		await runKimchiSession(
-			terminal,
-			{
-				artifactName: `auto-model-${command.slice(1)}-explicit-cli`,
-				providerId: "kimchi-dev",
-				initialModel: "override",
-				models: MODELS_WITH_OVERRIDE,
-				responses: [{ stream: ["Session reset sentinel."] }],
-			},
-			async (fixture, trace) => {
-				await waitForText(terminal, "override → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				terminal.submit("Render the session reset sentinel")
-				await waitForText(terminal, "Session reset sentinel.", { timeoutMs: STREAM_TIMEOUT_MS })
-				await waitForTurnToSettle(fixture.fake.requests)
-				terminal.submit(command)
-				await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				await expect(terminal.getByText("Session reset sentinel.", { full: false })).not.toBeVisible()
-				expect(viewText(terminal)).toContain("override → ctrl+p")
-				trace.step("explicit CLI model survived the new session")
-			},
-		)
-	})
-
-	test(`${command} restores the explicit CLI model after a session-scoped switch`, async ({ terminal }) => {
-		await runKimchiSession(
-			terminal,
-			{
-				artifactName: `auto-model-${command.slice(1)}-explicit-after-switch`,
-				providerId: "kimchi-dev",
-				initialModel: "override",
-				models: MODELS_WITH_OVERRIDE,
-				responses: [{ stream: ["Session reset sentinel."] }],
-			},
-			async (fixture, trace) => {
-				await waitForText(terminal, "override → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				terminal.submit("/model kimchi-dev/routed")
-				await waitForText(terminal, "routed → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				terminal.submit("Render the session reset sentinel")
-				await waitForText(terminal, "Session reset sentinel.", { timeoutMs: STREAM_TIMEOUT_MS })
-				await waitForTurnToSettle(fixture.fake.requests)
-				terminal.submit(command)
-				await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				await expect(terminal.getByText("Session reset sentinel.", { full: false })).not.toBeVisible()
-				expect(viewText(terminal)).toContain("override → ctrl+p")
-				trace.step("new session restored the original CLI model, not the session-scoped switch")
-			},
-		)
-	})
-
-	test(`${command} restores Auto for the new session after a default launch`, async ({ terminal }) => {
-		await runKimchiSession(
-			terminal,
-			{
-				artifactName: `auto-model-${command.slice(1)}-default-launch`,
-				providerId: "kimchi-dev",
-				initialModel: false,
-				models: MODELS_WITH_OVERRIDE,
-				responses: [{ stream: ["Session reset sentinel."] }],
-			},
-			async (fixture, trace) => {
-				await waitForText(terminal, "auto → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				terminal.submit("/model kimchi-dev/override")
-				await waitForText(terminal, "override → ctrl+p", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				terminal.submit("Render the session reset sentinel")
-				await waitForText(terminal, "Session reset sentinel.", { timeoutMs: STREAM_TIMEOUT_MS })
-				await waitForTurnToSettle(fixture.fake.requests)
-				terminal.submit(command)
-				await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-				await expect(terminal.getByText("Session reset sentinel.", { full: false })).not.toBeVisible()
-				expect(viewText(terminal)).toContain("auto → ctrl+p")
-				trace.step("session-scoped model returned to the Auto default")
-			},
-		)
-	})
+	for (const c of NEW_SESSION_MODEL_CASES) {
+		const launch = c.initialModel ? `--model ${c.initialModel}` : "a default launch"
+		const switched = c.switchTo ? ` after switching to ${c.switchTo}` : ""
+		test(`${command} after ${launch}${switched} starts on ${c.expectedModel}`, async ({ terminal }) => {
+			await runKimchiSession(
+				terminal,
+				{
+					artifactName: `auto-model-${command.slice(1)}-${c.artifact}`,
+					providerId: "kimchi-dev",
+					initialModel: c.initialModel,
+					models: MODELS_WITH_OVERRIDE,
+					responses: [{ stream: ["Session reset sentinel."] }],
+				},
+				async (fixture, trace) => {
+					await waitForText(terminal, `${c.launchModel} → ctrl+p`, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+					if (c.switchTo) {
+						terminal.submit(`/model kimchi-dev/${c.switchTo}`)
+						await waitForText(terminal, `${c.switchTo} → ctrl+p`, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+					}
+					terminal.submit("Render the session reset sentinel")
+					await waitForText(terminal, "Session reset sentinel.", { timeoutMs: STREAM_TIMEOUT_MS })
+					await waitForTurnToSettle(fixture.fake.requests)
+					terminal.submit(command)
+					await waitForText(terminal, "New session started", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+					await expect(terminal.getByText("Session reset sentinel.", { full: false })).not.toBeVisible()
+					expect(viewText(terminal)).toContain(`${c.expectedModel} → ctrl+p`)
+					trace.step(c.step)
+				},
+			)
+		})
+	}
 }
 
 test("a saved Auto default keeps working across restarts", async ({ terminal }) => {
