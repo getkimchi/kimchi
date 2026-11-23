@@ -31,19 +31,13 @@ function statusMessageText(message: OAuthStatusMessage): string {
 		.join("\n")
 }
 
-/** Remote HTTPS redirects without loopback capture deliberately have no
- * background watcher. The adapter's only completion path is a follow-up
- * auth-complete, which ACP cannot issue until this prompt has returned.
- * executeAuthStart does not expose loopbackCapture in details, but uses this
- * handoff only for its watcher-less, paste-only result. */
-function isPasteOnlyHandoff(result: AgentToolResult<unknown>): boolean {
-	return result.content.some(
-		(block) =>
-			block.type === "text" &&
-			block.text.includes(
-				"After approving, copy the full callback URL from your browser address bar and send it back with:",
-			),
-	)
+/** Intentional #797 scope exception for remote HTTPS redirects without
+ * loopback capture. No background watcher can settle these flows. The user
+ * must see the instructions, then supply the callback in a follow-up ACP
+ * prompt so its auth-complete tool can finish authorization and resumed work.
+ * Use the adapter's structured discriminator, never its display wording. */
+function isManualHandoff(result: AgentToolResult<unknown>): boolean {
+	return isRecord(result.details) && result.details.handoff === "manual"
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -114,7 +108,7 @@ export class McpOAuthTurnContinuation {
 				!isRecord(result.details) ||
 				typeof result.details.authorizationUrl !== "string" ||
 				result.details.authenticated === true ||
-				isPasteOnlyHandoff(result)
+				isManualHandoff(result)
 			) {
 				this.pending.delete(serverName)
 				return result

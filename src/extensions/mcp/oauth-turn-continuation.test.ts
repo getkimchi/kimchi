@@ -40,6 +40,28 @@ describe("McpOAuthTurnContinuation status correlation", () => {
 		second.consumeStatusMessage(statusMessage("authenticated"))
 		await expect(secondPending).resolves.toMatchObject({ details: { authenticated: true } })
 	})
+
+	it("returns a structured manual handoff independently of instruction wording", async () => {
+		vi.useFakeTimers()
+		const continuation = new McpOAuthTurnContinuation()
+		const pending = continuation.runAuthStart("fixture", undefined, async () => ({
+			content: [{ type: "text", text: "Instruction wording changed upstream." }],
+			details: {
+				mode: "auth-start",
+				server: "fixture",
+				authorizationUrl: "https://authorize.example",
+				handoff: "manual",
+			},
+		}))
+		await vi.advanceTimersByTimeAsync(0)
+		let settled = false
+		void pending.then(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(true)
+		await expect(pending).resolves.toMatchObject({ details: { handoff: "manual" } })
+	})
 })
 
 function startAuthorization(continuation: McpOAuthTurnContinuation, authenticated = false) {

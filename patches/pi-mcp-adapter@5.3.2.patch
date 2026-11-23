@@ -2418,7 +2418,7 @@ index 0000000000000000000000000000000000000000..01bf2d87c50f03e0f1d7ea2ead1be8b4
 +  return null;
 +}
 diff --git a/proxy-modes.ts b/proxy-modes.ts
-index 453e728eaf6e76771aecb0e4386dbb1273aefe45..d961cd5ac713e8a93e7ad211e5520816572d4e37 100644
+index 453e728eaf6e76771aecb0e4386dbb1273aefe45..79b01a16363e7816bb178dd8da3361e3a3fd11f8 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
 @@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
@@ -2517,7 +2517,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..d961cd5ac713e8a93e7ad211e5520816
        ? ownedSignal
          ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
          : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
-@@ -641,17 +657,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -641,18 +657,29 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
      }
  
      if (getRedirectDetails(authorizationUrl).remote) {
@@ -2539,11 +2539,18 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..d961cd5ac713e8a93e7ad211e5520816
  
      return {
 -      content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, authorizationUrl) }],
+-      details: { mode: "auth-start", server: serverName, authorizationUrl },
 +      content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, authorizationUrl, loopbackCapture === true) }],
-       details: { mode: "auth-start", server: serverName, authorizationUrl },
++      details: {
++        mode: "auth-start",
++        server: serverName,
++        authorizationUrl,
++        ...(getRedirectDetails(authorizationUrl).remote && !loopbackCapture ? { handoff: "manual" as const } : {}),
++      },
      };
    } catch (error) {
-@@ -1473,6 +1495,23 @@ export async function executeCall(
+     const message = error instanceof Error ? error.message : String(error);
+@@ -1473,6 +1500,23 @@ export async function executeCall(
        }
      }
  
@@ -2567,7 +2574,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..d961cd5ac713e8a93e7ad211e5520816
      if (connection?.status === "needs-auth") {
        const message = getAuthRequiredMessage(state, serverName);
        return {
-@@ -1650,6 +1689,7 @@ export async function executeCall(
+@@ -1650,6 +1694,7 @@ export async function executeCall(
            config: state.config,
            ...(ownedSignal ? { signal: ownedSignal } : {}),
            onNeedsAuth: recoverAuthConnection,
@@ -2575,7 +2582,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..d961cd5ac713e8a93e7ad211e5520816
          },
          serverName,
          async (conn) => {
-@@ -1695,6 +1735,7 @@ export async function executeCall(
+@@ -1695,6 +1740,7 @@ export async function executeCall(
          config: state.config,
          ...(ownedSignal ? { signal: ownedSignal } : {}),
          onNeedsAuth: recoverAuthConnection,

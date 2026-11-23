@@ -296,7 +296,7 @@ it(
 )
 
 it(
-	"preserves manual auth-start and auth-complete for a remote redirect without loopback capture",
+	"documents the paste-only scope exception with a follow-up completion prompt",
 	async () => {
 		const manualPrompt = "Authenticate with a remote HTTPS callback"
 		const completionPrompt = "Complete manual OAuth with the pasted callback"
@@ -336,6 +336,9 @@ it(
 		})
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
+			// Explicit #797 exception: there is no callback watcher to complete.
+			// Return instructions now, then let the user's callback drive auth-complete
+			// and protected work in the subsequent ACP prompt and its own agent run.
 			const first = await withTimeout(prompt(fixture, sessionId, manualPrompt), "remote manual auth-start")
 			expect(first.stopReason).toBe("end_turn")
 			expect(first.chunks).toContain("Paste the remote OAuth callback in the next prompt.")
@@ -356,7 +359,7 @@ it(
 			}
 			expect(fixture.mcp.eventsOfType("oauth_token_issued")).toHaveLength(0)
 			expect(oauthToolOutput(fixture, "auth-complete")).toMatchObject({
-				details: { authorizationUrl: opened.target },
+				details: { authorizationUrl: opened.target, handoff: "manual" },
 			})
 
 			// The user supplies the full remote callback on a subsequent prompt;
