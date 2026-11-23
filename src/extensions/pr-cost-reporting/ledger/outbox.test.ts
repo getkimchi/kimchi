@@ -91,6 +91,34 @@ it("sqlite: multi-entity claim reads use the entity index (bun driver)", () => {
 	}
 })
 
+it("sqlite: delivery status reaches each account through the index, not a scan of every event (bun driver)", () => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-delivery-plan-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "delivery-plan", dir], { encoding: "utf8", timeout: 30_000 }),
+		) as {
+			plan: string[]
+			rows: { accountKey: string; sendable: boolean; hasBatch: boolean; firstBatchId: string | null }[]
+			reference: { accountKey: string; sendable: number; hasBatch: number; firstBatchId: string | null }[]
+		}
+		const plan = result.plan.join(" | ")
+		expect(plan).toContain("SEARCH outbox_events USING COVERING INDEX outbox_pending (account_key>?)")
+		expect(plan).not.toMatch(/SCAN outbox_events\b/)
+		expect(result.rows).toEqual(
+			result.reference.map((row) => ({ ...row, sendable: row.sendable === 1, hasBatch: row.hasBatch === 1 })),
+		)
+		expect(result.rows.map((row) => row.accountKey)).toEqual(["acked", "batch-only", "blocked", "bulk"])
+		expect(result.rows.find((row) => row.accountKey === "bulk")).toMatchObject({
+			sendable: true,
+			hasBatch: true,
+			firstBatchId: "batch-a",
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
 it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and atomic rollback (%s)", {
 	timeout: 30_000,
 }, (mode) => {
