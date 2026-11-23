@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { __resetCheckinGate, markCheckinPending, recordGateBlockedToolCall } from "./checkin-gate.js"
 import { __resetReconciliationBookkeeping } from "./reconciliation.js"
 import { __resetTodoStore, GLOBAL_TODO_SCOPE, getTodosForScope, subscribeTodoStore } from "./store.js"
 import {
@@ -31,6 +32,7 @@ describe("confirm_todos", () => {
 	beforeEach(() => {
 		__resetTodoStore()
 		__resetReconciliationBookkeeping()
+		__resetCheckinGate()
 	})
 
 	it("confirms an unchanged plan without writing and records reconciliation", async () => {
@@ -62,6 +64,66 @@ describe("confirm_todos", () => {
 		// No synthetic store write: subscribers are not notified.
 		expect(listener).not.toHaveBeenCalled()
 		unsubscribe()
+	})
+
+	it("reminds to re-issue the work calls the check-in gate swallowed", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		await tools.add_todo.execute("add-1", { content: "alpha", status: "in_progress" }, undefined, undefined, ctx)
+
+		// A gate cycle: the check arms and swallows two work calls.
+		markCheckinPending([GLOBAL_TODO_SCOPE], "session", 0)
+		recordGateBlockedToolCall("session", "w1", "bash(git status -sb)")
+		recordGateBlockedToolCall("session", "w2", "write(README.md)")
+
+		const result = await tools.confirm_todos.execute(
+			"confirm-1",
+			{ inputRevision: 0, expected: [{ id: 1, status: "in_progress" }] },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].type === "text" ? result.content[0].text : ""
+		expect(text).toContain("Confirmed 1 todos in global match the current plan (input revision 0).")
+		expect(text).toContain("2 tool calls were blocked by this check-in and never executed")
+		expect(text).toContain("bash(git status -sb)")
+		expect(text).toContain("write(README.md)")
+		expect(text).toContain("Re-issue them (or their updated equivalents) now")
+
+		// The ledger drains once: a later confirm does not repeat the reminder.
+		const again = await tools.confirm_todos.execute(
+			"confirm-2",
+			{ inputRevision: 0, expected: [{ id: 1, status: "in_progress" }] },
+			undefined,
+			undefined,
+			ctx,
+		)
+		const againText = again.content[0].type === "text" ? again.content[0].text : ""
+		expect(againText).toBe("Confirmed 1 todos in global match the current plan (input revision 0).")
+	})
+
+	it("caps the reminder at five named calls and counts the rest", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		await tools.add_todo.execute("add-1", { content: "alpha", status: "pending" }, undefined, undefined, ctx)
+
+		markCheckinPending([GLOBAL_TODO_SCOPE], "session", 0)
+		for (let i = 1; i <= 6; i++) recordGateBlockedToolCall("session", `w${i}`, `bash(echo ${i})`)
+
+		const result = await tools.confirm_todos.execute(
+			"confirm-1",
+			{ inputRevision: 0, expected: [{ id: 1, status: "pending" }] },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].type === "text" ? result.content[0].text : ""
+		expect(text).toContain("6 tool calls were blocked by this check-in and never executed")
+		expect(text).toContain("bash(echo 5); and 1 more")
+		expect(text).not.toContain("bash(echo 6)")
+		expect(text).toContain("Re-issue them (or their updated equivalents) now")
 	})
 
 	it("rejects a stale input revision with the actual state and current revision", async () => {
