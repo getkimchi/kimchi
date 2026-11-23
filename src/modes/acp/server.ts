@@ -2812,8 +2812,8 @@ export class KimchiAcpAgent implements Agent {
 				}
 				// tool_execution_end carries no args — stash them for artifact
 				// detection and existing completion bookkeeping. Nested calls keep
-				// their UI/lifecycle state, but only top-level calls capture or
-				// collect artifacts so replay matches the recorder's scope.
+				// their UI/lifecycle state and established artifact collection, but
+				// only top-level calls capture filesystem snapshots.
 				const startedAt = Date.now()
 				const snapshotClaim = {
 					scope: entry.session.sessionManager,
@@ -2921,7 +2921,7 @@ export class KimchiAcpAgent implements Agent {
 						console.error("bash-control wait targets persist failed:", err)
 					}
 				}
-				if (!event.isError && !event.parentToolCallId && stashed) {
+				if (!event.isError && stashed) {
 					turn.artifactBuffer.collectFromToolCall(
 						{
 							toolName: stashed.toolName,

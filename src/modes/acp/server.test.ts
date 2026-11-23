@@ -7125,6 +7125,117 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(finalReport).href])
 	})
 
+	it("preserves nested write and output-sniff artifacts without client opt-in or snapshot rows", async () => {
+		const legacy = new FakeAgentSession("session-nested-legacy-artifacts", tmpDir)
+		const recording = makeRecordingConn()
+		const legacyAgent = new KimchiAcpAgent(recording.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(legacy),
+		})
+		await legacyAgent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		const opened = await legacyAgent.newSession({ cwd: tmpDir, mcpServers: [] })
+		const recorder = createExtensionApi()
+		artifactRecorderExtension(recorder.api)
+		const context = createContext({ cwd: tmpDir })
+		legacy.subscribe((event) => {
+			for (const handler of recorder.getHandlers(event.type)) void handler(event, context)
+		})
+		const written = join(tmpDir, "nested-write.md")
+		const sniffed = join(tmpDir, "nested-sniff.html")
+		legacy.promptImpl = async () => {
+			legacy.emit({ type: "agent_start" })
+			legacy.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-nested-write",
+				toolName: "write",
+				args: { path: written, content: "nested" },
+				parentToolCallId: "tc-subagent",
+			})
+			writeFileSync(written, "nested")
+			legacy.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-nested-write",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote nested-write.md" }] },
+				isError: false,
+				parentToolCallId: "tc-subagent",
+			})
+			legacy.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-nested-sniff",
+				toolName: "bash",
+				args: { command: "node nested-build.js" },
+				parentToolCallId: "tc-subagent",
+			})
+			writeFileSync(sniffed, "<h1>Nested</h1>")
+			legacy.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-nested-sniff",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "Wrote nested-sniff.html" }] },
+				isError: false,
+				parentToolCallId: "tc-subagent",
+			})
+			const message = makeAssistantMessage([
+				{ type: "text", text: "Nested legacy artifacts finished." },
+				{ type: "toolCall", id: "tc-nested-write", name: "write", arguments: { path: written } },
+				{ type: "toolCall", id: "tc-nested-sniff", name: "bash", arguments: { command: "node nested-build.js" } },
+			])
+			legacy.emit({ type: "message_end", message })
+			legacy.emit({
+				type: "turn_end",
+				message,
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "tc-nested-write",
+						toolName: "write",
+						content: [{ type: "text", text: "Wrote nested-write.md" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					{
+						role: "toolResult",
+						toolCallId: "tc-nested-sniff",
+						toolName: "bash",
+						content: [{ type: "text", text: "Wrote nested-sniff.html" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			legacy.emit(agentEnd())
+			legacy.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+
+		await legacyAgent.prompt({ sessionId: opened.sessionId, prompt: [{ type: "text", text: "Write in a subagent" }] })
+		const expectedUris = [pathToFileURL(written).href, pathToFileURL(sniffed).href]
+		expect(artifactChunks(recording.updates).map((chunk) => chunk.uri)).toEqual(expectedUris)
+		const rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows[0].artifacts).toEqual([
+			{ path: written, name: "nested-write.md", mimeType: "text/markdown", sniffed: false },
+			{ path: sniffed, name: "nested-sniff.html", mimeType: "text/html", sniffed: true },
+		])
+
+		const loaded = new FakeAgentSession("loaded-nested-legacy-artifacts", tmpDir)
+		loaded.branch = [
+			userTextEntry("Write in a subagent", "u1", null),
+			assistantTextEntry("Nested legacy artifacts finished.", "a1", "u1"),
+			{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never,
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect(artifactChunks(replay.updates).map((chunk) => chunk.uri)).toEqual(expectedUris)
+	})
+
 	it("ignores nested silent builds without hiding their tool-call UI or recording replay artifacts", async () => {
 		const nestedReport = join(tmpDir, "nested-final.html")
 		const recorder = attachArtifactRecorder()
