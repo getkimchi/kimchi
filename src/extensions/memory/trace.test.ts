@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -138,11 +138,12 @@ describe("createTraceRecorder", () => {
 		let attempts = 0
 		const recorder = createTraceRecorder({
 			writeTimeoutMs: 5,
-			append: async (file, body) => {
+			append: (file, body) => {
 				attempts++
 				if (attempts === 1) return new Promise<void>(() => {})
-				const { appendFile } = await import("node:fs/promises")
-				await appendFile(file, body, "utf-8")
+				// Only the first append is meant to time out. Keep this write synchronous
+				// so cold imports or I/O contention do not race the same short deadline.
+				appendFileSync(file, body, "utf-8")
 			},
 		})
 		recorder?.emit({ type: "drain_start" })
