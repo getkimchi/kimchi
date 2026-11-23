@@ -41,6 +41,57 @@ describe("McpOAuthTurnContinuation status correlation", () => {
 		await expect(secondPending).resolves.toMatchObject({ details: { authenticated: true } })
 	})
 
+	it("allows retry after an aborted execute returns an existing grant", async () => {
+		const continuation = new McpOAuthTurnContinuation()
+		const controller = new AbortController()
+
+		await expect(
+			continuation.runAuthStart("fixture", controller.signal, async () => {
+				controller.abort(new Error("authentication setup cancelled"))
+				return {
+					content: [{ type: "text", text: "the grant is available" }],
+					details: { mode: "auth-start", server: "fixture", authenticated: true },
+				}
+			}),
+		).rejects.toThrow("authentication setup cancelled")
+
+		const retry = await startAuthorization(continuation, true)
+		expect(retry.details).toMatchObject({ authenticated: true })
+		expect(retry.details).not.toMatchObject({ error: "oauth_already_pending" })
+	})
+
+	it("allows retry after an aborted execute rejects during setup", async () => {
+		const continuation = new McpOAuthTurnContinuation()
+		const controller = new AbortController()
+
+		await expect(
+			continuation.runAuthStart("fixture", controller.signal, async () => {
+				controller.abort(new Error("authentication setup cancelled"))
+				throw controller.signal.reason
+			}),
+		).rejects.toThrow("authentication setup cancelled")
+
+		expect((await startAuthorization(continuation, true)).details).toMatchObject({ authenticated: true })
+	})
+
+	it("retains retry fencing for a registered watcher after cancellation", async () => {
+		vi.useFakeTimers()
+		const continuation = new McpOAuthTurnContinuation()
+		const controller = new AbortController()
+		const pending = continuation.runAuthStart("fixture", controller.signal, async () => ({
+			content: [{ type: "text", text: "authorize in the browser" }],
+			details: { mode: "auth-start", server: "fixture", authorizationUrl: "https://authorize.example" },
+		}))
+		await vi.advanceTimersByTimeAsync(0)
+		controller.abort(new Error("authorization cancelled"))
+		await expect(pending).rejects.toThrow("authorization cancelled")
+
+		const retry = await startAuthorization(continuation, true)
+		expect(retry.details).toMatchObject({ error: "oauth_already_pending" })
+		expect(continuation.consumeStatusMessage(statusMessage("failed"))).toBe(true)
+		expect((await startAuthorization(continuation, true)).details).toMatchObject({ authenticated: true })
+	})
+
 	it("returns a structured manual handoff independently of instruction wording", async () => {
 		vi.useFakeTimers()
 		const continuation = new McpOAuthTurnContinuation()

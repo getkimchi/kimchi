@@ -99,20 +99,21 @@ export class McpOAuthTurnContinuation {
 			try {
 				result = await execute()
 			} catch (error) {
-				if (signal?.aborted) pending.cancelled = true
-				else this.pending.delete(serverName)
+				// A rejected start never reaches the established-watcher wait.
+				// Do not leave an aborted setup blocking subsequent grants/retries.
+				this.pending.delete(serverName)
 				throw error
 			}
-			if (signal?.aborted) throw abortError(signal)
-			if (
+			const returnsWithoutWatcher =
 				!isRecord(result.details) ||
 				typeof result.details.authorizationUrl !== "string" ||
 				result.details.authenticated === true ||
 				isManualHandoff(result)
-			) {
-				this.pending.delete(serverName)
-				return result
-			}
+			// Existing grants, non-browser failures, and manual handoffs have no
+			// terminal watcher status. Never retain a cancelled tombstone for them.
+			if (returnsWithoutWatcher) this.pending.delete(serverName)
+			if (signal?.aborted) throw abortError(signal)
+			if (returnsWithoutWatcher) return result
 
 			let rejectAborted!: (error: Error) => void
 			const aborted = new Promise<never>((_, reject) => {
