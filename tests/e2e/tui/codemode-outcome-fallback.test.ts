@@ -33,12 +33,12 @@ test("Codemode without a valid purpose or positive context reduction retains the
 			await waitForText(terminal, "Legacy fallback complete.", { full: false })
 			const collapsed = viewText(terminal)
 			expect(collapsed).toContain("● Codemode Codemode")
-			expect(collapsed).toMatch(/✓ \d+(?:\.\d+)?(?:ms|s)/)
+			expect(collapsed).toMatch(/✓ Script completed · \d+(?:\.\d+)?(?:ms|s)/)
 			expect(collapsed).not.toContain("tokens kept out of context")
 			trace.step("an oversized purpose and a non-positive estimate preserve the old title and omit token claims")
 
 			terminal.keyPress("o", { ctrl: true })
-			await waitForText(terminal, "Intermediate ≈", { full: false })
+			await waitForText(terminal, "Context estimate:", { full: false })
 			expect(viewText(terminal)).not.toContain("Wall time")
 			expect(viewText(terminal)).toContain("tiny")
 		},
@@ -78,7 +78,7 @@ test("Codemode shows a complete context estimate for a failed script", async ({ 
 			await waitForText(terminal, "Failed Codemode scenario complete.", { full: false })
 			const collapsed = viewText(terminal)
 			expect(collapsed).toContain("● Codemode Filter the fixture before failing deliberately")
-			expect(collapsed).toMatch(/✗ ≈\d+(?:\.\d+)?[km]? tokens kept out of context · \d+(?:\.\d+)?(?:ms|s)/)
+			expect(collapsed).toMatch(/✗ Script failed · \d+(?:\.\d+)?(?:ms|s)/)
 			trace.step("a completed failed script reports overall failure with its valid context estimate")
 
 			terminal.keyPress("o", { ctrl: true })
@@ -122,7 +122,7 @@ test("Codemode keeps overall success when the script catches a nested failure", 
 			terminal.submit("Run the nested Codemode failure scenario")
 			await waitForText(terminal, "Nested failure scenario complete.", { full: false })
 			const collapsed = viewText(terminal)
-			expect(collapsed).toMatch(/✓ ≈\d+(?:\.\d+)?[km]? tokens kept out of context/)
+			expect(collapsed).toMatch(/✓ Script completed · \d+(?:\.\d+)?(?:ms|s)/)
 			expect(collapsed).not.toContain("⚠")
 			trace.step("caught nested failures do not change the compact overall success")
 
@@ -130,7 +130,7 @@ test("Codemode keeps overall success when the script catches a nested failure", 
 			await waitForText(terminal, "Actions: read 2 files", { full: false })
 			const expanded = viewText(terminal)
 			expect(expanded).toContain('✗ read {"path":"missing.txt"}')
-			expect(expanded).toMatch(/Intermediate ≈\d+(?:\.\d+)?[km]? tokens/)
+			expect(expanded).toMatch(/Context estimate: ≈\d+(?:\.\d+)?[km]? intermediate tokens/)
 		},
 	)
 })

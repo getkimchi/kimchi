@@ -72,7 +72,6 @@ import {
 	estimatedTokens,
 	formatEstimatedTokenCount,
 	readCodemodeContextReduction,
-	shouldDisplayCodemodeContextReduction,
 } from "./codemode/outcome.js"
 import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
@@ -4137,14 +4136,11 @@ function renderCodemodeOutcome(
 ): Text {
 	const reduction = readCodemodeContextReduction(result.details)
 	const parts: string[] = []
-	if (reduction && shouldDisplayCodemodeContextReduction(reduction)) {
-		parts.push(`≈${formatEstimatedTokenCount(reduction.estimatedTokensKeptOut)} tokens kept out of context`)
-	}
 	const timer = formatToolTimer(ctx.durationMs ?? getToolElapsedMs(ctx))
 	if (timer) parts.push(timer)
 	const icon = theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "✗" : "✓")
 	const outcome = ctx.isError ? "Script failed" : "Script completed"
-	const status = `${icon} ${parts.length > 0 ? parts.join(" · ") : outcome}`
+	const status = `${icon} ${[outcome, ...parts].join(" · ")}`
 
 	if (!expanded) {
 		return makeText(ctx.lastComponent, withBranch(`${status}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
@@ -4159,7 +4155,7 @@ function renderCodemodeOutcome(
 		lines.push(
 			theme.fg(
 				"muted",
-				`Intermediate ≈${intermediate} tokens (${reduction.intermediateTextChars} chars) → returned ≈${returned} tokens (${reduction.returnedTextChars} chars)${reduction.complete ? "" : " · incomplete accounting"}`,
+				`Context estimate: ≈${intermediate} intermediate tokens (${reduction.intermediateTextChars} chars) → ≈${returned} returned tokens (${reduction.returnedTextChars} chars)${reduction.complete ? "" : " · incomplete accounting"}`,
 			),
 		)
 	}

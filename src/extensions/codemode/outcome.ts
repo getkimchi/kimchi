@@ -9,7 +9,6 @@ import type {
 type CodemodeNestedCall = CodemodeToolDetails["calls"][number]
 
 export const CODEMODE_PURPOSE_MAX_CHARS = 120
-export const CODEMODE_CONTEXT_DISPLAY_MIN_TOKENS = 100
 
 const PURPOSE_PREFIX = "// @description:"
 const OPTIONS_PREFIX = "// @options:"
@@ -250,13 +249,6 @@ export function codemodeNestedCalls(details: unknown): CodemodeNestedCall[] {
 			(value.cost === undefined || finiteNumber(value.cost)) &&
 			(value.error === undefined || typeof value.error === "string") &&
 			(value.status === "running" || value.status === "ok" || value.status === "error" || value.status === "cancelled"),
-	)
-}
-
-export function shouldDisplayCodemodeContextReduction(reduction: CodemodeContextReduction): boolean {
-	return (
-		reduction.complete &&
-		(reduction.intermediateTextChars - reduction.returnedTextChars) / 4 >= CODEMODE_CONTEXT_DISPLAY_MIN_TOKENS
 	)
 }
 

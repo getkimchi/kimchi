@@ -47,23 +47,22 @@ test("Codemode shows its purpose and context outcome, then replays the recorded 
 			await waitForText(terminal, "Codemode outcome complete.", { full: false })
 			const collapsed = viewText(terminal)
 			expect(collapsed).toContain("● Codemode Filter the fixture down to its alpha lines")
-			expect(collapsed).toMatch(/✓ ≈\d+(?:\.\d+)?[km]? tokens kept out of context · \d+(?:\.\d+)?(?:ms|s)/)
+			expect(collapsed).toMatch(/✓ Script completed · \d+(?:\.\d+)?(?:ms|s)/)
 			expect(collapsed).not.toContain("// @description:")
 			expect(collapsed).not.toContain("Actions:")
-			const liveMetric = collapsed.match(/≈\d+(?:\.\d+)?[km]? tokens kept out of context/)?.[0]
-			expect(liveMetric).toBeDefined()
-			trace.step("purpose and compact context outcome replace the repeated Codemode title and line count")
+			expect(collapsed).not.toContain("tokens kept out of context")
+			trace.step("purpose and compact script status replace the repeated Codemode title and line count")
 
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, "Actions: read 1 file", { full: false })
 			const expanded = viewText(terminal)
 			expect(expanded).toMatch(
-				/Intermediate ≈\d+(?:\.\d+)?[km]? tokens \(\d+ chars\) → returned ≈\d+(?:\.\d+)?[km]? tokens \(\d+ chars\)/,
+				/Context estimate: ≈\d+(?:\.\d+)?[km]? intermediate tokens \(\d+ chars\) → ≈\d+(?:\.\d+)?[km]? returned tokens \(\d+ chars\)/,
 			)
 			expect(expanded).toContain('read {"path":"fixture.txt"}')
 			expect(expanded).toContain("alpha 001 intermediate payload")
 			const liveCalculation = expanded.match(
-				/Intermediate ≈\d+(?:\.\d+)?[km]? tokens \(\d+ chars\) → returned ≈\d+(?:\.\d+)?[km]? tokens \(\d+ chars\)/,
+				/Context estimate: ≈\d+(?:\.\d+)?[km]? intermediate tokens \(\d+ chars\) → ≈\d+(?:\.\d+)?[km]? returned tokens \(\d+ chars\)/,
 			)?.[0]
 			expect(liveCalculation).toBeDefined()
 			trace.step("expansion reveals actions, calculation inputs, the nested call, and script output")
@@ -74,10 +73,10 @@ test("Codemode shows its purpose and context outcome, then replays the recorded 
 			await waitForText(terminal, PROMPT_READY, { full: false })
 			await waitForText(terminal, "Codemode Filter the fixture down to its alpha lines", { full: false })
 			terminal.keyPress("o", { ctrl: true })
-			await waitForText(terminal, "Intermediate ≈", { full: false })
+			await waitForText(terminal, "Context estimate:", { full: false })
 			const replayed = fullText(terminal)
 			expect(replayed).toContain("Codemode Filter the fixture down to its alpha lines")
-			expect(replayed).toContain(liveMetric)
+			expect(replayed).not.toContain("tokens kept out of context")
 			expect(replayed).toContain(liveCalculation)
 			trace.step("resume replays the persisted purpose and context calculation without executing the script again")
 		},
