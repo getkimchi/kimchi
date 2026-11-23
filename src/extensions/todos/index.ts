@@ -269,10 +269,13 @@ function armPlanSubmissionCheckin(pi: ExtensionAPI, sessionId: string, interacti
 	if (isCheckinPending(GLOBAL_TODO_SCOPE, sessionId)) return
 	const revision = getInputRevision(sessionId)
 	markCheckinPending([GLOBAL_TODO_SCOPE], sessionId, revision, "plan_submission")
-	sendHiddenSteer(pi, TODO_CHECKIN_CUSTOM_TYPE, planSubmissionCheckinText(sessionId, revision), {
-		reason: "plan_submission",
-		inputRevision: revision,
-	})
+	sendHiddenSteer(
+		pi,
+		TODO_CHECKIN_CUSTOM_TYPE,
+		planSubmissionCheckinText(sessionId, revision),
+		{ reason: "plan_submission", inputRevision: revision },
+		{ deliverAs: "nextTurn" },
+	)
 	const steerId = emitSteerFired(pi, "todo_checkin", "plan_submission", { interactive, sessionId })
 	if (steerId) checkinSteerIds.set(sessionId, steerId)
 }

@@ -65,7 +65,13 @@ export function sendHiddenSteer(
 	customType: string,
 	text: string,
 	details: Record<string, unknown>,
-	opts: { steerKind?: SteerKind; steerReason?: SteerReason; interactive?: boolean; sessionId?: string } = {},
+	opts: {
+		steerKind?: SteerKind
+		steerReason?: SteerReason
+		interactive?: boolean
+		sessionId?: string
+		deliverAs?: "steer" | "nextTurn"
+	} = {},
 ): boolean {
 	if (opts.steerKind && isSteerDisabled(opts.steerKind)) return false
 	// markHarnessSteer neutralizes closing-marker near-misses in the payload
@@ -79,7 +85,7 @@ export function sendHiddenSteer(
 			content: markHarnessSteer(text),
 			details,
 		},
-		{ deliverAs: "steer" },
+		{ deliverAs: opts.deliverAs ?? "steer" },
 	)
 	if (opts.steerKind) {
 		const steerId = emitSteerFired(pi, opts.steerKind, opts.steerReason ?? "staleness", {

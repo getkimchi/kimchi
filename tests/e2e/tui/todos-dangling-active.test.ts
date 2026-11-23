@@ -284,6 +284,9 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 			await waitForText(terminal, "Plan complete. How would you like to proceed?", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("plan submitted; review menu open")
 
+			// Give an incorrectly queued post-submission steer enough time to run
+			// before approval. A valid plan review must still be waiting.
+			await new Promise((resolve) => setTimeout(resolve, 250))
 			// Approve locally: the first option is "Execute the plan locally".
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "Plan executed. Ready for the next task.", { timeoutMs: STREAM_TIMEOUT_MS })
