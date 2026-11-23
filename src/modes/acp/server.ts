@@ -247,6 +247,7 @@ import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
+import { SubagentConfigReporter } from "./subagent-config.js"
 import {
 	absoluteSubagentCwd,
 	clientSupportsSubagents,
@@ -623,6 +624,7 @@ type SubagentRoute = {
 	parentSessionId: string
 	parentToolCallId: string
 	record: SessionRecord
+	configReporter: SubagentConfigReporter
 	cleanupInteraction: () => void
 }
 
@@ -2532,6 +2534,7 @@ export class KimchiAcpAgent {
 		if (!route) return
 		route.record.planTracker?.stop()
 		route.record.unsubscribe()
+		route.configReporter.dispose()
 		route.cleanupInteraction()
 		this.subagentRoutes.delete(sessionId)
 		const byTool = this.subagentIdsByParentTool.get(route.parentSessionId)
@@ -2595,6 +2598,12 @@ export class KimchiAcpAgent {
 		// parent link is downstream of this parent-envelope announcement.
 		this.send(subagentAnnouncement(event.parentSessionId, event, cwd))
 
+		const configReporter = new SubagentConfigReporter(session, {
+			buildPermissionsConfigOption,
+			buildModelConfigOption,
+			buildThinkingConfigOption,
+			getEffectivePermissionMode: () => this.getInitialPermissionMode(session).mode,
+		})
 		const childUiContext = createAcpUIContext(this.conn, event.sessionId, this.clientCapabilities, (params) =>
 			this.send(params),
 		)
@@ -2628,8 +2637,10 @@ export class KimchiAcpAgent {
 			parentSessionId: event.parentSessionId,
 			parentToolCallId: event.toolCallId,
 			record,
+			configReporter,
 			cleanupInteraction,
 		})
+		configReporter.publishInitial((params) => this.send(params))
 		for (const message of subagentPromptMessages(event.parentSessionId, event)) this.send(message)
 		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
 		this.startPlanTracker(record, event.sessionId)
@@ -2639,6 +2650,7 @@ export class KimchiAcpAgent {
 		const route = this.subagentRoutes.get(sessionId)
 		const entry = this.sessions.get(sessionId) ?? route?.record
 		if (!entry) return
+		route?.configReporter.publishChanged((params) => this.send(params))
 		// The active run's bookkeeping: the prompt-owned turn, or — for an
 		// unsolicited run (no prompt in flight, e.g. a background-bash
 		// completion notification waking an idle agent) — its passive context.
@@ -3691,6 +3703,9 @@ export class KimchiAcpAgent {
 	 * `lastModelOptionName` with the label the client already received.
 	 */
 	private publishModelOptionIfChanged(sessionId: string, entry: SessionRecord): void {
+		// Child snapshots have one authoritative publisher which also includes
+		// routed physical reasoning and the child's own permission state.
+		if (this.subagentRoutes.has(sessionId)) return
 		const configOptions = buildConfigOptions(entry.session, this.getInitialPermissionMode(entry.session).mode)
 		const autoName = autoOptionName(configOptions)
 		if (!autoName || autoName === entry.lastModelOptionName) return
