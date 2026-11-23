@@ -1183,6 +1183,69 @@ describe("classifier outage escalation to the parent session", () => {
 		}
 	})
 
+	// A hold that is not given back leaves the subagent with no inactivity
+	// watchdog and no time cap for the rest of its run.
+	describe("gives the watchdog hold back when a request ends without an answer", () => {
+		beforeEach(() => {
+			vi.useFakeTimers()
+		})
+		afterEach(() => {
+			vi.useRealTimers()
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		})
+
+		async function unansweredRequest() {
+			const setup = await setupEscalation()
+			const request = vi.fn(
+				(req: PermissionRequest) =>
+					new Promise<{ kind: "aborted" }>((resolve) => {
+						if (req.signal?.aborted) return resolve({ kind: "aborted" })
+						req.signal?.addEventListener("abort", () => resolve({ kind: "aborted" }), { once: true })
+					}),
+			)
+			registerAcpPrompter(TEST_SESSION_ID, { request })
+			const release = vi.fn()
+			const acquire = vi.fn((): (() => void) => release)
+			const stop = new AbortController()
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed)
+			const started = runAsAgentWorker(
+				() => setup.worker.fire("tool_call", event, { ...setup.workerCtx, signal: stop.signal }),
+				{ inactivityHold: { acquire } },
+			)
+			await vi.advanceTimersByTimeAsync(50)
+			expect(request).toHaveBeenCalledOnce()
+			expect(acquire).toHaveBeenCalledTimes(1)
+			expect(release).not.toHaveBeenCalled()
+			return { ...setup, started, release, stop }
+		}
+
+		it("nobody answers in time", async () => {
+			const { started, release } = await unansweredRequest()
+			await vi.advanceTimersByTimeAsync(ESCALATED_PROMPT_TIMEOUT_MS + 50)
+			expect(await started).toMatchObject({ block: true })
+			expect(release).toHaveBeenCalledTimes(1)
+		})
+
+		it("the subagent is stopped", async () => {
+			const { started, release, stop } = await unansweredRequest()
+			stop.abort(new Error("worker stopped"))
+			await vi.advanceTimersByTimeAsync(50)
+			expect(await started).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("Subagent was stopped"),
+			})
+			expect(release).toHaveBeenCalledTimes(1)
+		})
+
+		it("a mode change withdraws the request and the new mode blocks the call", async () => {
+			const { parent, parentCtx, started, release } = await unansweredRequest()
+			await parent.commands.get("permissions")?.handler("mode plan", parentCtx)
+			await vi.advanceTimersByTimeAsync(MODE_SETTLE_MS + 50)
+			expect(await started).toMatchObject({ block: true })
+			expect(release).toHaveBeenCalledTimes(1)
+		})
+	})
+
 	it("preserves a draft until the parent can open the escalated prompt", async () => {
 		const { parentCtx, worker, workerCtx } = await setupEscalation()
 		parentCtx.mode = "tui"
