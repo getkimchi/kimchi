@@ -4976,6 +4976,8 @@ function wireSafeToolResult(result: unknown, exposeManualHandoff = false): Recor
 		details &&
 		typeof details === "object" &&
 		!Array.isArray(details) &&
+		"mode" in details &&
+		details.mode === "auth-start" &&
 		"handoff" in details &&
 		details.handoff === "manual"
 	) {
