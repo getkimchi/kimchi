@@ -32,6 +32,10 @@ function submitPlanResponse() {
 	}
 }
 
+function toolResponse(name: string, args: Record<string, unknown>) {
+	return { toolCalls: [{ function: { name, arguments: JSON.stringify(args) } }] }
+}
+
 describe("ACP integration — plan review held prompt", () => {
 	let fixture: AcpFixture | undefined
 
@@ -68,6 +72,46 @@ describe("ACP integration — plan review held prompt", () => {
 			const t2 = await prompt(fixture, sessionId, "How did the execution go?")
 			expect(t2.stopReason).toBe("end_turn")
 			expect(t2.chunks).toContain("follow-up ok")
+		},
+		PROMPT_TIMEOUT_MS,
+	)
+
+	it(
+		"execute: plan check-in is delivered with the approval turn",
+		async () => {
+			fixture = await startAcpFixture({
+				artifactName: "plan-review-todo-checkin",
+				extraArgs: ["--plan"],
+				responses: [
+					toolResponse("create_todos", { todos: [{ content: "Finalize the plan", status: "in_progress" }] }),
+					toolResponse("bash", { command: "printf 'finalize 1\\n'" }),
+					toolResponse("bash", { command: "printf 'finalize 2\\n'" }),
+					submitPlanResponse(),
+					toolResponse("bash", { command: "printf 'blocked until reconciliation\\n'" }),
+					toolResponse("mark_todo", { id: 1, status: "completed" }),
+					toolResponse("bash", { command: "printf 'executed\\n'" }),
+					{ stream: ["Plan executed with reconciled todos."] },
+				],
+				clientCapabilities: FULL_CAPABILITIES,
+				clientMeta: PI_META,
+			})
+			const sessionId = await newSession(fixture, fixture.workDir)
+			fixture.client.answerNextElicitationWith({ action: "accept", content: { value: EXECUTE_LOCAL_DECISION_OPTION } })
+
+			const result = await prompt(fixture, sessionId, "Plan and execute the cache layer")
+			expect(result.stopReason).toBe("end_turn")
+			expect(result.chunks).toContain("Plan executed with reconciled todos.")
+
+			const bodies = fixture.fake.requests
+				.filter((request) => request.method === "POST" && request.url.startsWith("/openai/v1/chat/completions"))
+				.map((request) => JSON.stringify(request.body ?? ""))
+			// Requests 0–3 produce the list, Finalize the plan with two work
+			// calls, then submit. Request 4 begins approved execution and must
+			// carry both the approval and the deferred check-in instruction.
+			const checkinTurn = bodies.findIndex((body) => body.includes("The plan was submitted for review"))
+			expect(checkinTurn).toBe(4)
+			expect(bodies[checkinTurn]).toContain("The user approved the plan")
+			expect(bodies[checkinTurn + 1]).toContain("check-in pending (input revision 1)")
 		},
 		PROMPT_TIMEOUT_MS,
 	)
