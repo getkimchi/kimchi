@@ -52,7 +52,7 @@ it.each(SCENARIOS)(
 			const codemodeDescription = toolDescriptionOf(request, "codemode")
 			if (expectCodemode) {
 				// Exactly once: pi's built-in codemode is replaced, not stacked.
-				expect(codemodeDescription?.split("Use to filter large output before it reaches the model")).toHaveLength(2)
+				expect(codemodeDescription?.split("Use to filter large results before they reach you")).toHaveLength(2)
 				expect(codemodeDescription).not.toContain("const hits")
 				expect(codemodeDescription).toContain("Run JavaScript that calls other tools")
 				if (checkPiLeak) {
