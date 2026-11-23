@@ -1004,7 +1004,8 @@ export { preludeStretch } from "./prelude.js"
 const CHUNK_RESERVE_MS = 500
 /** Ceiling for building one group's translation plan; the prelude yields throughout and runs once per round. */
 const PRELUDE_MS = 60_000
-/** The group translation in progress: units committed while its marked records stay unchanged. */
+/** The group translation in progress: units committed under the plan its group and plan digest name. Records
+ * captured after that plan was built leave the count valid; they wait for the next round. */
 const PROGRESS_NOTE = "translation-progress"
 
 /** The built plan of a translation pass's prelude lives in its own note, written once per round of a group.
@@ -1239,7 +1240,7 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	await recordReportingError(
 		agentDir,
-		waiting ? "Some PR cost events are waiting for complete original evidence" : undefined,
+		waiting ? "Some PR cost events are waiting for complete original evidence or a repository identity" : undefined,
 	)
 }
 

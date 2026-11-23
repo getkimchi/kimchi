@@ -2362,7 +2362,7 @@ describe("incremental translation", () => {
 			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
 			// The group still reports its own waiting state; a corrupt note never becomes a capture failure.
 			expect((await readReportingState(directory)).error).toBe(
-				"Some PR cost events are waiting for complete original evidence",
+				"Some PR cost events are waiting for complete original evidence or a repository identity",
 			)
 			clock.mockReturnValue(Date.now() + 30_000)
 			await run()
@@ -2414,6 +2414,10 @@ describe("incremental translation", () => {
 			clock.mockReturnValue(start + 31_000)
 			await run()
 			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+			// The group reports that it waits, not a capture failure.
+			expect((await readReportingState(directory)).error).toBe(
+				"Some PR cost events are waiting for complete original evidence or a repository identity",
+			)
 			clock.mockReturnValue(start + 5 * 60_000 + 1_000)
 			await run()
 			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
