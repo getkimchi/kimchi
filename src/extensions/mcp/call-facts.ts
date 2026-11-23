@@ -140,6 +140,8 @@ function prefixedServerScope(config: McpConfig, toolName: string): PrefixedServe
 		: { kind: "ambiguous" }
 }
 
+// Mirrors the name precedence of executeCall in pi-mcp-adapter proxy-modes.ts.
+// call-facts.adapter.test.ts runs the real executeCall to catch drift on upgrades.
 export function resolveMcpGatewayTool(
 	call: { tool: string; server?: string },
 	catalog: McpCallCatalog,
