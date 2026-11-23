@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -49,6 +50,18 @@ async function openAuthorization(target: string): Promise<Response> {
 	const response = await fetch(target, { redirect: "follow", signal: AbortSignal.timeout(OAUTH_ACTION_TIMEOUT_MS) })
 	await response.text()
 	return response
+}
+
+async function occupyOAuthCallbackPort(): Promise<() => Promise<void>> {
+	const blocker = createServer()
+	await new Promise<void>((resolve, reject) => {
+		blocker.once("error", reject)
+		blocker.listen(19_876, "127.0.0.1", resolve)
+	})
+	return () =>
+		new Promise<void>((resolve, reject) => {
+			blocker.close((error) => (error ? reject(error) : resolve()))
+		})
 }
 
 function withPromptMatch(script: FakeResponseScript, promptText: string): FakeResponseScript {
@@ -277,6 +290,96 @@ it(
 			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
 		} finally {
 			await fixture.stop()
+		}
+	},
+	STARTUP_TIMEOUT_MS,
+)
+
+it(
+	"preserves manual auth-start and auth-complete for a remote redirect without loopback capture",
+	async () => {
+		const manualPrompt = "Authenticate with a remote HTTPS callback"
+		const completionPrompt = "Complete manual OAuth with the pasted callback"
+		const completeToolCall = {
+			id: "oauth-manual-complete",
+			function: { name: "mcp", arguments: "" },
+		}
+		const echo = gatewayMcpCall("echo", { message: "oauth-manual-callback" })
+		const releaseCallbackPort = await occupyOAuthCallbackPort()
+		const fixture = await startAcpMcpFixture({
+			artifactName: "acp-mcp-oauth-turn-remote-manual",
+			extensionPath: LIFECYCLE_EXTENSION,
+			mcp: {
+				transport: "oauth",
+				oauthAutoComplete: false,
+				oauth: { scope: "mcp:tools", redirectUri: "https://app.kimchi.dev/mcp-oauth/callback-v2" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-manual-callback" }] },
+							{ message: "oauth-manual-callback" },
+						),
+					],
+				},
+			},
+			responses: [
+				authStartForPrompt("fixture", manualPrompt, "oauth-manual-start"),
+				modelReplyForPrompt(manualPrompt, "Paste the remote OAuth callback in the next prompt."),
+				withPromptMatch({ toolCalls: [completeToolCall] }, completionPrompt),
+				echo.response,
+				modelReply("Manual OAuth and the protected call completed."),
+			],
+		}).catch(async (error: unknown) => {
+			await releaseCallbackPort()
+			throw error
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const first = await withTimeout(prompt(fixture, sessionId, manualPrompt), "remote manual auth-start")
+			expect(first.stopReason).toBe("end_turn")
+			expect(first.chunks).toContain("Paste the remote OAuth callback in the next prompt.")
+			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(1)
+
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened")
+			const authorization = await fetch(opened.target, {
+				redirect: "manual",
+				signal: AbortSignal.timeout(OAUTH_ACTION_TIMEOUT_MS),
+			})
+			expect(authorization.status).toBe(302)
+			const bounced = new URL(authorization.headers.get("location") ?? "")
+			const redirectUrl = new URL("https://app.kimchi.dev/mcp-oauth/callback-v2")
+			for (const name of ["code", "state"]) {
+				const value = bounced.searchParams.get(name)
+				if (!value) throw new Error(`OAuth callback fixture omitted ${name}`)
+				redirectUrl.searchParams.set(name, value)
+			}
+			expect(fixture.mcp.eventsOfType("oauth_token_issued")).toHaveLength(0)
+			expect(oauthToolOutput(fixture, "auth-complete")).toMatchObject({
+				details: { authorizationUrl: opened.target },
+			})
+
+			// The user supplies the full remote callback on a subsequent prompt;
+			// substitute it into the scripted model's actual auth complete call.
+			completeToolCall.function.arguments = JSON.stringify({
+				action: "auth-complete",
+				server: "fixture",
+				args: { redirectUrl: redirectUrl.toString() },
+			})
+			const second = await prompt(fixture, sessionId, completionPrompt)
+			expect(second.stopReason).toBe("end_turn")
+			expect(second.chunks).toContain("Manual OAuth and the protected call completed.")
+			await fixture.mcp.waitForEvent("oauth_token_issued", { where: { grantType: "authorization_code" } })
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-manual-callback" } },
+			})
+			const completed = oauthToolOutput(fixture, "OAuth authentication successful")
+			expect(completed).toMatchObject({ details: { authenticated: true } })
+			expect(completed).not.toHaveProperty("isError")
+			expect(agentEndCount(fixture.homeDir, sessionId)).toBe(2)
+		} finally {
+			await fixture.stop()
+			await releaseCallbackPort()
 		}
 	},
 	STARTUP_TIMEOUT_MS,

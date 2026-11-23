@@ -31,6 +31,21 @@ function statusMessageText(message: OAuthStatusMessage): string {
 		.join("\n")
 }
 
+/** Remote HTTPS redirects without loopback capture deliberately have no
+ * background watcher. The adapter's only completion path is a follow-up
+ * auth-complete, which ACP cannot issue until this prompt has returned.
+ * executeAuthStart does not expose loopbackCapture in details, but uses this
+ * handoff only for its watcher-less, paste-only result. */
+function isPasteOnlyHandoff(result: AgentToolResult<unknown>): boolean {
+	return result.content.some(
+		(block) =>
+			block.type === "text" &&
+			block.text.includes(
+				"After approving, copy the full callback URL from your browser address bar and send it back with:",
+			),
+	)
+}
+
 function abortError(signal: AbortSignal): Error {
 	return signal.reason instanceof Error ? signal.reason : new Error("MCP OAuth turn was cancelled")
 }
@@ -98,7 +113,8 @@ export class McpOAuthTurnContinuation {
 			if (
 				!isRecord(result.details) ||
 				typeof result.details.authorizationUrl !== "string" ||
-				result.details.authenticated === true
+				result.details.authenticated === true ||
+				isPasteOnlyHandoff(result)
 			) {
 				this.pending.delete(serverName)
 				return result
