@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { lookupMcpCall, registerMcpCallLookup } from "./call-lookup.js"
+import { createExtensionApi } from "../extensions/__mocks__/extension-api.js"
+import { lookupMcpCall, registerMcpCallLookup } from "./mcp-call-lookup.js"
 
 const firstFacts = { kind: "metadata", op: "status" } as const
 const secondFacts = { kind: "unresolved", via: "direct", why: "unknown" } as const
