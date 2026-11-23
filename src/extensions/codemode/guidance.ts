@@ -10,7 +10,7 @@ import { CODEMODE_PURPOSE_MAX_CHARS } from "./purpose.js"
  *  The grep line format (pi's grep tool) is what a chaining script must parse. */
 export const CODEMODE_SELECTION_GUIDANCE = `Use to filter large results before they reach you, or to chain calls whose arguments depend on earlier results. For independent calls whose full results you need, call tools directly in one turn. Nested grep output uses \`path:line: text\`.
 
-Optional purpose: \`// @description: <short purpose>\` (one line, maximum ${CODEMODE_PURPOSE_MAX_CHARS} characters). Source order: \`@options\` when used → \`// @description: <short purpose>\` → executable code.`
+Start every script with a purpose line: \`// @description: <short purpose>\` (one line, maximum ${CODEMODE_PURPOSE_MAX_CHARS} characters). Source order: \`@options\` when used → \`// @description: <short purpose>\` → executable code.`
 
 /** Decorate Pi's dynamic tool description without replacing its execution or loadout logic. */
 export function createGuidedCodemodeExtension(): ExtensionFactory {

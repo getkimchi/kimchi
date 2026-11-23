@@ -40,7 +40,14 @@ it("steers filtering and mechanical chains to codemode, independent full-result 
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain("`path:line: text`")
 })
 
-it("places required @options before the optional purpose in model-facing guidance", () => {
+it("asks for a purpose line in every script, not as an optional extra", () => {
+	expect(CODEMODE_SELECTION_GUIDANCE).toContain(
+		"Start every script with a purpose line: `// @description: <short purpose>` (one line, maximum 120 characters).",
+	)
+	expect(CODEMODE_SELECTION_GUIDANCE).not.toContain("Optional purpose")
+})
+
+it("places required @options before the purpose in model-facing guidance", () => {
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain(
 		"Source order: `@options` when used → `// @description: <short purpose>` → executable code.",
 	)
