@@ -35,6 +35,7 @@ const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = 
 	readonly: "config",
 	mcp_gateway_readonly: "config",
 	mcp_readonly_annotation: "config",
+	preapproved: "config",
 	ferment_internal: "config",
 	compound_rule: "config",
 	rule: "config",

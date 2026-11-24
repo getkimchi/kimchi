@@ -3,12 +3,22 @@ import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
 	FERMENT_V2_EVALUATION_VERDICTS,
 	FERMENT_V2_STATUSES,
+	type FermentV2Baseline,
 	type FermentV2Evaluation,
+	type FermentV2EvaluatorUsage,
 	type FermentV2JournalEntry,
 	type FermentV2Presentation,
 	type FermentV2Status,
+	type FermentV2VerifierUsage,
 	type SessionFermentV2,
 } from "./types.js"
+import {
+	type FindingResolution,
+	type FindingResponse,
+	type OpenFinding,
+	parseOpenFindings,
+	type VerifierFinding,
+} from "./verifier-report.js"
 
 const MAX_BLOCKED_REASON_LENGTH = 1_000
 
@@ -27,9 +37,10 @@ export function createFermentV2(
 	now: string,
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
+	baseline?: FermentV2Baseline,
 ): SessionFermentV2 {
 	if (state) throw new Error("A Ferment V2 already exists.")
-	return newFermentV2(objective, id, now, tokenBudget, presentation)
+	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline)
 }
 
 export function replaceFermentV2(
@@ -38,8 +49,9 @@ export function replaceFermentV2(
 	now: string,
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
+	baseline?: FermentV2Baseline,
 ): SessionFermentV2 {
-	return newFermentV2(objective, id, now, tokenBudget, presentation)
+	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline)
 }
 
 export function editFermentV2(
@@ -54,6 +66,8 @@ export function editFermentV2(
 		completionConfidence: _completionConfidence,
 		lastEvaluation: _lastEvaluation,
 		presentation: _presentation,
+		// Findings answer the old objective text; the new one starts fresh.
+		openFindings: _openFindings,
 		...editable
 	} = current
 	const nextObjective = normalizeObjective(objective)
@@ -63,6 +77,94 @@ export function editFermentV2(
 		objective: nextObjective,
 		name: deriveFermentV2Name(nextObjective),
 		status: current.status === "complete" ? "paused" : current.status,
+		updatedAt: now,
+	}
+}
+
+/**
+ * Applies a settled review's findings. `met` closes everything; otherwise the
+ * review's active findings become the open set, keeping their IDs, and a
+ * rejected dispute counts toward the finding's history. Responses are cleared:
+ * each review asks for fresh ones.
+ */
+export function applyFermentV2ReviewFindings(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	review: {
+		verdict: "met" | "continue" | "impossible"
+		findings: readonly VerifierFinding[]
+		resolutions: readonly FindingResolution[]
+		/** True when no verdict was submitted and some earlier findings may not have been reached. */
+		incompleteReview?: boolean
+		/** The working tree the review checked; every finding it leaves open was observed against it. */
+		workspaceTree?: string
+	},
+	now: string,
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	const { openFindings: previous, ...rest } = current
+	if (review.verdict === "met") return previous?.length ? { ...rest, updatedAt: now } : current
+	const earlier = new Map((previous ?? []).map((finding) => [finding.id, finding]))
+	const openFindings: OpenFinding[] = review.findings
+		.filter((finding) => finding.status === "active")
+		.map((finding) => {
+			const before = earlier.get(finding.id)
+			const rejected = review.resolutions.some(
+				(resolution) => resolution.id === finding.id && resolution.resolution === "dispute_rejected",
+			)
+			const disputesRejected = (before?.disputesRejected ?? 0) + (rejected ? 1 : 0)
+			return {
+				id: finding.id,
+				clause: finding.clause,
+				observed: finding.observed,
+				expected: finding.expected,
+				why: finding.why,
+				...(disputesRejected ? { disputesRejected } : {}),
+				...(review.workspaceTree ? { observedTree: review.workspaceTree } : {}),
+			}
+		})
+	if (review.incompleteReview) {
+		for (const finding of previous ?? []) {
+			const wasResolved = review.resolutions.some((resolution) => resolution.id === finding.id)
+			const isInCurrentFindings = openFindings.some((openFinding) => openFinding.id === finding.id)
+			if (wasResolved || isInCurrentFindings) continue
+			const { response: _response, ...untouched } = finding
+			// This finding was not re-checked: retain its last observed tree instead
+			// of claiming it was observed against the current workspace tree.
+			openFindings.push(untouched)
+		}
+	}
+	return { ...rest, ...(openFindings.length ? { openFindings } : {}), updatedAt: now }
+}
+
+/** Records the implementer's response to one open finding; an unknown ID throws with a fixable reason. */
+export function respondToFermentV2Finding(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	findingId: string,
+	response: FindingResponse,
+	now: string,
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	const open = current.openFindings ?? []
+	const target = open.find((finding) => finding.id.toLowerCase() === findingId.trim().toLowerCase())
+	if (!target) {
+		throw new Error(
+			open.length
+				? `No open finding ${findingId}. Open findings: ${open.map((finding) => finding.id).join(", ")}.`
+				: "There are no open review findings to respond to.",
+		)
+	}
+	const evidence = response.evidence.trim()
+	if (!evidence)
+		throw new Error("Give the evidence: what you verified, or the objective text or code behind the dispute.")
+	return {
+		...current,
+		openFindings: open.map((finding) =>
+			finding === target ? { ...finding, response: { status: response.status, evidence } } : finding,
+		),
 		updatedAt: now,
 	}
 }
@@ -113,6 +215,35 @@ export function addFermentV2Accounting(
 	}
 }
 
+/** Fold one executing-verifier run's usage into the ferment's cumulative verifier accounting. */
+export function recordFermentV2VerifierUsage(
+	state: FermentV2State,
+	expectedId: string,
+	usage: FermentV2EvaluatorUsage,
+	now: string,
+): SessionFermentV2 {
+	if (!state) throw new Error("Ferment V2 verifier accounting rejected: no current Ferment V2 exists.")
+	if (state.id !== expectedId) {
+		throw new Error(
+			`Ferment V2 verifier accounting rejected: expected Ferment V2 ${expectedId}, but the current Ferment V2 is ${state.id}.`,
+		)
+	}
+	const previous = state.verifierUsage
+	return {
+		...state,
+		verifierUsage: {
+			runs: (previous?.runs ?? 0) + 1,
+			input: (previous?.input ?? 0) + usage.input,
+			output: (previous?.output ?? 0) + usage.output,
+			cacheRead: (previous?.cacheRead ?? 0) + usage.cacheRead,
+			cacheWrite: (previous?.cacheWrite ?? 0) + usage.cacheWrite,
+			totalTokens: (previous?.totalTokens ?? 0) + usage.totalTokens,
+			costUsd: (previous?.costUsd ?? 0) + usage.costUsd,
+		},
+		updatedAt: now,
+	}
+}
+
 export function recordFermentV2Evaluation(
 	state: FermentV2State,
 	expectedId: string,
@@ -127,6 +258,22 @@ export function recordFermentV2Evaluation(
 		lastEvaluation: evaluation,
 		updatedAt: now,
 	}
+}
+
+/**
+ * Persist that the user has been warned about the evaluator running on the
+ * implementer's model. Idempotent: the flag is never cleared once set, so the
+ * warning fires at most once per ferment (also across resume/replay).
+ */
+export function markFermentV2EvaluatorModelWarned(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	now: string,
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	if (current.evaluatorModelWarned) return current
+	return { ...current, evaluatorModelWarned: true, updatedAt: now }
 }
 
 export function setFermentV2ConsecutiveErrorTurns(
@@ -223,6 +370,7 @@ function newFermentV2(
 	now: string,
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
+	baseline?: FermentV2Baseline,
 ): SessionFermentV2 {
 	if (!id.trim()) throw new Error("Ferment V2 ID cannot be empty.")
 	if (tokenBudget !== undefined && !isPositiveInteger(tokenBudget)) {
@@ -239,6 +387,7 @@ function newFermentV2(
 		tokensUsed: 0,
 		...(presentation ? { presentation } : {}),
 		...(tokenBudget === undefined ? {} : { tokenBudget }),
+		...(baseline ? { baseline } : {}),
 		timeUsedMs: 0,
 		createdAt: now,
 		updatedAt: now,
@@ -276,6 +425,9 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 	)
 	const lastEvaluation = parseFermentV2Evaluation(value.lastEvaluation)
 	const presentation = parseFermentV2Presentation(value.presentation)
+	const verifierUsage = parseFermentV2VerifierUsage(value.verifierUsage)
+	const baseline = parseFermentV2Baseline(value.baseline)
+	const openFindings = parseOpenFindings(value.openFindings)
 	if (
 		value.schemaVersion !== 1 ||
 		!isNonEmptyString(value.id) ||
@@ -286,6 +438,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		(value.presentation !== undefined && presentation === undefined) ||
 		(value.completionConfidence !== undefined && completionConfidence === undefined) ||
 		(value.evaluationCount !== undefined && !isNonNegativeInteger(value.evaluationCount)) ||
+		(value.evaluatorModelWarned !== undefined && value.evaluatorModelWarned !== true) ||
 		(value.consecutiveErrorTurns !== undefined && !isNonNegativeInteger(value.consecutiveErrorTurns)) ||
 		(value.unchangedContinuationTurns !== undefined && !isNonNegativeInteger(value.unchangedContinuationTurns)) ||
 		(value.tokensUsed !== undefined && !isNonNegativeInteger(value.tokensUsed)) ||
@@ -310,6 +463,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		...(completionConfidence && status === "complete" ? { completionConfidence } : {}),
 		...(value.evaluationCount === undefined ? {} : { evaluationCount: value.evaluationCount }),
 		...(lastEvaluation ? { lastEvaluation } : {}),
+		...(value.evaluatorModelWarned === true ? { evaluatorModelWarned: true } : {}),
 		...(value.consecutiveErrorTurns === undefined ? {} : { consecutiveErrorTurns: value.consecutiveErrorTurns }),
 		...(value.unchangedContinuationTurns === undefined
 			? {}
@@ -317,8 +471,47 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		tokensUsed: value.tokensUsed ?? 0,
 		...(value.tokenBudget === undefined ? {} : { tokenBudget: value.tokenBudget }),
 		timeUsedMs: value.timeUsedMs ?? 0,
+		...(verifierUsage ? { verifierUsage } : {}),
+		...(baseline ? { baseline } : {}),
+		...(openFindings?.length ? { openFindings } : {}),
 		createdAt: value.createdAt,
 		updatedAt: value.updatedAt,
+	}
+}
+
+function parseFermentV2Baseline(value: unknown): FermentV2Baseline | undefined {
+	if (value === undefined) return undefined
+	// A malformed baseline is dropped rather than rejecting the entry: the
+	// baseline is optional metadata, and a ferment without one simply verifies
+	// without baseline facts, flags, or a baseline worktree.
+	if (!isRecord(value) || !isNonEmptyString(value.commit) || !isNonEmptyString(value.capturedAt)) return undefined
+	return { commit: value.commit, capturedAt: value.capturedAt }
+}
+
+function parseFermentV2VerifierUsage(value: unknown): FermentV2VerifierUsage | undefined {
+	if (value === undefined) return undefined
+	if (
+		!isRecord(value) ||
+		!isNonNegativeInteger(value.runs) ||
+		!isNonNegativeInteger(value.input) ||
+		!isNonNegativeInteger(value.output) ||
+		!isNonNegativeInteger(value.cacheRead) ||
+		!isNonNegativeInteger(value.cacheWrite) ||
+		!isNonNegativeInteger(value.totalTokens) ||
+		typeof value.costUsd !== "number" ||
+		!Number.isFinite(value.costUsd) ||
+		value.costUsd < 0
+	) {
+		return undefined
+	}
+	return {
+		runs: value.runs,
+		input: value.input,
+		output: value.output,
+		cacheRead: value.cacheRead,
+		cacheWrite: value.cacheWrite,
+		totalTokens: value.totalTokens,
+		costUsd: value.costUsd,
 	}
 }
 
@@ -345,10 +538,12 @@ function parseFermentV2Evaluation(value: unknown): FermentV2Evaluation | undefin
 	const verdict = FERMENT_V2_EVALUATION_VERDICTS.find((candidate) => candidate === value.verdict)
 	if (!verdict || !isNonEmptyString(value.reason) || !isNonEmptyString(value.evaluatedAt)) return undefined
 	if (value.model !== undefined && !isNonEmptyString(value.model)) return undefined
+	if (value.sameModelAsImplementer !== undefined && value.sameModelAsImplementer !== true) return undefined
 	return {
 		verdict,
 		reason: value.reason,
 		...(typeof value.model === "string" ? { model: value.model } : {}),
+		...(value.sameModelAsImplementer === true ? { sameModelAsImplementer: true } : {}),
 		evaluatedAt: value.evaluatedAt,
 	}
 }

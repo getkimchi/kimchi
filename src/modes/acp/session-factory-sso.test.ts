@@ -89,7 +89,8 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-	await rm(agentDir, { recursive: true, force: true })
+	// Credential-store initialization can leave asynchronous file cleanup pending on CI.
+	await rm(agentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
 
 describe("defaultSessionFactory on an SSO-only machine", () => {

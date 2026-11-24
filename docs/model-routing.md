@@ -110,7 +110,14 @@ For the main session (not subagents), the auto-model extension additionally:
   session rolls back to Auto: for entitled accounts Auto IS the default, not
   a one-time install. The rollback is provider-agnostic — switching to
   another provider's model (e.g. Anthropic's Claude) rolls back too. An
-  explicit launch-time `--model` still wins.
+  explicit launch-time `--model` still wins, for the whole process: `/new`
+  and `/clear` start on that model too, even after a session-scoped switch.
+  `--model` is the only exemption: every other fresh session, including a
+  `--models`-only launch, starts on Auto.
+- **Fresh means no messages** — a startup session counts as resumed only
+  when it has messages, the same rule upstream uses to restore a session's
+  model. A session file without messages (for example one a launch wrapper
+  pre-creates) gets the Auto default like any fresh session.
 - **Persists explicit choices** — an explicit launch-time `--model` over an
   auto session is user-initiated and persists.
 

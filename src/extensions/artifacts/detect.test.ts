@@ -3,7 +3,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ARTIFACT_EXTENSIONS, artifactsFromToolCall } from "./detect.js"
+import {
+	ARTIFACT_EXTENSIONS,
+	artifactsFromToolCall,
+	observeDirectArtifactWrite,
+	releaseArtifactSnapshot,
+	snapshotArtifactFiles,
+} from "./detect.js"
 
 let cwd: string
 
@@ -295,6 +301,262 @@ describe("artifactsFromToolCall", () => {
 		expect(
 			artifactsFromToolCall("bash", {}, textResult("wrote a .md file"), cwd, { windowStart: Date.now() - 1000 }),
 		).toEqual([])
+	})
+
+	describe("silent shell file snapshots", () => {
+		it("detects only files created or modified in the command working directory", () => {
+			touch("unchanged.md")
+			const modified = touch("modified.html")
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			expect(fileSnapshot).toBeDefined()
+			const windowStart = Date.now()
+			writeFileSync(modified, "<h1>Modified</h1>")
+			const created = touch("final.html")
+			// Shallow scope: no recursive/tree-wide monitoring.
+			touch("nested/not-attributed.html")
+			const out = artifactsFromToolCall("bash", { command: "node build.js" }, textResult(""), cwd, {
+				windowStart,
+				fileSnapshot,
+			})
+			expect(out.map((a) => a.path).sort()).toEqual([created, modified].sort())
+			expect(out.every((a) => a.origin === "snapshot")).toBe(true)
+		})
+
+		it("ignores an arbitrary pre-existing file and a tree-materializing git command", () => {
+			touch("pre-existing.html")
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			const out = artifactsFromToolCall("bash", { command: "node build.js" }, textResult(""), cwd, {
+				windowStart: Date.now(),
+				fileSnapshot,
+			})
+			expect(out).toEqual([])
+			expect(snapshotArtifactFiles("bash", { command: "git checkout main" }, cwd)).toBeUndefined()
+		})
+
+		it("captures the effective directory from supported leading navigation", () => {
+			touch("out/.keep.md")
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "cd out && node build.js" }, cwd)
+			const created = touch("out/final.html")
+			const out = artifactsFromToolCall("bash", { command: "cd out && node build.js" }, textResult(""), cwd, {
+				windowStart: Date.now(),
+				fileSnapshot,
+			})
+			expect(out.map((a) => a.path)).toEqual([created])
+		})
+
+		it("suppresses snapshot deltas when same-cwd commands overlap, then recovers", () => {
+			const scopeA = {}
+			const scopeB = {}
+			const claimA = { scope: scopeA, toolCallId: "passive-wait", consumer: "acp" as const }
+			const claimB = { scope: scopeB, toolCallId: "other-session", consumer: "acp" as const }
+			const waiting = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claimA)
+			const concurrent = snapshotArtifactFiles("bash", { command: "node write.js" }, cwd, claimB)
+			expect(waiting).toBeDefined()
+			expect(concurrent).toBeDefined()
+			writeFileSync(join(cwd, "other-session.html"), "<h1>Other session</h1>")
+			const waitResult = artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, {
+				fileSnapshot: waiting,
+			})
+			const writeResult = artifactsFromToolCall("bash", { command: "node write.js" }, textResult(""), cwd, {
+				fileSnapshot: concurrent,
+			})
+			// Neither side can establish authorship when the snapshots overlap.
+			expect(waitResult).toEqual([])
+			expect(writeResult).toEqual([])
+			releaseArtifactSnapshot(claimA)
+			releaseArtifactSnapshot(claimB)
+
+			// The ambiguity belongs to the overlapping execution interval, not
+			// the directory forever: a later isolated command can still detect.
+			const isolated = snapshotArtifactFiles("bash", { command: "node next.js" }, cwd, claimA)
+			const created = touch("isolated.html")
+			const isolatedResult = artifactsFromToolCall("bash", { command: "node next.js" }, textResult(""), cwd, {
+				fileSnapshot: isolated,
+			})
+			expect(isolatedResult.map((artifact) => artifact.path)).toEqual([created])
+			releaseArtifactSnapshot(claimA)
+		})
+
+		it("does not attribute another prompt's direct write to a waiting Bash snapshot", () => {
+			const claim = { scope: {}, toolCallId: "waiting-bash", consumer: "acp" as const }
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claim)
+			const otherPromptReport = touch("other-prompt.html")
+			expect(
+				artifactsFromToolCall("write", { path: otherPromptReport }, textResult("Wrote other prompt."), cwd).map(
+					({ path, origin }) => ({ path, origin }),
+				),
+			).toEqual([{ path: otherPromptReport, origin: "write" }])
+			expect(artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, { fileSnapshot })).toEqual(
+				[],
+			)
+			releaseArtifactSnapshot(claim)
+		})
+
+		it.each([
+			{
+				fileName: "nested-redirect.html",
+				toolName: "bash",
+				args: { command: "printf html > nested-redirect.html" },
+				origin: "sniffed",
+			},
+			{
+				fileName: "nested-sniff.html",
+				toolName: "bash",
+				args: { command: "node build.js" },
+				origin: "sniffed",
+				output: "Created nested-sniff.html",
+			},
+			{
+				fileName: "fallback-sniff.html",
+				toolName: "bash",
+				args: {},
+				origin: "sniffed",
+				output: "Created fallback-sniff.html",
+			},
+			{ fileName: "declared.html", toolName: "render_report", args: {}, origin: "declared" },
+		])("does not attribute another prompt's $origin legacy source to a waiting Bash snapshot", ({
+			fileName,
+			toolName,
+			args,
+			origin,
+			output,
+		}) => {
+			const claim = { scope: {}, toolCallId: "waiting-bash", consumer: "acp" as const }
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claim)
+			const report = touch(fileName)
+			const result =
+				origin === "declared"
+					? { ...textResult("Generated."), details: { artifacts: [{ path: report, name: fileName }] } }
+					: textResult(output ?? "")
+			expect(
+				artifactsFromToolCall(toolName, args, result, cwd).map(({ path, origin: detectedOrigin }) => ({
+					path,
+					origin: detectedOrigin,
+				})),
+			).toEqual([{ path: report, origin }])
+			expect(artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, { fileSnapshot })).toEqual(
+				[],
+			)
+			releaseArtifactSnapshot(claim)
+		})
+
+		it("does not attribute a later output sniff to an already collected Bash snapshot", () => {
+			const claim = { scope: {}, toolCallId: "waiting-first-bash", consumer: "acp" as const }
+			const producerClaim = {
+				scope: {},
+				toolCallId: "nested-build-finishes-last",
+				consumer: "acp" as const,
+				capture: false,
+			}
+			expect(snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, producerClaim)).toBeUndefined()
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, claim)
+			const report = touch("reverse-order.html")
+			const waitingArtifacts = artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, {
+				fileSnapshot,
+			})
+			const producerArtifacts = artifactsFromToolCall(
+				"bash",
+				{ command: "node build.js" },
+				textResult("Created reverse-order.html"),
+				cwd,
+			)
+			expect(producerArtifacts.map(({ path, origin }) => ({ path, origin }))).toEqual([
+				{ path: report, origin: "sniffed" },
+			])
+			expect(waitingArtifacts).toEqual([])
+			releaseArtifactSnapshot(producerClaim)
+			releaseArtifactSnapshot(claim)
+		})
+
+		it("keeps precise direct-write ownership when the writer starts first", () => {
+			const writerClaim = { scope: {}, toolCallId: "writer-starts-first", consumer: "acp" as const }
+			const waitingClaim = { scope: {}, toolCallId: "waiting-after-writer", consumer: "acp" as const }
+			expect(snapshotArtifactFiles("write", { path: "writer-starts-first.html" }, cwd, writerClaim)).toBeUndefined()
+			observeDirectArtifactWrite("write", { path: "writer-starts-first.html" }, cwd)
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node wait.js" }, cwd, waitingClaim)
+			touch("writer-starts-first.html")
+			const shellArtifact = touch("waiting-shell.html")
+			expect(
+				artifactsFromToolCall("bash", { command: "node wait.js" }, textResult(""), cwd, { fileSnapshot }).map(
+					({ path }) => path,
+				),
+			).toEqual([shellArtifact])
+			releaseArtifactSnapshot(waitingClaim)
+			releaseArtifactSnapshot(writerClaim)
+		})
+
+		it("excludes files changed before a background handoff result", () => {
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			touch("final.html")
+			const result = {
+				...textResult("Command handed off; still running."),
+				details: { handoff: true, handle: "bg1" },
+			}
+			expect(artifactsFromToolCall("bash", { command: "node build.js" }, result, cwd, { fileSnapshot })).toEqual([])
+		})
+
+		it("retains redirect and output detection for a background handoff result", () => {
+			const args = { command: "printf csv > redirected.csv && node build.js" }
+			const fileSnapshot = snapshotArtifactFiles("bash", args, cwd)
+			const redirected = touch("redirected.csv")
+			const reported = touch("reported.md")
+			touch("silent.html")
+			const result = {
+				...textResult("Generated reported.md"),
+				details: { handoff: true, handle: "bg1" },
+			}
+			expect(
+				artifactsFromToolCall("bash", args, result, cwd, { fileSnapshot }).map(({ path, origin }) => ({
+					path,
+					origin,
+				})),
+			).toEqual([
+				{ path: redirected, origin: "sniffed" },
+				{ path: reported, origin: "sniffed" },
+			])
+		})
+
+		it("shares ACP and recorder snapshots until both consumers release them", () => {
+			const scope = {}
+			const acpClaim = { scope, toolCallId: "shared-call", consumer: "acp" as const }
+			const recorderClaim = { scope, toolCallId: "shared-call", consumer: "recorder" as const }
+			const first = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, acpClaim)
+			const second = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, recorderClaim)
+			expect(second).toBe(first)
+			const created = touch("same-call.html")
+			const detected = artifactsFromToolCall("bash", { command: "node build.js" }, textResult(""), cwd, {
+				fileSnapshot: first,
+			})
+			expect(detected.map((artifact) => artifact.path)).toEqual([created])
+			releaseArtifactSnapshot(acpClaim)
+			releaseArtifactSnapshot(recorderClaim)
+			const next = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd, acpClaim)
+			expect(next).not.toBe(first)
+			releaseArtifactSnapshot(acpClaim)
+		})
+
+		it("skips a mismatched snapshot without disabling redirect or output detection", () => {
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			const created = touch("out/final.html")
+			const out = artifactsFromToolCall(
+				"bash",
+				{ command: "cd out && node build.js" },
+				textResult("wrote final.html"),
+				cwd,
+				{ windowStart: Date.now(), fileSnapshot },
+			)
+			expect(out.map((a) => a.path)).toEqual([created])
+		})
+
+		it("dedupes a changed file also printed in output", () => {
+			const fileSnapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, cwd)
+			const created = touch("final.html")
+			const out = artifactsFromToolCall("bash", { command: "node build.js" }, textResult("wrote final.html"), cwd, {
+				windowStart: Date.now(),
+				fileSnapshot,
+			})
+			expect(out.map((a) => a.path)).toEqual([created])
+		})
 	})
 
 	describe("mtime window and command filtering", () => {
