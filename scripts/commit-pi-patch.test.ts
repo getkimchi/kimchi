@@ -1,5 +1,5 @@
 import { type SpawnSyncReturns, spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -48,10 +48,12 @@ function createFixture({
 	)
 	writeFileSync(patchPath, originalPatch)
 	const pnpmStub = join(root, "pnpm-stub.mjs")
+	const pnpmLog = join(root, "pnpm-invocations.log")
 	writeFileSync(
 		pnpmStub,
-		`import { readFileSync, writeFileSync } from "node:fs";
+		`import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 const path = process.env.TEST_PATCH_PATH;
+appendFileSync(process.env.TEST_PNPM_LOG, process.argv.slice(2).join(" ") + "\\n");
 if (process.argv[2] === "patch-commit") {
   const generated = readFileSync(path, "utf8");
   writeFileSync(path, "# discarded generated header\\n" + generated.slice(generated.indexOf("diff --git")));
@@ -62,10 +64,11 @@ if (process.argv[2] === "patch-commit") {
 		root,
 		editDirectory: join(root, "edits"),
 		patchPath,
+		pnpmLog,
 		run(args: string[]): SpawnSyncReturns<string> {
 			return spawnSync(process.execPath, [scriptPath, ...args], {
 				cwd: root,
-				env: { npm_execpath: pnpmStub, TEST_PATCH_PATH: patchPath },
+				env: { npm_execpath: pnpmStub, TEST_PATCH_PATH: patchPath, TEST_PNPM_LOG: pnpmLog },
 				encoding: "utf8",
 				timeout: 10_000,
 			})
@@ -126,6 +129,52 @@ it.each(["tracking", "changes"] as const)("rejects a non-comment continuation in
 		const result = fixture.run([fixture.editDirectory, defaultPackage, headerPath])
 		expect(result.status).toBe(1)
 		expect(result.stderr).toContain(`Header addition ${field} must be a text block containing comment lines`)
+		expect(readFileSync(fixture.patchPath, "utf8")).toBe(originalPatch)
+	})
+})
+
+const trackingReplacement = {
+	from: "# Tracking: existing change\n# Removal: when upstream includes it",
+	to: "# Tracking: https://example.invalid/upstream/record\n# Removal: after an upstream release includes the fix",
+}
+
+it("replaces a pending tracking record through the real CLI without modifying generated hunks", () => {
+	withFixture((fixture) => {
+		const headerPath = fixture.writeAdditions({ replaceTracking: trackingReplacement })
+		const result = fixture.run([fixture.editDirectory, defaultPackage, headerPath])
+		expect(result.error).toBeUndefined()
+		expect(result.stderr).toBe("")
+		expect(result.status).toBe(0)
+		expect(readFileSync(fixture.patchPath, "utf8")).toBe(
+			`${trackingReplacement.to}\n# Changes:\n# Existing behavior\n\n${patchBody}`,
+		)
+	})
+})
+
+it.each(["from", "to"] as const)("rejects a non-comment replacement field in %s before invoking pnpm", (field) => {
+	withFixture((fixture) => {
+		const replacement = { ...trackingReplacement, [field]: "# Valid comment\nnot-a-comment" }
+		const headerPath = fixture.writeAdditions({ replaceTracking: replacement })
+		const result = fixture.run([fixture.editDirectory, defaultPackage, headerPath])
+		expect(result.status).toBe(1)
+		expect(result.stderr).toContain(
+			`Header addition replaceTracking.${field} must be a text block containing comment lines`,
+		)
+		expect(existsSync(fixture.pnpmLog)).toBe(false)
+		expect(readFileSync(fixture.patchPath, "utf8")).toBe(originalPatch)
+	})
+})
+
+it.each([
+	"# Tracking: missing change",
+	"#",
+] as const)("rejects a non-unique or missing tracking source before invoking pnpm: %s", (from) => {
+	withFixture((fixture) => {
+		const headerPath = fixture.writeAdditions({ replaceTracking: { ...trackingReplacement, from } })
+		const result = fixture.run([fixture.editDirectory, defaultPackage, headerPath])
+		expect(result.status).toBe(1)
+		expect(result.stderr).toContain("Expected exactly one matching tracking comment in the existing header")
+		expect(existsSync(fixture.pnpmLog)).toBe(false)
 		expect(readFileSync(fixture.patchPath, "utf8")).toBe(originalPatch)
 	})
 })
