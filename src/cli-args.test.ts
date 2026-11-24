@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest"
 import {
 	CACHEABLE_OPTION_NAMES,
 	CLI_OPTIONS,
+	dropRetiredMultiModelArg,
 	forwardAdditionalSkillPathsToPi,
 	getCliModeArg,
 	getParsedCliArgs,
@@ -17,10 +18,10 @@ import {
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
+	parseCliArgs,
 	populateCliArgs,
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
-	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 
@@ -315,65 +316,27 @@ describe("stripExperimentalFeaturesArg", () => {
 	})
 })
 
-describe("stripMultiModelArgs", () => {
-	it("strips --multi-model", () => {
-		expect(stripMultiModelArgs(["--multi-model"])).toEqual([])
+describe("dropRetiredMultiModelArg", () => {
+	// Kimchi Studio launches new terminal sessions this way; they must start
+	// on the default model instead of failing with "model not found".
+	it.each([
+		[
+			["--model", "multi-model", "--plan", "fix it"],
+			["--plan", "fix it"],
+		],
+		[["--model=multi-model", "--plan"], ["--plan"]],
+	])("drops %j", (args, expected) => {
+		expect(dropRetiredMultiModelArg(args)).toEqual(expected)
+		expect(parseCliArgs(dropRetiredMultiModelArg(args)).options.model).toBeUndefined()
 	})
 
-	it("strips --model multi-model", () => {
-		expect(stripMultiModelArgs(["--model", "multi-model"])).toEqual([])
-	})
-
-	it("strips --model=multi-model", () => {
-		expect(stripMultiModelArgs(["--model=multi-model"])).toEqual([])
-	})
-
-	it("preserves real --model values", () => {
-		expect(stripMultiModelArgs(["--model", "kimchi-dev/kimi-k2.7"])).toEqual(["--model", "kimchi-dev/kimi-k2.7"])
-		expect(stripMultiModelArgs(["--model=kimchi-dev/kimi-k2.7"])).toEqual(["--model=kimchi-dev/kimi-k2.7"])
-	})
-
-	it("preserves surrounding args", () => {
-		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])).toEqual([
-			"--provider",
-			"kimchi-dev",
-			"fix tests",
-		])
-	})
-
-	it("returns the array unchanged when no multi-model flags are present", () => {
-		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "kimi-k2.7", "fix tests"])).toEqual([
-			"--provider",
-			"kimchi-dev",
-			"--model",
-			"kimi-k2.7",
-			"fix tests",
-		])
-	})
-
-	it("strips --multi-model when combined with a real --model value", () => {
-		expect(stripMultiModelArgs(["--model", "real-model", "--multi-model"])).toEqual(["--model", "real-model"])
-		expect(stripMultiModelArgs(["--multi-model", "--model", "real-model"])).toEqual(["--model", "real-model"])
+	it("keeps real model selections", () => {
+		const args = ["--model", "kimchi-dev/deepseek-v4.1-flash", "multi-model"]
+		expect(dropRetiredMultiModelArg(args)).toEqual(args)
 	})
 })
 
 describe("populateCliArgs / getParsedCliArgs", () => {
-	it("parses --model multi-model", () => {
-		populateCliArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])
-		expect(getParsedCliArgs()).toEqual({
-			options: { provider: "kimchi-dev", model: "multi-model" },
-			positionals: ["fix tests"],
-		})
-	})
-
-	it("parses --multi-model", () => {
-		populateCliArgs(["--multi-model", "fix tests"])
-		expect(getParsedCliArgs()).toEqual({
-			options: { "multi-model": true },
-			positionals: ["fix tests"],
-		})
-	})
-
 	it("parses real --model values", () => {
 		populateCliArgs(["--model", "kimchi-dev/kimi-k2.7", "fix tests"])
 		expect(getParsedCliArgs()).toEqual({ options: { model: "kimchi-dev/kimi-k2.7" }, positionals: ["fix tests"] })
@@ -393,10 +356,10 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 	})
 
 	it("reuses the cached parse across calls", () => {
-		populateCliArgs(["--multi-model"])
-		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
+		populateCliArgs(["--approve"])
+		expect(getParsedCliArgs()).toEqual({ options: { approve: true }, positionals: [] })
 		// Subsequent calls return the same cached result without re-parsing.
-		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
+		expect(getParsedCliArgs()).toEqual({ options: { approve: true }, positionals: [] })
 	})
 })
 

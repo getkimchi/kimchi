@@ -106,25 +106,4 @@ describe("steer outcome watcher — site adoptions", () => {
 			expect.objectContaining({ kind: "exploration_guard", outcome: "complied", steer_id: "eg-1" }),
 		])
 	})
-
-	it("review_write_guard: repeated when a write lands inside the guard window (via regression path)", async () => {
-		const { emitted, fire } = makePi()
-		const { watchSteerOutcome } = await import("./steer-outcome-watcher.js")
-		const impl = new Set(["edit", "write"])
-		watchSteerOutcome({
-			kind: "review_write_guard",
-			steerId: "rwg-1",
-			sessionId: "session",
-			interactive: true,
-			windowToolCalls: 3,
-			classify: (event) =>
-				event.type === "tool_execution_end" && event.toolName !== undefined && impl.has(event.toolName)
-					? "repeated"
-					: undefined,
-		})
-		await fire("tool_execution_end", { toolName: "edit" })
-		expect(outcomes(emitted)).toEqual([
-			expect.objectContaining({ kind: "review_write_guard", outcome: "repeated", steer_id: "rwg-1" }),
-		])
-	})
 })

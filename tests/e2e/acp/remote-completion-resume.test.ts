@@ -19,7 +19,7 @@ it("restores a finished remote result only when its original ACP session is reop
 		const a = await newSession(fixture, fixture.workDir)
 		expect((await prompt(fixture, a, "hello")).stopReason).toBe("end_turn")
 		await prompt(fixture, a, "/seed-remote-completion")
-		await fixture.conn.closeSession({ sessionId: a })
+		await fixture.conn.request("session/close", { sessionId: a })
 		const b = await newSession(fixture, fixture.workDir)
 		expect(fixture.client.elicitationRequests).toHaveLength(0)
 
@@ -27,7 +27,7 @@ it("restores a finished remote result only when its original ACP session is reop
 			action: "accept",
 			content: { value: "Review the remote agent's results in the local session" },
 		})
-		await fixture.conn.loadSession({ sessionId: a, cwd: fixture.workDir, mcpServers: [] })
+		await fixture.conn.request("session/load", { sessionId: a, cwd: fixture.workDir, mcpServers: [] })
 		await waitFor(
 			() => fixture.client.elicitationRequests.length,
 			(count) => count === 1,

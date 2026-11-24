@@ -1,0 +1,2952 @@
+#
+# Tracking:
+#   - Project config directory: https://github.com/nicobailon/pi-mcp-adapter/issues/491
+#     (remove when upstream supports a project config directory independent of
+#     the user config directory)
+#   - Tool-name sanitization and selector matching: getkimchi/kimchi#1168
+#     (remove when upstream sanitizes both name parts and caps wire names at
+#     the 128-char provider limit)
+#   - MCP UI standard disable: no upstream option; remove when the harness
+#     supports MCP Apps or upstream adds a disable option
+#   - OAuth loopback capture: getkimchi/kimchi#1284; upstream tracking issue
+#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
+#     upstream supports an opportunistic loopback listener for manual
+#     redirect flows)
+#   - OAuth metadata Accept header: strict gateways answer 406 when
+#     text/event-stream is missing; upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     sends "Accept: application/json, text/event-stream")
+#   - DCR clientInfo version: still hardcoded "2.11.0" in upstream
+#     mcp-auth-flow; remove when upstream derives it from the package version
+#   - Stored redirect URI reuse: upstream 5.3.1 defaults the loopback host to
+#     127.0.0.1 (PR #712), so re-auth of a pre-registered client (e.g. Google)
+#     whose registration was created with a localhost URI now sends a different
+#     redirect and fails with redirect_uri_mismatch. Fixed-client servers with
+#     no usable stored registration (first auth, or a registration whose
+#     redirectUris were dropped) now default to the localhost callback adapter
+#     2.x sent, since such clients register localhost only; upstream issue
+#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
+#     upstream prefers the stored registration's redirect URIs and defaults
+#     fixed-client servers to the localhost callback)
+#   - Stored redirect URI preservation: mcp-oauth-provider clientInformation()
+#     rewrites the stored clientInfo for config-registered clients (issuer
+#     binding bookkeeping) and drops its redirectUris, destroying the legacy
+#     registration before re-auth can reuse it; same upstream tracking as above
+#   - Authorize-URL hook: upstream has no first-class way for a host to add
+#     offline-access request parameters (OIDC offline_access scope, vendor
+#     params such as Google's access_type=offline) without passing a
+#     programmatic config, which disables the /mcp panel and the config write
+#     flows; upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     supports offline-access defaults or an authorize-URL customization hook)
+#   - Default protocol version: hosts need to opt servers into the MCP
+#     2026-07-28 era (stateless core, MRTR) without mutating user config
+#     files; McpAdapterOptions has no default-era knob and passing programmatic
+#     config would disable configPath write flows; upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream ships
+#     a defaultProtocolVersion option or equivalent per-era default)
+#   - Refresh-token rotation across sessions: getValidToken refreshed with
+#     the process-cached entry, so a token another session had already
+#     rotated was rejected invalid_grant ("Unknown or invalid refresh
+#     token") and pushed the session into a full re-auth mid-session. The
+#     cache is now dropped before the refresh leg and, when a grant is
+#     rejected or the SDK falls back to a re-auth flow, the shared store is
+#     polled briefly and the grant retried with the current token. Upstream
+#     issue pending at https://github.com/nicobailon/pi-mcp-adapter (remove
+#     when upstream re-reads shared credentials before and on refresh
+#     failure)
+#   - Live session catalog observation: getkimchi/kimchi#1787; propose this
+#     onSessionMetadata observer and its per-runtime factory upstream for review
+#     and remove the hunk when
+#     upstream exposes session-bound catalog metadata (including private
+#     authorization scopes) to host authorization policy without persisting it.
+#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
+#     the call-path readiness gates never re-read the shared credential store
+#     for a plain OAuth server in needs-auth, so a live session stayed broken
+#     after re-authentication elsewhere (settings probe, another chat) wrote a
+#     fresh credential; upstream tracking issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     retries needs-auth routes against the store without an interactive flow)
+#   - Initial runtime server discovery: upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when runtime-scoped
+#     servers can join every initialization's discovery without programmatic
+#     config, while preserving configPath, file installs, and resume reloads)
+#   - OAuth post-authentication cleanup recovery: https://github.com/nicobailon/pi-mcp-adapter/issues/972 (remove when upstream emits an owning watcher's authenticated terminal status even after post-auth manager cleanup fails)
+#   - Structured manual OAuth handoff: https://github.com/nicobailon/pi-mcp-adapter/issues/971 (remove when upstream exposes equivalent structured handoff metadata for remote redirects without automatic capture, or guarantees automatic capture)
+# Changes:
+#   - proxy-modes: once authenticate() succeeds, a post-auth state.manager.close() failure emits a UI warning instead of replacing the background watcher's authenticated terminal status. The owning flow can therefore settle without treating another session's shared grant as proof of completion.
+#   - proxy-modes: remote HTTPS redirects without loopback capture return details.handoff: "manual" alongside the manual instructions, so hosts can identify the follow-up-prompt contract without depending on presentation wording.
+#   - types/index/init (+dist type mirror): add initialRuntimeServers and merge
+#     those proxy-only entries before startup discovery, including lazy close,
+#     metadata publication, lifecycle setup, and per-session config reloads.
+#     initialRuntimeDiscoveryTimeoutMs bounds only this discovery pass, leaving
+#     later tool calls on normal per-server/global request timeouts. Resident
+#     connections also reset the task channel's captured default (mcp-tasks
+#     setDefaultTimeoutMs) so tasks/* polls keep the normal timeout instead of
+#     the discovery one. Runtime-scoped servers always join startup
+#     discovery: a valid-but-empty or private-scoped cached catalog never
+#     suppresses the live listing the host asked for.
+#   - types/init/state (+dist type mirror): notify an optional host observer of
+#     newly captured in-memory server catalogs for session-bound policy; this
+#     does not bypass private-cache validation or persist private metadata.
+#   - agent-dir/config (+dist mirrors): resolve the MCP project config
+#     directory via piConfig.mcpProjectConfigDir so project MCP config can
+#     live outside the user config directory; covers both the adapter config
+#     path (mcp-adapter.json) and the legacy pi-mcp compat read (mcp.json).
+#   - types (+dist mirrors): sanitize MCP tool names to ^[a-zA-Z0-9_-]{1,128}$
+#     (truncating with a warning), normalize selector patterns on both sides,
+#     and keep pre-sanitization spellings matching for include/excludeTools.
+#   - metadata-cache/server-manager/tool-metadata (+dist mirrors): do not
+#     advertise the io.modelcontextprotocol/ui extension capability and do
+#     not persist or reconstruct UI resource metadata. (Tool-annotation
+#     caching is native upstream as of 5.x, so the 2.34.0-era hunk that
+#     persisted annotations in the metadata cache was dropped.)
+#   - mcp-auth-flow: manual (remote https) OAuth redirect flows also start an
+#     opportunistic loopback listener on the default callback port/path and
+#     race it against the manual paste prompt; graceful fallback to
+#     paste-only when the listener cannot bind. startAuth reports whether the
+#     capture is armed, and non-interactive callers (no onAuthorizationInput,
+#     e.g. ACP/Studio) may proceed without a manual paste when it is.
+#   - proxy-modes: auth-start registers the background auth watcher for
+#     remote https redirects when the loopback capture is armed, and the
+#     auth-start instructions reflect automatic completion.
+#   - mcp-callback-server (+mcp-auth-flow): callbacks whose oauth state belongs
+#     to a recently completed flow replay the normal success page (HTTP 200)
+#     via a process-level tombstone (10 min TTL, capped at 100, lazily pruned)
+#     recorded only in completeAuth after a successful token exchange (a
+#     failed exchange no longer leaves a success-page tombstone); unknown,
+#     superseded, or expired states get a neutral "Authorization No Longer
+#     Active" error page (HTTP 400) instead of the CSRF error page, with the
+#     heading string unchanged so host branding keeps mapping it.
+#   - mcp-auth-flow: concurrent token exchanges of the same pending flow
+#     (callback listener racing a pasted redirect URL) are serialized via an
+#     in-flight map; the second caller awaits and shares the first result,
+#     and a paste for an already-completed state returns "authenticated"
+#     instead of throwing "No pending OAuth flow".
+#   - proxy-modes: a background auth watcher that fails with the callback
+#     timeout appends the actionable manual-auth instructions (URL and
+#     auth-complete paste command) to the failure status message.
+#   - mcp-auth-flow: when the server is configured with a fixed oauth.clientId
+#     and no explicit redirectUri, startAuth reuses the stored client
+#     registration's first redirect URI (only when the stored registration's
+#     clientId matches the configured one) instead of the current default
+#     host; unreadable or non-matching stored state falls back to
+#     http://localhost:<configured callback port>/callback. Dynamic-registration
+#     servers (no clientId) keep upstream's 127.0.0.1 default.
+#     See the stored-redirect-URI-reuse tracking entry above.
+#   - mcp-oauth-provider: clientInformation() preserves the stored client
+#     registration's redirectUris when it rewrites the entry for a
+#     config-registered client. See the stored-redirect-URI-preservation
+#     tracking entry above.
+#   - mcp-auth-flow: DCR clientInfo version bumped from stale hardcoded
+#     "2.11.0" to "5.3.2".
+#   - mcp-oauth-provider: configured-discovery metadata fetch sends Accept
+#     "application/json, text/event-stream" instead of "application/json".
+#   - project-server-trust: KIMCHI_MANAGES_MCP_PROJECT_TRUST=1 skips the
+#     interactive per-server project approval (host already gates project trust),
+#     avoiding a double prompt in the TUI; no approval-store writes occur.
+#   - config (+dist mirror): the repointed legacy pi-mcp compat layers stay
+#     authoritative and adapter-format in the host topology — the global
+#     mcp.json behaves as the user-scope layer and the project mcp.json as
+#     the top project layer (each reads/writes itself, outranking shared
+#     imports a la 2.34). Pi-style compat parsing (which drops top-level
+#     settings/imports and per-server adapter keys) is disabled for these
+#     paths, and a project entry MERGES field-wise with the global entry
+#     (via mergeServerMaps' credential stripping) instead of replacing it.
+#   - Always register /mcp (index.ts): pi 0.99+/1.2 ships a built-in native
+#     MCP extension; Kimchi's compat layers own these mcp.json files, so
+#     keeping the built-in double-connects servers and its stricter native
+#     auth schema ({provider} bearer) warns on adapter-format configs.
+#     Registering /mcp at load makes pi's loader omit the replaceable
+#     built-in extension (upstream-designed replacement mechanism).
+#   - pi-builtin-mcp: ADAPTER_VERSION read is bundled-runtime-safe: under
+#     Bun single-executable builds import.meta.url has no real package.json
+#     ($bunfs), and the top-level readFileSync threw at import time, so the
+#     built-in MCP was never disabled in compiled binaries (double MCP
+#     stacks, strict-auth-schema warnings). Falls back to "unknown"; the
+#     onboarding-state gate then simply re-checks each start.
+#   - config: writeProjectServerDisabledOverride writes its override through
+#     the server's provenance path (the file it was loaded from), falling
+#     back to the adapter-native project config for unknown servers.
+#   - mcp-output-guard (+dist mirrors): default output budget 50 KB -> 12 KB
+#     (DEFAULT_MCP_OUTPUT_MAX_BYTES) so oversized MCP results no longer blow
+#     the session context on parallel tool results; still overridable via
+#     settings.mcpToolOutputTuning.maxBytes.
+#   - mcp-oauth-provider (+dist mirror), oauth: setAuthorizationUrlTransform()
+#     hook, applied in redirectToAuthorization to the authorize URL (with the
+#     flow's saved discovery state) after the server's own
+#     authorizationParams, so a host only fills in what config left unset; default is identity. The
+#     host (src/extensions/mcp/oauth-offline-access.ts) supplies the policy.
+#   - types/index/init/server-manager (+dist mirrors): new McpAdapterOptions
+#     defaultProtocolVersion ("legacy" | "auto" | "2026-07-28"). The manager
+#     applies it at connection time to entries whose protocolVersion is unset
+#     (explicit per-entry values always win); config entries are never
+#     mutated, so definition hashes, metadata caches, and host-side policy
+#     snapshots stay byte-identical to pre-patch behavior. The host passes
+#     "auto" so Kimchi negotiates the modern era with legacy fallback; the
+#     default is scoped to connectionless (url-based) servers because era
+#     negotiation on stdio costs a sacrificial process spawn - stdio entries
+#     keep the legacy handshake unless they pin a version explicitly.
+#   - config (+dist mirrors): adapt the 5.3.2 dropped-credential notices
+#     to replay the same field-wise merge as the actual loader.
+#   - Session-scoped private listings (2026-11). MCP servers that mark their
+#     listings identity-scoped (tools/list cacheScope: "private") broke two
+#     user surfaces after /mcp reconnect:
+#       * prompt-autocomplete.ts (new) + index.ts: live autocomplete wrapper
+#         stacked via ctx.ui.addAutocompleteProvider so prompt commands
+#         registered mid-session (first connect, reconnect, list-changed
+#         refresh) show in the TUI slash dropdown without /reload, including
+#         argument completions resolved from live metadata (the base
+#         provider only knows its one-time snapshot); lookup scans by exact
+#         commandName because promptMetadata is keyed by RAW config server
+#         names while commands embed the sanitized part. Both lookup paths
+#         reject absent/disabled server definitions. Invocation suggestions
+#         are limited to owned, unambiguous registry matches; raw `commandName`
+#         is not assumed to resolve to a duplicate `name:N` alias or owner.
+#         Remove when upstream Pi rebuilds its autocomplete provider on
+#         command registration (or registerCommand emits an event).
+#       * commands.ts refreshCacheAfterReconnect: 5.3.2's withSessionMetadata
+#         overlay already renders this session's private and zero-TTL catalogs
+#         when the panel opens. Refreshing a panel with ctrl+r must use the
+#         same overlay rather than the persistent cache alone. Remove when
+#         upstream shares the overlay across the panel refresh path too.
+
+diff --git a/agent-dir.ts b/agent-dir.ts
+index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
+--- a/agent-dir.ts
++++ b/agent-dir.ts
+@@ -1,3 +1,5 @@
++// Host project-path compatibility; tracking: https://github.com/nicobailon/pi-mcp-adapter/issues/491
++// Remove when upstream supports a project config directory independent of the user config directory.
+ import { readFileSync } from "node:fs";
+ import { homedir } from "node:os";
+ import { join, resolve } from "node:path";
+@@ -7,6 +9,11 @@ export function getConfigDirName(): string {
+   return typeof configDir === "string" && configDir.trim() ? configDir.trim() : ".pi";
+ }
+ 
++export function getMcpProjectConfigDirName(): string {
++  const configDir = readPiConfig()?.mcpProjectConfigDir;
++  return typeof configDir === "string" && configDir.trim() ? configDir.trim() : getConfigDirName();
++}
++
+ export function getAgentDir(): string {
+   const piConfig = readPiConfig();
+   const name = piConfig?.name;
+@@ -39,12 +46,12 @@ export function getAgentPath(...segments: string[]): string {
+  *
+  * Falls back to "pi", which is what pi's own APP_NAME resolves to.
+  */
+-function readPiConfig(): { name?: unknown; configDir?: unknown; clientUri?: unknown } | undefined {
++function readPiConfig(): { name?: unknown; configDir?: unknown; mcpProjectConfigDir?: unknown; clientUri?: unknown } | undefined {
+   const dir = process.env.PI_PACKAGE_DIR?.trim()
+   if (!dir) return undefined
+   try {
+     const manifest = JSON.parse(readFileSync(join(resolve(dir), "package.json"), "utf8")) as {
+-      piConfig?: { name?: unknown; configDir?: unknown; clientUri?: unknown }
++      piConfig?: { name?: unknown; configDir?: unknown; mcpProjectConfigDir?: unknown; clientUri?: unknown }
+     }
+     return manifest.piConfig
+   } catch {
+diff --git a/commands.ts b/commands.ts
+index da763cf88cc2f9556b6c678bebf084cf667d1b96..fee1c9f9313cd4646700d53e1b3f7b2ce8729412 100644
+--- a/commands.ts
++++ b/commands.ts
+@@ -762,8 +762,9 @@ function buildMcpPanelCallbacks(
+     getFailureMessage: (serverName: string) => state.blockedProjectServers?.get(serverName)?.reason
+       ?? authStatusFailures.get(serverName) ?? getFailureMessage(state, serverName),
+     refreshCacheAfterReconnect: (serverName: string) => {
+-      const freshCache = loadMetadataCache();
+-      return freshCache?.servers?.[serverName] ?? null;
++      // Match openMcpPanel(): private and zero-TTL entries captured by this
++      // session are valid here, including after a live ctrl+r reconnect.
++      return withSessionMetadata(loadMetadataCache(), state.config, state.sessionMetadata)?.servers?.[serverName] ?? null;
+     },
+   };
+ }
+@@ -880,6 +881,47 @@ export async function openMcpPanel(
+   return { configChanged };
+ }
+ 
++/**
++ * Remote-capable `/mcp-auth` fallback for modes without TUI overlays (rpc, ACP).
++ *
++ * `canRenderPanel()` gates the AltScreen picker on `ctx.mode === "tui"`, so
++ * protocol hosts used to hit a dead end on bare `/mcp-auth`. Those hosts do
++ * implement the dialog primitives (`ui.select`, `ui.input`), so ask for the
++ * server with a plain select and run the same per-server authenticateServer
++ * flow that `/mcp-auth <server>` uses — including the post-auth reconnect.
++ */
++async function openMcpAuthFallback(
++  state: McpExtensionState,
++  ctx: ExtensionContext,
++): Promise<PanelFlowResult> {
++  if (state.programmaticConfig) {
++    ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
++    return { configChanged: false };
++  }
++
++  const config = state.config;
++  const oauthServers = Object.entries(config.mcpServers).filter(
++    ([, definition]) => !isServerDisabled(definition) && supportsOAuth(definition),
++  );
++  if (oauthServers.length === 0) {
++    ctx.ui.notify("No OAuth-capable MCP servers are configured.", "warning");
++    return { configChanged: false };
++  }
++
++  const names = oauthServers.map(([name]) => name);
++  let serverName: string | undefined = names[0];
++  if (names.length > 1) {
++    serverName = await ctx.ui.select("Select an OAuth MCP server to authenticate", names);
++  }
++  if (!serverName) return { configChanged: false };
++
++  const result = await authenticateServer(serverName, config, ctx, state.owner?.signal, state.oauthRuntime);
++  if (result.ok) {
++    await reconnectServer(state, ctx, serverName);
++  }
++  return { configChanged: false };
++}
++
+ export async function openMcpAuthPanel(
+   state: McpExtensionState,
+   pi: ExtensionAPI,
+@@ -888,8 +930,7 @@ export async function openMcpAuthPanel(
+ ): Promise<PanelFlowResult> {
+   if (!ctx.hasUI) return { configChanged: false };
+   if (!canRenderPanel(ctx)) {
+-    ctx.ui.notify(`The interactive MCP auth panel is only available in the terminal UI (current mode: ${ctx.mode}). Use /mcp-auth <server> to authenticate a specific server.`, "info");
+-    return { configChanged: false };
++    return openMcpAuthFallback(state, ctx);
+   }
+   if (state.programmaticConfig) {
+     ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
+@@ -935,3 +976,4 @@ export async function openMcpAuthPanel(
+ 
+   return { configChanged: false };
+ }
++
+diff --git a/config.ts b/config.ts
+index db256f1df21ab82aafa6a5517f68289be3d8423f..67211e07c55a579791aeed02ca65fa60dbb7263b 100644
+--- a/config.ts
++++ b/config.ts
+@@ -4,7 +4,7 @@ import { homedir } from "node:os";
+ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+ import { parse as parseToml } from "smol-toml";
+ import stripJsonComments from "strip-json-comments";
+-import { getAgentPath, getConfigDirName } from "./agent-dir.ts";
++import { getAgentPath, getMcpProjectConfigDirName } from "./agent-dir.ts";
+ import { getAgentPluginSummaries, loadAgentPluginConfigs, type AgentPluginSummary } from "./agent-plugin-loader.ts";
+ import { cloneBuiltInAgentPluginEntry, isBuiltInAgentPlugin, mergeBuiltInAgentPluginEntries } from "./agent-plugin-provenance.ts";
+ import { loadClaudePluginBundles } from "./claude-plugin-loader.ts";
+@@ -234,11 +234,11 @@ export function getProjectConfigPath(cwd = process.cwd()): string {
+ }
+ 
+ export function getProjectPiConfigPath(cwd = process.cwd()): string {
+-  return resolve(cwd, getConfigDirName(), ADAPTER_CONFIG_NAME);
++  return resolve(cwd, getMcpProjectConfigDirName(), ADAPTER_CONFIG_NAME);
+ }
+ 
+ export function getProjectPiMcpConfigPath(cwd = process.cwd()): string {
+-  return resolve(cwd, getConfigDirName(), PI_MCP_CONFIG_NAME);
++  return resolve(cwd, getMcpProjectConfigDirName(), PI_MCP_CONFIG_NAME);
+ }
+ 
+ let piMcpConfigEnabled = false;
+@@ -327,14 +327,9 @@ function getDroppedCredentialNotices(cwd: string, overridePath?: string): string
+   let servers = host.config.mcpServers;
+   let files = credentialFiles(servers, hostFile);
+   const sourceSpecs = getConfigSources(overridePath, cwd);
+-  const piProjectSource = sourceSpecs.find((source) => source.id === "pi-mcp-project");
+-  const piProjectNames = Object.keys((piProjectSource && readPiMcpConfig(piProjectSource.readPath))?.mcpServers ?? {});
+   for (const source of sourceSpecs) {
+     const loaded = readSourceConfig(source.id, source.readPath);
+     if (!loaded) continue;
+-    if (source.id === "pi-mcp-global") {
+-      for (const name of piProjectNames) delete loaded.mcpServers[name];
+-    }
+     // The same two merges as expandImports and mergeConfigs: the file's own entries over its imports,
+     // then the file over the files before it.
+     const imported = expandImports({ ...loaded, mcpServers: {} }, cwd);
+@@ -593,15 +588,12 @@ export function loadMcpConfigWithSources(overridePath?: string, cwd = process.cw
+     if (source.scope === "project") projectServers.set(name, { path: source.path });
+   }
+ 
+-  const piProjectSource = sourceSpecs.find((source) => source.id === "pi-mcp-project");
+-  const piProjectNames = Object.keys((piProjectSource && readPiMcpConfig(piProjectSource.readPath))?.mcpServers ?? {});
+   for (const source of sourceSpecs) {
+     const loaded = readSourceConfig(source.id, source.readPath);
+     if (!loaded) continue;
+-    // Pi replaces a global entry that the project file redefines; mergeServerMaps would merge fields.
+-    if (source.id === "pi-mcp-global") {
+-      for (const name of piProjectNames) delete loaded.mcpServers[name];
+-    }
++    // Kimchi: the repointed mcp.json project layer MERGES with the global
++    // layer field-wise (mergeServerMaps strips credentials on endpoint
++    // changes) instead of Pi's global-entry replacement.
+     const expandedImport = expandImports(loaded, cwd);
+     const expanded = expandedImport.config;
+     const sourceRef = { path: source.readPath };
+@@ -1286,8 +1278,12 @@ function readValidatedConfig(path: string, label: string): McpConfig | null {
+   }
+ }
+ 
++// Kimchi: the repointed `mcp.json` layers are adapter-format host files, not
++// Pi-native ones, so they go through the adapter parser (settings + imports
++// preserved) instead of the Pi compat translator.
+ function isPiMcpSource(id: ConfigSourceSpec["id"]): boolean {
+-  return id === "pi-mcp-global" || id === "pi-mcp-project";
++  void id;
++  return false;
+ }
+ 
+ function readSourceConfig(id: ConfigSourceSpec["id"], path: string): (McpConfig & { ignoredSettings?: Map<string, string[]> }) | null {
+@@ -1895,7 +1891,10 @@ export function writeProjectServerDisabledOverride(
+   serverName: string,
+   disabled: boolean,
+ ): ServerDisabledOverrideResult {
+-  const filePath = getProjectPiConfigPath(cwd);
++  // Kimchi: write the override where the server was loaded from (provenance),
++  // falling back to the adapter-native project file for unknown servers.
++  const provenancePath = getServerProvenance(overridePath, cwd).get(serverName)?.path;
++  const filePath = provenancePath ?? getProjectPiConfigPath(cwd);
+   const raw = readRawConfigObject(filePath);
+ 
+   const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
+diff --git a/direct-tools.ts b/direct-tools.ts
+index 8f0c1dfc0779d97928c19ade647d4001e4f37da3..5028ff7be24da05481e9852d580bd5ddd48a1b60 100644
+--- a/direct-tools.ts
++++ b/direct-tools.ts
+@@ -11,7 +11,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
+ import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions, scriptPipeHint } from "./mcp-output-guard.ts";
+ import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+ import { isServerDisabled } from "./types.ts";
+-import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
++import { authenticate, hasPendingAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+ import { formatAuthRequiredMessage, normalizeToolArguments, resolveServerUrl, withToolCallIdMeta } from "./utils.ts";
+ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
+@@ -284,6 +284,7 @@ export function createDirectToolExecutor(
+             config: state.config,
+             ...(ownedSignal ? { signal: ownedSignal } : {}),
+             onNeedsAuth: recoverAuthConnection,
++            hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+           },
+           spec.serverName,
+           async (conn) => {
+@@ -327,6 +328,7 @@ export function createDirectToolExecutor(
+           config: state.config,
+           ...(ownedSignal ? { signal: ownedSignal } : {}),
+           onNeedsAuth: recoverAuthConnection,
++          hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+         },
+         spec.serverName,
+         async (conn) => {
+diff --git a/dist/agent-dir.d.ts b/dist/agent-dir.d.ts
+index b5cea54794703a8f94c84552aea1433cd40bcf6e..1cd442e4396b02e5bbefb8346f35f7e1a228c714 100644
+--- a/dist/agent-dir.d.ts
++++ b/dist/agent-dir.d.ts
+@@ -1,4 +1,5 @@
+ export declare function getConfigDirName(): string;
++export declare function getMcpProjectConfigDirName(): string;
+ export declare function getAgentDir(): string;
+ export declare function getAgentPath(...segments: string[]): string;
+ export declare function getAppName(): string;
+diff --git a/dist/agent-dir.js b/dist/agent-dir.js
+index 5e32b5b5ac21b77f3fe654bf081b296490e38272..c4de0fa818ba6b1dc493d434c10da392a4f58410 100644
+--- a/dist/agent-dir.js
++++ b/dist/agent-dir.js
+@@ -1,3 +1,5 @@
++// Host project-path compatibility; tracking: https://github.com/nicobailon/pi-mcp-adapter/issues/491
++// Remove when upstream supports a project config directory independent of the user config directory.
+ import { readFileSync } from "node:fs";
+ import { homedir } from "node:os";
+ import { join, resolve } from "node:path";
+@@ -5,6 +7,10 @@ export function getConfigDirName() {
+     const configDir = readPiConfig()?.configDir;
+     return typeof configDir === "string" && configDir.trim() ? configDir.trim() : ".pi";
+ }
++export function getMcpProjectConfigDirName() {
++    const configDir = readPiConfig()?.mcpProjectConfigDir;
++    return typeof configDir === "string" && configDir.trim() ? configDir.trim() : getConfigDirName();
++}
+ export function getAgentDir() {
+     const piConfig = readPiConfig();
+     const name = piConfig?.name;
+diff --git a/dist/config.d.ts b/dist/config.d.ts
+index ddf4786efa7c6f7808647b78fd55db34cbf9911d..21b1200b44d504ef7b2747e0f41970db097fdd2a 100644
+--- a/dist/config.d.ts
++++ b/dist/config.d.ts
+@@ -98,6 +98,10 @@ export declare function getGenericGlobalConfigPath(): string;
+ export declare function getProjectConfigPath(cwd?: string): string;
+ export declare function getProjectPiConfigPath(cwd?: string): string;
+ export declare function getProjectPiMcpConfigPath(cwd?: string): string;
++/** @internal Set once by the extension on Pi 0.99+, so every loader in the process agrees. */
++export declare function setPiMcpConfigEnabled(enabled: boolean): void;
++/** @internal */
++export declare function isPiMcpConfigEnabled(): boolean;
+ export declare function getLegacyMcpMigrationNotices(cwd?: string, overridePath?: string): string[];
+ export declare function getSharedConfigPath(target: SharedConfigTarget, cwd?: string): string;
+ export declare function getConfigDiscoveryPaths(overridePath?: string, cwd?: string): ConfigDiscoveryPath[];
+diff --git a/dist/config.js b/dist/config.js
+index 3c98c8883f77a2317c945685857a0d3a0ee0b9f1..f05b4e83c739cb82ff96fdc398e4c3a61c0492a1 100644
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -4,7 +4,7 @@ import { homedir } from "node:os";
+ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+ import { parse as parseToml } from "smol-toml";
+ import stripJsonComments from "strip-json-comments";
+-import { getAgentPath, getConfigDirName } from "./agent-dir.js";
++import { getAgentPath, getMcpProjectConfigDirName } from "./agent-dir.js";
+ import { getAgentPluginSummaries, loadAgentPluginConfigs } from "./agent-plugin-loader.js";
+ import { cloneBuiltInAgentPluginEntry, isBuiltInAgentPlugin, mergeBuiltInAgentPluginEntries } from "./agent-plugin-provenance.js";
+ import { loadClaudePluginBundles } from "./claude-plugin-loader.js";
+@@ -130,10 +130,10 @@ export function getProjectConfigPath(cwd = process.cwd()) {
+     return resolve(cwd, PROJECT_CONFIG_NAME);
+ }
+ export function getProjectPiConfigPath(cwd = process.cwd()) {
+-    return resolve(cwd, getConfigDirName(), ADAPTER_CONFIG_NAME);
++    return resolve(cwd, getMcpProjectConfigDirName(), ADAPTER_CONFIG_NAME);
+ }
+ export function getProjectPiMcpConfigPath(cwd = process.cwd()) {
+-    return resolve(cwd, getConfigDirName(), PI_MCP_CONFIG_NAME);
++    return resolve(cwd, getMcpProjectConfigDirName(), PI_MCP_CONFIG_NAME);
+ }
+ let piMcpConfigEnabled = false;
+ /** @internal Set once by the extension on Pi 0.99+, so every loader in the process agrees. */
+@@ -210,16 +210,10 @@ function getDroppedCredentialNotices(cwd, overridePath) {
+     let servers = host.config.mcpServers;
+     let files = credentialFiles(servers, hostFile);
+     const sourceSpecs = getConfigSources(overridePath, cwd);
+-    const piProjectSource = sourceSpecs.find((source) => source.id === "pi-mcp-project");
+-    const piProjectNames = Object.keys((piProjectSource && readPiMcpConfig(piProjectSource.readPath))?.mcpServers ?? {});
+     for (const source of sourceSpecs) {
+         const loaded = readSourceConfig(source.id, source.readPath);
+         if (!loaded)
+             continue;
+-        if (source.id === "pi-mcp-global") {
+-            for (const name of piProjectNames)
+-                delete loaded.mcpServers[name];
+-        }
+         // The same two merges as expandImports and mergeConfigs: the file's own entries over its imports,
+         // then the file over the files before it.
+         const imported = expandImports({ ...loaded, mcpServers: {} }, cwd);
+@@ -434,17 +428,13 @@ export function loadMcpConfigWithSources(overridePath, cwd = process.cwd()) {
+         if (source.scope === "project")
+             projectServers.set(name, { path: source.path });
+     }
+-    const piProjectSource = sourceSpecs.find((source) => source.id === "pi-mcp-project");
+-    const piProjectNames = Object.keys((piProjectSource && readPiMcpConfig(piProjectSource.readPath))?.mcpServers ?? {});
+     for (const source of sourceSpecs) {
+         const loaded = readSourceConfig(source.id, source.readPath);
+         if (!loaded)
+             continue;
+-        // Pi replaces a global entry that the project file redefines; mergeServerMaps would merge fields.
+-        if (source.id === "pi-mcp-global") {
+-            for (const name of piProjectNames)
+-                delete loaded.mcpServers[name];
+-        }
++        // Kimchi: the repointed mcp.json project layer MERGES with the global
++        // layer field-wise (mergeServerMaps strips credentials on endpoint
++        // changes) instead of Pi's global-entry replacement.
+         const expandedImport = expandImports(loaded, cwd);
+         const expanded = expandedImport.config;
+         const sourceRef = { path: source.readPath };
+@@ -666,14 +656,15 @@ function getConfigSources(overridePath, cwd = process.cwd()) {
+     }
+     const piMcpGlobalPath = getPiMcpGlobalConfigPath();
+     if (piMcpConfigEnabled && piMcpGlobalPath !== userPath && !sources.some((source) => source.readPath === piMcpGlobalPath)) {
++        // Kimchi: the repointed host-dir mcp.json IS the user's adapter-format
++        // layer (2.34 semantics), so it reads/writes itself and outranks imports.
+         sources.push({
+             id: "pi-mcp-global",
+-            label: "user-global Pi MCP",
++            label: "user-global MCP",
+             readPath: piMcpGlobalPath,
+-            writePath: userPath,
+-            kind: "import",
+-            importKind: "Pi mcp.json",
+-            shared: true,
++            writePath: piMcpGlobalPath,
++            kind: "user",
++            shared: false,
+             scope: "global",
+         });
+     }
+@@ -737,15 +728,17 @@ function getConfigSources(overridePath, cwd = process.cwd()) {
+         });
+     }
+     // Pi reads `.pi/mcp.json` only in the cwd, so it is not part of ancestor discovery.
++    // Kimchi: the repointed project mcp.json is the primary adapter-format
++    // project layer (2.34 semantics): authoritative over `.mcp.json`, written
++    // back in place, parsed with the adapter parser (settings/imports kept).
+     if (piMcpConfigEnabled && projectPiMcpPath !== userPath && projectPiMcpPath !== piMcpGlobalPath) {
+         sources.push({
+             id: "pi-mcp-project",
+-            label: "project Pi MCP",
++            label: "project MCP",
+             readPath: projectPiMcpPath,
+-            writePath: projectPiPath,
+-            kind: "import",
+-            importKind: "Pi project mcp.json",
+-            shared: true,
++            writePath: projectPiMcpPath,
++            kind: "project",
++            shared: false,
+             scope: "project",
+         });
+     }
+@@ -1103,7 +1096,10 @@ function readValidatedConfig(path, label) {
+     }
+ }
+ function isPiMcpSource(id) {
+-    return id === "pi-mcp-global" || id === "pi-mcp-project";
++    // Kimchi: the repointed `mcp.json` layers are adapter-format host files,
++    // not Pi-native ones, so they go through the adapter parser.
++    void id;
++    return false;
+ }
+ function readSourceConfig(id, path) {
+     return isPiMcpSource(id) ? readPiMcpConfig(path) : readValidatedConfig(path, `MCP config from ${path}`);
+@@ -1696,7 +1692,10 @@ function setServersObject(raw, servers) {
+  * writer never copies a server definition or its credentials into the file.
+  */
+ export function writeProjectServerDisabledOverride(overridePath, cwd, serverName, disabled) {
+-    const filePath = getProjectPiConfigPath(cwd);
++    // Kimchi: write the override where the server was loaded from (provenance),
++    // falling back to the adapter-native project file for unknown servers.
++    const provenancePath = getServerProvenance(overridePath, cwd).get(serverName)?.path;
++    const filePath = provenancePath ?? getProjectPiConfigPath(cwd);
+     const raw = readRawConfigObject(filePath);
+     const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
+     const rawServers = raw[serverKey];
+diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
+index 274849a3a2a60a176db5c16dc003d1aea204e18b..1656ca0d95456dd89086a940926fb0f76a442bd5 100644
+--- a/dist/mcp-auth-flow.js
++++ b/dist/mcp-auth-flow.js
+@@ -3,11 +3,11 @@
+  *
+  * High-level OAuth flow management using the MCP SDK's built-in auth functions.
+  */
+-import { auth as runSdkAuth, extractWWWAuthenticateParams, LATEST_PROTOCOL_VERSION, RegistrationRejectedError, UnauthorizedError, validateClientMetadataUrl, } from "@modelcontextprotocol/client";
++import { auth as runSdkAuth, extractWWWAuthenticateParams, LATEST_PROTOCOL_VERSION, OAuthError, OAuthErrorCode, RegistrationRejectedError, UnauthorizedError, validateClientMetadataUrl, } from "@modelcontextprotocol/client";
+ import open from "open";
+-import { getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
++import { DEFAULT_OAUTH_CALLBACK_PATH, getConfiguredOAuthCallbackPort, getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
+ import { ensureCallbackServer, waitForCallback, cancelPendingCallback, stopCallbackServer, stopCallbackServerIfIdle, releaseCallbackServer, } from "./mcp-callback-server.js";
+-import { getAuthForUrl, getAuthEntry, clearAllCredentials, clearClientInfo, clearCodeVerifier, getOAuthState, clearOAuthState, getAuthBaseDir, beginOAuthRevocation, captureOAuthAuthority, OAuthCredentialStoreError, } from "./mcp-auth.js";
++import { getAuthForUrl, getAuthEntry, clearAllCredentials, clearClientInfo, clearCodeVerifier, getOAuthState, clearOAuthState, getAuthBaseDir, beginOAuthRevocation, captureOAuthAuthority, invalidateAuthEntryCache, OAuthCredentialStoreError, } from "./mcp-auth.js";
+ import { isServerDisabled } from "./types.js";
+ import { formatTerminalError, interpolateEnvVars } from "./utils.js";
+ import { createOAuthFetch, oauthHeaderResolver, resolveOAuthHeaders } from "./mcp-auth-fetch.js";
+@@ -254,7 +254,7 @@ async function probeAuthDiscovery(serverUrl, definition, signal) {
+                 params: {
+                     protocolVersion: LATEST_PROTOCOL_VERSION,
+                     capabilities: {},
+-                    clientInfo: { name: "pi-mcp-adapter", version: "2.11.0" },
++                    clientInfo: { name: "pi-mcp-adapter", version: "5.3.2" },
+                 },
+             }),
+             ...(discoverySignal ? { signal: discoverySignal } : {}),
+@@ -400,6 +400,42 @@ export async function startAuth(serverName, serverUrl, definition, options = {},
+         existingPendingAuth.authority();
+         return { authorizationUrl: existingPendingAuth.authorizationUrl };
+     }
++    // Pre-registered clients must receive the redirect URI their registration was
++    // created with. The default loopback host changed from localhost to 127.0.0.1
++    // (upstream PR #712), so a registration stored by an earlier version now
++    // mismatches what servers such as Google pre-registered (Error 400:
++    // redirect_uri_mismatch). When the server is configured with a fixed
++    // clientId, reuse the stored registration's first redirect URI, or default to
++    // the localhost callback when nothing usable is stored; clients that register
++    // dynamically re-register instead and keep upstream's 127.0.0.1 default.
++    // Tracking: upstream issue pending at https://github.com/nicobailon/pi-mcp-adapter
++    // — remove when upstream prefers the stored registration's redirect URIs.
++    if (config.redirectUri === undefined && config.clientId !== undefined) {
++        let storedRedirectUri;
++        try {
++            const storedForRedirect = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
++            // Only the registration for THIS client may donate its redirect URI; a
++            // stale registration from a different client would send a URI the
++            // server never registered.
++            if (storedForRedirect?.clientInfo?.clientId !== config.clientId) throw new Error("stored client registration does not match the configured clientId");
++            const storedRedirectUris = storedForRedirect?.clientInfo?.redirectUris;
++            const candidate = Array.isArray(storedRedirectUris) ? storedRedirectUris[0] : undefined;
++            if (typeof candidate === "string" && candidate.length > 0) {
++                parseOAuthRedirectUri(candidate);
++                storedRedirectUri = candidate;
++            }
++        }
++        catch {
++            // Best effort: fall back to the default redirect URI below.
++        }
++        authority();
++        throwIfAborted(signal);
++        // No usable stored URI: a fixed-client registration predates this adapter's
++        // 127.0.0.1 default and typically lists only the localhost callback, so
++        // send that instead (what adapter 2.x sent). Use the configured port, not
++        // the currently bound one, which other flows rebind (setOAuthCallbackPort).
++        config.redirectUri = storedRedirectUri ?? `http://localhost:${getConfiguredOAuthCallbackPort()}${DEFAULT_OAUTH_CALLBACK_PATH}`;
++    }
+     const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
+     const manualRedirect = redirectTarget?.mode === "manual";
+     const oauthState = generateState();
+@@ -927,6 +963,40 @@ export async function authenticate(serverName, serverUrl, definition, options =
+         }
+     }
+ }
++/** Upper bound on refresh attempts when the shared store keeps advancing
++ * under this session (chained rotations); each retry is only issued when the
++ * poll found a token different from the last one presented, so a genuinely
++ * revoked token can never loop here. */
++const ROTATION_RECOVERY_MAX_ATTEMPTS = 4;
++/** Rotation-recovery diagnostics are silent by default: recovery is a normal,
++ * silent operation and its rare misses are captured for bug reports by
++ * setting PI_MCP_ADAPTER_DEBUG_AUTH=1 rather than shown to the user. */
++const authRecoveryDebug = process.env.PI_MCP_ADAPTER_DEBUG_AUTH === "1";
++function authRecoveryLog(message) {
++    if (authRecoveryDebug)
++        console.log(message);
++}
++/**
++ * Poll shared credential storage for a refresh token rotated by another
++ * session (single-use refresh tokens retire the presented one on each
++ * grant). Returns the rotated entry, or undefined when nothing changed
++ * before the deadline. Always performs at least one read, even when the
++ * deadline has already passed: a winning write that landed just after a
++ * previous poll's window is caught by the next call instead of costing a
++ * re-auth.
++ */
++async function pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions) {
++    const pollDeadline = Date.now() + 1_500;
++    for (;;) {
++        invalidateAuthEntryCache(serverName);
++        const fresh = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
++        if (fresh?.tokens?.refreshToken !== undefined && fresh.tokens.refreshToken !== presentedRefreshToken)
++            return fresh;
++        if (Date.now() >= pollDeadline)
++            return undefined;
++        await new Promise((resolvePoll) => setTimeout(resolvePoll, 100));
++    }
++}
+ /**
+  * Get a valid access token for a server, refreshing if necessary.
+  *
+@@ -956,12 +1026,21 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+     }
+     if (expired === true && entry.tokens.refreshToken) {
+         console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`);
+-        try {
+-            const config = options.definition ? extractOAuthConfig(options.definition) : {};
+-            const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal);
+-            authority();
++        // Updated to each adopted token: the retry only continues while the
++        // shared store keeps advancing past what this session last presented.
++        let presentedRefreshToken = entry.tokens.refreshToken
++        // Another session may have rotated the stored refresh token while this
++        // process held a cached entry; the SDK must read the current token from
++        // shared storage, not a retired one from this process's cache.
++        invalidateAuthEntryCache(serverName);
++        const config = options.definition ? extractOAuthConfig(options.definition) : {};
++        const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal);
++        // On invalid_grant the stored token may have been rotated concurrently
++        // after this read; retry once from shared storage before pushing the
++        // session into a needless full re-auth.
++        for (let refreshAttempt = 1; refreshAttempt <= ROTATION_RECOVERY_MAX_ATTEMPTS; refreshAttempt++) {
+             const authProvider = new McpOAuthProvider(serverName, serverUrl, config, {
+-                onRedirect: async () => { },
++                onRedirect: async () => {},
+             }, authStorageOptions, runtime.signal, undefined, authority);
+             try {
+                 authProvider.setAuthFetch(fetchFn);
+@@ -984,6 +1063,22 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+                 authority();
+                 throwIfAborted(signal);
+                 if (result !== "AUTHORIZED") {
++                    // The SDK falls back to a fresh authorization flow when a refresh grant
++                    // is rejected invalid_grant; a rotated token from another session may
++                    // already be in shared storage — poll for it and retry while the store
++                    // keeps advancing. The rejected-grant signal gates the poll: this
++                    // fallback is also reached for network and server errors the SDK
++                    // swallowed, where no rotation can have occurred and the poll would
++                    // only delay the failure — those fail fast.
++                    if (authProvider.tokensInvalidatedByRecovery()) {
++                        const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken;
++                        if (adopted !== undefined) {
++                            authRecoveryLog(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
++                            presentedRefreshToken = adopted;
++                            continue;
++                        }
++                        authRecoveryLog(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`);
++                    }
+                     return null;
+                 }
+                 const refreshed = await getAuthForUrl(serverName, serverUrl, authStorageOptions);
+@@ -991,16 +1086,37 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+                 throwIfAborted(signal);
+                 return refreshed?.tokens ?? null;
+             }
++            catch (error) {
++                if (isAbortError(error, signal) || error instanceof OAuthCredentialStoreError)
++                    throw error;
++                // Gate on a rejected grant: either the error itself is an invalid_grant
++                // OAuthError (SDK variants that do not wrap it), or the SDK orchestrator
++                // already consumed that error, invalidated the stored tokens, and
++                // surfaced the recovery retry's own failure — the provider records the
++                // invalidation. Unrelated failures (network, aborts) fail fast instead
++                // of paying the shared-storage poll.
++                if (error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant
++                    || authProvider.tokensInvalidatedByRecovery()) {
++                    const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken;
++                    if (adopted !== undefined) {
++                        authRecoveryLog(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`);
++                        presentedRefreshToken = adopted;
++                        continue;
++                    }
++                    authRecoveryLog(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`);
++                }
++                console.error(`MCP Auth: Token refresh failed for ${serverName}`);
++                return null;
++            }
+             finally {
+                 authProvider.deactivate();
+             }
+         }
+-        catch (error) {
+-            if (isAbortError(error, signal) || error instanceof OAuthCredentialStoreError)
+-                throw error;
+-            console.error(`MCP Auth: Token refresh failed for ${serverName}`);
+-            return null;
+-        }
++        // Reachable only when every attempt adopted a newer token and the cap
++        // exhausted: the shared token is rotating faster than this session can
++        // adopt it. Debug-only like the other recovery diagnostics.
++        authRecoveryLog(`MCP Auth: refresh token for ${serverName} kept rotating under this session; re-auth required after ${ROTATION_RECOVERY_MAX_ATTEMPTS} attempts`);
++        return null;
+     }
+     authority();
+     return null;
+diff --git a/dist/mcp-oauth-provider.js b/dist/mcp-oauth-provider.js
+index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..674448cc4a7d39124f174b29ae5d489b8cf14f1c 100644
+--- a/dist/mcp-oauth-provider.js
++++ b/dist/mcp-oauth-provider.js
+@@ -89,6 +89,14 @@ export function getOAuthCallbackPath() {
+ export function setOAuthCallbackPath(path) {
+     oauthCallbackPath = path.startsWith("/") ? path : `/${path}`;
+ }
++// Kimchi: host hook applied to every authorize URL after the server's own
++// authorizationParams, so a host only fills in what config left unset. Receives the discovery state saved for this flow, so a
++// host can add offline-access request parameters without network calls.
++// Removal: upstream first-class offline-access support.
++let authorizationUrlTransform = (url) => url;
++export function setAuthorizationUrlTransform(transform) {
++    authorizationUrlTransform = transform;
++}
+ const reservedAuthorizationParams = new Set([
+     "client_id",
+     "code_challenge",
+@@ -323,7 +331,10 @@ export class McpOAuthProvider {
+                 : undefined;
+             if (issuer && (storedClient?.issuer !== issuer || storedClient.configPreRegistered !== true)) {
+                 this.throwIfInactive();
+-                updateClientInfo(this.serverName, { clientId: this.config.clientId, issuer, configPreRegistered: true }, this.serverUrl, this.storageOptions);
++                // Preserve the stored registration's redirect URIs: pre-registered
++                // clients must keep receiving the URI their registration was created
++                // with (see the stored-redirect-URI-reuse note in mcp-auth-flow).
++                updateClientInfo(this.serverName, { clientId: this.config.clientId, issuer, configPreRegistered: true, ...(storedClient?.redirectUris !== undefined ? { redirectUris: storedClient.redirectUris } : {}) }, this.serverUrl, this.storageOptions);
+             }
+             const clientSecret = this.config.clientSecret?.startsWith("!")
+                 ? resolveCommandSecret(this.config.clientSecret, `MCP server "${this.serverName}" OAuth clientSecret`)
+@@ -516,7 +527,7 @@ export class McpOAuthProvider {
+             throw new UnauthorizedError(`Re-authentication required for MCP server: ${this.serverName}`);
+         }
+         // URL is passed to callback, not logged (may contain sensitive params)
+-        await this.callbacks.onRedirect(addAuthorizationParams(authorizationUrl, this.config.authorizationParams));
++        await this.callbacks.onRedirect(authorizationUrlTransform(addAuthorizationParams(authorizationUrl, this.config.authorizationParams), this.flowDiscoveryState));
+     }
+     /**
+      * Save the PKCE code verifier.
+@@ -630,6 +641,16 @@ export class McpOAuthProvider {
+                 break;
+         }
+     }
++    /**
++     * True when the SDK orchestrator's recovery path invalidated the stored
++     * tokens through this provider — i.e. a recoverable OAuth error from the
++     * invalid_grant family occurred and a fresh authorization was attempted.
++     * Polling shared storage for a token another session rotated is only
++     * useful then; unrelated failures must not pay the poll delay.
++     */
++    tokensInvalidatedByRecovery() {
++        return this.invalidatedAccessToken !== undefined;
++    }
+     /**
+      * Adds configured authorization-code scope without replacing the SDK's
+      * default token endpoint authentication behavior.
+diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
+index 871d7dc45add97d210886262eb2c3366a4bdbab3..3bdd1403de1c23495bb2777ac99e4951e9f723cc 100644
+--- a/dist/metadata-cache.js
++++ b/dist/metadata-cache.js
+@@ -4,10 +4,9 @@ import { dirname } from "node:path";
+ import { getAgentPath } from "./agent-dir.js";
+ import { createHash } from "node:crypto";
+ import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.js";
+-import { getToolUiResourceUri } from "./ui-app-bridge-helpers.js";
+ import { createToolSelectorCandidateIndex, formatPromptCommandName, formatToolName, getToolNameCandidates, isServerDisabled, isToolAllowed, resolveToolPrefix, resolveUniqueNameOwnership } from "./types.js";
+ import { resourceNameToToolName } from "./resource-tools.js";
+-import { extractToolAnnotations, extractToolUiStreamMode, interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, stableStringify, } from "./utils.js";
++import { extractToolAnnotations, interpolateEnvRecord, interpolateEnvVars, resolveBearerToken, resolveConfigPath, resolveServerUrl, stableStringify, } from "./utils.js";
+ import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.js";
+ const CACHE_VERSION = 1;
+ export function getMetadataCachePath() {
+@@ -271,9 +270,9 @@ export function reconstructToolMetadata(serverName, entry, prefix, definition, c
+             description: tool.description ?? "",
+             ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+             ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+-            ...(tool.uiResourceUri !== undefined ? { uiResourceUri: tool.uiResourceUri } : {}),
++            // Host MCP UI disable: cached UI metadata never reconstructs into
++            // tool metadata. Remove when the harness supports MCP Apps.
+             ...(tool.uiVisibility !== undefined ? { uiVisibility: tool.uiVisibility } : {}),
+-            ...(tool.uiStreamMode !== undefined ? { uiStreamMode: tool.uiStreamMode } : {}),
+             ...(annotations !== undefined ? { annotations } : {}),
+         });
+     }
+@@ -320,21 +319,19 @@ export function createCachedToolSelectorCandidateIndex(configuredServers, cache,
+     return createToolSelectorCandidateIndex(candidates);
+ }
+ export function serializeTools(tools) {
++    // Host MCP UI disable: UI resource metadata is never persisted. Remove
++    // when the harness supports MCP Apps.
+     return tools
+         .filter(t => t?.name)
+         .map(t => {
+-        const uiResourceUri = tryGetToolUiResourceUri(t);
+         const uiVisibility = extractUiToolVisibility(t._meta);
+-        const uiStreamMode = extractToolUiStreamMode(t._meta);
+         const annotations = extractToolAnnotations(t.annotations);
+         return {
+             name: t.name,
+             ...(t.description !== undefined ? { description: t.description } : {}),
+             ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
+             ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
+-            ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
+             ...(uiVisibility !== undefined ? { uiVisibility } : {}),
+-            ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+             ...(annotations !== undefined ? { annotations } : {}),
+         };
+     });
+@@ -386,12 +383,4 @@ export function reconstructPromptMetadata(serverName, prompts, prefix, definitio
+         };
+     });
+ }
+-function tryGetToolUiResourceUri(tool) {
+-    try {
+-        return getToolUiResourceUri({ _meta: tool._meta });
+-    }
+-    catch {
+-        return undefined;
+-    }
+-}
+ //# sourceMappingURL=metadata-cache.js.map
+\ No newline at end of file
+diff --git a/dist/server-manager.js b/dist/server-manager.js
+index 45343f8e7ef172cded28b07b6495f99c8c806558..987f5e7edb4d23ebac622f63933f8a33ac9542e5 100644
+--- a/dist/server-manager.js
++++ b/dist/server-manager.js
+@@ -79,8 +79,15 @@ function shouldFallbackToSse(error, definition) {
+         return false;
+     return error instanceof SdkHttpError && [404, 405, 406, 415].includes(error.status);
+ }
+-function resolveVersionNegotiation(definition) {
+-    switch (definition.protocolVersion) {
++function resolveVersionNegotiation(definition, defaultProtocolVersion) {
++    // The host-level default is scoped to connectionless transports: era
++    // negotiation on stdio costs a sacrificial process spawn (the probe spends
++    // the child's one life), so stdio servers keep the legacy handshake unless
++    // the entry pins a version explicitly.
++    const requested =
++        definition.protocolVersion ??
++        (defaultProtocolVersion === "auto" && definition.url === undefined ? "legacy" : defaultProtocolVersion);
++    switch (requested) {
+         case undefined:
+         case "legacy":
+             return undefined;
+@@ -89,7 +96,7 @@ function resolveVersionNegotiation(definition) {
+         case "2026-07-28":
+             return { mode: { pin: "2026-07-28" } };
+         default:
+-            throw new Error(`Invalid MCP protocolVersion: ${String(definition.protocolVersion)}`);
++            throw new Error(`Invalid MCP protocolVersion: ${String(requested)}`);
+     }
+ }
+ function boundedStderrChunk(chunk) {
+@@ -237,10 +244,15 @@ export class McpServerManager {
+     traceWriter;
+     providerToken;
+     stopped = false;
++    /** Host-level protocol era applied to entries without an explicit `protocolVersion`. */
++    defaultProtocolVersion;
+     /** Default cwd for stdio servers without an explicit config `cwd`. */
+     constructor(defaultCwd) {
+         this.defaultCwd = defaultCwd;
+     }
++    setDefaultProtocolVersion(version) {
++        this.defaultProtocolVersion = version;
++    }
+     setSamplingConfig(config) {
+         this.samplingConfig = config;
+     }
+@@ -1180,7 +1192,7 @@ export class McpServerManager {
+     }
+     createClient(serverName, definition) {
+         const capabilities = this.buildClientCapabilities(definition);
+-        const versionNegotiation = resolveVersionNegotiation(definition);
++        const versionNegotiation = resolveVersionNegotiation(definition, this.defaultProtocolVersion);
+         let client;
+         client = new AdapterClient({ name: `pi-mcp-${serverName}`, version: "1.0.0" }, {
+             jsonSchemaValidator: createJsonSchemaValidator(),
+@@ -1383,7 +1395,10 @@ export class McpServerManager {
+             }
+             const hasImplicitStoredTokens = implicitStoredAuth?.status === "present"
+                 && implicitStoredAuth.entry.tokens !== undefined;
+-            if (hasImplicitStoredTokens)
++            // Explicit-OAuth connections refresh through this provider too; a token
++            // another session rotated must not be served from the stale process cache
++            // at connect time.
++            if (hasImplicitStoredTokens || definition.auth === "oauth")
+                 invalidateAuthEntryCache(serverName);
+             let authState = supportsOAuth(definition)
+                 ? definition.auth === undefined
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index cd540e229b893f6c9cec107b736dcea22ce4111c..c1004a3d0762ed1056b38fc52ea58b896e06e564 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -522,6 +522,23 @@ export interface McpConfig {
+ export interface McpAdapterOptions {
+     config?: McpConfig;
+     configPath?: string;
++    /** Runtime-scoped servers included in every initialization's startup discovery. Proxy-only and never persisted to config files. */
++    initialRuntimeServers?: Record<string, ServerEntry>;
++    /** Timeout for initial runtime discovery requests only; later tool calls use normal server/global timeouts. */
++    initialRuntimeDiscoveryTimeoutMs?: number;
++    /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
++    onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
++    /** Create a session-bound observer during each runtime initialization. */
++    createSessionMetadataObserver?: () => (serverName: string, entry: ServerCacheEntry) => void;
++    /**
++     * MCP protocol era applied to every configured server whose entry does not
++     * set `protocolVersion` itself. `"auto"` offers the SDK's default
++     * 2026-07-28+ modern versions with legacy fallback; `"2026-07-28"` pins the
++     * connection to that revision; `"legacy"` keeps pre-2026 behavior. Hosts
++     * opt in explicitly; when omitted, entries without an explicit
++     * `protocolVersion` keep byte-identical pre-2026 behavior.
++     */
++    defaultProtocolVersion?: "legacy" | "auto" | "2026-07-28";
+ }
+ export type ServerDefinition = ServerEntry;
+ export interface ToolMetadata {
+@@ -651,6 +668,7 @@ export interface McpPanelResult {
+     disabledChanges: Map<string, boolean>;
+     cancelled: boolean;
+ }
++export declare const MAX_TOOL_NAME_LENGTH = 128;
+ export declare function getServerPrefix(serverName: string, mode: ToolPrefix): string;
+ /**
+  * Format a tool name with server prefix.
+diff --git a/dist/types.js b/dist/types.js
+index 298d5f63e404d6743be3cc7d0657ee8191d5bc51..9442387b57d62ed46b7bc1a25869b656ac72e891 100644
+--- a/dist/types.js
++++ b/dist/types.js
+@@ -106,33 +106,54 @@ export function describeIgnoredSettings(provenance) {
+ /**
+  * Get server prefix based on tool prefix mode.
+  */
+-function sanitizeServerPrefix(serverName, preserveProviderValid = true) {
+-    const validCharacters = preserveProviderValid ? /^[A-Za-z0-9_-]$/ : /^[A-Za-z0-9]$/;
+-    return Array.from(serverName, char => validCharacters.test(char) ? char : `_${char.codePointAt(0).toString(16)}_`).join("");
++// Host tool-name compatibility; tracking: getkimchi/kimchi#1168 (sanitize MCP
++// tool names to the provider pattern). Remove when upstream sanitizes both name
++// parts and caps wire names at the 128-char provider limit.
++export const MAX_TOOL_NAME_LENGTH = 128;
++const INVALID_TOOL_NAME_CHAR = /[^a-zA-Z0-9_-]/g;
++function sanitizeNamePart(value) {
++    return value.replace(INVALID_TOOL_NAME_CHAR, "_");
++}
++function sanitizeServerPrefix(serverName) {
++    return sanitizeNamePart(serverName);
+ }
+ export function getServerPrefix(serverName, mode) {
+     if (mode === "none")
+         return "";
+     if (mode === "short") {
+-        let short = sanitizeServerPrefix(serverName.replace(/-?mcp$/i, ""));
++        let short = sanitizeNamePart(serverName.replace(/-?mcp$/i, "").replace(/-/g, "_"));
+         if (!short)
+             short = "mcp";
+         return short;
+     }
+     if (mode === "mcp")
+-        return `mcp__${sanitizeServerPrefix(serverName)}`;
+-    return sanitizeServerPrefix(serverName);
++        return `mcp__${sanitizeNamePart(serverName.replace(/-/g, "_"))}`;
++    return sanitizeNamePart(serverName.replace(/-/g, "_"));
+ }
+ /**
+  * Format a tool name with server prefix.
+  */
++const warnedTruncatedNames = new Set();
+ export function formatToolName(toolName, serverName, prefix) {
+-    const p = getServerPrefix(serverName, prefix);
+-    const sanitized = toolName.replace(/\./g, "_");
+-    if (p && sanitized.startsWith(`${p}_`) && sanitized.length > p.length + 1) {
+-        return sanitized;
++    const serverPrefix = getServerPrefix(serverName, prefix);
++    const toolPart = sanitizeNamePart(toolName) || "tool";
++    if (serverPrefix && toolPart.startsWith(`${serverPrefix}_`) && toolPart.length > serverPrefix.length + 1) {
++        return truncateToolName(toolPart, toolPart);
++    }
++    const name = serverPrefix ? `${serverPrefix}_${toolPart}` : toolPart;
++    return truncateToolName(name, toolPart);
++}
++function truncateToolName(name, toolPart) {
++    if (name.length <= MAX_TOOL_NAME_LENGTH)
++        return name;
++    const limited = toolPart.length >= MAX_TOOL_NAME_LENGTH
++        ? toolPart.slice(0, MAX_TOOL_NAME_LENGTH)
++        : `${name.slice(0, MAX_TOOL_NAME_LENGTH - toolPart.length - 1)}_${toolPart}`;
++    if (!warnedTruncatedNames.has(name)) {
++        warnedTruncatedNames.add(name);
++        console.warn(`MCP: tool name "${name}" exceeds ${MAX_TOOL_NAME_LENGTH} chars; truncated to "${limited}" — may collide with similarly-named tools`);
+     }
+-    return p ? `${p}_${sanitized}` : sanitized;
++    return limited;
+ }
+ export function resolveToolPrefix(definition, globalPrefix) {
+     return definition?.toolPrefix ?? globalPrefix ?? "server";
+@@ -200,13 +221,17 @@ export function formatPromptCommandName(promptName, serverName, prefix) {
+     return `mcp__${serverPart}__${sanitizePromptName(promptName)}`;
+ }
+ function getLegacyServerPrefix(serverName, mode) {
++    // Pre-sanitization era spellings (vendored ≤2.4.x adapter): only hyphens
++    // were replaced with "_", everything else passed through raw — including
++    // spaces, which is exactly the spelling users see in older provider error
++    // messages and write down in includeTools/excludeTools.
+     if (mode === "none")
+         return "";
+     if (mode === "short")
+-        return sanitizeServerPrefix(serverName.replace(/-?mcp$/i, ""), false) || "mcp";
++        return serverName.replace(/-?mcp$/i, "").replace(/-/g, "_") || "mcp";
+     if (mode === "mcp")
+-        return `mcp__${sanitizeServerPrefix(serverName, false)}`;
+-    return sanitizeServerPrefix(serverName, false);
++        return `mcp__${serverName.replace(/-/g, "_")}`;
++    return serverName.replace(/-/g, "_");
+ }
+ function formatLegacyToolName(toolName, serverName, prefix) {
+     const serverPrefix = getLegacyServerPrefix(serverName, prefix);
+@@ -251,14 +276,27 @@ export function createToolSelectorCandidateIndex(allCurrentCandidates, additiona
+         ...(additionalCurrentCandidatesByToolName ? { additionalCurrentCandidatesByToolName } : {}),
+     };
+ }
++// Host exclusion compatibility; tracking: getkimchi/kimchi#1168. Patterns
++// fuzzy-match the way master's fix did: hyphens and invalid characters
++// normalize to "_" on BOTH sides, so excludes written with the raw name (as
++// it appears in provider error messages) or the sanitized form both match.
++function normalizeSelectorValue(value) {
++    return value.replace(/[^a-zA-Z0-9_]/g, "_");
++}
+ export function matchesToolPattern(candidates, patterns) {
+     if (!Array.isArray(patterns) || patterns.length === 0)
+         return false;
+     for (const pattern of patterns) {
+         if (typeof pattern !== "string")
+             continue;
+-        if (!pattern.includes("*") && !pattern.includes("?") && candidates.has(pattern)) {
+-            return true;
++        if (!pattern.includes("*") && !pattern.includes("?")) {
++            if (candidates.has(pattern))
++                return true;
++            const normalized = normalizeSelectorValue(pattern);
++            for (const candidate of candidates) {
++                if (normalizeSelectorValue(candidate) === normalized)
++                    return true;
++            }
+         }
+         if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
+             return true;
+diff --git a/index.ts b/index.ts
+index c6621ff1c9bd2fcb5ed8dc04985db80fe67a9ef0..3fd39c7bc9e5ff25fad20e4fece1ed9c4225ede6 100644
+--- a/index.ts
++++ b/index.ts
+@@ -15,6 +15,7 @@ import { buildProxyDescription, getLargeDirectToolsAdvisory, getMissingConfigure
+ import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
+ import { isServerCacheValid, loadMetadataCache, parseDirectToolSelectors, withSessionMetadata, type MetadataCache } from "./metadata-cache.ts";
+ import { createPromptCommand, resolveCachedPrompts } from "./prompts.ts";
++import { createMcpPromptAutocompleteProvider } from "./prompt-autocomplete.ts";
+ import { logger } from "./logger.ts";
+ import { formatMcpFooterStatus, formatTerminalError, getConfigPathFromArgv, normalizeDirectToolInputSchema, truncateAtWord } from "./utils.ts";
+ import { createMcpDirectToolCallRenderer, createMcpProxyToolCallRenderer, createMcpScriptToolCallRenderer, createMcpToolResultRenderer, resolveMcpToolRenderOptions } from "./tool-result-renderer.ts";
+@@ -210,10 +211,27 @@ function resolveNamespaceEnvOverride(
+ 
+ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   const sessionConfig = options.config !== undefined ? cloneMcpConfig(options.config) : undefined;
++  const defaultProtocolVersion = options.defaultProtocolVersion;
+   const programmaticConfig = sessionConfig !== undefined;
+   // Before the first config load, so every load in this process agrees.
+   if (!programmaticConfig) setPiMcpConfigEnabled(piSupportsMcp(pi));
+   let state: McpExtensionState | null = null;
++
++  // Kimchi host: one-time registration of the live prompt-command autocomplete
++  // wrapper. The wrapper closes over `state` via a getter, so owner handoffs
++  // and hands-off state resets need no re-registration. Registration is
++  // interactive-only: outside the TUI broker the call is a documented no-op.
++  let promptAutocompleteWrapperRegistered = false;
++  const registerPromptAutocompleteWrapper = (ctx: ExtensionContext): void => {
++    if (promptAutocompleteWrapperRegistered) return;
++    if (!ctx.hasUI || ctx.mode !== "tui") return;
++    try {
++      ctx.ui.addAutocompleteProvider((base) => createMcpPromptAutocompleteProvider(() => state, base, resolvePromptInvocation));
++      promptAutocompleteWrapperRegistered = true;
++    } catch (error) {
++      logger.debug(`MCP: prompt autocomplete wrapper registration failed: ${error instanceof Error ? error.message : String(error)}`);
++    }
++  };
+   let sessionCtx: ExtensionContext | null = null;
+   let initPromise: Promise<McpExtensionState> | null = null;
+   let initStartedPromise: Promise<void> | null = null;
+@@ -378,7 +396,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   const envRaw = process.env.MCP_DIRECT_TOOLS;
+   const envDirectToolOverride = parseEnvDirectToolOverride(envRaw);
+   const namespaceEnvOverride = resolveNamespaceEnvOverride(envRaw, envDirectToolOverride);
+-  const hasStartupServer = Object.values(earlyConfig.mcpServers).some((definition) =>
++  const hasStartupServer = [...Object.values(earlyConfig.mcpServers), ...Object.values(options.initialRuntimeServers ?? {})].some((definition) =>
+     !isServerDisabled(definition) && (definition.lifecycle === "eager" || definition.lifecycle === "keep-alive"));
+   const registeredDirectTools = new Map<string, string>();
+   const registeredDirectToolServers = new Map<string, string>();
+@@ -405,6 +423,10 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   // Session/runtime scoped server registrations from other extensions. They
+   // survive session restarts within this install and die with the process.
+   const runtimeServers = new Map<string, { definition: ServerEntry; entry: ServerEntry }>();
++  for (const [name, definition] of Object.entries(options.initialRuntimeServers ?? {})) {
++    const snapshotDefinition = structuredClone(definition);
++    runtimeServers.set(name, { definition: snapshotDefinition, entry: { ...structuredClone(snapshotDefinition), directTools: false } });
++  }
+   // Every server registered with Pi's `pi.registerMcpServer()`, and the ones applied to the
+   // session by name, with their config JSON; `registration` is null when skipped or overridden.
+   let piRegistered: RegisteredMcpServer[] = [];
+@@ -749,6 +771,9 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+       if (hasProjectServerDefinitions(loadedConfig)) return undefined;
+       config = loadedConfig;
+     }
++    for (const [name, { entry }] of runtimeServers) {
++      if (!Object.hasOwn(config.mcpServers, name)) config.mcpServers[name] = entry;
++    }
+     const cache = loadMetadataCache();
+     const enabledServers = Object.values(config.mcpServers).filter((definition) => !isServerDisabled(definition));
+     if (enabledServers.some((definition) => definition.lifecycle === "eager" || definition.lifecycle === "keep-alive")) return undefined;
+@@ -796,6 +821,20 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+ 
+   const registeredPromptCommands = new Set<string>();
+ 
++  function resolvePromptInvocation(commandName: string): string | null {
++    if (!registeredPromptCommands.has(commandName)) return null;
++    try {
++      const matches = pi.getCommands().filter((command) => command.name === commandName);
++      // Public command info exposes raw names, not Pi's resolved invocation
++      // names. When the raw name is shared, its owner and :N alias cannot be
++      // established here; fail closed and leave the base provider in charge.
++      return matches.length === 1 ? commandName : null;
++    } catch {
++      // Lifecycle handoffs can temporarily make the registry inaccessible.
++      return null;
++    }
++  }
++
+   function registerPromptCommands(specs: Iterable<PromptMetadata>): void {
+     for (const spec of specs) {
+       if (registeredPromptCommands.has(spec.commandName)) {
+@@ -1099,6 +1138,10 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+               ...(sessionConfig !== undefined ? { config: sessionConfig } : {}),
+             }
+           : {}),
++        ...(defaultProtocolVersion !== undefined ? { defaultProtocolVersion } : {}),
++        onSessionMetadata: options.createSessionMetadataObserver?.() ?? options.onSessionMetadata,
++        initialRuntimeServers: Object.fromEntries([...runtimeServers].map(([name, { entry }]) => [name, entry])),
++        initialRuntimeDiscoveryTimeoutMs: options.initialRuntimeDiscoveryTimeoutMs,
+         oauthRuntime,
+         excludeProjectServers,
+         // Pi awaits session_start handlers in order. Returning before the approval
+@@ -1144,7 +1187,9 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+         for (const [name, { entry }] of runtimeServers) {
+           guard();
+           if (Object.hasOwn(nextState.config.mcpServers, name)) {
+-            console.error(`MCP: runtime-registered server "${name}" now collides with a configured server; keeping the configured server`);
++            if (nextState.config.mcpServers[name] !== entry) {
++              console.error(`MCP: runtime-registered server "${name}" now collides with a configured server; keeping the configured server`);
++            }
+             continue;
+           }
+           nextState.config.mcpServers[name] = entry;
+@@ -1164,6 +1209,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+           syncToolSurface(ctx);
+         };
+         guard();
++        // Kimchi host: the TUI autocomplete provider snapshots the registered
++        // command list once. A live wrapper over it surfaces prompt commands
++        // registered later in the session. One registration per process — the
++        // wrapper reads state at keystroke time, so owner handoffs need no
++        // re-registration. ctx.ui is a no-op broker outside interactive mode.
++        registerPromptAutocompleteWrapper(ctx);
++        guard();
+         syncPromptCommands();
+         guard();
+         syncToolSurface(ctx);
+@@ -1706,8 +1758,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+     },
+   });
+   registerMcpCommand("mcp-adapter");
+-  // /mcp at load replaces Pi 0.99+'s built-in MCP; a supplied config doesn't read Pi's files, so it keeps the built-in.
+-  if (!programmaticConfig || !piSupportsMcp(pi)) registerMcpCommand("mcp");
++  // Kimchi: always register /mcp — pi 0.99+/1.2's built-in MCP reads the same
++  // mcp.json files Kimchi's compat layers write (adapter-format), so keeping
++  // the built-in double-connects every server and its stricter native schema
++  // (auth as {provider}) rejects the adapter's "oauth" shorthand with a
++  // startup warning. Registering /mcp at load makes pi's loader omit the
++  // replaceable built-in extension entirely (upstream-designed replacement).
++  registerMcpCommand("mcp");
+   // Opt-in `mcp.panel.open` keys open the panel without touching the editor draft.
+   // Shortcut handlers get no reload(), so dispatch the command: its context has one.
+   if (!programmaticConfig) {
+@@ -2354,7 +2411,14 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
+   return function mcpAdapter(pi: ExtensionAPI) {
+     installMcpAdapter(pi, {
+       ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
++      initialRuntimeServers: options.initialRuntimeServers,
++      initialRuntimeDiscoveryTimeoutMs: options.initialRuntimeDiscoveryTimeoutMs,
+       ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
++      ...(options.defaultProtocolVersion !== undefined
++        ? { defaultProtocolVersion: options.defaultProtocolVersion }
++        : {}),
++      onSessionMetadata: options.onSessionMetadata,
++      createSessionMetadataObserver: options.createSessionMetadataObserver,
+     });
+   };
+ }
+diff --git a/init.ts b/init.ts
+index 3f465e9e31cf551e7e6bc56458f9fa7d7cf1f5fb..f7bd0baac9109cc732510caaffb7444779bfb1cd 100644
+--- a/init.ts
++++ b/init.ts
+@@ -150,12 +150,18 @@ export async function initializeMcp(
+       : await applyProjectServerTrustToConfig(loadMcpConfig(configPath, cwd), ctx);
+   options.onProjectTrustResolved?.();
+   const config = trustResult.config;
++  for (const [name, entry] of Object.entries(options.initialRuntimeServers ?? {})) {
++    if (!Object.hasOwn(config.mcpServers, name)) config.mcpServers[name] = entry;
++  }
+   const authStorageOptions = getAuthStorageOptions(config.settings?.oauthDir, cwd, config.settings?.oauthCredentialStore);
+ 
+   const ownsOAuthRuntime = options.oauthRuntime === undefined;
+   const oauthRuntime = options.oauthRuntime ?? createOAuthRuntime(owner.signal);
+   const manager = new McpServerManager(cwd);
+   manager.setRuntimeSignal?.(owner.signal);
++  if (options.defaultProtocolVersion !== undefined) {
++    manager.setDefaultProtocolVersion?.(options.defaultProtocolVersion);
++  }
+   manager.setOAuthRuntime?.(oauthRuntime);
+   manager.setDefaultRequestTimeoutMs(config.settings?.requestTimeoutMs);
+   manager.setTraceConfig?.(config.settings?.trace);
+@@ -208,6 +214,7 @@ export async function initializeMcp(
+   const consentManager = new ConsentManager("once-per-server", persistSessionApproval);
+   const state: McpExtensionState = {
+     owner,
++    onSessionMetadata: options.onSessionMetadata,
+     manager,
+     lifecycle,
+     toolMetadata,
+@@ -315,7 +322,12 @@ export async function initializeMcp(
+     }
+ 
+     const cachedEntry = cache?.servers?.[name];
+-    if (cachedEntry && isServerCacheValid(cachedEntry, definition)) {
++    // Runtime-scoped servers (initialRuntimeServers) join every initialization's
++    // startup discovery regardless of cache state: a valid-looking but empty
++    // or private-scoped cached catalog must not suppress the live listing the
++    // host asked for.
++    const runtimeDiscoveryServer = options.initialRuntimeServers?.[name] !== undefined;
++    if (cachedEntry && isServerCacheValid(cachedEntry, definition) && !runtimeDiscoveryServer) {
+       const hasToolFilters =
+         (Array.isArray(definition.includeTools) && definition.includeTools.length > 0) ||
+         (Array.isArray(definition.excludeTools) && definition.excludeTools.length > 0);
+@@ -334,10 +346,10 @@ export async function initializeMcp(
+         serverInstructions.set(name, cachedEntry.instructions);
+       }
+       seedObservedOutputs(state, name, cachedEntry);
+-    } else if (cachedEntry?.discoveryFailed && cachedEntry.configHash === tryComputeServerHash(definition)) {
++    } else if (cachedEntry?.discoveryFailed && cachedEntry.configHash === tryComputeServerHash(definition) && !runtimeDiscoveryServer) {
+       // Startup tries a config once; a server that failed is tried again on first use.
+       failedDiscovery.add(name);
+-    } else if (cachedEntry?.cacheScope !== "private") {
++    } else if (runtimeDiscoveryServer || cachedEntry?.cacheScope !== "private") {
+       needsDiscovery.add(name);
+     }
+   }
+@@ -357,14 +369,27 @@ export async function initializeMcp(
+ 
+   const results = await parallelLimit(startupServers, 10, async ([name, definition]) => {
+     const resident = (definition.lifecycle ?? "lazy") !== "lazy" || getEffectiveIdleTimeoutMinutes(state, name) === 0;
++    const discoveryDefinition = options.initialRuntimeServers?.[name] === definition && options.initialRuntimeDiscoveryTimeoutMs !== undefined
++      ? { ...definition, requestTimeoutMs: options.initialRuntimeDiscoveryTimeoutMs }
++      : definition;
+     try {
+-      const connection = await manager.connect(name, definition, runtimeSignal);
++      const connection = await manager.connect(name, discoveryDefinition, runtimeSignal);
+       if (connection.status === "needs-auth") {
+         const error = typeof definition.auth === "object"
+           ? providerSignInMessage(name, definition.auth.provider)
+           : `OAuth authentication required. Run /mcp-auth ${name}.`;
+         return { name, definition, resident, connection: null, error, transient: false };
+       }
++      // Resident connections use normal per-server/global timeouts for later
++      // calls. The task channel captured the discovery timeout as its own
++      // default when the connection was created, and tasks/* polls fall back
++      // to that default, so reset it alongside the restored definition.
++      if (discoveryDefinition !== definition) {
++        connection.definition = definition;
++        connection.taskChannel?.setDefaultTimeoutMs(
++          definition.requestTimeoutMs ?? config.settings?.requestTimeoutMs,
++        );
++      }
+       // Capture before closing; the closed connection keeps its catalog for publication below.
+       captureMetadata(state, name, connection, () => cache);
+       if (!resident) await manager.close(name);
+@@ -670,6 +695,12 @@ function captureMetadata(
+   };
+ 
+   (state.sessionMetadata ??= new Map()).set(serverName, entry);
++  try {
++    state.onSessionMetadata?.(serverName, entry);
++  } catch (error) {
++    const message = error instanceof Error ? error.message : String(error);
++    logger.debug(`MCP: session metadata observer failed for ${serverName}: ${message}`);
++  }
+   seedObservedOutputs(state, serverName, entry);
+   return entry;
+ }
+@@ -726,9 +757,15 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+   const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
+   throwIfAborted(ownedSignal);
+   const connection = state.manager.getConnection(serverName);
+-  if (connection?.status === "needs-auth") {
++  if (connection?.status === "needs-auth"
++    && hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime ?? undefined)) {
++    // A user-initiated interactive flow owns this needs-auth episode right
++    // now; racing it from a tool call would create competing OAuth owners.
+     return false;
+   }
++  // Otherwise a needs-auth route may be satisfiable again after an
++  // out-of-band re-auth (settings probe, another chat): fall through to the
++  // normal connect path, which re-reads the shared credential store.
+   if (connection?.status === "connected") {
+     await state.manager.ensureListen?.(serverName, connection);
+     updateServerMetadata(state, serverName);
+@@ -737,7 +774,7 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+   }
+ 
+   const failedAgo = getFailureAgeSeconds(state, serverName);
+-  if (failedAgo !== null) return false;
++  if (failedAgo !== null && connection?.status !== "needs-auth") return false;
+ 
+   const definition = state.config.mcpServers[serverName];
+   if (!definition || isServerDisabled(definition)) return false;
+@@ -747,7 +784,9 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+       const status = formatMcpStatus(state.config, `connecting to ${serverName}...`);
+       state.ui.setStatus("mcp", status);
+     }
+-    const newConnection = await state.manager.connect(serverName, definition, ownedSignal);
++    const newConnection = connection?.status === "needs-auth"
++      ? await state.manager.reconnect(serverName, definition, connection, ownedSignal)
++      : await state.manager.connect(serverName, definition, ownedSignal);
+     if (newConnection.status === "needs-auth") {
+       return false;
+     }
+diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
+index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..692b85761311d5c2ae668fc0fc5199f2ee983e55 100644
+--- a/mcp-auth-flow.ts
++++ b/mcp-auth-flow.ts
+@@ -8,6 +8,8 @@ import {
+   auth as runSdkAuth,
+   extractWWWAuthenticateParams,
+   LATEST_PROTOCOL_VERSION,
++  OAuthError,
++  OAuthErrorCode,
+   RegistrationRejectedError,
+   UnauthorizedError,
+   validateClientMetadataUrl,
+@@ -15,6 +17,8 @@ import {
+ } from "@modelcontextprotocol/client"
+ import open from "open"
+ import {
++  DEFAULT_OAUTH_CALLBACK_PATH,
++  getConfiguredOAuthCallbackPort,
+   getOAuthCallbackPort,
+   McpOAuthProvider,
+   type McpOAuthConfig,
+@@ -26,6 +30,8 @@ import {
+   stopCallbackServer,
+   stopCallbackServerIfIdle,
+   releaseCallbackServer,
++  markAuthStateCompleted,
++  isAuthStateRecentlyCompleted,
+ } from "./mcp-callback-server.ts"
+ import {
+   getAuthForUrl,
+@@ -38,6 +44,8 @@ import {
+   getAuthBaseDir,
+   beginOAuthRevocation,
+   captureOAuthAuthority,
++  invalidateAuthEntryCache,
++  type AuthEntry,
+   OAuthCredentialStoreError,
+   type AuthStorageOptions,
+   type OAuthAuthority,
+@@ -53,6 +61,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
+ /** Auth status for a server */
+ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
+ 
++// Token exchanges currently in flight, keyed by pending-auth key. Serializes
++// concurrent completions of the same flow (e.g. the callback listener racing
++// a pasted redirect URL) so only one exchange runs and both callers observe
++// the same result.
++const exchangesInFlight = new Map<string, Promise<AuthStatus>>()
++
+ export interface McpOAuthRuntime {
+   readonly signal: AbortSignal
+ }
+@@ -94,6 +108,12 @@ type PendingAuth = {
+   authorizationUrl: string
+   manualRedirect: boolean
+   manualCompletionController?: AbortController
++  /**
++   * True when a manual (remote https) redirect flow also captured a loopback
++   * callback listener, so the flow can complete either by paste or by the
++   * remote endpoint bouncing the browser down to the local callback server.
++   */
++  loopbackCapture?: boolean
+   discovery: AuthDiscovery
+   getHeaders: () => Headers
+   authStorageOptions: AuthStorageOptions
+@@ -344,7 +364,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
+         params: {
+           protocolVersion: LATEST_PROTOCOL_VERSION,
+           capabilities: {},
+-          clientInfo: { name: "pi-mcp-adapter", version: "2.11.0" },
++          clientInfo: { name: "pi-mcp-adapter", version: "5.3.2" },
+         },
+       }),
+       ...(discoverySignal ? { signal: discoverySignal } : {}),
+@@ -461,7 +481,7 @@ export async function startAuth(
+   definition?: ServerEntry,
+   options: AuthenticateOptions = {},
+   operationAuthority?: OAuthAuthority,
+-): Promise<{ authorizationUrl: string }> {
++): Promise<{ authorizationUrl: string; loopbackCapture?: boolean }> {
+   if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
+   const authority = operationAuthority ?? captureOAuthAuthority(serverName)
+   authority()
+@@ -512,13 +532,58 @@ export async function startAuth(
+   const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
+   if (existingPendingAuth?.serverUrl === serverUrl) {
+     existingPendingAuth.authority()
+-    return { authorizationUrl: existingPendingAuth.authorizationUrl }
++    return { authorizationUrl: existingPendingAuth.authorizationUrl, ...(existingPendingAuth.loopbackCapture ? { loopbackCapture: true } : {}) }
++  }
++
++  // Pre-registered clients must receive the redirect URI their registration was
++  // created with. The default loopback host changed from localhost to 127.0.0.1
++  // (upstream PR #712), so a registration stored by an earlier version now
++  // mismatches what servers such as Google pre-registered (Error 400:
++  // redirect_uri_mismatch). When the server is configured with a fixed
++  // clientId, reuse the stored registration's first redirect URI, or default to
++  // the localhost callback when nothing usable is stored; clients that register
++  // dynamically re-register instead and keep upstream's 127.0.0.1 default.
++  // Tracking: upstream issue pending at https://github.com/nicobailon/pi-mcp-adapter
++  // — remove when upstream prefers the stored registration's redirect URIs.
++  if (config.redirectUri === undefined && config.clientId !== undefined) {
++    let storedRedirectUri: string | undefined
++    try {
++      const storedForRedirect = await getAuthForUrl(serverName, serverUrl, authStorageOptions)
++      // Only the registration for THIS client may donate its redirect URI; a
++      // stale registration from a different client would send a URI the
++      // server never registered.
++      if (storedForRedirect?.clientInfo?.clientId !== config.clientId) throw new Error("stored client registration does not match the configured clientId")
++      const storedRedirectUris = storedForRedirect?.clientInfo?.redirectUris
++      const candidate = Array.isArray(storedRedirectUris) ? storedRedirectUris[0] : undefined
++      if (typeof candidate === "string" && candidate.length > 0) {
++        parseOAuthRedirectUri(candidate)
++        storedRedirectUri = candidate
++      }
++    } catch {
++      // Best effort: fall back to the default redirect URI below.
++    }
++    authority()
++    throwIfAborted(signal)
++    // No usable stored URI: a fixed-client registration predates this adapter's
++    // 127.0.0.1 default and typically lists only the localhost callback, so
++    // send that instead (what adapter 2.x sent). Use the configured port, not
++    // the currently bound one, which other flows rebind (setOAuthCallbackPort).
++    config.redirectUri = storedRedirectUri ?? `http://localhost:${getConfiguredOAuthCallbackPort()}${DEFAULT_OAUTH_CALLBACK_PATH}`
+   }
+ 
+   const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined
+   const manualRedirect = redirectTarget?.mode === "manual"
+   const oauthState = generateState()
+ 
++  // Loopback capture for remote (https) redirect URIs.
++  // Tracking: https://github.com/nicobailon/pi-mcp-adapter/issues (pending) — remove
++  // once upstream supports an opportunistic loopback listener for manual redirect
++  // flows. A pre-registered remote https redirect URI (for example a hosted bounce
++  // page that redirects the browser to the default loopback callback) normally
++  // completes by pasting the final callback URL. When that remote endpoint in fact
++  // bounces to the default loopback port/path, starting the local callback server
++  // lets the flow finish automatically; the paste prompt remains as a fallback.
++  let loopbackCapture = false
+   if (!manualRedirect) {
+     try {
+       await ensureCallbackServer({
+@@ -551,6 +616,18 @@ export async function startAuth(
+       }
+       throw error
+     }
++  } else {
++    try {
++      await ensureCallbackServer({ strictPort: true, oauthState, reserveState: true })
++      authority()
++      throwIfAborted(signal)
++      loopbackCapture = true
++    } catch {
++      // The loopback endpoint is best-effort for remote redirect URIs: keep the
++      // manual paste flow when the default callback port/path is unavailable.
++      releaseCallbackServer(oauthState)
++      await stopCallbackServerIfIdle().catch(() => {})
++    }
+   }
+ 
+   let capturedUrl: URL | undefined
+@@ -612,13 +689,14 @@ export async function startAuth(
+       authorizationUrl: capturedUrl.toString(),
+       manualRedirect,
+       ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
++      ...(loopbackCapture ? { loopbackCapture: true } : {}),
+       discovery,
+       getHeaders,
+       authStorageOptions,
+       authority,
+     }, oauthState, signal, generation)
+     authority()
+-    return { authorizationUrl: capturedUrl.toString() }
++    return { authorizationUrl: capturedUrl.toString(), ...(loopbackCapture ? { loopbackCapture: true } : {}) }
+   } catch (error) {
+     authProvider.deactivate()
+     try {
+@@ -901,6 +979,13 @@ export async function completeAuthFromInput(
+     throw new Error("Paste the full OAuth callback URL, including its code and state parameters")
+   }
+   const parsed = parseAuthorizationRedirectInput(input, oauthState)
++  // Paste-after-completion: if the pasted state matches a flow that already
++  // exchanged its code (post-exchange tombstone), report success instead of
++  // failing with "No pending OAuth flow".
++  const pastedState = getSearchParamsFromInput(input.trim())?.get("state")
++  if (pastedState && isAuthStateRecentlyCompleted(pastedState)) {
++    return "authenticated"
++  }
+   return completeAuth(serverName, parsed, options)
+ }
+ 
+@@ -921,6 +1006,13 @@ export async function completeAuth(
+   const signal = combineAbortSignals(runtime.signal, options.signal)
+   throwIfAborted(signal)
+   const key = getPendingAuthKey(serverName, fallbackAuthStorageOptions)
++  // Serialize concurrent exchanges of the same flow (listener vs paste race):
++  // the second caller awaits the first caller's in-flight exchange.
++  const inFlight = exchangesInFlight.get(key)
++  if (inFlight) {
++    return inFlight
++  }
++  const doCompleteAuth = async (): Promise<AuthStatus> => {
+   const pendingAuth = runtimeState.pendingAuths.get(key)
+   const authStorageOptions = pendingAuth?.authStorageOptions ?? fallbackAuthStorageOptions
+   if (!pendingAuth) {
+@@ -965,6 +1057,9 @@ export async function completeAuth(
+     if (result !== "AUTHORIZED") {
+       throw new UnauthorizedError("Failed to authorize")
+     }
++    if (oauthState) {
++      markAuthStateCompleted(oauthState)
++    }
+     return "authenticated"
+   } catch (error) {
+     caughtError = error
+@@ -982,6 +1077,14 @@ export async function completeAuth(
+       if (caughtError === undefined) pendingAuth.authority()
+     }
+   }
++  }
++  const exchange = doCompleteAuth()
++  exchangesInFlight.set(key, exchange)
++  try {
++    return await exchange
++  } finally {
++    exchangesInFlight.delete(key)
++  }
+ }
+ 
+ /**
+@@ -1045,7 +1148,7 @@ export async function authenticate(
+       if (!pendingAuth) {
+         throw new Error(`No pending OAuth flow for server: ${serverName}`)
+       }
+-      if (pendingAuth.manualRedirect && !options.onAuthorizationInput) {
++      if (pendingAuth.manualRedirect && !pendingAuth.loopbackCapture && !options.onAuthorizationInput) {
+         throw new Error(
+           `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
+         )
+@@ -1053,7 +1156,7 @@ export async function authenticate(
+ 
+       // Register the localhost callback before opening the browser. Remote
+       // pre-registered callbacks are completed by pasting their full URL.
+-      const callbackPromise: Promise<AuthorizationCodeInput> = pendingAuth.manualRedirect
++      const callbackPromise: Promise<AuthorizationCodeInput> = pendingAuth.manualRedirect && !pendingAuth.loopbackCapture
+         ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
+         : waitForCallback(oauthState)
+       void callbackPromise.catch(() => {})
+@@ -1121,6 +1224,46 @@ export async function authenticate(
+   }
+ }
+ 
++/** Upper bound on refresh attempts when the shared store keeps advancing
++ * under this session (chained rotations); each retry is only issued when the
++ * poll found a token different from the last one presented, so a genuinely
++ * revoked token can never loop here. */
++const ROTATION_RECOVERY_MAX_ATTEMPTS = 4
++
++/** Rotation-recovery diagnostics are silent by default: recovery is a normal,
++ * silent operation and its rare misses are captured for bug reports by
++ * setting PI_MCP_ADAPTER_DEBUG_AUTH=1 rather than shown to the user. */
++const authRecoveryDebug = process.env.PI_MCP_ADAPTER_DEBUG_AUTH === "1"
++
++function authRecoveryLog(message: string): void {
++  if (authRecoveryDebug) console.log(message)
++}
++
++/**
++ * Poll shared credential storage for a refresh token rotated by another
++ * session (single-use refresh tokens retire the presented one on each
++ * grant). Returns the rotated entry, or undefined when nothing changed
++ * before the deadline. Always performs at least one read, even when the
++ * deadline has already passed: a winning write that landed just after a
++ * previous poll's window is caught by the next call instead of costing a
++ * re-auth.
++ */
++async function pollForRotatedToken(
++  serverName: string,
++  serverUrl: string,
++  presentedRefreshToken: string,
++  authStorageOptions: AuthStorageOptions,
++): Promise<AuthEntry | undefined> {
++  const pollDeadline = Date.now() + 1_500
++  for (;;) {
++    invalidateAuthEntryCache(serverName)
++    const fresh = await getAuthForUrl(serverName, serverUrl, authStorageOptions)
++    if (fresh?.tokens?.refreshToken !== undefined && fresh.tokens.refreshToken !== presentedRefreshToken) return fresh
++    if (Date.now() >= pollDeadline) return undefined
++    await new Promise((resolvePoll) => setTimeout(resolvePoll, 100))
++  }
++}
++
+ /**
+  * Get a valid access token for a server, refreshing if necessary.
+  * 
+@@ -1155,51 +1298,100 @@ export async function getValidToken(
+ 
+   if (expired === true && entry.tokens.refreshToken) {
+     console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`)
+-
+-    try {
+-      const config = options.definition ? extractOAuthConfig(options.definition) : {}
+-      const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal)
+-      authority()
++    // Updated to each adopted token: the retry only continues while the
++    // shared store keeps advancing past what this session last presented.
++    let presentedRefreshToken = entry.tokens.refreshToken
++    // Another session may have rotated the stored refresh token while this
++    // process held a cached entry; the SDK must read the current token from
++    // shared storage, not a retired one from this process's cache.
++    invalidateAuthEntryCache(serverName)
++    const config = options.definition ? extractOAuthConfig(options.definition) : {}
++    const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal)
++    // On invalid_grant the stored token may have been rotated concurrently
++    // after this read; retry once from shared storage before pushing the
++    // session into a needless full re-auth.
++    for (let refreshAttempt = 1; refreshAttempt <= ROTATION_RECOVERY_MAX_ATTEMPTS; refreshAttempt++) {
+       const authProvider = new McpOAuthProvider(serverName, serverUrl, config, {
+         onRedirect: async () => {},
+       }, authStorageOptions, runtime.signal, undefined, authority)
+-
+       try {
+         authProvider.setAuthFetch(fetchFn)
+         const clientInfo = await authProvider.clientInformation()
+         authority()
+         throwIfAborted(signal)
+         if (!clientInfo) {
+-          console.log(`MCP Auth: No client info for refresh for ${serverName}`)
+-          return null
++            console.log(`MCP Auth: No client info for refresh for ${serverName}`)
++            return null
+         }
+-
+         const discovery = applyOAuthConfig(await probeAuthDiscovery(serverUrl, options.definition, signal), config)
+         authority()
+         throwIfAborted(signal)
+         const result = await abortable(runSdkAuth(authProvider, {
+-          serverUrl,
+-          ...discovery,
+-          ...(options.skipIssuerMetadataValidation === true ? { skipIssuerMetadataValidation: true } : {}),
+-          fetchFn,
++            serverUrl,
++            ...discovery,
++            ...(options.skipIssuerMetadataValidation === true ? { skipIssuerMetadataValidation: true } : {}),
++            fetchFn,
+         }), signal)
+         authority()
+         throwIfAborted(signal)
+         if (result !== "AUTHORIZED") {
+-          return null
++            // The SDK falls back to a fresh authorization flow when a refresh grant
++            // is rejected invalid_grant; a rotated token from another session may
++            // already be in shared storage — poll for it and retry while the store
++            // keeps advancing. The rejected-grant signal gates the poll: this
++            // fallback is also reached for network and server errors the SDK
++            // swallowed, where no rotation can have occurred and the poll would
++            // only delay the failure — those fail fast.
++            if (authProvider.tokensInvalidatedByRecovery()) {
++                const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken
++                if (adopted !== undefined) {
++                    authRecoveryLog(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
++                    presentedRefreshToken = adopted
++                    continue
++                }
++                authRecoveryLog(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`)
++            }
++            return null
+         }
+         const refreshed = await getAuthForUrl(serverName, serverUrl, authStorageOptions)
+         authority()
+         throwIfAborted(signal)
+         return refreshed?.tokens ?? null
+-      } finally {
++      }
++      catch (error) {
++        if (isAbortError(error, signal) || error instanceof OAuthCredentialStoreError)
++            throw error
++        // Gate on a rejected grant: either the error itself is an invalid_grant
++        // OAuthError (SDK variants that do not wrap it), or the SDK orchestrator
++        // already consumed that error, invalidated the stored tokens, and
++        // surfaced the recovery retry's own failure — the provider records the
++        // invalidation. Unrelated failures (network, aborts) fail fast instead
++        // of paying the shared-storage poll. A found rotation retries while the
++        // store keeps advancing (cap above).
++        if (
++            error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant
++            || authProvider.tokensInvalidatedByRecovery()
++        ) {
++            const adopted = (await pollForRotatedToken(serverName, serverUrl, presentedRefreshToken, authStorageOptions))?.tokens?.refreshToken
++            if (adopted !== undefined) {
++                authRecoveryLog(`MCP Auth: Refresh token for ${serverName} was rotated by another session; retrying with the shared token`)
++                presentedRefreshToken = adopted
++                continue
++            }
++            authRecoveryLog(`MCP Auth: refresh token for ${serverName} was rejected but no rotated token appeared in shared storage; re-auth required`)
++        }
++        console.error(`MCP Auth: Token refresh failed for ${serverName}`)
++        return null
++      }
++      finally {
+         authProvider.deactivate()
+       }
+-    } catch (error) {
+-      if (isAbortError(error, signal) || error instanceof OAuthCredentialStoreError) throw error
+-      console.error(`MCP Auth: Token refresh failed for ${serverName}`)
+-      return null
+     }
++    // Reachable only when every attempt adopted a newer token and the cap
++    // exhausted: the shared token is rotating faster than this session can
++    // adopt it. Debug-only like the other recovery diagnostics.
++    authRecoveryLog(`MCP Auth: refresh token for ${serverName} kept rotating under this session; re-auth required after ${ROTATION_RECOVERY_MAX_ATTEMPTS} attempts`)
++    return null
+   }
+ 
+   authority()
+diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
+index 32aad31f9fe94cef128de9e1576cbc04d53fa822..b2593924653dda1fe18be16da7e7a90ae8d4cced 100644
+--- a/mcp-callback-server.ts
++++ b/mcp-callback-server.ts
+@@ -163,6 +163,24 @@ function htmlError(error: string): string {
+   })
+ }
+ 
++// Inactive-callback page; part of the loopback-capture patch (getkimchi/kimchi#1284).
++// Served only when a callback carries a state that belongs to no active flow and
++// has no completion tombstone: expired, superseded, or bogus. States that belong
++// to a recently completed flow instead replay the success page (see
++// markAuthStateCompleted). Rejecting the code with HTTP 400 stays; the copy is
++// neutral, since the CSRF framing alarms users for a benign, expected landing.
++// Fold into the same upstream proposal.
++function htmlAuthInactive(): string {
++  const app = escapeHtml(getAppName())
++  return page({
++    title: `${app} — Authorization No Longer Active`,
++    heading: "Authorization No Longer Active",
++    body: `This authorization link is no longer valid. It may have expired or been superseded by a newer attempt — start authorization again from <span class="app">${app}</span>.`,
++    icon: CROSS_ICON,
++    tone: "bad",
++  })
++}
++
+ /** Result of a successful OAuth callback */
+ export interface OAuthCallbackResult {
+   code: string
+@@ -189,6 +207,49 @@ const reservedAuthStates = new Set<string>()
+ /** Timeout for callback completion (5 minutes) */
+ const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
+ 
++// Completed-state tombstones: an oauth state whose flow finished replays the
++// success page when the same callback URL fires again (browser double-fire,
++// tab restore, losing side of the paste race). Process-level with a lazy TTL,
++// so entries survive listener restarts and no timer keeps the process alive.
++const COMPLETED_STATE_TTL_MS = 10 * 60 * 1000
++const COMPLETED_STATES_MAX = 100
++const completedAuthStates = new Map<string, number>() // oauth state -> expiresAt (ms epoch)
++
++/** Marks an oauth state as recently completed so replayed callbacks show the success page. */
++export function markAuthStateCompleted(oauthState: string): void {
++  const now = Date.now()
++  for (const [state, expiresAt] of completedAuthStates) {
++    if (expiresAt <= now) completedAuthStates.delete(state)
++  }
++  completedAuthStates.set(oauthState, now + COMPLETED_STATE_TTL_MS)
++  while (completedAuthStates.size > COMPLETED_STATES_MAX) {
++    const oldest = completedAuthStates.keys().next().value
++    if (oldest === undefined) break
++    completedAuthStates.delete(oldest)
++  }
++}
++
++export function isAuthStateRecentlyCompleted(state: string): boolean {
++  const expiresAt = completedAuthStates.get(state)
++  if (expiresAt === undefined) return false
++  if (expiresAt <= Date.now()) {
++    completedAuthStates.delete(state)
++    return false
++  }
++  return true
++}
++
++/** A no-pending callback either replays the success page (completed state) or gets the inactive error page. */
++function serveCompletedOrInactive(res: ServerResponse, state: string): void {
++  if (isAuthStateRecentlyCompleted(state)) {
++    res.writeHead(200, { "Content-Type": "text/html" })
++    res.end(htmlSuccess())
++    return
++  }
++  res.writeHead(400, { "Content-Type": "text/html" })
++  res.end(htmlAuthInactive())
++}
++
+ interface EnsureCallbackServerOptions {
+   strictPort?: boolean
+   port?: number
+@@ -233,9 +294,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+   // Handle OAuth errors only for a state that belongs to an active flow.
+   if (error) {
+     if (!pending && !isReserved) {
+-      const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
+-      res.writeHead(400, { "Content-Type": "text/html" })
+-      res.end(htmlError(errorMsg))
++      serveCompletedOrInactive(res, state)
+       return
+     }
+ 
+@@ -255,9 +314,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+ 
+   // Validate state parameter
+   if (!pending && !isReserved) {
+-    const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
+-    res.writeHead(400, { "Content-Type": "text/html" })
+-    res.end(htmlError(errorMsg))
++    serveCompletedOrInactive(res, state)
+     return
+   }
+ 
+@@ -274,7 +331,11 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+     return
+   }
+ 
+-  // Clear timeout and resolve the pending promise
++  // Clear timeout and resolve the pending promise.
++  // NOTE: the completed-state tombstone is NOT recorded here — code delivery
++  // precedes the token exchange, and a failed exchange must not leave a
++  // tombstone serving "Authorization Successful". completeAuth() marks the
++  // state only after the exchange succeeds.
+   clearTimeout(pending.timeout)
+   pendingAuths.delete(state)
+   pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
+diff --git a/mcp-oauth-provider.ts b/mcp-oauth-provider.ts
+index b724478bf4036c199d4574c87a200207706ceb29..9207555f0a302e1a68acb160e499e163b62e0e89 100644
+--- a/mcp-oauth-provider.ts
++++ b/mcp-oauth-provider.ts
+@@ -127,6 +127,18 @@ export function setOAuthCallbackPath(path: string): void {
+   oauthCallbackPath = path.startsWith("/") ? path : `/${path}`
+ }
+ 
++// Kimchi: host hook applied to every authorize URL after the server's own
++// authorizationParams, so a host only fills in what config left unset. Receives the discovery state saved for this flow, so a
++// host can add offline-access request parameters without network calls.
++// Removal: upstream first-class offline-access support.
++export type AuthorizationUrlTransform = (url: URL, discovery: OAuthDiscoveryState | undefined) => URL
++
++let authorizationUrlTransform: AuthorizationUrlTransform = (url) => url
++
++export function setAuthorizationUrlTransform(transform: AuthorizationUrlTransform): void {
++  authorizationUrlTransform = transform
++}
++
+ /** Configuration options for OAuth */
+ export interface McpOAuthConfig {
+   grantType?: "authorization_code" | "client_credentials"
+@@ -224,7 +236,7 @@ async function loadConfiguredDiscoveryState(
+   fetchFn: FetchLike,
+ ): Promise<OAuthDiscoveryState> {
+   const response = await fetchFn(metadataUrl, {
+-    headers: { accept: "application/json" },
++    headers: { accept: "application/json, text/event-stream" },
+   })
+   if (!response.ok) {
+     await response.text().catch(() => {})
+@@ -411,9 +423,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
+         : undefined
+       if (issuer && (storedClient?.issuer !== issuer || storedClient.configPreRegistered !== true)) {
+         this.throwIfInactive()
++        // Preserve the stored registration's redirect URIs: pre-registered
++        // clients must keep receiving the URI their registration was created
++        // with (see the stored-redirect-URI-reuse note in mcp-auth-flow).
+         updateClientInfo(
+           this.serverName,
+-          { clientId: this.config.clientId, issuer, configPreRegistered: true },
++          {
++            clientId: this.config.clientId,
++            issuer,
++            configPreRegistered: true,
++            ...(storedClient?.redirectUris !== undefined ? { redirectUris: storedClient.redirectUris } : {}),
++          },
+           this.serverUrl,
+           this.storageOptions,
+         )
+@@ -628,7 +648,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
+       )
+     }
+     // URL is passed to callback, not logged (may contain sensitive params)
+-    await this.callbacks.onRedirect(addAuthorizationParams(authorizationUrl, this.config.authorizationParams))
++    await this.callbacks.onRedirect(
++      authorizationUrlTransform(
++        addAuthorizationParams(authorizationUrl, this.config.authorizationParams),
++        this.flowDiscoveryState,
++      ),
++    )
+   }
+ 
+   /**
+@@ -757,6 +782,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
+     }
+   }
+ 
++  /**
++   * True when the SDK orchestrator's recovery path invalidated the stored
++   * tokens through this provider — i.e. a recoverable OAuth error from the
++   * invalid_grant family occurred and a fresh authorization was attempted.
++   * Polling shared storage for a token another session rotated is only
++   * useful then; unrelated failures must not pay the poll delay.
++   */
++  tokensInvalidatedByRecovery(): boolean {
++    return this.invalidatedAccessToken !== undefined
++  }
++
+   /**
+    * Adds configured authorization-code scope without replacing the SDK's
+    * default token endpoint authentication behavior.
+diff --git a/mcp-output-guard.ts b/mcp-output-guard.ts
+index 219c949f5de785a1e8ddc6927fcf366444862527..43ed93c9a86014a14129ca73490bccc09c4f391b 100644
+--- a/mcp-output-guard.ts
++++ b/mcp-output-guard.ts
+@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import {
+-  DEFAULT_MAX_BYTES,
+   DEFAULT_MAX_LINES,
+   formatSize,
+   truncateHead,
+@@ -11,7 +10,7 @@ import {
+ } from "@earendil-works/pi-coding-agent";
+ import type { ContentBlock, McpSettings } from "./types.ts";
+ 
+-export const DEFAULT_MCP_OUTPUT_MAX_BYTES = DEFAULT_MAX_BYTES;
++export const DEFAULT_MCP_OUTPUT_MAX_BYTES = 12 * 1024;
+ export const DEFAULT_MCP_OUTPUT_MAX_LINES = DEFAULT_MAX_LINES;
+ export const DEFAULT_MCP_DETAILS_MAX_BYTES = 16 * 1024;
+ const SCRIPT_PIPE_HINT_MIN_BYTES = 8 * 1024;
+diff --git a/mcp-tasks.ts b/mcp-tasks.ts
+index 88ffa8dd3719442b8f51cdb8ea50ff718b86cba9..0e4e09d71a0656464658fce03b7a68e259bcd184 100644
+--- a/mcp-tasks.ts
++++ b/mcp-tasks.ts
+@@ -96,7 +96,7 @@ export class RawRequestChannel {
+   private readonly transport: Transport;
+   private readonly pending = new Map<string, PendingRawRequest>();
+   private requestCounter = 0;
+-  private readonly defaultTimeoutMs: number;
++  private defaultTimeoutMs: number;
+   private attached = false;
+ 
+   constructor(transport: Transport, defaultTimeoutMs?: number) {
+@@ -104,6 +104,20 @@ export class RawRequestChannel {
+     this.defaultTimeoutMs = defaultTimeoutMs ?? DEFAULT_RAW_REQUEST_TIMEOUT_MS;
+   }
+ 
++  /**
++   * Restores the channel's fallback timeout after a host connected with a
++   * bounded discovery timeout: tasks/* polls that carry no per-request
++   * timeout fall back to this default, so it must track the connection's
++   * normal per-server/global timeout rather than the discovery one.
++   * Non-positive or non-finite values reset to the 60 s default, matching a
++   * channel created without one.
++   */
++  setDefaultTimeoutMs(timeoutMs: number | undefined): void {
++    this.defaultTimeoutMs = (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
++      ? timeoutMs
++      : undefined) ?? DEFAULT_RAW_REQUEST_TIMEOUT_MS;
++  }
++
+   attach(): void {
+     if (this.attached) return;
+     this.attached = true;
+diff --git a/metadata-cache.ts b/metadata-cache.ts
+index 8e9e9887d44354487b0971bf81af16c6c70188a5..c4b05a2df912172fa8d0abed5db13d1dd93e1867 100644
+--- a/metadata-cache.ts
++++ b/metadata-cache.ts
+@@ -4,7 +4,6 @@ import { dirname } from "node:path";
+ import { getAgentPath } from "./agent-dir.ts";
+ import { createHash } from "node:crypto";
+ import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.ts";
+-import { getToolUiResourceUri } from "./ui-app-bridge-helpers.ts";
+ import type {
+   CachedPrompt,
+   CachedResource,
+@@ -24,7 +23,6 @@ import { createToolSelectorCandidateIndex, formatPromptCommandName, formatToolNa
+ import { resourceNameToToolName } from "./resource-tools.ts";
+ import {
+   extractToolAnnotations,
+-  extractToolUiStreamMode,
+   interpolateEnvRecord,
+   interpolateEnvVars,
+   resolveBearerToken,
+@@ -327,9 +325,9 @@ export function reconstructToolMetadata(
+       description: tool.description ?? "",
+       ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+       ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+-      ...(tool.uiResourceUri !== undefined ? { uiResourceUri: tool.uiResourceUri } : {}),
++      // Host MCP UI disable: cached UI metadata never reconstructs into tool
++      // metadata. Remove when the harness supports MCP Apps.
+       ...(tool.uiVisibility !== undefined ? { uiVisibility: tool.uiVisibility } : {}),
+-      ...(tool.uiStreamMode !== undefined ? { uiStreamMode: tool.uiStreamMode } : {}),
+       ...(annotations !== undefined ? { annotations } : {}),
+     });
+   }
+@@ -380,21 +378,19 @@ export function createCachedToolSelectorCandidateIndex(
+ }
+ 
+ export function serializeTools(tools: McpTool[]): CachedTool[] {
++  // Host MCP UI disable: UI resource metadata is never persisted. Remove when
++  // the harness supports MCP Apps.
+   return tools
+     .filter(t => t?.name)
+     .map(t => {
+-      const uiResourceUri = tryGetToolUiResourceUri(t);
+       const uiVisibility = extractUiToolVisibility(t._meta);
+-      const uiStreamMode = extractToolUiStreamMode(t._meta);
+       const annotations = extractToolAnnotations(t.annotations);
+       return {
+         name: t.name,
+         ...(t.description !== undefined ? { description: t.description } : {}),
+         ...(t.inputSchema !== undefined ? { inputSchema: t.inputSchema } : {}),
+         ...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
+-        ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
+         ...(uiVisibility !== undefined ? { uiVisibility } : {}),
+-        ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+         ...(annotations !== undefined ? { annotations } : {}),
+       };
+     });
+@@ -455,10 +451,3 @@ export function reconstructPromptMetadata(
+   });
+ }
+ 
+-function tryGetToolUiResourceUri(tool: McpTool): string | undefined {
+-  try {
+-    return getToolUiResourceUri({ _meta: tool._meta });
+-  } catch {
+-    return undefined;
+-  }
+-}
+diff --git a/oauth.ts b/oauth.ts
+index 16bde6bf20ef16ecf44a7bcd2edb4a2c56c0db0e..65956bd2d582acbdba35a66c454a8134a360c847 100644
+--- a/oauth.ts
++++ b/oauth.ts
+@@ -8,6 +8,9 @@ import {
+ 
+ import type { ServerEntry } from "./types.ts";
+ 
++// Kimchi: host hook for authorize-URL shaping (see mcp-oauth-provider.ts).
++export { setAuthorizationUrlTransform, type AuthorizationUrlTransform } from "./mcp-oauth-provider.ts";
++
+ export type McpOAuthTokens = StoredTokens;
+ export type McpOAuthStorageOptions = AuthStorageOptions;
+ export interface McpOAuthTokenOptions {
+diff --git a/package.json b/package.json
+index b710947a510c2b73c47815b1cb21f1d9a25a0978..aad68fce29ac7fda182f7972b1b738ed7001551b 100644
+--- a/package.json
++++ b/package.json
+@@ -20,6 +20,11 @@
+       "import": "./oauth.ts",
+       "default": "./oauth.ts"
+     },
++    "./commands": {
++      "types": "./commands.ts",
++      "import": "./commands.ts",
++      "default": "./commands.ts"
++    },
+     "./host-managed": {
+       "types": "./host-managed.ts",
+       "import": "./host-managed.ts",
+@@ -107,7 +112,7 @@
+     "namespace-tools.ts",
+     "mcp-references.ts",
+     "commands.ts",
+-    "prompts.ts",
++    "prompts.ts", "prompt-autocomplete.ts",
+     "onboarding-state.ts",
+     "pi-signin-import.ts",
+     "pi-builtin-mcp.ts",
+diff --git a/pi-builtin-mcp.ts b/pi-builtin-mcp.ts
+index 4e3f8775e9e4770d776ed8e92eab80edc5f3f8df..5657644bb7c17ac9c0ead1886dcb20ad1bf644ea 100644
+--- a/pi-builtin-mcp.ts
++++ b/pi-builtin-mcp.ts
+@@ -4,7 +4,17 @@ import { getAgentDir } from "./agent-dir.ts";
+ import { loadOnboardingState, updateOnboardingState } from "./onboarding-state.ts";
+ 
+ const BUILTIN_MCP = "builtin:mcp";
+-const ADAPTER_VERSION: string = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8")).version;
++// Bundled builds (e.g. Bun single-executable apps) have no real package.json on
++// disk: import.meta.url points into the virtual filesystem ($bunfs), and the
++// read would throw at import time, silently skipping the built-in MCP turn-off.
++// Treat the version as unknown there; the onboarding-state gate then never
++// short-circuits, which simply re-checks the settings entry on each start.
++let ADAPTER_VERSION: string = "unknown";
++try {
++	ADAPTER_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8")).version;
++} catch {
++	// no real package.json under bundled runtimes
++}
+ 
+ /**
+  * Once per adapter version, adds `-builtin:mcp` to Pi's user `extensions` unless it already has a
+diff --git a/project-server-trust.ts b/project-server-trust.ts
+index 51e5bd594dd66fa4f271fa3bd8a6130caba1d9bf..733cdbfee4fb9c761e9b725fa793736f4cc9c065 100644
+--- a/project-server-trust.ts
++++ b/project-server-trust.ts
+@@ -239,6 +239,12 @@ export async function applyProjectServerTrust(
+   for (const [name, source] of loaded.projectServers) {
+     const definition = config.mcpServers[name];
+     if (!definition || isServerDisabled(definition)) continue;
++    // Host-managed project trust (Kimchi): the host runs its own project-trust
++    // gate before project config reaches this adapter, so the adapter's
++    // interactive per-server approval would double-prompt. Skip it entirely —
++    // no prompt and no approval-store write — when the host asked us to stand
++    // down. Remove when upstream supports a host-managed trust flag.
++    if (process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST === "1") continue;
+     const approved = isApproved(approvals, projectRoot, name, definition);
+     if (projectTrusted && (approved || (!interactive && loaded.projectServerPolicy === "allow"))) continue;
+ 
+diff --git a/prompt-autocomplete.ts b/prompt-autocomplete.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..01bf2d87c50f03e0f1d7ea2ead1be8b42f946c84
+--- /dev/null
++++ b/prompt-autocomplete.ts
+@@ -0,0 +1,130 @@
++// Host integration: live MCP prompt commands in the TUI autocomplete.
++// Tracking: upstream Pi rebuilds its autocomplete provider from a one-time
++// snapshot of registered commands. Remove this wrapper when Pi rebuilds the
++// provider on command registration (or registerCommand emits an event).
++import type { AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
++import { completePromptArgs } from "./prompts.ts";
++import type { McpExtensionState } from "./state.ts";
++import { isServerDisabled, type PromptMetadata } from "./types.ts";
++import { truncateAtWord } from "./utils.ts";
++
++export type McpPromptAutocompleteState = Pick<McpExtensionState, "config" | "promptMetadata" | "provisionalInstalls">;
++export type ResolveMcpPromptInvocation = (commandName: string) => string | null;
++
++/**
++ * Kimchi host integration — live MCP prompt-command autocomplete.
++ *
++ * Upstream Pi builds its autocomplete provider once from a snapshot of the
++ * extension-runner command registry, and `pi.registerCommand` emits no event,
++ * so prompt commands registered mid-session (first connect, /mcp reconnect,
++ * list-changed refresh) never appear in the TUI dropdown until /reload — even
++ * though the command already executes. This wrapper reads the adapter's live
++ * prompt metadata at keystroke time and merges matching `mcp__*` prompt
++ * commands into the base provider's answer. Dedupe by value keeps commands
++ * that already made the snapshot single-listed.
++ *
++ * Kept in its own module so index.ts can register the wrapper without
++ * statically importing commands.ts (which is intentionally lazy-loaded).
++ * Remove when Pi rebuilds its autocomplete provider on command registration.
++ */
++export function createMcpPromptAutocompleteProvider(
++  getState: () => McpPromptAutocompleteState | null,
++  base: AutocompleteProvider,
++  resolveInvocation: ResolveMcpPromptInvocation,
++): AutocompleteProvider {
++  return {
++    ...(base.triggerCharacters !== undefined ? { triggerCharacters: base.triggerCharacters } : {}),
++    async getSuggestions(lines, cursorLine, cursorCol, options) {
++      const suggestions = await base.getSuggestions(lines, cursorLine, cursorCol, options);
++      const state = getState();
++      if (!state || options.signal.aborted) return suggestions;
++      // Mirror CombinedAutocompleteProvider's slash context: text before the
++      // cursor (trimmed) is a single "/" token with no space.
++      const currentLine = lines[cursorLine] || "";
++      const commandText = currentLine.slice(0, cursorCol).trimStart();
++      if (!commandText.startsWith("/")) return suggestions;
++      const spaceIndex = commandText.indexOf(" ");
++      if (spaceIndex !== -1) {
++        // Argument phase. The base provider resolves arguments against
++        // its one-time snapshot, so it can only help commands that were
++        // registered before the provider was built — for those it has
++        // already answered. For mid-session commands the snapshot lookup
++        // fails and the base returns nothing; serve the same completions
++        // from the live metadata instead (mirrors
++        // createPromptCommand.getArgumentCompletions).
++        if (suggestions) return suggestions;
++        const commandName = commandText.slice(1, spaceIndex);
++        const spec = findLivePromptSpec(state, commandName, resolveInvocation);
++        if (!spec || spec.arguments.length === 0) return suggestions;
++        const argumentText = commandText.slice(spaceIndex + 1);
++        const argItems = completePromptArgs(spec, argumentText);
++        return argItems && argItems.length > 0 ? { items: argItems, prefix: argumentText } : suggestions;
++      }
++      const prefix = commandText.slice(1);
++      if (!prefix.startsWith("mcp__")) return suggestions;
++      const merged = [...(suggestions?.items ?? [])];
++      const seen = new Set(merged.map((item) => item.value));
++      // Trust + rendering parity with syncPromptCommands: provisional
++      // installs never surface, and descriptions are truncated the same way
++      // the registered command builds them.
++      for (const [serverName, prompts] of state.promptMetadata ?? new Map<string, PromptMetadata[]>()) {
++        if (!isLivePromptServer(state, serverName)) continue;
++        for (const spec of prompts) {
++          const invocationName = resolveInvocation(spec.commandName);
++          if (!invocationName || !invocationName.startsWith(prefix)) continue;
++          // Only invocation names confirmed by the actual command registry are
++          // advertised. Pi can rename duplicate registrations to `name:N`; raw
++          // metadata cannot establish ownership of that name or its alias.
++          if (seen.has(invocationName)) continue;
++          seen.add(invocationName);
++          const base = spec.description || spec.title || `MCP prompt from ${spec.serverName}`;
++          merged.push({
++            value: invocationName,
++            label: invocationName,
++            description: truncateAtWord(`MCP: ${base}`, 120) || `MCP prompt from ${spec.serverName}`,
++          });
++        }
++      }
++      if (merged.length === 0 || merged.length === (suggestions?.items.length ?? 0)) return suggestions;
++      return { items: merged, prefix: suggestions?.prefix ?? commandText } satisfies AutocompleteSuggestions;
++    },
++    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
++      return base.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
++    },
++    ...(base.shouldTriggerFileCompletion
++      ? {
++          shouldTriggerFileCompletion: (lines: string[], cursorLine: number, cursorCol: number) =>
++            base.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? false,
++        }
++      : {}),
++  };
++}
++
++/** Resolve the live prompt metadata behind an `mcp__<server>__<prompt>`
++ * command name, applying the same provisional-install trust filter as the
++ * command list so the wrapper never exceeds the command registry.
++ *
++ * Scans by exact commandName rather than reverse-parsing the command,
++ * because `state.promptMetadata` is keyed by the RAW config server name
++ * while commands embed its sanitized prefix-part (hyphens become
++ * underscores; `toolPrefix: "mcp"` rewrites the shape) — splitting on
++ * "__" would silently miss every sanitizable name. */
++function isLivePromptServer(state: McpPromptAutocompleteState, serverName: string): boolean {
++  if (state.provisionalInstalls?.has(serverName)) return false;
++  const definition = state.config.mcpServers[serverName];
++  return definition !== undefined && !isServerDisabled(definition);
++}
++
++function findLivePromptSpec(
++  state: McpPromptAutocompleteState,
++  commandName: string,
++  resolveInvocation: ResolveMcpPromptInvocation,
++): PromptMetadata | null {
++  if (!commandName.startsWith("mcp__")) return null;
++  for (const [serverName, prompts] of state.promptMetadata ?? []) {
++    if (!isLivePromptServer(state, serverName)) continue;
++    const spec = prompts.find((p) => resolveInvocation(p.commandName) === commandName);
++    if (spec) return spec;
++  }
++  return null;
++}
+diff --git a/proxy-modes.ts b/proxy-modes.ts
+index 453e728eaf6e76771aecb0e4386dbb1273aefe45..79b01a16363e7816bb178dd8da3361e3a3fd11f8 100644
+--- a/proxy-modes.ts
++++ b/proxy-modes.ts
+@@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
+ import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions, scriptPipeHint } from "./mcp-output-guard.ts";
+ import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+ import { formatAuthRequiredMessage, formatMcpStatus, normalizeToolArguments, resolveServerUrl, truncateAtWord, withToolCallIdMeta } from "./utils.ts";
+-import { authenticate, completeAuthFromInput, getAuthStatus, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
++import { authenticate, completeAuthFromInput, getAuthStatus, hasPendingAuth, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+ import { callToolViaTaskSession } from "./mcp-tasks.ts";
+ import { callToolPausingForElicitation } from "./elicitation-handler.ts";
+@@ -241,6 +241,8 @@ function ensureBackgroundAuthWatcher(
+   serverName: string,
+   serverUrl: string,
+   definition: ServerEntry,
++  authorizationUrl: string,
++  loopbackCapture: boolean,
+ ): void {
+   let watchers = backgroundAuthWatchers.get(state);
+   if (!watchers) {
+@@ -257,7 +259,14 @@ function ensureBackgroundAuthWatcher(
+   const watcher = authenticate(serverName, serverUrl, definition, authOptions).then(async (status) => {
+     throwIfAborted(state.owner.signal);
+     if (status !== "authenticated") throw new Error(`OAuth authentication ended with status: ${status}`);
+-    await state.manager.close(serverName);
++    try {
++      await state.manager.close(serverName);
++    } catch {
++      // authenticate() has already persisted this flow's grant. Connection
++      // cleanup is separate: lazy healing/reconnect can recover its failure,
++      // but this watcher must still deliver its own authenticated outcome.
++      state.ui?.notify(`MCP OAuth: connection cleanup failed after authenticating "${serverName}"; continuing with the persisted grant`, "warning");
++    }
+     throwIfAborted(state.owner.signal);
+     clearFailure(state, serverName, "auth-background-complete");
+     updateStatusBar(state);
+@@ -278,11 +287,15 @@ function ensureBackgroundAuthWatcher(
+       if (isAbortError(statusError, state.owner.signal)) return;
+     }
+     if (state.owner.signal.aborted) return;
++    const message = error instanceof Error ? error.message : String(error);
++    const timeoutInstructions = message === "OAuth callback timeout - authorization took too long"
++      ? `\n\n${formatManualAuthInstructions(serverName, authorizationUrl, loopbackCapture)}`
++      : "";
+     emitAuthStatus(
+       state,
+       serverName,
+       "failed",
+-      `OAuth authentication failed for MCP server "${serverName}". Start authorization again or inspect trusted logs.`,
++      `OAuth authentication failed for MCP server "${serverName}". Start authorization again or inspect trusted logs.${timeoutInstructions}`,
+     );
+   }).finally(() => {
+     if (watchers?.get(serverName) === watcher) watchers.delete(serverName);
+@@ -322,24 +335,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
+   }
+ }
+ 
+-function formatManualAuthInstructions(serverName: string, authorizationUrl: string): string {
++function formatManualAuthInstructions(serverName: string, authorizationUrl: string, loopbackCapture = false): string {
+   const redirect = getRedirectDetails(authorizationUrl);
++  const watchingLocal = !redirect.remote || loopbackCapture;
+   const redirectNote = redirect.remote
+-    ? "The provider uses a pre-registered HTTPS callback. Copy its full URL from the browser address bar, even if the destination page reports an error."
++    ? loopbackCapture
++      ? "The provider uses a pre-registered HTTPS callback that bounces to the loopback listener, so authentication can complete automatically. If the browser instead shows an error page, copy its full URL from the address bar and send it back so the OAuth state can be checked."
++      : "The provider uses a pre-registered HTTPS callback. Copy its full URL from the browser address bar, even if the destination page reports an error."
+     : `The adapter is watching${redirect.port ? ` local port ${redirect.port}` : " the local callback"} and will report when authentication completes.`;
+ 
+   return [
+     `MCP OAuth required for "${serverName}".`,
+     "",
+-    redirect.remote
+-      ? "The adapter is attempting to open this authorization URL in your local browser:"
+-      : "The adapter is attempting to open this authorization URL and watching for its callback:",
++    watchingLocal
++      ? "The adapter is attempting to open this authorization URL and watching for its callback:"
++      : "The adapter is attempting to open this authorization URL in your local browser:",
+     "",
+     authorizationUrl,
+     "",
+-    redirect.remote
+-      ? "After approving, copy the full callback URL from your browser address bar and send it back with:"
+-      : "If the browser does not open or the callback is not detected, open the URL above and complete manually with:",
++    watchingLocal
++      ? "If the browser does not open or the callback is not detected, open the URL above and complete manually with:"
++      : "After approving, copy the full callback URL from your browser address bar and send it back with:",
+     `mcp({ action: "auth-complete", server: "${serverName}", args: { redirectUrl: "PASTE_REDIRECT_URL_HERE" } })`,
+     "",
+     redirect.remote
+@@ -626,7 +642,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+       };
+     }
+ 
+-    const { authorizationUrl } = state.authStorageOptions
++    const { authorizationUrl, loopbackCapture } = state.authStorageOptions
+       ? ownedSignal
+         ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
+         : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
+@@ -641,18 +657,29 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+     }
+ 
+     if (getRedirectDetails(authorizationUrl).remote) {
++      // Remote https redirects with an armed loopback capture complete through
++      // the local callback listener in the background; without it they stay
++      // paste-only via auth-complete.
++      if (loopbackCapture) {
++        ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition, authorizationUrl, loopbackCapture === true);
++      }
+       try {
+         await state.openBrowser(authorizationUrl);
+       } catch (error) {
+         if (isAbortError(error, ownedSignal)) throw error;
+       }
+     } else {
+-      ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition);
++      ensureBackgroundAuthWatcher(state, serverName, serverUrl, definition, authorizationUrl, loopbackCapture === true);
+     }
+ 
+     return {
+-      content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, authorizationUrl) }],
+-      details: { mode: "auth-start", server: serverName, authorizationUrl },
++      content: [{ type: "text" as const, text: formatManualAuthInstructions(serverName, authorizationUrl, loopbackCapture === true) }],
++      details: {
++        mode: "auth-start",
++        server: serverName,
++        authorizationUrl,
++        ...(getRedirectDetails(authorizationUrl).remote && !loopbackCapture ? { handoff: "manual" as const } : {}),
++      },
+     };
+   } catch (error) {
+     const message = error instanceof Error ? error.message : String(error);
+@@ -1473,6 +1500,23 @@ export async function executeCall(
+       }
+     }
+ 
++    // An out-of-band re-auth (settings probe, another chat) may have written
++    // a fresh credential since this episode started; reconnect re-reads the
++    // shared store. Skipped while an interactive flow owns the episode so
++    // they don't race as competing OAuth owners.
++    const definition = state.config.mcpServers[serverName];
++    if (connection?.status === "needs-auth"
++      && definition !== undefined
++      && !isServerDisabled(definition)
++      && !hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime)) {
++      try {
++        connection = await state.manager.reconnect(serverName, definition, connection, ownedSignal);
++      } catch (error) {
++        if (isAbortError(error, ownedSignal)) throw error;
++        // Fall through to the auth-required guidance below.
++      }
++    }
++
+     if (connection?.status === "needs-auth") {
+       const message = getAuthRequiredMessage(state, serverName);
+       return {
+@@ -1650,6 +1694,7 @@ export async function executeCall(
+           config: state.config,
+           ...(ownedSignal ? { signal: ownedSignal } : {}),
+           onNeedsAuth: recoverAuthConnection,
++          hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+         },
+         serverName,
+         async (conn) => {
+@@ -1695,6 +1740,7 @@ export async function executeCall(
+         config: state.config,
+         ...(ownedSignal ? { signal: ownedSignal } : {}),
+         onNeedsAuth: recoverAuthConnection,
++        hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+       },
+       serverName,
+       async (conn) => {
+diff --git a/server-manager.ts b/server-manager.ts
+index 9fb4f964fc1455666159ed4f1a442bba2ebf7799..c6d85aa030564d613c686a134c724fec4bf0947f 100644
+--- a/server-manager.ts
++++ b/server-manager.ts
+@@ -41,7 +41,6 @@ import {
+ import { resolveNpxBinary } from "./npx-resolver.ts";
+ import { createJsonSchemaValidator } from "./json-schema-validator.ts";
+ import { logger } from "./logger.ts";
+-import { RESOURCE_MIME_TYPE } from "./ui-app-bridge-helpers.ts";
+ import { isBuiltInAgentPlugin } from "./agent-plugin-provenance.ts";
+ import { McpOAuthProvider } from "./mcp-oauth-provider.ts";
+ import { explainRegistrationRejection, extractOAuthConfig, supportsOAuth, type McpOAuthRuntime } from "./mcp-auth-flow.ts";
+@@ -149,8 +148,15 @@ function shouldFallbackToSse(error: unknown, definition: ServerDefinition): bool
+   return error instanceof SdkHttpError && [404, 405, 406, 415].includes(error.status);
+ }
+ 
+-function resolveVersionNegotiation(definition: ServerDefinition): VersionNegotiationOptions | undefined {
+-  switch (definition.protocolVersion) {
++function resolveVersionNegotiation(definition: ServerDefinition, defaultProtocolVersion?: "legacy" | "auto" | "2026-07-28"): VersionNegotiationOptions | undefined {
++  // The host-level default is scoped to connectionless transports: era
++  // negotiation on stdio costs a sacrificial process spawn (the probe spends
++  // the child's one life), so stdio servers keep the legacy handshake unless
++  // the entry pins a version explicitly.
++  const requested =
++    definition.protocolVersion ??
++    (defaultProtocolVersion === "auto" && definition.url === undefined ? "legacy" : defaultProtocolVersion);
++  switch (requested) {
+     case undefined:
+     case "legacy":
+       return undefined;
+@@ -159,7 +165,7 @@ function resolveVersionNegotiation(definition: ServerDefinition): VersionNegotia
+     case "2026-07-28":
+       return { mode: { pin: "2026-07-28" } };
+     default:
+-      throw new Error(`Invalid MCP protocolVersion: ${String(definition.protocolVersion)}`);
++      throw new Error(`Invalid MCP protocolVersion: ${String(requested)}`);
+   }
+ }
+ 
+@@ -385,9 +391,16 @@ export class McpServerManager {
+   private providerToken: ((provider: string) => Promise<string | undefined>) | undefined;
+   private stopped = false;
+ 
++  /** Host-level protocol era applied to entries without an explicit `protocolVersion`. */
++  private defaultProtocolVersion?: "legacy" | "auto" | "2026-07-28";
++
+   /** Default cwd for stdio servers without an explicit config `cwd`. */
+   constructor(private readonly defaultCwd?: string) {}
+ 
++  setDefaultProtocolVersion(version: "legacy" | "auto" | "2026-07-28" | undefined): void {
++    this.defaultProtocolVersion = version;
++  }
++
+   setSamplingConfig(config: ServerSamplingConfig | undefined): void {
+     this.samplingConfig = config;
+   }
+@@ -1451,10 +1464,10 @@ export class McpServerManager {
+ 
+   private buildClientCapabilities(definition: ServerDefinition) {
+     return {
+-      // openUi: false tells the server there is no UI, so MCP App tools return results instead of deferring to a form.
+-      ...(definition.openUi === false
+-        ? {}
+-        : { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [RESOURCE_MIME_TYPE] } } }),
++      // Host MCP UI disable: Kimchi does not yet properly support the MCP UI
++      // standard, so the client must not advertise the ui extension capability.
++      // Remove when the harness supports MCP Apps (or adopts an upstream
++      // disable option).
+       ...(this.samplingConfig ? { sampling: {} } : {}),
+       ...(this.elicitationConfig
+         ? {
+@@ -1469,7 +1482,7 @@ export class McpServerManager {
+ 
+   private createClient(serverName: string, definition: ServerDefinition): Client {
+     const capabilities = this.buildClientCapabilities(definition);
+-    const versionNegotiation = resolveVersionNegotiation(definition);
++    const versionNegotiation = resolveVersionNegotiation(definition, this.defaultProtocolVersion);
+     let client: Client;
+     client = new AdapterClient(
+       { name: `pi-mcp-${serverName}`, version: "1.0.0" },
+@@ -1714,7 +1727,10 @@ export class McpServerManager {
+     }
+     const hasImplicitStoredTokens = implicitStoredAuth?.status === "present"
+       && implicitStoredAuth.entry.tokens !== undefined;
+-    if (hasImplicitStoredTokens) invalidateAuthEntryCache(serverName);
++    // Explicit-OAuth connections refresh through this provider too; a token
++    // another session rotated must not be served from the stale process cache
++    // at connect time.
++    if (hasImplicitStoredTokens || definition.auth === "oauth") invalidateAuthEntryCache(serverName);
+     let authState: HttpAuthProviderState = supportsOAuth(definition)
+       ? definition.auth === undefined
+         ? hasImplicitStoredTokens
+diff --git a/session-recovery.ts b/session-recovery.ts
+index 286242f0b9fcfbe012000d4a5397c39f2ffff845..7878594af5fe60852f04c7b5cf624a1feabee6e3 100644
+--- a/session-recovery.ts
++++ b/session-recovery.ts
+@@ -77,6 +77,13 @@ export interface SessionRecoveryDeps {
+   config: McpConfig;
+   signal?: AbortSignal;
+   onNeedsAuth?: (serverName: string) => Promise<ServerConnection | undefined>;
++  /**
++   * Reports that an interactive OAuth flow for this server is in flight.
++   * Set by call-path sites; when true the 401 recovery stays out of the way
++   * (errors surface unchanged) instead of racing the interactive flow with a
++   * reconnect that re-reads a store the flow is still writing to.
++   */
++  hasPendingAuth?: (serverName: string) => boolean;
+ }
+ 
+ /**
+@@ -113,8 +120,20 @@ export async function withSessionRecovery<T>(
+     if (definition && supportsOAuth(definition) && unauthorized) {
+       invalidateAuthEntryCache(serverName);
+     }
+-    // A provider token rejected or gone reconnects, which ends in needs-auth when Pi has no token.
+-    if (!isTerminatedSession(err, hadSessionId) && !(unauthorized && typeof definition?.auth === "object")) {
++    // A provider or OAuth token rejected or gone reconnects, which ends in
++    // needs-auth when Pi has no token. supportsOAuth covers plain OAuth
++    // definitions (auth: "oauth" or auto-detected), so an out-of-band
++    // re-auth (settings probe, another session) heals the live session on
++    // the next tool call.
++    if (
++      !isTerminatedSession(err, hadSessionId)
++      // Skip the healing reconnect while an interactive flow owns the
++      // episode, mirroring the call-path gates' hasPendingAuth guard.
++      && !(unauthorized
++        && definition !== undefined
++        && (typeof definition.auth === "object" || supportsOAuth(definition))
++        && !deps.hasPendingAuth?.(serverName))
++    ) {
+       throw err;
+     }
+ 
+diff --git a/state.ts b/state.ts
+index c3e193da728e489214676ecc55308c6cbd2ad3a1..31938a8273428d4f29b6fdf9f1bca9c760860ca6 100644
+--- a/state.ts
++++ b/state.ts
+@@ -1,4 +1,5 @@
+ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
++import type { McpAdapterOptions } from "./types.ts";
+ import type { ConsentManager } from "./consent-manager.ts";
+ import type { McpLifecycleManager } from "./lifecycle.ts";
+ import type { McpServerManager } from "./server-manager.ts";
+@@ -78,5 +79,7 @@ export interface McpExtensionState {
+   ui?: ExtensionContext["ui"];
+   sendMessage?: SendMessageFn;
+   onToolMetadataUpdated?: (serverName: string, reason: string) => void | Promise<void>;
++  /** Immediate in-memory catalog observation for a host's session-bound policy. */
++  onSessionMetadata?: McpAdapterOptions["onSessionMetadata"];
+   statusEvents?: McpStatusEventBus;
+ }
+diff --git a/tool-metadata.ts b/tool-metadata.ts
+index 3c4c4b44b3fd4c7012bce98f2abad91e5feba663..15cced2d61dcf40b632699875d24b3d0ae77a1b0 100644
+--- a/tool-metadata.ts
++++ b/tool-metadata.ts
+@@ -1,9 +1,8 @@
+-import { getToolUiResourceUri } from "./ui-app-bridge-helpers.ts";
+ import type { McpExtensionState } from "./state.ts";
+ import type { ToolMetadata, McpTool, McpResource, ServerEntry, ToolPrefix } from "./types.ts";
+ import { createToolSelectorCandidateIndex, formatToolName, getToolNameCandidates, isToolAllowed, resolveToolPrefix, resolveUniqueNameOwnership } from "./types.ts";
+ import { resourceNameToToolName } from "./resource-tools.ts";
+-import { extractToolAnnotations, extractToolUiStreamMode } from "./utils.ts";
++import { extractToolAnnotations } from "./utils.ts";
+ import { extractUiToolVisibility, isUiToolVisibleToModel } from "./ui-tool-visibility.ts";
+ 
+ export function buildToolMetadata(
+@@ -89,13 +88,9 @@ export function buildToolMetadata(
+     if (!isUiToolVisibleToModel(uiVisibility)) {
+       continue;
+     }
+-    let uiResourceUri: string | undefined;
+-    try {
+-      uiResourceUri = getToolUiResourceUri({ _meta: tool._meta });
+-    } catch {
+-      failedTools.push(tool.name);
+-    }
+-    const uiStreamMode = extractToolUiStreamMode(tool._meta);
++    // Host MCP UI disable: Kimchi does not yet properly support the MCP UI
++    // standard, so tools never acquire interactive UI resources here. Remove
++    // when the harness supports MCP Apps (or adopts an upstream disable option).
+     const annotations = extractToolAnnotations(tool.annotations);
+     metadata.push({
+       name,
+@@ -103,9 +98,7 @@ export function buildToolMetadata(
+       description: tool.description ?? "",
+       ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+       ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+-      ...(uiResourceUri !== undefined ? { uiResourceUri } : {}),
+       ...(uiVisibility !== undefined ? { uiVisibility } : {}),
+-      ...(uiStreamMode !== undefined ? { uiStreamMode } : {}),
+       ...(annotations !== undefined ? { annotations } : {}),
+     });
+   }
+diff --git a/types.ts b/types.ts
+index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..1949c73c052bbae605d398f4e2e88fddf288b3ab 100644
+--- a/types.ts
++++ b/types.ts
+@@ -732,6 +732,23 @@ export interface McpConfig {
+ export interface McpAdapterOptions {
+   config?: McpConfig;
+   configPath?: string;
++  /** Runtime-scoped servers included in every initialization's startup discovery. Proxy-only and never persisted to config files. */
++  initialRuntimeServers?: Record<string, ServerEntry>;
++  /** Timeout for initial runtime discovery requests only; later tool calls use normal server/global timeouts. */
++  initialRuntimeDiscoveryTimeoutMs?: number;
++  /** In-memory catalog updates for this adapter session, including private-auth scopes. Never persisted by this hook. */
++  onSessionMetadata?: (serverName: string, entry: ServerCacheEntry) => void;
++  /** Create a session-bound observer during each runtime initialization. */
++  createSessionMetadataObserver?: () => (serverName: string, entry: ServerCacheEntry) => void;
++  /**
++   * MCP protocol era applied to every configured server whose entry does not
++   * set `protocolVersion` itself. `"auto"` offers the SDK's default
++   * 2026-07-28+ modern versions with legacy fallback; `"2026-07-28"` pins the
++   * connection to that revision; `"legacy"` keeps pre-2026 behavior. Hosts
++   * opt in explicitly; when omitted, entries without an explicit
++   * `protocolVersion` keep byte-identical pre-2026 behavior.
++   */
++  defaultProtocolVersion?: "legacy" | "auto" | "2026-07-28";
+ }
+ 
+ // Alias for clarity
+@@ -869,14 +886,22 @@ export interface McpPanelResult {
+   cancelled: boolean;
+ }
+ 
++// Host tool-name compatibility; tracking: getkimchi/kimchi#1168 (sanitize MCP
++// tool names to the provider pattern). Remove when upstream sanitizes both name
++// parts and caps wire names at the 128-char provider limit.
++export const MAX_TOOL_NAME_LENGTH = 128;
++
++const INVALID_TOOL_NAME_CHAR = /[^a-zA-Z0-9_-]/g;
++
++function sanitizeNamePart(value: string): string {
++  return value.replace(INVALID_TOOL_NAME_CHAR, "_");
++}
++
+ /**
+  * Get server prefix based on tool prefix mode.
+  */
+-function sanitizeServerPrefix(serverName: string, preserveProviderValid = true): string {
+-  const validCharacters = preserveProviderValid ? /^[A-Za-z0-9_-]$/ : /^[A-Za-z0-9]$/;
+-  return Array.from(serverName, char =>
+-    validCharacters.test(char) ? char : `_${char.codePointAt(0)!.toString(16)}_`,
+-  ).join("");
++function sanitizeServerPrefix(serverName: string): string {
++  return sanitizeNamePart(serverName);
+ }
+ 
+ export function getServerPrefix(
+@@ -885,28 +910,51 @@ export function getServerPrefix(
+ ): string {
+   if (mode === "none") return "";
+   if (mode === "short") {
+-    let short = sanitizeServerPrefix(serverName.replace(/-?mcp$/i, ""));
++    let short = sanitizeNamePart(serverName.replace(/-?mcp$/i, "").replace(/-/g, "_"));
+     if (!short) short = "mcp";
+     return short;
+   }
+-  if (mode === "mcp") return `mcp__${sanitizeServerPrefix(serverName)}`;
+-  return sanitizeServerPrefix(serverName);
++  if (mode === "mcp") return `mcp__${sanitizeNamePart(serverName.replace(/-/g, "_"))}`;
++  return sanitizeNamePart(serverName.replace(/-/g, "_"));
+ }
+ 
++const warnedTruncatedNames = new Set<string>();
++
+ /**
+- * Format a tool name with server prefix.
++ * Format a tool name with server prefix. The result always matches
++ * ^[a-zA-Z0-9_-]{1,128}$: structurally valid tool names pass through
++ * byte-for-byte (hyphens in the tool name are kept), anything else is replaced
++ * with "_". Overlong names are truncated — server prefix first, tool tail
++ * preserved so the model can still reference the tool — with a warning once
++ * per distinct original name.
+  */
+ export function formatToolName(
+   toolName: string,
+   serverName: string,
+   prefix: ToolPrefix
+ ): string {
+-  const p = getServerPrefix(serverName, prefix);
+-  const sanitized = toolName.replace(/\./g, "_");
+-  if (p && sanitized.startsWith(`${p}_`) && sanitized.length > p.length + 1) {
+-    return sanitized;
++  const serverPrefix = getServerPrefix(serverName, prefix);
++  const toolPart = sanitizeNamePart(toolName) || "tool";
++  if (serverPrefix && toolPart.startsWith(`${serverPrefix}_`) && toolPart.length > serverPrefix.length + 1) {
++    return truncateToolName(toolPart, toolPart);
++  }
++  const name = serverPrefix ? `${serverPrefix}_${toolPart}` : toolPart;
++  return truncateToolName(name, toolPart);
++}
++
++function truncateToolName(name: string, toolPart: string): string {
++  if (name.length <= MAX_TOOL_NAME_LENGTH) return name;
++  const limited =
++    toolPart.length >= MAX_TOOL_NAME_LENGTH
++      ? toolPart.slice(0, MAX_TOOL_NAME_LENGTH)
++      : `${name.slice(0, MAX_TOOL_NAME_LENGTH - toolPart.length - 1)}_${toolPart}`;
++  if (!warnedTruncatedNames.has(name)) {
++    warnedTruncatedNames.add(name);
++    console.warn(
++      `MCP: tool name "${name}" exceeds ${MAX_TOOL_NAME_LENGTH} chars; truncated to "${limited}" — may collide with similarly-named tools`,
++    );
+   }
+-  return p ? `${p}_${sanitized}` : sanitized;
++  return limited;
+ }
+ 
+ export function resolveToolPrefix(
+@@ -990,10 +1038,14 @@ export function formatPromptCommandName(
+ }
+ 
+ function getLegacyServerPrefix(serverName: string, mode: ToolPrefix): string {
++  // Pre-sanitization era spellings (vendored ≤2.4.x adapter): only hyphens
++  // were replaced with "_", everything else passed through raw — including
++  // spaces, which is exactly the spelling users see in older provider error
++  // messages and write down in includeTools/excludeTools.
+   if (mode === "none") return "";
+-  if (mode === "short") return sanitizeServerPrefix(serverName.replace(/-?mcp$/i, ""), false) || "mcp";
+-  if (mode === "mcp") return `mcp__${sanitizeServerPrefix(serverName, false)}`;
+-  return sanitizeServerPrefix(serverName, false);
++  if (mode === "short") return serverName.replace(/-?mcp$/i, "").replace(/-/g, "_") || "mcp";
++  if (mode === "mcp") return `mcp__${serverName.replace(/-/g, "_")}`;
++  return serverName.replace(/-/g, "_");
+ }
+ 
+ function formatLegacyToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
+@@ -1053,13 +1105,25 @@ export function createToolSelectorCandidateIndex(
+   };
+ }
+ 
++// Host exclusion compatibility; tracking: getkimchi/kimchi#1168. Patterns
++// fuzzy-match the way master's fix did: hyphens and invalid characters
++// normalize to "_" on BOTH sides, so excludes written with the raw name (as
++// it appears in provider error messages) or the sanitized form both match.
++function normalizeSelectorValue(value: string): string {
++  return value.replace(/[^a-zA-Z0-9_]/g, "_");
++}
++
+ export function matchesToolPattern(candidates: Set<string>, patterns?: unknown): boolean {
+   if (!Array.isArray(patterns) || patterns.length === 0) return false;
+ 
+   for (const pattern of patterns) {
+     if (typeof pattern !== "string") continue;
+-    if (!pattern.includes("*") && !pattern.includes("?") && candidates.has(pattern)) {
+-      return true;
++    if (!pattern.includes("*") && !pattern.includes("?")) {
++      if (candidates.has(pattern)) return true;
++      const normalized = normalizeSelectorValue(pattern);
++      for (const candidate of candidates) {
++        if (normalizeSelectorValue(candidate) === normalized) return true;
++      }
+     }
+     if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
+       return true;

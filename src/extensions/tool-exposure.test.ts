@@ -44,14 +44,8 @@ import { createContext } from "./__mocks__/context.js"
 import { EXTENSION_SOURCES } from "./context-budget-tools.js"
 import { DAP_ENTRY_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
 import type { DapAdapterConfig } from "./dap/types.js"
-import { resolveMultiModelEnabled } from "./multi-model.js"
 import { withPrintGate } from "./print-mode.js"
 import { getDisabledToolNames } from "./prompt-construction/tool-visibility.js"
-
-vi.mock("./multi-model.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("./multi-model.js")>()
-	return { ...actual, resolveMultiModelEnabled: vi.fn(() => ({ value: false, source: "cli" })) }
-})
 
 // =============================================================================
 // Mock MCP config — pin zero configured servers so the Chunk 5 registration
@@ -352,7 +346,6 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	// only when >=1 MCP server is configured; see the gate-on test below).
 	// Skill is resource-gated: it registers only when a .claude skills dir
 	// exists (gate tests in claude-code-skills/index.test.ts).
-	"set_phase",
 	// model-switch / permissions — previously registered but invisible to this
 	// spec; now covered (and print-gated, separately, in Chunk C.6).
 	"set_model",
@@ -453,13 +446,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 21-tool surface and hides the 24 deferred tools", async () => {
+	it("advertises exactly the documented 20-tool surface and hides the 24 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(21)
+		expect(visible.size).toBe(20)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -470,22 +463,22 @@ describe("tool exposure at session start", () => {
 		expect(deferredInActive).toEqual([])
 	})
 
-	it("print mode drops questionnaire + set_phase + set_model + submit_plan at registration", async () => {
+	it("print mode drops questionnaire + set_model + submit_plan at registration", async () => {
 		await withPrintGate({ print: true }, async () => {
 			const harness = createExposureHarness()
 			await instantiateAllExtensions(harness)
 
 			// Registration gates: unlike deferred tools, these are NOT registered
 			// in --print mode — not merely hidden.
-			for (const name of ["questionnaire", "set_phase", "set_model", "submit_plan"]) {
+			for (const name of ["questionnaire", "set_model", "submit_plan"]) {
 				expect(harness.registered.has(name), `${name} must not register in --print`).toBe(false)
 			}
 
-			// The remaining visible surface is the interactive spec minus the four
+			// The remaining visible surface is the interactive spec minus the three
 			// gate-outs; deferred spec is unchanged.
 			const expectedVisible = new Set(
 				[...EXPECTED_SESSION_START_VISIBLE].filter(
-					(n) => n !== "questionnaire" && n !== "set_phase" && n !== "set_model" && n !== "submit_plan",
+					(n) => n !== "questionnaire" && n !== "set_model" && n !== "submit_plan",
 				),
 			)
 			const visible = new Set(harness.active)
@@ -497,33 +490,11 @@ describe("tool exposure at session start", () => {
 		})
 	})
 
-	it("print mode keeps set_phase registered when the session is multi-model", async () => {
-		vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: true, source: "cli" })
-		try {
-			await withPrintGate({ print: true }, async () => {
-				const harness = createExposureHarness()
-				await instantiateAllExtensions(harness)
-
-				// The orchestrator prompt instructs set_phase calls; the tool must
-				// exist even though the print gate would otherwise skip it.
-				expect(harness.registered.has("set_phase"), "set_phase must register in multi-model --print").toBe(true)
-				expect(harness.registered.has("questionnaire"), "questionnaire stays print-gated").toBe(false)
-				// Multi-model print keeps set_model — the orchestrator may switch
-				// roles mid-run.
-				expect(harness.registered.has("set_model"), "set_model must register in multi-model --print").toBe(true)
-				expect(harness.registered.has("submit_plan"), "submit_plan stays print-gated in multi-model").toBe(false)
-			})
-		} finally {
-			vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: false, source: "cli" })
-		}
-	})
-
 	it("print + ferment-oneshot keeps submit_plan registered (planning catalog)", async () => {
 		await withPrintGate({ print: true, fermentOneshot: true }, async () => {
 			const harness = createExposureHarness()
 			await instantiateAllExtensions(harness)
 			expect(harness.registered.has("submit_plan"), "submit_plan must register in ferment-oneshot --print").toBe(true)
-			expect(harness.registered.has("set_phase"), "set_phase must register in ferment-oneshot --print").toBe(true)
 		})
 	})
 

@@ -15,7 +15,7 @@
 // `isAcpWarning` filter is kept defensively but no `[ACP]` warnings are
 // emitted in this scenario.
 
-import type { ContentChunk } from "@agentclientprotocol/sdk"
+import type { ContentChunk } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"

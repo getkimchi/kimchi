@@ -9,7 +9,7 @@
 // session's model list — so unknown-model picks carry `provider/raw-id`,
 // like the attribution fallback does.
 
-import type { AgentSideConnection } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import { isRoutedResolutionEntry } from "../../extensions/auto-model/index.js"
 import { refFromParts } from "../../shared/model-ref.js"
@@ -24,13 +24,15 @@ import { emitExtNotification } from "./ext-notifications.js"
  * `modelId`, and both ids are composed into provider refs so every kimchi
  * ACP surface names models identically (docs/model-routing.md).
  */
-export function emitRoutedModelUpdate(conn: AgentSideConnection, sessionId: string, event: AgentSessionEvent): void {
+export function emitRoutedModelUpdate(conn: AgentContext, sessionId: string, event: AgentSessionEvent): void {
 	if (event.type !== "entry_appended") return
 	if (!isRoutedResolutionEntry(event.entry)) return
-	const { requestedId, provider, modelId } = event.entry.data
+	const { requestedId, provider, modelId, routedProvider } = event.entry.data
 	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.routed_model, {
 		requestedId: refFromParts(provider, requestedId),
-		routedId: refFromParts(provider, modelId),
+		// Known picks record the block that served them; older entries and
+		// unknown picks fall back to the requested provider.
+		routedId: refFromParts(routedProvider ?? provider, modelId),
 		sessionId,
 	})
 }

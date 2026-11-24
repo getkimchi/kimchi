@@ -7,10 +7,11 @@ import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { RequestError } from "@agentclientprotocol/sdk"
+import type { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { AdminBackend, AdminMemoryItem } from "../../../extensions/memory/admin.js"
+import { readMemoryMetadata } from "../../../extensions/memory/metadata.js"
 import { resolveProjectScope } from "../../../extensions/memory/scope.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "../../../extensions/memory/session-toggle.js"
 import { BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__mocks__/fake-agent-session.js"
@@ -18,10 +19,12 @@ import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
 import { KimchiAcpAgent } from "../server.js"
 import {
 	handleMemoryDelete,
+	handleMemoryGet,
 	handleMemoryList,
 	handleMemoryReset,
 	handleMemorySearch,
 	handleMemoryStatus,
+	handleMemoryUpdate,
 	handleSetMemoryEnabled,
 	type MemoryMethodOptions,
 } from "./memory.js"
@@ -85,6 +88,18 @@ function makeFakeBackend(items: AdminMemoryItem[]) {
 		deleteAll: async () => {
 			deletedAll = true
 		},
+		update: async (id, options) => {
+			const index = items.findIndex((item) => item.id === id)
+			if (index < 0) return
+			const previous = items[index] as AdminMemoryItem
+			items[index] = {
+				...previous,
+				memory: options.text ?? previous.memory,
+				metadata: options.metadata
+					? readMemoryMetadata(options.metadata, options.text ?? previous.memory)
+					: previous.metadata,
+			}
+		},
 	}
 	return { backend, deleted, isDeletedAll: () => deletedAll }
 }
@@ -133,6 +148,87 @@ function setFeatureEnabled(enabled: boolean): void {
 		writeFileSync(join(dir, "settings.json"), JSON.stringify({ resources: { "extensions.memory": true } }))
 	}
 }
+
+// --- memory_get / memory_update -----------------------------------------------
+
+describe("memory_get and memory_update", () => {
+	it("shares scoped explanation and exact metadata editing with the CLI", async () => {
+		const h = harness({ personal: [fact("p1", "Use npm")] })
+		const explanation = await handleMemoryGet(h.options, { id: "p1", scope: "personal" })
+		expect(explanation).toMatchObject({
+			id: "p1",
+			fact: { scope: "personal", memory: "Use npm", supportCount: 0, recentRecalls: [] },
+		})
+
+		const edited = await handleMemoryUpdate(h.options, {
+			id: "p1",
+			scope: "personal",
+			kind: "procedural",
+			confidence: 0,
+			note: "confirmed",
+			canonical: false,
+			confirm: true,
+		})
+		expect(edited).toMatchObject({
+			corrected: {
+				id: "p1",
+				scope: "personal",
+				memory: "Use npm",
+				metadata: {
+					kind: "procedural",
+					source: "authored",
+					confidence: 0,
+					canonical: false,
+					attributes: { note: "confirmed" },
+				},
+			},
+			deleted: [],
+		})
+		const explained = await handleMemoryGet(h.options, { id: "p1", scope: "personal" })
+		expect(explained).toMatchObject({ id: "p1", fact: { memory: "Use npm", scope: "personal" } })
+	})
+
+	it("searches exact IDs across stores and reports unknown IDs and retryable contention", async () => {
+		const h = harness({ personal: [fact("p1", "personal")], "a/b": [fact("p1", "project")] })
+		await expect(handleMemoryGet(h.options, { id: "p1" })).resolves.toEqual({ id: "p1", fact: null })
+		await expect(handleMemoryUpdate(h.options, { id: "missing", note: "test", confirm: true })).rejects.toMatchObject({
+			code: -32602,
+			data: { id: "missing", reason: "unknown-id" },
+		})
+		const busy: MemoryMethodOptions = {
+			...h.options,
+			deps: { ...h.options.deps, acquireLock: () => Promise.resolve(null) },
+		}
+		await expect(handleMemoryUpdate(busy, { id: "p1", note: "test", confirm: true })).rejects.toMatchObject({
+			code: -32603,
+			data: { id: "p1", reason: "busy", retryable: true },
+		})
+	})
+
+	it("requires confirmation, valid fields, and an available capture lock", async () => {
+		const h = harness({ personal: [fact("p1", "Use npm")] })
+		await expect(handleMemoryUpdate(h.options, { id: "p1", text: "Use pnpm" })).rejects.toThrow("confirm must be true")
+		await expect(handleMemoryUpdate(h.options, { id: "p1", confidence: 2, confirm: true })).rejects.toThrow(
+			"between 0 and 1",
+		)
+		await expect(handleMemoryUpdate(h.options, { id: "p1", note: "only change" })).rejects.toThrow(
+			"confirm must be true",
+		)
+		const busy: MemoryMethodOptions = {
+			...h.options,
+			deps: { ...h.options.deps, acquireLock: () => Promise.resolve(null) },
+		}
+		await expect(handleMemoryUpdate(busy, { id: "p1", text: "Use yarn", confirm: true })).rejects.toThrow(
+			"capture worker is active",
+		)
+		const backend = h.options.deps?.createBackend
+			? await h.options.deps.createBackend(join(h.root, "personal", "memory.db"))
+			: undefined
+		expect(backend ? await backend.getAll({ metadata: true }) : []).toEqual([
+			expect.objectContaining({ id: "p1", memory: "Use npm" }),
+		])
+	})
+})
 
 // --- memory_status --------------------------------------------------------------
 
@@ -577,6 +673,24 @@ describe("KimchiAcpAgent extMethod memory", () => {
 				enabled: true,
 			}),
 		).rejects.toMatchObject({ code: -32602, message: expect.stringContaining("unknown sessionId nope") })
+	})
+
+	it("memory_get and memory_update dispatch through the agent", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const explanation = (await agent.extMethod(AVAILABLE_EXT_METHODS.memory_get, { id: "no-such-id" })) as {
+			id: string
+			fact: null
+		}
+		expect(explanation).toEqual({ id: "no-such-id", fact: null })
+		await expect(
+			agent.extMethod(AVAILABLE_EXT_METHODS.memory_update, { id: "no-such-id", canonical: true }),
+		).rejects.toMatchObject({
+			code: -32602,
+			message: expect.stringContaining("confirm must be true"),
+		})
 	})
 
 	it("memory_delete and memory_search dispatch through the agent", async () => {

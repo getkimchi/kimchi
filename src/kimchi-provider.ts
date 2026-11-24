@@ -28,3 +28,17 @@ export function isKimchiProvider(provider: string): boolean {
 		provider === KIMCHI_EXPERIMENTAL_PROVIDER_ID
 	)
 }
+
+/**
+ * True for every provider block the Kimchi gateway owns: the base `kimchi-dev`
+ * block, its per-upstream siblings (`kimchi-dev/anthropic`, `kimchi-dev/openai`,
+ * `kimchi-dev/bedrock`, …), the ChatGPT-subscription `kimchi-dev/openai-codex`
+ * block, and `kimchi-experimental`.
+ *
+ * Broader than {@link isKimchiProvider} on purpose: that one answers "does this
+ * provider take the Kimchi credential?" and excludes the Codex block; catalog
+ * lookups instead need "could the gateway be serving this model?".
+ */
+export function isKimchiGatewayBlock(provider: string): boolean {
+	return provider === CODEX_PROVIDER_ID || isKimchiProvider(provider)
+}

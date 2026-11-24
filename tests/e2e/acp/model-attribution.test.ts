@@ -77,7 +77,7 @@ describe("ACP integration — per-message model attribution", () => {
 			responses: [{ stream: ["Hello", " attribution"], responseModel: "routed" }],
 		})
 
-		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		const session = await fixture.conn.request("session/new", { cwd: fixture.workDir, mcpServers: [] })
 		const result = await prompt(fixture, session.sessionId, "Say hi")
 		expect(result.stopReason).toBe("end_turn")
 		expect(result.chunks).toContain("Hello attribution")
@@ -152,7 +152,7 @@ describe("ACP integration — per-message model attribution", () => {
 			},
 		])
 
-		await fixture.conn.loadSession({ sessionId, cwd, mcpServers: [] })
+		await fixture.conn.request("session/load", { sessionId, cwd, mcpServers: [] })
 
 		const replayed = fixture.client.sessionUpdates.filter(
 			(u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk" && !isAcpWarning(u.update),

@@ -12,7 +12,7 @@ import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import type {
-	AgentSideConnection,
+	AgentContext,
 	ContentChunk,
 	ListSessionsRequest,
 	LoadSessionRequest,
@@ -20,8 +20,8 @@ import type {
 	RequestPermissionRequest,
 	SessionNotification,
 	TextContent,
-} from "@agentclientprotocol/sdk"
-import { RequestError } from "@agentclientprotocol/sdk"
+} from "@agentclientprotocol/sdk/unstable"
+import { methods, RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -44,6 +44,15 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import { createContext } from "../../extensions/__mocks__/context.js"
+import { createExtensionApi } from "../../extensions/__mocks__/extension-api.js"
+import { releaseArtifactSnapshot, snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
+import {
+	ARTIFACTS_ENTRY_TYPE,
+	type ArtifactsEntry,
+	artifactRecorderExtension,
+} from "../../extensions/artifacts/recorder.js"
+import { setSnapshotArtifactsOptIn } from "../../extensions/artifacts/snapshot-policy.js"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
 import { createFakeOps, type FakeOps } from "../../extensions/bash-background/__mocks__/fake-bash-ops.js"
 import { createProcessRegistry, type ProcessRegistry } from "../../extensions/bash-background/process-registry.js"
@@ -118,6 +127,12 @@ vi.mock("../../pi-auth.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../pi-auth.js")>()),
 	syncOAuthCredentialToKimchiProviders: vi.fn(),
 }))
+// Keep the actual preparation by default. Individual prompt tests can replace
+// it once to exercise the adapter's failure-to-typed-error mapping.
+vi.mock("../../auth/active-prompt-refresh.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof ActivePromptRefresh>()
+	return { ...actual, prepareActivePromptKimchiCredential: vi.fn(actual.prepareActivePromptKimchiCredential) }
+})
 // Pin getVersion() so initialize() agentInfo assertions are deterministic
 // and don't depend on the repo's package.json.
 const getVersionMock = vi.fn(() => "1.2.3-test")
@@ -171,6 +186,8 @@ const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import type { Model } from "@earendil-works/pi-ai"
+import type * as ActivePromptRefresh from "../../auth/active-prompt-refresh.js"
+import { prepareActivePromptKimchiCredential } from "../../auth/active-prompt-refresh.js"
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, loadConfig, resolveEndpoints, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
@@ -180,8 +197,6 @@ import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/const
 import { clearAutoRoutingState, setAutoRoutingState } from "../../extensions/auto-model/state.js"
 import { preserveRawErrorMessage } from "../../extensions/error-preservation.js"
 import { setExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
-import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
 import { getPermissionModeEnvKey } from "../../extensions/permissions/mode-controller.js"
@@ -206,7 +221,7 @@ import {
 } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { THINKING_LEVEL_DESCRIPTIONS } from "../../thinking-levels.js"
-import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { AVAILABLE_EXT_METHODS, AVAILABLE_EXT_NOTIFICATIONS, CAPABILITIES_KEY } from "./capabilities.js"
 import { COMPACT_COMMAND_ENTRY_TYPE } from "./commands.js"
 import type { SsoFlowManager } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
@@ -349,8 +364,7 @@ class FakeAgentSession {
 			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
 		hasConfiguredAuth: (_model: { provider: string }) => this.authConfigured,
 	}
-	// Provider-keyed seam used where only the provider id is known (multi-model
-	// orchestrator authRequired check) — mirrors modelRegistry.hasConfiguredAuth.
+	// Provider-keyed seam — mirrors modelRegistry.hasConfiguredAuth.
 	// refresh() stands in for pi's credential re-read: calling it flips the fake
 	// to configured, as a real runtime picks up a freshly-persisted auth.json.
 	modelRuntime = {
@@ -439,8 +453,6 @@ class FakeAgentSession {
 	) {
 		this.sessionId = sessionId
 		// Tests assume deterministic single-model state by default. The global
-		// multi-model default may differ between local and CI, so pin it here.
-		setMultiModelEnabled(sessionId, false)
 	}
 
 	subscribe(listener: AgentSessionEventListener): () => void {
@@ -558,19 +570,19 @@ function asSession(fake: FakeAgentSession): AgentSession {
 	return fake as unknown as AgentSession
 }
 
-function makeConn(): AgentSideConnection {
+function makeConn(): AgentContext {
 	const stub = {
-		sessionUpdate: async (_p: SessionNotification) => {},
-		extNotification: async (_method: string, _params: unknown) => {},
+		notify: async (_method: string, _params: unknown) => {},
+		request: vi.fn(),
 	}
-	return stub as unknown as AgentSideConnection
+	return stub as unknown as AgentContext
 }
 
 // Recording variant of makeConn: captures every sessionUpdate the agent emits
 // so tests can assert on the full notification stream (tool_call, partial
 // tool_call_update, terminal tool_call_update, etc.).
 function makeRecordingConn(): {
-	conn: AgentSideConnection
+	conn: AgentContext
 	updates: SessionNotification[]
 	extNotifications: Array<{ method: string; params: unknown }>
 	trace: Array<{ channel: "session-update" | "ext-notification"; label: string }>
@@ -582,18 +594,20 @@ function makeRecordingConn(): {
 	// updates and ext notifications read this instead.
 	const trace: Array<{ channel: "session-update" | "ext-notification"; label: string }> = []
 	const stub = {
-		sessionUpdate: async (p: SessionNotification) => {
-			updates.push(p)
-			trace.push({ channel: "session-update", label: p.update.sessionUpdate })
-		},
-		extNotification: async (method: string, params: unknown) => {
+		notify: async (method: string, params: unknown) => {
+			if (method === "session/update") {
+				const notification = params as SessionNotification
+				updates.push(notification)
+				trace.push({ channel: "session-update", label: notification.update.sessionUpdate })
+				return
+			}
 			extNotifications.push({ method, params })
 			const kind = (params as { kind?: string }).kind
 			trace.push({ channel: "ext-notification", label: kind ? `${method}:${kind}` : method })
 		},
-		requestPermission: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
+		request: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
 	}
-	return { conn: stub as unknown as AgentSideConnection, updates, extNotifications, trace }
+	return { conn: stub as unknown as AgentContext, updates, extNotifications, trace }
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -755,7 +769,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const startup = new FakeAgentSession("startup-todos")
 		const updates: SessionNotification[] = []
 		const conn = makeConn()
-		conn.sessionUpdate = async (notification) => {
+		conn.notify = async (_method: string, notification: SessionNotification) => {
 			updates.push(notification)
 		}
 		startup.bindExtensionsImpl = async () => {
@@ -3193,6 +3207,28 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(messageChunks(updates).filter((chunk) => chunk.text.includes("does not accept image input"))).toHaveLength(0)
 	})
 
+	it("stops a Kimi prompt on credential-sync failure without requesting sign-in", async () => {
+		const {
+			agent: localAgent,
+			fake: localFake,
+			sessionId: sid,
+		} = await startRecordingSession({
+			provider: "kimchi-dev/openai",
+			id: "test-model",
+			input: ["text"],
+		})
+		vi.mocked(prepareActivePromptKimchiCredential).mockResolvedValueOnce("credential_sync_failed")
+
+		await expect(
+			localAgent.prompt({ sessionId: sid, prompt: [{ type: "text", text: "hello" }] }),
+		).rejects.toMatchObject({
+			code: -32603,
+			message:
+				"Internal error: OAuth refresh succeeded, but the active credential could not be saved. Retry this prompt; sign-in is not required.",
+		})
+		expect(localFake.promptCalls).toHaveLength(0)
+	})
+
 	// Defensive: once a turn is finalized (short-circuit, shutdown, cancel),
 	// stray tool_execution_{start,end} must not emit tool_call notifications
 	// to the client. Clients would otherwise see tool activity on a turn they
@@ -3409,13 +3445,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	it("registers an ACP permission prompter that maps allow_once through requestPermission", async () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
-			sessionUpdate: async (_p: SessionNotification) => {},
-			extNotification: async (_method: string, _params: unknown) => {},
-			requestPermission: async (params: RequestPermissionRequest) => {
+			notify: async (_method: string, _params: unknown) => {},
+			request: async (_method: string, params: RequestPermissionRequest) => {
 				requests.push(params)
 				return { outcome: { outcome: "selected", optionId: "choice-0" } }
 			},
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		const localFake = new FakeAgentSession("session-permission")
 		const localAgent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
@@ -3462,15 +3497,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	it("maps ACP permission cancellation to a client-denial outcome", async () => {
 		const requests: RequestPermissionRequest[] = []
 		const conn = {
-			sessionUpdate: async (_p: SessionNotification) => {},
-			extNotification: async (_method: string, _params: unknown) => {},
-			requestPermission: async (params: RequestPermissionRequest) => {
+			notify: async (_method: string, _params: unknown) => {},
+			request: async (_method: string, params: RequestPermissionRequest) => {
 				requests.push(params)
 				return {
 					outcome: { outcome: "cancelled" },
 				}
 			},
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		const localFake = new FakeAgentSession("session-permission-cancel")
 		const localAgent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
@@ -6758,6 +6792,10 @@ describe("generated artifacts (live turns)", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory,
 		})
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
 		const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
 		sessionId = res.sessionId
 	})
@@ -6806,10 +6844,24 @@ describe("generated artifacts (live turns)", () => {
 		})
 	}
 
+	const attachArtifactRecorder = (source: FakeAgentSession = fake) => {
+		const recorder = createExtensionApi()
+		artifactRecorderExtension(recorder.api)
+		const sessionManager = asSession(source).sessionManager
+		const context = { ...createContext({ cwd: tmpDir }), sessionManager }
+		// Match production's shared execution snapshot and concurrency scope.
+		setSnapshotArtifactsOptIn(sessionManager, true)
+		onTestFinished(() => setSnapshotArtifactsOptIn(sessionManager, false))
+		source.subscribe((event) => {
+			for (const handler of recorder.getHandlers(event.type)) void handler(event, context)
+		})
+		return recorder
+	}
+
 	// Artifact link chunks, narrowed to messageId + link content + kimchi.dev
 	// meta blob (tests assert both link fields and merged attribution fields).
-	const artifactChunks = () =>
-		updates.flatMap((u) => {
+	const artifactChunks = (notifications = updates) =>
+		notifications.flatMap((u) => {
 			if (u.update.sessionUpdate !== "agent_message_chunk") return []
 			const meta = (u.update as { _meta?: { "kimchi.dev"?: Record<string, unknown> } })._meta?.["kimchi.dev"]
 			if (meta?.type !== "artifact") return []
@@ -6925,6 +6977,81 @@ describe("generated artifacts (live turns)", () => {
 		expect(chipIdx).toBeLessThan(laterTextIdx)
 	})
 
+	it("drops a declared artifact deleted before any text allowed it to emit", async () => {
+		const declared = join(tmpDir, "deleted-declaration.md")
+		const recorder = attachArtifactRecorder()
+		const declarationTurn = makeAssistantMessage([
+			{ type: "toolCall", id: "tc-declare-before-text", name: "custom_doc_tool", arguments: { path: declared } },
+		])
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-declare-before-text",
+				toolName: "custom_doc_tool",
+				args: { path: declared },
+			})
+			writeFileSync(declared, "# Temporary plan")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-declare-before-text",
+				toolName: "custom_doc_tool",
+				result: {
+					content: [{ type: "text", text: "Plan saved." }],
+					details: { artifacts: [{ path: declared }] },
+				},
+				isError: false,
+			})
+			// The declaration is recorded while the file exists, but no text
+			// block is available for emitNow to attach it to.
+			fake.emit({ type: "message_end", message: declarationTurn })
+			fake.emit({
+				type: "turn_end",
+				message: declarationTurn,
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "tc-declare-before-text",
+						toolName: "custom_doc_tool",
+						content: [{ type: "text", text: "Plan saved." }],
+						details: { artifacts: [{ path: declared }] },
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			rmSync(declared)
+			const textTurn = makeAssistantMessage([{ type: "text", text: "The plan was removed." }])
+			fake.emit({ type: "message_end", message: textTurn })
+			fake.emit({ type: "turn_end", message: textTurn, toolResults: [] })
+			fake.emit(agentEnd())
+			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write a temporary plan" }] })
+		const rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		const loaded = new FakeAgentSession("loaded-deleted-declaration", tmpDir)
+		loaded.branch = [
+			userTextEntry("Write a temporary plan", "u1", null),
+			assistantTextEntry("The plan was removed.", "a1", "u1"),
+			...(rows.length > 0 ? [{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never] : []),
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect({
+			live: artifactChunks().map((chunk) => chunk.uri),
+			recorded: rows.flatMap((row) => row.artifacts.map((artifact) => pathToFileURL(artifact.path).href)),
+			replayed: artifactChunks(replay.updates).map((chunk) => chunk.uri),
+		}).toEqual({ live: [], recorded: [], replayed: [] })
+	})
+
 	it("detects artifacts mentioned in bash output and dedupes across calls", async () => {
 		const target = join(tmpDir, "report.pdf")
 		writeFileSync(target, "pdf")
@@ -6950,6 +7077,818 @@ describe("generated artifacts (live turns)", () => {
 		const chunks = artifactChunks()
 		expect(chunks).toHaveLength(1)
 		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL(target).href])
+	})
+
+	it("keeps snapshot-derived links invisible to an empty-capability client", async () => {
+		const legacy = new FakeAgentSession("session-artifacts-no-opt-in", tmpDir)
+		const recording = makeRecordingConn()
+		const legacyAgent = new KimchiAcpAgent(recording.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(legacy),
+		})
+		await legacyAgent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		const opened = await legacyAgent.newSession({ cwd: tmpDir, mcpServers: [] })
+		const written = join(tmpDir, "legacy-write.md")
+		const silent = join(tmpDir, "legacy-silent.html")
+		legacy.promptImpl = async () => {
+			legacy.emit({ type: "agent_start" })
+			legacy.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-legacy-write",
+				toolName: "write",
+				args: { path: written, content: "legacy" },
+			})
+			writeFileSync(written, "legacy")
+			legacy.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-legacy-write",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote legacy.md" }] },
+				isError: false,
+			})
+			legacy.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-legacy-silent",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			})
+			writeFileSync(silent, "<h1>Silent</h1>")
+			legacy.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-legacy-silent",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			legacy.emit(assistantMessageEnd("Done."))
+			legacy.emit(agentEnd())
+		}
+		await legacyAgent.prompt({ sessionId: opened.sessionId, prompt: [{ type: "text", text: "Build" }] })
+		expect(artifactChunks(recording.updates).map((chunk) => chunk.uri)).toEqual([pathToFileURL(written).href])
+	})
+
+	it("includes a final HTML file created by a silent foreground build after an intermediate write", async () => {
+		const template = join(tmpDir, "_code-reviewer-prd.template.html")
+		const finalReport = join(tmpDir, "code-reviewer-rebuild-prd.html")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-template",
+				toolName: "write",
+				args: { path: template, content: "<template>" },
+			})
+			writeFileSync(template, "<template>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-template",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote template." }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-silent-build",
+				toolName: "bash",
+				args: { command: "node build-report.js" },
+			})
+			// Simulate the foreground script's side effect: no redirect and no
+			// stdout path token, only a file created after execution starts.
+			writeFileSync(finalReport, "<h1>Final report</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-silent-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Built code-reviewer-rebuild-prd.html."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build the report" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks().map((chunk) => ({ name: chunk.name, uri: chunk.uri }))).toEqual([
+			{ name: "_code-reviewer-prd.template.html", uri: pathToFileURL(template).href },
+			{ name: "code-reviewer-rebuild-prd.html", uri: pathToFileURL(finalReport).href },
+		])
+	})
+
+	it("does not duplicate a snapshot-detected file also printed by Bash", async () => {
+		const finalReport = join(tmpDir, "final.html")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-printed-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			})
+			writeFileSync(finalReport, "<h1>Final</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-printed-build",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "wrote final.html" }] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Done."))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build" }] })
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(finalReport).href])
+	})
+
+	it("preserves nested write and output-sniff artifacts without client opt-in or snapshot rows", async () => {
+		const legacy = new FakeAgentSession("session-nested-legacy-artifacts", tmpDir)
+		const recording = makeRecordingConn()
+		const legacyAgent = new KimchiAcpAgent(recording.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(legacy),
+		})
+		await legacyAgent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		const opened = await legacyAgent.newSession({ cwd: tmpDir, mcpServers: [] })
+		const recorder = createExtensionApi()
+		artifactRecorderExtension(recorder.api)
+		const context = createContext({ cwd: tmpDir })
+		legacy.subscribe((event) => {
+			for (const handler of recorder.getHandlers(event.type)) void handler(event, context)
+		})
+		const written = join(tmpDir, "nested-write.md")
+		const sniffed = join(tmpDir, "nested-sniff.html")
+		legacy.promptImpl = async () => {
+			legacy.emit({ type: "agent_start" })
+			legacy.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-nested-write",
+				toolName: "write",
+				args: { path: written, content: "nested" },
+				parentToolCallId: "tc-subagent",
+			})
+			writeFileSync(written, "nested")
+			legacy.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-nested-write",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote nested-write.md" }] },
+				isError: false,
+				parentToolCallId: "tc-subagent",
+			})
+			legacy.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-nested-sniff",
+				toolName: "bash",
+				args: { command: "node nested-build.js" },
+				parentToolCallId: "tc-subagent",
+			})
+			writeFileSync(sniffed, "<h1>Nested</h1>")
+			legacy.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-nested-sniff",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "Wrote nested-sniff.html" }] },
+				isError: false,
+				parentToolCallId: "tc-subagent",
+			})
+			const message = makeAssistantMessage([
+				{ type: "text", text: "Nested legacy artifacts finished." },
+				{ type: "toolCall", id: "tc-nested-write", name: "write", arguments: { path: written } },
+				{ type: "toolCall", id: "tc-nested-sniff", name: "bash", arguments: { command: "node nested-build.js" } },
+			])
+			legacy.emit({ type: "message_end", message })
+			legacy.emit({
+				type: "turn_end",
+				message,
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "tc-nested-write",
+						toolName: "write",
+						content: [{ type: "text", text: "Wrote nested-write.md" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					{
+						role: "toolResult",
+						toolCallId: "tc-nested-sniff",
+						toolName: "bash",
+						content: [{ type: "text", text: "Wrote nested-sniff.html" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			legacy.emit(agentEnd())
+			legacy.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+
+		await legacyAgent.prompt({ sessionId: opened.sessionId, prompt: [{ type: "text", text: "Write in a subagent" }] })
+		const expectedUris = [pathToFileURL(written).href, pathToFileURL(sniffed).href]
+		expect(artifactChunks(recording.updates).map((chunk) => chunk.uri)).toEqual(expectedUris)
+		const rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows[0].artifacts).toEqual([
+			{ path: written, name: "nested-write.md", mimeType: "text/markdown", sniffed: false },
+			{ path: sniffed, name: "nested-sniff.html", mimeType: "text/html", sniffed: true },
+		])
+
+		const loaded = new FakeAgentSession("loaded-nested-legacy-artifacts", tmpDir)
+		loaded.branch = [
+			userTextEntry("Write in a subagent", "u1", null),
+			assistantTextEntry("Nested legacy artifacts finished.", "a1", "u1"),
+			{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never,
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect(artifactChunks(replay.updates).map((chunk) => chunk.uri)).toEqual(expectedUris)
+	})
+
+	it("ignores nested silent builds without hiding their tool-call UI or recording replay artifacts", async () => {
+		const nestedReport = join(tmpDir, "nested-final.html")
+		const recorder = attachArtifactRecorder()
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-nested-build",
+				toolName: "bash",
+				args: { command: "node nested-build.js" },
+				parentToolCallId: "tc-subagent",
+			})
+			writeFileSync(nestedReport, "<h1>Nested</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-nested-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+				parentToolCallId: "tc-subagent",
+			})
+			fake.emit(assistantMessageEnd("Nested build finished."))
+			fake.emit(agentEnd())
+			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build in a subagent" }] })
+		expect(artifactChunks()).toEqual([])
+		expect(
+			updates.some(
+				(update) => update.update.sessionUpdate === "tool_call" && update.update.title.includes("node nested-build.js"),
+			),
+		).toBe(true)
+		expect(recorder.getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+
+		const loaded = new FakeAgentSession("loaded-nested-build", tmpDir)
+		loaded.branch = [
+			userTextEntry("Build in a subagent", "u1", null),
+			assistantTextEntry("Nested build finished.", "a1", "u1"),
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect(artifactChunks(replay.updates)).toEqual([])
+	})
+
+	it("does not expose or record a silent file change at background handoff", async () => {
+		const command = "node build.js"
+		const report = join(tmpDir, "background-final.html")
+		const recorder = attachArtifactRecorder()
+		const ops = createFakeOps()
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, command, tmpDir, undefined, { limitSeconds: 600 })
+		const state: BashSessionState = {
+			registry,
+			coordinator: createReviewCoordinator({ registry, handoffSeconds: 2 }),
+			delivery: createTerminalDelivery(),
+			limitSeconds: 600,
+			sessionKind: "user-facing",
+			cwd: tmpDir,
+		}
+		setSessionState(sessionId, state)
+		const details = { handle, exited: false, exitCode: null, handoff: true }
+		const args = { command }
+		const message = makeAssistantMessage([
+			{ type: "text", text: "The build is still running." },
+			{ type: "toolCall", id: "tc-handoff-silent", name: "bash", arguments: args },
+		])
+		onTestFinished(async () => {
+			setSessionState(sessionId, undefined)
+			await registry.shutdown().catch(() => {})
+		})
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-handoff-silent", toolName: "bash", args })
+			// Pre-exit side effects are not the final artifact of a background command.
+			writeFileSync(report, "<h1>Build still running</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-handoff-silent",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "Command handed off; still running." }], details },
+				isError: false,
+			})
+			fake.emit({ type: "message_end", message })
+			fake.emit({
+				type: "turn_end",
+				message,
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "tc-handoff-silent",
+						toolName: "bash",
+						content: [{ type: "text", text: "Command handed off; still running." }],
+						details,
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			fake.emit(agentEnd())
+			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build in the background" }] })
+		const handoff = updates.find(
+			(update) =>
+				update.update.sessionUpdate === "tool_call_update" &&
+				(update.update as { rawOutput?: { details?: { handoff?: unknown } } }).rawOutput?.details?.handoff === true,
+		)
+		expect(handoff?.update).toMatchObject({ status: "in_progress" })
+		const rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		const loaded = new FakeAgentSession("loaded-background-handoff", tmpDir)
+		loaded.branch = [
+			userTextEntry("Build in the background", "u1", null),
+			assistantTextEntry("The build is still running.", "a1", "u1"),
+			...(rows.length > 0 ? [{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never] : []),
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect({
+			live: artifactChunks().map((chunk) => chunk.uri),
+			recorded: rows.flatMap((row) => row.artifacts.map((artifact) => pathToFileURL(artifact.path).href)),
+			replayed: artifactChunks(replay.updates).map((chunk) => chunk.uri),
+		}).toEqual({ live: [], recorded: [], replayed: [] })
+	})
+
+	it("refreshes a snapshot when cancellation drops a call and the next prompt reuses its ID", async () => {
+		const target = join(tmpDir, "cancelled.html")
+		writeFileSync(target, "before")
+		let promptNumber = 0
+		let cancelSeen = false
+		let markToolStarted!: () => void
+		const toolStarted = new Promise<void>((resolve) => {
+			markToolStarted = resolve
+		})
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+		fake.promptImpl = async () => {
+			promptNumber++
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			})
+			if (promptNumber === 1) {
+				writeFileSync(target, "after")
+				markToolStarted()
+				while (!cancelSeen) await delay(5)
+				fake.emit(agentEnd())
+				fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+				return
+			}
+			// The second invocation is read-only. A stale first-prompt snapshot
+			// would mistake the cancelled command's modification for this call.
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Done."))
+			fake.emit(agentEnd())
+		}
+
+		const first = agent.prompt({ sessionId, prompt: [{ type: "text", text: "Cancel an unfinished build" }] })
+		await toolStarted
+		await agent.cancel({ sessionId })
+		expect(await first).toMatchObject({ stopReason: "cancelled" })
+		const claim = { scope: fake.sessionManager, toolCallId: "tc-reused", consumer: "acp" as const }
+		const cached = snapshotArtifactFiles("bash", { command: "node build.js" }, tmpDir, claim)
+		expect(cached?.files.get(target)?.size).toBe(Buffer.byteLength("after"))
+		releaseArtifactSnapshot(claim)
+		expect(await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Reuse the call ID" }] })).toMatchObject({
+			stopReason: "end_turn",
+		})
+		expect(artifactChunks()).toEqual([])
+	})
+
+	it.each([
+		{ kind: "direct write", fileName: "other-prompt.html" },
+		{ kind: "non-opted redirect", fileName: "nested-redirect.html" },
+		{ kind: "non-opted output sniff", fileName: "nested-sniff.html" },
+		{ kind: "non-opted output sniff", fileName: "reverse-order.html", reverse: true },
+		{ kind: "declaration", fileName: "declared.html" },
+	])("does not attribute another session's $kind to a waiting Bash prompt", async ({
+		kind,
+		fileName,
+		reverse = false,
+	}) => {
+		const waitingSession = new FakeAgentSession("session-waiting-for-bash", tmpDir)
+		const writingSession = new FakeAgentSession("session-direct-writer", tmpDir)
+		const sessionQueue = [waitingSession, writingSession]
+		const sessionFactory: AcpSessionFactory = async () => {
+			const next = sessionQueue.shift()
+			if (!next) throw new Error("Unexpected extra session")
+			return asSession(next)
+		}
+		const rec = makeRecordingConn()
+		const concurrentAgent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+		await concurrentAgent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
+		const waitingId = (await concurrentAgent.newSession({ cwd: tmpDir, mcpServers: [] })).sessionId
+		const writingId = (await concurrentAgent.newSession({ cwd: tmpDir, mcpServers: [] })).sessionId
+		const waitingRecorder = attachArtifactRecorder(waitingSession)
+		const writingRecorder = attachArtifactRecorder(writingSession)
+		setSnapshotArtifactsOptIn(writingSession.sessionManager, false)
+		const otherPromptReport = join(tmpDir, fileName)
+		let signalBashStarted!: () => void
+		let signalProducerStarted!: () => void
+		let signalWriterFinished!: () => void
+		const bashStarted = new Promise<void>((resolve) => {
+			signalBashStarted = resolve
+		})
+		const producerStarted = new Promise<void>((resolve) => {
+			signalProducerStarted = resolve
+		})
+		const writerFinished = new Promise<void>((resolve) => {
+			signalWriterFinished = resolve
+		})
+		const finishRecordedPrompt = (
+			source: FakeAgentSession,
+			toolCallId: string,
+			toolName: string,
+			args: Record<string, unknown>,
+			text: string,
+			output: string,
+			details?: { artifacts: Array<{ path: string; name: string }> },
+		) => {
+			const message = makeAssistantMessage([
+				{ type: "text", text },
+				{ type: "toolCall", id: toolCallId, name: toolName, arguments: args },
+			])
+			source.emit({ type: "message_end", message })
+			source.emit({
+				type: "turn_end",
+				message,
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId,
+						toolName,
+						content: output ? [{ type: "text", text: output }] : [],
+						details,
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			})
+			source.emit(agentEnd())
+			source.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+		const waitArgs = { command: "node wait.js" }
+		waitingSession.promptImpl = async () => {
+			waitingSession.emit({ type: "agent_start" })
+			waitingSession.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-other-prompt-bash",
+				toolName: "bash",
+				args: waitArgs,
+			})
+			signalBashStarted()
+			await (reverse ? producerStarted : writerFinished)
+			waitingSession.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-other-prompt-bash",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			finishRecordedPrompt(waitingSession, "tc-other-prompt-bash", "bash", waitArgs, "Bash done.", "")
+			// In the reverse-order case, the waiting call has emitted and recorded
+			// before the producer returns its validated legacy source.
+			if (reverse) signalWriterFinished()
+		}
+		const producerToolName = kind === "direct write" ? "write" : kind === "declaration" ? "render_report" : "bash"
+		const producerArgs =
+			kind === "direct write"
+				? { path: otherPromptReport, content: "<h1>Other prompt</h1>" }
+				: kind === "non-opted redirect"
+					? { command: `printf html > ${fileName}` }
+					: kind === "non-opted output sniff"
+						? { command: "node build.js" }
+						: {}
+		const producerStdout = kind === "non-opted output sniff" ? `Generated ${fileName}` : "Produced other prompt."
+		const producerDetails =
+			kind === "declaration" ? { artifacts: [{ path: otherPromptReport, name: fileName }] } : undefined
+		writingSession.promptImpl = async () => {
+			writingSession.emit({ type: "agent_start" })
+			writingSession.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-other-prompt-producer",
+				toolName: producerToolName,
+				args: producerArgs,
+			})
+			writeFileSync(otherPromptReport, "<h1>Other prompt</h1>")
+			if (reverse) {
+				signalProducerStarted()
+				await writerFinished
+			}
+			writingSession.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-other-prompt-producer",
+				toolName: producerToolName,
+				result: {
+					content: [{ type: "text", text: producerStdout }],
+					...(producerDetails ? { details: producerDetails } : {}),
+				},
+				isError: false,
+			})
+			finishRecordedPrompt(
+				writingSession,
+				"tc-other-prompt-producer",
+				producerToolName,
+				producerArgs,
+				"Other prompt done.",
+				producerStdout,
+				producerDetails,
+			)
+			if (!reverse) signalWriterFinished()
+		}
+
+		const waitingPrompt = concurrentAgent.prompt({
+			sessionId: waitingId,
+			prompt: [{ type: "text", text: "Wait for a silent command" }],
+		})
+		await bashStarted
+		const writingPrompt = concurrentAgent.prompt({
+			sessionId: writingId,
+			prompt: [{ type: "text", text: "Write directly" }],
+		})
+		if (reverse) {
+			await waitingPrompt
+			await writingPrompt
+		} else {
+			await writingPrompt
+			await waitingPrompt
+		}
+
+		expect(artifactChunks(rec.updates).map((chunk) => chunk.uri)).toEqual([pathToFileURL(otherPromptReport).href])
+		expect(writingRecorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)).toEqual([
+			{
+				v: 1,
+				artifacts: [
+					{
+						path: otherPromptReport,
+						name: fileName,
+						mimeType: "text/html",
+						sniffed: kind === "non-opted redirect" || kind === "non-opted output sniff",
+					},
+				],
+			},
+		])
+		expect(waitingRecorder.getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+	})
+
+	it("keeps a first prompt's template out of a second prompt that writes the final report and runs Bash", async () => {
+		const template = join(tmpDir, "_code-reviewer-prd.template.html")
+		const finalReport = join(tmpDir, "code-reviewer-rebuild-prd.html")
+		let promptNumber = 0
+		fake.promptImpl = async () => {
+			promptNumber++
+			fake.emit({ type: "agent_start" })
+			if (promptNumber === 1) {
+				fake.emit({
+					type: "tool_execution_start",
+					toolCallId: "tc-first-template",
+					toolName: "write",
+					args: { path: template, content: "<template>" },
+				})
+				writeFileSync(template, "<template>")
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId: "tc-first-template",
+					toolName: "write",
+					result: { content: [{ type: "text", text: "Wrote template." }] },
+					isError: false,
+				})
+				fake.emit(assistantMessageEnd("Template ready."))
+				fake.emit(agentEnd())
+				return
+			}
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-second-final",
+				toolName: "write",
+				args: { path: finalReport, content: "<h1>Final</h1>" },
+			})
+			writeFileSync(finalReport, "<h1>Final</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-second-final",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote final." }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-second-bash",
+				toolName: "bash",
+				args: { command: "node verify-report.js" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-second-bash",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			fake.emit(assistantMessageEnd("Final ready."))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write template" }] })
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(template).href])
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write and verify final" }] })
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([
+			pathToFileURL(template).href,
+			pathToFileURL(finalReport).href,
+		])
+	})
+
+	it("records each prompt separately and replays only its recorded final files", async () => {
+		const template = join(tmpDir, "_code-reviewer-prd.template.html")
+		const finalReport = join(tmpDir, "code-reviewer-rebuild-prd.html")
+		const recorder = attachArtifactRecorder()
+		let promptNumber = 0
+		const settle = (
+			text: string,
+			calls: { id: string; toolName: string; args: Record<string, unknown>; output: string }[],
+		) => {
+			const message = makeAssistantMessage([
+				{ type: "text", text },
+				...calls.map(({ id, toolName, args }) => ({ type: "toolCall" as const, id, name: toolName, arguments: args })),
+			])
+			fake.emit({ type: "message_end", message })
+			fake.emit({
+				type: "turn_end",
+				message,
+				toolResults: calls.map(({ id, toolName, output }) => ({
+					role: "toolResult" as const,
+					toolCallId: id,
+					toolName,
+					content: output ? [{ type: "text" as const, text: output }] : [],
+					isError: false,
+					timestamp: Date.now(),
+				})),
+			})
+			fake.emit(agentEnd())
+			fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		}
+		fake.promptImpl = async () => {
+			promptNumber++
+			fake.emit({ type: "agent_start" })
+			if (promptNumber === 1) {
+				const args = { path: template, content: "<template>" }
+				fake.emit({ type: "tool_execution_start", toolCallId: "tc-row-template", toolName: "write", args })
+				writeFileSync(template, args.content)
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId: "tc-row-template",
+					toolName: "write",
+					result: { content: [{ type: "text", text: "Wrote template." }] },
+					isError: false,
+				})
+				settle("Template ready.", [{ id: "tc-row-template", toolName: "write", args, output: "Wrote template." }])
+				return
+			}
+			const writeArgs = { path: finalReport, content: "<h1>Final</h1>" }
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-row-write", toolName: "write", args: writeArgs })
+			writeFileSync(finalReport, writeArgs.content)
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-row-write",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote final." }] },
+				isError: false,
+			})
+			const bashArgs = { command: "node verify-report.js" }
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-row-final", toolName: "bash", args: bashArgs })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-row-final",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			})
+			settle("Final ready.", [
+				{ id: "tc-row-write", toolName: "write", args: writeArgs, output: "Wrote final." },
+				{ id: "tc-row-final", toolName: "bash", args: bashArgs, output: "" },
+			])
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write the template" }] })
+		let rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows.map((row) => row.artifacts.map((artifact) => artifact.path))).toEqual([[template]])
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([pathToFileURL(template).href])
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Write and verify the final report" }] })
+		rows = recorder.getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(2)
+		expect(rows[1].artifacts).toEqual([
+			{ path: finalReport, name: "code-reviewer-rebuild-prd.html", mimeType: "text/html", sniffed: false },
+		])
+		expect(artifactChunks().map((chunk) => chunk.uri)).toEqual([
+			pathToFileURL(template).href,
+			pathToFileURL(finalReport).href,
+		])
+
+		const loaded = new FakeAgentSession("loaded-two-prompt-artifacts", tmpDir)
+		loaded.branch = [
+			userTextEntry("Write the template", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Template ready." },
+					{ type: "toolCall", id: "tc-row-template", name: "write", arguments: { path: template } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-row-template", "write", "Wrote template.", false, "tr1", "a1"),
+			{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[0] } as never,
+			userTextEntry("Write and verify the final report", "u2", "tr1"),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Final ready." },
+					{ type: "toolCall", id: "tc-row-write", name: "write", arguments: { path: finalReport } },
+					{ type: "toolCall", id: "tc-row-final", name: "bash", arguments: { command: "node verify-report.js" } },
+				],
+				"a2",
+				"u2",
+			),
+			toolResultEntry("tc-row-write", "write", "Wrote final.", false, "tr2", "a2"),
+			toolResultEntry("tc-row-final", "bash", "", false, "tr3", "tr2"),
+			{ type: "custom", customType: ARTIFACTS_ENTRY_TYPE, data: rows[1] } as never,
+		]
+		const replay = makeRecordingConn()
+		const replayAgent = new KimchiAcpAgent(replay.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(loaded),
+		})
+		await replayAgent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
+		await replayAgent.loadSession({ sessionId: loaded.sessionId, cwd: tmpDir, mcpServers: [] })
+		expect(artifactChunks(replay.updates).map((chunk) => chunk.uri)).toEqual([
+			pathToFileURL(template).href,
+			pathToFileURL(finalReport).href,
+		])
 	})
 
 	// A text-less turn has no id to attach to, and a fresh `km.` id has no
@@ -7197,6 +8136,33 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactChunks()).toEqual([])
 	})
 
+	it("ignores a file created by a failed silent foreground build", async () => {
+		const target = join(tmpDir, "failed-build.html")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-bash-fail",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			})
+			writeFileSync(target, "<h1>Created before exit 1</h1>")
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-bash-fail",
+				toolName: "bash",
+				result: { content: [], isError: true },
+				isError: true,
+			})
+			fake.emit(assistantMessageEnd("Build failed."))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "Build" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(artifactChunks()).toEqual([])
+	})
+
 	it("advertises artifacts support in the initialize capabilities _meta", async () => {
 		const { conn } = makeRecordingConn()
 		const initAgent = new KimchiAcpAgent(conn, {
@@ -7221,7 +8187,7 @@ describe("generated artifacts (live turns)", () => {
 // artifacts flush once, attached to the turn's last text block id (before
 // the next user message, or at branch end). Existence check skipped.
 describe("generated artifacts (replay)", () => {
-	function makeAgent(loader: AcpSessionLoader, conn: AgentSideConnection): KimchiAcpAgent {
+	function makeAgent(loader: AcpSessionLoader, conn: AgentContext): KimchiAcpAgent {
 		return new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
@@ -7292,6 +8258,77 @@ describe("generated artifacts (replay)", () => {
 		// rather than allocating a fresh one.
 		const textChunk = messageChunks(updates).find((c) => c.text === "Here you go.")
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
+	})
+
+	it("replays a recorded silent-build final HTML verbatim without live detection", async () => {
+		const finalPath = "/tmp/code-reviewer-rebuild-prd.html"
+		const fake = new FakeAgentSession("loaded-silent-final")
+		fake.branch = [
+			userTextEntry("build the report", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "Built code-reviewer-rebuild-prd.html." },
+					{ type: "toolCall", id: "tc-silent", name: "bash", arguments: { command: "node build.js" } },
+				],
+				"a1",
+				"u1",
+			),
+			// No path in output and no file on disk: only the version-1 row
+			// can supply the action. Replay must not run live filesystem detection.
+			toolResultEntry("tc-silent", "bash", "", false, "tr1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [
+						{
+							path: finalPath,
+							name: "code-reviewer-rebuild-prd.html",
+							mimeType: "text/html",
+							sniffed: true,
+							snapshot: true,
+						},
+					],
+				},
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { artifacts: true } } },
+		})
+		await agent.loadSession({ sessionId: "loaded-silent-final", cwd: "/tmp", mcpServers: [] })
+		expect(artifactChunks(updates).map((chunk) => ({ name: chunk.name, uri: chunk.uri }))).toEqual([
+			{ name: "code-reviewer-rebuild-prd.html", uri: pathToFileURL(finalPath).href },
+		])
+	})
+
+	it("omits only snapshot rows when replaying for an empty-capability client", async () => {
+		const legacyPath = "/tmp/legacy-replay.md"
+		const snapshotPath = "/tmp/snapshot-replay.html"
+		const fake = new FakeAgentSession("loaded-snapshot-no-opt-in")
+		fake.branch = [
+			userTextEntry("show the files", "u1", null),
+			assistantTextEntry("Done.", "a1", "u1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [
+						{ path: legacyPath, name: "legacy-replay.md", mimeType: "text/markdown", sniffed: false },
+						{ path: snapshotPath, name: "snapshot-replay.html", mimeType: "text/html", sniffed: true, snapshot: true },
+					],
+				},
+			} as never,
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), conn)
+		await agent.initialize({ protocolVersion: 1, clientCapabilities: {} })
+		await agent.loadSession({ sessionId: fake.sessionId, cwd: "/tmp", mcpServers: [] })
+		expect(artifactChunks(updates).map((chunk) => chunk.uri)).toEqual([pathToFileURL(legacyPath).href])
 	})
 
 	it("merges multiple recorded rows within one turn (one row per assistant message)", async () => {
@@ -7616,7 +8653,7 @@ describe("assertSessionHasModel", () => {
 
 // No-auth failures on the ACP surface surface as authRequired (-32000)
 // so clients route to their login UI, not generic -32603 (prompt) or
-// -32602 (multi-model model-set). Keyless → rejected at session/new;
+// -32602 (model-set). Keyless → rejected at session/new;
 // logout-while-live → prompt and model-set paths.
 describe("no-auth failures surface as authRequired (-32000)", () => {
 	const makeNoAuthAgent = (fake: FakeAgentSession) =>
@@ -7668,28 +8705,6 @@ describe("no-auth failures surface as authRequired (-32000)", () => {
 			.catch((e) => e)
 		expect((err as Error).message).toBe("provider exploded")
 		expect((err as { code?: number }).code).toBeUndefined()
-	})
-
-	it("setSessionConfigOption(model: multi-model) with no configured auth rejects with -32000, not -32602", async () => {
-		const fake = new FakeAgentSession("session-noauth-multimodel")
-		setProcessOrchestratorRef("session-noauth-multimodel", "kimchi-dev/glm-5.2-fp8")
-		const agent = makeNoAuthAgent(fake)
-		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		// Log out after the session exists: the orchestrator provider now has
-		// no credentials — the availability gap is auth-caused, not a bad ref.
-		fake.authConfigured = false
-
-		const err = await agent
-			.setSessionConfigOption({
-				sessionId: "session-noauth-multimodel",
-				configId: "model",
-				value: "multi-model",
-			})
-			.catch((e) => e)
-		expect(err).toMatchObject({ code: -32000 })
-		expect((err as Error).message).toMatch(
-			/multi-model orchestrator \(kimchi-dev\/glm-5\.2-fp8\) is not available: auth required/,
-		)
 	})
 
 	it("session/new rejects with -32000 when the active model's provider lacks configured auth", async () => {
@@ -8269,18 +9284,24 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 // hang. Those pi events go out as _kimchi.dev/agent_activity notifications so
 // the client can pin the stall (and its session) to a cause.
 describe("routed model notifications", () => {
-	function routedModelEntry(modelId: string): SessionEntry {
+	function routedModelEntry(modelId: string, routedProvider?: string): SessionEntry {
 		return {
 			type: "custom",
 			id: "routed-entry",
 			parentId: null,
 			timestamp: "2026-01-01T00:00:00.000Z",
 			customType: ROUTED_MODEL_RESOLUTION_ENTRY,
-			data: { version: 1, requestedId: "auto", provider: "kimchi-dev", modelId },
+			data: {
+				version: 1,
+				requestedId: "auto",
+				provider: "kimchi-dev",
+				modelId,
+				...(routedProvider ? { routedProvider } : {}),
+			},
 		}
 	}
 
-	async function startRoutedTestSession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+	async function startRoutedTestSession(fake: FakeAgentSession, conn: AgentContext): Promise<KimchiAcpAgent> {
 		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
@@ -8334,6 +9355,30 @@ describe("routed model notifications", () => {
 			{
 				method: "_kimchi.dev/routed_model",
 				params: { sessionId: "session-routed-1", requestedId: "kimchi-dev/auto", routedId: "kimchi-dev/glm-5.3" },
+			},
+		])
+	})
+
+	it("emits the served model's own provider for a sibling-block pick", async () => {
+		const fake = new FakeAgentSession("session-routed-7")
+		const { conn, extNotifications } = makeRecordingConn()
+		const agent = await startRoutedTestSession(fake, conn)
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "entry_appended", entry: routedModelEntry("claude-haiku-5-5", "kimchi-dev/anthropic") })
+			fake.emit(agentEnd())
+		}
+
+		await runTurn(agent, "session-routed-7")
+		const routedModel = AVAILABLE_EXT_NOTIFICATIONS.routed_model
+		expect(extNotifications.filter((n) => n.method === routedModel)).toEqual([
+			{
+				method: routedModel,
+				params: {
+					sessionId: "session-routed-7",
+					requestedId: "kimchi-dev/auto",
+					routedId: "kimchi-dev/anthropic/claude-haiku-5-5",
+				},
 			},
 		])
 	})
@@ -8462,7 +9507,7 @@ describe("run boundary notifications", () => {
 	const RUN_START = "_kimchi.dev/background_run_start"
 	const RUN_END = "_kimchi.dev/background_run_end"
 
-	async function startRunBoundarySession(fake: FakeAgentSession, conn: AgentSideConnection): Promise<KimchiAcpAgent> {
+	async function startRunBoundarySession(fake: FakeAgentSession, conn: AgentContext): Promise<KimchiAcpAgent> {
 		// Background-runs opt-in: these tests exercise run boundaries, which
 		// only fire for clients that opted in at initialize. The unit fabric
 		// skips initialize, so set the same process flag it would set there.
@@ -8864,7 +9909,6 @@ describe("initializeHeadlessTheme", () => {
 describe("newSession model state", () => {
 	it("returns model state in the response when a model is available", async () => {
 		const sessionId = "session-model"
-		setProcessOrchestratorRef(sessionId, "kimchi-dev/kimi-k2.7")
 		const fake = new FakeAgentSession(sessionId)
 		fake.model = { provider: "openai", id: "gpt-4" }
 		fake.modelRegistry = {
@@ -8888,16 +9932,10 @@ describe("newSession model state", () => {
 		const options = (
 			modelOption as unknown as { options: Array<{ value: string; name: string; description?: string }> }
 		).options
-		expect(options).toHaveLength(3)
-		// Concrete models sorted by modelId; the deprecated routing entry sits last.
+		expect(options).toHaveLength(2)
+		// Concrete models sorted by ref.
 		expect(options[0]).toEqual({ value: "anthropic/claude-3", name: "Claude 3" })
 		expect(options[1]).toEqual({ value: "openai/gpt-4", name: "GPT-4" })
-		expect(options[2]).toEqual({
-			value: "multi-model",
-			name: "Multi-model (kimi-k2.7)",
-			// Harness-side deprecation label + routing one-liner.
-			description: "[Deprecated] Routes each task to the best model, with an orchestrator and workers.",
-		})
 	})
 
 	it("rejects with authRequired when no model is active", async () => {
@@ -8928,7 +9966,6 @@ describe("newSession model state", () => {
 			input: ["text"],
 			contextWindow: 128_000,
 		}
-		setProcessOrchestratorRef(sessionId, "kimchi-dev/kimi-k3")
 		fake.modelRegistry = {
 			...fake.modelRegistry,
 			getAvailable: () => [
@@ -10359,123 +11396,7 @@ describe("setSessionConfigOption", () => {
 			expect(modelOption?.currentValue).toBe("provider-b/model-b")
 		})
 
-		it("restores previous multi-model state when switching to a single model fails", async () => {
-			const sessionId = "test-session-model-restore"
-			const fake = new FakeAgentSession(sessionId)
-			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
-			fake.modelRegistry = {
-				...fake.modelRegistry,
-				getAvailable: () => [
-					{ provider: "provider-a", id: "model-a", name: "Model A" },
-					{ provider: "provider-b", id: "model-b", name: "Model B" },
-				],
-			}
-			fake.setModel = async () => {
-				throw new Error("auth failed")
-			}
-			const agent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: "/tmp/fake-agent-dir",
-				sessionFactory: async () => asSession(fake),
-			})
-			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-			// Start in multi-model mode so we can verify the flag is restored on
-			// failure. Set after newSession, which anchors the flag to the session's
-			// resolved model.
-			setMultiModelEnabled(sessionId, true)
-
-			await expect(
-				agent.setSessionConfigOption({
-					sessionId,
-					configId: "model",
-					value: "provider-b/model-b",
-				}),
-			).rejects.toThrow(/model provider-b\/model-b is not available: auth required/)
-
-			expect(getMultiModelEnabled(fake.sessionManager as Pick<SessionManager, "getEntries" | "getSessionId">)).toBe(
-				true,
-			)
-		})
-
-		it("switches to multi-model when orchestrator is available", async () => {
-			const sessionId = "test-session-model-multi"
-			const fake = new FakeAgentSession(sessionId)
-			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
-			fake.modelRegistry = {
-				...fake.modelRegistry,
-				getAvailable: () => [
-					{ provider: "provider-a", id: "model-a", name: "Model A" },
-					{
-						provider: "orchestrator-provider",
-						id: "orchestrator-model",
-						name: "Orchestrator Model",
-					},
-				],
-			}
-			// Wire the orchestrator model explicitly instead of relying on the global default role.
-			setProcessOrchestratorRef(sessionId, "orchestrator-provider/orchestrator-model")
-			const agent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: "/tmp/fake-agent-dir",
-				sessionFactory: async () => asSession(fake),
-			})
-			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-
-			const res = await agent.setSessionConfigOption({
-				sessionId,
-				configId: "model",
-				value: "multi-model",
-			})
-
-			expect(fake.model).toMatchObject({
-				provider: "orchestrator-provider",
-				id: "orchestrator-model",
-			})
-			const modelOption = res.configOptions?.find((o) => o.id === "model")
-			expect(modelOption?.currentValue).toBe("multi-model")
-		})
-
-		it("restores previous multi-model state when switching to multi-model fails", async () => {
-			const sessionId = "test-session-model-multi-restore"
-			const fake = new FakeAgentSession(sessionId)
-			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
-			fake.modelRegistry = {
-				...fake.modelRegistry,
-				getAvailable: () => [
-					{ provider: "provider-a", id: "model-a", name: "Model A" },
-					{
-						provider: "orchestrator-provider",
-						id: "orchestrator-model",
-						name: "Orchestrator Model",
-					},
-				],
-			}
-			fake.setModel = async () => {
-				throw new Error("auth failed")
-			}
-			// Wire the orchestrator model explicitly instead of relying on the global default role.
-			setProcessOrchestratorRef(sessionId, "orchestrator-provider/orchestrator-model")
-			const agent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: "/tmp/fake-agent-dir",
-				sessionFactory: async () => asSession(fake),
-			})
-			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-
-			await expect(
-				agent.setSessionConfigOption({
-					sessionId,
-					configId: "model",
-					value: "multi-model",
-				}),
-			).rejects.toThrow(/orchestrator model orchestrator-provider\/orchestrator-model is not available: auth required/)
-
-			expect(getMultiModelEnabled(fake.sessionManager as Pick<SessionManager, "getEntries" | "getSessionId">)).toBe(
-				false,
-			)
-		})
-
-		it("rejects multi-model with -32602 when the orchestrator is not available but auth IS configured", async () => {
+		it("rejects the retired multi-model value as an invalid model (-32602)", async () => {
 			const fake = new FakeAgentSession("test-session-model-multi-missing")
 			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
 			fake.modelRegistry = {
@@ -10489,9 +11410,6 @@ describe("setSessionConfigOption", () => {
 			})
 			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
-			// Credentials are configured (fake default) — an unresolvable
-			// orchestrator is a genuinely unknown ref, so it stays invalidParams
-			// rather than being misclassified as authRequired.
 			const err = await agent
 				.setSessionConfigOption({
 					sessionId: "test-session-model-multi-missing",
@@ -10500,7 +11418,7 @@ describe("setSessionConfigOption", () => {
 				})
 				.catch((e) => e)
 			expect(err).toMatchObject({ code: -32602 })
-			expect((err as Error).message).toMatch(/multi-model orchestrator .* is not available/)
+			expect((err as Error).message).toContain('invalid model format: "multi-model"')
 		})
 
 		it("rejects invalid model format", async () => {
@@ -10749,15 +11667,16 @@ describe("setSessionConfigOption", () => {
 
 		// Create a connection that splits notifications by sessionId
 		const conn = {
-			sessionUpdate: async (msg: SessionNotification) => {
+			notify: async (method: string, params: unknown) => {
+				if (method !== methods.client.session.update) return
+				const msg = params as SessionNotification
 				if (msg.sessionId === "multi-session-1") {
 					updates1.push(msg)
 				} else if (msg.sessionId === "multi-session-2") {
 					updates2.push(msg)
 				}
 			},
-			extNotification: async (_method: string, _params: unknown) => {},
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 
 		let callCount = 0
 		const fake1 = new FakeAgentSession("multi-session-1")
@@ -11893,7 +12812,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		writeFileSync(sessionFile, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`)
 		return sessionFile
 	}
-	function makeAgent(loader: AcpSessionLoader, opts?: { conn?: AgentSideConnection }): KimchiAcpAgent {
+	function makeAgent(loader: AcpSessionLoader, opts?: { conn?: AgentContext }): KimchiAcpAgent {
 		return new KimchiAcpAgent(opts?.conn ?? makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
@@ -12535,19 +13454,6 @@ describe("KimchiAcpAgent loadSession", () => {
 		// Capture the order: replay notifications must land BEFORE the response
 		// resolves so Zed sees a coherent transcript on the load promise.
 		const updatesAtResolve: (typeof updates)[number][] = []
-		const original = (
-			conn as unknown as {
-				sessionUpdate: (p: SessionNotification) => Promise<void>
-			}
-		).sessionUpdate
-		;(
-			conn as unknown as {
-				sessionUpdate: (p: SessionNotification) => Promise<void>
-			}
-		).sessionUpdate = async (p: SessionNotification) => {
-			await original(p)
-		}
-
 		const res = await agent.loadSession({
 			sessionId: "loaded-1",
 			cwd: "/tmp",

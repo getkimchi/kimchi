@@ -18,6 +18,9 @@ export default defineConfig({
 			"**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*",
 			"**/.tui-test/**",
 			".worktrees/**",
+			// Temporary source staging for Linux binary validation. It contains
+			// copies of this repo's tests, not an independent suite.
+			".kimchi/docs/remote-binary-build/**",
 			// TUI E2E suites run through the dedicated tui-test CLI (one file per
 			// process, via `pnpm run test:e2e:tui` / scripts/run-tui-e2e.js) —
 			// their test framework communicates over the worker IPC channel and

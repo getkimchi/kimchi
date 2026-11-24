@@ -26,6 +26,21 @@ function contextText(objective: string): string {
 	return message?.content[0]?.text ?? ""
 }
 
+describe("the Ferment V2 prompts", () => {
+	it("keeps the finding rules in the context block", () => {
+		const text = contextText("ship the parser")
+		expect(text).toContain(
+			"<finding_rules>\n- Open review findings (openFindings above) stay open until a later review closes them.",
+		)
+		expect(text).toContain("map every explicit objective requirement to concrete current evidence")
+	})
+
+	it("asks for supplied-file inventory and tactical Todo reconciliation", () => {
+		expect(buildFermentV2StartSteer("created")).toContain("- First inventory supplied files")
+		expect(buildFermentV2EditSteer(fermentV2("new"))).toContain("- Reconcile the tactical todo list")
+	})
+})
+
 describe("the Ferment V2 context block", () => {
 	it("is structured and pinned byte for byte", () => {
 		expect(contextText("ship the parser")).toBe(
@@ -40,6 +55,10 @@ Persistent objective continuation is enabled.
 - Treat the objective JSON above as authoritative.
 - Do not call get_ferment_v2 while this context is present.
 </objective_rules>
+
+<finding_rules>
+- Open review findings (openFindings above) stay open until a later review closes them. Answer each with respond_to_ferment_v2_finding: fixed once you verified the fix, or disputed with the objective text, repository contract, or specification that shows its expectation is wrong or out of scope.
+</finding_rules>
 
 <todo_rules>
 - Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this objective is active.
@@ -86,6 +105,19 @@ Persistent objective continuation is enabled.
 		)
 	})
 
+	it("names update_ferment_v2 as the way to finish on every continuation", () => {
+		for (const prompt of [
+			buildFermentV2Continuation(),
+			buildFermentV2Continuation(true, "More verification is required."),
+			buildFermentV2ErrorContinuation(),
+			buildFermentV2StartSteer("created"),
+		]) {
+			expect(prompt).toContain(
+				"When every objective requirement is done and verified, settle your Todos and submit the objective with update_ferment_v2",
+			)
+		}
+	})
+
 	it("keeps controller mechanics out of model-facing prose", () => {
 		const editSteer = buildFermentV2EditSteer({ ...fermentV2("ship the parser"), revision: 2 })
 		const prompts = [
@@ -109,9 +141,9 @@ Persistent objective continuation is enabled.
 	})
 
 	it("orients once when Ferment V2 starts", () => {
-		expect(buildFermentV2StartSteer("created")).toContain(
-			"First inventory supplied files, executables, tests, and constraints; create short action Todos for concrete work and verification.",
-		)
+		const start = buildFermentV2StartSteer("created")
+		expect(start).toContain("First inventory supplied files, executables, tests, and constraints.")
+		expect(start.indexOf("First inventory")).toBeLessThan(start.indexOf("Create short action Todos"))
 		expect(buildFermentV2Continuation()).not.toContain("First inventory")
 		expect(buildFermentV2ErrorContinuation()).not.toContain("First inventory")
 	})

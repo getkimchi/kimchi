@@ -4,6 +4,7 @@ import type {
 	OutboxAccountStatus,
 	OutboxBatch,
 	OutboxEvent,
+	PositionedRecord,
 	RecordBackend,
 	StoredRecord,
 } from "./records.js"
@@ -144,10 +145,40 @@ export function createMemoryRecords(): RecordBackend {
 			const event = events.get(id)
 			return event?.accountKey === accountKey ? structuredClone(event) : undefined
 		},
+		readTransitionRepositories: () =>
+			[
+				...new Set(
+					order.flatMap((row) => {
+						if (row.type !== "file_transition") return []
+						try {
+							const repository: unknown = JSON.parse(row.body).repository
+							return typeof repository === "string" ? [repository] : []
+						} catch {
+							return []
+						}
+					}),
+				),
+			].sort(),
 		outboxEntityEvents: (accountKey, entityId) =>
 			structuredClone(
 				[...events.values()].filter((event) => event.accountKey === accountKey && event.entityId === entityId),
 			),
+		outboxClaims: (accountKey, entityIds) => {
+			const requested = new Set(entityIds)
+			return structuredClone(
+				[...events.values()].filter((event) => event.accountKey === accountKey && requested.has(event.entityId)),
+			)
+		},
+		outboxClaimRows: (accountKey, entityIds, after, limit) => {
+			// Insertion order is the memory twin of rowid order; the cursor is an index
+			// into the filtered sequence, which is stable because Map order is stable.
+			const requested = new Set(entityIds)
+			const matching = [...events.values()].filter(
+				(event) => event.accountKey === accountKey && requested.has(event.entityId),
+			)
+			const rows = structuredClone(matching.slice(after, after + limit))
+			return { rows, nextAfter: after + rows.length }
+		},
 		insertOutboxEvent: (event) => {
 			if (events.has(event.id)) throw new Error("Duplicate outbox event")
 			touch()
@@ -284,6 +315,25 @@ export function createMemoryRecords(): RecordBackend {
 				checkBudget?.()
 				return { ...row, position: after + index + 1 }
 			}),
+		readRecordsSincePage: (modifiedSince, after, through, limit, checkBudget) => {
+			const rows: PositionedRecord[] = []
+			for (let index = after; index < Math.min(through, order.length) && rows.length < limit; index++) {
+				checkBudget?.()
+				const row = order[index]
+				if (row.importedAt >= modifiedSince) rows.push({ ...row, position: index + 1 })
+			}
+			return rows
+		},
+		readWorkRecordPage: (workId, after, through, limit, checkBudget) => {
+			const end = Math.min(through, order.length)
+			const rows: PositionedRecord[] = []
+			for (let index = after; index < end && rows.length < limit; index++) {
+				checkBudget?.()
+				const row = order[index]
+				if (row.workId === workId) rows.push({ ...row, position: index + 1 })
+			}
+			return rows
+		},
 		recordCount: (workId) => (workId ? order.filter((row) => row.workId === workId).length : order.length),
 		hasProjectionOutput: (workId) => {
 			const byLog = logs.get(workId)

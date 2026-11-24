@@ -54,7 +54,13 @@ attribution `_meta` (see [ACP model attribution](./acp-model-attribution.md))
 and the session's model list, so `requestedId` compares directly against
 `SessionModelState.currentModelId`. The requested ref is the virtual id
 (`kimchi-dev/auto`); `routedId` is the served model's ref, or
-`provider/raw-id` when the catalog doesn't know the pick. Like all
+`provider/raw-id` when the catalog doesn't know the pick. For a known pick
+the routed ref carries the block that actually serves it — e.g.
+`kimchi-dev/anthropic/claude-haiku-5-5` rather than the requested
+`kimchi-dev/claude-haiku-5-5` — so it joins directly to the advertised model
+list. The persisted entry records that block as `routedProvider` (omitted
+when it equals the requested provider), and replay consumers fall back to
+`provider` for older entries and unknown picks. Like all
 kimchi.dev ext notifications it is
 not advertised in `_meta`; clients that don't know it ignore it per JSON-RPC
 rules.
@@ -104,11 +110,16 @@ For the main session (not subagents), the auto-model extension additionally:
   session rolls back to Auto: for entitled accounts Auto IS the default, not
   a one-time install. The rollback is provider-agnostic — switching to
   another provider's model (e.g. Anthropic's Claude) rolls back too. An
-  explicit launch-time `--model` still wins.
+  explicit launch-time `--model` still wins, for the whole process: `/new`
+  and `/clear` start on that model too, even after a session-scoped switch.
+  `--model` is the only exemption: every other fresh session, including a
+  `--models`-only launch, starts on Auto.
+- **Fresh means no messages** — a startup session counts as resumed only
+  when it has messages, the same rule upstream uses to restore a session's
+  model. A session file without messages (for example one a launch wrapper
+  pre-creates) gets the Auto default like any fresh session.
 - **Persists explicit choices** — an explicit launch-time `--model` over an
   auto session is user-initiated and persists.
-- **Unwraps saved defaults** — a persisted default is never wrapped in
-  multi-model.
 
 ## Attribution
 

@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { fullText, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import type { FakeResponseRequest, FakeResponseScript } from "./support/fake-openai-server.js"
+import { isVerifierRequest, verifierCheck, verifierSubmit } from "./support/ferment-v2-verifier.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -88,12 +89,9 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 				},
 			],
 			responses: [
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [
-						'{"verdict":"met","checks":[{"requirement":"Create and verify plan-mode-ferment.txt","met":true,"failureMode":"the file could contain different data; l1 records the verified write","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo records the verified file write."}',
-					],
-				},
+				// The verifier session: one executing bash check (stamped [e1]), then a met verdict citing it.
+				verifierCheck("verifier-plan-mode-check", `test "$(cat ${outputFile})" = done`),
+				verifierSubmit("met", "The file exists with the exact required content."),
 				{
 					stream: ["Creating the requested file."],
 					toolCalls: [
@@ -142,7 +140,18 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 						},
 					],
 				},
-				{ stream: ["The requested file is verified."] },
+				{
+					stream: ["The requested file is verified. Claiming completion."],
+					toolCalls: [
+						{
+							id: "claim-plan-mode-ferment-complete",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "complete", completion_confidence: "proven" }),
+							},
+						},
+					],
+				},
 				{ stream: [acceptedFinal] },
 			],
 		},
@@ -158,7 +167,9 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 				"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
 			)
 			expect(fullText(terminal)).not.toContain("Plan mode: tool write is not available")
-			trace.step("manual Ferment V2 left Plan mode, wrote the exact file, and completed")
+			const verifierRequests = fixture.fake.requests.filter(isVerifierRequest)
+			expect(verifierRequests).toHaveLength(2)
+			trace.step("completion waited for the verifier's submitted verdict")
 		},
 	)
 })
@@ -192,12 +203,6 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 	const compactionResponse: FakeResponseScript = {
 		stream: [`${COMPACTION_SUMMARY_MARKER}: the Ferment V2 plan is ready and implementation remains.`],
 	}
-	const continueEvaluationResponse: FakeResponseScript = {
-		match: isFermentV2EvaluatorRequest,
-		stream: [
-			'{"verdict":"continue","checks":[{"requirement":"Implement feature A","met":false,"evidence":["m1"],"todoIds":[1]}],"reason":"Implementation is not evidenced yet."}',
-		],
-	}
 	const finishTodosResponse: FakeResponseScript = {
 		stream: ["Working toward the session objective.", " Verification is complete."],
 		textDelayMs: 1_000,
@@ -227,12 +232,10 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			},
 		],
 	}
-	const metEvaluationResponse: FakeResponseScript = {
-		match: isFermentV2EvaluatorRequest,
-		stream: [
-			'{"verdict":"met","checks":[{"requirement":"Implement feature A","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The Todo is completed and the retained evidence records verification."}',
-		],
-	}
+	const metEvaluationResponse: FakeResponseScript[] = [
+		verifierCheck("verifier-compaction-check", "pwd"),
+		verifierSubmit("met", "The implemented feature is verified."),
+	]
 	const finalAnswerResponse: FakeResponseScript = { stream: ["Feature A is complete."] }
 
 	await runKimchiSession(
@@ -244,8 +247,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			// (19k) so only the scripted 19.5k usage crosses: one compaction.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 20_000, maxTokens: 1024 }],
 			responses: [
-				continueEvaluationResponse,
-				metEvaluationResponse,
+				...metEvaluationResponse,
 				planningResponse,
 				planningStopResponse,
 				compactionResponse,
@@ -278,7 +280,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 			terminal.submit("/ferment-v2")
-			await waitForText(terminal, "Evaluations: 2", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Evaluations: 1", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })
 			const finalView = viewText(terminal)
 			expect(finalView).not.toContain("Ferment V2 not met")
@@ -290,8 +292,12 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			const requests = chatRequests(fixture.fake.requests)
 			expect(requests).toHaveLength(8)
 			expect(JSON.stringify(requests[2]?.body)).toContain("You are a context summarization assistant")
-			expect(JSON.stringify(requests[4]?.body)).toContain(COMPACTION_SUMMARY_MARKER)
-			trace.step("Ferment V2 compacted, continued from the summary, then completed")
+			expect(JSON.stringify(requests[3]?.body)).toContain(COMPACTION_SUMMARY_MARKER)
+			// The stop after compaction had no completion claim, so the continuation came
+			// from the deterministic host path, not a verifier run. The claim at the end
+			// ran the verifier: one executing bash check plus the verdict.
+			expect(requests.filter(isVerifierRequest)).toHaveLength(2)
+			trace.step("Ferment V2 compacted, continued deterministically from the summary, then completed on its claim")
 		},
 	)
 })
@@ -307,12 +313,8 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			// below must be the only summarization request in the wire.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 20_000, maxTokens: 1024 }],
 			responses: [
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [
-						'{"verdict":"met","checks":[{"requirement":"Finish after manual compaction","met":true,"failureMode":"the resumed work could be incomplete; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The resumed turn completed the Todo with retained evidence."}',
-					],
-				},
+				verifierCheck("verifier-manual-compaction-check", "pwd"),
+				verifierSubmit("met", "The resumed turn completed the verified work."),
 				{
 					stream: ["Creating the manual-compaction Todo."],
 					toolCalls: [
@@ -382,7 +384,9 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			await waitForText(terminal, "Status: complete", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })
 			const requests = chatRequests(fixture.fake.requests)
-			expect(requests).toHaveLength(7)
+			// Two implementer turns before compaction, the summary, two resumed turns,
+			// then the verifier's bash check + verdict, then the final answer.
+			expect(requests).toHaveLength(8)
 			expect(
 				fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))[1]?.aborted,
 			).toBe(true)
@@ -462,7 +466,7 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 			const editRequest = await waitForChatRequest(fixture.fake.requests, 3)
 			expect(fermentV2Snapshot(editRequest)).toMatchObject({ objective: "revised objective", status: "active" })
 			expect(JSON.stringify(editRequest.body)).toContain("The new objective supersedes the previous objective")
-			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isFermentV2EvaluatorRequest)).toBe(false)
+			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isVerifierRequest)).toBe(false)
 			await waitForText(terminal, "Revised objective instructions received after settlement.", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).not.toContain(finishedRevisionOne)
 			expect(
@@ -525,12 +529,12 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 				status: "active",
 			})
 			expect(JSON.stringify(revisedRequest.body)).not.toContain("The new objective supersedes the previous objective")
-			expect(chatRequests(fixture.fake.requests).slice(0, 2).some(isFermentV2EvaluatorRequest)).toBe(false)
+			expect(chatRequests(fixture.fake.requests).slice(0, 2).some(isVerifierRequest)).toBe(false)
 			await waitForText(terminal, "Working from revision two.", { timeoutMs: 5_000 })
 			const editRequest = await waitForChatRequest(fixture.fake.requests, 3)
 			expect(fermentV2Snapshot(editRequest)).toMatchObject({ objective: "revised objective", status: "active" })
 			expect(JSON.stringify(editRequest.body)).toContain("The new objective supersedes the previous objective")
-			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isFermentV2EvaluatorRequest)).toBe(false)
+			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isVerifierRequest)).toBe(false)
 			await waitForText(terminal, "Revision two instructions received after settlement.", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).not.toContain("Operation aborted")
 			expect(fullText(terminal)).not.toContain("Ferment V2 paused because the agent turn was cancelled.")
@@ -541,12 +545,10 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 	)
 })
 
-test("experimental Ferment V2 evaluates settled work without a completion-tool loop or extra nudge", async ({
-	terminal,
-}) => {
-	const firstHiddenCandidate = "TEXT_ONLY_CANDIDATE_MUST_NOT_TRIGGER_NUDGE"
-	const secondHiddenCandidate = "REVISED_TEXT_ONLY_CANDIDATE"
-	const acceptedFinal = "TEXT_ONLY_CANDIDATE_ACCEPTED"
+test("experimental Ferment V2 evaluates an explicit completion claim without extra nudges", async ({ terminal }) => {
+	const firstHiddenCandidate = "CLAIM_CANDIDATE_MUST_STAY_HIDDEN_UNTIL_VERDICT"
+	const secondHiddenCandidate = "REVISED_CLAIM_CANDIDATE"
+	const acceptedFinal = "CLAIM_CANDIDATE_ACCEPTED"
 	await runKimchiSession(
 		terminal,
 		{
@@ -555,19 +557,21 @@ test("experimental Ferment V2 evaluates settled work without a completion-tool l
 			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true }],
 			extraArgs: ["--model", "thinking-model"],
 			responses: [
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [
-						'{"verdict":"continue","checks":[{"requirement":"Write a concise final synthesis","met":false,"evidence":["l1"],"todoIds":[1]}],"reason":"The evaluator wants a concise final synthesis before returning a continue verdict."}',
-					],
+				// Verifier run 1: an executing bash check, then a cited continue verdict.
+				verifierCheck("verifier-claim-check-1", "pwd"),
+				verifierSubmit("continue", "The verifier wants a concise final synthesis.", {
+					finding: {
+						clause: "Write a concise final synthesis",
+						observed: "the synthesis is missing from the delivered work",
+						expected: "Write a concise final synthesis",
+					},
 					textDelayMs: 5_500,
-				},
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [
-						'{"verdict":"met","checks":[{"requirement":"Finish the task","met":true,"failureMode":"the result could omit the synthesis; l1 records the verified work","evidence":["l1"],"todoIds":[1]}],"reason":"The verified work and concise synthesis satisfy the objective."}',
-					],
-				},
+				}),
+				// Verifier run 2: an executing bash check, then a cited met verdict.
+				verifierCheck("verifier-claim-check-2", "pwd -P"),
+				verifierSubmit("met", "The verified work and concise synthesis satisfy the objective.", {
+					resolve: [{ id: "F1", resolution: "fixed", reproduction: "pwd -P" }],
+				}),
 				{
 					stream: ["Creating the task Todo."],
 					toolCalls: [
@@ -600,11 +604,29 @@ test("experimental Ferment V2 evaluates settled work without a completion-tool l
 					thinking: ["Reviewing the first completion candidate."],
 					stream: [firstHiddenCandidate],
 					usage: { prompt_tokens: 100, completion_tokens: 10 },
+					toolCalls: [
+						{
+							id: "claim-text-only-candidate",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "complete", completion_confidence: "tested" }),
+							},
+						},
+					],
 				},
 				{
 					thinking: ["Reviewing the revised completion candidate."],
 					stream: [secondHiddenCandidate],
 					usage: { prompt_tokens: 20, completion_tokens: 5 },
+					toolCalls: [
+						{
+							id: "reclaim-text-only-candidate",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "complete", completion_confidence: "tested" }),
+							},
+						},
+					],
 				},
 				{
 					thinking: ["Returning the accepted final answer."],
@@ -621,16 +643,17 @@ test("experimental Ferment V2 evaluates settled work without a completion-tool l
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Prompt summary", { timeoutMs: 5_000 })
 			const requests = chatRequests(fixture.fake.requests)
-			expect(requests).toHaveLength(7)
-			const continuation = JSON.stringify(requests[4]?.body)
-			expect(continuation).toContain("Remaining task gap: Remaining requirement: Write a concise final synthesis.")
+			expect(requests).toHaveLength(9)
+			const continuation = JSON.stringify(requests[5]?.body)
+			expect(continuation).toContain("Remaining task gap: F1 Write a concise final synthesis: expected")
+			expect(continuation).toContain("observed the synthesis is missing from the delivered work")
 			expect(continuation).not.toMatch(/independent evaluation|completion policy|the evaluator/i)
 			expect(JSON.stringify(requests)).not.toContain("If you have finished, please summarize the result")
 			expect(fullText(terminal)).not.toContain(firstHiddenCandidate)
 			expect(fullText(terminal)).not.toContain(secondHiddenCandidate)
 			expect(fullText(terminal).match(/Prompt summary/g)).toHaveLength(1)
 			expect(fullText(terminal).match(/Worked for/g)).toHaveLength(1)
-			trace.step("settled Todos reached evaluation without a completion-tool turn or empty-turn nudge")
+			trace.step("an explicit completion claim reached evaluation without extra nudges or empty-turn steers")
 		},
 	)
 })
@@ -653,19 +676,21 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true, contextWindow: 200_000 }],
 			extraArgs: ["--model", "thinking-model"],
 			responses: [
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [
-						'{"verdict":"continue","checks":[{"requirement":"Finish behind the evaluator gate","met":false,"evidence":["l1"],"todoIds":[1]}],"reason":"Verify the remaining evaluator concern."}',
-					],
+				// Verifier run 1: a finding sends the work back for further verification.
+				verifierCheck("verifier-gate-check-1", "pwd"),
+				verifierSubmit("continue", "Verify the remaining verifier concern.", {
+					finding: {
+						clause: "Finish behind the evaluator gate",
+						observed: "Verify the remaining verifier concern.",
+						expected: "Finish behind the evaluator gate",
+					},
 					textDelayMs: 1_500,
-				},
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [
-						'{"verdict":"met","checks":[{"requirement":"Finish behind the evaluator gate","met":true,"failureMode":"the result could be unverified; l1 and l2 record both verification passes","evidence":["l1","l2"],"todoIds":[1,2]}],"reason":"Both completed Todos have retained verification evidence."}',
-					],
-				},
+				}),
+				// Verifier run 2: bash check, then a cited met verdict.
+				verifierCheck("verifier-gate-check-2", "pwd -P"),
+				verifierSubmit("met", "The verified work satisfies the objective.", {
+					resolve: [{ id: "F1", resolution: "fixed", reproduction: "pwd -P" }],
+				}),
 				{
 					thinking: [visibleThinking],
 					thinkingDelayMs: 500,
@@ -695,7 +720,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 					],
 				},
 				{
-					stream: [firstHiddenCandidate],
+					stream: ["Finishing the gated completion Todo."],
 					toolCalls: [
 						{
 							id: "finish-gated-completion-todo",
@@ -704,13 +729,14 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 								arguments: JSON.stringify({
 									id: 1,
 									status: "completed",
-									note: "Evidence: scripted verification completed",
+									note: `Evidence: scripted verification completed by ${privateEmail}`,
 								}),
 							},
 						},
 					],
 				},
 				{
+					stream: [firstHiddenCandidate],
 					toolCalls: [
 						{
 							id: "claim-gated-completion",
@@ -737,7 +763,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 					],
 				},
 				{
-					stream: [secondHiddenCandidate],
+					stream: ["Verifying the remaining evaluator concern."],
 					toolCalls: [
 						{
 							id: "finish-remaining-gated-todo",
@@ -753,6 +779,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 					],
 				},
 				{
+					stream: [secondHiddenCandidate],
 					toolCalls: [
 						{
 							id: "reclaim-gated-completion",
@@ -776,22 +803,27 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			await waitForChatRequest(fixture.fake.requests, 2)
 			expect(fullText(terminal)).not.toContain(earlyHiddenCandidate)
 			const firstEvaluatorRequest = await waitForChatRequest(fixture.fake.requests, 5)
-			expect(isFermentV2EvaluatorRequest(firstEvaluatorRequest)).toBe(true)
-			expect(JSON.stringify(firstEvaluatorRequest.body)).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+			expect(isVerifierRequest(firstEvaluatorRequest)).toBe(true)
+			// The verifier is transcript-free: the hidden completion candidate never
+			// reaches it, and the Todo note it does receive is PII-redacted.
+			expect(JSON.stringify(firstEvaluatorRequest.body)).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 			expect(JSON.stringify(firstEvaluatorRequest.body)).not.toContain(privateEmail)
-			expect(JSON.stringify(firstEvaluatorRequest.body)).toContain("[REDACTED-EMAIL_ADDRESS]")
+			expect(JSON.stringify(firstEvaluatorRequest.body)).toContain("[EMAIL_ADDRESS_1]")
 			const cookingMessage = await waitForCookingAnimation(terminal)
 			expect(fullText(terminal)).not.toContain(firstHiddenCandidate)
 			trace.step("completion candidate stayed hidden while evaluation was pending")
 
-			const continuationRequest = await waitForChatRequest(fixture.fake.requests, 6)
+			const continuationRequest = await waitForChatRequest(fixture.fake.requests, 7)
 			expect(JSON.stringify(continuationRequest.body)).toContain(
 				"If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list.",
 			)
-			const resumedWorkRequest = await waitForChatRequest(fixture.fake.requests, 7)
+			const resumedWorkRequest = await waitForChatRequest(fixture.fake.requests, 8)
 			expect(JSON.stringify(resumedWorkRequest.body)).toContain("Finish behind the evaluator gate")
 			expect(JSON.stringify(resumedWorkRequest.body)).toContain("Verify the remaining evaluator concern")
-			await waitForText(terminal, "Reopening tactical work after the rejected completion.", { timeoutMs: 5_000 })
+			// The rejected-completion narration is interstitial commentary, which
+			// folds once the next tool call runs. Wait for the stable end state;
+			// the request above already proves the rebuilt Todo moved through it.
+			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 			trace.step("rejected completion rebuilt the settled Todo list before further work")
 
 			await waitForText(terminal, acceptedFinal, { timeoutMs: 5_000 })
@@ -846,7 +878,7 @@ test("experimental Ferment V2 preserves exact output when accepted final deliver
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 			const requests = chatRequests(fixture.fake.requests)
 			expect(requests).toHaveLength(1)
-			expect(requests.filter(isFermentV2EvaluatorRequest)).toHaveLength(0)
+			expect(requests.filter(isVerifierRequest)).toHaveLength(0)
 			expect(JSON.stringify(requests[0]?.body)).toContain(
 				"If the original objective requires exact output, return exactly that output with no preface or summary.",
 			)
@@ -864,12 +896,8 @@ test("experimental Ferment V2 pauses when an accepted final answer cannot be del
 			artifactName: "ferment-v2-mode-final-delivery-error",
 			seedHome: enableFermentV2Mode,
 			responses: [
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [
-						'{"verdict":"met","checks":[{"requirement":"Finish before delivery","met":true,"failureMode":"the work could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo retains verification evidence."}',
-					],
-				},
+				verifierCheck("verifier-delivery-check", "pwd"),
+				verifierSubmit("met", "The verified work satisfies the objective."),
 				{
 					stream: ["Creating the delivery Todo."],
 					toolCalls: [
@@ -944,15 +972,55 @@ test("experimental Ferment V2 pauses after the same unresolved gap repeats three
 					toolCalls: [
 						{
 							id: `repeated-gap-check-${index + 1}`,
+							index: 0,
 							function: { name: "bash", arguments: JSON.stringify({ command: "pwd" }) },
+						},
+						// Round 1 settles the Todo list so the completion claim passes its gate.
+						...(index === 0
+							? [
+									{
+										id: "settle-repeated-gap-todo",
+										index: 1,
+										function: {
+											name: "create_todos",
+											arguments: JSON.stringify({
+												todos: [
+													{
+														content: "Verify the same requirement",
+														status: "completed",
+														note: "Evidence: scripted verification completed",
+													},
+												],
+											}),
+										},
+									},
+								]
+							: []),
+					],
+				},
+				{
+					stream: [`Checked source ${index + 1}.`],
+					toolCalls: [
+						{
+							id: `repeated-gap-claim-${index + 1}`,
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "complete", completion_confidence: "tested" }),
+							},
 						},
 					],
 				},
-				{ stream: [`Checked source ${index + 1}.`] },
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [JSON.stringify({ verdict: "continue", reason: repeatedGap })],
-				},
+				verifierCheck(`verifier-repeated-gap-${index + 1}`, "pwd"),
+				// The first review opens F1; later ones find it still failing, which keeps it open.
+				index === 0
+					? verifierSubmit("continue", repeatedGap, {
+							finding: {
+								clause: "Verify the same requirement",
+								observed: "the requirement is still unverified",
+								expected: "the requirement is verified",
+							},
+						})
+					: verifierSubmit("continue", repeatedGap, { resolve: [{ id: "F1", resolution: "still_failing" }] }),
 			] satisfies FakeResponseScript[],
 	).flat()
 
@@ -973,8 +1041,9 @@ test("experimental Ferment V2 pauses after the same unresolved gap repeats three
 			terminal.submit("/ferment-v2")
 			await waitForText(terminal, "Status: paused", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Evaluations: 4", { timeoutMs: 5_000 })
-			expect(chatRequests(fixture.fake.requests).filter(isFermentV2EvaluatorRequest)).toHaveLength(4)
-			trace.step("three repeated evaluator gaps paused substantive but ineffective retry work")
+			// Four verifier runs, each an executing bash check plus its verdict.
+			expect(chatRequests(fixture.fake.requests).filter(isVerifierRequest)).toHaveLength(8)
+			trace.step("three repeated verifier gaps paused substantive but ineffective retry work")
 		},
 	)
 })
@@ -1129,10 +1198,6 @@ function collectStrings(value: unknown): string[] {
 	if (Array.isArray(value)) return value.flatMap(collectStrings)
 	if (value && typeof value === "object") return Object.values(value).flatMap(collectStrings)
 	return []
-}
-
-function isFermentV2EvaluatorRequest(request: FakeResponseRequest): boolean {
-	return collectStrings(request.body).some((value) => value.includes("<ferment_v2_evaluator>"))
 }
 
 async function waitForCookingAnimation(terminal: Parameters<typeof fullText>[0]): Promise<string> {

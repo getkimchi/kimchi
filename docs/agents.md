@@ -4,19 +4,19 @@ Kimchi's `agents` extension brings Claude-Code-style subagents to the harness. T
 LLM can spawn specialized agents via the `Agent` tool — each runs as a focused
 child session with its own system prompt, model, and tool restrictions.
 
-## Phase model
+## Permission modes
 
-Kimchi has a separate phase system that gates the **parent session's** autonomy
-(read-only vs full edit, etc.). Phases and agents are independent:
+Kimchi's permission modes (`default`, `plan`, `auto`, `yolo`) and agents work
+together:
 
-- **Phases** (managed by kimchi's `behaviours` extension and `set_phase` tool)
-  control what the parent session is allowed to do.
+- **Permission modes** control what the session is allowed to do.
 - **Agents** (this extension) handle delegation. Each persona declares its own
-  tool set independently of the parent's phase.
+  tool set in its `tools` field.
 
-A `plan`-phase parent (read-only) can still spawn an `expert-coder` agent that
-edits files — that's by design. Agents are isolated child sessions; their
-authority is scoped to the persona's `tools` field, not the parent's phase.
+A subagent's tool calls follow the main session's mode and rules. The persona
+decides which tools the subagent has; the mode decides whether a call may run.
+For example, a subagent started from a session in `plan` mode cannot edit
+files, even when its persona lists `edit`. See [Permissions](#permissions).
 
 ## How it works
 
@@ -90,6 +90,8 @@ You are a senior X engineer who...
 (persona body — markdown, becomes the subagent's system prompt)
 ```
 
+Built-in host-spawned personas (currently the Ferment V2 `Verifier`) use the internal `hostOnly` flag. Unlike `enabled: false`, this hides them from user spawning and agent UIs without discarding their runtime configuration or falling back to General Purpose. `hostOnly` is not a supported custom-agent frontmatter field.
+
 ### Invalid frontmatter
 
 The frontmatter must be valid YAML, with one exception: a single-line
@@ -98,10 +100,18 @@ The frontmatter must be valid YAML, with one exception: a single-line
 value, so agent files written for other tools usually load as they are.
 
 A file whose frontmatter still cannot be parsed is skipped. The other agents
-load, and kimchi shows a warning that names the file and the YAML error — once
-per session, when the session starts, when the `Agent` tool runs, and when
-`/agents` opens. A skipped file overrides nothing: a user, extension, or
-built-in agent with the same name stays active.
+load, and kimchi reports the file and the YAML error once per session — when
+the session starts, when the `Agent` tool runs, and when `/agents` opens. In
+the TUI that report is a one-line warning in the warning colour
+(`Warning: Skipped N agent files with invalid frontmatter (not loaded)`) that
+lists the files with ctrl+o and collapses again the same way; a `▸` / `▾`
+marker after the sentence shows whether it is closed or open. In fullscreen mode a click
+on the notice toggles it alone. A file that
+breaks later in the same session adds a second notice for the new file, while
+notices from earlier session starts stay hidden — resuming a session never
+stacks them. ACP and headless sessions get the plain warning text. A skipped
+file overrides nothing: a user, extension, or built-in agent with the same name
+stays active.
 
 ### Built-in tool names
 
@@ -318,6 +328,14 @@ before the interruption. No manual cleanup is needed.
 Subagents cannot spawn further subagents. The `Agent`, `get_subagent_result`,
 and `steer_subagent` tools are filtered out of any spawned agent's tool set,
 preventing fork-bombs and runaway delegation chains.
+
+## Permissions
+
+Subagent tool calls go through the same permission gate as the main session and
+follow its mode and rules. A subagent has no prompt of its own. In `default` and
+`auto` mode a call that is not read-only and that no rule allows runs only when
+the classifier calls it safe; otherwise it is blocked. The details are in
+[subagent-permissions.md](subagent-permissions.md).
 
 ## Remote runs and session replacement
 

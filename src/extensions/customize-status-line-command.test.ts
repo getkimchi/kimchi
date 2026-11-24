@@ -13,7 +13,6 @@ import {
 import * as AGENTS from "./agents/index.js"
 import customizeStatusLineExtension, { CustomizeStatusLineComponent } from "./customize-status-line-command.js"
 import * as FERMENT from "./ferment/index.js"
-import * as MULTI_MODEL from "./multi-model.js"
 import * as TAGS from "./tags.js"
 
 // ── Real status-line-config backed by in-memory JSON storage ──────────────────
@@ -131,8 +130,6 @@ beforeEach(() => {
 	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 	vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
-	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
-	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 })
 
 afterEach(() => {
@@ -223,7 +220,6 @@ describe("customize-status-line popover", () => {
 		const text = strip(makeComponent().render(80).join("\n"))
 		expect(text).toContain("● Agents")
 		expect(text).toContain("● Thinking level")
-		expect(text).toContain("○ Phase")
 		expect(text).toContain("● Token I/O")
 	})
 
@@ -281,7 +277,7 @@ describe("customize-status-line popover: LSP/DAP opt-in rows", () => {
 	})
 
 	it("pressing space on LSP pins it: row goes ●, settings gain pinned:[...,lsp], hidden untouched", () => {
-		const component = makeComponent(12) // lsp at STATUS_LINE_ELEMENTS index 12
+		const component = makeComponent(11) // lsp at STATUS_LINE_ELEMENTS index 11
 		component.handleInput(" ")
 
 		expect(strip(component.render(80).join("\n"))).toContain("● LSP")
@@ -290,7 +286,7 @@ describe("customize-status-line popover: LSP/DAP opt-in rows", () => {
 	})
 
 	it("pressing space on LSP again un-pins it without touching hidden", () => {
-		const component = makeComponent(12)
+		const component = makeComponent(11)
 		component.handleInput(" ")
 		component.handleInput(" ")
 
@@ -300,7 +296,7 @@ describe("customize-status-line popover: LSP/DAP opt-in rows", () => {
 	})
 
 	it("pressing space on DAP pins only dap: ● DAP while LSP stays ○", () => {
-		const component = makeComponent(13) // dap at STATUS_LINE_ELEMENTS index 13
+		const component = makeComponent(12) // dap at STATUS_LINE_ELEMENTS index 12
 		component.handleInput(" ")
 
 		const text = strip(component.render(80).join("\n"))
@@ -311,7 +307,7 @@ describe("customize-status-line popover: LSP/DAP opt-in rows", () => {
 	})
 
 	it("pinning lsp via Space shows its status line segment while dap's stays hidden", () => {
-		const component = makeComponent(12)
+		const component = makeComponent(11)
 		component.handleInput(" ")
 
 		const statuses = new Map([
@@ -331,7 +327,7 @@ describe("customize-status-line popover: LSP/DAP opt-in rows", () => {
 	})
 
 	it("pressing space on Branch / PR hides it: row goes ○ and settings gain hidden:[work-pr]", () => {
-		const component = makeComponent(14) // work-pr at STATUS_LINE_ELEMENTS index 14 (last)
+		const component = makeComponent(13) // work-pr at STATUS_LINE_ELEMENTS index 13 (last)
 		component.handleInput(" ")
 
 		expect(strip(component.render(80).join("\n"))).toContain("○ Branch / PR")

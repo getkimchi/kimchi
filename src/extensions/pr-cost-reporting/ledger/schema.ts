@@ -112,6 +112,57 @@ CREATE TABLE IF NOT EXISTS work_dirty (
 );
 `
 
+/**
+ * Additive INDEXES applied on EVERY open, not just at creation: LEDGER_SCHEMA executes only when a
+ * database is first created, so a pre-existing ledger keeps user_version but never gains indexes
+ * added later. Each statement is `CREATE INDEX IF NOT EXISTS`, so re-application is a no-op. These
+ * are OPTIONAL: readers probe their presence, so a held writer lock skips the pass rather than
+ * stalling a reader; the next open reapplies it.
+ */
+export const LEDGER_ADDITIVE_SCHEMA = `
+-- Covers the status aggregate's per-account SUM(acked_at ...) GROUP BY without touching the base table.
+CREATE INDEX IF NOT EXISTS outbox_pending_cover ON outbox_events(account_key, acked_at, blocked);
+-- Covers the status aggregate's "earliest batch per account" scalar lookup.
+CREATE INDEX IF NOT EXISTS outbox_batches_by_account ON outbox_batches(account_key, order_key, created_at);
+-- The reconcile incremental read filters WHERE imported_at >= ? on the full authority: without this,
+-- every pass scans six-figure row count to extract the few fresh ones.
+CREATE INDEX IF NOT EXISTS work_records_imported ON work_records(imported_at);
+`
+
+/**
+ * REQUIRED additive objects: unlike the indexes above, backend construction reads
+ * `transition_repositories` unconditionally, so this apply is never skipped on a busy
+ * writer — the busy error propagates to the open's retry loop instead of handing out a
+ * backend whose schema it cannot read. Materialized distinct repository set: discovery reads
+ * pay O(repositories), not a JSON parse per stored record per pass. Maintained at insert time
+ * only — work_records rows are immutable facts with no update or delete path, so an
+ * AFTER INSERT trigger can never go stale.
+ */
+export const LEDGER_REQUIRED_SCHEMA = `
+CREATE TABLE IF NOT EXISTS transition_repositories (
+	repository TEXT PRIMARY KEY
+) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS work_records_repository_probe
+AFTER INSERT ON work_records
+WHEN NEW.type = 'file_transition' AND json_valid(NEW.body) AND json_type(NEW.body, '$.repository') = 'text'
+BEGIN
+	INSERT OR IGNORE INTO transition_repositories (repository) VALUES (json_extract(NEW.body, '$.repository'));
+END;
+`
+
+/**
+ * One-time population of transition_repositories when the additive block first creates it: a
+ * pre-existing ledger's rows predate the trigger. Same tolerance as the insert path — damaged
+ * bodies and non-string repositories are skipped, never fatal. Runs inside the additive apply's
+ * immediate transaction, so a crash leaves the table absent and the next open retries whole.
+ */
+export const LEDGER_TRANSITION_BACKFILL = `
+INSERT OR IGNORE INTO transition_repositories (repository)
+SELECT DISTINCT json_extract(body, '$.repository') AS repository
+FROM work_records
+WHERE type = 'file_transition' AND json_valid(body) AND json_type(body, '$.repository') = 'text'
+`
+
 /** Meta key. */
 export const META_PROJECTION_VERSION = "projectionVersion"
 /** Current derived-projection format; bump when the projection layout changes (forces rebuild). */

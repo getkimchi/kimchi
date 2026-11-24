@@ -10,6 +10,7 @@ import {
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	firstRunSettingsDefaults,
 	getApiKeyMismatchWarning,
 	getApiKeySource,
 	getConfiguredLegacyMcpKeys,
@@ -18,6 +19,7 @@ import {
 	normalizeLanguageSetting,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
+	readClaudeCodeInstructionsNoticeSeenAt,
 	readGitToken,
 	readHideTips,
 	readStudioOnboardingSeenAt,
@@ -28,6 +30,7 @@ import {
 	syncWheelScrollToPiSettings,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
+	writeClaudeCodeInstructionsNoticeSeenAt,
 	writeDeviceId,
 	writeGitToken,
 	writeHideTips,
@@ -1400,6 +1403,30 @@ describe("readStudioOnboardingSeenAt / writeStudioOnboardingSeenAt", () => {
 	})
 })
 
+describe("readClaudeCodeInstructionsNoticeSeenAt / writeClaudeCodeInstructionsNoticeSeenAt", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("round-trips and keeps other onboarding fields", () => {
+		writeFileSync(configPath, JSON.stringify({ onboarding: { teleportHelpSeenAt: "2026-05-19T09:30:00.000Z" } }))
+		expect(readClaudeCodeInstructionsNoticeSeenAt(configPath)).toBeUndefined()
+
+		writeClaudeCodeInstructionsNoticeSeenAt("2026-11-19T10:00:00.000Z", configPath)
+
+		expect(readClaudeCodeInstructionsNoticeSeenAt(configPath)).toBe("2026-11-19T10:00:00.000Z")
+		expect(JSON.parse(readFileSync(configPath, "utf-8")).onboarding.teleportHelpSeenAt).toBe("2026-05-19T09:30:00.000Z")
+	})
+})
+
 describe("readHideTips / writeHideTips", () => {
 	let tempDir: string
 	let configPath: string
@@ -1758,6 +1785,42 @@ describe("ensureHideThinkingBlockDefault", () => {
 		const visible = { hideThinkingBlock: false }
 		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
 		expect(visible.hideThinkingBlock).toBe(false)
+	})
+})
+
+describe("firstRunSettingsDefaults", () => {
+	it("seeds the explicit new-user default set, including collapseWork", () => {
+		expect(firstRunSettingsDefaults()).toEqual({
+			quietStartup: true,
+			theme: "kimchi-minimal",
+			retry: RETRY_DEFAULTS,
+			hideThinkingBlock: true,
+			collapseWork: "all",
+		})
+	})
+
+	it("keeps collapseWork at the read-time fallback so /settings shows it", () => {
+		expect(firstRunSettingsDefaults().collapseWork).toBe("all")
+	})
+
+	it("returns a fresh object each call so callers cannot corrode the defaults", () => {
+		const first = firstRunSettingsDefaults()
+		first.collapseWork = "off"
+		expect(firstRunSettingsDefaults().collapseWork).toBe("all")
+	})
+
+	it("deep-copies the retry defaults so nested mutations cannot corrode them", () => {
+		const first = firstRunSettingsDefaults()
+		const firstRetry = first.retry as typeof RETRY_DEFAULTS
+		firstRetry.provider.timeoutMs = 1
+
+		// The shared module-level defaults stay untouched...
+		expect(RETRY_DEFAULTS.provider.timeoutMs).toBe(600_000)
+
+		// ...and a later call still gets pristine retry settings.
+		const second = firstRunSettingsDefaults()
+		expect(second.retry).toEqual(RETRY_DEFAULTS)
+		expect((second.retry as typeof RETRY_DEFAULTS).provider.timeoutMs).toBe(600_000)
 	})
 })
 

@@ -4,10 +4,10 @@ import { dirname, resolve } from "node:path"
  * Project-local entries (relative to a directory) whose presence makes a
  * folder trust-requiring for the Kimchi harness: config, permissions, hooks
  * (bash, kimchi-native, claude), skills, agents, memory, MCP servers, tags,
- * plans, and ferments.
+ * plans, ferments, and agent rules (`.agents/rules`).
  *
  * This is the single source of truth for kimchi-side detection. The pi patch
- * (patches/@earendil-works__pi-coding-agent@0.85.1.patch) embeds the same
+ * (patches/@earendil-works__pi-coding-agent@1.3.0.patch) embeds the same
  * list in KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES inside pi's
  * hasTrustRequiringProjectResources (checked in cwd and ancestors, with the
  * user's home excluded); a unit test in project-scope-trust.test.ts
@@ -33,6 +33,7 @@ export const TRUST_REQUIRING_PROJECT_RESOURCES: readonly string[] = [
 	".claude/skills",
 	".claude/settings.json",
 	".claude/settings.local.json",
+	".agents/rules",
 ]
 
 /**

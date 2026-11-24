@@ -101,7 +101,18 @@ test("the add-to-chat pill follows the selection and hides when it scrolls out o
 			expect(viewText(terminal)).not.toContain("Report line 38")
 			trace.step("selection scrolled out above the viewport — the pill hid instead of floating")
 
-			wheel(terminal, 65, 20)
+			// Wheel velocity and rendering timing can leave a burst short of the latest
+			// message. Keep the wheel interaction, but advance one tick per render poll
+			// and assert the rendered destination rather than assuming a tick count.
+			await waitForText(
+				terminal,
+				(text) => {
+					if (text.includes("Report line 40")) return true
+					wheel(terminal, 65, 1)
+					return false
+				},
+				{ full: false },
+			)
 			await waitForText(terminal, "Report line 40", { full: false })
 			await waitForText(terminal, "+ Add to side chat", { full: false })
 			trace.step("scrolled back down — the pill returned under the still-settled selection")

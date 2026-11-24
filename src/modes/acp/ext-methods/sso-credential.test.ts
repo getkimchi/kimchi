@@ -8,7 +8,8 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { RequestError } from "@agentclientprotocol/sdk"
+import type { RequestError } from "@agentclientprotocol/sdk/unstable"
+import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeApiKey } from "../../../config.js"
@@ -36,7 +37,16 @@ describe("handleSsoCredential", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
-		rmSync(dir, { recursive: true, force: true })
+		vi.restoreAllMocks()
+		// Credential-store initialization can leave asynchronous file cleanup pending on CI.
+		// Temp-dir cleanup is best-effort: a concurrent writer can keep recreating
+		// entries past the retry budget (ENOTEMPTY on CI runners). A leftover /tmp
+		// directory is harmless; failing the test on cleanup is not.
+		try {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+		} catch {
+			/* best-effort */
+		}
 	})
 
 	function writeSsoEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -65,6 +75,13 @@ describe("handleSsoCredential", () => {
 		}
 		throw new Error("expected the handler to throw")
 	}
+
+	it("uses an in-memory dynamic model cache for credential-only resolution", async () => {
+		const create = vi.spyOn(ModelRuntime, "create")
+		writeSsoEntry()
+		await handleSsoCredential(fakeOAuthDeps(), paths)
+		expect(create.mock.calls[0]?.[0]?.modelsStore).toBeInstanceOf(InMemoryModelsStore)
+	})
 
 	it("returns the org-scoped credential for a fresh SSO entry", async () => {
 		const entry = writeSsoEntry()

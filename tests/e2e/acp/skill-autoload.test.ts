@@ -69,7 +69,7 @@ describe("ACP integration — skill auto-load on prompt keywords", () => {
 	it("injects the pdf skill body into the first chat request when the prompt names a .pdf", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 		const result = (await withTimeout(
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "read ~/runbook-q4.pdf and summarize it in two lines" }],
 			}),
@@ -117,7 +117,7 @@ describe("ACP integration — skill auto-load on prompt keywords", () => {
 	it("injects the pdf skill body on a keyword-only prompt (no file name)", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 		const result = (await withTimeout(
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "summarize the attached pdf in two lines" }],
 			}),

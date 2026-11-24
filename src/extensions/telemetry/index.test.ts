@@ -935,6 +935,8 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			verdict: "continue",
 			count: 2,
 			model: "test/judge",
+			sameModelAsImplementer: true,
+			modelFallback: "session",
 			reason: "private evaluator rationale",
 			usage: {
 				input: 20,
@@ -963,6 +965,8 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			verdict: "continue",
 			evaluation_count: "2",
 			evaluator_model: "test/judge",
+			same_model_as_implementer: "true",
+			model_fallback: "session",
 			duration_ms: "123",
 			timeout_ms: "600000",
 			provider_request_count: "2",
@@ -2510,6 +2514,33 @@ describe("session isolation (concurrent instances)", () => {
 
 		const block = records.find((r) => r.eventName === "bash_tool_guard.block")
 		expect(block?.attrs["session.id"]).toBe("parent-session")
+	})
+
+	it("keeps interleaved memory events on their originating sessions", async () => {
+		const { MEMORY_TELEMETRY_CHANNEL } = await import("../memory/telemetry-events.js")
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		parent.events.emit(MEMORY_TELEMETRY_CHANNEL, {
+			event: "session_state",
+			active: true,
+			authoredEnabled: false,
+			reason: "initial",
+		})
+		child.events.emit(MEMORY_TELEMETRY_CHANNEL, {
+			event: "session_state",
+			active: false,
+			authoredEnabled: false,
+			reason: "toggle",
+		})
+
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+
+		const records = allRecords().filter((record) => record.eventName === "memory.session_state")
+		expect(records).toHaveLength(2)
+		expect(records.find((record) => record.attrs["session.id"] === "parent-session")?.attrs.active).toBe("true")
+		expect(records.find((record) => record.attrs["session.id"] === "child-session")?.attrs.active).toBe("false")
 	})
 
 	it("keeps interleaved ferment phase tracking and token deltas per session", async () => {

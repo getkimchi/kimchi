@@ -22,6 +22,8 @@ interface McpFixtureEventBase {
 interface McpFixtureEventDetails {
 	initialized: { clientName?: string; extensionCapabilities: string[] }
 	tools_listed: Record<string, never>
+	prompts_listed: Record<string, never>
+	prompts_get: { name: string | null }
 	tool_list_changed_sent: Record<string, never>
 	resources_listed: Record<string, never>
 	resource_read: { uri: string }
@@ -127,6 +129,7 @@ export type McpFixtureScenario =
 	| "oauth-rotating-refresh"
 	| "oauth-manual-revoke"
 	| "tools-change"
+	| "cache-private-scope"
 	| "ui-app"
 
 export type McpFixtureToolResponse =
@@ -196,6 +199,8 @@ export interface McpServerFixtureOptions {
 	serverEnv?: Record<string, string>
 	autoAuth?: boolean
 	oauthPreauthorized?: boolean
+	/** Automatically follow the authorize URL in the test browser. Defaults to true; false leaves OAuth under test control. */
+	oauthAutoComplete?: boolean
 	/** Spec-strict gateway mode: OAuth metadata/DCR endpoints 406 unless Accept advertises text/event-stream. */
 	strictAccept?: boolean
 	behavior?: McpFixtureBehavior
@@ -466,6 +471,7 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 		// driver replays the authorize request against the fixture to complete the flow.
 		const browserEnv = oauth
 			? createOAuthBrowserDriver(agentDir, eventPath, {
+					autoComplete: options.oauthAutoComplete ?? true,
 					rewriteGoogleOrigin: scenario === "oauth-google-like" ? new URL(listening.url).origin : undefined,
 				})
 			: {}
@@ -672,14 +678,17 @@ ${rewriteBody}appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_op
 function createOAuthBrowserDriver(
 	agentDir: string,
 	eventPath: string,
-	options: { rewriteGoogleOrigin?: string } = {},
+	options: { autoComplete?: boolean; rewriteGoogleOrigin?: string } = {},
 ): Record<string, string> {
 	const browserBinDir = resolve(agentDir, "mcp-oauth-browser")
 	const browserPath = resolve(browserBinDir, "open")
 	mkdirSync(browserBinDir, { recursive: true })
 	writeFileSync(
 		browserPath,
-		oauthBrowserDriverScript(eventPath, { autoComplete: true, rewriteGoogleOrigin: options.rewriteGoogleOrigin }),
+		oauthBrowserDriverScript(eventPath, {
+			autoComplete: options.autoComplete ?? true,
+			rewriteGoogleOrigin: options.rewriteGoogleOrigin,
+		}),
 		"utf-8",
 	)
 	chmodSync(browserPath, 0o755)

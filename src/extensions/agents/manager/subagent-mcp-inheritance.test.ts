@@ -212,10 +212,9 @@ describe("subagent MCP tool inheritance — real extension", () => {
 		warn.mockRestore()
 	})
 
-	it("registers the built-in gateway without keep-alive lifecycle when lazyGatewayConnect is set", async () => {
+	it("registers the lazy built-in gateway for initial runtime discovery", async () => {
 		const { harness, ctx } = createChildSessionHarness(childCwd)
 		const emitSpy = vi.spyOn(harness.api.events, "emit")
-		vi.spyOn(console, "error").mockImplementation(() => {}) // no runtime listener answers the register request
 		const extension = createKimchiMcpAdapterExtension({
 			cwd: childCwd,
 			lazyGatewayConnect: true,
@@ -228,13 +227,21 @@ describe("subagent MCP tool inheritance — real extension", () => {
 		extension(harness.api)
 		await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
 
-		const registerCall = emitSpy.mock.calls.find(([event]) => event === "pi-mcp-adapter:runtime-register:v1")
-		expect(registerCall).toBeDefined()
-		const definition = (registerCall?.[1] as { definition?: Record<string, unknown> } | undefined)?.definition
-		expect(definition?.url).toContain("api.cast.ai")
-		// The lazy child strips keep-alive: no eager connection per subagent;
-		// the adapter connects on first tool call instead.
-		expect(definition).not.toHaveProperty("lifecycle")
+		expect(upstream.options).toEqual({
+			configPath: mcpConfigPath,
+			initialRuntimeServers: {
+				"kimchi-mcp-gateway": {
+					url: "https://api.cast.ai/mcp",
+					headers: { Authorization: "Bearer t" },
+					directTools: false,
+					idleTimeout: 1,
+				},
+			},
+			initialRuntimeDiscoveryTimeoutMs: 10_000,
+			defaultProtocolVersion: "auto",
+			createSessionMetadataObserver: expect.any(Function),
+		})
+		expect(emitSpy.mock.calls.find(([event]) => event === "pi-mcp-adapter:runtime-register:v1")).toBeUndefined()
 	})
 
 	it("serves MCP tools again after a run-end shutdown and a resume restart", async () => {

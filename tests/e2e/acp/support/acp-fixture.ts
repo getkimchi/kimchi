@@ -1,5 +1,5 @@
 // ACP integration test fixture. Spawns kimchi with `--mode acp`, returns a
-// `ClientSideConnection` + recording client, and loads a throwaway extension
+// `ClientContext` + recording client, and loads a throwaway extension
 // so every test triggers the fire-and-forget UI surface during `session_start`.
 // ACP speaks JSON-RPC over stdio — no node-pty like the TUI fixture.
 
@@ -10,8 +10,8 @@ import { join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
-import type { ClientSideConnection } from "@agentclientprotocol/sdk"
-import * as acp from "@agentclientprotocol/sdk"
+import type { ClientContext } from "@agentclientprotocol/sdk/unstable"
+import * as acp from "@agentclientprotocol/sdk/unstable"
 import {
 	DEFAULT_MODEL,
 	type FakeModel,
@@ -45,7 +45,7 @@ export interface AcpFixture {
 	workDir: string
 	fake: FakeOpenAiServer
 	proc: ChildProcess
-	conn: ClientSideConnection
+	conn: ClientContext
 	client: RecordingClient
 	/** The initialize() response captured at connection setup, so tests can assert negotiated agent capabilities without a second initialization call. */
 	initializeResponse: acp.InitializeResponse
@@ -67,7 +67,11 @@ export interface AcpFixtureOptions {
 	telemetry?: boolean
 	account?: Parameters<typeof startFakeOpenAiServer>[0]["account"]
 	billingRows?: Parameters<typeof startFakeOpenAiServer>[0]["billingRows"]
+	/** Seed expiring canonical OAuth credentials and serve their fake replacement. */
+	oauth?: { refreshedAccessToken: string }
 	responses: FakeResponseScript[]
+	/** Enable deterministic local embeddings for memory-edit tests. */
+	enableMemoryEmbeddings?: boolean
 	models?: FakeModel[]
 	providerId?: string
 	defaultProvider?: string
@@ -102,6 +106,8 @@ export interface AcpFixtureOptions {
 	 * a custom extension that exercises those calls.
 	 */
 	extensionPath?: string
+	/** Mutate the isolated fixture after its default config/models/settings are written and before the harness starts. */
+	seedHome?: (homeDir: string, workDir: string, fakeBaseUrl: string) => void
 	/** Seed the isolated Kimchi config with the shared repository-owned MCP fixture. */
 	mcp?: McpFixtureOptions
 	/** Org policy served by the fake platform endpoints (api-keys:verify +
@@ -300,8 +306,10 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	const keepHomeDir = options.homeDirOverride !== undefined || options.keepDirsOnStop
 	const keepWorkDir = options.workDirOverride !== undefined || options.keepDirsOnStop
 	const fake = await startFakeOpenAiServer({
+		enableMemoryEmbeddings: options.enableMemoryEmbeddings,
 		responses,
 		models: configuredModels,
+		refreshedOAuthAccessToken: options.oauth?.refreshedAccessToken,
 		account: options.account,
 		billingRows: options.billingRows,
 		policy: options.policy,
@@ -370,8 +378,9 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			join(configDir, "config.json"),
 			JSON.stringify(
 				{
-					apiKey: "fake",
+					...(options.oauth ? {} : { apiKey: "fake" }),
 					llmEndpoint: fake.baseUrl,
+					...(options.enableMemoryEmbeddings ? { memoryEmbedding: { model: "fake-embedding" } } : {}),
 					telemetry: { endpoint: `${fake.baseUrl}/logs`, metricsEndpoint: `${fake.baseUrl}/metrics` },
 					skillPaths: [],
 					migrationState: "done",
@@ -382,6 +391,24 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			),
 			"utf-8",
 		)
+
+		if (options.oauth) {
+			writeFileSync(
+				join(agentDir, "auth.json"),
+				JSON.stringify({
+					"kimchi-dev": {
+						type: "oauth",
+						access: "expiring-fake-access",
+						refresh: "fake-refresh",
+						expires: Date.now() + 60_000,
+						tokenUrl: `${fake.baseUrl}/oauth/token`,
+						clientId: "fake-client",
+						useIdToken: false,
+						orgId: "fake-org",
+					},
+				}),
+			)
+		}
 
 		writeFileSync(
 			join(agentDir, "models.json"),
@@ -432,6 +459,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			)
 		}
 		mcp = options.mcp ? await createMcpFixture(agentDir, options.mcp) : undefined
+		options.seedHome?.(homeDir, workDir, fake.baseUrl)
 
 		// pi-coding-agent auto-loads `${agentDir}/extensions/*.js` on every session.
 		const extPath = extensionPath ?? TEST_EXTENSION_PATH
@@ -491,13 +519,24 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		// biome-ignore lint/style/noNonNullAssertion: defined at this point
 		const readable = Readable.toWeb(proc.stdout!) as ReadableStream<Uint8Array>
 		client = new RecordingClient()
+		const recordingClient = client
 		const stream = acp.ndJsonStream(writable, readable)
-		// biome-ignore lint/style/noNonNullAssertion: defined at this point
-		const conn = new acp.ClientSideConnection(() => client!, stream)
+		const app = acp
+			.client()
+			.onNotification(acp.methods.client.session.update, ({ params }) => recordingClient.sessionUpdate(params))
+			.onRequest(acp.methods.client.session.requestPermission, ({ params }) =>
+				recordingClient.requestPermission(params),
+			)
+			.onRequest(acp.methods.client.fs.writeTextFile, () => recordingClient.writeTextFile())
+			.onRequest(acp.methods.client.fs.readTextFile, () => recordingClient.readTextFile())
+			.onRequest(acp.methods.client.elicitation.create, ({ params }) => recordingClient.createElicitation(params))
+			.onRequest("*", ({ method, params }) => recordingClient.extMethod(method, params))
+			.onNotification("*", ({ method, params }) => recordingClient.extNotification(method, params))
+		const conn = app.connect(stream).agent
 
 		// If kimchi crashes on startup this rejects within the timeout.
 		const initResult = await Promise.race([
-			conn.initialize({
+			conn.request("initialize", {
 				protocolVersion: acp.PROTOCOL_VERSION,
 				clientCapabilities: mergeCapabilities(clientCapabilities, clientMeta),
 				...(clientInfo ? { clientInfo } : {}),

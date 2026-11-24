@@ -79,13 +79,13 @@ describe("ACP integration — memory control ext-methods", () => {
 			expect(lastSystemPrompt()).toContain(NOTICE_MARKER)
 
 			// Off for this session only — takes effect from the next agent start.
-			const off = await fixture.conn.extMethod(SET_MEMORY_ENABLED, { sessionId, enabled: false })
+			const off = await fixture.conn.request(SET_MEMORY_ENABLED, { sessionId, enabled: false })
 			expect(off).toEqual({ sessionId, enabled: false })
 			expect(await prompt(fixture, sessionId, "second hello")).toMatchObject({ stopReason: "end_turn" })
 			expect(lastSystemPrompt()).not.toContain(NOTICE_MARKER)
 
 			// Back on: the flip reset the digest state, the notice returns.
-			const on = await fixture.conn.extMethod(SET_MEMORY_ENABLED, { sessionId, enabled: true })
+			const on = await fixture.conn.request(SET_MEMORY_ENABLED, { sessionId, enabled: true })
 			expect(on).toEqual({ sessionId, enabled: true })
 			expect(await prompt(fixture, sessionId, "third hello")).toMatchObject({ stopReason: "end_turn" })
 			expect(lastSystemPrompt()).toContain(NOTICE_MARKER)
@@ -100,30 +100,30 @@ describe("ACP integration — memory control ext-methods", () => {
 			const sessionId = await newSession(fixture, fixture.workDir)
 
 			// list_resources: the env-enabled memory resource shows enabled.
-			const listed = (await fixture.conn.extMethod(LIST_RESOURCES, {})) as {
+			const listed = (await fixture.conn.request(LIST_RESOURCES, {})) as {
 				resources: Array<{ id: string; enabled: boolean; overridden: boolean; restartRequired: boolean }>
 			}
 			const memory = listed.resources.find((r) => r.id === "extensions.memory")
 			expect(memory).toMatchObject({ enabled: true, overridden: false, restartRequired: true })
 
 			// set_resource_enabled: persistent override reflected by list.
-			const off = await fixture.conn.extMethod(SET_RESOURCE_ENABLED, {
+			const off = await fixture.conn.request(SET_RESOURCE_ENABLED, {
 				resourceId: "extensions.memory",
 				enabled: false,
 			})
 			expect(off).toEqual({ id: "extensions.memory", enabled: false, restartRequired: true })
-			const afterOff = (await fixture.conn.extMethod(LIST_RESOURCES, {})) as {
+			const afterOff = (await fixture.conn.request(LIST_RESOURCES, {})) as {
 				resources: Array<{ id: string; enabled: boolean; overridden: boolean }>
 			}
 			expect(afterOff.resources.find((r) => r.id === "extensions.memory")).toMatchObject({
 				enabled: false,
 				overridden: true,
 			})
-			await fixture.conn.extMethod(SET_RESOURCE_ENABLED, { resourceId: "extensions.memory", enabled: true })
+			await fixture.conn.request(SET_RESOURCE_ENABLED, { resourceId: "extensions.memory", enabled: true })
 
 			// memory_status: both control layers, empty stores under the
 			// isolated home.
-			const status = (await fixture.conn.extMethod(MEMORY_STATUS, { sessionId })) as {
+			const status = (await fixture.conn.request(MEMORY_STATUS, { sessionId })) as {
 				featureEnabled: boolean
 				sessionOverride: boolean | null
 				sessionActive: boolean
@@ -133,20 +133,20 @@ describe("ACP integration — memory control ext-methods", () => {
 			expect(status.stores).toEqual([])
 
 			// memory_list over the empty stores.
-			const list = (await fixture.conn.extMethod(MEMORY_LIST, {})) as {
+			const list = (await fixture.conn.request(MEMORY_LIST, {})) as {
 				total: number
 				facts: unknown[]
 			}
 			expect(list).toMatchObject({ total: 0, facts: [] })
 
 			// memory_reset without the explicit confirm is rejected.
-			await expect(fixture.conn.extMethod(MEMORY_RESET, { scope: "personal" })).rejects.toMatchObject({
+			await expect(fixture.conn.request(MEMORY_RESET, { scope: "personal" })).rejects.toMatchObject({
 				code: -32602,
 			})
 
 			// Session-scoped ops reject an unknown session.
 			await expect(
-				fixture.conn.extMethod(SET_MEMORY_ENABLED, { sessionId: "no-such-session", enabled: true }),
+				fixture.conn.request(SET_MEMORY_ENABLED, { sessionId: "no-such-session", enabled: true }),
 			).rejects.toMatchObject({ code: -32602 })
 		},
 		STARTUP_TIMEOUT_MS + 20_000,

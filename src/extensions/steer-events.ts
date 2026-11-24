@@ -53,7 +53,6 @@ export type SteerKind =
 	| "bash_timeout_guidance"
 	| "bash_control_checkin"
 	| "exploration_guard"
-	| "review_write_guard"
 	| "continuation_nudge"
 	| "planning_stop_nudge"
 
@@ -342,7 +341,6 @@ const STEER_DISABLE_FLAGS: Record<SteerKind, string> = {
 	bash_timeout_guidance: "KIMCHI_DISABLE_NUDGE_BASH_TIMEOUT",
 	bash_control_checkin: "KIMCHI_DISABLE_NUDGE_BASH_CONTROL_CHECKIN",
 	exploration_guard: "KIMCHI_DISABLE_GUARD_EXPLORATION",
-	review_write_guard: "KIMCHI_DISABLE_GUARD_REVIEW_WRITE",
 	continuation_nudge: "KIMCHI_DISABLE_NUDGE_CONTINUATION",
 	planning_stop_nudge: "KIMCHI_DISABLE_NUDGE_PLANNING_STOP",
 }

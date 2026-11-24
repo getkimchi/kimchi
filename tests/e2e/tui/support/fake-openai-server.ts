@@ -123,8 +123,14 @@ interface StartFakeOpenAiServerOptions {
 	/** Billed rows for one `kimchi-request:<id>` tag, read on every lookup so a test can change them. */
 	billingRows?: (tag: string) => { id: string; totalPrice: string | null }[]
 	rejectedApiKeys?: string[]
+	/** Serve a successful fake OAuth refresh used by startup discovery tests. */
+	refreshedOAuthAccessToken?: string
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	/** Opt in to deterministic local embeddings for memory-edit tests. */
+	enableMemoryEmbeddings?: boolean
+	/** Hold the embedding request whose body contains this text, for in-flight UI assertions. */
+	memoryEmbeddingHold?: { inputIncludes: string; until: Promise<unknown> }
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
 	/** Org policy served on the platform endpoints the harness queries at startup
@@ -245,6 +251,10 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				)
 				return
 			}
+			if (req.method === "POST" && req.url === "/oauth/token" && options.refreshedOAuthAccessToken) {
+				writeJson(res, 200, { access_token: options.refreshedOAuthAccessToken, expires_in: 3600 })
+				return
+			}
 			if (req.method === "GET" && req.url?.startsWith("/v1/models/metadata")) {
 				writeJson(res, 200, {
 					models: models.map((model) => ({
@@ -261,6 +271,20 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 						...(model.description ? { description: model.description } : {}),
 						...model.metadata,
 					})),
+				})
+				return
+			}
+
+			if (options.enableMemoryEmbeddings === true && req.method === "POST" && req.url?.endsWith("/embeddings")) {
+				if (options.memoryEmbeddingHold && JSON.stringify(body).includes(options.memoryEmbeddingHold.inputIncludes)) {
+					await options.memoryEmbeddingHold.until
+				}
+				if (res.destroyed || res.writableEnded) return
+				writeJson(res, 200, {
+					object: "list",
+					data: [{ object: "embedding", embedding: [1, ...Array.from({ length: 1023 }, () => 0)], index: 0 }],
+					model: "fake-embedding",
+					usage: { prompt_tokens: 1, total_tokens: 1 },
 				})
 				return
 			}

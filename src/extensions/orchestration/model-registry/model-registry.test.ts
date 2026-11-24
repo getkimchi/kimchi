@@ -20,16 +20,11 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 		expect(ALLOWED_TIERS).toContain(cap.tier)
 	})
 
-	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is a non-empty string", (_id, cap) => {
-		expect(typeof cap.orchestrationGuidelines).toBe("string")
-		expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
-	})
-
 	it.each(LIVE_ENTRIES)("%s — every guidelines entry is a non-empty string", (_id, cap) => {
 		if (!cap.guidelines) return
-		for (const [phase, value] of Object.entries(cap.guidelines)) {
+		for (const [role, value] of Object.entries(cap.guidelines)) {
 			expect(typeof value).toBe("string")
-			expect((value as string).trim().length, `guidelines["${phase}"] must be non-empty if present`).toBeGreaterThan(0)
+			expect((value as string).trim().length, `guidelines["${role}"] must be non-empty if present`).toBeGreaterThan(0)
 		}
 	})
 })

@@ -5,7 +5,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { RequestError } from "@agentclientprotocol/sdk"
+import type { RequestError } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { readStudioOnboardingSeenAt } from "../../../config.js"
 import { handleSetOnboardingFlag } from "./set-onboarding-flag.js"

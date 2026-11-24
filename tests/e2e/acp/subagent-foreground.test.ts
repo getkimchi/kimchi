@@ -81,6 +81,20 @@ describe("ACP integration — subagent foreground default", () => {
 		)
 		expect(completedIdx, "Agent tool_call_update with status completed").toBeGreaterThanOrEqual(0)
 
+		// Progress reuses the existing TUI activity text instead of a generic
+		// tool-use count, while retaining the original Agent call title.
+		const progressWithSummary = updates.find(
+			(u) =>
+				u.sessionUpdate === "tool_call_update" &&
+				u.toolCallId === toolCallId &&
+				u.status === "in_progress" &&
+				u.content?.some(
+					(item) =>
+						item.type === "content" && item.content.type === "text" && item.content.text.includes(SUBAGENT_MARKER),
+				),
+		)
+		expect(progressWithSummary, "Agent progress includes the latest response summary").toBeDefined()
+
 		// The subagent actually made its own LLM call, and its output flowed
 		// back into the orchestrator continuation in the same turn: some request
 		// after the spawn carries the tool result containing the marker.

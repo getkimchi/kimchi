@@ -18,7 +18,7 @@
 
 import { existsSync } from "node:fs"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
-import { type AgentSideConnection, RequestError } from "@agentclientprotocol/sdk"
+import { type AgentContext, RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
@@ -59,8 +59,10 @@ export const CATEGORY_PATHS: Record<BlockedTrustCategory, readonly string[]> = {
  * would need a product decision on its category vocabulary — e.g.
  * `.kimchi/mcp.json` wants an `mcp_servers` category (deferred review
  * finding), permissions/hooks/agents/memory are project_config-adjacent
- * kimchi state, `.claude/settings*.json` is Claude Code config, and
- * tags/plans/ferments are workflow state Studio does not render banners for.
+ * kimchi state, `.claude/settings*.json` is Claude Code config,
+ * tags/plans/ferments are workflow state Studio does not render banners for,
+ * and `.agents/rules` wants an `agent_rules` category (deferred, like
+ * `mcp_servers`).
  */
 export const UNCLASSIFIED_TRUST_PATHS: readonly string[] = [
 	join(".kimchi", "permissions.json"),
@@ -76,6 +78,7 @@ export const UNCLASSIFIED_TRUST_PATHS: readonly string[] = [
 	join(".kimchi", "tags.json"),
 	join(".kimchi", "plans"),
 	join(".kimchi", "ferments"),
+	join(".agents", "rules"),
 	join(".claude", "settings.json"),
 	join(".claude", "settings.local.json"),
 ]
@@ -112,7 +115,7 @@ export function buildProjectTrustUpdate(sessionId: string, cwd: string): Project
  * writes, so ordering against surrounding sessionUpdate calls is preserved
  * without awaiting. Unaware clients ignore unknown ext notifications.
  */
-export function notifyProjectTrustUpdate(conn: AgentSideConnection, update: ProjectTrustUpdate): void {
+export function notifyProjectTrustUpdate(conn: AgentContext, update: ProjectTrustUpdate): void {
 	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.project_trust_update, {
 		sessionId: update.sessionId,
 		trusted: update.trusted,

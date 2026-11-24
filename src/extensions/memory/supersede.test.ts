@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { createDecisionSupersedeJudge, findSupersededIds, type SupersedeCandidate } from "./supersede.js"
 
 describe("findSupersededIds", () => {
@@ -33,6 +33,23 @@ describe("findSupersededIds", () => {
 		)
 		expect(seen).toHaveLength(1) // one batched judge call per invocation
 		expect(seen[0]).toHaveLength(2)
+	})
+
+	it("protects authored corrections from passive supersession", async () => {
+		const judge = vi.fn(async () => ["user-edit"])
+		const ids = await findSupersededIds(
+			["the extracted model prefers an older value"],
+			async () => [
+				{
+					id: "user-edit",
+					memory: "Use pnpm",
+					metadata: { version: 1, kind: "semantic", source: "authored" },
+				},
+			],
+			judge,
+		)
+		expect(ids).toEqual([])
+		expect(judge).not.toHaveBeenCalled()
 	})
 
 	it("skips the judge entirely when there are no facts", async () => {

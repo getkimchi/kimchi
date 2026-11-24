@@ -5,7 +5,7 @@
 // the dependencies it needs (manager, params) and returns a plain record
 // suitable for the ACP wire.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { ServerEntry } from "pi-mcp-adapter/types"
 import { type McpProbe, type ProbeResult, SERVER_NAME_PATTERN } from "../../../extensions/mcp/probe.js"
 

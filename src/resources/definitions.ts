@@ -4,6 +4,7 @@ import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { PII_REDACTION_RESOURCE_ID } from "../extensions/pii-redaction/resource.js"
+import { CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID } from "../extensions/prompt-construction/claude-code-instructions-resource.js"
 import { SIDE_CHAT_PILL_RESOURCE_ID } from "../extensions/side-chat/resource.js"
 import { COST_PER_PR_RESOURCE_ID } from "../extensions/work-attribution/resource.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
@@ -86,6 +87,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: "extensions.agents-rules",
+		kind: "extensions",
+		label: "Agent rules",
+		description: "Load project rules from .agents/rules (.mdc files with globs and alwaysApply).",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
 		id: "extensions.ferment",
 		kind: "extensions",
 		label: "Ferment",
@@ -140,6 +149,15 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "Claude Code skills",
 		description: "Load Claude Code skills from .claude/skills into Kimchi's native skill prompt.",
 		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
+		id: CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID,
+		kind: "extensions",
+		label: "Claude Code global instructions",
+		description:
+			"Load your Claude Code global instructions (~/.claude/CLAUDE.md, or $CLAUDE_CONFIG_DIR/CLAUDE.md) into every session's context, before Kimchi's global AGENTS.md.",
+		defaultEnabled: true,
 		restartRequired: true,
 	},
 	{

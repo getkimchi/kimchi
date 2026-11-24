@@ -4,6 +4,7 @@ import {
 	addStalenessPending,
 	CHECKIN_STALENESS_OPENINGS_PER_REQUEST,
 	canOpenStalenessGate,
+	claimGateBlockedWork,
 	disposeCheckinGateSession,
 	dropIrrelevantPending,
 	getEffectivePendingCheckins,
@@ -250,5 +251,40 @@ describe("gate-blocked tool call registry", () => {
 		handleCheckinReplay("s")
 
 		expect(isGateBlockedToolCall("call-1")).toBe(false)
+	})
+
+	it("accumulates blocked-work descriptions while checks are pending and drains once at close", () => {
+		markCheckinPending([GLOBAL_TODO_SCOPE], "s", 1)
+		recordGateBlockedToolCall("s", "call-1", "bash(git status -sb)")
+		recordGateBlockedToolCall("s", "call-2", "write(README.md)")
+
+		// Gate still open: nothing to claim yet, the ledger keeps accumulating.
+		expect(claimGateBlockedWork("s")).toEqual([])
+
+		reconcileCheckinScope(GLOBAL_TODO_SCOPE, "s", 1, "confirm")
+
+		expect(claimGateBlockedWork("s")).toEqual(["bash(git status -sb)", "write(README.md)"])
+		// Drained: the re-issue reminder names each swallowed call exactly once.
+		expect(claimGateBlockedWork("s")).toEqual([])
+	})
+
+	it("keeps the blocked-work ledger while another scope is still pending", () => {
+		markCheckinPending([GLOBAL_TODO_SCOPE, STEP_SCOPE], "s", 1)
+		recordGateBlockedToolCall("s", "call-1", "bash(git status -sb)")
+
+		reconcileCheckinScope(GLOBAL_TODO_SCOPE, "s", 1, "confirm")
+		// The step check still gates work — the reminder belongs to the close
+		// that admits work again.
+		expect(claimGateBlockedWork("s")).toEqual([])
+
+		reconcileCheckinScope(STEP_SCOPE, "s", 1, "confirm")
+		expect(claimGateBlockedWork("s")).toEqual(["bash(git status -sb)"])
+	})
+
+	it("records blocked calls without descriptions for transcript rendering only", () => {
+		recordGateBlockedToolCall("s", "call-1")
+
+		expect(isGateBlockedToolCall("call-1")).toBe(true)
+		expect(claimGateBlockedWork("s")).toEqual([])
 	})
 })

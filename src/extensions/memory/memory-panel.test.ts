@@ -19,19 +19,28 @@ interface Harness {
 	panel: MemoryPanel
 	done: Mock
 	deleteFact: Mock
+	explainFact: Mock
 }
 
-function makePanel(facts: MemoryPanelFact[], deleteFact?: Harness["deleteFact"]): Harness {
+function makePanel(
+	facts: MemoryPanelFact[],
+	deleteFact?: Harness["deleteFact"],
+	explainFact?: Harness["explainFact"],
+	rows = 24,
+): Harness {
 	const done = vi.fn()
 	const resolvedDelete: Harness["deleteFact"] = deleteFact ?? vi.fn(async () => "personal")
+	const resolvedExplain: Harness["explainFact"] =
+		explainFact ?? vi.fn(async () => ["scope=personal · kind=semantic · source=authored", "Support references: 1"])
 	const panel = new MemoryPanel({
 		title: "Memory — test",
 		facts,
 		deleteFact: resolvedDelete,
-		tui: { requestRender: vi.fn(), terminal: { rows: 24 } },
+		explainFact: resolvedExplain,
+		tui: { requestRender: vi.fn(), terminal: { rows } },
 		done,
 	})
-	return { panel, done, deleteFact: resolvedDelete }
+	return { panel, done, deleteFact: resolvedDelete, explainFact: resolvedExplain }
 }
 
 const rendered = (panel: MemoryPanel): string => plain(panel.render(80)).join("\n")
@@ -148,6 +157,66 @@ describe("MemoryPanel", () => {
 			panel.handleInput(key)
 			expect(done).toHaveBeenCalledTimes(1)
 		}
+	})
+
+	it("i opens scoped information and restores the list without changing selection", async () => {
+		const { panel, explainFact } = makePanel([fact("1", "alpha"), fact("2", "beta")])
+		panel.handleInput("\x1b[B")
+		panel.handleInput("i")
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(explainFact).toHaveBeenCalledWith(expect.objectContaining({ id: "2", scopeId: "personal" }))
+		expect(rendered(panel)).toContain("Memory evidence — 2")
+		expect(rendered(panel)).toContain("kind=semantic")
+		expect(rendered(panel)).toContain("Support references: 1")
+
+		panel.handleInput("i")
+		expect(selectedLine(panel)).toContain("beta")
+	})
+
+	it("ignores stale explanation responses after escape", async () => {
+		let resolveInfo: (lines: string[]) => void = () => undefined
+		const pending = new Promise<string[]>((resolve) => {
+			resolveInfo = resolve
+		})
+		const { panel, done } = makePanel(
+			[fact("1", "alpha")],
+			undefined,
+			vi.fn(() => pending),
+		)
+		panel.handleInput("i")
+		panel.handleInput("\x1b")
+		resolveInfo(["late metadata"])
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(rendered(panel)).not.toContain("late metadata")
+		expect(selectedLine(panel)).toContain("alpha")
+		expect(done).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps information rows bounded and valid on tiny terminals", async () => {
+		const { panel } = makePanel([fact("1", "alpha")], undefined, undefined, 3)
+		panel.handleInput("i")
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		const lines = plain(panel.render(0))
+		expect(lines.every((line) => line.length > 0)).toBe(true)
+		expect(plain(panel.render(80)).some((line) => line.includes("Memory evidence"))).toBe(true)
+	})
+
+	it("pages long evidence instead of permanently clipping it", async () => {
+		const evidence = Array.from({ length: 12 }, (_, index) => `evidence-${index}`)
+		const { panel } = makePanel(
+			[fact("1", "alpha")],
+			undefined,
+			vi.fn(async () => evidence),
+			9,
+		)
+		panel.handleInput("i")
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(rendered(panel)).toContain("evidence-0")
+		expect(rendered(panel)).toContain("PgUp/PgDn")
+		panel.handleInput("\x1b[6~")
+		expect(rendered(panel)).toContain("evidence-4")
+		panel.handleInput("\x1b[5~")
+		expect(rendered(panel)).toContain("evidence-0")
 	})
 
 	it("an empty fact list renders the empty state", () => {

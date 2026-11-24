@@ -115,6 +115,7 @@ export interface OnboardingConfig {
 	hideSessionModeDialog?: boolean
 	teleportHelpSeenAt?: string
 	studioOnboardingSeenAt?: string
+	claudeCodeInstructionsNoticeSeenAt?: string
 }
 
 export interface SurveyConfig {
@@ -164,6 +165,28 @@ export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | unde
 		upgraded.maxRetries = maxRetries
 	}
 	return upgraded
+}
+
+/**
+ * Settings written to a brand-new `<agentDir>/settings.json` on first run.
+ *
+ * This is the explicit, visible default set for new users: once the file
+ * exists these values are never rewritten (see the `ensure*` helpers below,
+ * which only fill gaps for files predating a given key). `collapseWork` is
+ * seeded as `"all"` so a fresh install shows "Collapse work: all" in
+ * settings.json and in the `/settings` panel; readers already fall back to
+ * `"all"` when the key is absent, so this only makes the default explicit.
+ */
+export function firstRunSettingsDefaults(): Record<string, unknown> {
+	return {
+		quietStartup: true,
+		theme: "kimchi-minimal",
+		// Deep copy so callers mutating a nested field (e.g.
+		// `retry.provider.timeoutMs`) can't corrupt the shared defaults.
+		retry: structuredClone(RETRY_DEFAULTS),
+		hideThinkingBlock: true,
+		collapseWork: "all",
+	}
 }
 
 /** Seed hideThinkingBlock when absent so Kimchi and upstream pi agree on the default. */
@@ -587,12 +610,17 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 		typeof raw.studioOnboardingSeenAt === "string" && raw.studioOnboardingSeenAt.length > 0
 			? raw.studioOnboardingSeenAt
 			: undefined
+	const claudeCodeInstructionsNoticeSeenAt =
+		typeof raw.claudeCodeInstructionsNoticeSeenAt === "string" && raw.claudeCodeInstructionsNoticeSeenAt.length > 0
+			? raw.claudeCodeInstructionsNoticeSeenAt
+			: undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
 		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
 		...(teleportHelpSeenAt ? { teleportHelpSeenAt } : {}),
 		...(studioOnboardingSeenAt ? { studioOnboardingSeenAt } : {}),
+		...(claudeCodeInstructionsNoticeSeenAt ? { claudeCodeInstructionsNoticeSeenAt } : {}),
 	}
 }
 
@@ -1108,6 +1136,16 @@ export function writeTeleportHelpSeenAt(seenAt: string, configPath?: string): vo
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateOnboardingConfig(path, (onboarding) => {
 		onboarding.teleportHelpSeenAt = seenAt
+	})
+}
+
+export function readClaudeCodeInstructionsNoticeSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.claudeCodeInstructionsNoticeSeenAt
+}
+
+export function writeClaudeCodeInstructionsNoticeSeenAt(seenAt: string, configPath?: string): void {
+	updateOnboardingConfig(configPath ?? KIMCHI_CONFIG_PATH, (onboarding) => {
+		onboarding.claudeCodeInstructionsNoticeSeenAt = seenAt
 	})
 }
 

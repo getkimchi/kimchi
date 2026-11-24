@@ -53,9 +53,9 @@ describe("steer-outcome-watcher", () => {
 
 	it("watch registered without a steer_id still joins via the fire registry fallback", async () => {
 		const { pi, emitted, fire } = makePi()
-		const fireId = emitSteerFired(pi, "review_write_guard", "steer", { sessionId: "session" })
+		const fireId = emitSteerFired(pi, "exploration_guard", "steer", { sessionId: "session" })
 		watchSteerOutcome({
-			kind: "review_write_guard",
+			kind: "exploration_guard",
 			sessionId: "session",
 			interactive: true,
 			windowToolCalls: 3,
@@ -67,7 +67,7 @@ describe("steer-outcome-watcher", () => {
 		// steer_id comes from the fire registry fallback; turns_to_outcome stays
 		// the watcher's own turnsElapsed (explicit shape values win).
 		expect(outcomes(emitted)).toEqual([
-			expect.objectContaining({ kind: "review_write_guard", steer_id: fireId, turns_to_outcome: 0 }),
+			expect.objectContaining({ kind: "exploration_guard", steer_id: fireId, turns_to_outcome: 0 }),
 		])
 	})
 
@@ -142,7 +142,7 @@ describe("steer-outcome-watcher", () => {
 	it("session_shutdown expires every open watch for that session only (ACP isolation)", async () => {
 		const { emitted, fire } = makePi()
 		watchSteerOutcome({ kind: "todo_staleness", sessionId: "s1", interactive: true, classify: () => undefined })
-		watchSteerOutcome({ kind: "review_write_guard", sessionId: "s2", interactive: true, classify: () => undefined })
+		watchSteerOutcome({ kind: "exploration_guard", sessionId: "s2", interactive: true, classify: () => undefined })
 		await fire("session_shutdown", {}, "s1")
 		expect(outcomes(emitted)).toEqual([expect.objectContaining({ kind: "todo_staleness", outcome: "expired" })])
 		// s2's watch is untouched and still live.

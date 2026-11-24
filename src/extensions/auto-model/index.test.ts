@@ -10,7 +10,7 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { MULTI_MODEL_ID, populateCliArgs } from "../../cli-args.js"
+import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
@@ -73,7 +73,6 @@ vi.mock(import("../../config/settings.js"), async (importOriginal) => {
 	}
 })
 
-import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "../kimchi-process.js"
 import autoModelExtension, {
 	_resetAutoModelNoticeCache,
 	createAutoModelRoutingExtension,
@@ -115,14 +114,20 @@ function messageUpdate(message: Partial<Record<string, unknown>>): MessageUpdate
 	} as unknown as MessageUpdateEvent
 }
 
-function routedEntry(requestedId: string, modelId: string): SessionEntry {
+function routedEntry(requestedId: string, modelId: string, routedProvider?: string): SessionEntry {
 	return {
 		type: "custom",
 		id: crypto.randomUUID(),
 		parentId: null,
 		timestamp: new Date().toISOString(),
 		customType: ROUTED_MODEL_RESOLUTION_ENTRY,
-		data: { version: 1, requestedId, provider: "kimchi-dev", modelId },
+		data: {
+			version: 1,
+			requestedId,
+			provider: "kimchi-dev",
+			modelId,
+			...(routedProvider ? { routedProvider } : {}),
+		},
 	}
 }
 
@@ -133,6 +138,15 @@ describe("isRoutedResolutionEntry", () => {
 		if (isRoutedResolutionEntry(entry)) {
 			expect(entry.data).toEqual({ version: 1, requestedId: "auto", provider: "kimchi-dev", modelId: "kimi-k3" })
 		}
+	})
+
+	it("accepts an optional routed provider and rejects a malformed one", () => {
+		const entry = routedEntry("auto", "claude-haiku-5-5", "kimchi-dev/anthropic")
+		expect(isRoutedResolutionEntry(entry)).toBe(true)
+
+		const data = (entry as Extract<SessionEntry, { type: "custom" }>).data as Record<string, unknown>
+		const malformed = { ...(entry as object), data: { ...data, routedProvider: 42 } }
+		expect(isRoutedResolutionEntry(malformed as SessionEntry)).toBe(false)
 	})
 
 	it("rejects other custom types, malformed data, and non-custom entries", () => {
@@ -224,6 +238,24 @@ describe("auto-model extension", () => {
 		expect(setModel).toHaveBeenCalledTimes(1)
 	})
 
+	it("resolves a sibling pick once, not once per streamed update", () => {
+		// The sibling fallback scans the whole catalog, so the dedup guard must
+		// run before resolution: message_update fires per token.
+		const { getHandler, getAppendedEntries } = setup()
+		const target = model("claude-haiku-5-5", { provider: "kimchi-dev/anthropic" })
+		const find = vi.fn(() => undefined)
+		const getAll = vi.fn(() => [target])
+		const c = ctx({ modelRegistry: { find, getAll } })
+		const onMessageUpdate = getHandler<MessageUpdateEvent>("message_update")
+
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+		onMessageUpdate(messageUpdate({ model: "auto-beta", responseModel: "claude-haiku-5-5" }), c as never)
+
+		expect(getAll).toHaveBeenCalledTimes(1)
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toHaveLength(1)
+	})
+
 	it("does not re-cap a model selected while the routed request was in flight", () => {
 		// The user switched from auto to a concrete model while the request was
 		// streaming. The routed response still names kimi-k3; syncing it onto
@@ -266,6 +298,43 @@ describe("auto-model extension", () => {
 		expect(setModel).toHaveBeenCalledTimes(1)
 		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toEqual([
 			{ version: 1, requestedId: "auto-beta", provider: "kimchi-dev", modelId: "kimi-k3" },
+		])
+	})
+
+	it("syncs a pick served by a sibling gateway block", () => {
+		// Regression: claude-* models are registered under `kimchi-dev/anthropic`,
+		// not the request's `kimchi-dev` block. The exact lookup missed them, so
+		// the pick resolved as unknown and the session kept Auto's 16k max output
+		// for its whole life (observed via mitmproxy on every turn).
+		const { getHandler, getAppendedEntries, setModel } = setup()
+		const target = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+		})
+		const c = ctx({ modelRegistry: { find: () => undefined, getAll: () => [target] } })
+
+		getHandler<MessageEndEvent>("message_end")(
+			messageEnd({ model: "auto-beta", responseModel: "claude-haiku-5-5" }),
+			c as never,
+		)
+
+		expect(getAutoRoutingState(SESSION_ID)).toEqual({
+			status: "resolved",
+			model: target,
+			requestedId: "auto-beta",
+		})
+		expect(setModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "auto-beta", contextWindow: 1_000_000, maxTokens: 128_000 }),
+		)
+		expect(getAppendedEntries(ROUTED_MODEL_RESOLUTION_ENTRY)).toEqual([
+			{
+				version: 1,
+				requestedId: "auto-beta",
+				provider: "kimchi-dev",
+				modelId: "claude-haiku-5-5",
+				routedProvider: "kimchi-dev/anthropic",
+			},
 		])
 	})
 
@@ -414,6 +483,59 @@ describe("auto-model extension", () => {
 		expect(setModel).toHaveBeenCalledTimes(1)
 	})
 
+	it("hydrates a persisted pick served by a sibling gateway block", async () => {
+		const { getHandler, setModel } = setup()
+		const target = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+		})
+		const onSessionStart = getHandler<"session_start">("session_start")
+		const c = ctx({
+			modelRegistry: { find: () => undefined, getAll: () => [target] },
+			sessionManager: {
+				getSessionId: () => SESSION_ID,
+				getEntries: () => [routedEntry("auto-beta", "claude-haiku-5-5")],
+			},
+		})
+
+		await onSessionStart({ type: "session_start" } as never, c as never)
+
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({
+			status: "resolved",
+			model: target,
+			requestedId: "auto-beta",
+		})
+		expect(setModel).toHaveBeenCalledTimes(1)
+	})
+
+	it("hydrates using the persisted routed provider", async () => {
+		const { getHandler, setModel } = setup()
+		const target = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+		})
+		const onSessionStart = getHandler<"session_start">("session_start")
+		const c = ctx({
+			// No fallback candidates: hydration must use the recorded provider.
+			modelRegistry: {
+				find: (provider: string, modelId: string) =>
+					provider === "kimchi-dev/anthropic" && modelId === "claude-haiku-5-5" ? target : undefined,
+				getAll: () => [],
+			},
+			sessionManager: {
+				getSessionId: () => SESSION_ID,
+				getEntries: () => [routedEntry("auto-beta", "claude-haiku-5-5", "kimchi-dev/anthropic")],
+			},
+		})
+
+		await onSessionStart({ type: "session_start" } as never, c as never)
+
+		expect(getAutoRoutingState(SESSION_ID)).toMatchObject({ status: "resolved", model: target })
+		expect(setModel).toHaveBeenCalledTimes(1)
+	})
+
 	it("resumed session: the hydrated pick re-seeds dedup so the same response appends nothing", async () => {
 		const { getHandler, getAppendedEntries } = setup()
 		const onSessionStart = getHandler<"session_start">("session_start")
@@ -491,6 +613,50 @@ describe("catalog-driven Auto default (main session)", () => {
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
+	})
+
+	it("treats a startup session file without messages as fresh, as upstream does", async () => {
+		// Upstream restores no model for a session without messages, so a file a
+		// launch wrapper pre-created (or one resumed before any message) is fresh.
+		populateCliArgs([])
+		const sessionFile = join(tempDir, "precreated-session.jsonl")
+		writeFileSync(sessionFile, '{"type":"session"}\n')
+		const { setModel, start } = runSessionStart(autoModelExtension, {
+			sessionManager: {
+				getSessionFile: () => sessionFile,
+				getSessionId: () => SESSION_ID,
+				getEntries: () => [],
+			},
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
+	})
+
+	it("keeps the model of a resumed startup session that has messages", async () => {
+		populateCliArgs([])
+		const sessionFile = join(tempDir, "resumed-session.jsonl")
+		writeFileSync(sessionFile, '{"type":"session"}\n')
+		const { setModel, start } = runSessionStart(autoModelExtension, {
+			sessionManager: {
+				getSessionFile: () => sessionFile,
+				getSessionId: () => SESSION_ID,
+				getEntries: (): SessionEntry[] => [
+					{
+						type: "message",
+						id: "user-1",
+						parentId: null,
+						timestamp: new Date().toISOString(),
+						message: { role: "user", content: "hi", timestamp: Date.now() },
+					},
+				],
+			},
+		})
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
 	})
 
 	it("does not notify when the fresh session already comes up on Auto", async () => {
@@ -625,18 +791,13 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
 		settingsFileStubs.writeConfigSetting.mockClear()
 		settingsFileStubs.readConfigSetting.mockClear()
-		// Pre-branch cohort: settings.json carries multiModel=true (the seeded
-		// factory default), so the gated migration is still owed. Greenfield
+		// No default saved yet, so the gated default is owed. Greenfield
 		// scenarios remove the file per test.
-		seedSettings({ multiModel: true })
+		seedSettings({})
 	})
 
 	function seedSettings(settings: Record<string, unknown>) {
 		writeFileSync(configStubs.settingsPath, JSON.stringify(settings))
-	}
-
-	function readSettings(): Record<string, unknown> {
-		return JSON.parse(readFileSync(configStubs.settingsPath, "utf-8"))
 	}
 
 	/** Registry serving exactly the given kimchi-dev ids (no `auto` unless listed). */
@@ -644,6 +805,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		const served = ids.map((id) => model(id, { name: `Model ${id}` }))
 		return {
 			find: (_p: string, mid: string) => served.find((m) => m.id === mid),
+			getAll: () => served,
 			getAvailable: () => served,
 		}
 	}
@@ -665,73 +827,33 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		}
 	}
 
-	it("installs the served flash model as the persisted default and disables multi-model", async () => {
-		// Pre-state: the session comes up multi-model-enabled (the seeded
-		// global default) — the assertions below must be the outcome of
-		// start(), not residual state.
-		setProcessMultiModelEnabled(SESSION_ID, true)
-		expect(readSettings()).toMatchObject({ multiModel: true })
+	it("installs the served flash model as the persisted default", async () => {
 		const { setModel, ctx, start } = runSessionStart()
 
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
-		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+		// Legacy multi-model settings are inert: start() never writes settings.json.
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			`New sessions start on Model ${DEEPSEEK} (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
 			"info",
 		)
 	})
 
-	it("overwrites settings.json multiModel to false for gated organizations", async () => {
-		// Pre-state: a real settings.json on disk carrying multiModel=true
-		expect(readSettings()).toMatchObject({ multiModel: true })
-		const { start } = runSessionStart()
-
-		await start()
-
-		// Exactly one write in the whole start() run, and the file on disk
-		// really transitioned — nothing outside the gated-overwrite block
-		// could have driven multiModel to false. (The negative-control tests
-		// in this suite pin that non-gated start() paths never write at all.)
-		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledTimes(1)
-		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
-		expect(readSettings()).toMatchObject({ multiModel: false })
-	})
-
-	it("still installs the gated default when the settings.json write fails", async () => {
-		// readJson throws on a corrupt settings.json and writeJson on a
-		// read-only one; the bookkeeping overwrite must never take down
-		// session start.
-		expect(readSettings()).toMatchObject({ multiModel: true })
-		settingsFileStubs.writeConfigSetting.mockImplementationOnce(() => {
-			throw new Error("read-only settings.json")
-		})
-		const { setModel, start } = runSessionStart()
-
-		await start()
-
-		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
-	})
-
 	it("installs the gated default on a first run with no current model", async () => {
 		// Greenfield gated org: no persisted default and NO settings.json at
-		// all — the seeded-default overwrite runs below, so something must be
-		// installed on top of it or the user ends up on nothing.
+		// all — something must be installed or the user ends up on nothing.
 		rmSync(configStubs.settingsPath, { force: true })
 		expect(existsSync(configStubs.settingsPath)).toBe(false)
-		setProcessMultiModelEnabled(SESSION_ID, true)
 		const { setModel, start } = runSessionStart({ model: undefined })
 
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
-		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
-		expect(readSettings()).toMatchObject({ multiModel: false })
 	})
 
 	it("falls back to deepseek-v4-flash-0731 when the canonical slug is unserved", async () => {
-		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { setModel, start } = runSessionStart({
 			modelRegistry: registryServing(["deepseek-v4-flash-0731"]),
 		})
@@ -748,25 +870,14 @@ describe("catalog-driven gated default — orgs without auto", () => {
 			model: model(DEEPSEEK),
 		})
 
-		// Pre-state: the session came up multi-model-enabled and settings.json
-		// still carries multiModel=true, so the disabled state asserted below
-		// is provably the outcome of start().
-		setProcessMultiModelEnabled(SESSION_ID, true)
-		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(true)
-		expect(readSettings()).toMatchObject({ multiModel: true })
-
 		await start()
 
 		expect(setModel).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
-		// The seeded-default overwrite still applies; multi-model is off either way.
-		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
-		expect(readSettings()).toMatchObject({ multiModel: false })
-		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 	})
 
 	it("does not gate organizations that the catalog serves auto to", async () => {
-		expect(readSettings()).toMatchObject({ multiModel: true })
 		const { setModel, start } = runSessionStart({
 			modelRegistry: registryServing(["auto", DEEPSEEK]),
 		})
@@ -774,14 +885,11 @@ describe("catalog-driven gated default — orgs without auto", () => {
 		await start()
 
 		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
-		// On disk the seed is untouched: entitled orgs keep their multi-model flag.
-		expect(readSettings()).toMatchObject({ multiModel: true })
 		// Pre-existing behaviour: fresh sessions roll back to Auto.
 		expect(setModel).toHaveBeenCalledWith(model("auto", { name: "Model auto" }), { persist: true })
 	})
 
-	it("leaves multi-model alone when neither auto nor a flash candidate is served", async () => {
-		expect(readSettings()).toMatchObject({ multiModel: true })
+	it("installs nothing when neither auto nor a flash candidate is served", async () => {
 		const { setModel, start } = runSessionStart({
 			modelRegistry: registryServing(["kimi-k3"]),
 		})
@@ -790,19 +898,13 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 		expect(setModel).not.toHaveBeenCalled()
 		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
-		// On disk the seeded settings.json is untouched.
-		expect(readSettings()).toMatchObject({ multiModel: true })
 	})
 
-	it("respects a deliberate default after the migration — no rollback, no notice", async () => {
-		// Post-migration state: the seed wrote multiModel=false and the user
-		// deliberately switched their default to kimi-k3 afterwards. The gated
-		// default is a one-time migration of the multi-model default, not an
-		// ever-re-forced default — only Auto rolls back on fresh sessions.
+	it("respects a saved default — no rollback, no notice", async () => {
+		// The gated default is installed only while no default is saved; it is
+		// not an ever-re-forced default — only Auto rolls back on fresh sessions.
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		settingsStubs.getDefaultModel.mockReturnValue("kimi-k3")
-		seedSettings({ multiModel: false })
-		expect(readSettings()).toMatchObject({ multiModel: false })
 		// The registry serves the deliberate default too — otherwise the heal
 		// would (correctly) re-derive it as a dead pointer.
 		const { setModel, ctx, start } = runSessionStart({
@@ -813,40 +915,7 @@ describe("catalog-driven gated default — orgs without auto", () => {
 
 		expect(setModel).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
-		// The completed-migration overwrite was a redundant write: the value
-		// was already false, so the file is unchanged.
-		expect(readSettings()).toMatchObject({ multiModel: false })
-	})
-
-	it("migrates a user whose saved default came up as multi-model (multiModel still true)", async () => {
-		// Pre-branch cohort: a concrete defaultModel was persisted (e.g. by
-		// login) but multiModel stayed at the factory default (seeded in
-		// beforeEach), so the session defaulted into multi-model. These are
-		// the users the migration is for.
-		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
-		settingsStubs.getDefaultModel.mockReturnValue("routine")
-		expect(readSettings()).toMatchObject({ multiModel: true })
-		const { setModel, start } = runSessionStart()
-
-		await start()
-
-		expect(setModel).toHaveBeenCalledWith(model(DEEPSEEK, { name: `Model ${DEEPSEEK}` }), { persist: true })
-	})
-
-	it("respects an explicit --multi-model launch choice in a gated org", async () => {
-		populateCliArgs(["--multi-model"])
-		// Pre-state: the beforeEach seed carries multiModel=true, so the seed
-		// overwrite below is a real transition caused by start().
-		expect(readSettings()).toMatchObject({ multiModel: true })
-		const { setModel, start } = runSessionStart()
-
-		await start()
-
-		// Session-level choice wins: no install. The seeded default is still
-		// overwritten — it is not a user choice.
-		expect(setModel).not.toHaveBeenCalled()
-		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
-		expect(readSettings()).toMatchObject({ multiModel: false })
+		expect(settingsFileStubs.writeConfigSetting).not.toHaveBeenCalled()
 	})
 })
 
@@ -865,6 +934,7 @@ describe("self-heal — persisted default no longer served", () => {
 		const served = ids.map((id) => model(id, { name: `Model ${id}` }))
 		return {
 			find: (_p: string, mid: string) => served.find((m) => m.id === mid),
+			getAll: () => served,
 			getAvailable: () => served,
 		}
 	}
@@ -895,12 +965,12 @@ describe("self-heal — persisted default no longer served", () => {
 
 	beforeEach(() => {
 		populateCliArgs([])
-		// The completed gated migration: a dead default with multiModel=false.
-		// gatedDefaultOwed evaluates false here, so without the heal the one-time
-		// migration branch would early-return and the dead default would survive.
+		// A saved default that the catalog no longer serves. gatedDefaultOwed
+		// evaluates false here, so without the heal the gated branch would
+		// early-return and the dead default would survive.
 		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
 		settingsStubs.getDefaultModel.mockReturnValue(DEAD)
-		seedSettings({ multiModel: false, defaultProvider: "kimchi-dev", defaultModel: DEAD })
+		seedSettings({ defaultProvider: "kimchi-dev", defaultModel: DEAD })
 		// No metadata successor unless a test seeds the sidecar.
 		rmSync(join(configStubs.agentConfigDir, "model-deprecations.json"), { force: true })
 	})
@@ -913,7 +983,6 @@ describe("self-heal — persisted default no longer served", () => {
 		expect(setModel).toHaveBeenCalledWith(model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" }), {
 			persist: true,
 		})
-		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			`Default model "${DEAD}" is no longer served and has been replaced. New sessions start on Model deepseek-v4-flash-0731 (the new default). To pick a different model for this session, use your client's model selector (/model in the terminal).`,
 			"info",
@@ -948,13 +1017,46 @@ describe("self-heal — persisted default no longer served", () => {
 		await start()
 
 		expect(setModel).toHaveBeenCalledWith(model("kimi-k3", { name: "Model kimi-k3" }), { persist: true })
-		// The heal also settles multiModel=false on disk — the file-level invariant
-		// holds even when the dead default predates the gated migration.
-		expect(settingsFileStubs.writeConfigSetting).toHaveBeenCalledWith("multiModel", false)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			`Default model "${DEAD}" is no longer served and has been replaced. New sessions start on Model kimi-k3 (the new default). Details: https://kimchi.dev/deprecations/deepseek-v4-flash To pick a different model for this session, use your client's model selector (/model in the terminal).`,
 			"info",
 		)
+	})
+
+	it("heals to a metadata-declared successor served by a sibling gateway block", async () => {
+		seedDeprecations({ [DEAD]: { replacement_model: "claude-haiku-5-5" } })
+		const successor = model("claude-haiku-5-5", {
+			provider: "kimchi-dev/anthropic",
+			name: "Model claude-haiku-5-5",
+		})
+		const { setModel, start } = runSessionStart({
+			modelRegistry: { find: () => undefined, getAll: () => [successor] },
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(successor, { persist: true })
+	})
+
+	it("skips a metadata successor this machine cannot authenticate", async () => {
+		// setModel gates on configured auth: a Codex-block successor without a
+		// ChatGPT login fails silently and would block the policy heirs.
+		seedDeprecations({ [DEAD]: { replacement_model: "codex-model" } })
+		const codex = model("codex-model", { provider: "kimchi-dev/openai-codex", name: "Model codex-model" })
+		const flash = model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" })
+		const { setModel, ctx, start } = runSessionStart({
+			modelRegistry: {
+				find: () => undefined,
+				getAll: () => [codex],
+				getAvailable: () => [flash],
+				hasConfiguredAuth: (candidate) => candidate.provider !== "kimchi-dev/openai-codex",
+			},
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(flash, { persist: true })
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Model deepseek-v4-flash-0731"), "info")
 	})
 
 	it("walks the declared alternatives until one is served", async () => {
@@ -994,8 +1096,7 @@ describe("self-heal — persisted default no longer served", () => {
 		expect(setModel).toHaveBeenCalledWith(model("glm-5.3", { name: "Model glm-5.3" }), { persist: true })
 	})
 
-	it("clears the dead default without re-enabling multi-model when no catalog model is served", async () => {
-		setProcessMultiModelEnabled(SESSION_ID, false)
+	it("clears the dead default when no catalog model is served", async () => {
 		const { setModel, ctx, start } = runSessionStart({
 			modelRegistry: registryServing([]),
 		})
@@ -1003,42 +1104,36 @@ describe("self-heal — persisted default no longer served", () => {
 		await start()
 
 		expect(setModel).not.toHaveBeenCalled()
-		// The dead pointer is dropped from the file and multi-model stays
-		// disabled: the heal never re-enables it — its removal is planned.
-		expect(readSettings()).toEqual({ multiModel: false })
-		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(false)
+		// The dead pointer is dropped from the file.
+		expect(readSettings()).toEqual({})
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			`Default model "${DEAD}" is no longer served and has been cleared. To pick a model for this session, use your client's model selector (/model in the terminal).`,
 			"info",
 		)
 	})
 
-	it("does not treat the multi-model sentinel default as dead — the migration owns it", async () => {
-		// A persisted defaultModel of the multi-model sentinel is the factory
-		// state the gated migration exists to convert, not a dead pointer; the
-		// heal must leave it to the migration branch.
-		settingsStubs.getDefaultModel.mockReturnValue(MULTI_MODEL_ID)
-		// Factory state: the sentinel default with multiModel still enabled —
-		// exactly the pre-branch cohort the gated migration converts.
-		seedSettings({ multiModel: true, defaultProvider: "kimchi-dev", defaultModel: MULTI_MODEL_ID })
-		setProcessMultiModelEnabled(SESSION_ID, true)
+	it("heals a legacy multi-model default like any other dead default", async () => {
+		settingsStubs.getDefaultModel.mockReturnValue("multi-model")
+		seedSettings({ multiModel: true, defaultProvider: "kimchi-dev", defaultModel: "multi-model" })
 		const { setModel, ctx, start } = runSessionStart()
 
 		await start()
 
-		// Installed by the one-time migration, not the heal: no dead-default notice.
 		expect(setModel).toHaveBeenCalledWith(model("deepseek-v4-flash-0731", { name: "Model deepseek-v4-flash-0731" }), {
 			persist: true,
 		})
-		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining(`"${DEAD}" is no longer served`), "info")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining('Default model "multi-model" is no longer served'),
+			"info",
+		)
 	})
 
 	it("leaves a dead non-kimchi default to upstream's fallback", async () => {
 		// Heal remedies are kimchi-dev models; a dead default from another
-		// provider is not healed onto them (and never flips multiModel).
+		// provider is not healed onto them.
 		settingsStubs.getDefaultProvider.mockReturnValue("anthropic")
 		settingsStubs.getDefaultModel.mockReturnValue("claude-opus-4-8")
-		seedSettings({ multiModel: false, defaultProvider: "anthropic", defaultModel: "claude-opus-4-8" })
+		seedSettings({ defaultProvider: "anthropic", defaultModel: "claude-opus-4-8" })
 		const { setModel, ctx, start } = runSessionStart()
 
 		await start()
@@ -1077,11 +1172,52 @@ describe("self-heal — persisted default no longer served", () => {
 		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "reload" }, c)
 
 		expect(extension.setModel).not.toHaveBeenCalled()
-		expect(readSettings()).toMatchObject({ defaultModel: DEAD, multiModel: false })
+		expect(readSettings()).toMatchObject({ defaultModel: DEAD })
 	})
 })
 
 describe("main-session CLI model selection", () => {
+	beforeEach(() => {
+		settingsStubs.getDefaultModel.mockReturnValue(undefined)
+		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
+	})
+
+	/** Fires a main-session session_start on kimi-k2.5 with Auto in the catalog. */
+	async function startSession(reason: "startup" | "new") {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const autoModel = model("auto", { name: "Auto" })
+		const c = createContext({
+			model: model("kimi-k2.5"),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => autoModel },
+		})
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason }, c)
+		return { setModel: extension.setModel, autoModel }
+	}
+
+	// --model is the only launch option that keeps a fresh session off Auto, and
+	// it holds for the launch session and every /new or /clear (reason "new").
+	for (const reason of ["startup", "new"] as const) {
+		it(`keeps an explicit --model on a fresh ${reason} session`, async () => {
+			populateCliArgs(["--model", "kimi-k2.5"])
+
+			const { setModel } = await startSession(reason)
+
+			expect(setModel).not.toHaveBeenCalled()
+		})
+
+		for (const args of [["--models", "kimchi-dev/auto,kimchi-dev/kimi-k2.5"], []]) {
+			it(`installs Auto on a fresh ${reason} session launched with [${args.join(" ")}]`, async () => {
+				populateCliArgs(args)
+
+				const { setModel, autoModel } = await startSession(reason)
+
+				expect(setModel).toHaveBeenCalledWith(autoModel, { persist: true })
+			})
+		}
+	}
+
 	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
 		populateCliArgs(["--model", "kimchi-dev/auto"])
 		const extension = createExtensionApi()

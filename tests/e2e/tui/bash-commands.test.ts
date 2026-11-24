@@ -41,17 +41,27 @@ test("Bash uses one descriptive header like Grep and expands the submitted comma
 			terminal.submit("Compare the tool cards")
 			await waitForText(terminal, "Card comparison complete.", { full: false })
 			const collapsed = viewText(terminal)
-			expect(collapsed).toContain('● Grep "card-output"')
-			expect(collapsed).toContain("● Bash Check card output")
-			expect(collapsed.match(/Check card output/g)).toHaveLength(1)
-			expect(collapsed).toContain("└─ Exited 0")
+			// Completed work folds into one "Worked for" row: neither tool row is
+			// repeated in the collapsed transcript.
+			expect(collapsed).toContain("Worked for")
+			expect(collapsed).toContain("searched for 1 pattern")
+			expect(collapsed).toContain("ran 1 operation")
+			// Duplicate-row regressions are the most likely failure of this feature:
+			// each tool row must appear exactly zero times while folded...
+			expect(collapsed.match(/● Grep "card-output"/g) ?? []).toHaveLength(0)
+			expect(collapsed.match(/● Bash Check card output/g) ?? []).toHaveLength(0)
 			expect(collapsed).not.toContain(command)
 			expect(collapsed).not.toMatch(/Command [a-f0-9-]{36}/)
-			trace.step("Grep and Bash share one status-dot header with branched results")
+			trace.step("Grep and Bash fold into one Worked-for row")
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, command, { full: false })
-			expect(viewText(terminal).match(/Check card output/g)).toHaveLength(1)
-			expect(viewText(terminal)).toMatch(/Command [a-f0-9-]{36}/)
+			const expanded = viewText(terminal)
+			// ...and exactly once after expanding.
+			expect(expanded.match(/● Grep "card-output"/g) ?? []).toHaveLength(1)
+			expect(expanded.match(/● Bash Check card output/g) ?? []).toHaveLength(1)
+			expect(expanded.match(/Check card output/g)).toHaveLength(1)
+			expect(expanded).toContain("└─ Exited 0")
+			expect(expanded).toMatch(/Command [a-f0-9-]{36}/)
 			trace.step("expansion shows the command and handle without repeating the title")
 		},
 	)
@@ -279,13 +289,19 @@ test("inspect a running Bash command without interrupting it or asking the model
 
 			await waitForText(terminal, "The command is still running", { full: false, timeoutMs: 20_000 })
 			expect(requests()).toHaveLength(2)
-			expect(fullText(terminal).match(/● Bash Inspect streaming command/g)).toHaveLength(1)
+			// The handed-off command's call row folds into the run summary; its live
+			// output and identity stay visible through the Bash Control row.
+			expect(viewText(terminal)).toContain("Working")
 			expect(viewText(terminal)).not.toContain("Snapshot at check-in")
-			expect(viewText(terminal).match(/Inspect streaming command/g)).toHaveLength(1)
 			expect(viewText(terminal)).not.toMatch(/Command [a-f0-9-]{36}/)
 			expect(viewText(terminal)).not.toContain("cat initial.txt")
 			trace.step("same command streams output during the control wait")
 			const inputBeforeInspection = editorRow()
+			// Expand the folded run so the streaming output keeps its scroll position
+			// above the /processes menu (folding compresses the transcript).
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, "cat initial.txt", { full: false })
+			trace.step("expanded run reveals the submitted script")
 
 			terminal.submit("/processes")
 			await waitForText(terminal, "Enter inspect", { full: false })

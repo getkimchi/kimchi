@@ -1,18 +1,22 @@
 import { createCodemodeExtension, type ExtensionAPI, type ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { isDefaultToolEnabled } from "../../settings-watcher.js"
+import { createCodemodeOutcomeTracker } from "./outcome.js"
+import { CODEMODE_PURPOSE_MAX_CHARS } from "./purpose.js"
 
 /** Selection rule shown at the moment of tool choice. Codemode pays off when
  *  intermediate output can be filtered before it reaches the model, or when
  *  later arguments follow mechanically from earlier results; independent calls
  *  whose full results are needed already cost one round as direct parallel calls.
  *  The grep line format (pi's grep tool) is what a chaining script must parse. */
-export const CODEMODE_SELECTION_GUIDANCE =
-	"Use to filter large output before it reaches the model, or to chain calls whose arguments follow mechanically from earlier results. For independent calls whose full results you need, call tools directly in one turn. Nested grep resolves to `path:line: text` lines."
+export const CODEMODE_SELECTION_GUIDANCE = `Use to filter large results before they reach you, or to chain calls whose arguments depend on earlier results. For independent calls whose full results you need, call tools directly in one turn. Nested grep output uses \`path:line: text\`.
+
+Start every script with a purpose line: \`// @description: <short purpose>\` (one line, maximum ${CODEMODE_PURPOSE_MAX_CHARS} characters). Source order: \`@options\` when used → \`// @description: <short purpose>\` → executable code.`
 
 /** Decorate Pi's dynamic tool description without replacing its execution or loadout logic. */
 export function createGuidedCodemodeExtension(): ExtensionFactory {
 	const upstream = createCodemodeExtension()
 	return (pi) => {
+		const outcomes = createCodemodeOutcomeTracker()
 		const registerTool: ExtensionAPI["registerTool"] = (tool) => {
 			if (tool.name !== "codemode") return pi.registerTool(tool)
 			pi.registerTool({
@@ -25,6 +29,20 @@ export function createGuidedCodemodeExtension(): ExtensionFactory {
 				// Selection rule conditioned on it — silently vanished. Activate
 				// at registration instead.
 				defaultActive: true,
+				async execute(toolCallId, params, signal, onUpdate, ctx) {
+					outcomes.begin(ctx, toolCallId)
+					let completed = false
+					try {
+						const result = await tool.execute(toolCallId, params, signal, onUpdate, ctx)
+						const contextReduction = outcomes.complete(ctx, toolCallId, result)
+						completed = true
+						// No details object: nothing to attach to, so the renderer shows no estimate.
+						if (!result.details || typeof result.details !== "object") return result
+						return { ...result, details: { ...result.details, contextReduction } }
+					} finally {
+						if (!completed) outcomes.discard(ctx, toolCallId)
+					}
+				},
 				prepareLoadout(loadout) {
 					// Called on the original definition so pi's receiver is preserved.
 					const changes = tool.prepareLoadout?.(loadout)
@@ -60,5 +78,9 @@ export function createGuidedCodemodeExtension(): ExtensionFactory {
 			if (!active.includes("codemode")) return
 			pi.setActiveTools(active.filter((name) => name !== "codemode"))
 		})
+		pi.on("tool_execution_start", (event, ctx) => outcomes.nestedStart(ctx, event))
+		pi.on("tool_execution_end", (event, ctx) => outcomes.nestedEnd(ctx, event))
+		pi.on("agent_end", (_event, ctx) => outcomes.discard(ctx))
+		pi.on("session_shutdown", (_event, ctx) => outcomes.discard(ctx))
 	}
 }

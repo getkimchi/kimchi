@@ -14,7 +14,6 @@
  * builders — same pattern as src/integrations/cursor.ts. The Bun-runtime
  * acceptance check is `pnpm run memory:check` (backend.check.ts).
  */
-import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Memory as Mem0Memory, MemoryConfig } from "mem0ai/oss"
 import {
@@ -23,7 +22,10 @@ import {
 	resolveGatewayCredentials,
 } from "../../auth/gateway-credentials.js"
 import { type KimchiConfig, loadConfig } from "../../config.js"
+import { defaultMemoryDir, MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
+import { mergeRecallSignal } from "./deadline.js"
 import type { SharedEmbedder } from "./embedder.js"
+import { type MemoryMetadata, readMemoryMetadata } from "./metadata.js"
 import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 
 /**
@@ -43,6 +45,7 @@ export interface Mem0SearchHit {
 	id: string
 	memory: string
 	score?: number
+	metadata?: MemoryMetadata
 }
 
 /**
@@ -57,11 +60,19 @@ export function normalizeMem0SearchResults(raw: unknown): Mem0SearchHit[] {
 		id?: string
 		memory?: string
 		score?: number
+		metadata?: unknown
 	}>
-	return list.filter(
-		(r): r is { id: string; memory: string; score?: number } =>
-			typeof r.id === "string" && typeof r.memory === "string",
-	)
+	return list
+		.filter(
+			(r): r is { id: string; memory: string; score?: number; metadata?: unknown } =>
+				typeof r.id === "string" && typeof r.memory === "string",
+		)
+		.map((r) => ({
+			id: r.id,
+			memory: r.memory,
+			...(r.score !== undefined ? { score: r.score } : {}),
+			...(r.metadata !== undefined ? { metadata: readMemoryMetadata(r.metadata, r.memory) } : {}),
+		}))
 }
 
 /**
@@ -129,6 +140,9 @@ async function fetchAvailableModelIds(
 	}
 }
 
+import { elapsedRequestMs, requestCancellationMetadata } from "./timing.js"
+import { recordUsage } from "./usage-ledger.js"
+
 export const MEMORY_EMBEDDING_TAG = "memory:embedding"
 
 /**
@@ -169,6 +183,9 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 		const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input?.url ?? "")
 		const state = gatewayInterceptorState
 		if (!state.origin || requestOrigin(url) !== state.origin) return original(input, init)
+		const startedAt = performance.now()
+		const providedSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
+		let signal = mergeRecallSignal(providedSignal)
 		// Headers: only the SSO org routing value, only when missing — a
 		// models.json-stamped provider request keeps its own (identical) value.
 		let headers: Headers | undefined
@@ -176,20 +193,52 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 			headers = new Headers(init?.headers)
 			if (!headers.has(GATEWAY_ORGANIZATION_HEADER)) headers.set(GATEWAY_ORGANIZATION_HEADER, state.organizationId)
 		}
+		// The embedding model id from the tagged request body (the local usage
+		// ledger row's model field).
+		let embeddingModel: string | undefined
+		if (url.includes("/embeddings")) {
+			// The OpenAI SDK default is a ~10-minute per-attempt timeout and
+			// mem0's embedder constructor never sets one (see OpenAIEmbedder in
+			// mem0ai/oss), and the SDK *does* pass its per-request signal — so
+			// MERGE, don't replace (the bound needs to win over the default,
+			// and replacing would break the SDK's own retry semantics). One
+			// hung gateway socket otherwise parks a capture drain for tens of
+			// minutes — long past any external driver abort point. Scope
+			// the bound to embedding requests only: gateway session LLM traffic
+			// on the same origin needs its longer stream budgets.
+			signal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(MEMORY_REQUEST_TIMEOUT_MS)])
+		}
 		if (url.includes("/embeddings") && init?.body) {
+			let body: (Record<string, unknown> & { tags?: string[] }) | undefined
 			try {
-				const body = JSON.parse(String(init.body)) as Record<string, unknown> & { tags?: string[] }
+				body = JSON.parse(String(init.body)) as Record<string, unknown> & { tags?: string[] }
+			} catch {
+				// Not a JSON body — use the original payload below.
+			}
+			if (body) {
 				const tags = Array.isArray(body.tags) ? [...body.tags] : []
 				if (!tags.includes(MEMORY_EMBEDDING_TAG)) tags.push(MEMORY_EMBEDDING_TAG)
+				if (typeof body.model === "string") embeddingModel = body.model
 				const taggedBody = JSON.stringify({ ...body, tags })
-				return headers
-					? original(input, { ...init, headers, body: taggedBody })
-					: original(input, { ...init, body: taggedBody })
-			} catch {
-				// Not a JSON body — pass through untouched
+				try {
+					const response = await (headers
+						? original(input, { ...init, headers, body: taggedBody, signal })
+						: original(input, { ...init, body: taggedBody, signal }))
+					return recordEmbeddingUsage(url, embeddingModel, response, elapsedRequestMs(startedAt))
+				} catch (error) {
+					logEmbeddingNetworkError(embeddingModel, error, startedAt)
+				}
 			}
 		}
-		return headers ? original(input, { ...init, headers }) : original(input, init)
+		try {
+			const response = await (headers
+				? original(input, { ...init, headers, signal })
+				: original(input, { ...init, signal }))
+			return recordEmbeddingUsage(url, embeddingModel, response, elapsedRequestMs(startedAt))
+		} catch (error) {
+			if (url.includes("/embeddings")) logEmbeddingNetworkError(embeddingModel, error, startedAt)
+			throw error
+		}
 	}
 	intercepted._memoryGatewayIntercepted = true
 	globalThis.fetch = intercepted
@@ -203,18 +252,47 @@ function requestOrigin(url: string): string | undefined {
 	}
 }
 
-export function defaultMemoryDir(): string {
-	return join(homedir(), ".config", "kimchi", "memory")
+/** Storage paths live in config.ts (config is backend's dependency direction); re-exported for existing importers. */
+export { defaultMemoryDir, memoryDbPath } from "./config.js"
+
+/** Record the local usage-ledger row for a gateway embedding response.
+ * Usage is read from a CLONE so the SDK's consumer still gets the body;
+ * the clone is read asynchronously so the interceptor never blocks the
+ * embedding on ledger I/O. Fail-soft by contract (see usage-ledger.ts):
+ * recording must never break an embedding. */
+function recordEmbeddingUsage(
+	url: string,
+	model: string | undefined,
+	response: Response,
+	durationMs: number,
+): Response {
+	if (!url.includes("/embeddings")) return response
+	if (!response.ok) {
+		recordUsage({ kind: "embedding", model, failed: true, durationMs })
+		return response
+	}
+	response
+		.clone()
+		.json()
+		.then((parsed) => {
+			const usage = parsed as { usage?: { prompt_tokens?: number; total_tokens?: number } }
+			recordUsage({ kind: "embedding", model, inputTokens: usage.usage?.prompt_tokens, durationMs })
+		})
+		.catch(() => {
+			// Non-JSON or unreadable clone — nothing to record; the original
+			// response is returned intact either way.
+		})
+	return response
 }
 
-/** Scope ids interpolate into filesystem paths — allowlist strictly. */
-const SCOPE_ID_RE = /^[a-z0-9-]+$/
-
-export function memoryDbPath(scopeId: string): string {
-	if (!SCOPE_ID_RE.test(scopeId)) {
-		throw new Error(`invalid memory scope id: ${JSON.stringify(scopeId)} (allowed: ${SCOPE_ID_RE})`)
-	}
-	return join(defaultMemoryDir(), scopeId, "memory.db")
+function logEmbeddingNetworkError(model: string | undefined, error: unknown, startedAt: number): void {
+	recordUsage({
+		kind: "embedding",
+		model,
+		failed: true,
+		durationMs: elapsedRequestMs(startedAt),
+		...requestCancellationMetadata(error),
+	})
 }
 
 /**
@@ -233,8 +311,7 @@ export function projectDbPath(scopeId: string): string {
 /**
  * History DB path: the same .kimchi memory directory as the vector store.
  * mem0's default is a cwd-relative memory.db — unconfigured, concurrent
- * sessions collide on it and local runs litter the cwd (both seen in the
- * benchmark investigation).
+ * sessions collide on it and local runs litter the cwd.
  */
 export function historyDbPath(dbPath: string): string {
 	return dbPath.endsWith(".db") ? `${dbPath.slice(0, -3)}-history.db` : `${dbPath}-history.db`
@@ -253,11 +330,10 @@ export interface EmbeddingEndpointConfig extends MemoryEndpointConfig {
 
 /**
  * Embedding endpoint: the kimchi gateway with the open-weight model
- * (bge-m3 at 1024 dims — the phase-1 embedding study's choice) as the
- * default. The model and dimensions are user-configurable via the config
- * file (memoryEmbedding.model / memoryEmbedding.dims in
- * ~/.config/kimchi/config.json); env-var configuration was deliberately
- * removed after the phase-1 A/B runs. The pair must move together — the
+ * (bge-m3 at 1024 dims) as the default. The model and dimensions are
+ * user-configurable via the config file (memoryEmbedding.model /
+ * memoryEmbedding.dims in ~/.config/kimchi/config.json); env-var
+ * configuration was deliberately removed. The pair must move together — the
  * vector store schema is built from the dims. Programmatic overrides
  * (tests, check scripts) win per-field.
  */
@@ -342,6 +418,10 @@ export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiC
 				model: llm.model,
 				apiKey: llm.apiKey,
 				baseURL: llm.baseURL,
+				// mem0's OpenAILLM/OpenAIStructuredLLM thread config.timeout into
+				// the SDK client (see mem0ai/oss); same bound as the fetch
+				// interceptor for the embedder path.
+				timeout: MEMORY_REQUEST_TIMEOUT_MS,
 			},
 		},
 		vectorStore: {

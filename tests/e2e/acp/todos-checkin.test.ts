@@ -8,7 +8,7 @@
 // nothing — with the gate state published under plan `_meta["kimchi.dev"]`.
 
 import { setTimeout as delay } from "node:timers/promises"
-import type { Plan } from "@agentclientprotocol/sdk"
+import type { Plan } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession } from "./support/scenarios.js"
@@ -117,7 +117,7 @@ describe("ACP integration — todo closure and check-in gate", () => {
 		// Prompt 1: create + plan. The write reconciles the list for this
 		// input, so the text-only settle needs no cleanup continuation.
 		let result = await Promise.race([
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Create a pending todo to publish after approval. Do no task work." }],
 			}),
@@ -131,7 +131,7 @@ describe("ACP integration — todo closure and check-in gate", () => {
 		// Prompt 2: no work tools anywhere in the request — the once-per-request
 		// cleanup continuation still fires for the dangling deferred todo.
 		result = await Promise.race([
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Just repeat the total; do not call tools or publish." }],
 			}),
@@ -163,7 +163,7 @@ describe("ACP integration — todo closure and check-in gate", () => {
 		// write (the gate releases), then works, then answers. The reconciled
 		// list needs no extra cleanup continuation.
 		result = await Promise.race([
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Check the total with printf; the publishing plan is unchanged." }],
 			}),
@@ -265,7 +265,7 @@ describe("ACP integration — gated-input revision supersession", () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 
 		let result = await Promise.race([
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Verify the input and keep the list accurate." }],
 			}),
@@ -274,7 +274,7 @@ describe("ACP integration — gated-input revision supersession", () => {
 		expect(result.stopReason).toBe("end_turn")
 
 		result = await Promise.race([
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Now do it differently." }],
 			}),
@@ -286,7 +286,7 @@ describe("ACP integration — gated-input revision supersession", () => {
 		expect(bodies.some((body) => body.includes("check-in pending (input revision 2)"))).toBe(true)
 
 		result = await Promise.race([
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Actually, redo it the new way instead." }],
 			}),
@@ -371,7 +371,7 @@ describe("ACP integration — staleness escalation", () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 
 		const result = await Promise.race([
-			fixture.conn.prompt({
+			fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Do the long task. Keep the todo list accurate as you go." }],
 			}),

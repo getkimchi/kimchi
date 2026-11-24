@@ -28,9 +28,11 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	return {
 		...actual,
 		DefaultResourceLoader: CapturingResourceLoader,
-		createAgentSession: async (options: { resourceLoader?: { getAppendSystemPrompt(): string[] } }) => {
-			if (options?.resourceLoader) capturedSessionLoaders.push(options.resourceLoader)
-			return { session: { sessionId: "stubbed-session" } } as never
+		createAgentSession: async (options: NonNullable<Parameters<typeof actual.createAgentSession>[0]>) => {
+			if (options.resourceLoader) capturedSessionLoaders.push(options.resourceLoader)
+			// Metadata wiring remains stubbed, but the server's post-create OAuth
+			// binding requires the real modelRuntime it supplied to this factory.
+			return { session: { sessionId: "stubbed-session", modelRuntime: options.modelRuntime } } as never
 		},
 	}
 })

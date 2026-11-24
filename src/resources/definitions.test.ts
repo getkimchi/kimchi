@@ -70,6 +70,17 @@ describe("resource definitions", () => {
 		})
 	})
 
+	it("registers Claude Code global instructions as an extension, on by default", () => {
+		const resource = getResourceDefinitions().find((r) => r.id === "extensions.claude-code-instructions")
+		expect(resource).toMatchObject({
+			kind: "extensions",
+			label: "Claude Code global instructions",
+			defaultEnabled: true,
+			restartRequired: true,
+			description: expect.stringContaining("~/.claude/CLAUDE.md"),
+		})
+	})
+
 	it("registers bash-tool-guard as a toggleable extension", () => {
 		const resources = getResourceDefinitions()
 		const resource = resources.find((r) => r.id === "extensions.bash-tool-guard")
@@ -148,6 +159,18 @@ describe("resource definitions", () => {
 			defaultEnabled: false,
 			restartRequired: true,
 			description: expect.stringContaining("/workflow"),
+		})
+	})
+
+	it("registers agent rules as a default-on, restart-gated extension", () => {
+		const resource = getResourceDefinitions().find((candidate) => candidate.id === "extensions.agents-rules")
+
+		expect(resource).toMatchObject({
+			kind: "extensions",
+			label: "Agent rules",
+			defaultEnabled: true,
+			restartRequired: true,
+			description: expect.stringContaining(".agents/rules"),
 		})
 	})
 })

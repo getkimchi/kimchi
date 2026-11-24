@@ -58,10 +58,14 @@ const commitRows = (agentDir: string) =>
 			rewrittenFrom: typeof row.rewrittenFrom === "string" ? row.rewrittenFrom : undefined,
 		}))
 
-async function run(command: string, cwd = repository): Promise<number | null> {
+async function run(
+	command: string,
+	cwd = repository,
+	onData: (data: Buffer) => void = () => {},
+): Promise<number | null> {
 	return (
 		await createCommitTrackingOperations((commit) => commits.push(commit)).exec(command, cwd, {
-			onData: () => {},
+			onData,
 			env: { ...process.env },
 		})
 	).exitCode
@@ -238,8 +242,8 @@ fs.writeFileSync(${JSON.stringify(sizePath)}, String(fs.statSync(process.env.${v
 	})
 
 	it.each([
-		"maintenance run --auto --no-detach --task=gc",
-		"gc --auto --no-detach",
+		"maintenance run --auto --task=gc",
+		"gc --auto",
 	])("records a commit while Git %s is running", async (maintenance) => {
 		// Two packs trigger auto-GC without relying on Git's loose-object sampling.
 		for (const message of ["base", "second"]) {
@@ -265,9 +269,13 @@ done
 `,
 			{ mode: 0o700 },
 		)
+		// A detached gc outlives `wait` and keeps writing into .git while afterEach removes it.
+		// gc.autoDetach exists in every Git; --detach/--no-detach do not.
+		let output = ""
 		expect(
-			await run(`
-git ${maintenance} &
+			await run(
+				`
+git -c gc.autoDetach=false ${maintenance} &
 maintenance_pid=$!
 finish() { touch ${release}; wait "$maintenance_pid"; }
 trap finish EXIT
@@ -282,10 +290,16 @@ commit_result=$?
 touch ${release}
 wait "$maintenance_pid" || exit 1
 exit "$commit_result"
-`),
+`,
+				repository,
+				(data) => {
+					output += data.toString()
+				},
+			),
 		).toBe(0)
+		expect(output).not.toContain("in background")
 		expect(commits.map((commit) => commit.sha)).toEqual([git(repository, "rev-parse", "HEAD")])
-	})
+	}, 15_000)
 
 	it("does not record failed commits or dry runs", async () => {
 		git(repository, "commit", "--allow-empty", "-m", "base")

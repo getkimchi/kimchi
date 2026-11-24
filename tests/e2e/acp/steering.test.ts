@@ -12,7 +12,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
-import type { ContentChunk } from "@agentclientprotocol/sdk"
+import type { ContentChunk } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, waitForSessionUpdate } from "./support/scenarios.js"
@@ -68,7 +68,7 @@ describe("ACP integration — injected steer echo", () => {
 
 	it("echoes an injected steer to the client as a user_message_chunk", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "run echo" }],
 		})
@@ -78,7 +78,7 @@ describe("ACP integration — injected steer echo", () => {
 
 		// Enqueue a steer mid-turn via the extension method, then wait for pi to
 		// inject it (queue shrinks → user_message_chunk echo appears).
-		const steerResult = (await fixture.conn.extMethod(STEER_METHOD, {
+		const steerResult = (await fixture.conn.request(STEER_METHOD, {
 			sessionId,
 			prompt: "Actually, skip the rest and wrap up.",
 		})) as { status: string }
@@ -136,13 +136,13 @@ describe("ACP integration — /skill: steer echo", () => {
 		)
 
 		const sessionId = await newSession(fixture, fixture.workDir)
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "run echo" }],
 		})
 		await waitForSessionUpdate(fixture, sessionId, (u) => u.sessionUpdate === "agent_message_chunk")
 
-		const steerResult = (await fixture.conn.extMethod(STEER_METHOD, {
+		const steerResult = (await fixture.conn.request(STEER_METHOD, {
 			sessionId,
 			prompt: "/skill:e2e-steer-skill wrap up now",
 		})) as { status: string }
@@ -203,18 +203,18 @@ describe("ACP integration — cancel drops queued steers", () => {
 
 	it("notifies queue_dropped and emits no phantom user message chunks", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "go" }],
 		})
 
 		await waitForSessionUpdate(fixture, sessionId, (u) => u.sessionUpdate === "agent_message_chunk")
 
-		await fixture.conn.extMethod(STEER_METHOD, { sessionId, prompt: "never injected" })
+		await fixture.conn.request(STEER_METHOD, { sessionId, prompt: "never injected" })
 		// Give the queue_update a beat to be processed server-side.
 		await delay(100)
 
-		await fixture.conn.cancel({ sessionId })
+		await fixture.conn.notify("session/cancel", { sessionId })
 
 		const result = await Promise.race([
 			promptPromise,

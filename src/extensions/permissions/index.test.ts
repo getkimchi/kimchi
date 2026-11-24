@@ -32,11 +32,14 @@ import { createModel, createModelRegistry } from "../__mocks__/model-registry.js
 import { seedOrgPolicy } from "../__mocks__/org-policy.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { BUILTIN_TOOL_NAMES } from "../agents/personas/agent-types.js"
+import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
 import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
+import { isIdeConnected } from "../ide-adapter/index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
@@ -48,12 +51,22 @@ import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-at
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
-import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
+import permissionsExtension, {
+	checkCompoundCommand,
+	createPermissionsExtension,
+	createWorkerPermissionsExtension,
+	getPermissionsExtensionOptions,
+	handleCompoundConfirm,
+	notifyFermentActive,
+	type PermissionsExtensionOptions,
+} from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from "./mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
+import { getPermissionPolicySource } from "./policy-source-registry.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
+import { isReadOnlyTool } from "./taxonomy.js"
 
 vi.mock("../remote-run/runner.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../remote-run/runner.js")>()
@@ -259,6 +272,7 @@ function createPermissionsHarness(
 	toolNames: string[],
 	flags: Record<string, boolean | string | undefined> = {},
 	initialActiveTools: string[] = toolNames,
+	extension: ((pi: ExtensionAPI) => void) | PermissionsExtensionOptions = permissionsExtension,
 ) {
 	populateCliArgs(Object.entries(flags).flatMap(([name, value]) => (value === undefined ? [] : [`--${name}=${value}`])))
 	const handlers = new Map<string, ExtensionHandler[]>()
@@ -293,7 +307,8 @@ function createPermissionsHarness(
 		events,
 	} as unknown as ExtensionAPI
 
-	permissionsExtension(pi)
+	if (typeof extension === "function") extension(pi)
+	else createPermissionsExtension(extension)(pi)
 
 	return {
 		pi,
@@ -334,6 +349,74 @@ async function submitPlan(
 	await new Promise<void>((resolve) => setTimeout(resolve, 0))
 	return result
 }
+
+describe("host pre-approval (createPermissionsExtension preApproved)", () => {
+	const writeEvent = {
+		type: "tool_call",
+		toolCallId: "probe-write",
+		toolName: "write",
+		input: { path: "/test/src/probe.test.ts", content: "probe" },
+	}
+	const preApproved = (toolName: string, input: Record<string, unknown>) =>
+		toolName === "write" && input.path === "/test/src/probe.test.ts"
+
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	it("accepts a pre-approved call in a headless session without consulting the classifier", async () => {
+		const harness = createPermissionsHarness(["write"], {}, ["write"], { preApproved })
+		const ctx = createClassifierContext()
+		const decisions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, decisions)
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", writeEvent, ctx)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(decisions).toHaveBeenCalledWith(expect.objectContaining({ decision: "accept", sourceDetail: "preapproved" }))
+	})
+
+	it("still sends calls the predicate does not approve to the classifier", async () => {
+		const harness = createPermissionsHarness(["write"], {}, ["write"], { preApproved })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire("tool_call", { ...writeEvent, input: { path: "/test/src/existing.ts", content: "x" } }, ctx)
+
+		expect(classifyToolCall).toHaveBeenCalledOnce()
+	})
+
+	it("never overrides the plan-mode gate", async () => {
+		const harness = createPermissionsHarness(["write"], { plan: true }, ["write"], { preApproved })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", writeEvent, ctx)
+
+		expect(result).toMatchObject({ block: true })
+	})
+
+	it("exposes a host gate's options so a subagent spawn can fold them into its own gate", () => {
+		const options = { preApproved }
+		const gate = createPermissionsExtension(options)
+
+		expect(getPermissionsExtensionOptions(gate)).toBe(options)
+		expect(getPermissionsExtensionOptions({ name: "host-gate", factory: gate })).toBe(options)
+		expect(getPermissionsExtensionOptions(createPermissionsExtension())).toEqual({})
+	})
+
+	it("reports no options for the default gate, the worker gate, or a wrapper around a host gate", () => {
+		const gate = createPermissionsExtension({ preApproved })
+
+		expect(getPermissionsExtensionOptions(permissionsExtension)).toBeUndefined()
+		expect(
+			getPermissionsExtensionOptions(createWorkerPermissionsExtension({ parentSessionId: "p", persona: "Builder" })),
+		).toBeUndefined()
+		expect(getPermissionsExtensionOptions((pi) => gate(pi))).toBeUndefined()
+	})
+})
 
 describe("classifier health reporting", () => {
 	const event = {
@@ -4158,6 +4241,24 @@ describe("permission mode session-log persistence", () => {
 	})
 })
 
+describe("Plan persona path scope in the main session", () => {
+	it("judges the main session's Plan persona write on every path the call names", async () => {
+		vi.stubEnv("KIMCHI_AGENT_PERSONA", "Plan")
+		const harness = createPermissionsHarness(["write"], { "deny-tool": "write" })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+		const fire = (input: Record<string, unknown>) =>
+			harness.fire("tool_call", { type: "tool_call", toolCallId: "tc-plan", toolName: "write", input }, ctx)
+
+		expect(await fire({ path: "src/code.ts", file_path: ".kimchi/plans/design.md", content: "x" })).toMatchObject({
+			block: true,
+			reason: expect.stringContaining('The path "src/code.ts"'),
+		})
+		// Unchanged: a write inside the scope is allowed before rules are read.
+		expect(await fire({ path: ".kimchi/plans/design.md", content: "x" })).toBeUndefined()
+	})
+})
+
 describe("document-skill CLI route (kimchi doc-cli)", () => {
 	let bundledDir: string
 
@@ -4338,6 +4439,31 @@ describe("document-skill CLI route (kimchi doc-cli)", () => {
 
 		expect(result).toBeUndefined() // mocked classifier says safe
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it.each([
+		["path", "file_path"],
+		["file_path", "path"],
+	] as const)("denies a write whose %s is inside the bundled skills dir even when %s names another file", async (inside, other) => {
+		const harness = createPermissionsHarness(["write"], { yolo: true })
+		const decisions: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (payload) => decisions.push(payload))
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-both",
+				toolName: "write",
+				input: { [inside]: `${bundledDir}/pwn/scripts/pwn.mjs`, [other]: "notes.md", content: "x" },
+			},
+			ctx,
+		)
+
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		expect(decisions).toEqual([expect.objectContaining({ decision: "reject", sourceDetail: "bundled_skill_dir_deny" })])
 	})
 
 	it("keeps the doc-cli gate identical across two sessions", async () => {
@@ -4748,18 +4874,18 @@ describe("permissions:tool_decision emissions", () => {
 	})
 
 	it("builtin allow-listed tools emit accept/config/builtin_safe", async () => {
-		const harness = createPermissionsHarness(["set_phase"])
+		const harness = createPermissionsHarness(["get_subagent_result"])
 		const decisions = collectDecisions(harness)
 		await harness.fire("session_start", {}, createMockContext([]))
 		setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
 
 		expect(
-			await harness.fire("tool_call", tcall("set_phase", { phase: "build" }), createMockContext([])),
+			await harness.fire("tool_call", tcall("get_subagent_result", { agent_id: "agent-1" }), createMockContext([])),
 		).toBeUndefined()
 
 		expect(decisions).toEqual([
 			expect.objectContaining({
-				toolName: "set_phase",
+				toolName: "get_subagent_result",
 				decision: "accept",
 				sourceDetail: "builtin_safe",
 				permissionMode: "default",
@@ -5832,5 +5958,457 @@ describe("adhoc submit_plan org-policy dead-ends", () => {
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
 		}
+	})
+})
+
+describe("inline worker permissions", () => {
+	type Harness = ReturnType<typeof createPermissionsHarness>
+	const parents: Array<{ harness: Harness; ctx: ExtensionContext }> = []
+	let sequence = 0
+
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+		vi.mocked(isIdeConnected).mockReturnValue(false)
+	})
+
+	afterEach(async () => {
+		for (const parent of parents) await parent.harness.fire("session_shutdown", {}, parent.ctx)
+		parents.length = 0
+	})
+
+	async function setup(
+		flags: Record<string, boolean | string | undefined> = {},
+		options: {
+			persona?: string
+			cwd?: string
+			withParent?: boolean
+			cliArgs?: string[]
+			preApproved?: PermissionsExtensionOptions["preApproved"]
+		} = {},
+	) {
+		const id = `worker-policy-${++sequence}`
+		const parentSessionId = `${id}-parent`
+		let parent: Harness | undefined
+		let parentCtx: ExtensionContext | undefined
+		if (options.withParent !== false) {
+			parent = createPermissionsHarness(["read", "write", "edit", "bash"], flags)
+			parentCtx = createMockContext([], parentSessionId)
+			parentCtx.cwd = options.cwd ?? "/test"
+			await parent.fire("session_start", {}, parentCtx)
+			parents.push({ harness: parent, ctx: parentCtx })
+		}
+		const worker = createPermissionsHarness(
+			[
+				"read",
+				"write",
+				"edit",
+				"bash",
+				"Skill",
+				"questionnaire",
+				"submit_agent_report",
+				"confirm_todos",
+				"create_todos",
+				"web_search",
+				"debug_locals",
+			],
+			{},
+			undefined,
+			createWorkerPermissionsExtension({
+				parentSessionId,
+				persona: options.persona ?? "Builder",
+				...(options.preApproved ? { preApproved: options.preApproved } : {}),
+			}),
+		)
+		const workerCtx = {
+			...createClassifierContext(),
+			hasUI: true,
+			cwd: options.cwd ?? "/test",
+			sessionManager: { getSessionId: () => `${id}-child`, getEntries: () => [] },
+		} as unknown as ExtensionContext
+		if (options.cliArgs) populateCliArgs(options.cliArgs)
+		await worker.fire("session_start", {}, workerCtx)
+		return { parent, parentCtx, worker, workerCtx, parentSessionId }
+	}
+
+	async function call(harness: Harness, ctx: ExtensionContext, toolName: string, input: Record<string, unknown>) {
+		return harness.fire("tool_call", { type: "tool_call", toolCallId: `call-${++sequence}`, toolName, input }, ctx)
+	}
+
+	function parentCommand(parent: Harness | undefined, ctx: ExtensionContext | undefined) {
+		if (!parent || !ctx) throw new Error("parent fixture required")
+		const command = parent.commands.get("permissions")
+		if (!command) throw new Error("parent permissions command missing")
+		return (args: string) => command.handler(args, ctx)
+	}
+
+	function requireParent(parent: Harness | undefined, ctx: ExtensionContext | undefined) {
+		if (!parent || !ctx) throw new Error("parent fixture required")
+		return { parent, ctx }
+	}
+
+	it("registers only the worker lifecycle and gate, with no main-session surface", async () => {
+		const { worker, workerCtx, parentSessionId } = await setup()
+		expect(getPermissionPolicySource(parentSessionId)).toBeDefined()
+		expect(worker.pi.registerFlag).not.toHaveBeenCalled()
+		expect(worker.pi.registerCommand).not.toHaveBeenCalled()
+		expect(worker.pi.registerTool).not.toHaveBeenCalled()
+		expect(worker.pi.events.on).not.toHaveBeenCalled()
+		expect(
+			vi
+				.mocked(worker.pi.on)
+				.mock.calls.map(([event]) => event)
+				.sort(),
+		).toEqual(["session_shutdown", "session_start", "tool_call"])
+		expect(workerCtx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("uses parent deny and allow rules from config and CLI flags", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "worker-config-"))
+		try {
+			setProjectScopeTrusted(tmpDir, true)
+			mkdirSync(join(tmpDir, ".kimchi"), { recursive: true })
+			writeFileSync(
+				join(tmpDir, ".kimchi", "permissions.json"),
+				JSON.stringify({ defaultMode: "default", deny: ["write"] }),
+			)
+			const config = await setup({}, { cwd: tmpDir })
+			expect(await call(config.worker, config.workerCtx, "write", { path: "blocked.txt" })).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("Denied by rule"),
+			})
+
+			const cliDeny = await setup({ "deny-tool": "write" })
+			expect(await call(cliDeny.worker, cliDeny.workerCtx, "write", { path: "blocked.txt" })).toMatchObject({
+				block: true,
+			})
+
+			const cliAllow = await setup({ "allow-tool": "write" })
+			expect(await call(cliAllow.worker, cliAllow.workerCtx, "write", { path: "allowed.txt" })).toBeUndefined()
+			expect(classifyToolCall).not.toHaveBeenCalled()
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	describe("host pre-approval folded into the worker gate", () => {
+		const preApproved = (toolName: string, input: Record<string, unknown>) =>
+			toolName === "submit_agent_report" || (toolName === "write" && input.path === "probe.test.ts")
+
+		it("accepts a pre-approved call without the classifier and records it as preapproved", async () => {
+			const { worker, workerCtx } = await setup({}, { preApproved })
+			const decisions = vi.fn()
+			worker.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, decisions)
+
+			expect(await call(worker, workerCtx, "write", { path: "probe.test.ts" })).toBeUndefined()
+
+			expect(classifyToolCall).not.toHaveBeenCalled()
+			expect(decisions).toHaveBeenCalledOnce()
+			expect(decisions).toHaveBeenCalledWith(
+				expect.objectContaining({ decision: "accept", sourceDetail: "preapproved" }),
+			)
+		})
+
+		it("still sends a call the host did not pre-approve to the classifier", async () => {
+			const { worker, workerCtx } = await setup({}, { preApproved })
+
+			await call(worker, workerCtx, "write", { path: "src/existing.ts" })
+
+			expect(classifyToolCall).toHaveBeenCalledOnce()
+		})
+
+		it("lets a parent deny rule win over a pre-approval", async () => {
+			const { worker, workerCtx } = await setup({ "deny-tool": "write" }, { preApproved })
+
+			expect(await call(worker, workerCtx, "write", { path: "probe.test.ts" })).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("Denied by rule"),
+			})
+		})
+
+		it("lets the parent's plan mode win over a pre-approval, including a later switch", async () => {
+			const planned = await setup({ plan: true }, { preApproved })
+			expect(await call(planned.worker, planned.workerCtx, "write", { path: "probe.test.ts" })).toMatchObject({
+				block: true,
+			})
+
+			const live = await setup({}, { preApproved })
+			expect(await call(live.worker, live.workerCtx, "write", { path: "probe.test.ts" })).toBeUndefined()
+			await parentCommand(live.parent, live.parentCtx)("mode plan")
+			expect(await call(live.worker, live.workerCtx, "write", { path: "probe.test.ts" })).toMatchObject({
+				block: true,
+			})
+			expect(classifyToolCall).not.toHaveBeenCalled()
+		})
+	})
+
+	it("sees a remembered parent session rule added after the child started", async () => {
+		const { parent, parentCtx, worker, workerCtx } = await setup()
+		await parentCommand(parent, parentCtx)("allow write")
+		expect(await call(worker, workerCtx, "write", { path: "remembered.txt" })).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("applies plan mode to writes and non-read-only bash while allowing reads", async () => {
+		const { worker, workerCtx } = await setup({ plan: true })
+		for (const [toolName, input] of [
+			["write", { path: "blocked.txt" }],
+			["edit", { path: "blocked.txt", old_string: "a", new_string: "b" }],
+			["bash", { command: "touch blocked.txt" }],
+		] as const) {
+			expect(await call(worker, workerCtx, toolName, input)).toMatchObject({ block: true })
+		}
+		expect(await call(worker, workerCtx, "read", { path: "file.ts" })).toBeUndefined()
+		expect(await call(worker, workerCtx, "bash", { command: "git status" })).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("scopes the captured Plan persona to .kimchi/plans without reading the shared env", async () => {
+		const { worker, workerCtx } = await setup({}, { persona: "Plan" })
+		expect(await call(worker, workerCtx, "write", { path: ".kimchi/plans/design.md" })).toBeUndefined()
+		expect(await call(worker, workerCtx, "write", { path: "src/code.ts" })).toMatchObject({
+			block: true,
+			reason: expect.stringContaining("restricted to .kimchi/plans"),
+		})
+	})
+
+	it("judges a Plan persona write or edit on every path the call names", async () => {
+		const { worker, workerCtx } = await setup({}, { persona: "Plan" })
+		// The tools write to `path`: a `file_path` inside the scope must not vouch for it.
+		expect(
+			await call(worker, workerCtx, "write", { path: "src/code.ts", file_path: ".kimchi/plans/design.md" }),
+		).toMatchObject({ block: true, reason: expect.stringContaining('The path "src/code.ts"') })
+		expect(
+			await call(worker, workerCtx, "edit", { path: ".kimchi/plans/design.md", file_path: "src/code.ts" }),
+		).toMatchObject({ block: true, reason: expect.stringContaining('The path "src/code.ts"') })
+		expect(
+			await call(worker, workerCtx, "write", { path: ".kimchi/plans/a.md", file_path: ".kimchi/plans/b.md" }),
+		).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("follows parent mode changes in both directions after the child started", async () => {
+		const { parent, parentCtx, worker, workerCtx } = await setup()
+		expect(await call(worker, workerCtx, "write", { path: "first.txt" })).toBeUndefined()
+		await parentCommand(parent, parentCtx)("mode plan")
+		expect(await call(worker, workerCtx, "write", { path: "blocked.txt" })).toMatchObject({ block: true })
+		await parentCommand(parent, parentCtx)("mode yolo")
+		expect(await call(worker, workerCtx, "write", { path: "allowed.txt" })).toBeUndefined()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("enforces yolo rules and hard blocks, and inherits the parent's danger bypass", async () => {
+		const restricted = await setup({ yolo: true, "deny-tool": "write" })
+		expect(await call(restricted.worker, restricted.workerCtx, "write", { path: "blocked.txt" })).toMatchObject({
+			block: true,
+		})
+		expect(
+			await call(restricted.worker, restricted.workerCtx, "bash", { command: "sudo rm -rf /tmp/demo" }),
+		).toMatchObject({
+			block: true,
+		})
+		expect(await call(restricted.worker, restricted.workerCtx, "edit", { path: "allowed.txt" })).toBeUndefined()
+
+		const bypass = await setup({ yolo: true, "deny-tool": "write", "dangerously-skip-permissions": true })
+		expect(await call(bypass.worker, bypass.workerCtx, "write", { path: "allowed.txt" })).toBeUndefined()
+		expect(await call(bypass.worker, bypass.workerCtx, "bash", { command: "sudo rm -rf /tmp/demo" })).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("classifies non-read-only calls in default and auto, with worker-specific block guidance", async () => {
+		const standard = await setup()
+		expect(await call(standard.worker, standard.workerCtx, "read", { path: "file.ts" })).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(await call(standard.worker, standard.workerCtx, "write", { path: "safe.txt" })).toBeUndefined()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(standard.workerCtx.ui.select).not.toHaveBeenCalled()
+
+		const automatic = await setup({ auto: true })
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			reason: "needs review",
+			riskScore: "high",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+		expect(await call(automatic.worker, automatic.workerCtx, "write", { path: "unsafe.txt" })).toMatchObject({
+			block: true,
+			reason: expect.stringContaining("Do not retry; report to the main agent"),
+		})
+		expect(automatic.workerCtx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("classifies and blocks a compound bash call without awaiting a worker prompt", async () => {
+		const { worker, workerCtx } = await setup()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			reason: "compound contains a deletion",
+			riskScore: "high",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+
+		expect(await call(worker, workerCtx, "bash", { command: "git status && rm file.txt" })).toMatchObject({
+			block: true,
+		})
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(workerCtx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("routes direct MCP tools by plan mode and classifier decision", async () => {
+		const { worker, workerCtx, parent, parentCtx } = await setup({ plan: true })
+		expect(await call(worker, workerCtx, "docs_get_issue", { issue_id: "1" })).toBeUndefined()
+		expect(await call(worker, workerCtx, "docs_create_issue", { title: "blocked" })).toMatchObject({
+			block: true,
+		})
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(workerCtx.ui.select).not.toHaveBeenCalled()
+
+		await parentCommand(parent, parentCtx)("mode default")
+		expect(await call(worker, workerCtx, "docs_create_issue", { title: "classified" })).toBeUndefined()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(workerCtx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("fails closed when the classifier cannot decide", async () => {
+		const { worker, workerCtx } = await setup({ auto: true })
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			ok: false,
+			reason: "classifier unavailable",
+			failureCode: "no_candidates",
+		})
+		expect(await call(worker, workerCtx, "write", { path: "blocked.txt" })).toMatchObject({ block: true })
+		expect(workerCtx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("keeps debugger execution controls behind the classifier", async () => {
+		const { worker, workerCtx } = await setup({}, { persona: "Debugger" })
+		expect(await call(worker, workerCtx, "debug_launch", { program: "node app.js" })).toBeUndefined()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			reason: "launch the target to find an exception",
+			riskScore: "high",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+		expect(await call(worker, workerCtx, "debug_last_error", { program: "node app.js" })).toMatchObject({
+			block: true,
+		})
+		expect(classifyToolCall).toHaveBeenCalledTimes(2)
+	})
+
+	it("does not inherit the main session's IDE write deferral", async () => {
+		vi.mocked(isIdeConnected).mockReturnValue(true)
+		const { worker, workerCtx } = await setup()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			reason: "IDE is not a worker approval surface",
+			riskScore: "high",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})
+		expect(await call(worker, workerCtx, "write", { path: "blocked.txt" })).toMatchObject({ block: true })
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps the last parent snapshot across a resumed worker after the source is removed", async () => {
+		const { parent, parentCtx, worker, workerCtx, parentSessionId } = await setup({
+			plan: true,
+			"deny-tool": "edit",
+		})
+		const current = requireParent(parent, parentCtx)
+		await current.parent.fire("session_shutdown", {}, current.ctx)
+		setPermissionMode(parentSessionId, { mode: "default", source: "runtime", initiatedBy: "user" })
+		await worker.fire("session_shutdown", {}, workerCtx)
+		await worker.fire("session_start", {}, workerCtx)
+
+		expect(await call(worker, workerCtx, "write", { path: "blocked-by-plan.txt" })).toMatchObject({
+			block: true,
+			reason: expect.stringContaining("plan mode"),
+		})
+		expect(await call(worker, workerCtx, "edit", { path: "blocked-by-rule.txt" })).toMatchObject({
+			block: true,
+		})
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("falls back to file config and resolved mode when no parent source ever existed", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "worker-fallback-"))
+		try {
+			setProjectScopeTrusted(tmpDir, true)
+			mkdirSync(join(tmpDir, ".kimchi"), { recursive: true })
+			writeFileSync(
+				join(tmpDir, ".kimchi", "permissions.json"),
+				JSON.stringify({ defaultMode: "yolo", deny: ["write"] }),
+			)
+			const { worker, workerCtx } = await setup({}, { cwd: tmpDir, withParent: false, cliArgs: ["--deny-tool=edit"] })
+			expect(await call(worker, workerCtx, "write", { path: "blocked.txt" })).toMatchObject({ block: true })
+			expect(await call(worker, workerCtx, "edit", { path: "blocked-by-cli.txt" })).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("Denied by rule"),
+			})
+			expect(await call(worker, workerCtx, "bash", { command: "touch allowed.txt" })).toBeUndefined()
+			expect(classifyToolCall).not.toHaveBeenCalled()
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("uses the worker persona argument instead of another child's env value", async () => {
+		vi.stubEnv("KIMCHI_AGENT_PERSONA", "Plan")
+		const { worker, workerCtx } = await setup({}, { persona: "Builder" })
+		expect(await call(worker, workerCtx, "write", { path: "src/code.ts" })).toBeUndefined()
+	})
+
+	it("does not promote questionnaire calls out of the parent's default mode", async () => {
+		const { parentCtx, worker, workerCtx, parentSessionId } = await setup()
+		expect(await call(worker, workerCtx, "questionnaire", { questions: [] })).toBeUndefined()
+		expect(getPermissionMode(parentSessionId)?.mode).toBe("default")
+		if (!parentCtx) throw new Error("parent context required")
+		expect(parentCtx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it.each(["plan", "default"] as const)("keeps control-plane and inspection tools free in %s mode", async (mode) => {
+		const { worker, workerCtx } = await setup(mode === "plan" ? { plan: true } : {})
+		for (const toolName of [
+			"submit_agent_report",
+			"confirm_todos",
+			"create_todos",
+			"Skill",
+			"web_search",
+			"debug_locals",
+		]) {
+			expect(await call(worker, workerCtx, toolName, {})).toBeUndefined()
+		}
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		"plan",
+		"default",
+	] as const)("preserves every built-in persona's read-only surface in %s mode", async (mode) => {
+		for (const config of DEFAULT_AGENTS.values()) {
+			const { worker, workerCtx } = await setup(mode === "plan" ? { plan: true } : {}, { persona: config.name })
+			const requested = config.builtinToolNames ?? BUILTIN_TOOL_NAMES
+			for (const toolName of requested) {
+				if (toolName === "bash") {
+					expect(
+						await call(worker, workerCtx, "bash", { command: "git status" }),
+						`${config.name}:bash`,
+					).toBeUndefined()
+				} else if (isReadOnlyTool(toolName)) {
+					expect(await call(worker, workerCtx, toolName, {}), `${config.name}:${toolName}`).toBeUndefined()
+				}
+			}
+			if (config.extensions !== false) {
+				expect(await call(worker, workerCtx, "web_search", {}), `${config.name}:web_search`).toBeUndefined()
+			}
+			if (config.skills === true) {
+				expect(await call(worker, workerCtx, "Skill", {}), `${config.name}:Skill`).toBeUndefined()
+			}
+		}
+		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 })

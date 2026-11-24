@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import { claimTodoCrowding } from "../../todos/widget.js"
 import type { AgentManager } from "../manager/agent-manager.js"
 import type { LifetimeUsage } from "../manager/usage.js"
-import { type AgentActivity, AgentWidget, type Theme, type UICtx } from "./agent-widget.js"
+import { type AgentActivity, AgentWidget, describeActivity, type Theme, type UICtx } from "./agent-widget.js"
 
 // The widget remounts the tips widget when it registers — the tips module
 // pulls in config/billing/ferment chains a unit test doesn't need.
@@ -37,6 +37,18 @@ function renderOnce(manager: AgentManager, activity: Map<string, AgentActivity>,
 	widget.update()
 	return lines.join("\n")
 }
+
+describe("describeActivity", () => {
+	it("provides an initial activity fallback", () => {
+		expect(describeActivity(new Map(), "")).toBe("thinking…")
+	})
+
+	it("bounds response summaries to a single short line", () => {
+		const summary = describeActivity(new Map(), `\n${"a".repeat(60)} additional text\nignored`)
+
+		expect(summary).toBe(`${"a".repeat(60)}…`)
+	})
+})
 
 describe("AgentWidget token display", () => {
 	it("finished agent lines show the record's lifetime tokens", () => {

@@ -38,11 +38,13 @@ import {
 	type LoopGuardSubagentAbortPayload,
 	type LoopGuardWarnPayload,
 } from "../loop-guard-events.js"
+import { MEMORY_TELEMETRY_CHANNEL } from "../memory/telemetry-events.js"
 import { PERMISSION_EVENTS, type PermissionToolDecisionPayload } from "../permissions/permissions-events.js"
 import { PII_REDACTION_EVENTS } from "../pii-redaction/redaction-events.js"
 import { SIDE_CHAT_EVENTS } from "../side-chat/side-chat-events.js"
 import { STEER_EVENTS } from "../steer-events.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
+import { handleMemoryTelemetry } from "./handlers/memory.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { handleToolDecision } from "./handlers/permissions.js"
 import { createRedactionHandlers } from "./handlers/redactions.js"
@@ -446,6 +448,8 @@ function fermentV2EvaluatedTelemetryHandler(ctx: TelemetryContext, raw: unknown)
 		verdict: payload.verdict,
 		evaluation_count: payload.count ?? 1,
 		evaluator_model: payload.model ?? "unknown",
+		same_model_as_implementer: payload.sameModelAsImplementer === true,
+		model_fallback: payload.modelFallback ?? "",
 		duration_ms: payload.durationMs ?? 0,
 		timeout_ms: payload.timeoutMs ?? 0,
 		provider_request_count: payload.providerRequestCount ?? 0,
@@ -1009,6 +1013,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			onSideChatThreadCounts(telemetryCtx, raw, SIDE_CHAT_HISTORY_REOPENED_EVENT),
 		)
 		pi.events.on(SIDE_CHAT_EVENTS.WRAPPED, (raw) => onSideChatThreadCounts(telemetryCtx, raw, SIDE_CHAT_WRAPPED_EVENT))
+
+		// Persistent-memory usage and lifecycle facts. One envelope channel keeps
+		// the producer decoupled; the translator enforces the content allowlist
+		// and this closure keeps concurrent ACP sessions isolated.
+		pi.events.on(MEMORY_TELEMETRY_CHANNEL, (raw) => {
+			if (!isCtxEnabled(telemetryCtx)) return
+			handleMemoryTelemetry(telemetryCtx, raw)
+		})
 
 		// Workflow domain events (kimchi-workflows): one envelope channel covers the whole contract.
 		pi.events.on(WORKFLOW_TELEMETRY_CHANNEL, (raw) => onWorkflowTelemetry(telemetryCtx, raw))

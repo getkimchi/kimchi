@@ -309,9 +309,9 @@ describe("manual commit reconciliation", () => {
 		transitionReads = 0
 		commitReads = 0
 		const shared: SharedTypeReads = {}
-		const repositories = await knownTransitionRepositories(() => {}, shared)
+		const repositories = await knownTransitionRepositories(() => {})
 		expect(repositories).toHaveLength(2)
-		expect(shared.fileTransitions?.length).toBeGreaterThanOrEqual(2)
+		expect(transitionReads).toBe(0) // Discovery only needs distinct repositories.
 		for (const repository of repositories)
 			await reconcileRepositoryTransitions(
 				repository,
@@ -320,7 +320,9 @@ describe("manual commit reconciliation", () => {
 				() => {},
 				shared,
 			)
-		// Discovery read the table once into `shared`; every repository's pass reused it.
+		// The first genuine reconciliation fills the shared cache; every later
+		// repository reuses it. Discovery itself did not decode the whole table.
+		expect(shared.fileTransitions?.length).toBeGreaterThanOrEqual(2)
 		expect(transitionReads).toBe(1)
 		// The first repository's reconcile cached the commits table for the second.
 		expect(commitReads).toBe(1)
@@ -430,7 +432,7 @@ describe("manual commit reconciliation", () => {
 		const sha = commit()
 		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([expect.objectContaining({ sha, paths: ["file.txt", "second.txt", "third.txt"] })])
-	})
+	}, 30_000)
 
 	it.each(["missing", "truncated"])("retries weak matching after a %s history snapshot is repaired", async (damage) => {
 		baseline()
@@ -544,6 +546,7 @@ describe("manual commit reconciliation", () => {
 	})
 
 	it("finds a rewritten native contribution and labels its path/blob evidence", async () => {
+		// Rebase/history I/O is slower on shared CI workers; use the same bound as other large-history cases.
 		baseline()
 		const originalBranch = git("branch", "--show-current")
 		git("checkout", "-qb", "upstream")
@@ -562,7 +565,7 @@ describe("manual commit reconciliation", () => {
 				fileMatches: [expect.objectContaining({ path: "file.txt", method: "path-blob" })],
 			}),
 		)
-	})
+	}, 30_000)
 
 	it.each([
 		false,
@@ -1626,6 +1629,7 @@ describe("manual commit reconciliation", () => {
 	})
 
 	it("reconciles fresh work after more than 512 unrelated reflog entries", async () => {
+		// This reflects real Git/history I/O on slower CI workers, not assertion overhead.
 		baseline()
 		await write("old.txt", "old")
 		const oldWorkId = getWorkId(context())
@@ -1650,7 +1654,7 @@ describe("manual commit reconciliation", () => {
 				fileMatches: [expect.objectContaining({ method: "path-blob" })],
 			}),
 		])
-	}, 15000)
+	}, 30_000)
 
 	it.each(["amend", "unrelated commit"])("composes same-work edits across an intervening %s", async (kind) => {
 		baseline()

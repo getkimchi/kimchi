@@ -12,6 +12,7 @@ import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary
 import { type Fact, validateClaimUpdate } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
 import { nativeObservations } from "./native.js"
+import { preludeStretch } from "./prelude.js"
 import {
 	type Event,
 	encodeEvent,
@@ -52,26 +53,33 @@ type RequestOwner = { row: WorkRecord; scope: WorkScope }
 /**
  * Builds every fact the records support. Shared work and PR facts always aggregate every request, but with `touched`
  * only the named requests and auxiliary records become units, so untouched requests skip their claim reads.
+ *
+ * The default stretch creates a fresh preludeStretch() per call, so a long translation breathes on the same budget
+ * as the prelude; pass a shared stretcher to fold translation into a caller-owned budget.
  */
-export function buildEvents(
+export async function buildEvents(
 	stored: readonly StoredRecord[],
 	report: PullRequestCostReport,
 	repositories: Map<string, RepositoryIdentity>,
 	producerId: string,
 	check: () => void,
-	existingClaim: (account: string, entity: string) => Event | undefined,
+	existingClaims: (account: string, entityIds: readonly string[]) => Promise<ReadonlyMap<string, Event | undefined>>,
 	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
-): CommonEvents {
-	const records = stored.map((row) => {
+	stretch: () => Promise<void> = preludeStretch(),
+): Promise<CommonEvents> {
+	const records = new Array<WorkRecord>(stored.length)
+	for (let index = 0; index < stored.length; index++) {
+		await stretch()
 		check()
-		return JSON.parse(row.body) as WorkRecord
-	})
+		records[index] = JSON.parse(stored[index].body) as WorkRecord
+	}
 	const native = nativeObservations(stored)
 	const observations = new Map(native.observations.map((row) => [row.requestId, row]))
 	const nativeProblems = new Map(native.unresolved.map((row) => [row.requestId, row]))
 	const attribution = requestAttributions(records, report, repositories)
 	const requests = new Map<string, { row: WorkRecord; hash: string }[]>()
 	for (let i = 0; i < records.length; i++) {
+		await stretch()
 		check()
 		const row = records[i]
 		if (row.type !== "request" && row.type !== "request_dispatch" && row.type !== "request_response") continue
@@ -84,9 +92,31 @@ export function buildEvents(
 	const owners = new Map<string, RequestOwner>()
 	// The claims the outbox holds for the requests this pass translates, by account and entity.
 	const claims = new Map<string, Event | undefined>()
+	const claimAccounts = new Set<string>()
 	const unresolved: CommonEvents["unresolved"] = []
 	const units: EventUnit[] = []
+	// Resolve exactly the entity IDs this group's eligible requests can claim,
+	// then read each account's claim history once instead of per entity.
+	const requestEntities = new Map<string, string[]>()
 	for (const [requestId, evidence] of attribution) {
+		const owner = requests.get(requestId)?.find(({ row }) => row.type === "request")?.row
+		if (
+			isWorkId(requestId) &&
+			owner?.version === 1 &&
+			typeof owner.workId === "string" &&
+			typeof owner.sessionId === "string" &&
+			isWorkScope(owner.scope) &&
+			evidence.request.account &&
+			sameWorkAccount(owner.scope.account, evidence.request.account)
+		) {
+			const key = accountKey(owner.scope.account)
+			const ids = requestEntities.get(key) ?? []
+			ids.push(stableID("kimchi", "request", key, producerId, requestId.toLowerCase()))
+			requestEntities.set(key, ids)
+		}
+	}
+	for (const [requestId, evidence] of attribution) {
+		await stretch()
 		check()
 		const source = requests.get(requestId) ?? []
 		const recordHashes = [...new Set(source.map(({ hash }) => hash))]
@@ -138,7 +168,12 @@ export function buildEvents(
 			if (!identity) throw new Error("repository_unresolved")
 			const key = accountKey(scope.account)
 			const entityId = stableID("kimchi", "request", key, producerId, requestId.toLowerCase())
-			const previous = included ? existingClaim(key, entityId) : undefined
+			if (included && !claimAccounts.has(key)) {
+				const fetched = await existingClaims(key, requestEntities.get(key) ?? [entityId])
+				for (const [id, event] of fetched) claims.set(`${key}\u0000${id}`, event)
+				claimAccounts.add(key)
+			}
+			const previous = included ? claims.get(`${key}\u0000${entityId}`) : undefined
 			if (included) claims.set(`${key}\u0000${entityId}`, previous)
 			const entities = [entityId]
 			const repository = previous ? previous.repository : identity === "unsupported" ? undefined : identity
@@ -370,6 +405,7 @@ export function buildEvents(
 		}
 	}
 	for (let index = 0; index < records.length; index++) {
+		await stretch()
 		check()
 		const row = records[index]
 		if (!["work", "tool_execution", "file_transition", "file_observation", "plan", "commit"].includes(row.type))
@@ -588,6 +624,7 @@ export function buildEvents(
 	const valid = new Map<string, boolean>()
 	for (const unit of units) {
 		if (unit.requestId === undefined) continue
+		await stretch()
 		check()
 		const facts = accounts.get(unit.account)?.facts
 		const [request] = unit.entities
