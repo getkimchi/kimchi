@@ -943,6 +943,23 @@ describe("classifier outage escalation to the parent session", () => {
 		}
 	})
 
+	it("fails closed without asking when the worker is told not to ask the parent", async () => {
+		const { parentCtx, worker, workerCtx } = await setupEscalation({ askParent: false })
+		const request = vi.fn(async () => ({ kind: "allow-once" }) as const)
+		registerAcpPrompter(TEST_SESSION_ID, { request })
+		try {
+			for (const verdict of [failed, needsApproval]) {
+				vi.mocked(classifyToolCall).mockResolvedValueOnce(verdict)
+				const result = await runAsAgentWorker(() => worker.fire("tool_call", event, workerCtx))
+				expect(result).toMatchObject({ block: true })
+			}
+			expect(request).not.toHaveBeenCalled()
+			expect(parentCtx.ui.select).not.toHaveBeenCalled()
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
 	it("runs the parent prompter outside the worker's async context", async () => {
 		const { worker, workerCtx } = await setupEscalation()
 		let prompterSawWorker: boolean | undefined

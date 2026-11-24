@@ -312,6 +312,13 @@ export interface WorkerPermissionsOptions extends PermissionsExtensionOptions {
 	agentId?: string
 	/** User-facing task summary that distinguishes parallel workers of one persona. */
 	description?: string
+	/**
+	 * `false` keeps this worker failing closed: a call the classifier does not
+	 * clear is blocked instead of being put to the user in the main session.
+	 * For hidden host-run subagents (the Ferment V2 verifier), whose contract is
+	 * that they never prompt. Defaults to asking.
+	 */
+	askParent?: boolean
 }
 
 type GateOptions = ({ role: "main" } & PermissionsExtensionOptions) | ({ role: "worker" } & WorkerPermissionsOptions)
@@ -459,7 +466,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		subtitle: string,
 		riskScore?: RiskScore,
 	): Promise<{ result: PromptOutcome } | undefined> {
-		if (options.role !== "worker") return undefined
+		if (options.role !== "worker" || options.askParent === false) return undefined
 		const requestPermission = getParentSurface(options.parentSessionId)?.requestPermission
 		if (!requestPermission) return undefined
 		const origin: PermissionOrigin =

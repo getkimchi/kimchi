@@ -2544,7 +2544,9 @@ describe("runAgent — inline extension factories and model-only inactivity", ()
 			mockGetPermissionsExtensionOptions.mockImplementation(() => undefined)
 		}
 
-		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith(expect.objectContaining({ preApproved }))
+		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith(
+			expect.objectContaining({ preApproved, askParent: false }),
+		)
 		const factories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories
 		expect(factories).toContain(guard)
 		expect(factories).toContain(report)
@@ -2561,6 +2563,7 @@ describe("runAgent — inline extension factories and model-only inactivity", ()
 		})
 
 		expect(mockCreateWorkerPermissionsExtension.mock.calls[0]?.[0]).not.toHaveProperty("preApproved")
+		expect(mockCreateWorkerPermissionsExtension.mock.calls[0]?.[0]).not.toHaveProperty("askParent")
 	})
 
 	it("refuses to start a child whose host supplies two permission gates", async () => {

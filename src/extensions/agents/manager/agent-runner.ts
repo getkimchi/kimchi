@@ -666,7 +666,8 @@ ${skillLines}`
 	// A host that tunes the gate (the Ferment V2 verifier's pre-approvals)
 	// passes a createPermissionsExtension() factory with its inline
 	// extensions. The child keeps one gate: those options are folded into the
-	// worker gate and the host's factory is not loaded.
+	// worker gate and the host's factory is not loaded. Such a host-run child
+	// also keeps failing closed instead of asking the user in the main session.
 	const callerExtensions = options.extensionFactories ?? []
 	const callerGates = callerExtensions.filter((extension) => getPermissionsExtensionOptions(extension) !== undefined)
 	if (callerGates.length > 1) {
@@ -675,6 +676,7 @@ ${skillLines}`
 	const hostGateOptions = callerGates[0] ? getPermissionsExtensionOptions(callerGates[0]) : undefined
 	const workerPermissionsExtension = createWorkerPermissionsExtension({
 		...(hostGateOptions?.preApproved ? { preApproved: hostGateOptions.preApproved } : {}),
+		...(hostGateOptions ? { askParent: false } : {}),
 		parentSessionId,
 		persona: agentConfig?.name ?? type,
 		agentId: options.agentId,
