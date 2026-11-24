@@ -4995,8 +4995,9 @@ function wireSafeToolResult(
 		!Array.isArray(r.details) &&
 		"contextReduction" in r.details
 	) {
-		// Codemode's context estimate is TUI presentation state, not part of the
-		// wire contract. Other tools may own a field of the same name: keep theirs.
+		// Codemode's context estimate is part of its `details` (RPC clients get
+		// it), but ACP's legacy rawOutput keeps its pre-estimate shape until a
+		// reviewed `_meta` projection exists. Other tools' field of the same name stays.
 		const { contextReduction: _contextReduction, ...visibleDetails } = r.details as Record<string, unknown>
 		const { details: _details, ...withoutDetails } = r
 		r = Object.keys(visibleDetails).length === 0 ? withoutDetails : { ...withoutDetails, details: visibleDetails }
