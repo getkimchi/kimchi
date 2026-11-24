@@ -17,7 +17,7 @@ function createAssistantMessage(
 ): MessageLikeSessionEntry {
 	const message = {
 		role: "assistant" as const,
-		content: content as any,
+		content: content as Array<{ type: string; text?: string; thinking?: string }>,
 		api: "openai-responses",
 		provider: "openai",
 		model: "gpt-4",
@@ -45,7 +45,7 @@ function createToolResultMessage(): MessageLikeSessionEntry {
 			toolCallId: "tool-1",
 			toolName: "read",
 			isError: false,
-			timestamp: now,
+			timestamp: Date.now(),
 		},
 	}
 }
@@ -306,7 +306,7 @@ describe("classifyRunOutcome", () => {
 			kind: "no-result",
 			lastEvent: { kind: "denied-tool", toolName: "write", reason: "Denied by rule: write" },
 		})
-		const diagnostic = formatRunOutcomeDiagnostic(result as any)
+		const diagnostic = formatRunOutcomeDiagnostic(result)
 		expect(diagnostic).toContain("write")
 		expect(diagnostic).toContain("Denied by rule: write")
 	})
@@ -356,13 +356,12 @@ describe("classifyRunOutcome", () => {
 			kind: "no-result",
 			lastEvent: { kind: "final-message", role: "assistant", stopReason: "stop" },
 		})
-		const diagnostic = formatRunOutcomeDiagnostic(result as any)
+		const diagnostic = formatRunOutcomeDiagnostic(result)
 		expect(diagnostic).toContain("assistant")
 		expect(diagnostic).toContain("(stop reason: stop)")
 	})
 
 	it("never includes model text in diagnostic details", () => {
-		const secretInThinking = "THINKING_SECRET_XYZ789"
 		const secretInFinal = "FINAL_SECRET_ABC123"
 
 		// Snapshot with an assistant message that has the secret in a thinking block
@@ -380,9 +379,9 @@ describe("classifyRunOutcome", () => {
 		// Should be no-result due to empty text
 		expect(result).toMatchObject({ kind: "no-result" })
 
-		const diagnostic = formatRunOutcomeDiagnostic(result as any)
-		// Neither secret should appear in diagnostics
-		expect(diagnostic).not.toContain(secretInThinking)
+		if (result.kind !== "no-result") throw new Error("Expected no-result")
+		const diagnostic = formatRunOutcomeDiagnostic(result)
+		// Secret in final entry's thinking block should not appear in diagnostics
 		expect(diagnostic).not.toContain(secretInFinal)
 	})
 })
@@ -392,7 +391,9 @@ describe("formatRunOutcomeDiagnostic", () => {
 		const outcome = { kind: "no-prompt" as const }
 		const diagnostic = formatRunOutcomeDiagnostic(outcome)
 		const lines = diagnostic.split("\n")
-		expect(lines[0]).toBe(`KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code ${KIMCHI_NO_PROMPT_EXIT_CODE}.`)
+		expect(lines[0]).toBe(
+			`KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code ${KIMCHI_NO_PROMPT_EXIT_CODE}.`,
+		)
 		expect(lines[1]).toBe("A flag such as --auto may have taken the prompt as its value.")
 		expect(lines[2]).toBe("Put the prompt before the flags, or write the flag as --auto=true.")
 		expect(lines.length).toBeLessThanOrEqual(5)
@@ -406,7 +407,7 @@ describe("formatRunOutcomeDiagnostic", () => {
 		const diagnostic = formatRunOutcomeDiagnostic(outcome)
 		const lines = diagnostic.split("\n")
 		expect(lines[0]).toBe(
-			`KIMCHI_NO_RESULT: the agent finished without a final answer; exiting with code ${KIMCHI_NO_RESULT_EXIT_CODE}.`
+			`KIMCHI_NO_RESULT: the agent finished without a final answer; exiting with code ${KIMCHI_NO_RESULT_EXIT_CODE}.`,
 		)
 		expect(lines.length).toBeLessThanOrEqual(5)
 	})
