@@ -24,6 +24,12 @@ import {
 
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
+/** Explicit full tool set for General-Purpose — never leave it implicit so an
+ *  omitted `builtinToolNames` can widen a persona to every builtin tool.
+ *  Mirrors BUILTIN_TOOL_NAMES in agent-types.ts (kept literal to avoid a
+ *  circular import: agent-types.ts imports this module). */
+const ALL_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+
 /**
  * System prompt for the Ferment V2 Verifier persona: an attempt to break the
  * delivery within the objective's boundaries, with an explicit list of the
@@ -78,6 +84,7 @@ function buildDefaultAgents(): Map<string, AgentConfig> {
 				name: AGENT_GENERAL_PURPOSE,
 				displayName: "General Purpose",
 				description: "General-purpose agent for complex, multi-step tasks",
+				builtinToolNames: ALL_BUILTIN_TOOLS,
 				extensions: true,
 				skills: true,
 				includeContextFiles: true,

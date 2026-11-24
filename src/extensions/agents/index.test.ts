@@ -234,6 +234,20 @@ vi.mock("../../project-scope-trust.js", async (importOriginal) => ({
 	isProjectScopeAllowed: vi.fn().mockReturnValue(true),
 }))
 
+// Keep agent discovery hermetic: execute() reloads custom agents from disk
+// on every call, so tests control the discovered set via this mock. The real
+// loader stays reachable through realLoadCustomAgents for tests that need
+// on-disk discovery (e.g. the ctx.cwd regression suite).
+const { loadCustomAgentsMock, realLoadCustomAgents } = vi.hoisted(() => ({
+	loadCustomAgentsMock: vi.fn((): CustomAgentsLoadResult => ({ agents: new Map(), skipped: [] })),
+	realLoadCustomAgents: { fn: undefined as ((cwd?: string) => CustomAgentsLoadResult) | undefined },
+}))
+vi.mock("./personas/custom-agents.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./personas/custom-agents.js")>()
+	realLoadCustomAgents.fn = actual.loadCustomAgents as (cwd?: string) => CustomAgentsLoadResult
+	return { ...actual, loadCustomAgents: loadCustomAgentsMock }
+})
+
 import type { EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
@@ -245,6 +259,7 @@ import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { RemoteAgentSession } from "./manager/remote-agent-session.js"
 import { clearHandoff, peekHandoff, stageHandoff } from "./manager/subagent-handoff.js"
+import type { CustomAgentsLoadResult } from "./personas/custom-agents.js"
 import type { RemoteRunState } from "./remote-run-persistence.js"
 import { applyAndEmitLoaded } from "./settings.js"
 import type { Theme } from "./ui/agent-widget.js"
@@ -511,12 +526,132 @@ describe("Agent tool renderer", () => {
 		expect(tool.renderCall({ subagent_type: "Explore" }, theme, { argsComplete: false }).render(80)[0]?.trimEnd()).toBe(
 			"▸ Explore",
 		)
+		// Unknown types fail closed — the renderer shows the requested name, not
+		// the previous General-Purpose fallback (issue #1678).
 		expect(tool.renderCall({ subagent_type: "unknown" }, theme, { argsComplete: true }).render(80)[0]?.trimEnd()).toBe(
-			"▸ General Purpose",
+			"▸ unknown",
 		)
 	})
 })
 
+describe("Agent tool fail-closed type validation (issue #1678)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+		loadCustomAgentsMock.mockReturnValue({ agents: new Map(), skipped: [] })
+	})
+
+	function lastManagerInstance(): { spawn: ReturnType<typeof vi.fn> } {
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		return managerInstance
+	}
+
+	it("rejects an unknown subagent_type with an error listing valid types and never spawns", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", subagent_type: "Redaer", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain('Unknown agent type "Redaer"')
+		expect(text).toContain("General-Purpose")
+		expect(text).toContain("Explore")
+		expect(manager.spawn).not.toHaveBeenCalled()
+	})
+
+	it("rejects a disabled agent type (case-insensitive) and never spawns", async () => {
+		loadCustomAgentsMock.mockReturnValue({
+			agents: new Map([
+				[
+					"Reader",
+					{
+						name: "Reader",
+						description: "read-only agent",
+						enabled: false,
+						extensions: false,
+						skills: false,
+						systemPrompt: "",
+						promptMode: "replace",
+					},
+				],
+			]),
+			skipped: [],
+		})
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", subagent_type: "reader", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain('Agent type "Reader" is disabled')
+		expect(manager.spawn).not.toHaveBeenCalled()
+	})
+
+	it("rejects a missing subagent_type with the same fail-closed error instead of crashing", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain("Unknown agent type")
+		expect(manager.spawn).not.toHaveBeenCalled()
+	})
+
+	it("advertises only spawnable types in the tool description — disabled agents now hard-fail", () => {
+		loadCustomAgentsMock.mockReturnValue({
+			agents: new Map([
+				[
+					"Reader",
+					{
+						name: "Reader",
+						description: "read-only agent",
+						enabled: false,
+						extensions: false,
+						skills: false,
+						systemPrompt: "",
+						promptMode: "replace",
+					},
+				],
+			]),
+			skipped: [],
+		})
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const tool = getRegisteredAgentTool(pi) as unknown as { description: string }
+
+		expect(tool.description).not.toContain("Reader")
+		expect(tool.description).toContain("General-Purpose")
+	})
+})
 describe("spawnGraderAgent", () => {
 	const JUDGE_MODEL = { provider: "kimchi-dev", id: "judge-model", name: "judge-model" }
 	const PARENT_MODEL = { provider: "kimchi-dev", id: "parent-model", name: "Parent" }
@@ -2217,6 +2352,11 @@ describe("Agent tool session-cwd agent resolution", () => {
 		vi.useRealTimers()
 		vi.clearAllMocks()
 		vi.mocked(sessionHasImages).mockReturnValue(false)
+		// These tests exercise on-disk discovery from ctx.cwd, so delegate the
+		// mocked loader to the real implementation.
+		loadCustomAgentsMock.mockImplementation(
+			(cwd?: string) => realLoadCustomAgents.fn?.(cwd) ?? { agents: new Map(), skipped: [] },
+		)
 	})
 
 	it("resolves project agents against ctx.cwd, not process.cwd() (issue #1677)", async () => {
