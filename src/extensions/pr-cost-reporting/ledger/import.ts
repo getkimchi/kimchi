@@ -227,7 +227,8 @@ const rechecked = new Set<string>()
 /** Capture-only preflight: verify every old byte before the synchronous importer can reuse its running hash.
  * The whole-prefix re-read this function performs is the one an append always owes — but cooperatively,
  * yielding between pages, so it never holds the event loop. Memoized with the post-read stat, so an
- * unchanged file skips even this; a file that changed during the read invalidates the memo and re-runs. */
+ * unchanged file skips even this. Growth during the read is safe: it cannot change the consumed prefix,
+ * whose hash the importer still checks; any other change invalidates the memo and re-runs. */
 async function verifyCapturePrefix(
 	path: string,
 	cursor: JournalCursor,
@@ -278,13 +279,14 @@ async function verifyCapturePrefix(
 			await setImmediate()
 		}
 		const after = fstatSync(fd)
-		if (
-			after.dev !== before.dev ||
-			after.ino !== before.ino ||
-			after.size !== before.size ||
-			after.mtimeMs !== before.mtimeMs ||
-			after.ctimeMs !== before.ctimeMs
-		) {
+		const unchanged =
+			after.dev === before.dev &&
+			after.ino === before.ino &&
+			after.size === before.size &&
+			after.mtimeMs === before.mtimeMs &&
+			after.ctimeMs === before.ctimeMs
+		const grew = after.dev === before.dev && after.ino === before.ino && after.size > before.size
+		if (!unchanged && !grew) {
 			continued.delete(path)
 			return
 		}

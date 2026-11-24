@@ -814,6 +814,59 @@ describe("capture prefix verification (memory backend)", () => {
 		}
 	})
 
+	it("keeps importing while the session appends during the capture prefix read", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, `${" ".repeat(2 * 1024 * 1024)}\n`)
+		while ((await importJournals(dir)).pending) {}
+		const before = backend.getJournalCursor(file)?.offset ?? 0
+		appendFileSync(file, line(request("req-1")))
+		const realRead = fs.readSync
+		let reads = 0
+		const read = vi.spyOn(fs, "readSync").mockImplementation((...args: Parameters<typeof fs.readSync>) => {
+			if (++reads % 8 === 0) appendFileSync(file, " \n")
+			return realRead(...args)
+		})
+		try {
+			let result = await importJournals(dir, { verifyCapturePrefix: true })
+			for (let slice = 0; result.pending && slice < 20; slice++)
+				result = await importJournals(dir, { verifyCapturePrefix: true })
+		} finally {
+			read.mockRestore()
+		}
+		expect(backend.getJournalCursor(file)?.offset).toBeGreaterThan(before)
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1"])
+	})
+
+	it("rejects a prefix rewrite hidden by growth during the capture prefix read", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		const original = `${" ".repeat(2 * 1024 * 1024)}\n${line(request("req-1"))}`
+		writeFileSync(file, original)
+		while ((await importJournals(dir)).pending) {}
+		appendFileSync(file, line(request("req-2")))
+		const realRead = fs.readSync
+		const read = vi.spyOn(fs, "readSync").mockImplementationOnce((...args: Parameters<typeof fs.readSync>) => {
+			writeFileSync(file, readFileSync(file, "utf8").replace("req-1", "req-X"))
+			appendFileSync(file, " \n")
+			return realRead(...args)
+		})
+		let result: Awaited<ReturnType<typeof importJournals>>
+		try {
+			result = await importJournals(dir, { verifyCapturePrefix: true })
+		} finally {
+			read.mockRestore()
+		}
+		expect(result.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+		while (result.pending) result = await importJournals(dir, { verifyCapturePrefix: true })
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-X", "req-2"])
+	})
+
 	it("verifies capture-only appends with serial SHA-256 and rejects same-inode prefix rewrites", async () => {
 		const dir = agentDir()
 		dirs.push(dir)
