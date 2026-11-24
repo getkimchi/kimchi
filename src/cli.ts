@@ -200,6 +200,7 @@ import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import undecodableImageSanitizerExtension from "./extensions/undecodable-image-sanitizer.js"
+import { installKimchiHostPorts } from "./extensions/work-attribution/host-ports.js"
 import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
 import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
 import {
@@ -627,6 +628,12 @@ async function cliMain(): Promise<void> {
 				throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 			}
 			const modelsJsonPath = resolve(agentDir, "models.json")
+			// The bridge library (ledger + reconcile) resolves credentials, policy and
+			// telemetry through HostPorts; install the process default before any
+			// extension or instrumentation can reach that code. The ports take the
+			// session cwd as a parameter, so one default is correct for the ACP
+			// server's many sessions too.
+			installKimchiHostPorts()
 			installNativeUsageCapture()
 
 			let currentApiKey = apiKey

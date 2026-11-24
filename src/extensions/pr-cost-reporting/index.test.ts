@@ -12,13 +12,11 @@ import { CI_VARIABLES } from "./automation.js"
 import reportingExtension from "./index.js"
 import * as queue from "./queue.js"
 import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
-import { reconcileReporting } from "./worker.js"
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeReportingReconciliation: vi.fn(),
 	requestWorkReconciliation: vi.fn(),
 }))
-vi.mock("./worker.js", () => ({ reconcileReporting: vi.fn() }))
 const mode = vi.hoisted(() => ({ acp: false }))
 vi.mock("../../modes/acp/state.js", () => ({
 	get IS_ACP_MODE() {
@@ -196,9 +194,10 @@ describe("optional PR reporting", () => {
 		const subscriptions = vi.mocked(supervisor.subscribeReportingReconciliation).mock.calls
 		expect(subscriptions).toHaveLength(deliver ? 1 : 0)
 		if (deliver) {
-			const signal = new AbortController().signal
-			await subscriptions[0][0](directory, signal, () => {})
-			expect(reconcileReporting).toHaveBeenCalledWith(directory, ctx.cwd, signal, expect.any(Function))
+			// The extension registers its session cwd with the supervisor; the
+			// bridge pass runs reconcileReporting with that cwd (asserted by the
+			// supervisor and bridge pass suites).
+			expect(subscriptions[0][0]()).toBe(ctx.cwd)
 		}
 		const commandCtx = { ...createCommandContext(), mode }
 		await api.getRegisteredCommand("pr-reporting").handler("status", commandCtx)

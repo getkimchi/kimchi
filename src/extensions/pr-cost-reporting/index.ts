@@ -16,7 +16,6 @@ import {
 	takeReportingNotice,
 } from "./queue.js"
 import { limitNoticeTexts, statusText } from "./status.js"
-import { reconcileReporting } from "./worker.js"
 
 const ARGUMENT_COMPLETIONS = [
 	{ value: "on", label: "on", description: "Report PR costs to your account" },
@@ -74,9 +73,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		// Sessions that never upload (CI, print or JSON mode, benchmarks) skip the pass; the next interactive
 		// session builds the same reports from the same journals.
 		if (request.tracking && request.current && !skipReason) {
-			stop ??= subscribeReportingReconciliation(async (agentDir, signal, assertLease) => {
-				if (context) await reconcileReporting(agentDir, context.cwd, signal, assertLease)
-			})
+			stop ??= subscribeReportingReconciliation(() => context?.cwd)
 		} else if (stop) {
 			draining = Promise.all([draining, stop()]).then(() => {})
 			stop = undefined

@@ -1,22 +1,17 @@
 import { mkdir } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import {
+	type ContinuationProgress,
+	debugWorkAttribution as debug,
+	type PassInput,
+	readWorkPullRequestUpdates,
+	runReconciliationPass,
+	type WorkPullRequestUpdate,
+} from "@getkimchi/kimchi-bridge/reconcile"
 import { lock } from "proper-lockfile"
 import { readE2eSeam } from "../e2e-seam.js"
-import {
-	readWorkPullRequestUpdates,
-	reconcileWorkPullRequests,
-	type WorkPullRequestUpdate,
-} from "../pull-request-status/pull-requests.js"
-import { trackPRCostMetric } from "../telemetry/pr-cost.js"
-import { reconcileWorkCosts } from "./cost-sync.js"
-import { debugWorkAttribution as debug } from "./diagnostics.js"
-import {
-	knownTransitionRepositories,
-	reconcileRepositoryTransitions,
-	type SharedTypeReads,
-} from "./file-transitions.js"
-import { type ContinuationProgress, reconcileWorkContinuations } from "./links.js"
+import { kimchiHostPorts } from "./host-ports.js"
 
 const DEFAULT_RECONCILIATION_INTERVAL_MS = 30_000
 /**
@@ -46,14 +41,13 @@ export function resolveFirstTickDelayMs(): number {
 	const value = raw !== undefined && raw.trim() !== "" ? Number(raw) : Number.NaN
 	return Number.isSafeInteger(value) && value >= 0 ? value : DEFAULT_FIRST_TICK_DELAY_MS
 }
-const PASS_BUDGET_MS = 3000
 type ChannelKind = "pull-requests" | "costs" | "reporting"
 /** Optional work with its own cancellation; unsubscribing waits only for that channel's pass. */
 interface Channel {
 	controller: AbortController
 	running?: Promise<void>
 }
-interface Supervisor extends ContinuationProgress {
+interface Supervisor {
 	subscribers: Set<ReconciliationSubscriber>
 	controller: AbortController
 	timer?: ReturnType<typeof setInterval>
@@ -62,40 +56,18 @@ interface Supervisor extends ContinuationProgress {
 	running?: Promise<void>
 	requested?: boolean
 	nextRepository?: string
+	/** Continuation repair progress, carried across passes (PassResult.progress). */
+	progress?: ContinuationProgress
 	channels: Map<ChannelKind, Channel>
 }
 interface ReconciliationSubscriber {
 	kind: "files" | ChannelKind
-	onReport?: (agentDir: string, signal: AbortSignal, assertLease: () => void) => Promise<void>
 	onPullRequest?: (update: WorkPullRequestUpdate) => void
 	onError?: (error: unknown) => void
+	/** The reporting session's cwd for this pass; undefined skips the reporting channel. */
+	reportingCwd?: () => string | undefined
 }
 const supervisors = new Map<string, Supervisor>()
-
-async function runChannel(
-	owner: Supervisor,
-	kind: ChannelKind,
-	leaseSignal: AbortSignal,
-	assertLease: () => void,
-	run: (signal: AbortSignal, assertLease: () => void) => Promise<void>,
-	onError: (error: unknown) => void,
-): Promise<void> {
-	const channel = owner.channels.get(kind)
-	if (!channel || channel.controller.signal.aborted) return
-	const signal = AbortSignal.any([leaseSignal, channel.controller.signal])
-	const pending = run(signal, () => {
-		assertLease()
-		signal.throwIfAborted()
-	}).catch((error) => {
-		if (!signal.aborted) onError(error)
-	})
-	channel.running = pending
-	try {
-		await pending
-	} finally {
-		if (channel.running === pending) channel.running = undefined
-	}
-}
 
 async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 	const directory = join(agentDir, "work-attribution")
@@ -122,75 +94,40 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 		signal.throwIfAborted()
 		if (compromised) throw compromised
 	}
-	const deadline = Date.now() + PASS_BUDGET_MS
-	trackPRCostMetric({ kind: "reconciliation" })
-	const exhausted = new Error("Work attribution reconciliation time limit exceeded")
-	const checkBudget = () => {
-		assertLease()
-		if (Date.now() > deadline) throw exhausted
-	}
 	try {
-		if ([...owner.subscribers].some((subscriber) => subscriber.kind === "files")) {
-			try {
-				// One whole-type read serves every repository of the pass, not one full table scan each.
-				const shared: SharedTypeReads = {}
-				const repositories = await knownTransitionRepositories(checkBudget)
-				const start = Math.max(0, repositories.indexOf(owner.nextRepository ?? ""))
-				for (let offset = 0; offset < repositories.length; offset++) {
-					checkBudget()
-					const index = (start + offset) % repositories.length
-					// Move on after a slow/broken repository; its own checkpoints preserve partial progress.
-					owner.nextRepository = repositories[(index + 1) % repositories.length]
-					try {
-						await reconcileRepositoryTransitions(repositories[index], signal, checkBudget, assertLease, shared)
-					} catch (error) {
-						if (error === exhausted || signal.aborted) throw error
-						debug("Could not reconcile repository %s: %o", repositories[index], error)
+		const files = [...owner.subscribers].some((subscriber) => subscriber.kind === "files")
+		// The reporting channel runs for the reporting session's cwd, read fresh at
+		// every pass the way the old onReport closure read its captured context.
+		const reportingCwd = owner.channels.has("reporting")
+			? [...owner.subscribers].find((subscriber) => subscriber.kind === "reporting")?.reportingCwd?.()
+			: undefined
+		const input: PassInput = {
+			files: files || undefined,
+			pullRequests: owner.channels.has("pull-requests")
+				? {
+						onUpdate: (update) => {
+							for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
+						},
+						onError: (error) => reportError(owner, error),
+						signal: owner.channels.get("pull-requests")?.controller.signal,
 					}
-				}
-			} catch (error) {
-				if (error !== exhausted && !signal.aborted) debug("Could not discover repositories: %o", error)
-			}
+				: undefined,
+			costs: owner.channels.has("costs") ? { signal: owner.channels.get("costs")?.controller.signal } : undefined,
+			reporting:
+				reportingCwd !== undefined
+					? {
+							cwd: reportingCwd,
+							signal: owner.channels.get("reporting")?.controller.signal,
+						}
+					: undefined,
+			nextRepository: owner.nextRepository,
+			// Cross-pass continuation progress: the pass materializes it once and returns
+			// it in PassResult.progress, exactly how the old scan() body threaded `owner`.
+			progress: owner.progress,
 		}
-		// Network lookup has its own deadline. A slow local repository must not starve it,
-		// and Bash-only commits have no transition repository to visit above.
-		await runChannel(
-			owner,
-			"pull-requests",
-			signal,
-			assertLease,
-			(channelSignal, assertChannel) =>
-				reconcileWorkPullRequests(agentDir, channelSignal, assertChannel, (update) => {
-					for (const subscriber of owner.subscribers) subscriber.onPullRequest?.(update)
-				}),
-			(error) => reportError(owner, error),
-		)
-		await runChannel(
-			owner,
-			"costs",
-			signal,
-			assertLease,
-			(channelSignal, assertChannel) => reconcileWorkCosts(agentDir, channelSignal, assertChannel),
-			(error) => debug("Could not reconcile costs: %o", error),
-		)
-		// Historical repair is local and has its own budget; PR and billing work run first.
-		if ([...owner.subscribers].some((subscriber) => subscriber.kind === "files")) {
-			try {
-				await reconcileWorkContinuations(agentDir, signal, assertLease, owner)
-			} catch (error) {
-				if (!signal.aborted) debug("Could not reconcile work continuations: %o", error)
-			}
-		}
-		const report = [...owner.subscribers].find((subscriber) => subscriber.kind === "reporting")?.onReport
-		if (report)
-			await runChannel(
-				owner,
-				"reporting",
-				signal,
-				assertLease,
-				(channelSignal, assertChannel) => report(agentDir, channelSignal, assertChannel),
-				(error) => debug("Could not report PR costs: %o", error),
-			)
+		const result = await runReconciliationPass(input, kimchiHostPorts(), { signal, assertLease })
+		owner.nextRepository = result.nextRepository
+		owner.progress = result.progress
 	} finally {
 		if (!compromised) await release()
 	}
@@ -328,9 +265,11 @@ export function subscribePullRequestReconciliation(subscriber: {
 export function subscribeCostReconciliation(): () => Promise<void> {
 	return subscribeReconciliation({ kind: "costs" })
 }
-/** An optional extension supplies delivery; work tracking has no reporting dependency. */
-export function subscribeReportingReconciliation(
-	onReport: NonNullable<ReconciliationSubscriber["onReport"]>,
-): () => Promise<void> {
-	return subscribeReconciliation({ kind: "reporting", onReport })
+/**
+ * An optional extension supplies delivery; work tracking has no reporting dependency.
+ * The cwd getter is read fresh at every pass: it is the reporting session's
+ * cwd, replacing the old onReport closure that read its captured context.
+ */
+export function subscribeReportingReconciliation(reportingCwd: () => string | undefined): () => Promise<void> {
+	return subscribeReconciliation({ kind: "reporting", reportingCwd })
 }
