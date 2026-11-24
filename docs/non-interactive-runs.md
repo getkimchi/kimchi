@@ -18,11 +18,11 @@ A slash command from any of these sources, such as `echo /language | kimchi --pr
 
 ## Boolean flag syntax
 
-Kimchi boolean flags never take a separate value. `--auto`, `--yolo`, `--memory` and the other booleans are on/off switches, so a following token is always a different argument, such as the prompt.
+Kimchi boolean flags never take a separate value. `--auto`, `--yolo`, `--plan` and the other booleans are on/off switches, so a following token is always a different argument, such as the prompt.
 
 Before pi parses argv, `normalizeBooleanFlagArgs` (`src/cli-args.ts`) rewrites a bare Kimchi-only boolean flag to `--flag=true`. Without this, pi treats the next non-flag token as the flag's value and the positional prompt is lost. Normalization is skipped after `--`, and flags already written with `=` are left alone.
 
-The explicit forms stay valid. `--flag=true` is equivalent to the bare flag. To keep a flag off, omit it. `--flag=false` is honored only by flags Kimchi parses itself (`--auto`, `--yolo`, `--plan`, `--pr-watch`, `--no-auto-update`). Extension-read flags such as `--dangerously-skip-permissions`, `--ferment-oneshot`, `--init-git` and `--debug-prompts` currently treat any `=value` as on.
+The explicit forms stay valid for the flags Kimchi parses itself (`--auto`, `--yolo`, `--plan`, `--pr-watch`, `--no-auto-update`). For these, `--flag=true` turns the flag on and `--flag=false` keeps it off. Extension-read flags such as `--dangerously-skip-permissions`, `--ferment-oneshot`, `--init-git` and `--debug-prompts` accept `--flag=true`. Do not pass `--flag=false` to them. Some treat any value as on, and `--dangerously-skip-permissions=false` leaves permissions in a mixed state. To keep any flag off, omit it. `--enable-experimental-features` works only in its bare form.
 
 ```sh
 kimchi --print --auto=true "do the work"

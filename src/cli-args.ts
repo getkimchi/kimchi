@@ -69,6 +69,8 @@ export interface CliOptionDef {
 export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	memory: {
 		type: "boolean",
+		// Registered so pi accepts it, but nothing reads it yet; keep it out of help until something does.
+		hidden: true,
 		description:
 			"Enable persistent personal memory (capture + recall across sessions; facts stored locally, extraction and embedding via the kimchi gateway).",
 	},
@@ -320,6 +322,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
 	"models",
+	// Cached so the hidden-flag parse can be tested; the extension reads it with pi.getFlag.
 	"debug-prompts",
 	"thinking",
 	"mode",

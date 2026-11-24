@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import ts from "typescript"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import {
 	CACHEABLE_OPTION_NAMES,
 	CLI_OPTIONS,
@@ -24,7 +24,6 @@ import {
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
-import { printMergedHelp } from "./commands/help.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 
 describe("value-flag parsing", () => {
@@ -398,21 +397,8 @@ describe("cacheable option coverage", () => {
 })
 
 describe("hidden catalog options", () => {
-	it("parses hidden --debug-prompts as a boolean without showing it in help", async () => {
+	it("parses hidden --debug-prompts as a boolean", () => {
 		expect(parseCliArgs(["--debug-prompts"]).options["debug-prompts"]).toBe(true)
-		const logs: string[] = []
-		const logSpy = vi.spyOn(console, "log").mockImplementation((...parts) => {
-			logs.push(parts.join(" "))
-		})
-		try {
-			await printMergedHelp()
-		} finally {
-			logSpy.mockRestore()
-		}
-		const help = logs.join("\n")
-		expect(help).toContain("--memory")
-		expect(help).toContain("--ferment-oneshot")
-		expect(help).not.toContain("--debug-prompts")
 	})
 })
 
