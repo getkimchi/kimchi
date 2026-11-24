@@ -347,7 +347,8 @@ export class AgentManager {
 		this.onStart?.(record, ctx)
 
 		let detachParentSignal: (() => void) | undefined
-		if (options.signal) {
+		if (options.signal?.aborted) this.abort(id)
+		else if (options.signal) {
 			const onParentAbort = () => this.abort(id)
 			options.signal.addEventListener("abort", onParentAbort, { once: true })
 			detachParentSignal = () => options.signal?.removeEventListener("abort", onParentAbort)

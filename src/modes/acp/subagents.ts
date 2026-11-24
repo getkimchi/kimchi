@@ -12,6 +12,13 @@ import { truncate } from "./utils.js"
 export const SUBAGENT_SESSION_CREATED_EVENT = "subagents:session_created"
 
 /** Transport payload emitted by the agents extension on its parent's event bus. */
+export interface SubagentCancellation {
+	/** Synchronously claims a real manager-backed abort; false remains a no-op. */
+	accepted: boolean
+	/** Settles only after the manager's native run has finished stopping. */
+	stopped: Promise<void>
+}
+
 export interface SubagentSessionCreatedPayload {
 	agentId: string
 	sessionId: string
@@ -28,6 +35,8 @@ export interface SubagentSessionCreatedPayload {
 	phase?: "created" | "resumed"
 	/** Existing runtime carried on the owning parent's in-process event bus. */
 	agentSession?: AgentSession
+	/** Bound in the parent's own manager extension, never resolved globally. */
+	abort?: () => SubagentCancellation
 }
 
 export type SubagentSessionCreatedEvent = SubagentSessionCreatedPayload
@@ -55,6 +64,7 @@ export function parseSubagentSessionCreated(value: unknown): SubagentSessionCrea
 	if (!description || !cwd || !visibility || !status) return undefined
 	if (typeof data.remote !== "boolean" || typeof data.background !== "boolean") return undefined
 	if (data.phase !== undefined && data.phase !== "created" && data.phase !== "resumed") return undefined
+	if (data.abort !== undefined && typeof data.abort !== "function") return undefined
 	return {
 		agentId,
 		sessionId,
@@ -69,6 +79,7 @@ export function parseSubagentSessionCreated(value: unknown): SubagentSessionCrea
 		background: data.background,
 		phase: data.phase,
 		agentSession: data.agentSession as AgentSession | undefined,
+		abort: data.abort as (() => SubagentCancellation) | undefined,
 	}
 }
 
@@ -111,6 +122,22 @@ export function presentAgentToolCall<T extends SessionUpdate>(update: T, toolNam
 	} as T
 }
 
+/** Durable identity for the directed initial task on replay. Live messages
+ * retain unique ids; replayed views reproduce those ids instead of allocating
+ * fresh links each time a parent is loaded. */
+function replayMessageId(kind: "ksp" | "ksc", parentSessionId: string, event: SubagentSessionCreatedPayload): string {
+	return `${kind}.${parentSessionId}.${event.sessionId}.${event.agentId}`
+}
+
+export function subagentReplayPromptMessages(
+	parentSessionId: string,
+	event: SubagentSessionCreatedPayload,
+): SessionNotification[] {
+	const parentMessageId = replayMessageId("ksp", parentSessionId, event)
+	const childMessageId = replayMessageId("ksc", parentSessionId, event)
+	return directedSubagentPromptMessages(parentSessionId, event, parentMessageId, childMessageId)
+}
+
 /** Session links are native ACP content, not an invented ACP variant. They
  * are added only after the child announcement and preserved on every later
  * Agent content replacement. */
@@ -138,7 +165,7 @@ export function subagentAnnouncement(
 			description: event.description,
 			cwd,
 			additionalDirectories: [],
-			capabilities: {},
+			capabilities: event.abort ? { cancel: {} } : {},
 			state: { state: "running" },
 		},
 	}
@@ -167,8 +194,16 @@ export function subagentPromptMessages(
 	event: Pick<SubagentSessionCreatedPayload, "sessionId" | "prompt">,
 	prompt = event.prompt,
 ): SessionNotification[] {
-	const parentMessageId = `ksp.${randomUUID()}`
-	const childMessageId = `ksc.${randomUUID()}`
+	return directedSubagentPromptMessages(parentSessionId, event, `ksp.${randomUUID()}`, `ksc.${randomUUID()}`, prompt)
+}
+
+function directedSubagentPromptMessages(
+	parentSessionId: string,
+	event: Pick<SubagentSessionCreatedPayload, "sessionId" | "prompt">,
+	parentMessageId: string,
+	childMessageId: string,
+	prompt = event.prompt,
+): SessionNotification[] {
 	return [
 		{
 			sessionId: parentSessionId,

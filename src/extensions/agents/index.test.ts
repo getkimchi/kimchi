@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getParsedCliArgs } from "../../cli-args.js"
+import { asSession, BaseFakeAgentSession } from "../../modes/acp/__mocks__/fake-agent-session.js"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	buildAgentToolGuidelines,
@@ -483,6 +484,7 @@ describe("session_shutdown nudge race (integration)", () => {
 			status: "running",
 			background,
 			agentSession: { sessionId: "child-session" },
+			abort: expect.any(Function),
 		})
 	})
 })
@@ -2242,6 +2244,76 @@ describe("local agents survive session replacement (fork/new)", () => {
 			live2.ctx,
 		)
 		expect(manager2.adoptRecords).toHaveBeenCalledTimes(1)
+	})
+
+	it("re-parents the child metadata, projection event, and cancel owner across successive forks", async () => {
+		const pi0 = createExtensionApi()
+		const firstContext = createLiveContext({
+			mode: "tui",
+			sessionManager: { getSessionFile: () => "/tmp/original-parent.jsonl", getSessionId: () => "original-parent" },
+		})
+		agentsExtension(pi0.api)
+		const originalManager = latestManagerInstance()
+		const id = originalManager.spawn(pi0.api, firstContext.ctx, "Explore", "fork child", {
+			description: "Fork child",
+			isBackground: true,
+		})
+		const child = new BaseFakeAgentSession("native-fork-child")
+		const spawnedRecord = originalManager.getRecord(id)
+		if (!spawnedRecord) throw new Error("missing adopted child fixture")
+		Object.assign(spawnedRecord, {
+			sessionId: child.sessionId,
+			session: asSession(child),
+			sessionFile: "/tmp/native-fork-child.jsonl",
+			toolCallId: "provider-fork-agent",
+			visibility: "user",
+			remote: false,
+		})
+		await pi0.emit("session_shutdown", { type: "session_shutdown", reason: "fork" }, firstContext.ctx)
+		let previousAbort = Reflect.get(originalManager, "abort") as ReturnType<typeof vi.fn>
+		let previousFile = "/tmp/original-parent.jsonl"
+
+		for (const [childName, expectedParent] of [
+			["clone-one", "/tmp/clone-one.jsonl"],
+			["clone-two", "/tmp/clone-two.jsonl"],
+		] as const) {
+			const pi = createExtensionApi()
+			const context = createLiveContext({
+				mode: "tui",
+				sessionManager: { getSessionFile: () => expectedParent, getSessionId: () => childName },
+			})
+			agentsExtension(pi.api)
+			const manager = latestManagerInstance()
+			await pi.emit(
+				"session_start",
+				{ type: "session_start", reason: "fork", previousSessionFile: previousFile },
+				context.ctx,
+			)
+			expect(manager.getRecord(id)).toMatchObject({
+				parentSessionId: childName,
+				parentSessionFile: expectedParent,
+			})
+			const projection = vi
+				.mocked(pi.api.events.emit)
+				.mock.calls.find(
+					([name, payload]) =>
+						name === "subagents:session_created" && (payload as { sessionId?: string }).sessionId === child.sessionId,
+				)?.[1] as { abort: () => Promise<{ accepted: boolean; stopped: Promise<void> }> }
+			expect(projection).toBeDefined()
+			const managerAbort = Reflect.get(manager, "abort") as ReturnType<typeof vi.fn>
+			const previousCalls = previousAbort.mock.calls.length
+			await projection.abort()
+			expect(managerAbort).toHaveBeenCalledWith(id)
+			expect(previousAbort).toHaveBeenCalledTimes(previousCalls)
+			expect(pi.getAppendedEntries("subagents:record").at(-1)).toMatchObject({
+				parentSessionId: childName,
+				parentSessionFile: expectedParent,
+			})
+
+			await pi.emit("session_shutdown", { type: "session_shutdown", reason: "fork" }, context.ctx)
+			previousAbort = managerAbort
+			previousFile = expectedParent
+		}
 	})
 
 	it("aborts on reason new (plain /new): a clean slate carries no agents over", async () => {

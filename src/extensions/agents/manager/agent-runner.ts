@@ -69,6 +69,7 @@ import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../promp
 import { preloadSkills } from "../prompt/skill-loader.js"
 import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
+import { forwardAbortSignal, hardAbort } from "./abort-signal.js"
 import { prepareAgentWorkerSession } from "./agent-worker-session.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { sanitizeToolName } from "./result-text.js"
@@ -414,24 +415,6 @@ function resetUsage(usage: LifetimeUsage): void {
 	usage.output = 0
 	usage.cacheRead = 0
 	usage.cacheWrite = 0
-}
-
-/**
- * Hard-abort the session: kill any in-flight bash process tree, then abort the agent loop.
- * session.abort() alone does NOT kill in-flight bash (upstream gap), so we call abortBash()
- * to trigger killProcessTree on the bash subprocess. Uses optional chaining so test mocks
- * without abortBash don't break.
- */
-function hardAbort(session: AgentSession): void {
-	session.abortBash?.()
-	session.abort()
-}
-
-function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
-	if (!signal) return () => {}
-	const onAbort = () => hardAbort(session)
-	signal.addEventListener("abort", onAbort, { once: true })
-	return () => signal.removeEventListener("abort", onAbort)
 }
 
 /**

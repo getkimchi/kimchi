@@ -138,6 +138,12 @@ export class SubagentConfigReporter {
 		})
 	}
 
+	/** Invalidates client-confirmed state without discarding the child's
+	 * own configuration source or its live permission subscription. */
+	invalidate(): void {
+		this.lastFingerprint = undefined
+	}
+
 	dispose(): void {
 		this.unsubscribePermission?.()
 		this.unsubscribePermission = undefined

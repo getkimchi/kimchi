@@ -1653,6 +1653,21 @@ describe("AgentManager reconnecting lifecycle", () => {
 		await done.catch(() => {})
 	})
 
+	it("honors a parent signal that is already aborted before starting child initialization", () => {
+		const manager = new AgentManager()
+		const controller = new AbortController()
+		controller.abort()
+		mockRunAgent.mockImplementationOnce(() => new Promise<never>(() => {}))
+		const id = manager.spawn(fakePi(), fakeCtx(), "Explore", "work", {
+			description: "already aborted parent",
+			signal: controller.signal,
+		})
+		const record = manager.getRecord(id)
+		expect(record?.status).toBe("stopped")
+		expect(record?.abortController?.signal.aborted).toBe(true)
+		manager.dispose()
+	})
+
 	it("abort (single-record path, used by Ctrl+X) stops a reconnecting agent", async () => {
 		const { opts, resolveRun, done } = await spawnParkedRemote()
 		const record = manager?.listAgents()[0]
