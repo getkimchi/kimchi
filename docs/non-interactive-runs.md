@@ -1,6 +1,6 @@
 # Non-interactive runs
 
-`kimchi --print` and `kimchi --print --mode json` run one prompt and exit. Two guards make sure a run that produced nothing does not look like a success.
+`kimchi --print` and `kimchi --print --mode json` run one prompt and exit. This page covers how the prompt and boolean flags are read, and the two guards that make sure a run that produced nothing does not look like a success.
 
 The guards apply to every non-interactive run. pi also runs in print mode when stdin or stdout is not a terminal, so `kimchi "question" > answer.txt` and `echo question | kimchi` are guarded too.
 
@@ -15,6 +15,29 @@ The prompt can come from any of these:
 An empty positional prompt (`kimchi --print ""`) or an empty `@file` is not a prompt, and the run exits `2`.
 
 A slash command from any of these sources, such as `echo /language | kimchi --print`, counts as a prompt. It exits `0` when the agent does not run.
+
+## Boolean flag syntax
+
+Kimchi boolean flags never take a separate value. `--auto`, `--yolo`, `--memory` and the other booleans are on/off switches, so a following token is always a different argument, such as the prompt.
+
+Before pi parses argv, `normalizeBooleanFlagArgs` (`src/cli-args.ts`) rewrites a bare Kimchi-only boolean flag to `--flag=true`. Without this, pi treats the next non-flag token as the flag's value and the positional prompt is lost. Normalization is skipped after `--`, and flags already written with `=` are left alone.
+
+The explicit forms stay valid and are the way to turn a flag off:
+
+```sh
+kimchi --print --auto=true "do the work"
+kimchi --print --auto=false "do the work"
+kimchi --print --auto "do the work"       # same as --auto=true
+kimchi --print "do the work" --auto       # prompt before flags also works
+```
+
+## Catalog governance
+
+`CLI_OPTIONS` in `src/cli-args.ts` is the single catalog of Kimchi flags, with their names and types. Every flag an extension registers with `registerFlag` must have a `CLI_OPTIONS` entry with the same name and type. A flag that only extensions know about can be missing from the catalog, and then normalization cannot protect its prompt.
+
+Flags that should parse but not appear in `--help` set `hidden: true` in the catalog.
+
+`src/cli-args.test.ts` enforces this. The "extension flag registration parity" test fails if any literal `registerFlag` call lacks a matching catalog entry, or its type differs. When you add a flag, add it to `CLI_OPTIONS` in the same change.
 
 ## What counts as an answer
 
