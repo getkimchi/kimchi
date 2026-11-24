@@ -615,6 +615,50 @@ describe("catalog-driven Auto default (main session)", () => {
 		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
 	})
 
+	it("treats a startup session file without messages as fresh, as upstream does", async () => {
+		// Upstream restores no model for a session without messages, so a file a
+		// launch wrapper pre-created (or one resumed before any message) is fresh.
+		populateCliArgs([])
+		const sessionFile = join(tempDir, "precreated-session.jsonl")
+		writeFileSync(sessionFile, '{"type":"session"}\n')
+		const { setModel, start } = runSessionStart(autoModelExtension, {
+			sessionManager: {
+				getSessionFile: () => sessionFile,
+				getSessionId: () => SESSION_ID,
+				getEntries: () => [],
+			},
+		})
+
+		await start()
+
+		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
+	})
+
+	it("keeps the model of a resumed startup session that has messages", async () => {
+		populateCliArgs([])
+		const sessionFile = join(tempDir, "resumed-session.jsonl")
+		writeFileSync(sessionFile, '{"type":"session"}\n')
+		const { setModel, start } = runSessionStart(autoModelExtension, {
+			sessionManager: {
+				getSessionFile: () => sessionFile,
+				getSessionId: () => SESSION_ID,
+				getEntries: (): SessionEntry[] => [
+					{
+						type: "message",
+						id: "user-1",
+						parentId: null,
+						timestamp: new Date().toISOString(),
+						message: { role: "user", content: "hi", timestamp: Date.now() },
+					},
+				],
+			},
+		})
+
+		await start()
+
+		expect(setModel).not.toHaveBeenCalled()
+	})
+
 	it("does not notify when the fresh session already comes up on Auto", async () => {
 		// Auto is always the default now, so a fresh session starting on Auto
 		// must be silent — the notice is only for switching away from another
@@ -1133,6 +1177,47 @@ describe("self-heal — persisted default no longer served", () => {
 })
 
 describe("main-session CLI model selection", () => {
+	beforeEach(() => {
+		settingsStubs.getDefaultModel.mockReturnValue(undefined)
+		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
+	})
+
+	/** Fires a main-session session_start on kimi-k2.5 with Auto in the catalog. */
+	async function startSession(reason: "startup" | "new") {
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const autoModel = model("auto", { name: "Auto" })
+		const c = createContext({
+			model: model("kimi-k2.5"),
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+			modelRegistry: { find: () => autoModel },
+		})
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason }, c)
+		return { setModel: extension.setModel, autoModel }
+	}
+
+	// --model is the only launch option that keeps a fresh session off Auto, and
+	// it holds for the launch session and every /new or /clear (reason "new").
+	for (const reason of ["startup", "new"] as const) {
+		it(`keeps an explicit --model on a fresh ${reason} session`, async () => {
+			populateCliArgs(["--model", "kimi-k2.5"])
+
+			const { setModel } = await startSession(reason)
+
+			expect(setModel).not.toHaveBeenCalled()
+		})
+
+		for (const args of [["--models", "kimchi-dev/auto,kimchi-dev/kimi-k2.5"], []]) {
+			it(`installs Auto on a fresh ${reason} session launched with [${args.join(" ")}]`, async () => {
+				populateCliArgs(args)
+
+				const { setModel, autoModel } = await startSession(reason)
+
+				expect(setModel).toHaveBeenCalledWith(autoModel, { persist: true })
+			})
+		}
+	}
+
 	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
 		populateCliArgs(["--model", "kimchi-dev/auto"])
 		const extension = createExtensionApi()

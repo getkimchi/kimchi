@@ -25,6 +25,20 @@ export function createCommandContext(): ExtensionCommandContext {
 	}
 }
 
+/** Upstream's `ReplacedSessionContext`, which the package root does not export. */
+export type ReplacedSessionContext = Parameters<
+	NonNullable<NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>["withSession"]>
+>[0]
+
+/** Context a `newSession({ withSession })` callback receives for the replacement session. */
+export function createReplacedSessionContext(): ReplacedSessionContext {
+	return {
+		...createCommandContext(),
+		sendMessage: vi.fn(async () => {}),
+		sendUserMessage: vi.fn(async () => {}),
+	}
+}
+
 /**
  * Context for calling a tool's `execute()` directly in tests (upstream pi:
  * tool execution receives an `ExtensionToolContext`, not a plain
