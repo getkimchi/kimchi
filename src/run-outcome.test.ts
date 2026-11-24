@@ -10,19 +10,25 @@ import {
 
 const now = Date.now().toString()
 
+// Derive real pi types from SessionEntry
+type MessageSessionEntry = Extract<SessionEntry, { type: "message" }>
+type AssistantMessage = Extract<MessageSessionEntry["message"], { role: "assistant" }>
+type CustomMessageEntry = Extract<SessionEntry, { type: "custom_message" }>
+type ContentBlock = { type: string; text?: string; thinking?: string }
+
 // Typed fixture helpers
 function createAssistantMessage(
-	content: Array<{ type: string; text?: string; thinking?: string }>,
+	content: ContentBlock[],
 	stopReason: "stop" | "error" | "aborted" | "length" = "stop",
 ): MessageLikeSessionEntry {
-	const message: any = {
-		role: "assistant" as const,
-		content: content,
+	const message: AssistantMessage = {
+		role: "assistant",
+		content: content as AssistantMessage["content"],
 		api: "openai-responses",
 		provider: "openai",
 		model: "gpt-4",
-		usage: { inputTokens: 10, outputTokens: 5 },
-		stopReason,
+		usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: stopReason as AssistantMessage["stopReason"],
 		timestamp: Date.now(),
 	}
 	return {
@@ -51,9 +57,9 @@ function createToolResultMessage(): MessageLikeSessionEntry {
 	}
 }
 
-function createCustomMessage(content: string): MessageLikeSessionEntry {
-	const entry = {
-		type: "custom_message" as const,
+function createCustomMessage(content: string): CustomMessageEntry {
+	const entry: CustomMessageEntry = {
+		type: "custom_message",
 		id: "msg-custom",
 		parentId: "msg-2",
 		customType: "test",
@@ -61,8 +67,7 @@ function createCustomMessage(content: string): MessageLikeSessionEntry {
 		display: true,
 		timestamp: now,
 	}
-	if (entry.type !== "custom_message" && entry.type !== "message") throw new Error("Invalid entry type")
-	return entry as MessageLikeSessionEntry
+	return entry
 }
 
 describe("classifyRunOutcome", () => {
