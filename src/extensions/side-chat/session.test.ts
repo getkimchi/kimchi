@@ -1,8 +1,92 @@
 import { type AgentSession, SessionManager } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
-import { SIDE_CHAT_TOOLS, sideChatPrompt, sideThreadMessages } from "./session.js"
+import {
+	PENDING_TOOL_RESULT,
+	SIDE_CHAT_BOUNDARY,
+	SIDE_CHAT_BOUNDARY_TYPE,
+	SIDE_CHAT_TOOLS,
+	seedSideContext,
+	sideChatPrompt,
+	sideThreadMessages,
+} from "./session.js"
 
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 0 })
+
+const assistantCalling = (...ids: string[]) => ({
+	role: "assistant" as const,
+	content: ids.map((id) => ({ type: "toolCall" as const, id, name: "bash", arguments: { command: `run ${id}` } })),
+	api: "openai-completions" as const,
+	provider: "kimchi-dev",
+	model: "kimi-k3.1-pro",
+	usage: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	},
+	stopReason: "toolUse" as const,
+	timestamp: 0,
+})
+
+const toolResult = (id: string, text: string) => ({
+	role: "toolResult" as const,
+	toolCallId: id,
+	toolName: "bash",
+	content: [{ type: "text" as const, text }],
+	isError: false,
+	timestamp: 0,
+})
+
+const pendingResult = (id: string) => toolResult(id, PENDING_TOOL_RESULT)
+
+const boundary = {
+	role: "custom" as const,
+	customType: SIDE_CHAT_BOUNDARY_TYPE,
+	content: SIDE_CHAT_BOUNDARY,
+	display: false,
+	timestamp: 0,
+}
+
+describe("seedSideContext", () => {
+	it("ends a side chat branched between turns with the boundary marker", () => {
+		const inherited = [user("fix the tests"), assistantCalling("a"), toolResult("a", "ok")]
+
+		expect(seedSideContext(inherited, 0)).toEqual([...inherited, boundary])
+	})
+
+	it("answers tool calls still running at the branch point so they don't read as its own interrupted work", () => {
+		// Regression: a side chat opened while the main agent ran vitest and lint saw two unanswered
+		// bash calls, read the user's "hi" as an interruption, and resumed the main task.
+		const inherited = [user("remove the trigger test"), assistantCalling("vitest", "lint")]
+
+		expect(seedSideContext(inherited, 0)).toEqual([
+			...inherited,
+			pendingResult("vitest"),
+			pendingResult("lint"),
+			boundary,
+		])
+	})
+
+	it("keeps results that already finished and answers only the calls still running", () => {
+		const inherited = [user("verify"), assistantCalling("vitest", "lint"), toolResult("vitest", "4 passed")]
+
+		expect(seedSideContext(inherited, 0)).toEqual([...inherited, pendingResult("lint"), boundary])
+	})
+
+	it("leaves unanswered calls from earlier turns alone, since those were aborted rather than running", () => {
+		const inherited = [user("first"), assistantCalling("aborted"), user("second")]
+
+		expect(seedSideContext(inherited, 0)).toEqual([...inherited, boundary])
+	})
+
+	it("tells the model the main session owns the pending work and the side chat answers only the user", () => {
+		expect(PENDING_TOOL_RESULT).toMatch(/main session/)
+		expect(SIDE_CHAT_BOUNDARY).toMatch(/do not continue/i)
+		expect(SIDE_CHAT_BOUNDARY).toMatch(/only to the user's messages below/i)
+	})
+})
 
 function sessionWith(messages: Parameters<SessionManager["appendMessage"]>[0][]): AgentSession {
 	const sessionManager = SessionManager.inMemory("/project")

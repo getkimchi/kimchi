@@ -53,8 +53,10 @@ export function sideChatPrompt(fresh: boolean): string {
 
 export interface SideChatSession {
 	session: AgentSession
-	/** Count of inherited main-session message entries at the head of the child's journal. */
+	/** Count of seeded message entries (inherited context plus side-chat markers) at the head of the child's journal. */
 	contextLength: number
+	/** Count of main-session messages the side chat branched with. */
+	branchedMessages: number
 }
 
 /**
@@ -63,6 +65,57 @@ export interface SideChatSession {
  * the session stores and projects back verbatim.
  */
 type AppendableMessage = Parameters<SessionManager["appendMessage"]>[0]
+
+export const SIDE_CHAT_BOUNDARY_TYPE = "side-chat-boundary"
+
+export const PENDING_TOOL_RESULT =
+	"Still running in the main session when this side chat started. Its result is not visible here, and the main agent, not you, will handle it."
+
+export const SIDE_CHAT_BOUNDARY = [
+	"<side_chat_start>",
+	"Everything above is the main session, which another agent is still working on. It is context only: do not continue that work, re-run its tool calls, or check on its progress.",
+	"From here on you are in the read-only side chat. Respond only to the user's messages below.",
+	"</side_chat_start>",
+].join("\n")
+
+/**
+ * Seed messages for a branched side chat. A side chat opened mid-turn branches
+ * at an assistant message whose tool calls are still running; left unanswered,
+ * they read as the side chat's own interrupted work and models resume it. Close
+ * each with a result saying the main session owns it, then mark where the
+ * side chat begins right next to its first message.
+ */
+export function seedSideContext(inherited: AppendableMessage[], now = Date.now()): AppendableMessage[] {
+	const seeded = [...inherited]
+	// Only the branch point can be mid-turn; earlier unanswered calls were aborted, not running.
+	let lastTurn = seeded.length - 1
+	while (lastTurn >= 0 && seeded[lastTurn].role === "toolResult") lastTurn--
+	const last = seeded[lastTurn]
+	if (last?.role === "assistant") {
+		const answered = new Set(
+			seeded.slice(lastTurn + 1).flatMap((message) => (message.role === "toolResult" ? [message.toolCallId] : [])),
+		)
+		for (const block of last.content) {
+			if (block.type !== "toolCall" || answered.has(block.id)) continue
+			seeded.push({
+				role: "toolResult",
+				toolCallId: block.id,
+				toolName: block.name,
+				content: [{ type: "text", text: PENDING_TOOL_RESULT }],
+				isError: false,
+				timestamp: now,
+			})
+		}
+	}
+	seeded.push({
+		role: "custom",
+		customType: SIDE_CHAT_BOUNDARY_TYPE,
+		content: SIDE_CHAT_BOUNDARY,
+		display: false,
+		timestamp: now,
+	})
+	return seeded
+}
 
 interface ChildSessionOptions {
 	sessionManager: SessionManager
@@ -118,9 +171,10 @@ export async function createSideSession(
 	},
 ): Promise<SideChatSession> {
 	const sessionManager = SessionManager.inMemory(ctx.cwd)
-	const inherited = options.fresh
+	const branched = options.fresh
 		? []
-		: buildSessionContext(ctx.sessionManager.getEntries(), options.branchLeafId).messages
+		: (buildSessionContext(ctx.sessionManager.getEntries(), options.branchLeafId).messages as AppendableMessage[])
+	const inherited = options.fresh ? [] : seedSideContext(branched)
 	for (const message of [...inherited, ...(options.thread ?? [])]) {
 		sessionManager.appendMessage(message as AppendableMessage)
 	}
@@ -131,7 +185,7 @@ export async function createSideSession(
 		tools: SIDE_CHAT_TOOLS,
 		thinkingLevel: options.thinkingLevel,
 	})
-	return { session, contextLength: inherited.length }
+	return { session, contextLength: inherited.length, branchedMessages: branched.length }
 }
 
 export interface WrapUpRun {
@@ -187,7 +241,7 @@ export function draftSteeringPrompt(
 	}
 }
 
-export function sideThreadMessages(side: SideChatSession): SideThread {
+export function sideThreadMessages(side: Pick<SideChatSession, "session" | "contextLength">): SideThread {
 	// Compaction shortens session.messages, while the journal retains the original messages for saving and /wrap.
 	return side.session.sessionManager
 		.getBranch()
