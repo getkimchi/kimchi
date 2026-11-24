@@ -402,6 +402,20 @@ describe("classifyRunOutcome", () => {
 	})
 })
 
+describe("classifyRunOutcome with Ferment V2", () => {
+	it("accepts a settled Ferment V2 run that ends without an answer", () => {
+		const snapshot: RunOutcomeSnapshot = {
+			active: true,
+			inputSeen: true,
+			runSeen: true,
+			aborted: false,
+			fermentV2Owned: true,
+			sessionPath: "/tmp/s.jsonl",
+		}
+		expect(classifyRunOutcome(snapshot, { messages: ["p"], fileArgs: [] })).toEqual({ kind: "ok" })
+	})
+})
+
 describe("formatRunOutcomeDiagnostic", () => {
 	it("formats no-prompt with correct first line and Bug A advice", () => {
 		const outcome = { kind: "no-prompt" as const }

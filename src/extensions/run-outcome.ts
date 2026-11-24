@@ -1,6 +1,7 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import type { MessageLikeSessionEntry, RunOutcomeSnapshot } from "../run-outcome.js"
 import { isAgentWorker } from "./agent-worker-context.js"
+import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "./ferment-v2/constants.js"
 
 export interface RunOutcomeTracker {
 	extension(pi: ExtensionAPI): void
@@ -32,6 +33,21 @@ const DENIAL_PATTERN = new RegExp(
 )
 
 /**
+ * A Ferment V2 run is identified by its persisted journal, not by extension
+ * memory: the journal survives cleanup that runs before agent_settled. A later
+ * "clear" record means the session no longer belongs to Ferment V2.
+ */
+function endsWithLiveFermentV2Journal(branch: readonly SessionEntry[]): boolean {
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i]
+		if (entry.type !== "custom" || entry.customType !== FERMENT_V2_CUSTOM_ENTRY_TYPE) continue
+		const data: unknown = entry.data
+		return typeof data === "object" && data !== null && "op" in data && data.op === "put"
+	}
+	return false
+}
+
+/**
  * Observes top-level print/json sessions so the CLI can detect runs that end
  * without a result. Worker sessions never touch this state.
  */
@@ -52,9 +68,12 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 				state = { ...state, inputSeen: true }
 			})
 
-			pi.on("tool_result", (event) => {
+			// A blocked call skips afterToolCall, so only tool_execution_end sees denials.
+			pi.on("tool_execution_end", (event) => {
 				if (isAgentWorker() || !state.active || !event.isError) return
-				const reason = event.content
+				const content: unknown = event.result?.content
+				if (!Array.isArray(content)) return
+				const reason = content
 					.flatMap((block) => (block.type === "text" ? [block.text] : []))
 					.join("\n")
 					.trim()
@@ -75,11 +94,12 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 					}
 				}
 				const sessionPath = ctx.sessionManager.getSessionFile()
-				const { finalEntry: _previous, sessionPath: _previousPath, ...rest } = state
+				const { finalEntry: _previous, sessionPath: _previousPath, fermentV2Owned: _previousFerment, ...rest } = state
 				state = {
 					...rest,
 					runSeen: true,
 					aborted: event.aborted,
+					...(endsWithLiveFermentV2Journal(branch) ? { fermentV2Owned: true } : {}),
 					...(finalEntry ? { finalEntry } : {}),
 					...(sessionPath ? { sessionPath } : {}),
 				}

@@ -53,12 +53,13 @@ function setup(mode: ExtensionContext["mode"], branch: SessionEntry[] = [], sess
 const start = { type: "session_start", reason: "startup" }
 const input = { type: "input", text: "hi", source: "interactive" }
 const settled = (aborted = false) => ({ type: "agent_settled", aborted })
+// Blocked calls never reach afterToolCall, so pi emits no tool_result for them.
+// This is the shape pi emits for a real permission denial.
 const toolResult = (toolName: string, text: string, isError = true) => ({
-	type: "tool_result",
+	type: "tool_execution_end",
 	toolCallId: "c",
 	toolName,
-	input: {},
-	content: [{ type: "text", text }],
+	result: { content: [{ type: "text", text }], details: {} },
 	isError,
 })
 
@@ -166,11 +167,11 @@ describe("createRunOutcomeTracker", () => {
 	it("records the latest denied or blocked tool name and reason", async () => {
 		const { harness, tracker, ctx } = setup("print", [assistantEntry("secret-model-text", "model said this")])
 		await harness.emit("session_start", start, ctx)
-		await harness.emit("tool_result", toolResult("write", "Denied by rule Write(*)"), ctx)
+		await harness.emit("tool_execution_end", toolResult("write", "Denied by rule Write(*)"), ctx)
 		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName: "write", reason: "Denied by rule Write(*)" })
-		await harness.emit("tool_result", toolResult("bash", "Blocked: the session is in plan mode"), ctx)
-		await harness.emit("tool_result", toolResult("read", "ENOENT: no such file"), ctx)
-		await harness.emit("tool_result", toolResult("grep", "Denied but fine", false), ctx)
+		await harness.emit("tool_execution_end", toolResult("bash", "Blocked: the session is in plan mode"), ctx)
+		await harness.emit("tool_execution_end", toolResult("read", "ENOENT: no such file"), ctx)
+		await harness.emit("tool_execution_end", toolResult("grep", "Denied but fine", false), ctx)
 		await harness.emit("agent_settled", settled(), ctx)
 		const snapshot = tracker.getSnapshot()
 		expect(snapshot.deniedTool).toEqual({ toolName: "bash", reason: "Blocked: the session is in plan mode" })
@@ -181,7 +182,7 @@ describe("createRunOutcomeTracker", () => {
 		const { harness, tracker, ctx } = setup("print")
 		await harness.emit("session_start", start, ctx)
 		await harness.emit(
-			"tool_result",
+			"tool_execution_end",
 			toolResult("bash", "curl: access denied by server; the port was blocked by a firewall"),
 			ctx,
 		)
@@ -203,14 +204,73 @@ describe("createRunOutcomeTracker", () => {
 	])("recognizes the permissions producer format for %s: %s", async (toolName, text) => {
 		const { harness, tracker, ctx } = setup("print")
 		await harness.emit("session_start", start, ctx)
-		await harness.emit("tool_result", toolResult(toolName, text), ctx)
+		await harness.emit("tool_execution_end", toolResult(toolName, text), ctx)
 		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName, reason: text })
+	})
+
+	describe("Ferment V2 ownership", () => {
+		const journal = (id: string, data: unknown): SessionEntry => ({
+			type: "custom",
+			id,
+			parentId: null,
+			timestamp: "1",
+			customType: "kimchi_ferment_v2_state",
+			data,
+		})
+		const put = journal("j1", { schemaVersion: 1, op: "put", fermentV2: { status: "completed" } })
+		const clear = journal("j2", { schemaVersion: 1, op: "clear", fermentV2Id: "f", revision: 1, clearedAt: "1" })
+
+		it("marks a settled run whose branch ends with a live Ferment V2 put record", async () => {
+			const { harness, tracker, ctx } = setup("print", [put, assistantEntry("a", "")])
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBe(true)
+		})
+
+		it("does not mark a run whose latest Ferment V2 record is a clear", async () => {
+			const { harness, tracker, ctx } = setup("print", [put, clear, assistantEntry("a", "")])
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
+		})
+
+		it("does not mark an ordinary run", async () => {
+			const { harness, tracker, ctx } = setup("print", [assistantEntry("a", "")])
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
+		})
+
+		it("drops the mark when a later settlement no longer has a live record", async () => {
+			const { harness, tracker, ctx, setBranch } = setup("print", [put, assistantEntry("a", "")])
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("agent_settled", settled(), ctx)
+			setBranch([put, clear, assistantEntry("b", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
+		})
+
+		it("ignores malformed journal data", async () => {
+			const { harness, tracker, ctx } = setup("print", [journal("j", "nope"), assistantEntry("a", "")])
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
+		})
+
+		it("never marks a worker settlement", async () => {
+			const { harness, tracker, ctx } = setup("print", [put])
+			await harness.emit("session_start", start, ctx)
+			await runAsAgentWorker(async () => {
+				await harness.emit("agent_settled", settled(), ctx)
+			})
+			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
+		})
 	})
 
 	it("returns defensive snapshots", async () => {
 		const { harness, tracker, ctx } = setup("print")
 		await harness.emit("session_start", start, ctx)
-		await harness.emit("tool_result", toolResult("write", "Denied by rule Write(*)"), ctx)
+		await harness.emit("tool_execution_end", toolResult("write", "Denied by rule Write(*)"), ctx)
 		const snap = tracker.getSnapshot()
 		snap.inputSeen = true
 		if (snap.deniedTool) snap.deniedTool.reason = "mutated"

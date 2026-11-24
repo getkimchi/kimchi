@@ -13,6 +13,8 @@ export interface RunOutcomeSnapshot {
 	inputSeen: boolean
 	runSeen: boolean
 	aborted: boolean
+	/** Set when the settled session branch ends with a live Ferment V2 journal record. */
+	fermentV2Owned?: boolean
 	finalEntry?: MessageLikeSessionEntry
 	deniedTool?: DeniedToolOutcome
 	sessionPath?: string
@@ -72,6 +74,11 @@ export function classifyRunOutcome(
 
 	// Rule 3: Aborted settled run is ok
 	if (snapshot.aborted) {
+		return { kind: "ok" }
+	}
+
+	// Ferment V2 headless runs end on control/tool entries by design and own their exit code.
+	if (snapshot.fermentV2Owned) {
 		return { kind: "ok" }
 	}
 
