@@ -177,14 +177,44 @@ describe("createRunOutcomeTracker", () => {
 		expect(JSON.stringify(snapshot.deniedTool)).not.toContain("model said this")
 	})
 
+	it("ignores an unrelated error that mentions denied and blocked in prose", async () => {
+		const { harness, tracker, ctx } = setup("print")
+		await harness.emit("session_start", start, ctx)
+		await harness.emit(
+			"tool_result",
+			toolResult("bash", "curl: access denied by server; the port was blocked by a firewall"),
+			ctx,
+		)
+		expect(tracker.getSnapshot().deniedTool).toBeUndefined()
+	})
+
+	it.each([
+		["write", "Denied by rule Write(*) [user]"],
+		["bash", "Blocked in yolo mode (hard-blocked command): rm -rf /"],
+		["write", "Blocked: write inside the bundled skills directory is not allowed - it is the trust anchor."],
+		["bash", "Blocked: the session is in plan mode (read-only). Do not retry writes."],
+		["edit", "Blocked: the session is in plan mode (read-only) - tool edit is unavailable. Do not retry."],
+		["bash", "Subcommand denied"],
+		["bash", "Hard-blocked program in command: sudo ls"],
+		["bash", "Command blocked by rule: ls && rm x"],
+		["bash", "Subcommand blocked by rule: rm x"],
+		["bash", "No UI to confirm permission"],
+		["bash", "Classifier: looks risky (no UI to confirm)"],
+	])("recognizes the permissions producer format for %s: %s", async (toolName, text) => {
+		const { harness, tracker, ctx } = setup("print")
+		await harness.emit("session_start", start, ctx)
+		await harness.emit("tool_result", toolResult(toolName, text), ctx)
+		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName, reason: text })
+	})
+
 	it("returns defensive snapshots", async () => {
 		const { harness, tracker, ctx } = setup("print")
 		await harness.emit("session_start", start, ctx)
-		await harness.emit("tool_result", toolResult("write", "Denied"), ctx)
+		await harness.emit("tool_result", toolResult("write", "Denied by rule Write(*)"), ctx)
 		const snap = tracker.getSnapshot()
 		snap.inputSeen = true
 		if (snap.deniedTool) snap.deniedTool.reason = "mutated"
 		expect(tracker.getSnapshot().inputSeen).toBe(false)
-		expect(tracker.getSnapshot().deniedTool?.reason).toBe("Denied")
+		expect(tracker.getSnapshot().deniedTool?.reason).toBe("Denied by rule Write(*)")
 	})
 })

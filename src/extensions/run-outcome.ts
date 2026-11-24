@@ -7,7 +7,29 @@ export interface RunOutcomeTracker {
 	getSnapshot(): RunOutcomeSnapshot
 }
 
-const DENIAL_PATTERN = /\b(denied|blocked)\b/i
+/**
+ * pi turns a blocked `tool_call` into an error tool result whose text is the
+ * block reason, with empty `details` and no other marker. So the only stable
+ * contract is the exact reason text the permissions extension produces
+ * (src/extensions/permissions/index.ts). Anchor at the start so unrelated
+ * errors that merely mention "denied" or "blocked" are not matched.
+ */
+const DENIAL_PATTERN = new RegExp(
+	[
+		"Denied by rule ",
+		"Blocked: ",
+		"Blocked in yolo mode \\(hard-blocked command\\): ",
+		"Subcommand blocked by rule: ",
+		"Subcommand denied$",
+		"Hard-blocked program in command: ",
+		"Command blocked by rule: ",
+		"No UI to confirm permission$",
+		"Classifier: .* \\(no UI to confirm\\)$",
+	]
+		.map((alternative) => `^${alternative}`)
+		.join("|"),
+	"s",
+)
 
 /**
  * Observes top-level print/json sessions so the CLI can detect runs that end
