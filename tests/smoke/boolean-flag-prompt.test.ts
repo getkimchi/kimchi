@@ -1,13 +1,12 @@
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join } from "node:path"
 import { expect, it } from "vitest"
 import { DEFAULT_MODEL, type FakeOpenAiServer, startFakeOpenAiServer } from "../e2e/tui/support/fake-openai-server.js"
+import { BINARY_PATH, PACKAGE_DIR } from "./harness.js"
 import { writeKimchiConfig } from "./print-config.js"
 
-const BINARY_PATH = resolve("dist/bin/kimchi")
-const PACKAGE_DIR = resolve("dist/share/kimchi")
 const PROCESS_EXIT_TIMEOUT_MS = 12_000
 
 interface RunResult {
