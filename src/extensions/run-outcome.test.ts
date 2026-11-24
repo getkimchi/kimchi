@@ -299,6 +299,45 @@ describe("createRunOutcomeTracker", () => {
 			expect(tracker.getSnapshot().fermentV2Owned).toBe(true)
 		})
 
+		it("does not mark a later prompt in the same process when Ferment V2 wrote nothing during it", async () => {
+			const { harness, tracker, ctx, setBranch } = setup("print")
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("input", input, ctx)
+			setBranch([put, assistantEntry("a", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBe(true)
+
+			await harness.emit("input", input, ctx)
+			setBranch([put, assistantEntry("a", ""), assistantEntry("b", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
+		})
+
+		it("marks a later prompt in the same process when Ferment V2 writes a new put record during it", async () => {
+			const { harness, tracker, ctx, setBranch } = setup("print")
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("input", input, ctx)
+			setBranch([put, assistantEntry("a", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+
+			await harness.emit("input", input, ctx)
+			setBranch([put, assistantEntry("a", ""), laterPut, assistantEntry("b", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBe(true)
+		})
+
+		it("keeps the mark for Ferment V2 continuation runs, which emit no input", async () => {
+			const { harness, tracker, ctx, setBranch } = setup("print")
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("input", input, ctx)
+			setBranch([put, assistantEntry("a", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+
+			setBranch([put, assistantEntry("a", ""), assistantEntry("b", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBe(true)
+		})
+
 		it("does not mark a run whose latest Ferment V2 record is a clear", async () => {
 			const { harness, tracker, ctx, setBranch } = setup("print")
 			await harness.emit("session_start", start, ctx)

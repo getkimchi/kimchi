@@ -61,6 +61,6 @@ This is a change for existing automation: a JSON run with no prompt or no final 
 - Exit `3` because an extension handled the prompt: a hook or an extension stopped the prompt before the agent ran. Check your hooks, or rerun with `--mode json`.
 - Exit `3` after an empty answer: open the session file, or rerun with `--mode json`, to see the steps.
 
-Ferment V2 runs manage their own exit code, so the no-answer guard (exit `3`) does not apply to them. A run is exempt only when Ferment V2 writes a live record during that run. A live record left by an earlier run does not exempt a plain follow-up prompt on a resumed session. A Ferment V2 clear record ends the exemption.
+Ferment V2 runs manage their own exit code, so the no-answer guard (exit `3`) does not apply to them. A run is exempt only when Ferment V2 writes a live record during that run. A live record left by an earlier prompt does not exempt a plain follow-up prompt, whether that prompt runs in the same process or on a resumed session. A Ferment V2 clear record ends the exemption.
 
 TUI and ACP sessions are not affected by these guards.

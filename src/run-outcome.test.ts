@@ -264,9 +264,8 @@ describe("classifyRunOutcome", () => {
 	})
 
 	it("rejects a custom message after a real answer", () => {
-		// The custom message is the final entry after an earlier answer.
-		// Because the snapshot interface only carries finalEntry, the custom message
-		// is modeled as the final entry, representing the final outcome of a run.
+		// pi's text mode prints only a final assistant message, so a custom message
+		// after the answer leaves stdout empty. Exit 3 keeps stdout and the exit code in agreement.
 		const snapshot: RunOutcomeSnapshot = {
 			active: true,
 			inputSeen: false,

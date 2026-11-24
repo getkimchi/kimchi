@@ -38,19 +38,21 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 	let state: RunOutcomeSnapshot = { active: false, inputSeen: false, runSeen: false, aborted: false }
 	// A blocked call gets a `tool_call` but never reaches afterToolCall, so it has no `tool_result`.
 	const callsAwaitingResult = new Set<string>()
-	// A live record left by an earlier process does not mean Ferment V2 drives this run.
-	let fermentV2RecordIdAtStart: string | undefined
+	// A live record written before the current prompt does not mean Ferment V2 drives this run.
+	let fermentV2RecordIdBeforePrompt: string | undefined
 
 	const observing = () => state.active && !isAgentWorker()
 
 	return {
 		earlyObserver(pi: ExtensionAPI): void {
-			pi.on("input", () => {
+			pi.on("input", (_event, ctx) => {
 				if (!observing()) return
 				// A block belongs to the prompt that caused it.
 				const { blockedTool: _stale, ...rest } = state
 				state = { ...rest, inputSeen: true }
 				callsAwaitingResult.clear()
+				// Ferment V2 continues its own runs without `input`, so they keep this baseline.
+				fermentV2RecordIdBeforePrompt = latestFermentV2Record(ctx.sessionManager.getBranch())?.id
 			})
 
 			pi.on("tool_call", (event) => {
@@ -66,7 +68,8 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 			pi.on("session_start", (_event, ctx) => {
 				if (isAgentWorker()) return
 				if (ctx.mode !== "print" && ctx.mode !== "json") return
-				fermentV2RecordIdAtStart = latestFermentV2Record(ctx.sessionManager.getBranch())?.id
+				// A `/command` prompt emits no `input`, so the baseline starts here.
+				fermentV2RecordIdBeforePrompt = latestFermentV2Record(ctx.sessionManager.getBranch())?.id
 				const sessionPath = ctx.sessionManager.getSessionFile()
 				state = { ...state, active: true, ...(sessionPath ? { sessionPath } : {}) }
 			})
@@ -98,7 +101,9 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 				}
 				const fermentRecord = latestFermentV2Record(branch)
 				const fermentV2Owned =
-					fermentRecord !== undefined && fermentRecord.id !== fermentV2RecordIdAtStart && isPutRecord(fermentRecord)
+					fermentRecord !== undefined &&
+					fermentRecord.id !== fermentV2RecordIdBeforePrompt &&
+					isPutRecord(fermentRecord)
 				const sessionPath = ctx.sessionManager.getSessionFile()
 				const { finalEntry: _previous, sessionPath: _previousPath, fermentV2Owned: _previousFerment, ...rest } = state
 				state = {
