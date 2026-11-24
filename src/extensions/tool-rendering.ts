@@ -48,7 +48,12 @@ import { liveTheme } from "../components/live-theme.js"
 import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
 import { readCodemodeContextReduction } from "./codemode/outcome.js"
-import { codemodeActionSummary, estimatedTokens, formatEstimatedTokenCount } from "./codemode/presentation.js"
+import {
+	codemodeActionSummary,
+	codemodeFailureReason,
+	estimatedTokens,
+	formatEstimatedTokenCount,
+} from "./codemode/presentation.js"
 import { codemodePurpose } from "./codemode/purpose.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
@@ -4148,7 +4153,11 @@ function renderCodemodeResult(
 	clearBlinkTimer(ctx)
 	const timer = formatToolTimer(ctx.durationMs ?? getToolElapsedMs(ctx))
 	const actions = codemodeActionSummary(result.details)
-	const outcome = ctx.isError ? ["Script failed", actions] : [actions || "Script completed"]
+	// The reason stays on the collapsed row: master kept failed results open
+	// so the error was visible without a keypress.
+	const reason = ctx.isError ? codemodeFailureReason(result) : undefined
+	const failure = reason ? `Script failed: ${reason}` : "Script failed"
+	const outcome = ctx.isError ? [failure, actions] : [actions || "Script completed"]
 	const icon = theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "✗" : "✓")
 	const status = `${icon} ${[...outcome, timer].filter(Boolean).join(" · ")}`
 	if (!options.expanded) {
@@ -4157,8 +4166,9 @@ function renderCodemodeResult(
 
 	const lines = [status]
 	const reduction = readCodemodeContextReduction(result.details)
-	// Incomplete accounting would understate the intermediate size, so no estimate is shown.
-	if (reduction?.complete) {
+	// Incomplete accounting would understate the intermediate size, and a
+	// script with no nested results filtered nothing, so neither shows an estimate.
+	if (reduction?.complete && reduction.intermediateTextChars > 0) {
 		const intermediate = formatEstimatedTokenCount(estimatedTokens(reduction.intermediateTextChars))
 		const returned = formatEstimatedTokenCount(estimatedTokens(reduction.returnedTextChars))
 		lines.push(

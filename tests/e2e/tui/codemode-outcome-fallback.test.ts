@@ -6,10 +6,10 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-test("Codemode without a valid purpose or positive context reduction retains the legacy fallback", async ({
+test("Codemode without a purpose keeps the legacy title and shows no estimate when nothing was filtered", async ({
 	terminal,
 }) => {
-	const script = `// @description: ${"x".repeat(121)}\nreturn "tiny";`
+	const script = 'return "tiny";'
 
 	await runKimchiSession(
 		terminal,
@@ -34,13 +34,12 @@ test("Codemode without a valid purpose or positive context reduction retains the
 			const collapsed = viewText(terminal)
 			expect(collapsed).toContain("● Codemode Codemode")
 			expect(collapsed).toMatch(/✓ Script completed · \d+(?:\.\d+)?(?:ms|s)/)
-			expect(collapsed).not.toContain("tokens kept out of context")
-			trace.step("an oversized purpose and a non-positive estimate preserve the old title and omit token claims")
+			trace.step("a script without a purpose keeps the legacy title")
 
 			terminal.keyPress("o", { ctrl: true })
-			await waitForText(terminal, "Context estimate:", { full: false })
-			expect(viewText(terminal)).not.toContain("Wall time")
-			expect(viewText(terminal)).toContain("tiny")
+			await waitForText(terminal, "tiny", { full: false })
+			expect(viewText(terminal)).not.toContain("Context estimate:")
+			trace.step("a script with no nested calls filtered nothing, so no estimate is shown")
 		},
 	)
 })
@@ -78,11 +77,13 @@ test("Codemode shows a complete context estimate for a failed script", async ({ 
 			await waitForText(terminal, "Failed Codemode scenario complete.", { full: false })
 			const collapsed = viewText(terminal)
 			expect(collapsed).toContain("● Codemode Filter the fixture before failing deliberately")
-			expect(collapsed).toMatch(/✗ Script failed · read 1 file · \d+(?:\.\d+)?(?:ms|s)/)
-			trace.step("a failed script reports overall failure with the actions it completed")
+			expect(collapsed).toMatch(
+				/✗ Script failed: Error: intentional-codemode-failure · read 1 file · \d+(?:\.\d+)?(?:ms|s)/,
+			)
+			trace.step("a failed script shows why it failed and the actions it completed, without expanding")
 
 			terminal.keyPress("o", { ctrl: true })
-			await waitForText(terminal, "intentional-codemode-failure", { full: false })
+			await waitForText(terminal, "Context estimate:", { full: false })
 			expect(viewText(terminal)).toMatch(/Context estimate: ≈\d+(?:\.\d+)?[km]? intermediate tokens/)
 			expect(viewText(terminal)).not.toContain("Wall time")
 		},

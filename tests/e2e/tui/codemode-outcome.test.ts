@@ -40,7 +40,7 @@ test("Codemode estimates the structured value a script receives, not the shorter
 		async (_fixture, trace) => {
 			terminal.submit("Run the structured output Codemode scenario")
 			await waitForText(terminal, "Structured output scenario complete.", { full: false })
-			expect(viewText(terminal)).toMatch(/✓ 1 operation · \d+(?:\.\d+)?(?:ms|s)/)
+			expect(viewText(terminal)).toMatch(/✓ called structured_report · \d+(?:\.\d+)?(?:ms|s)/)
 
 			terminal.keyPress("o", { ctrl: true })
 			await waitForText(terminal, "Context estimate:", { full: false })
@@ -97,7 +97,6 @@ test("Codemode shows its purpose and observed actions, then replays the recorded
 			expect(collapsed).toMatch(/✓ read 1 file · \d+(?:\.\d+)?(?:ms|s)/)
 			expect(collapsed).not.toContain("// @description:")
 			expect(collapsed).not.toContain("Actions:")
-			expect(collapsed).not.toContain("tokens kept out of context")
 			trace.step("purpose and the observed actions replace the repeated Codemode title and line count")
 
 			terminal.keyPress("o", { ctrl: true })
@@ -124,7 +123,6 @@ test("Codemode shows its purpose and observed actions, then replays the recorded
 			await waitForText(terminal, "Context estimate:", { full: false })
 			const replayed = fullText(terminal)
 			expect(replayed).toContain("Codemode Filter the fixture down to its alpha lines")
-			expect(replayed).not.toContain("tokens kept out of context")
 			expect(replayed).toContain(liveCalculation)
 			trace.step("resume replays the persisted purpose and context calculation without executing the script again")
 		},

@@ -18,6 +18,15 @@ describe("codemodePurpose", () => {
 		expect(codemodePurpose({ code: `// @description: ${"x".repeat(120)}` })).toHaveLength(120)
 	})
 
+	it("cuts a longer purpose to 120 characters with an ellipsis instead of dropping it", () => {
+		expect(codemodePurpose({ code: `// @description: ${"x".repeat(121)}` })).toBe(`${"x".repeat(119)}…`)
+	})
+
+	it("measures the limit in code points, not UTF-16 units", () => {
+		const emoji = "😀".repeat(61)
+		expect(codemodePurpose({ code: `// @description: ${emoji}` })).toBe(emoji)
+	})
+
 	it("handles a CRLF @options line", () => {
 		expect(codemodePurpose({ code: "// @options: {}\r\n// @description: Filter files\r\nreturn 1" })).toBe(
 			"Filter files",
@@ -44,7 +53,6 @@ describe("codemodePurpose invalid metadata", () => {
 		"// @description: Filter files\n// @options: {}",
 		"// @description: Filter files\u2028// @options: {}",
 		"const x = 1;\n// @description: Late purpose",
-		`// @description: ${"x".repeat(121)}`,
 		"// @description:    \nreturn 1",
 	])("returns the fallback for invalid purpose metadata: %j", (code) => {
 		expect(codemodePurpose({ code })).toBeUndefined()
