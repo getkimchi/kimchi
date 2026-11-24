@@ -11,6 +11,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { type Mocked, vi } from "vitest"
 import { createModelRegistry } from "./model-registry.js"
+import { testTheme } from "./theme.js"
 
 export function createCommandContext(): ExtensionCommandContext {
 	return {
@@ -147,6 +148,9 @@ export function createContext(
 				}
 			: undefined,
 		ui: {
+			theme: testTheme,
+			setWorkingIndicator: vi.fn(),
+			setWorkingMessage: vi.fn(),
 			input: vi.fn(),
 			select: vi.fn(),
 			confirm: vi.fn(),

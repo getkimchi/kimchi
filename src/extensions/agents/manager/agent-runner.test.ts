@@ -24,8 +24,10 @@ afterEach(async () => {
 	rmSync(attributionDir, { recursive: true, force: true })
 })
 
-vi.mock("@earendil-works/pi-coding-agent", async () => {
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
 	return {
+		...actual,
 		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
 		DefaultResourceLoader: vi.fn().mockImplementation(function () {
 			return {
@@ -607,6 +609,49 @@ describe("runAgent — telemetry extension", () => {
 		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 
+	it("loads the host-only Verifier without disk extensions, skills, web tools or MCP", async () => {
+		mockGetConfig.mockReturnValue(
+			makeTypeConfig({
+				extensions: false,
+				skills: false,
+				builtinToolNames: [
+					"read",
+					"bash",
+					"grep",
+					"find",
+					"ls",
+					"write",
+					"report_finding",
+					"retract_finding",
+					"resolve_finding",
+					"submit_verdict",
+				],
+			}),
+		)
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Verifier", disallowedTools: ["edit"] }))
+		mockGetToolNamesForType.mockReturnValue(["read", "write"])
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Verifier", "verify", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const loaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(loaderOptions?.noExtensions).toBe(true)
+		expect(loaderOptions?.noSkills).toBe(true)
+		// Six host-installed factories only: no web or MCP factories, and no
+		// caller-provided inline factories in this focused profile run.
+		expect(loaderOptions?.extensionFactories).toHaveLength(6)
+		expect(mockScanBriefSkills).not.toHaveBeenCalled()
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
+	})
+
 	it("applies Kimchi's default bash timeout to subagent tool calls", async () => {
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({
@@ -825,6 +870,37 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		expect(submit).toHaveBeenCalledOnce()
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(result.aborted).toBe(false)
+	})
+
+	it("stops a session after a caller-accepted terminal tool, but not after a rejected call", async () => {
+		const abortSpy = vi.fn()
+		let accepted = false
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_end", toolName: "submit_verdict" })
+				await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+				expect(abortSpy).not.toHaveBeenCalled()
+				accepted = true
+				emit({ type: "tool_execution_end", toolName: "submit_verdict" })
+				await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "verify", {
+			pi: pi as unknown as RunOptions["pi"],
+			shouldTerminateAfterTool: (toolName) => toolName === "submit_verdict" && accepted,
+		})
+
 		expect(abortSpy).toHaveBeenCalledOnce()
 		expect(result.aborted).toBe(false)
 	})
@@ -2250,6 +2326,186 @@ describe("runAgent — runtime cleanup", () => {
 		resolvePrompt?.()
 		const result = await resultPromise
 		expect(result.aborted).toBe(false)
+	})
+})
+
+describe("runAgent — inline extension factories and model-only inactivity", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		vi.useFakeTimers()
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockDefaultResourceLoader.mockClear()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	function mockSession(session: ReturnType<typeof makeFakeSession>) {
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+	}
+
+	it("appends caller-provided inline extension factories to the child loader", async () => {
+		const inlineExtension: InlineExtension = (childPi) => {
+			childPi.on("session_start", () => {})
+		}
+		mockSession(makeFakeSession({ emitUsage: false }))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			extensionFactories: [inlineExtension],
+		})
+
+		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(ctorArg?.extensionFactories).toContain(inlineExtension)
+	})
+
+	it("does not steer or abort during a silent long tool call in model_only mode", async () => {
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				// A silent 30s tool call: no session events while it executes.
+				await new Promise((resolve) => setTimeout(resolve, 30_000))
+				emit({ type: "tool_execution_end", toolName: "bash" })
+				await promptPromise
+			},
+		})
+		mockSession(session)
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"verify the work",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				inactivityTimeout: 10,
+				maxDuration: 0,
+				inactivityMode: "model_only",
+			},
+		)
+
+		// 25s of silence while the tool runs — past the 10s inactivity timeout.
+		await vi.advanceTimersByTimeAsync(25_000)
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		// Once the tool ends, model inactivity steers and then aborts as usual.
+		await vi.advanceTimersByTimeAsync(31_000)
+		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("stalled"))
+		await vi.advanceTimersByTimeAsync(11_000)
+		expect(abortSpy).toHaveBeenCalled()
+
+		resolvePrompt?.()
+		const result = await resultPromise
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("inactivity")
+	})
+
+	it("still steers on a silent tool call in the default any_event mode", async () => {
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const session = makeFakeSession({
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				await new Promise((resolve) => setTimeout(resolve, 30_000))
+				emit({ type: "tool_execution_end", toolName: "bash" })
+				await promptPromise
+			},
+		})
+		mockSession(session)
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"verify the work",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				inactivityTimeout: 10,
+				maxDuration: 0,
+			},
+		)
+
+		await vi.advanceTimersByTimeAsync(25_000)
+		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("stalled"))
+
+		resolvePrompt?.()
+		// Release the silent tool's sleep so the prompt can settle.
+		await vi.advanceTimersByTimeAsync(10_000)
+		await resultPromise
+	})
+
+	it("does not abort a model_only resume during a silent tool call", async () => {
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				await new Promise((resolve) => setTimeout(resolve, 30_000))
+				emit({ type: "tool_execution_end", toolName: "bash" })
+				await promptPromise
+			},
+		})
+
+		const resultPromise = resumeAgent(session as unknown as AgentSession, "continue", {
+			inactivityTimeout: 10,
+			maxDuration: 0,
+			inactivityMode: "model_only",
+		})
+
+		await vi.advanceTimersByTimeAsync(25_000)
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		resolvePrompt?.()
+		// Release the silent tool's sleep so the resume prompt can settle.
+		await vi.advanceTimersByTimeAsync(10_000)
+		const result = await resultPromise
+		expect(result.aborted).toBe(false)
+	})
+
+	it("honours unlimited turns and duration (maxTurns 0, maxDuration 0)", async () => {
+		// A 40-turn agent must never hit a turn cap or wall-clock abort.
+		const session = makeFakeSession({
+			emitUsage: false,
+			events: Array.from({ length: 40 }, () => ({ type: "turn_end" })),
+		})
+		mockSession(session)
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "work", {
+			pi: pi as unknown as RunOptions["pi"],
+			maxTurns: 0,
+			maxDuration: 0,
+		})
+
+		expect(result.aborted).toBe(false)
+		expect(result.maxTurns).toBeUndefined()
 	})
 })
 

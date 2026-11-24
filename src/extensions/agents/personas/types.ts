@@ -84,6 +84,7 @@ export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_FIXER = "Fixer"
 export const AGENT_GRADER = "Grader"
 export const AGENT_DEBUGGER = "Debugger"
+export const AGENT_FERMENT_VERIFIER = "Verifier"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -96,6 +97,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_FIXER,
 	AGENT_GRADER,
 	AGENT_DEBUGGER,
+	AGENT_FERMENT_VERIFIER,
 ] as const
 
 /** Isolation mode for agent execution. */
@@ -146,6 +148,8 @@ export interface AgentConfig {
 	isDefault?: boolean
 	/** false = agent is hidden from the registry */
 	enabled?: boolean
+	/** true = host-spawned persona hidden from user spawning and agent UIs; runtime config remains available. */
+	hostOnly?: boolean
 	/** Where this agent was loaded from */
 	source?: "default" | "project" | "global" | "package"
 	/**

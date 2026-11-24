@@ -11,6 +11,7 @@ import {
 	resolveModels,
 	startFakeOpenAiServer,
 } from "../e2e/tui/support/fake-openai-server.js"
+import { isVerifierRequest, verifierCheck, verifierSubmit } from "../e2e/tui/support/ferment-v2-verifier.js"
 
 const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
@@ -37,23 +38,50 @@ async function withFermentV2PrintFixture(
 	}
 }
 
-it("recovers from malformed evaluation, completes headless, and delivers the evaluated draft exactly", {
+it("resumes a verifier that ended without submitting, completes headless, and delivers the evaluated draft exactly", {
 	timeout: 25_000,
 }, async () => {
 	await withFermentV2PrintFixture(
 		{
 			responses: [
-				{ stream: ["NO_TODO_DRAFT"] },
 				{
-					match: isFermentV2EvaluatorRequest,
-					stream: ['{"verdict":"met","checks":[{"failureMode":"quoted "text" breaks JSON"}]}'],
-				},
-				{
-					match: isFermentV2EvaluatorRequest,
-					stream: [
-						'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"NO_TODO_DRAFT","expectedAnswer":"NO_TODO_DRAFT","evidence":[]}],"reason":"ready"}',
+					stream: ["Creating the Todo."],
+					toolCalls: [
+						{
+							id: "create-no-todo-draft-todos",
+							function: {
+								name: "create_todos",
+								arguments: JSON.stringify({
+									todos: [
+										{
+											content: "Reply with exactly NO_TODO_DRAFT",
+											status: "completed",
+											note: "Evidence: scripted reply drafted",
+										},
+									],
+								}),
+							},
+						},
 					],
 				},
+				{ stream: ["NO_TODO_DRAFT"] },
+				{
+					toolCalls: [
+						{
+							id: "claim-no-todo-draft-complete",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "complete", completion_confidence: "proven" }),
+							},
+						},
+					],
+				},
+				verifierCheck("verifier-no-todo-draft-check"),
+				// The verifier ends its turn with prose instead of submitting; the host resumes it.
+				{ match: isVerifierRequest, stream: ["The answer looks exactly right."] },
+				verifierSubmit("met", "ready", {
+					finalAnswer: [{ clause: "Reply with exactly NO_TODO_DRAFT", expected: "NO_TODO_DRAFT" }],
+				}),
 				{ stream: ["\n\nNO_TODO_DRAFT\n"] },
 			],
 		},
@@ -71,9 +99,9 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 			expect(result.stdout, failure).toBe("NO_TODO_DRAFT\n")
 			expect(readFermentV2Journal(sessionPath).at(-1)?.status, failure).toBe("complete")
 			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-			expect(chatRequests, failure).toHaveLength(4)
-			expect(chatRequests.filter(isFermentV2EvaluatorRequest), failure).toHaveLength(2)
-			expect(JSON.stringify(chatRequests.at(-2)?.body), failure).toContain("previous response was not valid JSON")
+			expect(chatRequests, failure).toHaveLength(7)
+			expect(chatRequests.filter(isFermentV2VerifierRequest), failure).toHaveLength(3)
+			expect(JSON.stringify(chatRequests.at(-2)?.body), failure).toContain("call submit_verdict now")
 			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).toContain(
 				'Return this evaluated draft verbatim: \\"NO_TODO_DRAFT\\"',
 			)
@@ -102,11 +130,14 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 			expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 			expect(result.stdout, failure).toBe("VERIFIED_FINAL_AFTER_EVALUATION\n")
 			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-			const evaluatorRequests = chatRequests.filter(isFermentV2EvaluatorRequest)
-			expect(evaluatorRequests, failure).toHaveLength(2)
-			expect(JSON.stringify(evaluatorRequests.at(-1)?.body), failure).toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+			const verifierRequests = chatRequests.filter(isFermentV2VerifierRequest)
+			expect(verifierRequests, failure).toHaveLength(4)
+			// The verifier is transcript-free: the hidden claim candidate never reaches it.
+			expect(JSON.stringify(verifierRequests.at(-1)?.body), failure).not.toContain(
+				"UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN",
+			)
 			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).not.toContain("Return this evaluated draft verbatim")
-			expect(chatRequests, failure).toHaveLength(7)
+			expect(chatRequests, failure).toHaveLength(9)
 		},
 	)
 })
@@ -134,7 +165,7 @@ it("pauses --print and exits nonzero when final-answer delivery fails", {
 	)
 })
 
-it("exits --print with code 0 when the evaluator returns no parseable verdict, instead of hanging", {
+it("exits --print with code 0 when the verifier never submits a verdict, instead of hanging", {
 	timeout: 25_000,
 }, async () => {
 	await withFermentV2PrintFixture(
@@ -148,10 +179,13 @@ it("exits --print with code 0 when the evaluator returns no parseable verdict, i
 			expect(result.code, failure).toBe(0)
 			expect(fermentV2Runs.at(-1)?.status, failure).toBe("paused")
 			expect(fermentV2Runs.at(-1)?.lastEvaluation?.verdict, failure).toBe("unavailable")
+			expect(fermentV2Runs.at(-1)?.lastEvaluation?.reason, failure).toContain("ended without submitting a verdict")
+			// Todo setup and claim, then the verifier's check, its prose, and two
+			// prose replies to the submission reminders.
 			expect(
 				fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
 				failure,
-			).toHaveLength(3)
+			).toHaveLength(6)
 		},
 	)
 })
@@ -179,7 +213,8 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 				),
 				failure,
 			).toBe(true)
-			expect(result.stdout.match(/Still working on it\./g), failure).toHaveLength(1)
+			// Print mode emits only the final message, which here is the blocked
+			// tool result; the answered prose stays visible in the session journal.
 			expect(readFileSync(sessionPath, "utf-8").match(/Still working on it\./g), failure).toHaveLength(1)
 			expect(
 				JSON.stringify(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))),
@@ -207,7 +242,12 @@ it("delivers an evaluated final answer after resuming an active --print session"
 			expect(result.stdout.trim(), failure).toBe("RESUMED_FINAL_AFTER_EVALUATION")
 			expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
 			expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
-			expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(6)
+			// Resumed turn (no claim, deterministic continuation), claim turn, verifier
+			// (bash check + verdict), final-answer delivery, plus possible extra provider turns.
+			expect(
+				fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")).length,
+				failure,
+			).toBeGreaterThanOrEqual(4)
 		},
 	)
 })
@@ -274,22 +314,33 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 
 function resumedActiveFermentV2Responses() {
 	return [
-		{ stream: ["Still working on it."] },
 		{
-			match: isFermentV2EvaluatorRequest,
-			stream: ['{"verdict":"impossible","reason":"Blocked on missing external approval."}'],
+			stream: ["Still working on it."],
+			toolCalls: [
+				{
+					id: "block-resumed-ferment-v2",
+					function: {
+						name: "update_ferment_v2",
+						arguments: JSON.stringify({ status: "blocked", reason: "Blocked on missing external approval." }),
+					},
+				},
+			],
 		},
 	]
 }
 
 function resumedActiveFermentV2CompletionResponses(): FakeResponseScript[] {
 	return [
-		{ stream: ["RESUMED_PROGRESS_MUST_STAY_HIDDEN"] },
 		{
-			match: isFermentV2EvaluatorRequest,
-			stream: ['{"verdict":"continue","reason":"Run one final verification before delivery."}'],
+			match: (request) => JSON.stringify(request.body).includes("Continue the active objective."),
+			stream: ["RESUMED_PROGRESS_BEFORE_CLAIM"],
 		},
 		{
+			// The deterministic host continuation after the no-claim stop: keep working,
+			// then settle Todos and submit with update_ferment_v2.
+			match: (request) =>
+				JSON.stringify(request.body).includes("Progress did not materially change") ||
+				JSON.stringify(request.body).includes("Continue working on the active objective"),
 			stream: ["UNVERIFIED_RESUMED_CANDIDATE"],
 			toolCalls: [
 				{
@@ -301,13 +352,15 @@ function resumedActiveFermentV2CompletionResponses(): FakeResponseScript[] {
 				},
 			],
 		},
-		{ stream: ["UNVERIFIED_RESUMED_CANDIDATE_AFTER_CLAIM"] },
+		verifierCheck("verifier-met-check"),
+		verifierSubmit("met", "The implemented feature is verified."),
 		{
-			match: isFermentV2EvaluatorRequest,
-			stream: [
-				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
-			],
+			match: (request) => JSON.stringify(request.body).includes("Give the user only the final answer"),
+			stream: ["RESUMED_FINAL_AFTER_EVALUATION"],
 		},
+		// The provider may issue an extra model call after the terminating claim and
+		// the exploration guard may steer after delivery; keep those turns harmless.
+		{ stream: ["RESUMED_FINAL_AFTER_EVALUATION"] },
 		{ stream: ["RESUMED_FINAL_AFTER_EVALUATION"] },
 	]
 }
@@ -413,11 +466,6 @@ function fermentV2Responses(
 				},
 			],
 		},
-		{ stream: ["Planning ended before implementation."] },
-		{
-			match: isFermentV2EvaluatorRequest,
-			stream: ['{"verdict":"continue","reason":"Implementation is not evidenced yet."}'],
-		},
 		{
 			stream: ["Implementing and verifying."],
 			toolCalls: [
@@ -446,18 +494,41 @@ function fermentV2Responses(
 				},
 			],
 		},
+		verifierCheck("verifier-continue-check"),
+		verifierSubmit("continue", "Implementation is not evidenced yet.", {
+			finding: {
+				clause: "Implement feature A",
+				observed: "the implementation is not verified",
+				expected: "feature A is implemented and verified",
+			},
+		}),
 		{
-			match: isFermentV2EvaluatorRequest,
-			stream: [
-				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
+			stream: ["UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN"],
+			toolCalls: [
+				{
+					id: "reclaim-ferment-v2-complete",
+					function: {
+						name: "update_ferment_v2",
+						arguments: JSON.stringify({ status: "complete", completion_confidence: "proven" }),
+					},
+				},
 			],
 		},
+		verifierCheck("verifier-met-check", "pwd -P"),
+		verifierSubmit("met", "The implemented feature is verified.", {
+			resolve: [{ id: "F1", resolution: "fixed", reproduction: "pwd -P" }],
+		}),
 		finalAnswer,
 	]
 }
 
-function isFermentV2EvaluatorRequest(request: FakeResponseRequest): boolean {
-	return JSON.stringify(request.body).includes("<ferment_v2_evaluator>")
+function isFermentV2VerifierRequest(request: FakeResponseRequest): boolean {
+	return JSON.stringify(request.body).includes("<ferment_v2_verifier>")
+}
+
+/** A verifier turn returning prose without any report tool call. */
+function verifierResponse(text: string): FakeResponseScript {
+	return { match: isFermentV2VerifierRequest, stream: [text] }
 }
 
 function unparseableEvaluatorResponses() {
@@ -469,17 +540,31 @@ function unparseableEvaluatorResponses() {
 					id: "create-ferment-v2-todo",
 					function: {
 						name: "create_todos",
-						arguments: JSON.stringify({ todos: [{ content: "Finish feature A", status: "in_progress" }] }),
+						arguments: JSON.stringify({
+							todos: [{ content: "Finish feature A", status: "completed", note: "Evidence: done" }],
+						}),
 					},
 				},
 			],
 		},
-		{ stream: ["Planning ended before implementation."] },
 		{
-			stream: [
-				"Looking over the todo list and the recent changes, the work looks finished and every planning step appears satisfied to me.",
+			stream: ["Planning ended before implementation."],
+			toolCalls: [
+				{
+					id: "claim-unparseable-complete",
+					function: {
+						name: "update_ferment_v2",
+						arguments: JSON.stringify({ status: "complete", completion_confidence: "tested" }),
+					},
+				},
 			],
 		},
+		verifierCheck("verifier-unparseable-check"),
+		verifierResponse(
+			"Looking over the todo list and the recent changes, the work looks finished and every planning step appears satisfied to me.",
+		),
+		verifierResponse("Still looks finished to me; no verdict is needed here."),
+		verifierResponse("Nothing more to add."),
 	]
 }
 
@@ -521,6 +606,8 @@ function runFermentV2Print(
 	workDir: string,
 	sessionPath: string,
 	prompt = "/ferment-v2 implement feature A",
+	permissionMode: "default" | "auto" | "yolo" = "yolo",
+	extraEnv: Record<string, string> = {},
 ) {
 	return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolvePromise) => {
 		const child = spawn(
@@ -533,8 +620,9 @@ function runFermentV2Print(
 					HOME: homeDir,
 					PI_PACKAGE_DIR: PACKAGE_DIR,
 					KIMCHI_API_KEY: "fake",
-					KIMCHI_PERMISSIONS: "yolo",
+					KIMCHI_PERMISSIONS: permissionMode,
 					KIMCHI_TELEMETRY_ENABLED: "0",
+					...extraEnv,
 				},
 			},
 		)

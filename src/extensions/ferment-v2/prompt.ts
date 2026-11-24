@@ -1,5 +1,10 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
-import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME } from "./constants.js"
+import {
+	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
+	GET_FERMENT_V2_TOOL_NAME,
+	RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME,
+	UPDATE_FERMENT_V2_TOOL_NAME,
+} from "./constants.js"
 import type { FermentV2Lesson } from "./lessons.js"
 import { FERMENT_V2_STATUS, type SessionFermentV2 } from "./types.js"
 
@@ -16,6 +21,7 @@ const EXECUTION_GUIDANCE = `Working rules:
 - ${FINAL_DELIVERY_TODO_RULE}
 - If the objective asks for an artifact, create a usable version early.
 - Timebox uncertain exploration; preserve what you learn and change approach when stalled.
+- When every objective requirement is done and verified, settle your Todos and submit the objective with ${UPDATE_FERMENT_V2_TOOL_NAME}; ending a turn without submitting keeps the objective open.
 - ${TASK_ONLY_COMMUNICATION_RULE}
 - End the turn after a meaningful completed Todo or timeboxed failed approach so the next checkpoint can reassess.`
 
@@ -100,7 +106,8 @@ Objective:
 - Treat the canonical objective context in this request as authoritative.
 
 Execution:
-- First inventory supplied files, executables, tests, and constraints; create short action Todos for concrete work and verification.
+- First inventory supplied files, executables, tests, and constraints.
+- Create short action Todos for concrete work and verification.
 - Track the work with the tactical todo tools, keep one item in progress, and leave the settled list visible for verification.
 - Redirect current and future work toward this objective.
 - Continue until the objective is complete or genuinely blocked.
@@ -116,6 +123,17 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 			objective: fermentV2.objective,
 			tokenBudget: fermentV2.tokenBudget,
 			...(durableLessons.length > 0 ? { lessons: durableLessons } : {}),
+			...(fermentV2.openFindings?.length
+				? {
+						openFindings: fermentV2.openFindings.map(({ id, clause, expected, observed, response }) => ({
+							id,
+							clause,
+							expected,
+							observed,
+							response: response?.status ?? "none",
+						})),
+					}
+				: {}),
 		},
 		null,
 		2,
@@ -128,6 +146,10 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 - Treat the objective JSON above as authoritative.
 - Do not call ${GET_FERMENT_V2_TOOL_NAME} while this context is present.
 </objective_rules>
+
+<finding_rules>
+- Open review findings (openFindings above) stay open until a later review closes them. Answer each with ${RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME}: fixed once you verified the fix, or disputed with the objective text, repository contract, or specification that shows its expectation is wrong or out of scope.
+</finding_rules>
 
 <todo_rules>
 - Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this objective is active.
