@@ -244,7 +244,6 @@ export async function resolveReviewTarget(
 ): Promise<ResolvedReviewTarget> {
 	return withReviewTargetFetchAuthorization(request.fetch, async () => {
 		const root = await repositoryRoot(options.root, options.signal)
-		if (request.kind === "branch") await assertNoConversionDrivers(root, options.signal)
 		let baseRef = "HEAD"
 		let baseSha: string
 		let tipSha: string

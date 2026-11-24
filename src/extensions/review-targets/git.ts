@@ -140,6 +140,7 @@ export async function gitBytes(cwd: string, args: readonly string[], options: Gi
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		GIT_OPTIONAL_LOCKS: "0",
+		// No call relies on glob expansion, including stdin pathspec files.
 		GIT_LITERAL_PATHSPECS: "1",
 		GIT_TERMINAL_PROMPT: "0",
 		GIT_PAGER: "cat",

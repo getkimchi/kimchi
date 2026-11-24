@@ -22,7 +22,9 @@ The bare-choice result always contains Working tree followed by Branch and inclu
 
 Every internal Git subprocess, including config inspection, fetching, and all cleanup paths, runs with `core.hooksPath` set to a fresh process-owned empty directory. Repository hooks under `.git/hooks` or a configured `core.hooksPath` therefore cannot execute. A real empty directory is used instead of a platform-specific device path; marker-hook tests cover both configured hook locations on POSIX Git runners.
 
-Resolution and bare-choice discovery use a non-converting preflight before status, content diffs, or add. It rejects any `filter.<name>.clean`, `.smudge`, or `.process` command visible in repository configuration at any scope, and any tracked or current path to which `.gitattributes` or `info/attributes` assigns a filter or working-tree encoding. Config discovery, ref enumeration, `ls-tree`, `ls-files`, and `check-attr` do not execute those conversions. Actual subprocesses additionally replace discovered filter executables with empty, failing commands as defense in depth.
+Working-tree resolution and bare-choice discovery use a non-converting preflight before status, content diffs, or add. A configured filter driver alone is ordinary and does not block resolution: globally installed LFS is fine when no in-scope path uses it. Candidate discovery covers staged changes, working-tree modifications, and non-ignored untracked files, then batches those paths through `git check-attr --stdin -z`. A path is rejected only when its `filter` attribute names a driver with a configured clean/smudge/process command, or it has a `working-tree-encoding` attribute. The existing error names the path and driver, capped at 20 entries plus the remainder count.
+
+Attributes at any `.gitattributes` level, `.git/info/attributes`, and `core.attributesFile` all apply. An attribute on an unchanged path outside the comparison does not block review. An in-scope LFS path is still rejected because faithfully reproducing its result would require the filter. Committed-only branch comparisons do not inspect or convert working-tree contents, so filter attributes do not block them; `--include-working-tree` applies the snapshot rules. Discovery and external-diff suppression avoid executing conversions, and actual subprocesses additionally replace discovered filter executables with empty, failing commands as defense in depth.
 
 Custom diff drivers and textconv commands are allowed; repositories are not rejected for `diff=` attributes or `diff.<driver>` configuration. Every production diff-producing command passes both `--no-ext-diff` and `--no-textconv`, so these drivers are never executed. Porcelain status and ref-inspection commands do not produce patches, and the library has no production `log`, content `show`, or `diff-tree` calls. Dirty working-tree and committed branch comparisons have executable-marker regression coverage.
 
@@ -44,7 +46,7 @@ Branch resolutions use `merge-base <base-tip> <selected-tip>` as the immutable b
 
 ## Frozen working-tree snapshots
 
-A dirty snapshot is a synthetic commit with the selected tip as its parent. Capture uses `GIT_INDEX_FILE` pointing to a new temporary index, `read-tree <tip>`, `git add --all -- .`, `write-tree`, and `commit-tree`. Reading the working tree from `HEAD` rather than copying the user's index makes the final on-disk version win when staged and unstaged contents differ. Non-ignored untracked files are included; ignored files are not. Empty clean targets reuse the selected tip without creating a synthetic commit.
+A dirty snapshot is a synthetic commit with the selected tip as its parent. Capture uses `GIT_INDEX_FILE` pointing to a new temporary index, `read-tree <tip>`, `git add --all --pathspec-from-file=- --pathspec-file-nul`, `write-tree`, and `commit-tree`. Changed paths are NUL-delimited and passed through stdin rather than argv, so argument length is independent of changed-file count. Every path stays literal under the central pathspec environment, including brackets, wildcard characters, and leading-colon pathspec magic. Because `git diff` does not consistently support pathspec files, stability verification performs a second scoped temporary-index capture with the same stdin input and compares tree object IDs. No Git call relies on glob expansion. Starting from `HEAD` and adding only staged, modified, deleted, and non-ignored untracked paths makes final on-disk content win when versions differ without touching unrelated paths or their filters. Empty clean targets reuse the selected tip without creating a synthetic commit. A second scope discovery detects paths that become modified during capture.
 
 `git ls-files -v` runs before clean-tree decisions and capture. Any assume-unchanged or skip-worktree entry produces an explicit `unsupported_index_flags` error naming capped paths and the remainder count. Bare choices report such a tree as `possible-edits`, never clean.
 
@@ -65,7 +67,7 @@ The following inputs fail explicitly rather than dropping content:
 - unmerged paths;
 - staged, unstaged, untracked, or differently captured submodule revisions;
 - sparse checkouts;
-- any configured content-filter command or assigned filter/working-tree encoding;
+- an applicable configured filter or working-tree encoding on an in-scope working-tree path;
 - assume-unchanged or skip-worktree index paths;
 - working-tree changes detected during capture, a moving checkout `HEAD`, or an unsafe context directory.
 

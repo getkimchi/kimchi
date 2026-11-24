@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { gitBytes, gitResultError, gitText } from "./git.js"
-import { assertNoConversionDrivers } from "./preflight.js"
+import { assertNoConversionDrivers, workingTreeCandidatePaths } from "./preflight.js"
 import type { RemovedReviewSnapshot, WorkingTreeStatus } from "./types.js"
 import { ReviewTargetError } from "./types.js"
 
@@ -164,17 +164,51 @@ async function assertGitlinksUnchanged(
 	}
 }
 
-async function assertCaptureStable(root: string, env: Record<string, string>, signal?: AbortSignal): Promise<void> {
-	const difference = await gitBytes(root, ["diff", "--quiet", "--no-ext-diff", "--no-textconv", "--"], {
-		env,
-		signal,
-		allowFailure: true,
-	})
-	if (difference.exitCode > 1) {
-		throw gitResultError(["diff", "--quiet"], difference)
+function pathspecInput(paths: string[]): Buffer {
+	return Buffer.from(paths.map((path) => `${path}\0`).join(""))
+}
+
+async function captureTree(
+	root: string,
+	env: Record<string, string>,
+	tipSha: string,
+	paths: string[],
+	signal?: AbortSignal,
+): Promise<string> {
+	await gitText(root, ["read-tree", tipSha], { env, signal })
+	if (paths.length) {
+		await gitText(root, ["add", "--all", "--pathspec-from-file=-", "--pathspec-file-nul"], {
+			env,
+			signal,
+			input: pathspecInput(paths),
+		})
 	}
+	return (await gitText(root, ["write-tree"], { env, signal })).trim()
+}
+
+async function assertCaptureStable(
+	root: string,
+	env: Record<string, string>,
+	tipSha: string,
+	capturedPaths: string[],
+	treeSha: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	const currentPaths = await workingTreeCandidatePaths(root, signal)
+	if (
+		currentPaths.length !== capturedPaths.length ||
+		currentPaths.some((path, index) => path !== capturedPaths[index])
+	) {
+		throw new ReviewTargetError(
+			"snapshot_changed",
+			"The set of modified files changed while the working tree was being captured. Retry without concurrent edits.",
+		)
+	}
+	// git diff does not consistently support --pathspec-from-file. Recapture
+	// through the same literal stdin pathspec and compare immutable tree IDs.
+	const verificationTree = await captureTree(root, env, tipSha, capturedPaths, signal)
 	const untracked = await gitBytes(root, ["ls-files", "-z", "--others", "--exclude-standard"], { env, signal })
-	if (difference.exitCode === 1 || untracked.stdout.length > 0) {
+	if (verificationTree !== treeSha || untracked.stdout.length > 0) {
 		throw new ReviewTargetError(
 			"snapshot_changed",
 			"A file changed or an untracked file appeared while the working tree was being captured. Retry without concurrent edits.",
@@ -191,7 +225,7 @@ export async function freezeWorkingTree(
 	tipSha: string,
 	options: SnapshotOptions = {},
 ): Promise<WorkingTreeSnapshot> {
-	await assertNoConversionDrivers(root, options.signal)
+	const capturedPaths = await assertNoConversionDrivers(root, options.signal)
 	await assertNoIndexVisibilityFlags(root, options.signal)
 	const entries = await workingTreeStatus(root, options.signal)
 	if (!entries.length) {
@@ -223,12 +257,10 @@ export async function freezeWorkingTree(
 	const indexFile = join(temporaryDirectory, "index")
 	const env = { GIT_INDEX_FILE: indexFile }
 	try {
-		await gitText(root, ["read-tree", tipSha], { env, signal: options.signal })
-		await gitText(root, ["add", "--all", "--", "."], { env, signal: options.signal })
-		const treeSha = (await gitText(root, ["write-tree"], { env, signal: options.signal })).trim()
+		const treeSha = await captureTree(root, env, tipSha, capturedPaths, options.signal)
 		await assertGitlinksUnchanged(root, tipSha, treeSha, options.signal)
 		await options.beforeSnapshotCommit?.()
-		await assertCaptureStable(root, env, options.signal)
+		await assertCaptureStable(root, env, tipSha, capturedPaths, treeSha, options.signal)
 		const currentHead = await gitText(root, ["rev-parse", "--verify", "HEAD"], { signal: options.signal })
 		if (currentHead.trim() !== tipSha) {
 			throw new ReviewTargetError(

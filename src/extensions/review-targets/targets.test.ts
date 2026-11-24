@@ -16,7 +16,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, relative } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { submitFinding } from "../review-submit/store.js"
 import { parseReviewTargetArgs } from "./parser.js"
 import { cleanupStaleReviewSnapshots, getReviewTargetChoices, resolveReviewTarget } from "./resolve.js"
@@ -110,6 +110,19 @@ describe("review target resolution", () => {
 		sandbox = mkdtempSync(join(tmpdir(), "kimchi-review-targets-"))
 		repo = join(sandbox, "repo")
 		mkdirSync(repo)
+		const home = join(sandbox, "home")
+		const xdg = join(sandbox, "xdg")
+		const globalConfig = join(sandbox, "global.gitconfig")
+		mkdirSync(home, { recursive: true })
+		mkdirSync(xdg, { recursive: true })
+		writeFileSync(globalConfig, "")
+		for (const [name, value] of Object.entries({
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_CONFIG_GLOBAL: globalConfig,
+			HOME: home,
+			XDG_CONFIG_HOME: xdg,
+		}))
+			vi.stubEnv(name, value)
 		git(repo, "init", "--initial-branch=main")
 		git(repo, "config", "user.name", "Test User")
 		git(repo, "config", "user.email", "test@example.com")
@@ -117,7 +130,10 @@ describe("review target resolution", () => {
 		git(repo, "config", "tag.gpgsign", "false")
 	})
 
-	afterEach(() => rmSync(sandbox, { recursive: true, force: true }))
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		rmSync(sandbox, { recursive: true, force: true })
+	})
 
 	function initialize(files: Record<string, string | Buffer> = { "file.txt": "one\ntwo\nthree\n" }): string {
 		for (const [path, contents] of Object.entries(files)) write(repo, path, contents)
@@ -132,6 +148,18 @@ describe("review target resolution", () => {
 
 	async function resolve(request: ExplicitReviewRequest, overrides: Partial<ResolveReviewTargetOptions> = {}) {
 		return resolveReviewTarget(request, { ...options(), ...overrides })
+	}
+
+	function configureGlobalLfs(name: string): string {
+		const marker = join(sandbox, `${name}.log`)
+		const driver = join(sandbox, `${name}.sh`)
+		writeFileSync(driver, `#!/bin/sh\nprintf ran >> ${JSON.stringify(marker)}\ncat\n`)
+		chmodSync(driver, 0o755)
+		writeFileSync(
+			join(sandbox, "global.gitconfig"),
+			`[filter "lfs"]\n\tclean = ${driver}\n\tsmudge = ${driver}\n\tprocess = ${driver}\n`,
+		)
+		return marker
 	}
 
 	it("freezes final working contents, anchors every supported edit type, and preserves the checkout", async () => {
@@ -488,12 +516,102 @@ describe("review target resolution", () => {
 
 	it("rejects content filters on changed paths instead of reviewing transformed content", async () => {
 		initialize({ ".gitattributes": "*.dat filter=lfs\n", "data.dat": "original\n" })
+		git(repo, "config", "filter.lfs.clean", "cat")
 		write(repo, "data.dat", "changed\n")
 		const before = checkoutState(repo)
 		await expect(resolve({ kind: "working-tree", fetch: false })).rejects.toMatchObject({
 			code: "unsupported_content_filter",
 		})
 		expectCheckoutState(repo, before)
+	})
+
+	it.each([
+		"working-tree",
+		"branch",
+	] as const)("allows globally configured LFS commands without repository filter attributes during %s resolution", async (targetKind) => {
+		initialize()
+		if (targetKind === "branch") {
+			git(repo, "checkout", "-b", "feature")
+			write(repo, "file.txt", "changed\n")
+			git(repo, "commit", "-am", "feature")
+		} else {
+			write(repo, "file.txt", "changed\n")
+		}
+		const marker = configureGlobalLfs(`global-only-${targetKind}`)
+		const target =
+			targetKind === "working-tree"
+				? await resolve({ kind: "working-tree", fetch: false })
+				: await resolve({
+						kind: "branch",
+						branch: "feature",
+						base: "main",
+						includeWorkingTree: false,
+						fetch: false,
+					})
+		expect(target.scope.files.changed).toBe(1)
+		const map = JSON.parse(readFileSync(target.scope.commentableLinesPath, "utf8")) as ProviderAnchorMap
+		expect(map.files["file.txt"].ranges).toEqual([{ start_line: 1, end_line: 1 }])
+		expect(existsSync(marker)).toBe(false)
+		await target.cleanup()
+		expect(existsSync(marker)).toBe(false)
+	})
+
+	it("rejects an in-scope path whose global LFS driver applies", async () => {
+		initialize({ ".gitattributes": "*.bin filter=lfs\n", "data.bin": "base\n" })
+		write(repo, "data.bin", "evil\n")
+		const marker = configureGlobalLfs("in-scope-filter")
+		await expect(resolve({ kind: "working-tree", fetch: false })).rejects.toMatchObject({
+			code: "unsupported_content_filter",
+			message: expect.stringContaining("data.bin (filter=lfs)"),
+		})
+		expect(existsSync(marker)).toBe(false)
+	})
+
+	it("allows a configured filter attribute only on a path outside the comparison", async () => {
+		initialize({
+			".gitattributes": "outside.bin filter=lfs\n",
+			"file.txt": "base\n",
+			"outside.bin": "unchanged\n",
+		})
+		write(repo, "file.txt", "changed\n")
+		const marker = configureGlobalLfs("outside-filter")
+		const target = await resolve({ kind: "working-tree", fetch: false })
+		expect(target.scope.files).toEqual({ changed: 1, anchorable: 1, unanchorable: 0 })
+		const map = JSON.parse(readFileSync(target.scope.commentableLinesPath, "utf8")) as ProviderAnchorMap
+		expect(map.files["file.txt"].ranges).toEqual([{ start_line: 1, end_line: 1 }])
+		expect(map.files["outside.bin"]).toBeUndefined()
+		expect(existsSync(marker)).toBe(false)
+		await target.cleanup()
+	})
+
+	it("allows filter attributes in a committed-only branch comparison without working-tree conversion", async () => {
+		const base = initialize({ ".gitattributes": "*.bin filter=lfs\n", "data.bin": "base\n" })
+		git(repo, "checkout", "-b", "feature")
+		write(repo, "data.bin", "changed\n")
+		git(repo, "commit", "-am", "feature")
+		const marker = configureGlobalLfs("branch-filter")
+		const target = await resolve({
+			kind: "branch",
+			branch: "feature",
+			base: "main",
+			includeWorkingTree: false,
+			fetch: false,
+		})
+		expect(target.scope).toMatchObject({
+			pinned: { baseSha: base },
+			files: { changed: 1, anchorable: 1 },
+		})
+		expect(existsSync(marker)).toBe(false)
+	})
+
+	it("rejects working-tree-encoding on an in-scope path", async () => {
+		initialize({ "file.txt": "base\n" })
+		write(repo, ".gitattributes", "file.txt working-tree-encoding=UTF-16LE\n")
+		write(repo, "file.txt", "evil\n")
+		await expect(resolve({ kind: "working-tree", fetch: false })).rejects.toMatchObject({
+			code: "unsupported_content_filter",
+			message: expect.stringContaining("file.txt (working-tree-encoding=UTF-16LE)"),
+		})
 	})
 
 	it("rejects sparse checkouts explicitly", async () => {
@@ -541,6 +659,57 @@ describe("review target resolution", () => {
 			await target.cleanup()
 		},
 	)
+
+	it.runIf(process.platform !== "win32")(
+		"captures pathspec metacharacters literally without changing committed decoys",
+		async () => {
+			const decoys = {
+				"a1.ts": "committed a1\n",
+				"decoy.txt": "committed text\n",
+				"q.md": "committed markdown\n",
+				x: "committed magic-name decoy\n",
+			}
+			initialize(decoys)
+			const changed = new Map([
+				["a[1].ts", "literal brackets\n"],
+				["*.txt", "literal star\n"],
+				["?.md", "literal question mark\n"],
+				[":(glob)x", "literal pathspec magic\n"],
+			])
+			for (const [path, contents] of changed) write(repo, path, contents)
+			const target = await resolve({ kind: "working-tree", fetch: false })
+			expect(target.scope.files).toEqual({ changed: changed.size, anchorable: changed.size, unanchorable: 0 })
+			const map = JSON.parse(readFileSync(target.scope.commentableLinesPath, "utf8")) as ProviderAnchorMap
+			expect(new Set(Object.keys(map.files))).toEqual(new Set(changed.keys()))
+			for (const [path, contents] of changed) {
+				expect(map.files[path]).toEqual({ ranges: [{ start_line: 1, end_line: 1 }] })
+				expect(git(repo, "show", `${target.scope.pinned.headSha}:${path}`)).toBe(contents.trim())
+			}
+			for (const [path, contents] of Object.entries(decoys)) {
+				expect(git(repo, "show", `${target.scope.pinned.headSha}:${path}`)).toBe(contents.trim())
+				expect(map.files[path]).toBeUndefined()
+			}
+			await target.cleanup()
+		},
+	)
+
+	it("uses stdin pathspec files instead of an argv-sized changed-path list", async () => {
+		initialize()
+		const paths = Array.from(
+			{ length: 5000 },
+			(_, index) => `many/${"f".repeat(80)}-${String(index).padStart(4, "0")}.txt`,
+		)
+		expect(paths.reduce((size, path) => size + Buffer.byteLength(path) + 1, 0)).toBeGreaterThan(256 * 1024)
+		for (const path of paths) write(repo, path, "payload\n")
+		const target = await resolve({ kind: "working-tree", fetch: false })
+		expect(target.scope.files).toEqual({ changed: 5000, anchorable: 5000, unanchorable: 0 })
+		const map = JSON.parse(readFileSync(target.scope.commentableLinesPath, "utf8")) as ProviderAnchorMap
+		for (const path of [paths[0], paths[2499], paths[4999]]) {
+			expect(map.files[path]).toEqual({ ranges: [{ start_line: 1, end_line: 1 }] })
+			expect(git(repo, "show", `${target.scope.pinned.headSha}:${path}`)).toBe("payload")
+		}
+		await target.cleanup()
+	}, 60_000)
 
 	it.runIf(process.platform !== "win32").each(["default", "configured"] as const)(
 		"never executes %s repository hooks during success, failure, or cleanup",
