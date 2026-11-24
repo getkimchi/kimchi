@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import {
 	CACHEABLE_OPTION_NAMES,
@@ -527,6 +528,18 @@ describe("forwardAdditionalSkillPathsToPi", () => {
 		],
 	])("%s", (_name, input, expected) => {
 		expect(forwardAdditionalSkillPathsToPi(input)).toEqual(expected)
+	})
+
+	it("keeps the raw flag away from the ACP appendSystemPrompt parse", () => {
+		// The ACP branch of cli.ts resolves appendSystemPrompt by parsing the
+		// raw argv with pi's parser. The raw Kimchi-local flag is tolerated by
+		// pi today (unknownFlags), but this pins the actual composition used
+		// there: forwarding first leaves upstream with no unknown flag and the
+		// upstream --skill token it expects, while appendSystemPrompt survives.
+		const raw = ["--additionalSkillsPaths", "/tmp/private-skills", "--append-system-prompt", "tail instructions"]
+		const parsed = parsePiArgs(forwardAdditionalSkillPathsToPi(raw))
+		expect(parsed.appendSystemPrompt).toEqual(["tail instructions"])
+		expect(parsed.unknownFlags.has("additionalSkillsPaths")).toBe(false)
 	})
 })
 

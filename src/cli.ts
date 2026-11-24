@@ -1127,7 +1127,12 @@ async function cliMain(): Promise<void> {
 								mcpProbe: new UpstreamMcpProbe(),
 							}
 						: {}),
-					appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
+					// Same rewrite as the non-ACP branch: --additionalSkillsPaths is a
+					// Kimchi-local flag, so even this appendSystemPrompt-only parse must
+					// not feed the raw token to upstream pi (lenient today, strict
+					// tomorrow). Rewriting first leaves pi parsing only flags it knows
+					// (--skill is upstream-supported) and preserves every option value.
+					appendSystemPrompt: parsePiArgs(forwardAdditionalSkillPathsToPi(rawArgsWithoutMultiModel)).appendSystemPrompt,
 				})
 			} else {
 				// Delegate to pi-mono's CLI main function, injecting the kimchi extension.
