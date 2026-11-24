@@ -67,6 +67,7 @@ vi.mock("./panel.js", () => {
 		infos: string[] = []
 		disposed = false
 		editor = {
+			getText: () => this.editorText,
 			setText: (text: string) => {
 				this.editorText = text
 			},

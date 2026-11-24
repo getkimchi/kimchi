@@ -4,12 +4,14 @@ import { frameBox, frameOf } from "../__mocks__/side-chat-host.js"
 import {
 	addCompositor,
 	addFocusGuard,
+	addKeyboardInterceptor,
 	addMouseInterceptor,
 	addWheelInterceptor,
 	applyCompositors,
 	applyFocusGuards,
 	type FocusReader,
 	installSideChatHarnessPatch,
+	interceptKeyboard,
 	interceptMouse,
 	interceptWheel,
 	isLeftPress,
@@ -109,7 +111,15 @@ describe("hooks", () => {
 		expect(interceptWheel(0, 0, -1)).toBe(false)
 	})
 
+	it("passes keyboard input through after its interceptor is removed", () => {
+		const remove = addKeyboardInterceptor(() => true)
+		expect(interceptKeyboard("pageUp")).toBe(true)
+		remove()
+		expect(interceptKeyboard("pageUp")).toBe(false)
+	})
+
 	it("passes events through when nothing is registered", () => {
+		expect(interceptKeyboard("pageUp")).toBe(false)
 		expect(interceptMouse(press(0))).toBe(false)
 		expect(interceptWheel(0, 0, 1)).toBe(false)
 		expect(applyCompositors(["x"], frameOf(1, 1, []), 1)).toEqual(["x"])
