@@ -12,7 +12,13 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
 import type { Row, WorkHead } from "@getkimchi/kimchi-bridge/ledger"
-import { backendFor, capture, type StoredRecord } from "@getkimchi/kimchi-bridge/ledger"
+import {
+	backendFor,
+	capture,
+	importJournalSlice,
+	readRecords,
+	type StoredRecord,
+} from "@getkimchi/kimchi-bridge/ledger"
 import * as diagnostics from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
@@ -1320,4 +1326,65 @@ describe("readable work summaries", () => {
 			await reader.stop()
 		}
 	}, 60_000)
+})
+
+/**
+ * Ported from the deleted pr-cost-reporting/ledger/import.test.ts when the
+ * ledger moved to @getkimchi/kimchi-bridge: the hydration behavior under test
+ * stayed in Kimchi (summary.ts's history-dependent read/hydration wrapper),
+ * so its regression coverage stays here too, against the bridge primitives.
+ */
+describe("A2 hydration before history-dependent reads", () => {
+	const WORK = "11111111-1111-4111-8111-111111111111"
+	const SESSION = "session-import"
+	const line = (record: Record<string, unknown>): string => `${JSON.stringify(record)}\n`
+	const work = (): Record<string, unknown> => ({
+		version: 1,
+		type: "work",
+		workId: WORK,
+		sessionId: SESSION,
+		cwd: "/src/app",
+		recordedAt: "2026-10-01T00:00:00.000Z",
+	})
+	const request = (requestId: string, startedAt = "2026-10-01T00:01:00.000Z"): Record<string, unknown> => ({
+		version: 1,
+		type: "request",
+		workId: WORK,
+		sessionId: SESSION,
+		requestId,
+		startedAt,
+		recordedAt: "2026-10-01T00:30:00.000Z",
+	})
+	function journal(): string {
+		const folder = join(dir, "work-attribution")
+		fs.mkdirSync(folder, { recursive: true })
+		return folder
+	}
+
+	it("folds legacy journals in before the first history-dependent read, files stay untouched", () => {
+		const folder = journal()
+		const file = join(folder, "parent.jsonl")
+		const original = line(work()) + line(request("req-1"))
+		fs.writeFileSync(file, original)
+		const records = readWorkRecords(dir, undefined, () => {})
+		expect(records.map((record) => record.type).sort()).toEqual(["request", "work"])
+		// Legacy files are read-only inputs: hydration never deletes, converts, or rewrites them.
+		expect(fs.readFileSync(file, "utf8")).toBe(original)
+	})
+
+	it("re-hydration over an identical journal imports nothing new and advances no cursor", () => {
+		const folder = journal()
+		fs.writeFileSync(join(folder, "parent.jsonl"), line(work()) + line(request("req-1")))
+		expect(importJournalSlice(dir)).toBe(false)
+		expect(readRecords(dir)).toHaveLength(2)
+		expect(importJournalSlice(dir)).toBe(false)
+		expect(readRecords(dir)).toHaveLength(2)
+	})
+
+	it("read-work-records hydrates legacy journals before a history-dependent read", () => {
+		const folder = journal()
+		fs.writeFileSync(join(folder, "parent.jsonl"), line(work()) + line(request("req-1")))
+		const records = native<{ type: string }[]>("read-work-records", "")
+		expect(records.map((record) => record.type).sort()).toEqual(["request", "work"])
+	}, 90_000)
 })
