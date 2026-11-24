@@ -71,8 +71,8 @@
 #     https://github.com/nicobailon/pi-mcp-adapter (remove when runtime-scoped
 #     servers can join every initialization's discovery without programmatic
 #     config, while preserving configPath, file installs, and resume reloads)
-#   - OAuth post-authentication cleanup recovery: https://github.com/getkimchi/kimchi/pull/1832; upstream change proposal pending at https://github.com/nicobailon/pi-mcp-adapter/issues (remove when upstream emits an owning watcher's authenticated terminal status even after post-auth manager cleanup fails)
-#   - Structured manual OAuth handoff: https://github.com/getkimchi/kimchi/pull/1832; upstream change proposal pending at https://github.com/nicobailon/pi-mcp-adapter/issues (remove when upstream exposes equivalent structured handoff metadata for remote redirects without automatic capture, or guarantees automatic capture)
+#   - OAuth post-authentication cleanup recovery: https://github.com/nicobailon/pi-mcp-adapter/issues/972 (remove when upstream emits an owning watcher's authenticated terminal status even after post-auth manager cleanup fails)
+#   - Structured manual OAuth handoff: https://github.com/nicobailon/pi-mcp-adapter/issues/971 (remove when upstream exposes equivalent structured handoff metadata for remote redirects without automatic capture, or guarantees automatic capture)
 # Changes:
 #   - proxy-modes: once authenticate() succeeds, a post-auth state.manager.close() failure emits a UI warning instead of replacing the background watcher's authenticated terminal status. The owning flow can therefore settle without treating another session's shared grant as proof of completion.
 #   - proxy-modes: remote HTTPS redirects without loopback capture return details.handoff: "manual" alongside the manual instructions, so hosts can identify the follow-up-prompt contract without depending on presentation wording.
