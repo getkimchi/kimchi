@@ -25,16 +25,11 @@
 import type { Message, Model } from "@earendil-works/pi-ai"
 import { stream } from "@earendil-works/pi-ai/api/anthropic-messages"
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript"
-import type {
-	BeforeAgentStartEvent,
-	ContextEvent,
-	ExtensionAPI,
-	ExtensionContext,
-	SessionEntry,
-} from "@earendil-works/pi-coding-agent"
+import type { BeforeAgentStartEvent, ContextEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { MEMORY_PRE_REQUEST_TIMEOUT_MS } from "../memory/config.js"
 import { createMemoryExtension } from "../memory/index.js"
 import todosExtension from "../todos/index.js"
@@ -42,7 +37,6 @@ import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 
 const SESSION_ID = "cache-replay-session"
 
-type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
 /** Session-pipeline message shape — the same element type the `context`
  *  event carries (pi-coding-agent does not re-export `AgentMessage` from
  *  its package root). */
@@ -86,27 +80,19 @@ function toolResult(callId: string, text: string, timestamp: number): AgentMessa
 // ─── Harness: real extension over a simulated growing session ────────────────
 
 function createHarness(registerExtension?: (pi: ExtensionAPI) => void) {
-	const handlers = new Map<string, ExtensionHandler[]>()
-	/** Simulated persistent session history. pi.sendMessage persists here,
-	 *  mirroring what the session manager does with hidden custom messages. */
+	const mock = createExtensionApi()
 	const history: AgentMessage[] = []
-
-	const pi = {
-		registerTool: vi.fn(),
-		registerFlag: vi.fn(),
-		registerCommand: vi.fn(),
-		registerShortcut: vi.fn(),
-		appendEntry: vi.fn(),
-		sendMessage: vi.fn((message: Record<string, unknown>) => {
-			history.push({ role: "custom", timestamp: Date.now(), ...message } as unknown as AgentMessage)
-		}),
-		getActiveTools: vi.fn(() => []),
-		on: vi.fn((event: string, handler: ExtensionHandler) => {
-			const list = handlers.get(event) ?? []
-			list.push(handler)
-			handlers.set(event, list)
-		}),
-	} as unknown as ExtensionAPI
+	let timestamp = 0
+	mock.sendMessage.mockImplementation((message) => {
+		history.push({
+			role: "custom",
+			customType: message.customType,
+			content: message.content,
+			display: message.display,
+			details: message.details,
+			timestamp: timestamp++,
+		} as unknown as AgentMessage)
+	})
 
 	const ctx = createContext({
 		hasUI: false,
@@ -117,20 +103,12 @@ function createHarness(registerExtension?: (pi: ExtensionAPI) => void) {
 		},
 	})
 
-	todosExtension(pi)
-	registerExtension?.(pi)
+	todosExtension(mock.api)
+	registerExtension?.(mock.api)
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {
-		let result: unknown
-		let currentPayload = payload
-		for (const handler of handlers.get(event) ?? []) {
-			result = await handler(currentPayload, ctx)
-			const contextResult = result as { messages?: AgentMessage[] } | undefined
-			if (event === "context" && contextResult?.messages) {
-				currentPayload = { type: "context", messages: contextResult.messages }
-			}
-		}
-		return result
+		const results = await mock.emit(event, payload, ctx)
+		return results.at(-1)
 	}
 
 	/** The model-visible view for the next LLM call: persistent history run
@@ -142,7 +120,7 @@ function createHarness(registerExtension?: (pi: ExtensionAPI) => void) {
 		return result?.messages ?? history
 	}
 
-	return { history, pi, fire, requestView }
+	return { history, pi: mock.api, fire, requestView }
 }
 
 // ─── Real anthropic-messages wire capture ─────────────────────────────────────

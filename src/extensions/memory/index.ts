@@ -1138,8 +1138,8 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						state: undefined,
 						details: digestTelemetry,
 					})
-					digest = null
-					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
+					if (!stale) digest = null
+					return { systemPrompt: `${event.systemPrompt}${memoryEnabledNotice()}` }
 				}
 				digest = outcome
 				if (digest) {

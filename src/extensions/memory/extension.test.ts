@@ -418,6 +418,62 @@ describe("memory extension", () => {
 		expect(searcher.search).toHaveBeenCalledTimes(3)
 	})
 
+	it("recomputes the prefix when compaction lands during the initial digest", async () => {
+		vi.useFakeTimers()
+		try {
+			const search = vi.fn(() => {
+				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
+				return Promise.resolve([{ memory: "post-compact fact", score: 0.7 }])
+			})
+			const { start, getHandler } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			getHandler("session_compact")({ type: "session_compact" }, fakeCtx)
+			const first = await pending
+			expect(first?.systemPrompt).not.toContain("post-compact fact")
+
+			const second = await start(startEvent("turn 2"), fakeCtx)
+			expect(second?.systemPrompt).toContain("post-compact fact")
+			expect(search).toHaveBeenCalledTimes(2)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("recomputes the prefix when memory is toggled during the initial digest", async () => {
+		vi.useFakeTimers()
+		try {
+			let release: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
+			const search = vi.fn(() => {
+				if (search.mock.calls.length === 1) {
+					return new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						release = resolve
+					})
+				}
+				return Promise.resolve([{ memory: "post-toggle fact", score: 0.7 }])
+			})
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			setSessionMemoryOverride(fakeCtx.sessionManager, false)
+			release?.([{ memory: "stale fact", score: 0.7 }])
+			const first = await pending
+			expect(first?.systemPrompt).not.toContain("stale fact")
+			setSessionMemoryOverride(fakeCtx.sessionManager, true)
+
+			const second = await start(startEvent("turn 2"), fakeCtx)
+			expect(second?.systemPrompt).toContain("post-toggle fact")
+			expect(search).toHaveBeenCalledTimes(2)
+		} finally {
+			setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
+			vi.useRealTimers()
+		}
+	})
+
 	it("degrades to no-memory when the store fails — logged once, session untouched", async () => {
 		const ctx = createContext()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
@@ -481,6 +537,31 @@ describe("memory extension", () => {
 			await flushRecall(() => expect(search).toHaveBeenCalledTimes(3))
 			expect(sendMessage).toHaveBeenCalledTimes(1)
 		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("keeps the authored memory notice identical after the initial digest times out", async () => {
+		vi.useFakeTimers()
+		process.env.KIMCHI_MEMORY_AUTHORED = "1"
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const search = vi.fn(() => {
+				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
+				return Promise.resolve([{ memory: "late fact", score: 0.7 }])
+			})
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			const first = await pending
+			const second = await start(startEvent("turn 2"), fakeCtx)
+			expect(first?.systemPrompt).toContain("save_memory")
+			expect(second?.systemPrompt).toBe(first?.systemPrompt)
+		} finally {
+			delete process.env.KIMCHI_MEMORY_AUTHORED
 			vi.useRealTimers()
 			consoleError.mockRestore()
 		}
