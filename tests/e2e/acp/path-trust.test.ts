@@ -46,7 +46,7 @@ describe("ACP integration — sessionless path trust", () => {
 			expect(commandNames(fixture, sessionId)).not.toContain("skill:e2e-path-trust-skill")
 
 			// get_path_trust: undecided, fail-closed, blocked categories.
-			const undecided = await fixture.conn.extMethod(GET_PATH_TRUST, { path: fixture.workDir })
+			const undecided = await fixture.conn.request(GET_PATH_TRUST, { path: fixture.workDir })
 			expect(undecided).toEqual({
 				decided: false,
 				trusted: false,
@@ -55,7 +55,7 @@ describe("ACP integration — sessionless path trust", () => {
 			})
 
 			// set_path_trust trust: persisted, canonicalized source, live refresh.
-			const granted = await fixture.conn.extMethod(SET_PATH_TRUST, {
+			const granted = await fixture.conn.request(SET_PATH_TRUST, {
 				path: fixture.workDir,
 				decision: "trust",
 			})
@@ -71,7 +71,7 @@ describe("ACP integration — sessionless path trust", () => {
 			)
 
 			// Inheritance: a nested query resolves via the ancestor entry.
-			const inherited = await fixture.conn.extMethod(GET_PATH_TRUST, { path: nested })
+			const inherited = await fixture.conn.request(GET_PATH_TRUST, { path: nested })
 			expect(inherited).toEqual({
 				decided: true,
 				trusted: true,
@@ -91,7 +91,7 @@ describe("ACP integration — sessionless path trust", () => {
 			expect(commandNames(fixture, second)).toContain("skill:e2e-path-trust-skill")
 
 			// set_path_trust deny: live revoke for sessions under the path.
-			const denied = await fixture.conn.extMethod(SET_PATH_TRUST, {
+			const denied = await fixture.conn.request(SET_PATH_TRUST, {
 				path: fixture.workDir,
 				decision: "deny",
 			})
@@ -118,12 +118,12 @@ describe("ACP integration — sessionless path trust", () => {
 			fixture = await startAcpFixture({ artifactName: "path-trust-root", responses: [] })
 
 			// Root is a deliberate power-user capability — allowed.
-			const rootResult = await fixture.conn.extMethod(SET_PATH_TRUST, { path: "/", decision: "trust" })
+			const rootResult = await fixture.conn.request(SET_PATH_TRUST, { path: "/", decision: "trust" })
 			expect(rootResult).toMatchObject({ decided: true, trusted: true, decisionSource: "/" })
 
-			await expect(fixture.conn.extMethod(GET_PATH_TRUST, { path: "relative/path" })).rejects.toThrow()
+			await expect(fixture.conn.request(GET_PATH_TRUST, { path: "relative/path" })).rejects.toThrow()
 			await expect(
-				fixture.conn.extMethod(SET_PATH_TRUST, { path: fixture.workDir, decision: "trust_session" }),
+				fixture.conn.request(SET_PATH_TRUST, { path: fixture.workDir, decision: "trust_session" }),
 			).rejects.toThrow()
 		},
 		STARTUP_TIMEOUT_MS + WAIT_MS,

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionUpdate } from "@agentclientprotocol/sdk"
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
 import { buildArtifactLinkChunks, TurnArtifactBuffer } from "./artifact-links.js"

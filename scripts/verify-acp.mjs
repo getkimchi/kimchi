@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process"
 import { Readable, Writable } from "node:stream"
 import { setTimeout as delay } from "node:timers/promises"
-import * as acp from "@agentclientprotocol/sdk"
+import * as acp from "@agentclientprotocol/sdk/unstable"
 
 const binary = process.argv[2] ?? "./dist/bin/kimchi"
 
@@ -65,7 +65,13 @@ async function main() {
 	const readable = Readable.toWeb(proc.stdout)
 	const client = new Client()
 	const stream = acp.ndJsonStream(writable, readable)
-	const conn = new acp.ClientSideConnection(() => client, stream)
+	const app = acp
+		.client()
+		.onNotification(acp.methods.client.session.update, ({ params }) => client.sessionUpdate(params))
+		.onRequest(acp.methods.client.session.requestPermission, ({ params }) => client.requestPermission(params))
+		.onRequest(acp.methods.client.fs.writeTextFile, () => client.writeTextFile())
+		.onRequest(acp.methods.client.fs.readTextFile, () => client.readTextFile())
+	const conn = app.connect(stream).agent
 
 	const timer = setTimeout(() => {
 		process.stderr.write("TIMEOUT after 120s\n")
@@ -74,25 +80,25 @@ async function main() {
 	}, 120_000)
 
 	try {
-		const init = await conn.initialize({
+		const init = await conn.request("initialize", {
 			protocolVersion: acp.PROTOCOL_VERSION,
 			clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
 		})
 		process.stderr.write(`[init] protocolVersion=${init.protocolVersion}\n`)
 		if (init.protocolVersion !== acp.PROTOCOL_VERSION) throw new Error("protocol mismatch")
 
-		const ns1 = await conn.newSession({ cwd: process.cwd(), mcpServers: [] })
-		const ns2 = await conn.newSession({ cwd: process.cwd(), mcpServers: [] })
+		const ns1 = await conn.request("session/new", { cwd: process.cwd(), mcpServers: [] })
+		const ns2 = await conn.request("session/new", { cwd: process.cwd(), mcpServers: [] })
 		process.stderr.write(`[newSession] a=${ns1.sessionId} b=${ns2.sessionId}\n`)
 		if (!ns1.sessionId || !ns2.sessionId) throw new Error("missing sessionId")
 		if (ns1.sessionId === ns2.sessionId) throw new Error("sessionIds must differ")
 
 		const [res1, res2] = await Promise.all([
-			conn.prompt({
+			conn.request("session/prompt", {
 				sessionId: ns1.sessionId,
 				prompt: [{ type: "text", text: "Reply with exactly: alpha" }],
 			}),
-			conn.prompt({
+			conn.request("session/prompt", {
 				sessionId: ns2.sessionId,
 				prompt: [{ type: "text", text: "Reply with exactly: beta" }],
 			}),
@@ -113,9 +119,9 @@ async function main() {
 		if (!t2.includes("beta")) throw new Error(`session b missing beta: ${t2}`)
 
 		// Tool-call test: prompt kimchi to invoke a tool and verify tool_call + tool_call_update flowed through.
-		const ns3 = await conn.newSession({ cwd: process.cwd(), mcpServers: [] })
+		const ns3 = await conn.request("session/new", { cwd: process.cwd(), mcpServers: [] })
 		process.stderr.write(`[newSession] c=${ns3.sessionId}\n`)
-		const res3 = await conn.prompt({
+		const res3 = await conn.request("session/prompt", {
 			sessionId: ns3.sessionId,
 			prompt: [
 				{
@@ -141,9 +147,9 @@ async function main() {
 		if (!t3.includes("acp-tool-ok")) throw new Error(`session c missing tool output: ${t3}`)
 
 		// Cancel path: start a long-running prompt, cancel mid-flight, expect stopReason=cancelled.
-		const ns4 = await conn.newSession({ cwd: process.cwd(), mcpServers: [] })
+		const ns4 = await conn.request("session/new", { cwd: process.cwd(), mcpServers: [] })
 		process.stderr.write(`[newSession] d=${ns4.sessionId}\n`)
-		const cancelPromise = conn.prompt({
+		const cancelPromise = conn.request("session/prompt", {
 			sessionId: ns4.sessionId,
 			prompt: [
 				{
@@ -153,7 +159,7 @@ async function main() {
 			],
 		})
 		await delay(3000)
-		await conn.cancel({ sessionId: ns4.sessionId })
+		await conn.notify("session/cancel", { sessionId: ns4.sessionId })
 		const res4 = await cancelPromise
 		process.stderr.write(`[prompt d] stopReason=${res4.stopReason}\n`)
 		if (res4.stopReason !== "cancelled") {
@@ -165,11 +171,11 @@ async function main() {
 		// synthesize stopReason="end_turn" itself; otherwise the prompt hangs until the 120s
 		// global timeout. /tags is a kimchi extension command (src/extensions/tags.ts) so it
 		// routes through _tryExecuteExtensionCommand and exercises that exact path.
-		const ns5 = await conn.newSession({ cwd: process.cwd(), mcpServers: [] })
+		const ns5 = await conn.request("session/new", { cwd: process.cwd(), mcpServers: [] })
 		process.stderr.write(`[newSession] e=${ns5.sessionId}\n`)
 		const slashStart = Date.now()
 		const res5 = await Promise.race([
-			conn.prompt({
+			conn.request("session/prompt", {
 				sessionId: ns5.sessionId,
 				prompt: [{ type: "text", text: "/tags list" }],
 			}),
@@ -185,7 +191,7 @@ async function main() {
 		// Error path: prompt with bogus sessionId must return JSON-RPC error, not hang.
 		let errorCaught = null
 		try {
-			await conn.prompt({
+			await conn.request("session/prompt", {
 				sessionId: "00000000-0000-0000-0000-000000000000",
 				prompt: [{ type: "text", text: "should fail" }],
 			})

@@ -1,4 +1,4 @@
-import type { McpServer } from "@agentclientprotocol/sdk"
+import type { McpServer } from "@agentclientprotocol/sdk/unstable"
 import { describe, expect, it } from "vitest"
 import { convertAcpMcpServer, convertAcpMcpServers } from "./acp-config.js"
 

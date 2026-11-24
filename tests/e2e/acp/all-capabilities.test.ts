@@ -6,7 +6,7 @@
 // (the ACP prompter always uses that, regardless of elicitation capability
 // — `ctx.ui.confirm` is not on this path).
 
-import type { ClientCapabilities } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { ADVERTISED_CAPABILITIES } from "../../../src/modes/acp/capabilities.js"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"

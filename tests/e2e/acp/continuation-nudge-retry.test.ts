@@ -9,7 +9,7 @@
 // tests/e2e/tui/continuation-nudge-stop-wait.test.ts (scenario 4).
 
 import { setTimeout as delay } from "node:timers/promises"
-import type { ContentChunk } from "@agentclientprotocol/sdk"
+import type { ContentChunk } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession } from "./support/scenarios.js"
@@ -66,7 +66,7 @@ describe("ACP integration — retried nudge acknowledgement", () => {
 
 		// First prompt: a real tool cycle so the session latch is armed.
 		let result = await Promise.race([
-			fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "run echo hi" }] }),
+			fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "run echo hi" }] }),
 			delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" as const })),
 		])
 		expect(result.stopReason, "tool-cycle prompt stop reason").toBe("end_turn")
@@ -75,7 +75,10 @@ describe("ACP integration — retried nudge acknowledgement", () => {
 		// followUp, the acknowledgement round retries through both 500s, and
 		// the whole run settles — the prompt resolves only after all of it.
 		result = await Promise.race([
-			fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "continue with the implementation" }] }),
+			fixture.conn.request("session/prompt", {
+				sessionId,
+				prompt: [{ type: "text", text: "continue with the implementation" }],
+			}),
 			delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" as const })),
 		])
 		expect(result.stopReason, "drift prompt stop reason").toBe("end_turn")

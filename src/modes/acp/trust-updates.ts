@@ -18,7 +18,7 @@
 
 import { existsSync } from "node:fs"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
-import { type AgentSideConnection, RequestError } from "@agentclientprotocol/sdk"
+import { type AgentContext, RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { ProjectTrustStore } from "@earendil-works/pi-coding-agent"
 
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
@@ -115,7 +115,7 @@ export function buildProjectTrustUpdate(sessionId: string, cwd: string): Project
  * writes, so ordering against surrounding sessionUpdate calls is preserved
  * without awaiting. Unaware clients ignore unknown ext notifications.
  */
-export function notifyProjectTrustUpdate(conn: AgentSideConnection, update: ProjectTrustUpdate): void {
+export function notifyProjectTrustUpdate(conn: AgentContext, update: ProjectTrustUpdate): void {
 	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.project_trust_update, {
 		sessionId: update.sessionId,
 		trusted: update.trusted,

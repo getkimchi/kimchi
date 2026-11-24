@@ -3,8 +3,8 @@
  *
  * Connects to the sandbox worker's WebSocket endpoint (`wss://.../session/{name}/connect`),
  * bridges WebSocket ↔ web streams, wraps with `ndJsonStream()` from the ACP SDK, and drives
- * a `ClientSideConnection` that handles all JSON-RPC 2.0 framing, request/response correlation,
- * and notification dispatch.
+ * a client application connection that handles all JSON-RPC 2.0 framing, request/response
+ * correlation, and notification dispatch.
  *
  * Translates ACP `sessionUpdate` notifications into typed callbacks that mirror the
  * `RunOptions` callback contract used by `runAgent()`:
@@ -25,8 +25,9 @@
  */
 
 import {
-	type Client,
-	ClientSideConnection,
+	type ClientConnection,
+	client,
+	methods,
 	type NewSessionResponse,
 	ndJsonStream,
 	PROTOCOL_VERSION,
@@ -36,7 +37,7 @@ import {
 	type RequestPermissionResponse,
 	type SessionNotification,
 	type ToolCallStatus,
-} from "@agentclientprotocol/sdk"
+} from "@agentclientprotocol/sdk/unstable"
 import type { ImageContent } from "@earendil-works/pi-ai"
 import WebSocket from "ws"
 import type { LifetimeUsage } from "../../extensions/agents/manager/usage.js"
@@ -170,7 +171,7 @@ export interface AcpPromptResult {
 export class AcpSessionClient {
 	private readonly _options: AcpSessionClientOptions
 	private _ws: WebSocket | null = null
-	private _connection: ClientSideConnection | null = null
+	private _connection: ClientConnection | null = null
 	private _sessionId: string | null = null
 	private _turnCount = 0
 	private _accumulatedText = ""
@@ -215,13 +216,14 @@ export class AcpSessionClient {
 		this._ws = this._connectWebSocket()
 		const stream = this._bridgeStreams()
 
-		const client: Client = {
-			sessionUpdate: (params: SessionNotification) => this._handleSessionUpdate(params),
-			requestPermission: (params) => this._handleRequestPermission(params),
-			extNotification: () => Promise.resolve(),
-		}
+		const app = client()
+			.onRequest(methods.client.session.requestPermission, ({ params }) => this._handleRequestPermission(params))
+			.onNotification(methods.client.session.update, ({ params }) => this._handleSessionUpdate(params))
+			// Preserve the legacy client's ignore-by-default behavior for custom
+			// extension notifications. Exact handlers take precedence over this fallback.
+			.onNotification("*", () => {})
 
-		this._connection = new ClientSideConnection((_) => client, stream)
+		this._connection = app.connect(stream)
 
 		// Register abort listener early so we catch aborts during initialize/newSession
 		// (before _sessionId is assigned). The listener sets _aborted so we can cancel
@@ -232,7 +234,7 @@ export class AcpSessionClient {
 
 		await this._withAbortRejection(
 			this._withTimeout(
-				this._connection.initialize({
+				this._connection.agent.request(methods.agent.initialize, {
 					protocolVersion: PROTOCOL_VERSION,
 				}),
 				30_000,
@@ -254,7 +256,7 @@ export class AcpSessionClient {
 			try {
 				await this._withAbortRejection(
 					this._withTimeout(
-						this._connection.loadSession({
+						this._connection.agent.request(methods.agent.session.load, {
 							sessionId: resumeSessionId,
 							cwd: this._options.cwd ?? "/home/sandbox",
 							mcpServers: [],
@@ -273,7 +275,7 @@ export class AcpSessionClient {
 		} else {
 			const newSessionResponse: NewSessionResponse = await this._withAbortRejection(
 				this._withTimeout(
-					this._connection.newSession({
+					this._connection.agent.request(methods.agent.session.new, {
 						cwd: this._options.cwd ?? "/home/sandbox",
 						mcpServers: [],
 					}),
@@ -291,7 +293,7 @@ export class AcpSessionClient {
 		// the ACP config option dropdown.
 		await this._withAbortRejection(
 			this._withTimeout(
-				this._connection.setSessionConfigOption({
+				this._connection.agent.request(methods.agent.session.setConfigOption, {
 					sessionId: this._sessionId,
 					configId: "permissions-mode",
 					value: "yolo",
@@ -330,7 +332,7 @@ export class AcpSessionClient {
 		// turn from a dead connection (and wrongly closes a healthy WS), so
 		// transport failure detection is left to the ping keepalive instead.
 		const response: PromptResponse = await this._withAbortRejection(
-			this._connection.prompt({
+			this._connection.agent.request(methods.agent.session.prompt, {
 				sessionId: this._sessionId,
 				prompt: [{ type: "text", text }],
 			}),
@@ -385,7 +387,7 @@ export class AcpSessionClient {
 			// No _withAbortRejection: it is single-slot, held by the in-flight
 			// prompt() — wrapping steer() would evict the prompt's pending reject
 			// and silently disable its abort/forceDisconnect for the turn.
-			const response = await this._connection.extMethod(AVAILABLE_EXT_METHODS.steering, {
+			const response = await this._connection.agent.request<{ status?: unknown }>(AVAILABLE_EXT_METHODS.steering, {
 				sessionId: this._sessionId,
 				prompt: text,
 				...(images && images.length > 0 ? { attachments: images } : {}),
@@ -411,7 +413,7 @@ export class AcpSessionClient {
 	/** Cancels the in-progress prompt turn (if any). Sends `session/cancel`. */
 	async cancel(): Promise<void> {
 		if (!this._connection || !this._sessionId) return
-		await this._connection.cancel({ sessionId: this._sessionId })
+		await this._connection.agent.notify(methods.agent.session.cancel, { sessionId: this._sessionId })
 	}
 
 	/** True after close() — kept-alive steer loops use this to pick between

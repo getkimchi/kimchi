@@ -15,7 +15,7 @@
 // markers: there is no lock, so two simultaneous read-modify-write cycles can
 // still lose one update.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import { writeStudioOnboardingSeenAt } from "../../../config.js"
 
 /**

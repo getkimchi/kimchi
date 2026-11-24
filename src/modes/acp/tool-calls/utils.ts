@@ -7,7 +7,7 @@ import type {
 	ToolCallLocation,
 	ToolCallStatus,
 	ToolKind,
-} from "@agentclientprotocol/sdk"
+} from "@agentclientprotocol/sdk/unstable"
 import type { ProcessDisplaySnapshot, ProcessRegistry } from "../../../extensions/bash-background/process-registry.js"
 import { asString, truncate } from "../utils.js"
 

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { AgentSideConnection } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import type { BeforeAgentStartEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
@@ -1405,7 +1405,7 @@ describe("memory status over the ACP bridge", () => {
 		// unconditionally (no capability gate), proving the composition the
 		// docs claim: hasUI guard → extension emission → _kimchi.dev/pi_notify.
 		const extNotification = vi.fn(async (_method: string, _params: Record<string, unknown>) => {})
-		const conn = { extNotification } as unknown as AgentSideConnection
+		const conn = { notify: extNotification } as unknown as AgentContext
 		const acpUi = createAcpUIContext(conn, "sess-1", undefined, vi.fn())
 		const ctx = createContext({ ui: acpUi })
 		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])

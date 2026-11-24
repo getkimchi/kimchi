@@ -17,7 +17,7 @@
 import { spawn } from "node:child_process"
 import { Readable, Writable } from "node:stream"
 import { setTimeout as delay } from "node:timers/promises"
-import * as acp from "@agentclientprotocol/sdk"
+import * as acp from "@agentclientprotocol/sdk/unstable"
 
 const binary = process.argv[2] ?? "./dist/bin/kimchi"
 const CWD = process.cwd()
@@ -79,7 +79,13 @@ function spawnAcp() {
 	const readable = Readable.toWeb(proc.stdout)
 	const client = new Client()
 	const stream = acp.ndJsonStream(writable, readable)
-	const conn = new acp.ClientSideConnection(() => client, stream)
+	const app = acp
+		.client()
+		.onNotification(acp.methods.client.session.update, ({ params }) => client.sessionUpdate(params))
+		.onRequest(acp.methods.client.session.requestPermission, ({ params }) => client.requestPermission(params))
+		.onRequest(acp.methods.client.fs.writeTextFile, () => client.writeTextFile())
+		.onRequest(acp.methods.client.fs.readTextFile, () => client.readTextFile())
+	const conn = app.connect(stream).agent
 	return { proc, client, conn }
 }
 
@@ -91,7 +97,7 @@ async function killProcess(proc) {
 }
 
 async function initConn(conn) {
-	return await conn.initialize({
+	return await conn.request("initialize", {
 		protocolVersion: acp.PROTOCOL_VERSION,
 		clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
 	})
@@ -101,10 +107,12 @@ async function promptWithTimeout(conn, sessionId, text) {
 	// Attach a no-op catch BEFORE racing: if the timeout wins and conn.prompt
 	// rejects later, an unhandled rejection would crash the runner under
 	// stricter Node defaults.
-	const promptPromise = conn.prompt({ sessionId, prompt: [{ type: "text", text }] }).catch((err) => ({
-		stopReason: "ERROR",
-		error: err instanceof Error ? err.message : String(err),
-	}))
+	const promptPromise = conn
+		.request("session/prompt", { sessionId, prompt: [{ type: "text", text }] })
+		.catch((err) => ({
+			stopReason: "ERROR",
+			error: err instanceof Error ? err.message : String(err),
+		}))
 	const result = await Promise.race([promptPromise, delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" }))])
 	return result
 }
@@ -122,7 +130,7 @@ async function scenarioReconnectResume() {
 			failures.push("A1 initialize: loadSession capability not advertised")
 		}
 
-		const ns = await a.conn.newSession({ cwd: CWD, mcpServers: [] })
+		const ns = await a.conn.request("session/new", { cwd: CWD, mcpServers: [] })
 		sessionId = ns.sessionId
 		process.stderr.write(`[A1] sessionId=${sessionId}\n`)
 
@@ -152,7 +160,7 @@ async function scenarioReconnectResume() {
 		}
 
 		b.client.reset()
-		const load = await b.conn.loadSession({ sessionId, cwd: CWD, mcpServers: [] })
+		const load = await b.conn.request("session/load", { sessionId, cwd: CWD, mcpServers: [] })
 		process.stderr.write(
 			`[A2] load models=${JSON.stringify(load.models)} userChunks=${b.client.userChunks.length} agentChunks=${b.client.agentChunks.length}\n`,
 		)
@@ -200,7 +208,7 @@ async function scenarioCrossToolRoundTrip() {
 		if (!init.agentCapabilities?.sessionCapabilities?.list) {
 			failures.push("B1 initialize: sessionCapabilities.list not advertised")
 		}
-		const ns = await a.conn.newSession({ cwd: CWD, mcpServers: [] })
+		const ns = await a.conn.request("session/new", { cwd: CWD, mcpServers: [] })
 		sessionId = ns.sessionId
 		process.stderr.write(`[B1] sessionId=${sessionId}\n`)
 
@@ -254,7 +262,7 @@ async function scenarioCrossToolRoundTrip() {
 	try {
 		await initConn(b.conn)
 		b.client.reset()
-		const load = await b.conn.loadSession({ sessionId, cwd: CWD, mcpServers: [] })
+		const load = await b.conn.request("session/load", { sessionId, cwd: CWD, mcpServers: [] })
 		process.stderr.write(
 			`[B3] load userChunks=${b.client.userChunks.length} agentChunks=${b.client.agentChunks.length}\n`,
 		)
@@ -301,7 +309,7 @@ async function scenarioCrossToolRoundTrip() {
 	try {
 		await initConn(c.conn)
 		c.client.reset()
-		await c.conn.loadSession({ sessionId, cwd: CWD, mcpServers: [] })
+		await c.conn.request("session/load", { sessionId, cwd: CWD, mcpServers: [] })
 		process.stderr.write(
 			`[B4] reload userChunks=${c.client.userChunks.length} agentChunks=${c.client.agentChunks.length}\n`,
 		)

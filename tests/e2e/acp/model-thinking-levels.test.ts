@@ -98,7 +98,7 @@ describe("ACP integration — list_models thinking column", () => {
 			],
 		})
 
-		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		const session = await fixture.conn.request("session/new", { cwd: fixture.workDir, mcpServers: [] })
 		const result = await prompt(fixture, session.sessionId, "List the models")
 		expect(result.stopReason).toBe("end_turn")
 		expect(result.chunks).toContain("Listed.")

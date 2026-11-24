@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { ServerEntry } from "pi-mcp-adapter/types"
 import {
 	AGENT_DEFINITIONS,

@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk"
+import type * as acp from "@agentclientprotocol/sdk/unstable"
 import { afterEach, describe, expect, it } from "vitest"
 import type { AcpFixture } from "./support/acp-fixture.js"
 import { startAcpFixture } from "./support/acp-fixture.js"

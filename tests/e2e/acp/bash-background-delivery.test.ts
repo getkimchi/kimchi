@@ -183,7 +183,7 @@ it(
 		})
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const pending = fixture.conn.prompt({
+			const pending = fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Start the command and draft while it runs" }],
 			})
@@ -200,7 +200,7 @@ it(
 			// Allow the subprocess exit callback to enqueue its notification while
 			// the deterministic long stream keeps it outside conversation history.
 			await delay(300)
-			await fixture.conn.cancel({ sessionId })
+			await fixture.conn.notify("session/cancel", { sessionId })
 			expect((await pending).stopReason).toBe("cancelled")
 			expect(
 				(await prompt(fixture, sessionId, "Inspect the command's result and confirm nothing remains")).stopReason,

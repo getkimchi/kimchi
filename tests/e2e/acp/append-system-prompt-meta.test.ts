@@ -42,13 +42,13 @@ describe("ACP system prompt append via _meta", () => {
 	it(
 		"appends _meta['kimchi.dev'].appendSystemPrompt from session/new to the model's system prompt",
 		async () => {
-			const ns = await fixture.conn.newSession({
+			const ns = await fixture.conn.request("session/new", {
 				cwd: fixture.workDir,
 				mcpServers: [],
 				_meta: { "kimchi.dev": { appendSystemPrompt: INJECTION } },
 			})
 
-			const promptPromise = fixture.conn.prompt({
+			const promptPromise = fixture.conn.request("session/prompt", {
 				sessionId: ns.sessionId,
 				prompt: [{ type: "text", text: "Say hi." }],
 			})
