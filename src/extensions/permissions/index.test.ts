@@ -12,6 +12,11 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
+import {
+	registerAcpChildInteraction,
+	registerAcpWorkerSession,
+	resetAcpInteractionRegistriesForTests,
+} from "../../modes/acp/child-interaction-registry.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -2342,12 +2347,15 @@ describe("permissions TUI allow-remember", () => {
 
 describe("permissions ACP prompter", () => {
 	beforeEach(() => {
+		resetAcpInteractionRegistriesForTests()
 		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
 		vi.mocked(classifyToolCall).mockClear()
 	})
 
 	afterEach(() => {
+		resetAcpInteractionRegistriesForTests()
 		unregisterAcpPrompter(TEST_SESSION_ID)
+		unregisterAcpPrompter("parent-root")
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
@@ -2469,6 +2477,43 @@ describe("permissions ACP prompter", () => {
 		expect(result).toEqual({ block: true, reason: "Classifier: needs a human (no UI to confirm)" })
 		expect(requests).toEqual([])
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it.each([
+		"parent",
+		"child",
+	] as const)("allows a %s ACP approval for an observed worker in rpc mode", async (route) => {
+		const requests: Array<{ route: string; toolCallId: string }> = []
+		const prompter = (source: string): ToolPermissionPrompter => ({
+			request: async (req) => {
+				requests.push({ route: source, toolCallId: req.toolCallId })
+				return { kind: "allow-once" }
+			},
+		})
+		registerAcpPrompter("parent-root", prompter("parent"))
+		if (route === "parent") registerAcpWorkerSession(TEST_SESSION_ID, "parent-root")
+		else {
+			registerAcpChildInteraction({
+				childSessionId: TEST_SESSION_ID,
+				parentSessionId: "parent-root",
+				permissionPrompter: prompter("child"),
+				uiContext: createClassifierContext().ui,
+			})
+		}
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+		const result = await runAsAgentWorker(() =>
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "tc-worker", toolName: "bash", input: { command: "touch worker.txt" } },
+				ctx,
+			),
+		)
+
+		expect(result).toBeUndefined()
+		expect(requests).toEqual([{ route, toolCallId: "tc-worker" }])
+		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 
 	it("uses the ACP prompter in rpc mode even when hasUI is true (acp wins over terminal)", async () => {

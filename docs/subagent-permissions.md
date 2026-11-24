@@ -47,17 +47,26 @@ Two details:
 
 ## When a call needs a decision
 
-A subagent cannot open a permission prompt of its own. In `default` and `auto`
-mode, a call that is not read-only and that no rule allows is handled like this:
+A subagent uses its parent's policy and has no separate permission mode. If no
+interactive ACP route can handle an approval, `default` and `auto` mode handle a
+call that is not read-only and that no rule allows like this:
 
 1. The classifier judges the call. This is one classifier request per call.
 2. If the answer is `safe`, the call runs.
 3. If the answer is anything else, or the classifier fails, the call is
    blocked.
 
-A blocked subagent is told not to retry the call and to report that the main
-agent needs the user's approval. No permission request is sent to an ACP client
-for a subagent's own call.
+Without an interactive ACP route, a blocked subagent is told not to retry the
+call and to report that the main agent needs the user's approval. No permission
+request is sent to an ACP client for a subagent's own call.
+
+When a parent-root ACP approval route exists, an unexposed worker's request uses
+that route, including when the client did not advertise subagent support. If the
+worker has been announced as an ACP child, new requests use the child's own
+session ID. A request that had already started keeps its original session ID; a
+later announcement does not move it. These routes do not bypass the parent's
+policy, deny rules, or require a client to prompt the child. If a route cannot be
+resolved, the classifier/block result above remains the fail-closed fallback.
 
 ## Pre-approved calls from a host
 
