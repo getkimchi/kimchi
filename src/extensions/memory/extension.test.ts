@@ -462,7 +462,7 @@ describe("memory extension", () => {
 			setSessionMemoryOverride(fakeCtx.sessionManager, false)
 			release?.([{ memory: "stale fact", score: 0.7 }])
 			const first = await pending
-			expect(first?.systemPrompt).not.toContain("stale fact")
+			expect(first).toBeUndefined()
 			setSessionMemoryOverride(fakeCtx.sessionManager, true)
 
 			const second = await start(startEvent("turn 2"), fakeCtx)

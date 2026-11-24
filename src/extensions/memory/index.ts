@@ -1138,6 +1138,8 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						state: undefined,
 						details: digestTelemetry,
 					})
+					if (!memoryActive()) return
+					// Null settles the notice-only epoch; stale outcomes leave the reset's undefined state to recompute.
 					if (!stale) digest = null
 					return { systemPrompt: `${event.systemPrompt}${memoryEnabledNotice()}` }
 				}

@@ -107,8 +107,21 @@ function createHarness(registerExtension?: (pi: ExtensionAPI) => void) {
 	registerExtension?.(mock.api)
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {
-		const results = await mock.emit(event, payload, ctx)
-		return results.at(-1)
+		let result: unknown
+		let currentPayload = payload
+		for (const handler of mock.getHandlers(event)) {
+			result = await handler(currentPayload, ctx)
+			if (
+				event === "context" &&
+				result &&
+				typeof result === "object" &&
+				"messages" in result &&
+				Array.isArray(result.messages)
+			) {
+				currentPayload = { ...(currentPayload as Record<string, unknown>), messages: result.messages }
+			}
+		}
+		return result
 	}
 
 	/** The model-visible view for the next LLM call: persistent history run
@@ -457,6 +470,24 @@ describe("memory prefix stability", () => {
 		expect(firstDivergence(first, second)).toBe(first.messages.length)
 		const { cacheRead } = simulateCache([first, second])
 		expect(cacheRead[1]).toBeGreaterThan(cacheRead[0])
+	})
+
+	it("feeds context handlers their predecessors' messages", async () => {
+		const seen: string[] = []
+		const harness = createHarness((pi) => {
+			pi.on("context", (event: ContextEvent) => {
+				seen.push("first")
+				return { messages: [...event.messages, userMessage("first-injected", 1_000)] }
+			})
+			pi.on("context", (event: ContextEvent) => {
+				seen.push("second")
+				return { messages: [...event.messages, userMessage("second-injected", 1_001)] }
+			})
+		})
+		const view = await harness.requestView()
+		expect(seen).toEqual(["first", "second"])
+		expect(JSON.stringify(view)).toContain("first-injected")
+		expect(JSON.stringify(view)).toContain("second-injected")
 	})
 
 	it("reuses an immediate digest without later system changes", async () => {
