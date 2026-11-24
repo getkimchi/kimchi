@@ -435,11 +435,10 @@ function listSourceFiles(dir: string): string[] {
 	return out
 }
 
-function collectRegisteredFlagCatalogViolations(): string[] {
+function collectFileViolations(rel: string, file: string, text: string): string[] {
 	const violations: string[] = []
-	for (const file of listSourceFiles(SRC_ROOT)) {
-		const rel = `src/${relative(SRC_ROOT, file).split("\\").join("/")}`
-		const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true)
+	{
+		const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
 		const visit = (node: ts.Node): void => {
 			if (
 				ts.isCallExpression(node) &&
@@ -451,9 +450,9 @@ function collectRegisteredFlagCatalogViolations(): string[] {
 			ts.forEachChild(node, visit)
 		}
 		const visitRegistration = (call: ts.CallExpression): void => {
-			if (rel in NONLITERAL_REGISTRATION_ALLOWLIST) return
 			const [nameArg, defArg] = call.arguments
 			if (!nameArg || !ts.isStringLiteralLike(nameArg)) {
+				if (rel in NONLITERAL_REGISTRATION_ALLOWLIST) return
 				violations.push(`${rel}: nonliteral flag name ${nameArg?.getText(sf) ?? "<missing>"}`)
 				return
 			}
@@ -480,10 +479,22 @@ function collectRegisteredFlagCatalogViolations(): string[] {
 	return violations
 }
 
+function collectRegisteredFlagCatalogViolations(): string[] {
+	return listSourceFiles(SRC_ROOT).flatMap((file) =>
+		collectFileViolations(`src/${relative(SRC_ROOT, file).split("\\").join("/")}`, file, readFileSync(file, "utf8")),
+	)
+}
+
 describe("extension flag registration parity", () => {
 	it("every literal registerFlag call has a CLI_OPTIONS entry with the same name and type", () => {
 		const violations = collectRegisteredFlagCatalogViolations()
 		expect(violations).toEqual([])
+	})
+
+	it("still checks literal registrations in files allowlisted for nonliteral ones", () => {
+		const rel = "src/extensions/mcp/index.ts"
+		const text = 'pi.registerFlag("not-in-catalog", { type: "boolean" })\npi.registerFlag(name, flag)\n'
+		expect(collectFileViolations(rel, rel, text)).toEqual([`${rel}: --not-in-catalog missing from CLI_OPTIONS`])
 	})
 })
 

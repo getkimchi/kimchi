@@ -22,7 +22,7 @@ Kimchi boolean flags never take a separate value. `--auto`, `--yolo`, `--memory`
 
 Before pi parses argv, `normalizeBooleanFlagArgs` (`src/cli-args.ts`) rewrites a bare Kimchi-only boolean flag to `--flag=true`. Without this, pi treats the next non-flag token as the flag's value and the positional prompt is lost. Normalization is skipped after `--`, and flags already written with `=` are left alone.
 
-The explicit forms stay valid and are the way to turn a flag off:
+The explicit forms stay valid. `--flag=true` is equivalent to the bare flag. To keep a flag off, omit it. `--flag=false` is honored only by flags Kimchi parses itself (`--auto`, `--yolo`, `--plan`, `--pr-watch`, `--no-auto-update`). Extension-read flags such as `--dangerously-skip-permissions`, `--ferment-oneshot`, `--init-git` and `--debug-prompts` currently treat any `=value` as on.
 
 ```sh
 kimchi --print --auto=true "do the work"
