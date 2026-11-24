@@ -407,7 +407,6 @@ const SRC_ROOT = join(import.meta.dirname, ".")
 /** Files whose registerFlag calls are intentionally not literal. */
 const NONLITERAL_REGISTRATION_ALLOWLIST: Record<string, string> = {
 	"src/extensions/mcp/index.ts": "forwards flags from the MCP probe via target.registerFlag(name, flag)",
-	"src/extensions/mcp/probe.ts": "probe stub that records flags for forwarding, not a real registration",
 }
 
 function listSourceFiles(dir: string): string[] {
@@ -421,47 +420,50 @@ function listSourceFiles(dir: string): string[] {
 	return out
 }
 
-function collectFileViolations(rel: string, file: string, text: string): string[] {
+function collectFileViolations(
+	rel: string,
+	file: string,
+	text: string,
+	allowlist: Record<string, string> = NONLITERAL_REGISTRATION_ALLOWLIST,
+): string[] {
 	const violations: string[] = []
-	{
-		const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
-		const visit = (node: ts.Node): void => {
-			if (
-				ts.isCallExpression(node) &&
-				ts.isPropertyAccessExpression(node.expression) &&
-				node.expression.name.text === "registerFlag"
-			) {
-				visitRegistration(node)
-			}
-			ts.forEachChild(node, visit)
+	const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
+	const visit = (node: ts.Node): void => {
+		if (
+			ts.isCallExpression(node) &&
+			ts.isPropertyAccessExpression(node.expression) &&
+			node.expression.name.text === "registerFlag"
+		) {
+			visitRegistration(node)
 		}
-		const visitRegistration = (call: ts.CallExpression): void => {
-			const [nameArg, defArg] = call.arguments
-			if (!nameArg || !ts.isStringLiteralLike(nameArg)) {
-				if (rel in NONLITERAL_REGISTRATION_ALLOWLIST) return
-				violations.push(`${rel}: nonliteral flag name ${nameArg?.getText(sf) ?? "<missing>"}`)
-				return
-			}
-			const name = nameArg.text
-			const typeProp =
-				defArg && ts.isObjectLiteralExpression(defArg)
-					? defArg.properties.find(
-							(p): p is ts.PropertyAssignment =>
-								ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "type",
-						)
-					: undefined
-			if (!typeProp || !ts.isStringLiteralLike(typeProp.initializer)) {
-				violations.push(`${rel}: --${name} has no literal type`)
-				return
-			}
-			const entry = CLI_OPTIONS[name]
-			if (!entry) violations.push(`${rel}: --${name} missing from CLI_OPTIONS`)
-			else if (entry.type !== typeProp.initializer.text) {
-				violations.push(`${rel}: --${name} type ${typeProp.initializer.text} != CLI_OPTIONS ${entry.type}`)
-			}
-		}
-		visit(sf)
+		ts.forEachChild(node, visit)
 	}
+	const visitRegistration = (call: ts.CallExpression): void => {
+		const [nameArg, defArg] = call.arguments
+		if (!nameArg || !ts.isStringLiteralLike(nameArg)) {
+			if (rel in allowlist) return
+			violations.push(`${rel}: nonliteral flag name ${nameArg?.getText(sf) ?? "<missing>"}`)
+			return
+		}
+		const name = nameArg.text
+		const typeProp =
+			defArg && ts.isObjectLiteralExpression(defArg)
+				? defArg.properties.find(
+						(p): p is ts.PropertyAssignment =>
+							ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "type",
+					)
+				: undefined
+		if (!typeProp || !ts.isStringLiteralLike(typeProp.initializer)) {
+			violations.push(`${rel}: --${name} has no literal type`)
+			return
+		}
+		const entry = CLI_OPTIONS[name]
+		if (!entry) violations.push(`${rel}: --${name} missing from CLI_OPTIONS`)
+		else if (entry.type !== typeProp.initializer.text) {
+			violations.push(`${rel}: --${name} type ${typeProp.initializer.text} != CLI_OPTIONS ${entry.type}`)
+		}
+	}
+	visit(sf)
 	return violations
 }
 
@@ -476,6 +478,15 @@ describe("extension flag registration parity", () => {
 		const violations = collectRegisteredFlagCatalogViolations()
 		expect(violations).toEqual([])
 	})
+
+	it.each(Object.keys(NONLITERAL_REGISTRATION_ALLOWLIST))(
+		"allowlist entry %s still covers a nonliteral registerFlag call",
+		(rel) => {
+			const file = join(SRC_ROOT, rel.slice("src/".length))
+			const violations = collectFileViolations(rel, file, readFileSync(file, "utf8"), {})
+			expect(violations.some((v) => v.startsWith(`${rel}: nonliteral flag name`))).toBe(true)
+		},
+	)
 
 	it("still checks literal registrations in files allowlisted for nonliteral ones", () => {
 		const rel = "src/extensions/mcp/index.ts"
