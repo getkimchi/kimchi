@@ -21,6 +21,8 @@ The observer uses `tool_execution_start`/`tool_execution_end`, preserves invocat
 
 Default-private capture keeps command/path/tool identity, outcomes, timing, and typed result metadata without file contents, edit patches, stream output, web bodies, or error strings. Full capture remains a separately enabled bridge setting, not a harness telemetry permission. Users see no added UI or ACP messages. Read-only TUI and ACP sessions observe the same inert default and only change if the operator deliberately configures workspace capture.
 
+Native payloads are still passed to the local bridge for inspection and enforcement; those privacy guarantees apply to bridge persistence and delivery, not to suppress validation that needs the original content. Bridge process failures are classified and logged once per reason without sensitive payloads, while ordered retries continue. Commands and requests remain bounded to avoid hanging the harness. Receiver/network failures remain bridge-retryable rather than opening that circuit. Abandoned pending executions are bounded at 64 and emitted only with an explicit capacity diagnostic; shutdown clears pending state and suppresses sync while the circuit is open.
+
 ## Core Bash Hooks
 
 Kimchi core still supports local Bash command hooks for commands executed through the `bash` tool and interactive `!` / `!!` shell commands.

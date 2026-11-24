@@ -1,10 +1,16 @@
-import { spawn } from "node:child_process"
+import { type ChildProcessByStdio, spawn } from "node:child_process"
 import { existsSync } from "node:fs"
+import type { Readable, Writable } from "node:stream"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { bridgeCliPath } from "../../commands/bridge.js"
 
+import { type BridgeCommand, type BridgeFailure, createBridgeDiagnostics } from "./diagnostics.js"
+
+export type { BridgeCommand, BridgeFailure } from "./diagnostics.js"
+
 const BRIDGE_COMMAND_TIMEOUT_MS = 3000
 const BRIDGE_SIGTERM_GRACE_MS = 250
+const MAX_PENDING_TOOL_EXECUTIONS = 64
 
 /**
  * Mirror native Pi tool execution into the bridge's durable workspace activity
@@ -40,7 +46,7 @@ interface PendingToolActivity {
 }
 
 export interface WorkspaceActivityOptions {
-	runCommand?: typeof runBridgeCommand
+	runCommand?: BridgeCommand
 }
 
 export function workspaceActivityEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -94,43 +100,52 @@ export function toolActivityEvent(input: ToolActivityInput): Record<string, unkn
 	}
 }
 
-/** Every failure is silent and bounded; the hook preserves causal ordering. */
+type BridgeChildProcess = ChildProcessByStdio<Writable, Readable | null, Readable | null>
+
+type BridgeProcessFactory = () => BridgeChildProcess
+
+/** Every failure is bounded and classified; the hook preserves causal ordering. */
 export async function runBridgeCommand(
 	cliPath: string,
 	command: "hook" | "sync",
 	cwd: string,
 	payload?: Record<string, unknown>,
-): Promise<void> {
+	spawnProcess: BridgeProcessFactory = (): BridgeChildProcess =>
+		spawn(cliPath, [command, ...(command === "hook" ? ["kimchi"] : [])], {
+			cwd,
+			env: process.env,
+			stdio: ["pipe", "ignore", "ignore"],
+		}),
+): Promise<BridgeFailure | undefined> {
 	let encodedPayload: string | undefined
 	try {
 		encodedPayload = payload === undefined ? undefined : JSON.stringify(payload)
 	} catch {
-		return
+		return "payload_invalid"
 	}
-	await new Promise<void>((resolve) => {
-		let child: ReturnType<typeof spawn>
+	return new Promise<BridgeFailure | undefined>((resolve) => {
+		let child: BridgeChildProcess
 		try {
-			child = spawn(cliPath, [command, ...(command === "hook" ? ["kimchi"] : [])], {
-				cwd,
-				env: process.env,
-				stdio: ["pipe", "ignore", "ignore"],
-			})
+			child = spawnProcess()
 		} catch {
-			resolve()
+			resolve("spawn_error")
 			return
 		}
+		let failure: BridgeFailure | undefined
 		let settled = false
 		let timeout: NodeJS.Timeout | undefined
 		let forceKill: NodeJS.Timeout | undefined
-		const finish = () => {
+		const finish = (outcome?: BridgeFailure) => {
 			if (settled) return
+			failure ??= outcome
 			settled = true
 			if (timeout) clearTimeout(timeout)
 			if (forceKill) clearTimeout(forceKill)
-			resolve()
+			resolve(failure)
 		}
 		const terminate = () => {
 			if (settled || forceKill) return
+			failure ??= "timeout"
 			try {
 				child.kill()
 			} catch {}
@@ -141,19 +156,30 @@ export async function runBridgeCommand(
 					child.unref()
 				} finally {
 					child.unref()
-					finish()
+					finish(failure)
 				}
 			}, BRIDGE_SIGTERM_GRACE_MS)
 			forceKill.unref?.()
 		}
 		timeout = setTimeout(terminate, BRIDGE_COMMAND_TIMEOUT_MS)
 		timeout.unref?.()
-		child.once("error", finish)
-		child.once("close", finish)
-		child.stdin?.once("error", finish)
+		child.once("error", (error) => {
+			const code = (error as { code?: unknown }).code
+			finish(code === "ENOENT" || code === "EACCES" || code === "ENOEXEC" ? "spawn_error" : "io_error")
+		})
+		child.once("close", (code) => {
+			if (failure) finish(failure)
+			else if (code !== 0) finish("io_error")
+			else finish()
+		})
+		child.stdin.once("error", () => {
+			failure ??= "io_error"
+			terminate()
+		})
 		try {
-			child.stdin?.end(encodedPayload)
+			child.stdin.end(encodedPayload)
 		} catch {
+			failure ??= "io_error"
 			terminate()
 		}
 	})
@@ -162,13 +188,28 @@ export async function runBridgeCommand(
 export default function workspaceActivityExtension(options: WorkspaceActivityOptions = {}): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		if (!workspaceActivityEnabled()) return
+		const diagnostics = createBridgeDiagnostics()
 		const runCommand = options.runCommand ?? runBridgeCommand
 		const cliPath = bridgeCliPath()
-		if (!options.runCommand && !existsSync(cliPath)) return
+		if (!options.runCommand && !existsSync(cliPath)) {
+			diagnostics.note("bridge_missing")
+			return
+		}
 
 		const pending = new Map<string, PendingToolActivity>()
+		const invoke = async (...args: Parameters<BridgeCommand>) => {
+			const result = await runCommand(...args)
+			if (result) diagnostics.note(result)
+		}
 
 		pi.on("tool_execution_start", async (event, ctx) => {
+			if (!pending.has(event.toolCallId) && pending.size >= MAX_PENDING_TOOL_EXECUTIONS) {
+				const oldest = pending.keys().next().value
+				if (oldest !== undefined) {
+					pending.delete(oldest)
+					diagnostics.note("pending_capacity")
+				}
+			}
 			const call: PendingToolActivity = {
 				toolCallId: event.toolCallId,
 				sessionId: ctx.sessionManager.getSessionId(),
@@ -179,7 +220,7 @@ export default function workspaceActivityExtension(options: WorkspaceActivityOpt
 				parentToolCallId: parentToolCallId(event),
 			}
 			pending.set(event.toolCallId, call)
-			await runCommand(
+			await invoke(
 				cliPath,
 				"hook",
 				call.cwd,
@@ -205,7 +246,7 @@ export default function workspaceActivityExtension(options: WorkspaceActivityOpt
 				typeof event.durationMs === "number" && Number.isFinite(event.durationMs) && event.durationMs >= 0
 					? event.durationMs
 					: Date.now() - call.startedAt
-			await runCommand(
+			await invoke(
 				cliPath,
 				"hook",
 				call.cwd,
@@ -225,7 +266,7 @@ export default function workspaceActivityExtension(options: WorkspaceActivityOpt
 		})
 		pi.on("session_shutdown", async (_event, ctx) => {
 			pending.clear()
-			await runCommand(cliPath, "sync", ctx.cwd)
+			await invoke(cliPath, "sync", ctx.cwd)
 		})
 	}
 }
