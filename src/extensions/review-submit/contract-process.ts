@@ -1,3 +1,4 @@
+import { join } from "node:path"
 import { submitFinding, submitReply, submitSummary } from "./store.js"
 
 interface FixtureCallMessage {
@@ -15,8 +16,11 @@ process.on("message", (message: FixtureCallMessage) => {
 		try {
 			process.env.REVIEW_WRITER = message.writer
 			process.env.REVIEW_WRITER_LIMIT = "50"
+			const homeDir = process.env.HOME
+			if (!homeDir) throw new Error("The contract worker requires HOME only as its fixture base directory")
 			const context = {
-				homeDir: process.env.HOME ?? "",
+				contextDir: join(homeDir, "review-context"),
+				outputDir: join(homeDir, "review-output"),
 				writer: process.env.REVIEW_WRITER,
 				writerLimit: Number(process.env.REVIEW_WRITER_LIMIT),
 				now: () => new Date(message.fixed_created_at),

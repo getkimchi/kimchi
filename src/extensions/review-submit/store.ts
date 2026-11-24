@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto"
-import type { Stats } from "node:fs"
-import { lstat, mkdir, open, readFile, realpath, rename, rm, stat } from "node:fs/promises"
+import { lstat, open, readFile, realpath, rename, rm, stat } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
+import { checkReviewDirectory } from "./directory-safety.js"
+import type { ReviewDirectories } from "./paths.js"
 import { WriterLockReleaseError, WriterLockUnavailableError, withSQLiteWriterLock } from "./sqlite-lock.js"
 
 export const FINDING_SCHEMA_VERSION = "review-finding/v1"
@@ -57,8 +58,7 @@ interface ReplyInput {
 	evidence?: string
 }
 
-export interface ReviewSubmitContext {
-	homeDir: string
+export interface ReviewSubmitContext extends ReviewDirectories {
 	writer: string
 	writerLimit?: number
 	now?: () => Date
@@ -173,11 +173,11 @@ function createdAt(context: ReviewSubmitContext): string {
 }
 
 function outputRoot(context: ReviewSubmitContext): string {
-	return join(context.homeDir, "review-output")
+	return context.outputDir
 }
 
 function contextRoot(context: ReviewSubmitContext): string {
-	return join(context.homeDir, "review-context")
+	return context.contextDir
 }
 
 type CheckedPath = { path: string; error?: never } | { path?: never; error: SubmitResult }
@@ -186,28 +186,24 @@ function unsafeOutputPath(path: string, detail: string): SubmitResult {
 	return rejected("output_path", `Refusing to use ${path}: ${detail}. Output must stay inside review-output.`)
 }
 
-async function ensureOutputDirectory(path: string): Promise<CheckedPath> {
-	try {
-		let metadata: Stats
-		try {
-			metadata = await lstat(path)
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-			try {
-				await mkdir(path, { mode: 0o700 })
-			} catch (error) {
-				// A concurrent creator won the mkdir race; lstat below decides
-				// whether it made a real directory or a symlink/non-directory.
-				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-			}
-			metadata = await lstat(path)
-		}
-		if (metadata.isSymbolicLink()) return { error: unsafeOutputPath(path, "symbolic links are not allowed") }
-		if (!metadata.isDirectory()) return { error: unsafeOutputPath(path, "it is not a directory") }
-		return { path: await realpath(path) }
-	} catch {
-		return { error: unsafeOutputPath(path, "the directory could not be created or resolved") }
-	}
+async function ensureOutputDirectory(context: ReviewSubmitContext, path: string): Promise<CheckedPath> {
+	const checked = await checkReviewDirectory(path, {
+		isDefault: context.outputDirIsDefault === true && resolve(path) === resolve(outputRoot(context)),
+		projectDir: context.projectDir,
+		create: true,
+	})
+	if (checked.kind === "ready") return { path: checked.path }
+	const detail = checked.kind === "unsafe" ? checked.reason : "it is not a real directory and could not be created"
+	return { error: unsafeOutputPath(path, detail) }
+}
+
+async function readableContextDirectory(context: ReviewSubmitContext): Promise<string | undefined> {
+	const checked = await checkReviewDirectory(contextRoot(context), {
+		isDefault: context.contextDirIsDefault === true,
+		projectDir: context.projectDir,
+		create: false,
+	})
+	return checked.kind === "ready" ? checked.path : undefined
 }
 
 async function outputFile(
@@ -215,9 +211,9 @@ async function outputFile(
 	kind: "findings" | "summary" | "replies",
 ): Promise<CheckedPath> {
 	const root = outputRoot(context)
-	const checkedRoot = await ensureOutputDirectory(root)
+	const checkedRoot = await ensureOutputDirectory(context, root)
 	if (checkedRoot.error) return checkedRoot
-	const checkedDirectory = await ensureOutputDirectory(join(checkedRoot.path, kind))
+	const checkedDirectory = await ensureOutputDirectory(context, join(checkedRoot.path, kind))
 	if (checkedDirectory.error) return checkedDirectory
 	if (checkedDirectory.path !== resolve(checkedRoot.path, kind)) {
 		return { error: unsafeOutputPath(join(root, kind), "its resolved path escapes review-output") }
@@ -240,7 +236,7 @@ async function outputFile(
 }
 
 async function withWriterLock(context: ReviewSubmitContext, fn: () => Promise<SubmitResult>): Promise<SubmitResult> {
-	const checkedRoot = await ensureOutputDirectory(outputRoot(context))
+	const checkedRoot = await ensureOutputDirectory(context, outputRoot(context))
 	if (checkedRoot.error) return checkedRoot.error
 	const lockPath = join(checkedRoot.path, `${context.writer}.lock.sqlite`)
 	await context.beforeAcquire?.()
@@ -375,7 +371,11 @@ async function loadCommentableLines(
 	| { map: CommentableLines; absent: false; error?: never }
 	| { map?: never; absent: false; error: SubmitResult }
 > {
-	const filePath = join(contextRoot(context), "commentable-lines.json")
+	const contextDir = await readableContextDirectory(context)
+	// Context that cannot be resolved safely is equivalent to absent context:
+	// anchors are not validated, and replies report thread_context_missing.
+	if (!contextDir) return { absent: true }
+	const filePath = join(contextDir, "commentable-lines.json")
 	let raw: unknown
 	try {
 		raw = JSON.parse(await readFile(filePath, "utf8"))
@@ -580,7 +580,17 @@ export async function submitSummary(input: SummaryInput, context: ReviewSubmitCo
 }
 
 async function loadThreads(context: ReviewSubmitContext): Promise<{ threads?: ReviewThread[]; error?: SubmitResult }> {
-	const filePath = join(contextRoot(context), "comments.json")
+	const contextDir = await readableContextDirectory(context)
+	if (!contextDir) {
+		return {
+			error: rejected(
+				"thread_context_missing",
+				"review-context/comments.json is absent or unavailable; submit_reply requires safe existing thread context. No reply was written.",
+				{ field: "thread_id" },
+			),
+		}
+	}
+	const filePath = join(contextDir, "comments.json")
 	let raw: unknown
 	try {
 		raw = JSON.parse(await readFile(filePath, "utf8"))

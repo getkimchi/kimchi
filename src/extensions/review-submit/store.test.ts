@@ -8,6 +8,11 @@ import { REPLY_SCHEMA_VERSION, submitFinding, submitReply, submitSummary } from 
 
 const NOW = () => new Date("2026-11-17T12:00:00Z")
 
+const paths = (root: string) => ({
+	contextDir: join(root, "review-context"),
+	outputDir: join(root, "review-output"),
+})
+
 describe("review submit store", () => {
 	let homeDir: string
 	beforeEach(async () => {
@@ -19,7 +24,7 @@ describe("review submit store", () => {
 	it("rejects every reply with a clear reason when thread context is absent", async () => {
 		const result = await submitReply(
 			{ thread_id: "thread-1", body: "Done.", action: "none" },
-			{ homeDir, writer: "final", now: NOW },
+			{ ...paths(homeDir), writer: "final", now: NOW },
 		)
 		expect(result).toMatchObject({ accepted: false, reason: "thread_context_missing" })
 		expect(result.message).toContain("review-context/comments.json is absent")
@@ -43,7 +48,7 @@ describe("review submit store", () => {
 				],
 			}),
 		)
-		const context = { homeDir, writer: "final", now: NOW }
+		const context = { ...paths(homeDir), writer: "final", now: NOW }
 		const own = await submitReply(
 			{
 				thread_id: "ours",
@@ -183,7 +188,7 @@ describe("review submit store", () => {
 		writeFileSync(join(homeDir, "review-context", "comments.json"), JSON.stringify(comments))
 		const result = await submitReply(
 			{ thread_id: "mine", body: "Done.", action: "none" },
-			{ homeDir, writer: "final", now: NOW },
+			{ ...paths(homeDir), writer: "final", now: NOW },
 		)
 		expect(result).toMatchObject({ accepted: false, reason: "invalid_context" })
 		expect(readdirSync(homeDir)).not.toContain("review-output")
@@ -198,10 +203,10 @@ describe("review submit store", () => {
 			description: "A local finding.",
 			suggestion: "Fix it.",
 		}
-		const finalContext = { homeDir, writer: "final", writerLimit: 1, now: NOW }
+		const finalContext = { ...paths(homeDir), writer: "final", writerLimit: 1, now: NOW }
 		expect((await submitFinding(finding, finalContext)).accepted).toBe(true)
 		expect((await submitFinding(finding, finalContext)).accepted).toBe(true)
-		const otherContext = { homeDir, writer: "correctness", writerLimit: 1, now: NOW }
+		const otherContext = { ...paths(homeDir), writer: "correctness", writerLimit: 1, now: NOW }
 		expect((await submitFinding(finding, otherContext)).accepted).toBe(true)
 		expect(await submitFinding(finding, otherContext)).toMatchObject({
 			accepted: false,
@@ -225,7 +230,7 @@ describe("review submit store", () => {
 				description: "Unknown schema.",
 				suggestion: "Stop.",
 			},
-			{ homeDir, writer: "final", now: NOW },
+			{ ...paths(homeDir), writer: "final", now: NOW },
 		)
 		expect(result).toMatchObject({ accepted: false, reason: "invalid_context", field: "schema_version" })
 		expect(existsSync(join(homeDir, "review-output"))).toBe(false)
@@ -248,17 +253,17 @@ describe("review submit store", () => {
 				description: "bad\0description",
 				suggestion: "Stop.",
 			},
-			{ homeDir, writer: "final", now: NOW },
+			{ ...paths(homeDir), writer: "final", now: NOW },
 		)
 		expect(finding).toMatchObject({ accepted: false, reason: "invalid_field", field: "description" })
 		const summary = await submitSummary(
 			{ body: "body", environment_gaps: [{ kind: "missing_tool", name: "bad\0tool", note: "missing" }] },
-			{ homeDir, writer: "final", now: NOW },
+			{ ...paths(homeDir), writer: "final", now: NOW },
 		)
 		expect(summary).toMatchObject({ accepted: false, reason: "invalid_field", field: "environment_gaps[0].name" })
 		const reply = await submitReply(
 			{ thread_id: "mention", body: "bad\0body", action: "none" },
-			{ homeDir, writer: "final", now: NOW },
+			{ ...paths(homeDir), writer: "final", now: NOW },
 		)
 		expect(reply).toMatchObject({ accepted: false, reason: "invalid_field", field: "body" })
 	})

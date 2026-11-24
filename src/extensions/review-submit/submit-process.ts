@@ -35,7 +35,8 @@ async function waitAtCheckpoint(type: string): Promise<void> {
 }
 
 const context = {
-	homeDir,
+	contextDir: `${homeDir}/review-context`,
+	outputDir: `${homeDir}/review-output`,
 	writer: "final",
 	now: () => new Date("2026-11-17T12:00:00Z"),
 	beforeAcquire: crash === "hold-before-acquire" ? async () => waitAtCheckpoint("before_acquire") : undefined,

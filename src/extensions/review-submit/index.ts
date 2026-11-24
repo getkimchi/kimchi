@@ -1,6 +1,6 @@
-import { homedir } from "node:os"
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { resolveReviewDirectories } from "./paths.js"
 import {
 	DEFAULT_WRITER_LIMIT,
 	type ReviewSubmitContext,
@@ -21,19 +21,34 @@ function toolResult(result: SubmitResult): AgentToolResult<SubmitResult> {
 }
 
 export default function reviewSubmitExtension(pi: ExtensionAPI): void {
+	pi.registerFlag("review-context-dir", {
+		description: "Review context directory (default: .kimchi/review-context under the current project)",
+		type: "string",
+	})
+	pi.registerFlag("review-output-dir", {
+		description: "Review output directory (default: .kimchi/review-output under the current project)",
+		type: "string",
+	})
 	const writer = process.env.REVIEW_WRITER
 	if (!writer) return
-	const context: ReviewSubmitContext = {
-		homeDir: process.env.HOME || homedir(),
+	const stringFlag = (name: string): string | undefined => {
+		const value = pi.getFlag(name)
+		return typeof value === "string" ? value : undefined
+	}
+	const contextFor = (cwd: string): ReviewSubmitContext => ({
 		writer,
 		writerLimit: writerLimit(writer),
-	}
+		...resolveReviewDirectories(cwd, {
+			contextDir: stringFlag("review-context-dir"),
+			outputDir: stringFlag("review-output-dir"),
+		}),
+	})
 
 	pi.registerTool({
 		name: "submit_finding",
 		label: "Submit Review Finding",
 		description:
-			"Validate and store one structured code-review finding under $HOME/review-output/findings for the current REVIEW_WRITER. Anchors are checked against $HOME/review-context/commentable-lines.json when present. Returns the accepted finding ID or a structured rejection. Writes are local and atomic; this tool never posts or uses the network.",
+			"Validate and store one structured code-review finding in the configured review output directory for the current REVIEW_WRITER. Output defaults to .kimchi/review-output under the current project. Anchors are read from the configured review context directory (default: .kimchi/review-context under the current project). Returns the accepted finding ID or a structured rejection. Writes are local and atomic; this tool never posts or uses the network.",
 		promptSnippet: "Store a validated local review finding without posting it",
 		parameters: Type.Object(
 			{
@@ -53,8 +68,8 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 			{ additionalProperties: false },
 		),
 		executionMode: "parallel",
-		async execute(_toolCallId, params) {
-			return toolResult(await submitFinding(params, context))
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return toolResult(await submitFinding(params, contextFor(ctx.cwd)))
 		},
 	})
 
@@ -62,7 +77,7 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 		name: "submit_summary",
 		label: "Submit Review Summary",
 		description:
-			"Replace the current writer's local review summary. Include environment_gaps for missing tools and unavailable private, Git-URL, or otherwise unsupported dependencies. Validation limits follow review-summary/v1. The write is atomic, nothing is posted, and no network access is used.",
+			"Replace the current writer's local review summary in the configured output directory (default: .kimchi/review-output under the current project). Include environment_gaps for missing tools and unavailable private, Git-URL, or otherwise unsupported dependencies. Validation limits follow review-summary/v1. The write is atomic, nothing is posted, and no network access is used.",
 		promptSnippet: "Store the local review summary and environment gaps",
 		parameters: Type.Object(
 			{
@@ -90,8 +105,8 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 			{ additionalProperties: false },
 		),
 		executionMode: "parallel",
-		async execute(_toolCallId, params) {
-			return toolResult(await submitSummary(params, context))
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return toolResult(await submitSummary(params, contextFor(ctx.cwd)))
 		},
 	})
 
@@ -99,7 +114,7 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 		name: "submit_reply",
 		label: "Submit Review Reply",
 		description:
-			"Validate and store a local reply to an existing thread from $HOME/review-context/comments.json. Replies are restricted to our own findings and threads marked as mentioning the bot. Only our threads can use resolve or reopen. Own-finding replies require verdict, evidence_kind, and evidence. Missing thread context rejects every reply. Writes are local and atomic; nothing is posted.",
+			"Validate and store a local reply to an existing thread from the configured review context directory (default: .kimchi/review-context under the current project). Replies are restricted to our own findings and threads marked as mentioning the bot. Only our threads can use resolve or reopen. Own-finding replies require verdict, evidence_kind, and evidence. Missing thread context rejects every reply. Writes are local and atomic; nothing is posted.",
 		promptSnippet: "Store a scoped local review-thread reply without posting it",
 		parameters: Type.Object(
 			{
@@ -129,8 +144,8 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 			{ additionalProperties: false },
 		),
 		executionMode: "parallel",
-		async execute(_toolCallId, params) {
-			return toolResult(await submitReply(params, context))
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return toolResult(await submitReply(params, contextFor(ctx.cwd)))
 		},
 	})
 }

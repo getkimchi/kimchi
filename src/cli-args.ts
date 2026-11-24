@@ -196,6 +196,16 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Ignore project-local files for this run",
 	},
+	"review-context-dir": {
+		type: "string",
+		description: "Review context directory (default: .kimchi/review-context under the current project)",
+		placeholder: "<path>",
+	},
+	"review-output-dir": {
+		type: "string",
+		description: "Review output directory (default: .kimchi/review-output under the current project)",
+		placeholder: "<path>",
+	},
 	"permissions-config": {
 		type: "string",
 		description: "Replace the merged permissions config with this file",
@@ -257,6 +267,8 @@ export interface SessionCliArgs {
 		"dangerously-skip-permissions"?: boolean
 		approve?: boolean
 		"no-approve"?: boolean
+		"review-context-dir"?: string
+		"review-output-dir"?: string
 		"permissions-config"?: string
 		"bash-process-limit"?: string
 		"mcp-config"?: string
@@ -339,6 +351,8 @@ export const CACHEABLE_OPTION_NAMES = [
 	"dangerously-skip-permissions",
 	"approve",
 	"no-approve",
+	"review-context-dir",
+	"review-output-dir",
 	"permissions-config",
 	"bash-process-limit",
 	"mcp-config",

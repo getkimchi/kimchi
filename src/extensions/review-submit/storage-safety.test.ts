@@ -16,6 +16,11 @@ const finding = {
 }
 const summary = { body: "Committed summary.", score: 80, estimated_effort_to_review: 3, environment_gaps: [] }
 
+const paths = (root: string) => ({
+	contextDir: join(root, "review-context"),
+	outputDir: join(root, "review-output"),
+})
+
 function writeEligibleComments(homeDir: string): void {
 	writeFileSync(
 		join(homeDir, "review-context", "comments.json"),
@@ -42,7 +47,7 @@ describe("review output process and path safety", () => {
 		"reclaims a crash-left lock immediately after SIGKILL between temp write and rename",
 		{ timeout: 30_000 },
 		async () => {
-			expect((await submitSummary(summary, { homeDir, writer: "final", now: NOW })).accepted).toBe(true)
+			expect((await submitSummary(summary, { ...paths(homeDir), writer: "final", now: NOW })).accepted).toBe(true)
 			const crashed = await runSubmissionProcess({
 				tool: "submit_summary",
 				homeDir,
@@ -73,7 +78,7 @@ describe("review output process and path safety", () => {
 		const external = mkdtempSync(join(tmpdir(), "kimchi-review-external-"))
 		externalDirectories.push(external)
 		symlinkSync(external, join(homeDir, "review-output"), "dir")
-		const result = await submitSummary(summary, { homeDir, writer: "final", now: NOW })
+		const result = await submitSummary(summary, { ...paths(homeDir), writer: "final", now: NOW })
 		expect(result).toMatchObject({ accepted: false, reason: "output_path" })
 		expect(readdirSync(external)).toEqual([])
 	})
@@ -84,7 +89,7 @@ describe("review output process and path safety", () => {
 		externalDirectories.push(external)
 		mkdirSync(join(homeDir, "review-output"), { recursive: true })
 		symlinkSync(external, join(homeDir, "review-output", kind), "dir")
-		const context = { homeDir, writer: "final", now: NOW }
+		const context = { ...paths(homeDir), writer: "final", now: NOW }
 		const result =
 			kind === "findings"
 				? await submitFinding(finding, context)
@@ -104,17 +109,20 @@ describe("review output process and path safety", () => {
 		Number.POSITIVE_INFINITY,
 		Number.NaN,
 	])("rejects unsupported consumer line number %s", async (line) => {
-		const result = await submitFinding({ ...finding, line }, { homeDir, writer: "final", now: NOW })
+		const result = await submitFinding({ ...finding, line }, { ...paths(homeDir), writer: "final", now: NOW })
 		expect(result).toMatchObject({ accepted: false, reason: "invalid_field", field: "line" })
 	})
 
 	it("accepts the maximum signed 32-bit line number", async () => {
-		const result = await submitFinding({ ...finding, line: 2_147_483_647 }, { homeDir, writer: "final", now: NOW })
+		const result = await submitFinding(
+			{ ...finding, line: 2_147_483_647 },
+			{ ...paths(homeDir), writer: "final", now: NOW },
+		)
 		expect(result).toMatchObject({ accepted: true, id: "final-1" })
 	})
 
 	it("rejects non-integer summary scores and efforts", async () => {
-		const context = { homeDir, writer: "final", now: NOW }
+		const context = { ...paths(homeDir), writer: "final", now: NOW }
 		expect((await submitSummary({ ...summary, score: 82.5 }, context)).field).toBe("score")
 		expect((await submitSummary({ ...summary, estimated_effort_to_review: 2.5 }, context)).field).toBe(
 			"estimated_effort_to_review",

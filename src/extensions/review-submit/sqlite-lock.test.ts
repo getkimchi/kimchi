@@ -18,6 +18,11 @@ const baseFinding = {
 	suggestion: "Fix it.",
 }
 
+const paths = (root: string) => ({
+	contextDir: join(root, "review-context"),
+	outputDir: join(root, "review-output"),
+})
+
 interface HookedSubmission {
 	child: ChildProcess
 	beforeAcquire: Promise<void>
@@ -116,7 +121,7 @@ describe("live review writer locks", () => {
 		{ timeout: 30_000 },
 		async () => {
 			homeDir = mkdtempSync(join(tmpdir(), "kimchi-review-stop-lock-"))
-			expect((await submitFinding(baseFinding, { homeDir, writer: "final", now: NOW })).accepted).toBe(true)
+			expect((await submitFinding(baseFinding, { ...paths(homeDir), writer: "final", now: NOW })).accepted).toBe(true)
 			const committedBeforePause = readFileSync(join(homeDir, "review-output", "findings", "final.jsonl"), "utf8")
 			const holder = start("hold-before-rename", {
 				...baseFinding,
@@ -224,7 +229,7 @@ describe("live review writer locks", () => {
 
 	it("serializes concurrent submissions on one JavaScript event loop", async () => {
 		homeDir = mkdtempSync(join(tmpdir(), "kimchi-review-local-lock-"))
-		const context = { homeDir, writer: "final", now: NOW }
+		const context = { ...paths(homeDir), writer: "final", now: NOW }
 		const results = await Promise.all([
 			submitFinding({ ...baseFinding, description: "Local A." }, context),
 			submitFinding({ ...baseFinding, line: 2, description: "Local B." }, context),
@@ -245,13 +250,13 @@ describe("live review writer locks", () => {
 		const deadTemp = `.final.lock.dead-orphan.tmp`
 		const liveTemp = `.final.lock.live-owner.tmp`
 		const malformedTemp = `.final.lock.malformed.tmp`
-		expect((await submitFinding(baseFinding, { homeDir, writer: "final", now: NOW })).accepted).toBe(true)
+		expect((await submitFinding(baseFinding, { ...paths(homeDir), writer: "final", now: NOW })).accepted).toBe(true)
 		writeFileSync(join(outputRoot, deadTemp), JSON.stringify({ version: 1, pid: 999_999, token: "dead-orphan" }))
 		writeFileSync(join(outputRoot, liveTemp), JSON.stringify({ version: 1, pid: process.pid, token: "live-owner" }))
 		writeFileSync(join(outputRoot, malformedTemp), "null")
-		expect((await submitFinding({ ...baseFinding, line: 2 }, { homeDir, writer: "final", now: NOW })).accepted).toBe(
-			true,
-		)
+		expect(
+			(await submitFinding({ ...baseFinding, line: 2 }, { ...paths(homeDir), writer: "final", now: NOW })).accepted,
+		).toBe(true)
 		expect(existsSync(join(outputRoot, deadTemp))).toBe(false)
 		expect(existsSync(join(outputRoot, liveTemp))).toBe(true)
 		expect(existsSync(join(outputRoot, malformedTemp))).toBe(true)
