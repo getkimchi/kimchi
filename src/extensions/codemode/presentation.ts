@@ -54,8 +54,9 @@ function nestedCalls(details: unknown): CodemodeNestedCall[] {
 	return Array.isArray(calls) ? calls.filter((call) => typeof call?.name === "string") : []
 }
 
-/** Pi stores nested args as a JSON preview and ends it with this when it cuts
- *  it at 200 characters. Whole JSON ends with a bracket, never with dots. */
+/** Pi stores nested args as a JSON preview (`previewArgs` in its codemode
+ *  `execute`) and ends it with this when it cuts it at 200 characters.
+ *  Whole JSON ends with a bracket, never with dots. */
 const CUT_ARGS_SUFFIX = "..."
 
 /** What makes two successful calls the same action: the file for reads,
@@ -66,8 +67,10 @@ function distinctKey(category: ActionCategory, call: CodemodeNestedCall): string
 		case "file":
 		case "pattern":
 		case "directory":
-			// Two cut previews can be equal while the arguments differ, so such a call counts on its own.
-			if (call.args.endsWith(CUT_ARGS_SUFFIX)) return call.id
+			// A missing or cut preview cannot say whether two calls are the same, so
+			// such a call counts on its own, like an edit or a command. Two equal
+			// calls with long arguments therefore count twice.
+			if (typeof call.args !== "string" || call.args.endsWith(CUT_ARGS_SUFFIX)) return call.id
 			return category === "file" ? (readPath(call.args) ?? call.args) : call.args
 		default:
 			return undefined
@@ -123,7 +126,8 @@ export function truncateForDisplay(text: string, max: number): string {
 	return `${codePoints.slice(0, max - 1).join("")}…`
 }
 
-/** Pi starts its error block with a line that holds only this marker. */
+/** Pi starts its error block with a line that holds only this marker (the
+ *  `Script error:` item in its codemode `execute`). */
 const SCRIPT_ERROR_LINE = /^Script error:$/gm
 /** Pi's result header lines, which say nothing about why the script failed. */
 const RESULT_HEADER = /^(Script failed|Script completed|Wall time .*|Output:)$/

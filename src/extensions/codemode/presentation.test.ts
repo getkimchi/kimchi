@@ -12,6 +12,11 @@ function call(name: string, status: "running" | "ok" | "error" | "cancelled" = "
 	return { id: `root/${name}`, name, args: JSON.stringify(args), status }
 }
 
+/** A call whose args preview Pi cut: it keeps 200 characters and ends them with dots. */
+function cutCall(name: string, id: string, args: unknown) {
+	return { id, name, args: `${JSON.stringify(args).slice(0, 197)}...`, status: "ok" as const }
+}
+
 function failed(text: string): AgentToolResult<unknown> {
 	return { content: [{ type: "text", text }], details: {} }
 }
@@ -46,26 +51,40 @@ describe("codemodeActionSummary", () => {
 	})
 
 	it("counts calls apart when Pi cut their args preview", () => {
-		// Pi keeps 200 characters of the args JSON; both previews below are the same text.
+		// The directory fills the preview, so both previews below are the same text.
 		const dir = "d".repeat(200)
-		const cut = (name: string, id: string, args: unknown) => ({
-			id,
-			name,
-			args: `${JSON.stringify(args).slice(0, 197)}...`,
-			status: "ok" as const,
-		})
 		expect(
 			codemodeActionSummary({
 				calls: [
-					cut("read", "root/1", { path: `${dir}/one.txt` }),
-					cut("read", "root/2", { path: `${dir}/two.txt` }),
+					cutCall("read", "root/1", { path: `${dir}/one.txt` }),
+					cutCall("read", "root/2", { path: `${dir}/two.txt` }),
 					call("read", "ok", { path: "a.ts" }),
 					call("read", "ok", { path: "a.ts" }),
-					cut("grep", "root/5", { pattern: `${dir}one` }),
-					cut("grep", "root/6", { pattern: `${dir}two` }),
+					cutCall("grep", "root/5", { pattern: `${dir}one` }),
+					cutCall("grep", "root/6", { pattern: `${dir}two` }),
 				],
 			}),
 		).toBe("read 3 files, searched for 2 patterns")
+	})
+
+	it("counts two equal calls twice when their args preview is cut", () => {
+		// A cut preview cannot say whether the two calls read the same file.
+		const path = `${"d".repeat(200)}/one.txt`
+		expect(
+			codemodeActionSummary({ calls: [cutCall("read", "root/1", { path }), cutCall("read", "root/2", { path })] }),
+		).toBe("read 2 files")
+	})
+
+	it("counts a call without an args preview on its own", () => {
+		expect(
+			codemodeActionSummary({
+				calls: [
+					{ id: "root/1", name: "read", status: "ok" },
+					call("read", "ok", { path: "a.ts" }),
+					call("read", "ok", { path: "a.ts" }),
+				],
+			}),
+		).toBe("read 2 files")
 	})
 
 	it("names the tool when every other call is the same tool", () => {
