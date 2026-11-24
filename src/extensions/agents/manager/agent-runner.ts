@@ -631,6 +631,8 @@ ${skillLines}`
 
 	// Construct the gate before the resource loader: a failed import or
 	// initialization must prevent the child from running unchecked.
+	// The import is dynamic on purpose: a static one closes a cycle
+	// (permissions/index -> remote-run/runner -> agents/index -> this file).
 	const parentSessionId = ctx.sessionManager.getSessionId()
 	const { createWorkerPermissionsExtension, getPermissionsExtensionOptions } = await import(
 		"../../permissions/index.js"
