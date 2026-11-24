@@ -31,6 +31,8 @@ const validFinding = {
 	suggestion: "Do not read or write through the symlink.",
 }
 
+const REVIEW_FLAG_NAMES = ["review", "review-writer", "review-writer-limit", "review-context-dir", "review-output-dir"]
+
 describe("reviewSubmitExtension", () => {
 	const temporaryDirectories: string[] = []
 	let projectDir: string
@@ -43,40 +45,103 @@ describe("reviewSubmitExtension", () => {
 		for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
 	})
 
-	function activeHarness(overrides: Record<string, string | undefined> = {}) {
-		vi.stubEnv("REVIEW_WRITER", "final")
+	function activeHarness(overrides: Record<string, string | boolean | undefined> = {}) {
 		const harness = createExtensionApi()
-		harness.api.getFlag = vi.fn((name: string) => overrides[name])
+		const flags: Record<string, string | boolean | undefined> = {
+			review: true,
+			"review-writer": "final",
+			"review-writer-limit": "50",
+			...overrides,
+		}
+		harness.api.getFlag = vi.fn((name: string) => flags[name])
 		reviewSubmitExtension(harness.api)
 		return harness
 	}
 
-	it("registers path flags but no tools in an ordinary session without side effects", () => {
-		vi.stubEnv("REVIEW_WRITER", "")
+	it("registers all flags but no tools without --review, and creates no directories", () => {
 		const harness = createExtensionApi()
 		reviewSubmitExtension(harness.api)
 		expect(harness.getRegisteredTools()).toEqual([])
-		expect(vi.mocked(harness.api.registerFlag).mock.calls.map(([name]) => name)).toEqual([
-			"review-context-dir",
-			"review-output-dir",
-		])
+		expect(vi.mocked(harness.api.registerFlag).mock.calls.map(([name]) => name)).toEqual(REVIEW_FLAG_NAMES)
 		expect(readdirSync(projectDir)).toEqual([])
 	})
 
-	it("registers all three tools and both string path flags when comments.json is absent", () => {
+	it("registers all three tools and all five flags when --review is set", () => {
 		const harness = activeHarness()
 		expect(harness.getActiveToolNames()).toEqual(["submit_finding", "submit_summary", "submit_reply"])
-		expect(vi.mocked(harness.api.registerFlag).mock.calls.map(([name]) => name)).toEqual([
-			"review-context-dir",
-			"review-output-dir",
-		])
+		expect(vi.mocked(harness.api.registerFlag).mock.calls.map(([name]) => name)).toEqual(REVIEW_FLAG_NAMES)
 		expect(vi.mocked(harness.api.registerFlag).mock.calls.map(([, options]) => options.type)).toEqual([
+			"boolean",
+			"string",
+			"string",
 			"string",
 			"string",
 		])
 	})
 
-	it("uses the project .kimchi directories by default, never HOME", async () => {
+	it("honors --review-writer and its limit", async () => {
+		const harness = activeHarness({ "review-writer": "reviewer-1", "review-writer-limit": "1" })
+		const first = await harness
+			.getRegisteredTool("submit_finding")
+			.execute("custom-writer-1", validFinding, undefined, undefined, createToolContext({ cwd: projectDir }))
+		expect(first.details).toMatchObject({ accepted: true, id: "reviewer-1-1" })
+		const capped = await harness
+			.getRegisteredTool("submit_finding")
+			.execute("custom-writer-2", validFinding, undefined, undefined, createToolContext({ cwd: projectDir }))
+		expect(capped.details).toMatchObject({ accepted: false, reason: "cap", limit: 1, count: 1 })
+		expect(
+			readFileSync(join(projectDir, ".kimchi", "review-output", "findings", "reviewer-1.jsonl"), "utf8")
+				.trim()
+				.split("\n"),
+		).toHaveLength(1)
+	})
+
+	it.each([
+		"0",
+		"-1",
+		"abc",
+		"1e9",
+		"1001",
+		"1.5",
+		" 5",
+	])("rejects invalid writer limit %s in every submit tool without output", async (limit) => {
+		const harness = activeHarness({ "review-writer-limit": limit })
+		for (const { name, input } of [
+			{ name: "submit_finding", input: validFinding },
+			{ name: "submit_summary", input: validSummary },
+			{ name: "submit_reply", input: { thread_id: "thread", body: "Reply", action: "none" } },
+		] as const) {
+			const result = await harness
+				.getRegisteredTool(name)
+				.execute(`invalid-limit-${name}`, input, undefined, undefined, createToolContext({ cwd: projectDir }))
+			expect(result.details).toMatchObject({
+				accepted: false,
+				reason: "invalid_writer_limit",
+				field: "writer_limit",
+			})
+			expect(JSON.stringify(result.details)).toContain("1 to 1000")
+		}
+		expect(readdirSync(projectDir)).toEqual([])
+	})
+
+	it.each(["1", "1000"])("accepts valid writer limit %s", async (limit) => {
+		const harness = activeHarness({ "review-writer": "reviewer-1", "review-writer-limit": limit })
+		const result = await harness
+			.getRegisteredTool("submit_finding")
+			.execute(`valid-limit-${limit}`, validFinding, undefined, undefined, createToolContext({ cwd: projectDir }))
+		expect(result.details).toMatchObject({ accepted: true, id: "reviewer-1-1" })
+	})
+
+	it("returns invalid_writer for an invalid --review-writer value", async () => {
+		const harness = activeHarness({ "review-writer": "../escape" })
+		const result = await harness
+			.getRegisteredTool("submit_summary")
+			.execute("invalid-writer", validSummary, undefined, undefined, createToolContext({ cwd: projectDir }))
+		expect(result.details).toMatchObject({ accepted: false, reason: "invalid_writer" })
+		expect(readdirSync(projectDir)).toEqual([])
+	})
+
+	it("uses --review alone with final defaults and project .kimchi directories, never HOME", async () => {
 		const harness = activeHarness()
 		const result = await harness
 			.getRegisteredTool("submit_summary")

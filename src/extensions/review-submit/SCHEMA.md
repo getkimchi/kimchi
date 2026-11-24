@@ -4,7 +4,9 @@ These schemas are **provisional until the consumer-side reply context and ingest
 
 ## Directory selection
 
-`--review-context-dir` and `--review-output-dir` select the directories read and written by the tools. Absolute values are used as-is and relative values resolve from the session's project directory (`ctx.cwd`). Without these flags the directories are `.kimchi/review-context` and `.kimchi/review-output` under the current project. There is no home-directory fallback. The platform supplies both absolute flags on every fresh and resumed invocation.
+`--review` is the only switch that enables review mode and its three submit tools. The other review flags parse without enabling that mode and have no side effects without it. `--review-writer` selects the writer (default `final`); `--review-writer-limit` sets the non-final finding limit to a decimal integer from 1 to 1000 (default 50; no sign, decimal point, exponent, or whitespace). Invalid values return structured `invalid_writer_limit` without writing output, and `final` always remains 50.
+
+`--review-context-dir` and `--review-output-dir` select the directories read and written by the tools. Absolute values are used as-is and relative values resolve from the session's project directory (`ctx.cwd`). Without these flags the directories are `.kimchi/review-context` and `.kimchi/review-output` under the current project. There is no home-directory fallback. The platform supplies `--review --review-writer final --review-context-dir /home/sandbox/review-context --review-output-dir /home/sandbox/review-output` on every fresh and resumed invocation.
 
 The examples below use `<review-context>` and `<review-output>` for the selected directories. With a default path, every component from the project directory through the selected directory is checked and created one level at a time; a symlink or non-directory component is never followed. With a flag-selected path, existing ancestors may be symlinks but the selected leaf and every newly created component must be real directories. Context paths are validated without creating anything: unavailable context leaves anchors unchecked and rejects replies as missing context. Output containment, atomic replacement, and per-writer locking apply in every case. `<review-output>/${writer}.lock.sqlite` is the lock database, kept at the root of `<review-output>`, outside `findings/`, `summary/`, and `replies/`.
 
@@ -32,7 +34,7 @@ Fields:
 
 - `schema_version`: exactly `"review-reply/v1"`.
 - `id`: `<writer>-<seq>`.
-- `writer`: the process writer name.
+- `writer`: the configured writer from `--review-writer` (default `final`).
 - `seq`: contiguous positive sequence, starting at 1.
 - `created_at`: RFC 3339 UTC timestamp.
 - `thread_id`: the validated existing thread ID.

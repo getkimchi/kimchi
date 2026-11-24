@@ -14,15 +14,13 @@ interface FixtureCallMessage {
 process.on("message", (message: FixtureCallMessage) => {
 	void (async () => {
 		try {
-			process.env.REVIEW_WRITER = message.writer
-			process.env.REVIEW_WRITER_LIMIT = "50"
 			const homeDir = process.env.HOME
 			if (!homeDir) throw new Error("The contract worker requires HOME only as its fixture base directory")
 			const context = {
 				contextDir: join(homeDir, "review-context"),
 				outputDir: join(homeDir, "review-output"),
-				writer: process.env.REVIEW_WRITER,
-				writerLimit: Number(process.env.REVIEW_WRITER_LIMIT),
+				writer: message.writer,
+				writerLimit: 50,
 				now: () => new Date(message.fixed_created_at),
 			}
 			const submit =

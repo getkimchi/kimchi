@@ -7,7 +7,7 @@ All data files in this directory must stay byte-identical with the consumer's co
 ## How the Kimchi test runs the fixture
 
 1. Copy `review-context/` into a temporary fixture base directory and direct output to a sibling `review-output/` directory. Pass both directories explicitly as the tool context and output paths, with no home-directory fallback. Run without provider credentials or package-manager network access; the tools themselves make no network requests and never post a review.
-2. Set the clock to `fixed_created_at` from `calls.json`, set `REVIEW_WRITER_LIMIT=50`, and set `REVIEW_WRITER` from each call's `writer` field.
+2. Set the clock to `fixed_created_at` from `calls.json` and enable review mode with `--review`. Pass each call's `writer` through `--review-writer` and use `--review-writer-limit 50` for non-final writers; `final` always keeps the limit at 50.
 3. Execute steps in order. Expand `repeat` into sequential calls and run calls marked `parallel` concurrently.
 4. Keep calls with the same `process` name in one long-lived OS process; use separate processes for distinct names. This includes both same-writer racing processes, not concurrent functions within one store.
 5. Materialize `generate_string_bytes` and `generate_array_lengths` before each call, then pass the expanded arguments to the production submit functions.

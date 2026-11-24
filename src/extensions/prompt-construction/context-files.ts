@@ -20,6 +20,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs } from "../../cli-args.js"
 
 export interface ContextFile {
 	path: string
@@ -77,8 +78,8 @@ function loadContextFileFromDir(dir: string, alreadyLoaded: readonly ContextFile
  */
 export function loadProjectContextFiles(cwd: string, alreadyLoaded: readonly ContextFile[] = []): ContextFile[] {
 	// Review instructions arrive only through review-context/. Never inherit
-	// project instructions from the neutral run directory or any ancestor.
-	if (process.env.REVIEW_WRITER) return []
+	// project instructions from the neutral run directory or any ancestor when --review is enabled.
+	if (getParsedCliArgs().options.review === true) return []
 	const files: ContextFile[] = []
 
 	let dir = resolve(cwd)
@@ -164,7 +165,7 @@ function readGlobalContextFiles(options: GlobalContextFileOptions): { files: Con
 
 /** Global files, then project files that do not repeat them. */
 export function loadContextFiles(cwd: string, options: GlobalContextFileOptions): ContextFile[] {
-	if (process.env.REVIEW_WRITER) return []
+	if (getParsedCliArgs().options.review === true) return []
 	const { files, sources } = readGlobalContextFiles(options)
 	return [...files, ...loadProjectContextFiles(cwd, sources)]
 }

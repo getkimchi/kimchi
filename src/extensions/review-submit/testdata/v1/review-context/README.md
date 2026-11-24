@@ -59,11 +59,10 @@ Use `submit_summary` for the overall review and for the summary-only findings.
 Include `environment_gaps` entries for missing tools and unavailable private
 or git-URL packages. Each entry has a `kind`, `name`, and short `note`.
 
-Output lives under `$HOME/review-output/`, one file per `REVIEW_WRITER`:
-findings in `findings/<writer>.jsonl` and the latest summary in
-`summary/<writer>.json`. Findings use `review-finding/v1` and carry `id`,
-`writer`, `seq`, `created_at`, and optional `derived_from` in addition to
-the structured finding. The writer named `final` is the review and may store
-50 findings; its 51st is rejected with a request to prioritize. Other writers
-use `REVIEW_WRITER_LIMIT` (default 50). Locks only coordinate processes sharing
-one writer name. The local tools never post comments and need no credentials.
+Output lives under `$HOME/review-output/`: findings in `findings/<writer>.jsonl` and
+the latest summary in `summary/<writer>.json`. The writer named `final` is the review.
+Findings use `review-finding/v1` and carry `id`, `writer`, `seq`, `created_at`,
+and optional `derived_from` in addition to the structured finding. The per-writer
+limit defaults to 50; `final` may store 50 findings, and its 51st is rejected
+with a request to prioritize. Locks only coordinate processes sharing one writer name.
+The local tools never post comments and need no credentials.

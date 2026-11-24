@@ -55,8 +55,6 @@ function startHookedSubmission(
 			SystemRoot: process.env.SystemRoot,
 			TEMP: process.env.TEMP,
 			TMP: process.env.TMP,
-			REVIEW_WRITER: "final",
-			REVIEW_WRITER_LIMIT: "50",
 		},
 	})
 	let stdout = ""

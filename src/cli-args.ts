@@ -196,6 +196,20 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		type: "boolean",
 		description: "Ignore project-local files for this run",
 	},
+	review: {
+		type: "boolean",
+		description: "Enable review mode and its submit tools",
+	},
+	"review-writer": {
+		type: "string",
+		description: "Writer ID for submitted review records (default: final)",
+		placeholder: "<name>",
+	},
+	"review-writer-limit": {
+		type: "string",
+		description: "Maximum findings per non-final writer: decimal integer 1–1000 (default: 50; final is always 50)",
+		placeholder: "<n>",
+	},
 	"review-context-dir": {
 		type: "string",
 		description: "Review context directory (default: .kimchi/review-context under the current project)",
@@ -267,6 +281,9 @@ export interface SessionCliArgs {
 		"dangerously-skip-permissions"?: boolean
 		approve?: boolean
 		"no-approve"?: boolean
+		review?: boolean
+		"review-writer"?: string
+		"review-writer-limit"?: string
 		"review-context-dir"?: string
 		"review-output-dir"?: string
 		"permissions-config"?: string
@@ -351,6 +368,9 @@ export const CACHEABLE_OPTION_NAMES = [
 	"dangerously-skip-permissions",
 	"approve",
 	"no-approve",
+	"review",
+	"review-writer",
+	"review-writer-limit",
 	"review-context-dir",
 	"review-output-dir",
 	"permissions-config",
@@ -403,6 +423,12 @@ export function getParsedCliArgs(): SessionCliArgs {
 		cachedCliArgs = parseCliArgs(process.argv.slice(2))
 	}
 	return cachedCliArgs
+}
+
+/** Canonicalize the extension-boolean switch so Pi's unknown-flag parser
+ * cannot consume the following positional prompt as a string value. */
+export function normalizeReviewBooleanArgs(args: string[]): string[] {
+	return args.map((arg) => (arg === "--review" ? "--review=true" : arg))
 }
 
 export function normalizeResumeIdArgs(args: string[]): string[] {

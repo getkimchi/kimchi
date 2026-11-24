@@ -1,5 +1,6 @@
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { resolveReviewDirectories } from "./paths.js"
 import {
 	DEFAULT_WRITER_LIMIT,
@@ -10,17 +11,44 @@ import {
 	submitSummary,
 } from "./store.js"
 
-function writerLimit(writer: string): number {
-	if (writer === "final") return DEFAULT_WRITER_LIMIT
-	const parsed = Number(process.env.REVIEW_WRITER_LIMIT ?? DEFAULT_WRITER_LIMIT)
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_WRITER_LIMIT
+function invalidWriterLimit(configuredLimit: string | undefined): SubmitResult | undefined {
+	if (configuredLimit === undefined) return undefined
+	const parsed = Number(configuredLimit)
+	if (!/^[0-9]+$/.test(configuredLimit) || !Number.isSafeInteger(parsed) || parsed < 1 || parsed > 1000) {
+		return {
+			accepted: false,
+			reason: "invalid_writer_limit",
+			field: "writer_limit",
+			message:
+				"--review-writer-limit must be a decimal integer from 1 to 1000 (default 50; no sign, decimal point, exponent, or whitespace).",
+		}
+	}
+	return undefined
 }
+
+type ReviewInvocation =
+	| { context: ReviewSubmitContext; rejection?: never }
+	| { context?: never; rejection: SubmitResult }
 
 function toolResult(result: SubmitResult): AgentToolResult<SubmitResult> {
 	return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }
 }
 
 export default function reviewSubmitExtension(pi: ExtensionAPI): void {
+	pi.registerFlag("review", {
+		description: "Enable review mode and its submit tools",
+		type: "boolean",
+	})
+	pi.registerFlag("review-writer", {
+		description: "Writer ID for submitted review records (default: final)",
+		type: "string",
+		default: "final",
+	})
+	pi.registerFlag("review-writer-limit", {
+		description: "Maximum findings per non-final writer: decimal integer 1–1000 (default: 50; final is always 50)",
+		type: "string",
+		default: String(DEFAULT_WRITER_LIMIT),
+	})
 	pi.registerFlag("review-context-dir", {
 		description: "Review context directory (default: .kimchi/review-context under the current project)",
 		type: "string",
@@ -29,26 +57,35 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 		description: "Review output directory (default: .kimchi/review-output under the current project)",
 		type: "string",
 	})
-	const writer = process.env.REVIEW_WRITER
-	if (!writer) return
+	// Upstream applies extension flag values after factories load. The shared
+	// CLI parse captures --review before flags are applied at that later stage.
+	if (pi.getFlag("review") !== true && getParsedCliArgs().options.review !== true) return
 	const stringFlag = (name: string): string | undefined => {
 		const value = pi.getFlag(name)
 		return typeof value === "string" ? value : undefined
 	}
-	const contextFor = (cwd: string): ReviewSubmitContext => ({
-		writer,
-		writerLimit: writerLimit(writer),
-		...resolveReviewDirectories(cwd, {
-			contextDir: stringFlag("review-context-dir"),
-			outputDir: stringFlag("review-output-dir"),
-		}),
-	})
+	const contextFor = (cwd: string): ReviewInvocation => {
+		const rejection = invalidWriterLimit(stringFlag("review-writer-limit"))
+		if (rejection) return { rejection }
+		const writer = stringFlag("review-writer") ?? "final"
+		return {
+			context: {
+				writer,
+				writerLimit:
+					writer === "final" ? DEFAULT_WRITER_LIMIT : Number(stringFlag("review-writer-limit") ?? DEFAULT_WRITER_LIMIT),
+				...resolveReviewDirectories(cwd, {
+					contextDir: stringFlag("review-context-dir"),
+					outputDir: stringFlag("review-output-dir"),
+				}),
+			},
+		}
+	}
 
 	pi.registerTool({
 		name: "submit_finding",
 		label: "Submit Review Finding",
 		description:
-			"Validate and store one structured code-review finding in the configured review output directory for the current REVIEW_WRITER. Output defaults to .kimchi/review-output under the current project. Anchors are read from the configured review context directory (default: .kimchi/review-context under the current project). Returns the accepted finding ID or a structured rejection. Writes are local and atomic; this tool never posts or uses the network.",
+			"Validate and store one structured code-review finding in the configured review output directory for the writer selected with --review-writer (default: final). Output defaults to .kimchi/review-output under the current project. Anchors are read from the configured review context directory (default: .kimchi/review-context under the current project). Returns the accepted finding ID or a structured rejection. Writes are local and atomic; this tool never posts or uses the network.",
 		promptSnippet: "Store a validated local review finding without posting it",
 		parameters: Type.Object(
 			{
@@ -69,7 +106,9 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 		),
 		executionMode: "parallel",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return toolResult(await submitFinding(params, contextFor(ctx.cwd)))
+			const invocation = contextFor(ctx.cwd)
+			if (invocation.rejection) return toolResult(invocation.rejection)
+			return toolResult(await submitFinding(params, invocation.context))
 		},
 	})
 
@@ -106,7 +145,9 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 		),
 		executionMode: "parallel",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return toolResult(await submitSummary(params, contextFor(ctx.cwd)))
+			const invocation = contextFor(ctx.cwd)
+			if (invocation.rejection) return toolResult(invocation.rejection)
+			return toolResult(await submitSummary(params, invocation.context))
 		},
 	})
 
@@ -145,7 +186,9 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 		),
 		executionMode: "parallel",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return toolResult(await submitReply(params, contextFor(ctx.cwd)))
+			const invocation = contextFor(ctx.cwd)
+			if (invocation.rejection) return toolResult(invocation.rejection)
+			return toolResult(await submitReply(params, invocation.context))
 		},
 	})
 }

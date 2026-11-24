@@ -21,6 +21,7 @@ import {
 	isTerminalUiMode,
 	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
+	normalizeReviewBooleanArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
@@ -812,7 +813,7 @@ async function cliMain(): Promise<void> {
 				console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 				process.exit(1)
 			}
-			const rawArgs = atFileArgs.args
+			const rawArgs = normalizeReviewBooleanArgs(atFileArgs.args)
 
 			// Parse Kimchi-local CLI flags once before upstream pi-mono sees them.
 			populateCliArgs(rawArgs)
@@ -827,7 +828,7 @@ async function cliMain(): Promise<void> {
 			// `--exclude-tools bash_control` is honored: those sessions fall back
 			// to plain blocking bash instead (execute-time availability check).
 			const piArgs = coupleBashControlToolArg(rawArgs)
-			if (process.env.REVIEW_WRITER && !piArgs.includes("--no-context-files")) {
+			if (getParsedCliArgs().options.review === true && !piArgs.includes("--no-context-files")) {
 				// APA supplies review instructions through review-context/. Disable
 				// upstream global and ancestor AGENTS.md/CLAUDE.md discovery too.
 				piArgs.push("--no-context-files")
@@ -949,7 +950,7 @@ async function cliMain(): Promise<void> {
 				// re-enable only deliberately via registerSkillManageTool.
 				(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 				artifactRecorderExtension,
-				// APA activates these process-scoped review tools with REVIEW_WRITER.
+				// APA activates these process-scoped review tools with --review.
 				// Loading them through the normal inline extension list puts all three
 				// in the initial system message before the first model call.
 				reviewSubmitExtension,

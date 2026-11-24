@@ -161,7 +161,7 @@ function validateFields(input: Record<string, unknown>, allowed: string[]): Subm
 
 function validateWriter(writer: string): SubmitResult | undefined {
 	if (!WRITER_PATTERN.test(writer)) {
-		return rejected("invalid_writer", "REVIEW_WRITER must contain only letters, digits, underscores, or hyphens.", {
+		return rejected("invalid_writer", "--review-writer must contain only letters, digits, underscores, or hyphens.", {
 			field: "writer",
 		})
 	}

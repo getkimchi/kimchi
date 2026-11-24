@@ -2,6 +2,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 
 const FAKE_AGENT_DIR = join(tmpdir(), `kimchi-global-context-${Date.now()}`)
 const tmpBase = join(tmpdir(), `kimchi-project-context-${Date.now()}`)
@@ -72,10 +73,11 @@ describe("loadProjectContextFiles", () => {
 	})
 
 	it("skips cwd and every ancestor when review tools are active", () => {
-		vi.stubEnv("REVIEW_WRITER", "final")
+		populateCliArgs(["--review"])
 		writeFileSync(join(tmpBase, "AGENTS.md"), "ancestor rules")
 		writeFileSync(join(nested, "CLAUDE.md"), "cwd rules")
 		expect(loadProjectContextFiles(nested)).toEqual([])
+		populateCliArgs([])
 	})
 
 	it("does not return duplicate paths", () => {
@@ -152,11 +154,12 @@ describe("loadGlobalContextFiles", () => {
 	})
 
 	it("skips global and project context when review tools are active", () => {
-		vi.stubEnv("REVIEW_WRITER", "final")
+		populateCliArgs(["--review"])
 		writeFileSync(join(FAKE_AGENT_DIR, "AGENTS.md"), "global rules")
 		mkdirSync(nested, { recursive: true })
 		writeFileSync(join(nested, "AGENTS.md"), "project rules")
 		expect(loadContextFiles(nested, { includeClaudeCodeInstructions: true })).toEqual([])
+		populateCliArgs([])
 	})
 
 	it("discovers AGENTS.md in agent dir", () => {

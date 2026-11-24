@@ -31,8 +31,6 @@ export function runSubmissionProcess(options: {
 				SystemRoot: process.env.SystemRoot,
 				TEMP: process.env.TEMP,
 				TMP: process.env.TMP,
-				REVIEW_WRITER: "final",
-				REVIEW_WRITER_LIMIT: "50",
 			},
 			stdio: ["ignore", "pipe", "pipe"],
 		})

@@ -84,7 +84,6 @@ class FixtureProcess {
 			GOPROXY: "off",
 			GOSUMDB: "off",
 			CARGO_NET_OFFLINE: "true",
-			REVIEW_WRITER_LIMIT: "50",
 		}
 		return new FixtureProcess(
 			fork(WORKER_PATH, [], {

@@ -117,7 +117,7 @@ function runReviewPrint(
 	prompt: string,
 	sessionId?: string,
 	directories?: { contextDir: string; outputDir: string },
-	reviewWriter: string | false = "final",
+	reviewWriter?: string | false,
 ): Promise<PrintResult> {
 	return new Promise((resolvePromise) => {
 		const child = spawn(
@@ -135,6 +135,10 @@ function runReviewPrint(
 				"--yolo",
 				"--no-approve",
 				...(sessionId === undefined ? [] : ["--session", sessionId]),
+				...(reviewWriter === false ? [] : ["--review"]),
+				...(reviewWriter === undefined
+					? []
+					: ["--review-writer", reviewWriter || "final", "--review-writer-limit", "50"]),
 				...(directories === undefined
 					? []
 					: ["--review-context-dir", directories.contextDir, "--review-output-dir", directories.outputDir]),
@@ -150,8 +154,6 @@ function runReviewPrint(
 					KIMCHI_PERMISSIONS: "yolo",
 					KIMCHI_TELEMETRY_ENABLED: "0",
 					KIMCHI_NO_UPDATE_CHECK: "1",
-					REVIEW_WRITER: reviewWriter || "",
-					REVIEW_WRITER_LIMIT: "50",
 				},
 			},
 		)
@@ -379,7 +381,7 @@ it("meets APA print startup and ignores the adjacent checkout's configuration an
 		).toMatchObject({ body: "Default project output.", writer: "final" })
 		expect(fake.requests.filter((request) => request.url.endsWith("/chat/completions"))).toHaveLength(6)
 
-		const inertRunDir = join(tempRoot, "inert-flags-project")
+		const inertRunDir = join(homeDir, "inert-flags-project")
 		mkdirSync(inertRunDir, { recursive: true })
 		const inertDirectories = {
 			contextDir: join(tempRoot, "inert-review-context"),
@@ -395,6 +397,7 @@ it("meets APA print startup and ignores the adjacent checkout's configuration an
 		)
 		expect(inert.code).toBe(0)
 		for (const tool of REQUIRED_TOOLS) expect(inert.stdout).not.toContain(tool)
+		expect(inert.stdout).toContain(INSTRUCTION_SENTINEL)
 		expect(existsSync(inertDirectories.contextDir)).toBe(false)
 		expect(existsSync(inertDirectories.outputDir)).toBe(false)
 		expect(fake.requests.filter((request) => request.url.endsWith("/chat/completions"))).toHaveLength(7)
