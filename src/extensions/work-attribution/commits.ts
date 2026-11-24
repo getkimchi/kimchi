@@ -11,6 +11,7 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 import { readWorkRows } from "@getkimchi/kimchi-bridge/ledger"
+import { COST_PER_PR_RESOURCE_ID, debugWorkAttribution } from "@getkimchi/kimchi-bridge/reconcile"
 import { isResourceEnabled } from "../../resources/store.js"
 import {
 	appendWorkRecord,
@@ -20,9 +21,7 @@ import {
 	type WorkContext,
 	workLedgerPath,
 } from "../work-attribution.js"
-import { debugWorkAttribution } from "./diagnostics.js"
 import { observeToolFiles } from "./file-observations.js"
-import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
 
 const GIT_LOOKUP_TIMEOUT_MS = 2000
 

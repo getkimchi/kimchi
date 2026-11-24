@@ -1,5 +1,5 @@
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 import {

@@ -9,6 +9,15 @@ import { readE2eSeam } from "../e2e-seam.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 
 /**
+ * E2E seams the kimchi-bridge library reads through the HostPorts e2eSeam port
+ * (reconcile-out-of-process K1): the reading code moved to the bridge, so this
+ * allowlist is what Kimchi's env-var registry (src/env-vars.ts) still sees as
+ * the variable's live consumer. A seam the bridge does not read stays invisible
+ * to it even when set.
+ */
+const BRIDGE_E2E_SEAMS = new Set(["KIMCHI_E2E_COST_REPORT_REFRESH_MS"])
+
+/**
  * Kimchi's in-process HostPorts: the bridge's ledger and reconcile code
  * (moved in the reconcile-out-of-process plan) resolves credentials, endpoints,
  * org policy, telemetry consent and metrics through these ports instead of
@@ -30,6 +39,8 @@ import { trackPRCostMetric } from "../telemetry/pr-cost.js"
  * - `metric(m)` is `trackPRCostMetric(m)`.
  * - `fetch` is the global instrumented fetch (installGlobalFetchInstrumentation
  *   patches it before any reconcile code runs).
+ * - `e2eSeam(name)` is `readE2eSeam(name)` for the seams the bridge reads
+ *   (BRIDGE_E2E_SEAMS) and undefined for anything else.
  *
  * The ports take the session cwd as a parameter, so one process-wide default
  * (installed once at startup, see installKimchiHostPorts) is correct even for
@@ -39,7 +50,7 @@ import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 export function kimchiHostPorts(): HostPorts {
 	return {
 		agentDir: resolve(getAgentDir()),
-		e2eSeam: readE2eSeam,
+		e2eSeam: (name) => (BRIDGE_E2E_SEAMS.has(name) ? readE2eSeam(name) : undefined),
 		now: Date.now,
 		credentials(cwd) {
 			const config = loadConfig({ cwd })
@@ -61,10 +72,11 @@ export function kimchiHostPorts(): HostPorts {
 
 /**
  * Install the process-wide default host ports. Idempotent; called once at
- * startup (cli.ts, before any extension or instrumentation runs) and from the
- * vitest global setup, because bridge code reached outside a pass context —
- * the supervisor's inline passes and command handlers alike — reads the
- * default rather than receiving a host.
+ * startup (cli.ts, before any extension or instrumentation runs). Tests and
+ * the standalone ledger driver — processes that run bridge reconcile code
+ * without cli.ts — install it themselves, because code reached outside a pass
+ * context (the supervisor's inline passes and command handlers alike) reads
+ * the default rather than receiving a host.
  */
 export function installKimchiHostPorts(): void {
 	setDefaultHostPorts(kimchiHostPorts())

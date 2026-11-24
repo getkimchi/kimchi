@@ -24,9 +24,9 @@ function bashState(registry: ReturnType<typeof createProcessRegistry>): BashSess
 }
 
 import { createMemoryRecords, useBackendFactory } from "@getkimchi/kimchi-bridge/ledger"
+import * as diagnostics from "@getkimchi/kimchi-bridge/reconcile"
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
-import * as diagnostics from "./diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
 // Node/vitest cannot load bun:sqlite; suites that read records run on the memory backend,

@@ -14,13 +14,12 @@ vi.mock("node:os", async (importOriginal) => {
 	}
 })
 
+import { COST_PER_PR_RESOURCE_ID, prepareBillingTag } from "@getkimchi/kimchi-bridge/reconcile"
 import * as configTags from "../config/tags.js"
 import { isValidTag, parseTag } from "../config/tags.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
 import { clearPermissionModeEnv, setPermissionMode } from "./permissions/mode-controller.js"
 import tagsExtension, { peekActiveTags, TagManager } from "./tags.js"
-import { prepareBillingTag } from "./work-attribution/request-tags.js"
-import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
 

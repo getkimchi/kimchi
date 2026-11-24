@@ -128,7 +128,7 @@ it.each([false, true])("opens the advertised full report from DB authority (stal
 	const result = run(
 		agentDir,
 		`
-import { setNote, capture } from ${moduleUrl("../pr-cost-reporting/ledger/records.ts")};
+import { setNote, capture } from "@getkimchi/kimchi-bridge/ledger";
 import { workCostDetails, workCostTotals } from ${moduleUrl("./cost-details.ts")};
 import { readWorkBrowser } from ${moduleUrl("./browser.ts")};
 import { runCli } from ${moduleUrl("./accuracy-cli.ts")};

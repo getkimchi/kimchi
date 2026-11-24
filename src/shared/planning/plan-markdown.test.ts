@@ -1,8 +1,8 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import * as diagnostics from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import * as diagnostics from "../../extensions/work-attribution/diagnostics.js"
 import { derivePlanTitle, fermentPlanFileName, savePlanMarkdown, slugifyPlanName } from "./plan-markdown.js"
 
 describe("slugifyPlanName", () => {

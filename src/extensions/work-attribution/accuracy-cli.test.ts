@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { closeBackends, createMemoryRecords, useBackendFactory } from "@getkimchi/kimchi-bridge/ledger"
+import { reconcileWorkCosts } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as config from "../../config.js"
 import { createContext } from "../__mocks__/context.js"
@@ -12,8 +13,8 @@ import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import type { AttributionLabel } from "./accuracy.js"
 import { runCli } from "./accuracy-cli.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
-import { reconcileWorkCosts } from "./cost-sync.js"
 import { calculatePullRequestCosts, type RequestCostAllocation } from "./costs.js"
+import { installKimchiHostPorts } from "./host-ports.js"
 import { flushWorkSummaries } from "./summary.js"
 
 vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
@@ -342,6 +343,9 @@ describe("scoring a saved costs.json", () => {
 						}),
 			),
 		)
+		// The bridge reconcile code (reconcileWorkCosts) reads credentials and fetch through
+		// HostPorts; the agent dir is resolved eagerly, so install after the env is stubbed.
+		installKimchiHostPorts()
 	})
 	afterEach(async () => {
 		await flushWorkSummaries()

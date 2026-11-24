@@ -42,6 +42,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import { applyPiTelemetryPatch } from "./pi-telemetry-patch.js"
 import "./session-selector-adapter.js"
+import { COST_PER_PR_RESOURCE_ID } from "@getkimchi/kimchi-bridge/reconcile"
 import { resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
@@ -202,7 +203,6 @@ import uiExtension from "./extensions/ui.js"
 import undecodableImageSanitizerExtension from "./extensions/undecodable-image-sanitizer.js"
 import { installKimchiHostPorts } from "./extensions/work-attribution/host-ports.js"
 import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
-import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
 import {
 	createWorkAttributionExtension,
 	prepareProviderRequest,

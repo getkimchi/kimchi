@@ -4,8 +4,8 @@ import { lstatSync, readlinkSync } from "node:fs"
 import { realpath } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 import { promisify } from "node:util"
+import { debugWorkAttribution } from "@getkimchi/kimchi-bridge/reconcile"
 import { appendWorkRecord, getToolRequest, getWorkId, pinWorkContext, type WorkContext } from "../work-attribution.js"
-import { debugWorkAttribution } from "./diagnostics.js"
 import { type FileState, readAttributedFileStates } from "./file-transitions.js"
 
 const execFileAsync = promisify(execFile)

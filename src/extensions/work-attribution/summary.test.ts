@@ -13,6 +13,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import type { Row, WorkHead } from "@getkimchi/kimchi-bridge/ledger"
 import { backendFor, capture, type StoredRecord } from "@getkimchi/kimchi-bridge/ledger"
+import * as diagnostics from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -25,7 +26,6 @@ import {
 	setWorkId,
 	tryWorkAttribution,
 } from "../work-attribution.js"
-import * as diagnostics from "./diagnostics.js"
 import {
 	flushWorkSummaries,
 	journalParser,

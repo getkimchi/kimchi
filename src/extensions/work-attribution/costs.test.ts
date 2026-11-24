@@ -1,6 +1,6 @@
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/reconcile"
 import { describe, expect, it, vi } from "vitest"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import {
 	calculatePullRequestCosts,
 	calculatePullRequestCostsAsync,

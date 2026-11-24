@@ -17,7 +17,7 @@ import {
 	reportJournalProblems,
 	type WindowedRecord,
 } from "@getkimchi/kimchi-bridge/ledger"
-import { debugWorkAttribution } from "./diagnostics.js"
+import { debugWorkAttribution } from "@getkimchi/kimchi-bridge/reconcile"
 
 interface SummaryEntry {
 	sessionId: string

@@ -1,6 +1,6 @@
 import { pullRequestKey } from "@getkimchi/kimchi-bridge/ledger"
+import { plainURL } from "@getkimchi/kimchi-bridge/reconcile"
 import { savedBranchIssueKeys } from "../../shared/issue-keys.js"
-import { plainURL } from "../../utils/url.js"
 import {
 	providerId,
 	pullRequestAuthor,

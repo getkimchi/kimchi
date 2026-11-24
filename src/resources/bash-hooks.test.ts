@@ -7,7 +7,9 @@ import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../proje
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { applyEnabledBashHooks, parseBashHookOutput } from "./bash-hooks.js"
 
-vi.mock("node:child_process", () => ({
+vi.mock("node:child_process", async (original) => ({
+	// The bridge library (scope) binds execFile at import; keep the rest real.
+	...(await original<typeof import("node:child_process")>()),
 	execFileSync: vi.fn(),
 }))
 

@@ -1,6 +1,6 @@
 import { isWorkId } from "@getkimchi/kimchi-bridge/ledger"
+import { plainURL } from "@getkimchi/kimchi-bridge/reconcile"
 import { isIssueKey, MAX_PULL_REQUEST_ISSUE_KEYS } from "../../shared/issue-keys.js"
-import { plainURL } from "../../utils/url.js"
 import { providerId, pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
 import {
 	type PullRequestCost,

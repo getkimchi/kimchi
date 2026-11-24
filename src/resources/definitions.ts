@@ -1,3 +1,4 @@
+import { COST_PER_PR_RESOURCE_ID } from "@getkimchi/kimchi-bridge/reconcile"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
@@ -6,7 +7,6 @@ import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/i
 import { PII_REDACTION_RESOURCE_ID } from "../extensions/pii-redaction/resource.js"
 import { CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID } from "../extensions/prompt-construction/claude-code-instructions-resource.js"
 import { SIDE_CHAT_PILL_RESOURCE_ID } from "../extensions/side-chat/resource.js"
-import { COST_PER_PR_RESOURCE_ID } from "../extensions/work-attribution/resource.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
 import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"

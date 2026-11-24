@@ -12,7 +12,7 @@
  * installGlobalFetchInstrumentation call — see the options doc.
  */
 
-import { debugWorkAttribution } from "../extensions/work-attribution/diagnostics.js"
+import { debugWorkAttribution } from "@getkimchi/kimchi-bridge/reconcile"
 import { requestUrl, rewrapResponseWithBody, wrapFetchWithIdleTimeout } from "./stream-idle-timeout.js"
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>

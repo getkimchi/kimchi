@@ -1,7 +1,7 @@
 /** What a GitHub PR or GitLab MR must look like, from a provider response or a saved journal row, and how lookups fail. */
 
+import { plainURL } from "@getkimchi/kimchi-bridge/reconcile"
 import { branchIssueKeys, MAX_PULL_REQUEST_ISSUE_KEYS, savedBranchIssueKeys } from "../../shared/issue-keys.js"
-import { plainURL } from "../../utils/url.js"
 import { object } from "../work-attribution/summary.js"
 import type { WorkPullRequest, WorkPullRequestLookup } from "./pull-requests.js"
 

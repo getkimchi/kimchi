@@ -15,6 +15,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { COST_PER_PR_RESOURCE_ID } from "@getkimchi/kimchi-bridge/reconcile"
 import { loadConfig } from "../../../config.js"
 import { isResourceEnabled } from "../../../resources/store.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
@@ -46,7 +47,6 @@ import requestTimingExtension from "../../request-timing.js"
 import type { ReviewPermissionPolicy } from "../../review-runner/execution.js"
 import type { SkillTriggerHit } from "../../skills-manager/skill-triggers.js"
 import telemetryExtension from "../../telemetry/index.js"
-import { COST_PER_PR_RESOURCE_ID } from "../../work-attribution/resource.js"
 import {
 	createWorkAttributionExtension,
 	getWorkId,

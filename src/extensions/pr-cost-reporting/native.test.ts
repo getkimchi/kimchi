@@ -420,8 +420,6 @@ it("fulfills exact imported-line markers only with a durable outbox observation,
 	const agent = mkdtempSync(join(tmpdir(), "kimchi-native-import-"))
 	try {
 		const moduleUrl = new URL("./native.ts", import.meta.url).href
-		const recordsUrl = new URL("./ledger/records.ts", import.meta.url).href
-		const outboxUrl = new URL("./ledger/outbox.ts", import.meta.url).href
 		const output = JSON.parse(
 			execFileSync(
 				"bun",
@@ -429,8 +427,7 @@ it("fulfills exact imported-line markers only with a durable outbox observation,
 					"--eval",
 					`
 import { nativeObservations } from ${JSON.stringify(moduleUrl)};
-import { backendFor, importBatchInTx, recordHashOf, closeBackends } from ${JSON.stringify(recordsUrl)};
-import { observeEvents, pendingBatch } from ${JSON.stringify(outboxUrl)};
+import { backendFor, importBatchInTx, recordHashOf, closeBackends, observeEvents, pendingBatch } from "@getkimchi/kimchi-bridge/ledger";
 const { agent, rows } = await Bun.stdin.json();
 let backend = backendFor(agent);
 backend.tx(() => importBatchInTx(backend, rows.map((record, i) => ({

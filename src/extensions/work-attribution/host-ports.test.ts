@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
+import { COST_PER_PR_RESOURCE_ID } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fetchOrgPolicy } from "../../api/org-settings.js"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
@@ -8,7 +9,6 @@ import { loadConfig, readGitToken, resolveEndpoints } from "../../config.js"
 import { initOrgPolicy, resetOrgPolicyForTests } from "../../org-policy.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
-import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import {
 	enforceTelemetryPolicyForTests,
 	resetTelemetryPolicyMock,
@@ -16,7 +16,6 @@ import {
 } from "../__mocks__/telemetry-policy.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { kimchiHostPorts } from "./host-ports.js"
-import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
 
 vi.mock("../../api/org-settings.js", () => ({ fetchOrgPolicy: vi.fn() }))
 vi.mock("../../telemetry-policy.js", () => telemetryPolicyMock)
@@ -141,10 +140,10 @@ describe("kimchiHostPorts", () => {
 	describe("telemetryConsent", () => {
 		it("follows isTelemetryEnabled, including org enforcement", () => {
 			const host = kimchiHostPorts()
-			expect(host.telemetryConsent()).toBe(isTelemetryEnabled())
+			expect(host.telemetryConsent()).toBe(telemetryPolicyMock.isTelemetryEnabled())
 			enforceTelemetryPolicyForTests("FORCE_OFF")
 			expect(host.telemetryConsent()).toBe(false)
-			expect(isTelemetryEnabled()).toBe(false)
+			expect(telemetryPolicyMock.isTelemetryEnabled()).toBe(false)
 		})
 	})
 
@@ -163,12 +162,17 @@ describe("kimchiHostPorts", () => {
 			expect(host.agentDir).toContain("agent")
 			// readE2eSeam returns undefined outside the test harness env the seam
 			// variables gate on; inside vitest an exported variable is visible.
-			process.env.KIMCHI_E2E_PROBE = "visible"
+			// The port only forwards the seams the bridge reads (BRIDGE_E2E_SEAMS):
+			// KIMCHI_E2E_COST_REPORT_REFRESH_MS reaches the bridge code, while a
+			// Kimchi-only seam stays invisible to it.
+			process.env.KIMCHI_E2E_COST_REPORT_REFRESH_MS = "1234"
+			process.env.KIMCHI_E2E_RECONCILIATION_INTERVAL_MS = "5678"
 			try {
-				expect(host.e2eSeam("KIMCHI_E2E_PROBE")).toBe("visible")
-				expect(host.e2eSeam("KIMCHI_E2E_NEVER_SET")).toBeUndefined()
+				expect(host.e2eSeam("KIMCHI_E2E_COST_REPORT_REFRESH_MS")).toBe("1234")
+				expect(host.e2eSeam("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS")).toBeUndefined()
 			} finally {
-				delete process.env.KIMCHI_E2E_PROBE
+				delete process.env.KIMCHI_E2E_COST_REPORT_REFRESH_MS
+				delete process.env.KIMCHI_E2E_RECONCILIATION_INTERVAL_MS
 			}
 			expect(typeof host.now()).toBe("number")
 		})

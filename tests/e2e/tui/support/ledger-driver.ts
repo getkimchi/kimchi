@@ -270,6 +270,11 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		process.env.KIMCHI_REMOTE_ENDPOINT = "https://api.cast.ai"
 		process.env.KIMCHI_TELEMETRY_ENABLED = "true"
 	}
+	// The bridge reconcile code (readWorkCostReport, deliverEvents, reconcileReporting,
+	// deliverSnapshots) reads credentials, consent and fetch through HostPorts; this
+	// standalone driver process is its own host, so install the in-process ports.
+	const { installKimchiHostPorts } = await import("../../../../src/extensions/work-attribution/host-ports.js")
+	installKimchiHostPorts()
 	const { ModelRuntime } = await import("@earendil-works/pi-coding-agent")
 	const { installGlobalFetchInstrumentation } = await import("../../../../src/http/instrument-fetch.js")
 	const { getWorkId, prepareProviderRequest, recordProviderRequest, recordProviderResponse, setWorkId } = await import(
@@ -412,7 +417,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		const { backendFor, readStoredRecordsAsync } = await import("@getkimchi/kimchi-bridge/ledger")
 		const { effectiveClaims, observeEvents, pendingBatch } = await import("@getkimchi/kimchi-bridge/ledger")
 		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
-		const { readWorkCostReport } = await import("../../../../src/extensions/work-attribution/cost-sync.js")
+		const { readWorkCostReport } = await import("@getkimchi/kimchi-bridge/reconcile")
 		const backend = backendFor(agent)
 		let claimReads = 0
 		const claimRows = backend.outboxClaims
@@ -471,7 +476,7 @@ async function nativeDelivery(agent: string): Promise<void> {
 		throw new Error("Missing original native scope")
 	const account = request.scope.account
 	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
-	const { deliverEvents, reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
+	const { deliverEvents, reconcileReporting } = await import("@getkimchi/kimchi-bridge/reconcile")
 	const { pendingBatch, observeEvents } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
 	const { queueSnapshots, readReportingState, setReportingEnabled } = await import(
@@ -682,7 +687,7 @@ async function nativeDelivery(agent: string): Promise<void> {
 		legacyInterleaved = true
 	})
 	mode = "success"
-	const { deliverSnapshots } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
+	const { deliverSnapshots } = await import("@getkimchi/kimchi-bridge/reconcile")
 	await deliverSnapshots(agent, agent, new AbortController().signal, check)
 	await run()
 	seed()
@@ -2220,9 +2225,9 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	},
 	"pr-checks": async (agent) => {
 		process.env.PI_CODING_AGENT_DIR = agent
-		const { reconcileWorkPullRequests } = await import(
-			"../../../../src/extensions/pull-request-status/pull-requests.js"
-		)
+		const { installKimchiHostPorts } = await import("../../../../src/extensions/work-attribution/host-ports.js")
+		installKimchiHostPorts()
+		const { reconcileWorkPullRequests } = await import("@getkimchi/kimchi-bridge/reconcile")
 		await reconcileWorkPullRequests(agent, new AbortController().signal, () => {})
 		out({ note: getNote(agent, "agent", "pr-checks"), records: readRecords(agent).length })
 	},

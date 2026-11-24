@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { calculatePullRequestCosts, decimalNanos, usd } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 import { buildSnapshots } from "./snapshot.js"

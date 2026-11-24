@@ -30,7 +30,8 @@ import {
  * channels, the reporting session's cwd, the nextRepository rotation and the
  * cross-pass continuation progress).
  */
-vi.mock("@getkimchi/kimchi-bridge/reconcile", () => ({
+vi.mock("@getkimchi/kimchi-bridge/reconcile", async (original) => ({
+	...(await original<typeof import("@getkimchi/kimchi-bridge/reconcile")>()),
 	debugWorkAttribution: vi.fn(),
 	readWorkPullRequestUpdates: vi.fn(),
 	runReconciliationPass: vi.fn(),
@@ -338,9 +339,9 @@ describe("shared file reconciliation", () => {
 		subscribe()
 		let reportSignal: AbortSignal | undefined
 		passBody = async (input) => {
-			if (input.reporting) {
+			if (input.reporting?.signal) {
 				reportSignal = input.reporting.signal
-				await aborted(input.reporting.signal!)
+				await aborted(input.reporting.signal)
 			}
 		}
 		const stop = subscribeReportingReconciliation(() => "/session-cwd")

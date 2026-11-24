@@ -31,6 +31,7 @@ import {
 	setNote,
 	useBackendFactory,
 } from "@getkimchi/kimchi-bridge/ledger"
+import * as diagnostics from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -38,7 +39,6 @@ import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
-import * as diagnostics from "./diagnostics.js"
 import {
 	createTrackedEditTool,
 	createTrackedWriteTool,

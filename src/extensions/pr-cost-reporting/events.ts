@@ -13,6 +13,7 @@ import {
 	validateClaimUpdate,
 	validateIngestEvent,
 } from "@getkimchi/kimchi-bridge/ledger"
+import { preludeStretch } from "../../shared/prelude-stretch.js"
 import { pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import {
@@ -24,7 +25,6 @@ import {
 } from "../work-attribution/scope.js"
 import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary.js"
 import { nativeObservations } from "./native.js"
-import { preludeStretch } from "./prelude.js"
 import {
 	accountKey,
 	allocationFor,
