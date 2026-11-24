@@ -341,6 +341,63 @@ describe("ACP integration — native subagent sessions", () => {
 		STARTUP_TIMEOUT_MS,
 	)
 
+	it.each(["session/load", "session/resume"] as const)(
+		"projects a new child after %s",
+		async (method) => {
+			const parentRequest = `Delegate the alpha investigation after ${method}.`
+			const requestObservations = new Map<string, ChildRequestObservation>()
+			let fixture: AcpFixture | undefined
+			try {
+				fixture = await startAcpFixture({
+					artifactName: `subagent-protocol-after-${method.replace("session/", "")}`,
+					clientCapabilities: { subagents: {} },
+					responses: [
+						{
+							match: (request) => requestBody(request).includes(parentRequest),
+							toolCalls: [{ function: { name: "Agent", arguments: JSON.stringify(ALPHA_ARGS) } }],
+						},
+						{
+							forSubagent: true,
+							match: captureChildRequest(requestObservations, ALPHA_TASK, () => fixture),
+							stream: [ALPHA_RESULT],
+						},
+						{
+							match: (request) => requestBody(request).includes(ALPHA_RESULT),
+							stream: ["The parent received the delegated result."],
+						},
+						{
+							match: (request) => requestBody(request).includes("Prepare parent before reconnect."),
+							stream: ["Ready to reconnect."],
+						},
+					],
+				})
+				const activeFixture = fixture
+				const sessionId = await newSession(activeFixture, activeFixture.workDir)
+				expect((await prompt(activeFixture, sessionId, "Prepare parent before reconnect.")).stopReason).toBe("end_turn")
+				activeFixture.client.sessionUpdates.length = 0
+				await activeFixture.conn.request(method, {
+					sessionId,
+					cwd: activeFixture.workDir,
+					mcpServers: [],
+				})
+				const result = await prompt(activeFixture, sessionId, parentRequest)
+				expect(result.stopReason).toBe("end_turn")
+
+				const { childId } = findDirectedTask(activeFixture, sessionId, ALPHA_TASK)
+				expectChildLifecycle(activeFixture, sessionId, childId)
+				const observation = requestObservations.get(ALPHA_TASK)
+				expect(observation?.announcedSessionIds.has(childId)).toBe(true)
+				expect(observation?.directedRecipientIds.has(childId)).toBe(true)
+				const agentCall = findAgentCall(activeFixture, sessionId, ALPHA_TITLE)
+				const terminal = findTerminalAgentUpdate(activeFixture, sessionId, agentCall.update.toolCallId)
+				expect(hasSessionLink(terminal, childId)).toBe(true)
+			} finally {
+				await fixture?.stop()
+			}
+		},
+		STARTUP_TIMEOUT_MS,
+	)
+
 	it.each([
 		{ label: "omitted", clientCapabilities: undefined },
 		{ label: "null", clientCapabilities: { subagents: null } },
