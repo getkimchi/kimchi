@@ -4,8 +4,8 @@
 
 ### Fixed
 
-- `--print` runs that end without a prompt now exit with code `2` and write a `KIMCHI_NO_PROMPT:` message to stderr.
-- `--print` runs that end without a final answer (empty, whitespace-only, thinking-only, or tool-only) now exit with code `3` and write a `KIMCHI_NO_RESULT:` message to stderr. Existing exit code `1` (text mode) and `74` are unchanged.
+- Non-interactive runs (`--print`, or any run whose stdin or stdout is not a terminal) that end without a prompt now exit with code `2` and write a `KIMCHI_NO_PROMPT:` message to stderr.
+- Non-interactive runs that end without a final answer (empty, whitespace-only, thinking-only, or tool-only), or whose prompt an extension handled so the agent never ran, now exit with code `3` and write a `KIMCHI_NO_RESULT:` message to stderr. Existing exit code `1` (text mode) and `74` are unchanged.
 
 ### Changed
 

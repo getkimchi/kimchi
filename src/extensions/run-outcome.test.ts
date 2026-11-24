@@ -1,39 +1,20 @@
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
-import type { MessageLikeSessionEntry } from "../run-outcome.js"
 import { classifyRunOutcome } from "../run-outcome.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { type AssistantMessage, createAssistantEntry } from "./__mocks__/session-entries.js"
 import { runAsAgentWorker } from "./agent-worker-context.js"
 import { createRunOutcomeTracker } from "./run-outcome.js"
 
-type AssistantMessage = Extract<Extract<SessionEntry, { type: "message" }>["message"], { role: "assistant" }>
-
 function assistantEntry(id: string, text: string, stopReason: AssistantMessage["stopReason"] = "stop") {
-	const message: AssistantMessage = {
-		role: "assistant",
-		content: text ? [{ type: "text", text }] : [],
-		api: "openai-responses",
-		provider: "openai",
-		model: "gpt-4",
-		usage: {
-			input: 1,
-			output: 1,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 2,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason,
-		timestamp: 1,
-	}
-	const entry: MessageLikeSessionEntry = { type: "message", id, parentId: null, timestamp: "1", message }
-	return entry
+	return createAssistantEntry(text ? [{ type: "text", text }] : [], { id, stopReason })
 }
 
 function setup(mode: ExtensionContext["mode"], branch: SessionEntry[] = [], sessionFile = "/tmp/s.jsonl") {
 	const harness = createExtensionApi()
 	const tracker = createRunOutcomeTracker()
+	tracker.earlyObserver(harness.api)
 	tracker.extension(harness.api)
 	let current = branch
 	const ctx = createContext({
@@ -53,21 +34,56 @@ function setup(mode: ExtensionContext["mode"], branch: SessionEntry[] = [], sess
 const start = { type: "session_start", reason: "startup" }
 const input = { type: "input", text: "hi", source: "interactive" }
 const settled = (aborted = false) => ({ type: "agent_settled", aborted })
-// Blocked calls never reach afterToolCall, so pi emits no tool_result for them.
-// This is the shape pi emits for a real permission denial.
-const toolResult = (toolName: string, text: string, isError = true) => ({
+const toolCall = (toolCallId: string, toolName: string) => ({ type: "tool_call", toolCallId, toolName, input: {} })
+const toolResultEvent = (toolCallId: string, toolName: string) => ({
+	type: "tool_result",
+	toolCallId,
+	toolName,
+	input: {},
+	content: [],
+	details: undefined,
+	isError: true,
+})
+const executionEnd = (toolCallId: string, toolName: string, text: string, isError = true) => ({
 	type: "tool_execution_end",
-	toolCallId: "c",
+	toolCallId,
 	toolName,
 	result: { content: [{ type: "text", text }], details: {} },
 	isError,
 })
+
+type Harness = ReturnType<typeof setup>["harness"]
+
+/** pi emits `tool_call`, then (only when the call ran) `tool_result`, then `tool_execution_end`. */
+async function blockedCall(harness: Harness, ctx: ExtensionContext, id: string, toolName: string, reason: string) {
+	await harness.emit("tool_call", toolCall(id, toolName), ctx)
+	await harness.emit("tool_execution_end", executionEnd(id, toolName, reason), ctx)
+}
+
+async function failedCall(harness: Harness, ctx: ExtensionContext, id: string, toolName: string, error: string) {
+	await harness.emit("tool_call", toolCall(id, toolName), ctx)
+	await harness.emit("tool_result", toolResultEvent(id, toolName), ctx)
+	await harness.emit("tool_execution_end", executionEnd(id, toolName, error), ctx)
+}
 
 describe("createRunOutcomeTracker", () => {
 	const savedSubagent = process.env.KIMCHI_SUBAGENT
 	afterEach(() => {
 		if (savedSubagent === undefined) delete process.env.KIMCHI_SUBAGENT
 		else process.env.KIMCHI_SUBAGENT = savedSubagent
+	})
+
+	it("observes input and tool_call only from the early observer, which cli.ts registers first", () => {
+		const early = createExtensionApi()
+		const late = createExtensionApi()
+		const tracker = createRunOutcomeTracker()
+		tracker.earlyObserver(early.api)
+		tracker.extension(late.api)
+		expect(early.getHandlers("input")).toHaveLength(1)
+		expect(early.getHandlers("tool_call")).toHaveLength(1)
+		expect(late.getHandlers("input")).toHaveLength(0)
+		expect(late.getHandlers("tool_call")).toHaveLength(0)
+		expect(late.getHandlers("agent_settled")).toHaveLength(1)
 	})
 
 	it("does not record a TUI session", async () => {
@@ -84,13 +100,14 @@ describe("createRunOutcomeTracker", () => {
 
 	it("ignores events inside runAsAgentWorker", async () => {
 		const { harness, tracker, ctx } = setup("print", [assistantEntry("a", "x")])
+		await harness.emit("session_start", start, ctx)
 		await runAsAgentWorker(async () => {
-			for (const e of [start, input, toolResult("write", "Denied by rule"), settled()]) {
-				await harness.emit(e.type, e, ctx)
-			}
+			await harness.emit("input", input, ctx)
+			await blockedCall(harness, ctx, "c", "write", "Denied by rule")
+			await harness.emit("agent_settled", settled(), ctx)
 		})
-		expect(tracker.getSnapshot()).toMatchObject({ active: false, inputSeen: false, runSeen: false })
-		expect(tracker.getSnapshot().deniedTool).toBeUndefined()
+		expect(tracker.getSnapshot()).toMatchObject({ active: true, inputSeen: false, runSeen: false })
+		expect(tracker.getSnapshot().blockedTool).toBeUndefined()
 	})
 
 	it("ignores events when KIMCHI_SUBAGENT is set", async () => {
@@ -119,13 +136,25 @@ describe("createRunOutcomeTracker", () => {
 		})
 	})
 
+	it("records input that never reaches a run", async () => {
+		const { harness, tracker, ctx } = setup("print")
+		await harness.emit("session_start", start, ctx)
+		await harness.emit("input", input, ctx)
+		expect(tracker.getSnapshot()).toMatchObject({ inputSeen: true, runSeen: false })
+		expect(
+			classifyRunOutcome(tracker.getSnapshot(), { messages: ["hi"], fileArgs: [], stdinHasText: false }),
+		).toMatchObject({ kind: "no-result", lastEvent: { kind: "input-handled" } })
+	})
+
 	it("does not classify an aborted agent_settled as no-result", async () => {
 		const { harness, tracker, ctx } = setup("print", [assistantEntry("a", "")])
 		await harness.emit("session_start", start, ctx)
 		await harness.emit("agent_settled", settled(true), ctx)
 		const snapshot = tracker.getSnapshot()
 		expect(snapshot).toMatchObject({ runSeen: true, aborted: true })
-		expect(classifyRunOutcome(snapshot, { messages: ["p"], fileArgs: [] })).toEqual({ kind: "ok" })
+		expect(classifyRunOutcome(snapshot, { messages: ["p"], fileArgs: [], stdinHasText: false })).toEqual({
+			kind: "ok",
+		})
 	})
 
 	it("does not let a subagent session overwrite the top-level outcome", async () => {
@@ -164,76 +193,73 @@ describe("createRunOutcomeTracker", () => {
 		expect(snapshot.inputSeen).toBe(true)
 	})
 
-	it("records the latest denied or blocked tool name and reason", async () => {
-		const { harness, tracker, ctx } = setup("print", [assistantEntry("secret-model-text", "model said this")])
-		await harness.emit("session_start", start, ctx)
-		await harness.emit("tool_execution_end", toolResult("write", "Denied by rule Write(*)"), ctx)
-		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName: "write", reason: "Denied by rule Write(*)" })
-		await harness.emit("tool_execution_end", toolResult("bash", "Blocked: the session is in plan mode"), ctx)
-		await harness.emit("tool_execution_end", toolResult("read", "ENOENT: no such file"), ctx)
-		await harness.emit("tool_execution_end", toolResult("grep", "Denied but fine", false), ctx)
-		await harness.emit("agent_settled", settled(), ctx)
-		const snapshot = tracker.getSnapshot()
-		expect(snapshot.deniedTool).toEqual({ toolName: "bash", reason: "Blocked: the session is in plan mode" })
-		expect(JSON.stringify(snapshot.deniedTool)).not.toContain("model said this")
-	})
+	describe("blocked tool calls", () => {
+		it.each([
+			["write", "Denied by rule Write(*) [user]"],
+			["bash", "Classifier: no model available for classifier"],
+			["write", "write is disabled in Kimchi resources. Enable tool:write from /resources."],
+			["bash", "Permission mode changed too many times during prompt"],
+			["edit", "Plan persona: edits are not allowed"],
+		])("records a block from any producer for %s: %s", async (toolName, reason) => {
+			const { harness, tracker, ctx } = setup("print")
+			await harness.emit("session_start", start, ctx)
+			await blockedCall(harness, ctx, "c1", toolName, reason)
+			expect(tracker.getSnapshot().blockedTool).toEqual({ toolName, reason })
+		})
 
-	it("does not report a denial from an earlier prompt for a later prompt", async () => {
-		const first = assistantEntry("a", "")
-		const second = assistantEntry("b", "")
-		const { harness, tracker, ctx, setBranch } = setup("print", [first])
-		await harness.emit("session_start", start, ctx)
-		await harness.emit("input", input, ctx)
-		await harness.emit("tool_execution_end", toolResult("write", "Denied by rule Write(*)"), ctx)
-		await harness.emit("agent_settled", settled(), ctx)
-		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName: "write", reason: "Denied by rule Write(*)" })
+		it("ignores a tool that ran and failed, even when its error mentions denied or blocked", async () => {
+			const { harness, tracker, ctx } = setup("print")
+			await harness.emit("session_start", start, ctx)
+			await failedCall(harness, ctx, "c1", "bash", "Denied by rule: curl got access denied, port blocked")
+			expect(tracker.getSnapshot().blockedTool).toBeUndefined()
+		})
 
-		setBranch([first, second])
-		await harness.emit("input", input, ctx)
-		expect(tracker.getSnapshot().deniedTool).toBeUndefined()
-		await harness.emit("agent_settled", settled(), ctx)
-		expect(tracker.getSnapshot().deniedTool).toBeUndefined()
-	})
+		it("ignores an error that never had a tool_call, such as an unknown tool", async () => {
+			const { harness, tracker, ctx } = setup("print")
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("tool_execution_end", executionEnd("c1", "nope", "Tool nope not found"), ctx)
+			expect(tracker.getSnapshot().blockedTool).toBeUndefined()
+		})
 
-	it("still records a denial that arrives after the second prompt input", async () => {
-		const { harness, tracker, ctx } = setup("print", [assistantEntry("a", "")])
-		await harness.emit("session_start", start, ctx)
-		await harness.emit("input", input, ctx)
-		await harness.emit("tool_execution_end", toolResult("write", "Denied by rule Write(*)"), ctx)
-		await harness.emit("input", input, ctx)
-		await harness.emit("tool_execution_end", toolResult("bash", "Blocked: plan mode"), ctx)
-		await harness.emit("agent_settled", settled(), ctx)
-		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName: "bash", reason: "Blocked: plan mode" })
-	})
+		it("records the latest block and never copies model text", async () => {
+			const { harness, tracker, ctx } = setup("print", [assistantEntry("secret-model-text", "model said this")])
+			await harness.emit("session_start", start, ctx)
+			await blockedCall(harness, ctx, "c1", "write", "Denied by rule Write(*)")
+			await blockedCall(harness, ctx, "c2", "bash", "Blocked: the session is in plan mode")
+			await failedCall(harness, ctx, "c3", "read", "ENOENT: no such file")
+			await harness.emit("agent_settled", settled(), ctx)
+			const snapshot = tracker.getSnapshot()
+			expect(snapshot.blockedTool).toEqual({ toolName: "bash", reason: "Blocked: the session is in plan mode" })
+			expect(JSON.stringify(snapshot.blockedTool)).not.toContain("model said this")
+		})
 
-	it("ignores an unrelated error that mentions denied and blocked in prose", async () => {
-		const { harness, tracker, ctx } = setup("print")
-		await harness.emit("session_start", start, ctx)
-		await harness.emit(
-			"tool_execution_end",
-			toolResult("bash", "curl: access denied by server; the port was blocked by a firewall"),
-			ctx,
-		)
-		expect(tracker.getSnapshot().deniedTool).toBeUndefined()
-	})
+		it("does not report a block from an earlier prompt for a later prompt", async () => {
+			const first = assistantEntry("a", "")
+			const second = assistantEntry("b", "")
+			const { harness, tracker, ctx, setBranch } = setup("print", [first])
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("input", input, ctx)
+			await blockedCall(harness, ctx, "c1", "write", "Denied by rule Write(*)")
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().blockedTool).toEqual({ toolName: "write", reason: "Denied by rule Write(*)" })
 
-	it.each([
-		["write", "Denied by rule Write(*) [user]"],
-		["bash", "Blocked in yolo mode (hard-blocked command): rm -rf /"],
-		["write", "Blocked: write inside the bundled skills directory is not allowed - it is the trust anchor."],
-		["bash", "Blocked: the session is in plan mode (read-only). Do not retry writes."],
-		["edit", "Blocked: the session is in plan mode (read-only) - tool edit is unavailable. Do not retry."],
-		["bash", "Subcommand denied"],
-		["bash", "Hard-blocked program in command: sudo ls"],
-		["bash", "Command blocked by rule: ls && rm x"],
-		["bash", "Subcommand blocked by rule: rm x"],
-		["bash", "No UI to confirm permission"],
-		["bash", "Classifier: looks risky (no UI to confirm)"],
-	])("recognizes the permissions producer format for %s: %s", async (toolName, text) => {
-		const { harness, tracker, ctx } = setup("print")
-		await harness.emit("session_start", start, ctx)
-		await harness.emit("tool_execution_end", toolResult(toolName, text), ctx)
-		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName, reason: text })
+			setBranch([first, second])
+			await harness.emit("input", input, ctx)
+			expect(tracker.getSnapshot().blockedTool).toBeUndefined()
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().blockedTool).toBeUndefined()
+		})
+
+		it("still records a block that arrives after the second prompt input", async () => {
+			const { harness, tracker, ctx } = setup("print", [assistantEntry("a", "")])
+			await harness.emit("session_start", start, ctx)
+			await harness.emit("input", input, ctx)
+			await blockedCall(harness, ctx, "c1", "write", "Denied by rule Write(*)")
+			await harness.emit("input", input, ctx)
+			await blockedCall(harness, ctx, "c2", "bash", "Blocked: plan mode")
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().blockedTool).toEqual({ toolName: "bash", reason: "Blocked: plan mode" })
+		})
 	})
 
 	describe("Ferment V2 ownership", () => {
@@ -246,18 +272,37 @@ describe("createRunOutcomeTracker", () => {
 			data,
 		})
 		const put = journal("j1", { schemaVersion: 1, op: "put", fermentV2: { status: "completed" } })
+		const laterPut = journal("j3", { schemaVersion: 1, op: "put", fermentV2: { status: "completed" } })
 		const clear = journal("j2", { schemaVersion: 1, op: "clear", fermentV2Id: "f", revision: 1, clearedAt: "1" })
 
-		it("marks a settled run whose branch ends with a live Ferment V2 put record", async () => {
-			const { harness, tracker, ctx } = setup("print", [put, assistantEntry("a", "")])
+		it("marks a run during which Ferment V2 wrote a live put record", async () => {
+			const { harness, tracker, ctx, setBranch } = setup("print")
 			await harness.emit("session_start", start, ctx)
+			setBranch([put, assistantEntry("a", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBe(true)
+		})
+
+		it("does not mark a follow-up prompt on a resumed session with a live record from an earlier process", async () => {
+			const { harness, tracker, ctx, setBranch } = setup("print", [put])
+			await harness.emit("session_start", start, ctx)
+			setBranch([put, assistantEntry("a", "")])
+			await harness.emit("agent_settled", settled(), ctx)
+			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
+		})
+
+		it("marks a resumed session once Ferment V2 writes a new put record", async () => {
+			const { harness, tracker, ctx, setBranch } = setup("print", [put])
+			await harness.emit("session_start", start, ctx)
+			setBranch([put, laterPut, assistantEntry("a", "")])
 			await harness.emit("agent_settled", settled(), ctx)
 			expect(tracker.getSnapshot().fermentV2Owned).toBe(true)
 		})
 
 		it("does not mark a run whose latest Ferment V2 record is a clear", async () => {
-			const { harness, tracker, ctx } = setup("print", [put, clear, assistantEntry("a", "")])
+			const { harness, tracker, ctx, setBranch } = setup("print")
 			await harness.emit("session_start", start, ctx)
+			setBranch([put, clear, assistantEntry("a", "")])
 			await harness.emit("agent_settled", settled(), ctx)
 			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
 		})
@@ -270,8 +315,9 @@ describe("createRunOutcomeTracker", () => {
 		})
 
 		it("drops the mark when a later settlement no longer has a live record", async () => {
-			const { harness, tracker, ctx, setBranch } = setup("print", [put, assistantEntry("a", "")])
+			const { harness, tracker, ctx, setBranch } = setup("print")
 			await harness.emit("session_start", start, ctx)
+			setBranch([put, assistantEntry("a", "")])
 			await harness.emit("agent_settled", settled(), ctx)
 			setBranch([put, clear, assistantEntry("b", "")])
 			await harness.emit("agent_settled", settled(), ctx)
@@ -279,15 +325,17 @@ describe("createRunOutcomeTracker", () => {
 		})
 
 		it("ignores malformed journal data", async () => {
-			const { harness, tracker, ctx } = setup("print", [journal("j", "nope"), assistantEntry("a", "")])
+			const { harness, tracker, ctx, setBranch } = setup("print")
 			await harness.emit("session_start", start, ctx)
+			setBranch([journal("j", "nope"), assistantEntry("a", "")])
 			await harness.emit("agent_settled", settled(), ctx)
 			expect(tracker.getSnapshot().fermentV2Owned).toBeUndefined()
 		})
 
 		it("never marks a worker settlement", async () => {
-			const { harness, tracker, ctx } = setup("print", [put])
+			const { harness, tracker, ctx, setBranch } = setup("print")
 			await harness.emit("session_start", start, ctx)
+			setBranch([put])
 			await runAsAgentWorker(async () => {
 				await harness.emit("agent_settled", settled(), ctx)
 			})
@@ -298,11 +346,11 @@ describe("createRunOutcomeTracker", () => {
 	it("returns defensive snapshots", async () => {
 		const { harness, tracker, ctx } = setup("print")
 		await harness.emit("session_start", start, ctx)
-		await harness.emit("tool_execution_end", toolResult("write", "Denied by rule Write(*)"), ctx)
+		await blockedCall(harness, ctx, "c1", "write", "Denied by rule Write(*)")
 		const snap = tracker.getSnapshot()
 		snap.inputSeen = true
-		if (snap.deniedTool) snap.deniedTool.reason = "mutated"
+		if (snap.blockedTool) snap.blockedTool.reason = "mutated"
 		expect(tracker.getSnapshot().inputSeen).toBe(false)
-		expect(tracker.getSnapshot().deniedTool?.reason).toBe("Denied by rule Write(*)")
+		expect(tracker.getSnapshot().blockedTool?.reason).toBe("Denied by rule Write(*)")
 	})
 })

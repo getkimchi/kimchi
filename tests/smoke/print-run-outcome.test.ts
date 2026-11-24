@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -35,7 +35,7 @@ interface RunOptions {
 	stdin?: string
 	/** "none" passes --no-session; otherwise a session file is passed. */
 	session?: "file" | "none"
-	prepare?: (workDir: string) => void
+	prepare?: (workDir: string, homeDir: string) => void
 	permissions?: string
 }
 
@@ -98,7 +98,7 @@ async function runKimchi(options: RunOptions): Promise<Harness> {
 		mkdirSync(homeDir, { recursive: true })
 		mkdirSync(workDir, { recursive: true })
 		writeKimchiConfig(homeDir, fake.baseUrl)
-		options.prepare?.(workDir)
+		options.prepare?.(workDir, homeDir)
 		const sessionArgs = options.session === "none" ? ["--no-session"] : ["--session", sessionPath]
 		const result = await spawnKimchi(
 			homeDir,
@@ -256,6 +256,47 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 		expect(result.stdout, result.failure).toContain("Stdin answer.")
 		expectNoGuardMarker(result)
 		expectTextOutcomeEquivalence(result)
+	})
+
+	it("slash command only from piped stdin is not a missing prompt", TIMEOUT, async () => {
+		// pi runs a stdin `/command` before any extension event, so no `input` is ever seen.
+		const { result } = await runKimchi({
+			args: ["--print", ...MODEL_ARGS],
+			stdin: "/language",
+		})
+		expect(result.timedOut, result.failure).toBe(false)
+		expect(result.code, result.failure).toBe(0)
+		expectNoGuardMarker(result)
+	})
+
+	it("prompt blocked by a UserPromptSubmit hook exits 3 instead of a silent 0", TIMEOUT, async () => {
+		const { result } = await runKimchi({
+			args: ["--print", ...MODEL_ARGS, "hello"],
+			prepare: (_workDir, homeDir) => {
+				const hookScript = join(homeDir, "block-prompt.cjs")
+				writeFileSync(hookScript, 'console.error("prompt blocked by hook")\nprocess.exit(2)\n')
+				const harnessSettings = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+				const settings = JSON.parse(readFileSync(harnessSettings, "utf-8"))
+				settings.resources = { "extensions.claude-code-hook-adapter": true }
+				writeFileSync(harnessSettings, JSON.stringify(settings))
+				mkdirSync(join(homeDir, ".claude"), { recursive: true })
+				writeFileSync(
+					join(homeDir, ".claude", "settings.json"),
+					JSON.stringify({
+						hooks: {
+							UserPromptSubmit: [{ hooks: [{ type: "command", command: `node ${JSON.stringify(hookScript)}` }] }],
+						},
+					}),
+				)
+			},
+			responses: [{ stream: ["Should not run."] }],
+		})
+		expect(result.timedOut, result.failure).toBe(false)
+		expect(result.code, result.failure).toBe(KIMCHI_NO_RESULT_EXIT_CODE)
+		expect(result.stdout, result.failure).not.toContain("Should not run.")
+		expect(result.stderr, result.failure).toContain(NO_RESULT_MARKER)
+		expect(result.stderr, result.failure).toContain("An extension handled the prompt")
+		expect(result.stderr, result.failure).not.toContain(NO_PROMPT_MARKER)
 	})
 
 	it("prompt only from at-file succeeds", TIMEOUT, async () => {

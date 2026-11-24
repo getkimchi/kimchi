@@ -4,48 +4,30 @@ import { isAgentWorker } from "./agent-worker-context.js"
 import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "./ferment-v2/constants.js"
 
 export interface RunOutcomeTracker {
+	/**
+	 * Must be registered before every other extension. pi stops `input` at the
+	 * first handler that returns `handled` and stops `tool_call` at the first
+	 * block, so a later observer would miss both.
+	 */
+	earlyObserver(pi: ExtensionAPI): void
+	/** Registered late, so it reads the branch after other `agent_settled` handlers. */
 	extension(pi: ExtensionAPI): void
 	getSnapshot(): RunOutcomeSnapshot
 }
 
-/**
- * pi turns a blocked `tool_call` into an error tool result whose text is the
- * block reason, with empty `details` and no other marker. So the only stable
- * contract is the exact reason text the permissions extension produces
- * (src/extensions/permissions/index.ts). Anchor at the start so unrelated
- * errors that merely mention "denied" or "blocked" are not matched.
- */
-const DENIAL_PATTERN = new RegExp(
-	[
-		"Denied by rule ",
-		"Blocked: ",
-		"Blocked in yolo mode \\(hard-blocked command\\): ",
-		"Subcommand blocked by rule: ",
-		"Subcommand denied$",
-		"Hard-blocked program in command: ",
-		"Command blocked by rule: ",
-		"No UI to confirm permission$",
-		"Classifier: .* \\(no UI to confirm\\)$",
-	]
-		.map((alternative) => `^${alternative}`)
-		.join("|"),
-	"s",
-)
+type FermentV2Record = Extract<SessionEntry, { type: "custom" }>
 
-/**
- * A Ferment V2 run is identified by its persisted journal, not by extension
- * memory: the journal survives cleanup that runs before agent_settled. Only the
- * latest record counts: a "put" means live, a later "clear" means not Ferment V2.
- * This covers the whole session branch, including resumed sessions.
- */
-function latestFermentV2RecordIsPut(branch: readonly SessionEntry[]): boolean {
+function latestFermentV2Record(branch: readonly SessionEntry[]): FermentV2Record | undefined {
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i]
-		if (entry.type !== "custom" || entry.customType !== FERMENT_V2_CUSTOM_ENTRY_TYPE) continue
-		const data: unknown = entry.data
-		return typeof data === "object" && data !== null && "op" in data && data.op === "put"
+		if (entry.type === "custom" && entry.customType === FERMENT_V2_CUSTOM_ENTRY_TYPE) return entry
 	}
-	return false
+	return undefined
+}
+
+function isPutRecord(record: FermentV2Record): boolean {
+	const data: unknown = record.data
+	return typeof data === "object" && data !== null && "op" in data && data.op === "put"
 }
 
 /**
@@ -54,38 +36,56 @@ function latestFermentV2RecordIsPut(branch: readonly SessionEntry[]): boolean {
  */
 export function createRunOutcomeTracker(): RunOutcomeTracker {
 	let state: RunOutcomeSnapshot = { active: false, inputSeen: false, runSeen: false, aborted: false }
+	// A blocked call gets a `tool_call` but never reaches afterToolCall, so it has no `tool_result`.
+	const callsAwaitingResult = new Set<string>()
+	// A live record left by an earlier process does not mean Ferment V2 drives this run.
+	let fermentV2RecordIdAtStart: string | undefined
+
+	const observing = () => state.active && !isAgentWorker()
 
 	return {
+		earlyObserver(pi: ExtensionAPI): void {
+			pi.on("input", () => {
+				if (!observing()) return
+				// A block belongs to the prompt that caused it.
+				const { blockedTool: _stale, ...rest } = state
+				state = { ...rest, inputSeen: true }
+				callsAwaitingResult.clear()
+			})
+
+			pi.on("tool_call", (event) => {
+				if (observing()) callsAwaitingResult.add(event.toolCallId)
+			})
+
+			pi.on("tool_result", (event) => {
+				if (observing()) callsAwaitingResult.delete(event.toolCallId)
+			})
+		},
+
 		extension(pi: ExtensionAPI): void {
 			pi.on("session_start", (_event, ctx) => {
 				if (isAgentWorker()) return
 				if (ctx.mode !== "print" && ctx.mode !== "json") return
+				fermentV2RecordIdAtStart = latestFermentV2Record(ctx.sessionManager.getBranch())?.id
 				const sessionPath = ctx.sessionManager.getSessionFile()
 				state = { ...state, active: true, ...(sessionPath ? { sessionPath } : {}) }
 			})
 
-			pi.on("input", () => {
-				if (isAgentWorker() || !state.active) return
-				// A denial belongs to the prompt that caused it.
-				const { deniedTool: _stale, ...rest } = state
-				state = { ...rest, inputSeen: true }
-			})
-
-			// A blocked call skips afterToolCall, so only tool_execution_end sees denials.
 			pi.on("tool_execution_end", (event) => {
-				if (isAgentWorker() || !state.active || !event.isError) return
+				if (!observing()) return
+				const blocked = callsAwaitingResult.delete(event.toolCallId)
+				if (!blocked || !event.isError) return
 				const content: unknown = event.result?.content
 				if (!Array.isArray(content)) return
 				const reason = content
 					.flatMap((block) => (block.type === "text" ? [block.text] : []))
 					.join("\n")
 					.trim()
-				if (!DENIAL_PATTERN.test(reason)) return
-				state = { ...state, deniedTool: { toolName: event.toolName, reason } }
+				state = { ...state, blockedTool: { toolName: event.toolName, reason } }
 			})
 
 			pi.on("agent_settled", (event, ctx) => {
-				if (isAgentWorker() || !state.active) return
+				if (!observing()) return
 				// Read the branch only now: pi has flushed pending messages by settlement.
 				let finalEntry: MessageLikeSessionEntry | undefined
 				const branch = ctx.sessionManager.getBranch()
@@ -96,13 +96,16 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 						break
 					}
 				}
+				const fermentRecord = latestFermentV2Record(branch)
+				const fermentV2Owned =
+					fermentRecord !== undefined && fermentRecord.id !== fermentV2RecordIdAtStart && isPutRecord(fermentRecord)
 				const sessionPath = ctx.sessionManager.getSessionFile()
 				const { finalEntry: _previous, sessionPath: _previousPath, fermentV2Owned: _previousFerment, ...rest } = state
 				state = {
 					...rest,
 					runSeen: true,
 					aborted: event.aborted,
-					...(latestFermentV2RecordIsPut(branch) ? { fermentV2Owned: true } : {}),
+					...(fermentV2Owned ? { fermentV2Owned } : {}),
 					...(finalEntry ? { finalEntry } : {}),
 					...(sessionPath ? { sessionPath } : {}),
 				}
@@ -112,7 +115,7 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 		getSnapshot(): RunOutcomeSnapshot {
 			return {
 				...state,
-				...(state.deniedTool ? { deniedTool: { ...state.deniedTool } } : {}),
+				...(state.blockedTool ? { blockedTool: { ...state.blockedTool } } : {}),
 			}
 		},
 	}

@@ -2,6 +2,8 @@
 
 `kimchi --print` and `kimchi --print --mode json` run one prompt and exit. Two guards make sure a run that produced nothing does not look like a success.
 
+The guards apply to every non-interactive run. pi also runs in print mode when stdin or stdout is not a terminal, so `kimchi "question" > answer.txt` and `echo question | kimchi` are guarded too.
+
 ## Prompt sources
 
 The prompt can come from any of these:
@@ -9,6 +11,8 @@ The prompt can come from any of these:
 - Positional text: `kimchi --print "explain this repo"`.
 - An `@file` argument: `kimchi --print @prompt.md`.
 - Piped stdin: `echo "explain this repo" | kimchi --print`.
+
+A slash command from any of these sources, such as `echo /language | kimchi --print`, counts as a prompt. It exits `0` when the agent does not run.
 
 ## What counts as an answer
 
@@ -18,7 +22,8 @@ In text mode, stdout shows the text of the last message, as pi decides it. These
 - a whitespace-only final message,
 - a thinking-only final message,
 - a final message that only calls tools,
-- a final message that is not from the assistant.
+- a final message that is not from the assistant,
+- a prompt that an extension or hook handled, so the agent never ran. For example, a `UserPromptSubmit` hook that blocks the prompt.
 
 A final message that ended with a model error, an abort, or truncation is not a guard failure. In text mode, pi exits `1` for it. In JSON mode, the exit code stays `0` and the outcome is visible in the event stream.
 
@@ -39,7 +44,7 @@ The guards only replace an unset or zero exit code. In text mode, code `1` is ne
 Each guard writes one diagnostic to stderr. Stdout is not changed.
 
 - Exit `2`: the first line starts with `KIMCHI_NO_PROMPT:`.
-- Exit `3`: the first line starts with `KIMCHI_NO_RESULT:`. The next lines name the last event, for example a denied tool and its reason. Model text is never printed.
+- Exit `3`: the first line starts with `KIMCHI_NO_RESULT:`. The next lines name the last event, for example a blocked tool and its reason. Model text is never printed.
 
 For exit `3`, the diagnostic also gives the session file path and tells you to rerun with `--mode json` to see every step. With `--no-session` no file is saved, and the diagnostic says that no session was saved.
 
@@ -52,9 +57,10 @@ This is a change for existing automation: a JSON run with no prompt or no final 
 ## Troubleshooting
 
 - Exit `2`: a flag such as `--auto` may have taken the prompt as its value. Put the prompt before the flags, or write the flag as `--auto=true`.
-- Exit `3` with a denied tool: the permission mode blocked a tool and the model gave no answer after that. Change the permission mode or allow the tool, then rerun.
+- Exit `3` with a blocked tool: a permission rule, the permission mode, a hook or a disabled resource blocked a tool, and the model gave no answer after that. Allow the tool, then rerun.
+- Exit `3` because an extension handled the prompt: a hook or an extension stopped the prompt before the agent ran. Check your hooks, or rerun with `--mode json`.
 - Exit `3` after an empty answer: open the session file, or rerun with `--mode json`, to see the steps.
 
-Ferment V2 sessions manage their own exit code, so the no-answer guard (exit `3`) does not apply to them. Any session whose branch has a live Ferment V2 record is exempt, including a resumed session. A later Ferment V2 clear record ends the exemption.
+Ferment V2 runs manage their own exit code, so the no-answer guard (exit `3`) does not apply to them. A run is exempt only when Ferment V2 writes a live record during that run. A live record left by an earlier run does not exempt a plain follow-up prompt on a resumed session. A Ferment V2 clear record ends the exemption.
 
 TUI and ACP sessions are not affected by these guards.

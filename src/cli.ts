@@ -219,6 +219,7 @@ import { IS_ACP_MODE } from "./modes/acp/state.js"
 import { injectOllamaProvider, readOllamaModelMetadata, resolveOllamaHost } from "./ollama.js"
 import { initOrgPolicy } from "./org-policy.js"
 import { syncPiAuth } from "./pi-auth.js"
+import { watchPipedStdinText } from "./piped-stdin-probe.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -919,6 +920,8 @@ async function cliMain(): Promise<void> {
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
+				// Before every other input/tool_call handler; see RunOutcomeTracker.earlyObserver.
+				runOutcomeTracker.earlyObserver,
 				// Registers `codemode` with kimchi's selection rule. The settings
 				// bootstrap disables pi's replaceable built-in so TUI/print do not
 				// emit a conflict warning; ACP loads no pi built-ins at all.
@@ -1108,6 +1111,8 @@ async function cliMain(): Promise<void> {
 				imagePayloadBudgetExtension,
 			]
 
+			// Installed before pi attaches its stdin reader inside main().
+			const pipedStdin = IS_ACP_MODE ? undefined : watchPipedStdinText()
 			if (IS_ACP_MODE) {
 				const { runAcpMode } = await import("./modes/acp/server.js")
 				await runAcpMode({
@@ -1131,7 +1136,12 @@ async function cliMain(): Promise<void> {
 				process.exit,
 				Boolean(process.exitCode) || hasPrintFlag(rawArgs),
 			)
-			applyPostMainRunOutcomeExitPolicy(classifyRunOutcome(runOutcomeTracker.getSnapshot(), parsePiArgs(piArgs)))
+			applyPostMainRunOutcomeExitPolicy(
+				classifyRunOutcome(runOutcomeTracker.getSnapshot(), {
+					...parsePiArgs(piArgs),
+					stdinHasText: pipedStdin?.hasText() ?? false,
+				}),
+			)
 		}
 	} catch (err) {
 		await drainPreSessionTelemetry()

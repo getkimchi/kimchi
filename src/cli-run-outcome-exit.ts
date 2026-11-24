@@ -8,7 +8,7 @@ import { formatRunOutcomeDiagnostic, type RunOutcomeClassification } from "./run
  */
 export function applyPostMainRunOutcomeExitPolicy(outcome: RunOutcomeClassification): boolean {
 	if (outcome.kind === "ok") return false
-	if (process.exitCode && Number(process.exitCode) !== 0) return false
+	if (Number(process.exitCode ?? 0) !== 0) return false
 	console.error(formatRunOutcomeDiagnostic(outcome))
 	process.exitCode = outcome.kind === "no-prompt" ? KIMCHI_NO_PROMPT_EXIT_CODE : KIMCHI_NO_RESULT_EXIT_CODE
 	return true
