@@ -47,6 +47,14 @@ import type { TSchema } from "typebox"
 import { liveTheme } from "../components/live-theme.js"
 import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
+import { readCodemodeContextReduction } from "./codemode/outcome.js"
+import {
+	codemodeActionSummary,
+	codemodeFailureReason,
+	estimatedTokens,
+	formatEstimatedTokenCount,
+} from "./codemode/presentation.js"
+import { codemodePurpose } from "./codemode/purpose.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import {
@@ -826,6 +834,17 @@ function patchToolExecutionRenderers(): void {
 				theme: Theme,
 				ctx: ToolRenderContext,
 			) => renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx)
+		}
+		if (!renderer && toolName === "codemode" && typeof originalGetResultRenderer === "function") {
+			const upstream: UpstreamResultRenderer | undefined = originalGetResultRenderer.call(this)
+			if (upstream) {
+				renderer = (
+					result: AgentToolResult<unknown>,
+					options: ToolRenderResultOptions,
+					theme: Theme,
+					ctx: ToolRenderContext,
+				) => renderCodemodeResult(result, options, theme, ctx, upstream)
+			}
 		}
 		if (!renderer && shouldUseGenericToolRenderer(toolName)) {
 			renderer = (
@@ -3940,6 +3959,8 @@ export function summarizeOpenAiToolCall(
 			return theme.fg("muted", "enable read-only planning")
 		case "ExitPlanMode":
 			return theme.fg("muted", "present plan")
+		case "codemode":
+			return codemodePurpose(args) || "Codemode"
 		case "Agent":
 			return summarizeText(getStringArg(args, "description", "prompt") || "launch agent", 72)
 		case "get_subagent_result":
@@ -4116,6 +4137,55 @@ function renderReadImageResult(
 		if (fallback) lines.push(theme.fg("toolOutput", fallback))
 	}
 	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme))
+}
+
+/** Collapsed: overall status plus observed actions. Expanded: our status and
+ *  context estimate above Pi's own Codemode renderer (per-call rows and
+ *  script output). Partial results keep the generic running row. */
+function renderCodemodeResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	ctx: ToolRenderContext,
+	upstream: UpstreamResultRenderer,
+): Component {
+	if (options.isPartial) return renderGenericToolResult("codemode", result, options, theme, ctx)
+	clearBlinkTimer(ctx)
+	const timer = formatToolTimer(ctx.durationMs ?? getToolElapsedMs(ctx))
+	const actions = codemodeActionSummary(result.details)
+	// The reason stays on the collapsed row: master kept failed results open
+	// so the error was visible without a keypress.
+	const reason = ctx.isError ? codemodeFailureReason(result) : undefined
+	const failure = reason ? `Script failed: ${reason}` : "Script failed"
+	const outcome = ctx.isError ? [failure, actions] : [actions || "Script completed"]
+	const icon = theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "✗" : "✓")
+	const status = `${icon} ${[...outcome, timer].filter(Boolean).join(" · ")}`
+	if (!options.expanded) {
+		return makeText(ctx.lastComponent, withBranch(`${status}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
+	}
+
+	const lines = [status]
+	const reduction = readCodemodeContextReduction(result.details)
+	// Incomplete accounting would understate the intermediate size, and a
+	// script with no nested results filtered nothing, so neither shows an estimate.
+	if (reduction?.complete && reduction.intermediateTextChars > 0) {
+		const intermediate = formatEstimatedTokenCount(estimatedTokens(reduction.intermediateTextChars))
+		const returned = formatEstimatedTokenCount(estimatedTokens(reduction.returnedTextChars))
+		lines.push(
+			theme.fg(
+				"muted",
+				`Context estimate: ≈${intermediate} intermediate tokens (${reduction.intermediateTextChars} chars) → ≈${returned} returned tokens (${reduction.returnedTextChars} chars)`,
+			),
+		)
+	}
+	const component = new Container()
+	component.addChild(makeText(undefined, withBranch(lines.join("\n"), theme)))
+	// Pi never receives our component, and a fresh state with no duration
+	// drops its own "Took" line, which would repeat the status timer.
+	component.addChild(
+		upstream(result, options, theme, { ...ctx, lastComponent: undefined, state: {}, durationMs: undefined }),
+	)
+	return component
 }
 
 function renderOpenAiToolResult(
