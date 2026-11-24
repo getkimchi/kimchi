@@ -86,6 +86,30 @@ describe("createCodemodeOutcomeTracker", () => {
 		})
 	})
 
+	// Pi hands a script `structuredContent` instead of the text whenever the tool
+	// declares an outputSchema (bash, read), so that is what reached the script.
+	it("counts the structured value the script received, not the shorter display text", () => {
+		const tracker = createCodemodeOutcomeTracker()
+		const ctx = context("session")
+		tracker.begin(ctx, "root")
+		tracker.nestedStart(ctx, nestedStart("root/bash", "root"))
+		tracker.nestedStart(ctx, nestedStart("root/read", "root"))
+		const structured = { text: "x".repeat(10_000) }
+		tracker.nestedEnd(ctx, {
+			...nestedEnd("root/bash", "short", "root"),
+			result: { content: [{ type: "text", text: "short" }], details: {}, structuredContent: structured },
+		})
+		tracker.nestedEnd(ctx, {
+			...nestedEnd("root/read", "abc", "root"),
+			result: { content: [{ type: "text", text: "abc" }], details: {}, structuredContent: "abcdef" },
+		})
+		expect(tracker.complete(ctx, "root", result("x"))).toEqual({
+			intermediateTextChars: JSON.stringify(structured).length + "abcdef".length,
+			returnedTextChars: 1,
+			complete: true,
+		})
+	})
+
 	it("ignores unknown-parent events instead of counting or contaminating them", () => {
 		const tracker = createCodemodeOutcomeTracker()
 		const ctx = context("session")

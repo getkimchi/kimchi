@@ -1,10 +1,55 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { expect, test } from "@microsoft/tui-test"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
+
+const STRUCTURED_OUTPUT_TOOL = fileURLToPath(new URL("./support/fixtures/structured-output-tool.js", import.meta.url))
+
+test("Codemode estimates the structured value a script receives, not the shorter display text", async ({
+	terminal,
+}) => {
+	// The tool declares an outputSchema, so Pi hands the script its 10000-char
+	// structuredContent instead of the 5-char display text.
+	const script = [
+		"// @description: Measure a structured report",
+		"const report = await tools.structured_report({});",
+		"return String(report.text.length);",
+	].join("\n")
+
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "codemode-outcome-structured",
+			extraArgs: ["--plan=false", "--extension", STRUCTURED_OUTPUT_TOOL],
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "codemode-structured",
+							function: { name: "codemode", arguments: JSON.stringify({ code: script }) },
+						},
+					],
+				},
+				{ stream: ["Structured output scenario complete."] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Run the structured output Codemode scenario")
+			await waitForText(terminal, "Structured output scenario complete.", { full: false })
+			expect(viewText(terminal)).toMatch(/✓ 1 operation · \d+(?:\.\d+)?(?:ms|s)/)
+
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, "Context estimate:", { full: false })
+			const intermediateChars = Number(viewText(terminal).match(/intermediate tokens \((\d+) chars\)/)?.[1])
+			expect(intermediateChars).toBe(JSON.stringify({ text: "x".repeat(10_000) }).length)
+			trace.step("the estimate counts the structured value the script received, not the display text")
+		},
+	)
+})
 
 test("Codemode shows its purpose and observed actions, then replays the recorded context estimate", async ({
 	terminal,

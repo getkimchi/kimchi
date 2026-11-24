@@ -55,6 +55,15 @@ function resultTextSize(result: unknown): TextSize {
 	return size
 }
 
+/** What a nested call handed the script. Pi passes `structuredContent` instead
+ *  of the text whenever the tool declares an outputSchema (bash, read), and it
+ *  can be far larger than the truncated display text. */
+function scriptValueSize(result: unknown): TextSize {
+	if (!isRecord(result) || result.structuredContent === undefined) return resultTextSize(result)
+	const value = result.structuredContent
+	return { chars: typeof value === "string" ? value.length : JSON.stringify(value).length, hasNonText: false }
+}
+
 /** `models.*` results reach the script without tool execution events, so they are never counted. */
 function hasModelCalls(details: unknown): boolean {
 	return (
@@ -106,7 +115,7 @@ export function createCodemodeOutcomeTracker() {
 			if (!outcome || outcome.endedNestedCalls.has(event.toolCallId)) return
 			outcome.endedNestedCalls.add(event.toolCallId)
 			if (!outcome.pendingNestedCalls.delete(event.toolCallId)) outcome.complete = false
-			const size = resultTextSize(event.result)
+			const size = scriptValueSize(event.result)
 			outcome.intermediateTextChars += size.chars
 			if (size.hasNonText) outcome.complete = false
 		},
