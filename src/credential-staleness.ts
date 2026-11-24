@@ -248,16 +248,28 @@ export function prepareCredentialForLogin(apiKey: string, providerId: string, st
 export function isCredentialStale(apiKey: string | undefined, providerId: string, statePath?: string): boolean {
 	const entry = stalenessByProvider.get(providerId)
 	if (entry?.providerStale) return true
+	return isCredentialKeyRejected(apiKey, providerId, statePath)
+}
+
+/**
+ * True only when this exact key's fingerprint was individually observed
+ * rejected for the provider — in memory or in the persisted sidecar.
+ * Unlike isCredentialStale, provider-wide stale state is ignored: callers
+ * must be able to force a refresh of exactly the rejected token without
+ * dragging in an unrelated or newly rotated credential.
+ */
+export function isCredentialKeyRejected(apiKey: string | undefined, providerId: string, statePath?: string): boolean {
 	if (apiKey === undefined || apiKey.length === 0) return false
 	const rejectedFingerprint = fingerprint(apiKey)
-	if (entry?.staleKeys.has(rejectedFingerprint)) return true
+	if (stalenessByProvider.get(providerId)?.staleKeys.has(rejectedFingerprint)) return true
 	const path = rejectionsPath(statePath)
 	if (!path) return false
 	try {
 		return readPersistentRejections(resolve(path)).providers[providerId]?.includes(rejectedFingerprint) ?? false
 	} catch {
-		// Preserve the old presence-based behaviour if the auxiliary sidecar is
-		// unreadable; this must never turn an I/O problem into a sign-out.
+		// Same fail-closed-to-false contract as isCredentialStale: an unreadable
+		// sidecar must never turn an I/O problem into a sign-out or forced
+		// refresh loop.
 		return false
 	}
 }

@@ -2,7 +2,7 @@ import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { isInvalidGrantError } from "../cli-auth/oauth.js"
-import { clearRefreshedCredentialStale } from "../credential-staleness.js"
+import { clearRefreshedCredentialStale, isCredentialKeyRejected } from "../credential-staleness.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 import { syncOAuthCredentialToKimchiProviders } from "../pi-auth.js"
 import {
@@ -61,20 +61,39 @@ export async function prepareActivePromptKimchiCredential(
 		) {
 			return "ready"
 		}
+		// An HTML 401 can arrive for a token that is still well outside the
+		// proactive refresh window. Only the exact rejected access-token
+		// fingerprint may force a rotation; provider-wide stale state or an
+		// unrelated key must not retire the current grant.
+		const storedTokenRejected = isCredentialKeyRejected(storedCredential.access, KIMCHI_PROVIDER_ID)
+		const remainingLifetimeMs = storedCredential.expires - Date.now()
+		// Inside the five-minute window the resolver already refreshes, so no
+		// override is passed and refresh/error behavior stays unchanged. Outside
+		// it, force exactly one refresh by requiring one millisecond more than
+		// the remaining lifetime. The value must stay finite: the resolver
+		// applies the explicit minimum to the refreshed token too, and Infinity
+		// would fail every replacement.
+		const forceRejectedTokenRefresh =
+			storedTokenRejected &&
+			Number.isFinite(remainingLifetimeMs) &&
+			remainingLifetimeMs > KIMCHI_OAUTH_MINIMUM_VALIDITY_MS
+		const getAuthOverrides = forceRejectedTokenRefresh ? { minOAuthValidityMs: remainingLifetimeMs + 1 } : undefined
 		const activeCredentialBeforeCanonical =
 			activeProviderId === KIMCHI_PROVIDER_ID ? undefined : readStoredCredential(activeProviderId, paths.authPath)
-		const resolution = await resolveRefreshAwareKimchiAuth(paths, installOAuth, owner).catch((error) => {
-			// An inaccessible canonical grant must not block an independently
-			// authenticated active provider that needs no refresh itself.
-			if (
-				activeCredentialBeforeCanonical?.type === "api_key" ||
-				(activeCredentialBeforeCanonical?.type === "oauth" &&
-					Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS < activeCredentialBeforeCanonical.expires)
-			) {
-				return undefined
-			}
-			throw error
-		})
+		const resolution = await resolveRefreshAwareKimchiAuth(paths, installOAuth, owner, getAuthOverrides).catch(
+			(error) => {
+				// An inaccessible canonical grant must not block an independently
+				// authenticated active provider that needs no refresh itself.
+				if (
+					activeCredentialBeforeCanonical?.type === "api_key" ||
+					(activeCredentialBeforeCanonical?.type === "oauth" &&
+						Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS < activeCredentialBeforeCanonical.expires)
+				) {
+					return undefined
+				}
+				throw error
+			},
+		)
 		if (resolution === undefined) return "ready"
 		const credential = readStoredCredential(KIMCHI_PROVIDER_ID, paths.authPath)
 		if (credential?.type !== "oauth" || !resolution.auth?.auth.apiKey) return "ready"

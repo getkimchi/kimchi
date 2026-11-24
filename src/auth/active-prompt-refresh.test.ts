@@ -4,7 +4,12 @@ import { join } from "node:path"
 import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OAuthTokenError } from "../cli-auth/oauth.js"
-import { isCredentialStale, resetCredentialStalenessForTests } from "../credential-staleness.js"
+import {
+	isCredentialKeyRejected,
+	isCredentialStale,
+	markCredentialStale,
+	resetCredentialStalenessForTests,
+} from "../credential-staleness.js"
 import { installKimchiOAuth } from "../extensions/login/flow.js"
 import { fakeOAuthDeps } from "../modes/acp/ext-methods/oauth-test-utils.js"
 import { syncOAuthCredentialToKimchiProviders } from "../pi-auth.js"
@@ -45,6 +50,112 @@ describe("active prompt Kimchi credential preparation", () => {
 		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
 			expect(stored[providerId]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
 		}
+	})
+
+	it("refreshes a far-future exactly rejected token once and clears the old rejection after rotation", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		writeOAuthCredential(Date.now() + 3_600_000)
+		markCredentialStale("expiring-access", "kimchi-dev")
+		const oauth = rotatingOAuthDeps()
+		// The forced override demands one millisecond more remaining lifetime
+		// than the rejected token had when the preflight measured it, and the
+		// resolver applies the same explicit minimum to the replacement. The
+		// fake replacement carries the same one-hour nominal lifetime, so its
+		// absolute expiry must land far enough after the original write for the
+		// refreshed token to satisfy that minimum deterministically.
+		await new Promise((resolve) => setTimeout(resolve, 500))
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		const stored = readStore()
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(stored[providerId]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+		}
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(false)
+		expect(isCredentialKeyRejected("replacement-access", "kimchi-dev")).toBe(false)
+	})
+
+	it("does not force a refresh for a far-future token without an exact rejection", async () => {
+		writeOAuthCredential(Date.now() + 3_600_000)
+		const oauth = rotatingOAuthDeps()
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+
+		expect(oauth.refreshCalls).toHaveLength(0)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
+	})
+
+	it("does not force a refresh when an unrelated key was rejected", async () => {
+		writeOAuthCredential(Date.now() + 3_600_000)
+		markCredentialStale("unrelated-rejected-access", "kimchi-dev")
+		const oauth = rotatingOAuthDeps()
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+
+		expect(oauth.refreshCalls).toHaveLength(0)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
+	})
+
+	it("does not force a refresh for provider-wide-only stale state", async () => {
+		writeOAuthCredential(Date.now() + 3_600_000)
+		markCredentialStale(undefined, "kimchi-dev")
+		const oauth = rotatingOAuthDeps()
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+
+		expect(oauth.refreshCalls).toHaveLength(0)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
+		expect(isCredentialStale("expiring-access", "kimchi-dev")).toBe(true)
+	})
+
+	it("returns oauth_revoked for a forced invalid_grant outside the window and retains the rejection", async () => {
+		writeOAuthCredential(Date.now() + 3_600_000)
+		markCredentialStale("expiring-access", "kimchi-dev")
+		const oauth = fakeOAuthDeps(() => {
+			throw new OAuthTokenError("fake refresh grant revoked", { code: "invalid_grant", status: 400 })
+		})
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("oauth_revoked")
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(true)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
+	})
+
+	it("returns oauth_refresh_failed for a forced transient failure outside the window, then recovers", async () => {
+		writeOAuthCredential(Date.now() + 3_600_000)
+		markCredentialStale("expiring-access", "kimchi-dev")
+		let failNextRefresh = true
+		const oauth = fakeOAuthDeps((credential) => {
+			if (failNextRefresh) {
+				failNextRefresh = false
+				throw new Error("loopback temporarily unavailable")
+			}
+			return {
+				...credential,
+				access: "replacement-access",
+				refresh: "rotated-refresh",
+				expires: Date.now() + 3_600_000,
+			}
+		})
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("oauth_refresh_failed")
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(true)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
+
+		// Keep the retry's forced-validity margin as comfortable as the main
+		// regression's (see the far-future rejection test above).
+		await new Promise((resolve) => setTimeout(resolve, 500))
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+
+		expect(oauth.refreshCalls).toHaveLength(2)
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(false)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
 	})
 
 	it("fans out refresh-token-only rotation resolved through the canonical ModelRuntime", async () => {

@@ -11,11 +11,22 @@ import {
 	clearCredentialStale,
 	clearRefreshedCredentialStale,
 	isAuthRejectedMessage,
+	isCredentialKeyRejected,
 	isCredentialStale,
 	markCredentialStale,
 	prepareCredentialForLogin,
 	resetCredentialStalenessForTests,
 } from "./credential-staleness.js"
+
+// Byte-for-byte the nginx HTML body observed when a Kimchi OAuth access
+// token is rejected by the gateway, embedded multiline in the error text.
+const NGINX_401_HTML = `<html>
+<head><title>401 Authorization Required</title></head>
+<body>
+<center><h1>401 Authorization Required</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>`
 
 describe("credential-staleness registry", () => {
 	beforeEach(() => {
@@ -256,6 +267,53 @@ for (let i = 0; i < 10; i++) markCredentialStale(worker + "-" + i, "kimchi-dev",
 	}, 15_000)
 })
 
+describe("isCredentialKeyRejected", () => {
+	beforeEach(() => {
+		resetCredentialStalenessForTests()
+	})
+
+	it("matches only the exact rejected key recorded in memory", () => {
+		markCredentialStale("rejected-key", "kimchi-dev")
+		expect(isCredentialKeyRejected("rejected-key", "kimchi-dev")).toBe(true)
+		expect(isCredentialKeyRejected("unrelated-key", "kimchi-dev")).toBe(false)
+	})
+
+	it("returns false for a missing or undefined key", () => {
+		markCredentialStale("rejected-key", "kimchi-dev")
+		expect(isCredentialKeyRejected(undefined, "kimchi-dev")).toBe(false)
+		expect(isCredentialKeyRejected("", "kimchi-dev")).toBe(false)
+	})
+
+	it("does not leak an exact rejection across providers", () => {
+		markCredentialStale("rejected-key", "kimchi-dev")
+		expect(isCredentialKeyRejected("rejected-key", "other-provider")).toBe(false)
+	})
+
+	it("ignores provider-wide stale state", () => {
+		markCredentialStale(undefined, "kimchi-dev")
+		expect(isCredentialKeyRejected("fresh-key", "kimchi-dev")).toBe(false)
+		expect(isCredentialKeyRejected(undefined, "kimchi-dev")).toBe(false)
+		// The provider-wide OR exact-key behaviour of isCredentialStale is
+		// unchanged: the provider mark still counts there.
+		expect(isCredentialStale("fresh-key", "kimchi-dev")).toBe(true)
+	})
+
+	it("recognizes a rejected key persisted in the sidecar after a reset", () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-key-rejection-"))
+		const statePath = join(dir, "credential-rejections.json")
+		try {
+			markCredentialStale("persisted-key", "kimchi-dev", statePath)
+			resetCredentialStalenessForTests()
+
+			expect(isCredentialKeyRejected("persisted-key", "kimchi-dev", statePath)).toBe(true)
+			expect(isCredentialKeyRejected("different-key", "kimchi-dev", statePath)).toBe(false)
+			expect(isCredentialKeyRejected("persisted-key", "other-provider", statePath)).toBe(false)
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+})
+
 describe("isAuthRejectedMessage", () => {
 	it.each([
 		"Failed to fetch models: 401 Unauthorized",
@@ -266,6 +324,10 @@ describe("isAuthRejectedMessage", () => {
 		"unauthenticated request",
 	])("detects auth-class error text: %s", (message) => {
 		expect(isAuthRejectedMessage(message)).toBe(true)
+	})
+
+	it("detects the exact multiline nginx HTML 401 rejection page", () => {
+		expect(isAuthRejectedMessage(NGINX_401_HTML)).toBe(true)
 	})
 
 	it.each([
