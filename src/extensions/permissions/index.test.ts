@@ -12,6 +12,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
+import { resetAcpInteractionRegistriesForTests } from "../../modes/acp/child-interaction-registry.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -93,6 +94,7 @@ vi.mock("../remote-run/runner.js", async (importOriginal) => {
 const runCloudAgentMock = vi.mocked(runCloudAgent)
 
 import { SessionMemory } from "./session-memory.js"
+import { registerSessionPermissionPrompter } from "./session-prompter-registry.js"
 import type { PermissionModeState, Rule } from "./types.js"
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -3919,12 +3921,15 @@ describe("permissions TUI allow-remember", () => {
 
 describe("permissions ACP prompter", () => {
 	beforeEach(() => {
+		resetAcpInteractionRegistriesForTests()
 		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
 		vi.mocked(classifyToolCall).mockClear()
 	})
 
 	afterEach(() => {
+		resetAcpInteractionRegistriesForTests()
 		unregisterAcpPrompter(TEST_SESSION_ID)
+		unregisterAcpPrompter("parent-root")
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
@@ -4046,6 +4051,84 @@ describe("permissions ACP prompter", () => {
 		expect(result).toEqual({ block: true, reason: "Classifier: needs a human (no UI to confirm)" })
 		expect(requests).toEqual([])
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it.each(["parent", "child"] as const)("routes a worker through its %s session interaction", async (route) => {
+		const requests: Array<{ route: string; toolCallId: string }> = []
+		const prompter = (source: string): ToolPermissionPrompter => ({
+			request: async (req) => {
+				requests.push({ route: source, toolCallId: req.toolCallId })
+				return { kind: "allow-once" }
+			},
+		})
+		registerSessionPermissionPrompter(TEST_SESSION_ID, {
+			canPromptDirectly: () => route === "child",
+			resolve: () => prompter(route),
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+		const result = await runAsAgentWorker(() =>
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "tc-worker", toolName: "bash", input: { command: "touch worker.txt" } },
+				ctx,
+			),
+		)
+
+		expect(result).toBeUndefined()
+		if (route === "parent") {
+			// Unexposed workers use the classifier before parent escalation.
+			// The default safe verdict needs no approval request.
+			expect(requests).toEqual([])
+			expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		} else {
+			expect(requests).toEqual([{ route, toolCallId: "tc-worker" }])
+			expect(classifyToolCall).not.toHaveBeenCalled()
+		}
+	})
+
+	it("switches a worker from parent fallback to its child prompter and back without rebinding", async () => {
+		const requests: string[] = []
+		let direct = false
+		const removeWorker = registerSessionPermissionPrompter(TEST_SESSION_ID, {
+			canPromptDirectly: () => direct,
+			resolve: () => ({
+				request: async () => {
+					requests.push(direct ? "child" : "parent")
+					return { kind: "allow-once" }
+				},
+			}),
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+		const call = () =>
+			runAsAgentWorker(() =>
+				harness.fire(
+					"tool_call",
+					{
+						type: "tool_call",
+						toolCallId: `tc-worker-${requests.length}`,
+						toolName: "bash",
+						input: { command: "touch worker.txt" },
+					},
+					ctx,
+				),
+			)
+
+		await call()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		direct = true
+		await call()
+		expect(requests).toEqual(["child"])
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+
+		direct = false
+		await call()
+		expect(requests).toEqual(["child"])
+		expect(classifyToolCall).toHaveBeenCalledTimes(2)
+		removeWorker()
 	})
 
 	it("uses the ACP prompter in rpc mode even when hasUI is true (acp wins over terminal)", async () => {

@@ -69,6 +69,7 @@ import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../promp
 import { preloadSkills } from "../prompt/skill-loader.js"
 import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
+import { prepareAgentWorkerSession } from "./agent-worker-session.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { sanitizeToolName } from "./result-text.js"
 import { SubagentResourceLoader } from "./subagent-resource-loader.js"
@@ -813,14 +814,23 @@ ${skillLines}`
 	registerWorkerParentSession(session, parentSessionId)
 	sessionTimeBudgets.set(session, timeBudget)
 
-	await session.bindExtensions({
-		onError: (err) => {
-			options.onToolActivity?.({
-				status: "completed",
-				toolName: `extension-error:${err.extensionPath}`,
-			})
-		},
-	})
+	// Capture ownership before session_start: permission hooks may run during
+	// binding, and later announcement must not retarget an in-flight request.
+	const host = prepareAgentWorkerSession(session.sessionId, parentSessionId)
+	try {
+		await session.bindExtensions({
+			...host.bindings,
+			onError: (err) => {
+				options.onToolActivity?.({
+					status: "completed",
+					toolName: `extension-error:${err.extensionPath}`,
+				})
+			},
+		})
+	} catch (error) {
+		host.cleanup()
+		throw error
+	}
 
 	// Requested-but-unregistered tool names (e.g. a `tools:` list naming a tool
 	// no extension registered in the child session) — filled during tool
@@ -1044,7 +1054,12 @@ ${skillLines}`
 		clearInterval(inactivityInterval)
 		inactivityInterval = undefined
 	}
-	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
+	// The manager owns hard-fallback disposal of resumable workers. Keep the
+	// parent association alive across runAgent/resumeAgent until that cleanup.
+	options.onRuntimeCleanupRegistered?.(() => {
+		cleanupInactivityInterval()
+		host.cleanup()
+	})
 
 	// The worker's clock starts here. The budget object was created earlier
 	// because the prompt and the bash clamp need a reference to it, but

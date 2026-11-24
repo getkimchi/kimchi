@@ -890,7 +890,7 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[6]
+				const factory = mockCreateWorkerReportExtension.mock.results[0]?.value
 				const childApi = createExtensionApi()
 				await runInlineExtension(factory, childApi.api)
 				const tool = childApi.getRegisteredTool("submit_agent_report")

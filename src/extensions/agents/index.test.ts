@@ -130,69 +130,72 @@ describe("AGENT_MODEL_PARAMETER_DESCRIPTION", () => {
 
 vi.mock("./manager/agent-manager.js", () => {
 	return {
-		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
-		AgentManager: vi.fn().mockImplementation(function (onComplete, _maxConcurrent, onStart) {
-			const records = new Map<string, unknown>()
-			const manager = {
-				onComplete,
-				onStart,
-				_records: records,
-				spawn: vi.fn((_pi, _ctx, type, _prompt, options) => {
-					const id = `mock-${records.size}`
-					// Foreground execution races record.promise against a detach
-					// promise; a resolved promise keeps the mock's foreground path
-					// moving. Background tests never read it.
-					records.set(id, {
-						id,
-						type,
-						status: "running",
-						...options,
-						promise: Promise.resolve(),
-						lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					})
-					return id
-				}),
-				getRecord: vi.fn((id: string) => records.get(id)),
-				listAgents: vi.fn(() => [...records.values()]),
-				abort: vi.fn(),
-				abortAll: vi.fn(),
-				resumeRemoteRecord: vi.fn(),
-				waitForAll: vi.fn().mockResolvedValue(undefined),
-				clearCompleted: vi.fn(),
-				dispose: vi.fn(),
-				setMaxConcurrent: vi.fn(),
-				getMaxConcurrent: vi.fn().mockReturnValue(4),
-				getRunningCount: vi.fn().mockReturnValue(0),
-				hasRunning: vi.fn().mockReturnValue(false),
-				detachToBackground: vi.fn().mockReturnValue(false),
-				detachRemoteRuns: vi.fn(),
-				countAbortableBackground: vi.fn(
-					// Mirror the real accounting well enough for notice tests:
-					// only background-flagged records count; transients don't.
-					() => [...records.values()].filter((r) => (r as { isBackground?: boolean }).isBackground === true).length,
-				),
-				extractRunningLocal: vi.fn(() => {
-					const active = [...records.values()].filter((r) => {
-						const status = (r as { status?: string }).status
-						return status === "running" || status === "queued"
-					})
-					for (const r of active) records.delete((r as { id: string }).id)
-					return { records: active, queued: [], midResumeIds: new Set() }
-				}),
-				adoptRecords: vi.fn(
-					(
-						adopted: Array<Record<string, unknown>>,
-						_queued: unknown,
-						_midResumeIds: unknown,
-						_pi: unknown,
-						_ctx: unknown,
-					) => {
-						for (const r of adopted) records.set(r.id as string, r)
-					},
-				),
-			}
-			return manager
-		}),
+		AgentManager: vi
+			.fn()
+			// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+			.mockImplementation(function (onComplete, _maxConcurrent, onStart, _onCompact, onSessionCreated) {
+				const records = new Map<string, unknown>()
+				const manager = {
+					onComplete,
+					onStart,
+					onSessionCreated,
+					_records: records,
+					spawn: vi.fn((_pi, _ctx, type, _prompt, options) => {
+						const id = `mock-${records.size}`
+						// Foreground execution races record.promise against a detach
+						// promise; a resolved promise keeps the mock's foreground path
+						// moving. Background tests never read it.
+						records.set(id, {
+							id,
+							type,
+							status: "running",
+							...options,
+							promise: Promise.resolve(),
+							lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						})
+						return id
+					}),
+					getRecord: vi.fn((id: string) => records.get(id)),
+					listAgents: vi.fn(() => [...records.values()]),
+					abort: vi.fn(),
+					abortAll: vi.fn(),
+					resumeRemoteRecord: vi.fn(),
+					waitForAll: vi.fn().mockResolvedValue(undefined),
+					clearCompleted: vi.fn(),
+					dispose: vi.fn(),
+					setMaxConcurrent: vi.fn(),
+					getMaxConcurrent: vi.fn().mockReturnValue(4),
+					getRunningCount: vi.fn().mockReturnValue(0),
+					hasRunning: vi.fn().mockReturnValue(false),
+					detachToBackground: vi.fn().mockReturnValue(false),
+					detachRemoteRuns: vi.fn(),
+					countAbortableBackground: vi.fn(
+						// Mirror the real accounting well enough for notice tests:
+						// only background-flagged records count; transients don't.
+						() => [...records.values()].filter((r) => (r as { isBackground?: boolean }).isBackground === true).length,
+					),
+					extractRunningLocal: vi.fn(() => {
+						const active = [...records.values()].filter((r) => {
+							const status = (r as { status?: string }).status
+							return status === "running" || status === "queued"
+						})
+						for (const r of active) records.delete((r as { id: string }).id)
+						return { records: active, queued: [], midResumeIds: new Set() }
+					}),
+					adoptRecords: vi.fn(
+						(
+							adopted: Array<Record<string, unknown>>,
+							_queued: unknown,
+							_midResumeIds: unknown,
+							_pi: unknown,
+							_ctx: unknown,
+						) => {
+							for (const r of adopted) records.set(r.id as string, r)
+						},
+					),
+				}
+				return manager
+			}),
 		buildAgentOutcome: vi.fn().mockReturnValue({
 			outcome: "completed",
 			reason: undefined,
@@ -401,6 +404,14 @@ describe("session_shutdown nudge race (integration)", () => {
 			completedAt: 2_000,
 			outputFile: "/tmp/agent-outputs/session/tasks/record-agent.output",
 			sessionFile: "/tmp/agent-outputs/session/record-agent.jsonl",
+			sessionId: "child-session",
+			parentSessionId: "parent-session",
+			parentSessionFile: "/tmp/parent.jsonl",
+			toolCallId: "kt.Agent.1",
+			prompt: "Review all changes in full",
+			cwd: "/work/child",
+			remote: false,
+			isBackground: true,
 			toolUses: 3,
 			lifetimeUsage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
 		}
@@ -420,6 +431,58 @@ describe("session_shutdown nudge race (integration)", () => {
 			outputFile: "/tmp/agent-outputs/session/tasks/record-agent.output",
 			sessionFile: "/tmp/agent-outputs/session/record-agent.jsonl",
 			systemPrompt: undefined,
+			agentId: "record-agent",
+			sessionId: "child-session",
+			parentSessionId: "parent-session",
+			toolCallId: "kt.Agent.1",
+			prompt: "Review all changes in full",
+			cwd: "/work/child",
+			remote: false,
+			background: true,
+			parentSessionFile: "/tmp/parent.jsonl",
+		})
+	})
+
+	it.each([
+		{ background: false, visibility: "user", remote: false },
+		{ background: true, visibility: "user", remote: false },
+		{ background: false, visibility: "system", remote: true },
+	])("emits the complete session_created projection (background=$background, visibility=$visibility)", ({
+		background,
+		visibility,
+		remote,
+	}) => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = latestManagerInstance()
+		const record = makeRunningRecord({
+			id: "projection-agent",
+			description: "short description",
+			prompt: "original full\ndelegated prompt",
+			sessionId: "child-session",
+			parentSessionId: "parent-session",
+			toolCallId: "kt.Agent.7",
+			cwd: "/work/child",
+			isBackground: background,
+			visibility,
+			remote,
+		})
+
+		managerInstance.onSessionCreated(record, { sessionId: "child-session" })
+
+		expect(pi.events.emit).toHaveBeenCalledWith("subagents:session_created", {
+			agentId: "projection-agent",
+			sessionId: "child-session",
+			parentSessionId: "parent-session",
+			toolCallId: "kt.Agent.7",
+			prompt: "original full\ndelegated prompt",
+			description: "short description",
+			cwd: "/work/child",
+			visibility,
+			remote,
+			status: "running",
+			background,
+			agentSession: { sessionId: "child-session" },
 		})
 	})
 })
@@ -1428,6 +1491,7 @@ function getRegisteredTool(
 type MockManagerInstance = {
 	_records: Map<string, Record<string, unknown>>
 	onComplete: (record: Record<string, unknown>) => void
+	onSessionCreated: (record: Record<string, unknown>, session: { sessionId: string }) => void
 	spawn: ReturnType<
 		typeof vi.fn<(pi: unknown, ctx: unknown, type: string, prompt: string, options: Record<string, unknown>) => string>
 	>

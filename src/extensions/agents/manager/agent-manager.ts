@@ -58,6 +58,7 @@ import { addUsage, type LifetimeUsage } from "./usage.js"
 export type OnAgentComplete = (record: AgentRecord) => void
 export type OnAgentStart = (record: AgentRecord, ctx: ExtensionContext) => void
 export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void
+export type OnAgentSessionCreated = (record: AgentRecord, session: AgentSession) => void
 export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }
 
 /** Default max concurrent background agents. */
@@ -128,6 +129,8 @@ export interface SpawnOptions {
 	onAssistantUsage?: (usage: LifetimeUsage) => void
 	onRawNotification?: (params: SessionNotification) => void
 	onCompaction?: (info: CompactionInfo) => void
+	/** Original Agent tool call id. Captured before any asynchronous child work. */
+	toolCallId?: string
 }
 
 /** A queued-but-not-started agent, re-spawnable against a new pi/ctx
@@ -212,6 +215,8 @@ export class AgentManager {
 	private onComplete?: OnAgentComplete
 	private onStart?: OnAgentStart
 	private onCompact?: OnAgentCompact
+	private onSessionCreated?: OnAgentSessionCreated
+	private sessionCreatedRecords = new WeakSet<AgentRecord>()
 	private maxConcurrent: number
 
 	private queue: { id: string; args: SpawnArgs }[] = []
@@ -222,10 +227,12 @@ export class AgentManager {
 		maxConcurrent = DEFAULT_MAX_CONCURRENT,
 		onStart?: OnAgentStart,
 		onCompact?: OnAgentCompact,
+		onSessionCreated?: OnAgentSessionCreated,
 	) {
 		this.onComplete = onComplete
 		this.onStart = onStart
 		this.onCompact = onCompact
+		this.onSessionCreated = onSessionCreated
 		this.maxConcurrent = maxConcurrent
 		this.cleanupInterval = setInterval(() => this.cleanup(), 60_000)
 	}
@@ -293,6 +300,11 @@ export class AgentManager {
 			compactionCount: 0,
 			remote: effectiveOptions.remote,
 			gitWorkflow: effectiveOptions.gitWorkflow,
+			toolCallId: effectiveOptions.toolCallId,
+			prompt,
+			parentSessionId: ctx.sessionManager.getSessionId(),
+			parentSessionFile: ctx.sessionManager.getSessionFile(),
+			cwd: ctx.cwd,
 		}
 		this.agents.set(id, record)
 
@@ -409,7 +421,7 @@ export class AgentManager {
 						this.runtimeCleanups.set(record, cleanup)
 					},
 					onSessionCreated: (session) => {
-						record.session = session
+						this.handleSessionCreated(record, session)
 						if (record.pendingSteers?.length) {
 							for (const msg of record.pendingSteers) {
 								session.steer(msg).catch(() => {})
@@ -494,9 +506,19 @@ export class AgentManager {
 	 * Remote runs are single-turn (maxTurns: 1) with yolo: true. Multi-turn support,
 	 * budget enforcement, and timeout guards are planned for a follow-up PR.
 	 */
-	/** Creates the RemoteAgentSession adapter for a remote record and wires
-	 *  the activity-tracker hookup + transcript seed (shared by the initial
-	 *  run and steer continuations). */
+	private handleSessionCreated(record: AgentRecord, session: AgentSession): void {
+		record.cwd = session.sessionManager.getHeader()?.cwd ?? record.cwd
+		this.publishSessionCreated(record, session)
+	}
+
+	private publishSessionCreated(record: AgentRecord, session: AgentSession): void {
+		record.session = session
+		record.sessionId = session.sessionId
+		if (this.sessionCreatedRecords.has(record)) return
+		this.sessionCreatedRecords.add(record)
+		this.onSessionCreated?.(record, session)
+	}
+
 	private _prepareRemoteAdapter(record: AgentRecord, prompt: string, options: SpawnOptions): RemoteAgentSession {
 		const remoteSession = new RemoteAgentSession()
 		record.session = remoteSession as unknown as AgentSession
@@ -626,6 +648,7 @@ export class AgentManager {
 			onReady: async (acpClient, meta) => {
 				remoteSession.bindClient(acpClient, meta)
 				record.acpSessionId = continuation.acpSessionId
+				this.publishSessionCreated(record, remoteSession as unknown as AgentSession)
 				record.remoteSession ??= meta
 				options.onRemoteReady?.({ meta, acpSessionId: continuation.acpSessionId })
 			},
@@ -739,6 +762,7 @@ export class AgentManager {
 					record.acpSessionId = acpSessionId
 					record.remoteSession ??= meta
 				}
+				this.publishSessionCreated(record, remoteSession as unknown as AgentSession)
 				// Baseline capture (PR-first runs): HEAD at provisioning + the
 				// user's pre-existing dirty files. The runner awaits this before
 				// prompt() so the persisted running-state entry carries it. The

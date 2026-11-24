@@ -204,6 +204,7 @@ import {
 	MCP_OAUTH_TURN_CAPABILITY,
 	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
+import { registerAcpChildInteraction, registerAcpRootUIContext } from "./child-interaction-registry.js"
 import {
 	COMPACT_COMMAND_ENTRY_TYPE,
 	composeAvailableCommands,
@@ -246,6 +247,17 @@ import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
+import {
+	absoluteSubagentCwd,
+	clientSupportsSubagents,
+	presentAgentToolCall,
+	type SubagentSessionCreatedEvent,
+	subagentAnnouncement,
+	subagentPromptMessages,
+	subagentSessionCreatedExtension,
+	subagentStateUpdate,
+	withSubagentSessionLink,
+} from "./subagents.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import {
 	backgroundHandoffHandle,
@@ -376,6 +388,8 @@ export interface RunAcpOptions {
 	appendSystemPrompt?: string[]
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
+	/** Test seam for fabricated lifecycle events without a native session payload. */
+	subagentSessionResolver?: (agentId: string) => AgentSession | undefined
 	/** Override for tests. Defaults to {@link defaultSessionLister}. */
 	sessionLister?: AcpSessionLister
 	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
@@ -601,6 +615,34 @@ type SessionRecord = {
 	skillCommands: Map<string, AcpSkillInfo>
 	/** Mirrors this session's Todo store writes to ACP `plan` updates. */
 	planTracker?: AcpPlanTracker
+	/** Present only for announced child routes; keeps root run boundaries out of child streams. */
+	subagentParentSessionId?: string
+}
+
+type SubagentRoute = {
+	parentSessionId: string
+	parentToolCallId: string
+	record: SessionRecord
+	cleanupInteraction: () => void
+}
+
+function createProjectionSessionRecord(session: AgentSession, cwd: string, parentSessionId: string): SessionRecord {
+	return {
+		session,
+		unsubscribe: () => {},
+		cwd,
+		nextBlockId: 0,
+		contentIndexToBlockId: new Map(),
+		streamDesanitizers: new Map(),
+		streamedText: new Map(),
+		emittedModelMeta: new Map(),
+		nextToolCallId: 0,
+		toolCallIdMap: new Map(),
+		heldBackgroundToolCalls: new Map(),
+		skillCommands: new Map(),
+		steerEchoRewrites: [],
+		subagentParentSessionId: parentSessionId,
+	}
 }
 
 /** Options for {@link KimchiAcpAgent.disposeSessionRecord}. */
@@ -637,11 +679,16 @@ const SET_MODEL_COMPAT_METHOD = "session/set_model"
 
 export class KimchiAcpAgent {
 	private sessions = new Map<string, SessionRecord>()
+	/** Announced native children are readable projections, not directly addressable ACP sessions. */
+	private subagentRoutes = new Map<string, SubagentRoute>()
+	private subagentIdsByParentTool = new Map<string, Map<string, string>>()
+	private rootUiCleanups = new Map<string, () => void>()
 	private readonly commandsRefresher = createCommandsRefresher({
 		sessions: () => this.sessions,
 		broadcast: (sessionId) => this.scheduleAvailableCommandsUpdate(sessionId),
 	})
 	private readonly sessionFactory: AcpSessionFactory
+	private readonly subagentSessionResolver: (agentId: string) => AgentSession | undefined
 	private readonly agentDir: string
 	private readonly skillWatcher: SkillWatcher
 	private readonly sessionLister: AcpSessionLister
@@ -691,10 +738,13 @@ export class KimchiAcpAgent {
 		 * methods so one-flow-per-connection holds across both. */
 		ssoManager?: SsoFlowManager,
 	) {
-		this.sessionFactory = options.sessionFactory ?? defaultSessionFactory(options)
+		this.subagentSessionResolver = options.subagentSessionResolver ?? (() => undefined)
+		this.sessionFactory =
+			options.sessionFactory ?? defaultSessionFactory(options, (event) => this.onSubagentSessionCreated(event))
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
-		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
+		this.sessionLoader =
+			options.sessionLoader ?? defaultSessionLoader(options, (event) => this.onSubagentSessionCreated(event))
 		this.mcpProbe = options.mcpProbe
 		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
@@ -1098,6 +1148,7 @@ export class KimchiAcpAgent {
 			this.skillWatcher.addSession(record)
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.releaseSubagentRoute(sessionId)
 			this.sessions.set(sessionId, record)
 
 			this.startPlanTracker(record, sessionId)
@@ -1132,7 +1183,12 @@ export class KimchiAcpAgent {
 		// Build the ExtensionUIContext that pi's runner routes `ctx.ui.*` calls
 		// through. Bound to a single session for its lifetime — the connection,
 		// capabilities, and `send` callback are all session-scoped state.
-		return createAcpUIContext(this.conn, session.sessionId, this.clientCapabilities, (params) => this.send(params))
+		const context = createAcpUIContext(this.conn, session.sessionId, this.clientCapabilities, (params) =>
+			this.send(params),
+		)
+		this.rootUiCleanups.get(session.sessionId)?.()
+		this.rootUiCleanups.set(session.sessionId, registerAcpRootUIContext(session.sessionId, context))
+		return context
 	}
 
 	private async bindAcpExtensions(session: AgentSession, uiContext: ExtensionUIContext): Promise<void> {
@@ -1181,6 +1237,7 @@ export class KimchiAcpAgent {
 	// the removed wire name via the extMethod fallback); the name's `unstable_`
 	// prefix intentionally signals "not part of the current spec".
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
+		this.rejectSubagentMutation(params.sessionId)
 		const record = this.sessions.get(params.sessionId)
 		if (!record) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
@@ -1190,6 +1247,7 @@ export class KimchiAcpAgent {
 	}
 
 	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
+		this.rejectSubagentMutation(params.sessionId)
 		const record = this.sessions.get(params.sessionId)
 		if (!record) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
@@ -1313,6 +1371,7 @@ export class KimchiAcpAgent {
 
 	private async loadSessionInternal(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		const sessionId = params.sessionId
+		this.rejectSubagentMutation(sessionId)
 		const existing = this.sessions.get(sessionId)
 		if (existing) {
 			// Mid-turn attach is opt-in; clients passing the flag declared the
@@ -1420,6 +1479,7 @@ export class KimchiAcpAgent {
 			this.skillWatcher.addSession(record)
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.releaseSubagentRoute(sessionId)
 			this.sessions.set(sessionId, record)
 
 			this.startPlanTracker(record, sessionId)
@@ -1464,6 +1524,7 @@ export class KimchiAcpAgent {
 	}
 
 	async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+		this.rejectSubagentMutation(params.sessionId)
 		await this.closeSessionRecord(params.sessionId)
 		return {}
 	}
@@ -1483,6 +1544,7 @@ export class KimchiAcpAgent {
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
+		this.rejectSubagentMutation(params.sessionId)
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
@@ -1820,6 +1882,9 @@ export class KimchiAcpAgent {
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
+		// Child cancellation is not advertised in this wave. The draft requires
+		// unsupported child cancellation to be an ignored notification.
+		if (this.subagentRoutes.has(params.sessionId)) return
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
@@ -1850,7 +1915,9 @@ export class KimchiAcpAgent {
 		}
 	}
 
-	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+	async extMethod(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+		// Raw ACP requests may omit params. Preserve the legacy empty-object fallback before child routing.
+		this.rejectSubagentMutation(params.sessionId)
 		switch (method) {
 			case AVAILABLE_EXT_METHODS.probe_mcp_server: {
 				const result = await handleProbeMcpServer(this.mcpProbe, params)
@@ -2038,6 +2105,7 @@ export class KimchiAcpAgent {
 		// resolves — in that window a pending PromptResponse would otherwise hang
 		// until process exit. Reject symmetrically so the caller's await settles.
 		for (const entry of this.sessions.values()) {
+			this.releaseSubagentRoutes(entry.session.sessionId)
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			cancelPendingPrompts(entry)
 			unregisterAcpPrompter(entry.session.sessionId, entry.ownPrompter)
@@ -2056,6 +2124,7 @@ export class KimchiAcpAgent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		this.sessions.delete(sessionId)
+		this.releaseSubagentRoutes(sessionId)
 		clearRatingWindow(sessionId)
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
@@ -2414,7 +2483,15 @@ export class KimchiAcpAgent {
 	 * event, and disposing without emitting it would leak extension state
 	 * (token vaults, etc.) for a session that did start.
 	 */
+	private rejectSubagentMutation(sessionId: unknown): void {
+		if (typeof sessionId === "string" && this.subagentRoutes.has(sessionId)) {
+			throw RequestError.invalidParams(undefined, `subagent session ${sessionId} is read-only`)
+		}
+	}
+
 	private async disposeOrphanSession(session: AgentSession): Promise<void> {
+		this.rootUiCleanups.get(session.sessionId)?.()
+		this.rootUiCleanups.delete(session.sessionId)
 		try {
 			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		} catch {
@@ -2425,10 +2502,13 @@ export class KimchiAcpAgent {
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
+		this.releaseSubagentRoutes(entry.session.sessionId)
 		setSnapshotArtifactsOptIn(entry.session.sessionManager, false)
 		if (entry.turn) releaseTurnArtifactSnapshots(entry.turn)
 		if (entry.unsolicitedTurn) releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 		entry.planTracker?.stop()
+		this.rootUiCleanups.get(entry.session.sessionId)?.()
+		this.rootUiCleanups.delete(entry.session.sessionId)
 		// Stop the adapter from publishing skill-refresh results: a discovery
 		// pass still in flight must not commit an obsolete snapshot (or
 		// rebuild prompt options) after the session is gone.
@@ -2443,8 +2523,112 @@ export class KimchiAcpAgent {
 		this.skillWatcher?.removeSession(entry)
 	}
 
+	/** Detach one native child projection and any parent tool link to it. */
+	private releaseSubagentRoute(sessionId: string): void {
+		const route = this.subagentRoutes.get(sessionId)
+		if (!route) return
+		route.record.planTracker?.stop()
+		route.record.unsubscribe()
+		route.cleanupInteraction()
+		this.subagentRoutes.delete(sessionId)
+		const byTool = this.subagentIdsByParentTool.get(route.parentSessionId)
+		if (byTool?.get(route.parentToolCallId) === sessionId) byTool.delete(route.parentToolCallId)
+		if (byTool?.size === 0) this.subagentIdsByParentTool.delete(route.parentSessionId)
+	}
+
+	/** Parent disposal must not leave child observers writing into its stream. */
+	private releaseSubagentRoutes(parentSessionId: string): void {
+		for (const [sessionId, route] of this.subagentRoutes) {
+			if (route.parentSessionId === parentSessionId) this.releaseSubagentRoute(sessionId)
+		}
+	}
+
+	/** Orchestrator queue consumption is an inter-session message, not a human-user echo. */
+	private projectSubagentQueue(
+		route: SubagentRoute,
+		event: Extract<AgentSessionEvent, { type: "queue_update" }>,
+	): void {
+		const entry = route.record
+		if (!entry.previousQueue) entry.previousQueue = { steering: [], followUp: [] }
+		const steering = reconcileQueue(entry.previousQueue.steering, event.steering)
+		const followUp = reconcileQueue(entry.previousQueue.followUp, event.followUp)
+		entry.previousQueue = { steering: steering.previousQueue, followUp: followUp.previousQueue }
+		for (const update of [...steering.sessionUpdates, ...followUp.sessionUpdates]) {
+			if (update.sessionUpdate !== "user_message_chunk" || update.content.type !== "text") continue
+			const prompt = takeSteerEchoOriginal(entry.steerEchoRewrites, update.content.text)
+			const event = { sessionId: entry.session.sessionId, prompt }
+			for (const message of subagentPromptMessages(route.parentSessionId, event)) this.send(message)
+		}
+	}
+
+	private onSubagentSessionCreated(event: SubagentSessionCreatedEvent): void {
+		// Capability and semantic eligibility come first: an unrelated root must
+		// never enable a child surface for a client that did not opt in.
+		if (!clientSupportsSubagents(this.clientCapabilities)) return
+		if (event.remote || event.visibility.toLowerCase() === "system" || event.sessionId === event.agentId) return
+		// This projection is deliberately one-level: only root sessions observe its
+		// creation events. Nested Agent calls need no linked SessionReference.
+		const parent = this.sessions.get(event.parentSessionId)
+		if (!parent || this.sessions.has(event.sessionId) || this.subagentRoutes.has(event.sessionId)) return
+		const session = event.agentSession ?? this.subagentSessionResolver(event.agentId)
+		if (!session || session.sessionId !== event.sessionId || event.parentSessionId !== parent.session.sessionId) return
+
+		const cwd = absoluteSubagentCwd(event.cwd, parent.cwd)
+		const record = createProjectionSessionRecord(session, cwd, event.parentSessionId)
+		let byTool = this.subagentIdsByParentTool.get(event.parentSessionId)
+		if (!byTool) {
+			byTool = new Map()
+			this.subagentIdsByParentTool.set(event.parentSessionId, byTool)
+		}
+		byTool.set(event.toolCallId, event.sessionId)
+
+		// Ordering is part of the protocol: every child notification and every
+		// parent link is downstream of this parent-envelope announcement.
+		this.send(subagentAnnouncement(event.parentSessionId, event, cwd))
+
+		const childUiContext = createAcpUIContext(this.conn, event.sessionId, this.clientCapabilities, (params) =>
+			this.send(params),
+		)
+		const cleanupInteraction = registerAcpChildInteraction({
+			childSessionId: event.sessionId,
+			parentSessionId: event.parentSessionId,
+			uiContext: childUiContext,
+			permissionPrompter: createAcpPermissionPrompter(
+				this.conn,
+				event.sessionId,
+				childUiContext,
+				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				record.cwd,
+			),
+			onRequiresActionChange: (waiting) => {
+				if (waiting) {
+					this.send({
+						sessionId: event.parentSessionId,
+						update: {
+							sessionUpdate: "subagent_update",
+							sessionId: event.sessionId,
+							state: { state: "requires_action" },
+						},
+					})
+				} else if (record.turn || record.unsolicitedTurn) {
+					this.send(subagentStateUpdate(event.parentSessionId, event.sessionId, "running"))
+				}
+			},
+		})
+		this.subagentRoutes.set(event.sessionId, {
+			parentSessionId: event.parentSessionId,
+			parentToolCallId: event.toolCallId,
+			record,
+			cleanupInteraction,
+		})
+		for (const message of subagentPromptMessages(event.parentSessionId, event)) this.send(message)
+		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
+		this.startPlanTracker(record, event.sessionId)
+	}
+
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
-		const entry = this.sessions.get(sessionId)
+		const route = this.subagentRoutes.get(sessionId)
+		const entry = this.sessions.get(sessionId) ?? route?.record
 		if (!entry) return
 		// The active run's bookkeeping: the prompt-owned turn, or — for an
 		// unsolicited run (no prompt in flight, e.g. a background-bash
@@ -2466,6 +2650,10 @@ export class KimchiAcpAgent {
 		emitSkillAutoloadUpdate(this.conn, sessionId, event)
 		switch (event.type) {
 			case "queue_update": {
+				if (route && !this.sessions.has(sessionId)) {
+					this.projectSubagentQueue(route, event)
+					return
+				}
 				if (!entry.previousQueue) {
 					entry.previousQueue = { steering: [], followUp: [] }
 				}
@@ -2519,7 +2707,11 @@ export class KimchiAcpAgent {
 					// Opted-in clients only: a non-opted client should have had the
 					// completion guard hold its turn open — never reach here — and
 					// must not learn about runs it cannot present.
-					if (getBackgroundRunsPermitted()) emitRunStart(this.conn, sessionId, runStartReason)
+					if (route) {
+						this.send(subagentStateUpdate(route.parentSessionId, sessionId, "running"))
+					} else if (getBackgroundRunsPermitted()) {
+						emitRunStart(this.conn, sessionId, runStartReason)
+					}
 					if (wakeCancel) {
 						// Cancel raced the wake ramp: no unsolicitedTurn existed to
 						// mark when it arrived, so latch+apply here — otherwise the
@@ -2570,16 +2762,15 @@ export class KimchiAcpAgent {
 					// Close the run boundary AFTER the last streamed output, mirroring
 					// finalizeTurn's stopReason mapping for prompt-owned turns.
 					// Symmetric with background_run_start: non-opted clients never see it.
-					if (getBackgroundRunsPermitted()) {
-						emitRunEnd(
-							this.conn,
-							sessionId,
-							runStopReasonFromFlags({
-								cancelled: unsolicited.cancelled,
-								lastAssistantError: unsolicited.lastAssistantError,
-								refused: unsolicited.refused,
-							}),
-						)
+					const stopReason = runStopReasonFromFlags({
+						cancelled: unsolicited.cancelled,
+						lastAssistantError: unsolicited.lastAssistantError,
+						refused: unsolicited.refused,
+					})
+					if (route) {
+						this.send(subagentStateUpdate(route.parentSessionId, sessionId, "idle", stopReason))
+					} else if (getBackgroundRunsPermitted()) {
+						emitRunEnd(this.conn, sessionId, stopReason)
 					}
 				}
 				return
@@ -2625,20 +2816,23 @@ export class KimchiAcpAgent {
 							turn.hiddenToolCallIds.add(block.id)
 							return
 						}
-						const update: SessionUpdate = buildToolCall({
-							toolName: block.name,
-							toolCallId: this.getOrAllocateAcpToolCallId(entry, block.id, block.name),
-							piToolCallId: block.id,
-							// Args display mirrors execution (displayArgs): edit/write
-							// dereference at execute time, so their originals are what
-							// runs; every other tool keeps its tokens.
-							rawInput: this.displayArgs(sessionId, block.name, block.arguments as Record<string, unknown>),
-							// Arguments are still streaming: the call hasn't been approved or started
-							// executing yet, so ACP status is `pending`, not `in_progress`.
-							status: "pending",
-							cwd: entry.cwd,
-							bashControlRegistry: getBashSessionState(sessionId)?.registry,
-						})
+						const update: SessionUpdate = this.presentToolCall(
+							block.name,
+							buildToolCall({
+								toolName: block.name,
+								toolCallId: this.getOrAllocateAcpToolCallId(entry, block.id, block.name),
+								piToolCallId: block.id,
+								// Args display mirrors execution (displayArgs): edit/write
+								// dereference at execute time, so their originals are what
+								// runs; every other tool keeps its tokens.
+								rawInput: this.displayArgs(sessionId, block.name, block.arguments as Record<string, unknown>),
+								// Arguments are still streaming: the call hasn't been approved or started
+								// executing yet, so ACP status is `pending`, not `in_progress`.
+								status: "pending",
+								cwd: entry.cwd,
+								bashControlRegistry: getBashSessionState(sessionId)?.registry,
+							}),
+						)
 						this.send({ sessionId, update })
 						turn.announcedToolCallIds.add(block.id)
 					}
@@ -2703,18 +2897,21 @@ export class KimchiAcpAgent {
 					// Args display mirrors execution (displayArgs).
 					const rawInput = this.displayArgs(sessionId, toolCall.name, toolCall.arguments as Record<string, unknown>)
 					const { title, kind, locations } = describeToolCall(toolCall.name, rawInput, entry.cwd)
-					const update: SessionUpdate = buildToolCallUpdate({
-						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
-						piToolCallId: toolCall.id,
-						title,
-						kind,
-						locations,
-						rawInput,
-						_meta: bashControlWaitMeta(toolCall.name, rawInput, getBashSessionState(sessionId)?.registry),
-						// Arguments are complete but the call hasn't been approved or
-						// started executing yet, so ACP status stays `pending`.
-						status: "pending",
-					})
+					const update: SessionUpdate = this.presentToolCall(
+						toolCall.name,
+						buildToolCallUpdate({
+							toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
+							piToolCallId: toolCall.id,
+							title,
+							kind,
+							locations,
+							rawInput,
+							_meta: bashControlWaitMeta(toolCall.name, rawInput, getBashSessionState(sessionId)?.registry),
+							// Arguments are complete but the call hasn't been approved or
+							// started executing yet, so ACP status stays `pending`.
+							status: "pending",
+						}),
+					)
 					this.send({ sessionId, update })
 				}
 
@@ -2858,26 +3055,32 @@ export class KimchiAcpAgent {
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
 					const { title, kind, locations } = describeToolCall(event.toolName, rawInput, entry.cwd)
-					const update: SessionUpdate = buildToolCallUpdate({
-						toolCallId: acpToolCallId,
-						piToolCallId: event.toolCallId,
-						title,
-						kind,
-						locations,
-						rawInput,
-						status: "in_progress",
-					})
+					const update: SessionUpdate = this.presentToolCall(
+						event.toolName,
+						buildToolCallUpdate({
+							toolCallId: acpToolCallId,
+							piToolCallId: event.toolCallId,
+							title,
+							kind,
+							locations,
+							rawInput,
+							status: "in_progress",
+						}),
+					)
 					this.send({ sessionId, update })
 				} else {
-					const update: SessionUpdate = buildToolCall({
-						toolCallId: acpToolCallId,
-						piToolCallId: event.toolCallId,
-						toolName: event.toolName,
-						rawInput,
-						status: "in_progress",
-						cwd: entry.cwd,
-						bashControlRegistry: getBashSessionState(sessionId)?.registry,
-					})
+					const update: SessionUpdate = this.presentToolCall(
+						event.toolName,
+						buildToolCall({
+							toolCallId: acpToolCallId,
+							piToolCallId: event.toolCallId,
+							toolName: event.toolName,
+							rawInput,
+							status: "in_progress",
+							cwd: entry.cwd,
+							bashControlRegistry: getBashSessionState(sessionId)?.registry,
+						}),
+					)
 					// No pending notification was sent (back-compat) → emit tool_call as before
 					this.send({ sessionId, update })
 				}
@@ -2895,12 +3098,20 @@ export class KimchiAcpAgent {
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				const partial = toolResultContent(event.partialResult)
 				if (partial.length === 0) return
-				const update: SessionUpdate = buildToolCallUpdate({
-					toolCallId: acpToolCallId,
-					piToolCallId: event.toolCallId,
-					content: this.displayContent(sessionId, partial),
-					status: "in_progress",
-				})
+				const update: SessionUpdate = this.presentToolCall(
+					event.toolName,
+					buildToolCallUpdate({
+						toolCallId: acpToolCallId,
+						piToolCallId: event.toolCallId,
+						content: this.agentContent(
+							sessionId,
+							event.toolName,
+							event.toolCallId,
+							this.displayContent(sessionId, partial),
+						),
+						status: "in_progress",
+					}),
+				)
 				this.send({ sessionId, update })
 				return
 			}
@@ -3055,16 +3266,24 @@ export class KimchiAcpAgent {
 					)
 					return
 				}
-				const update: SessionUpdate = buildToolCallUpdate({
-					toolCallId: acpToolCallId,
-					piToolCallId: event.toolCallId,
-					status: event.isError ? "failed" : "completed",
-					content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
-					rawOutput: this.displayOptionalRecord(
-						sessionId,
-						wireSafeToolResult(event.toolName, event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
-					),
-				})
+				const update: SessionUpdate = this.presentToolCall(
+					event.toolName,
+					buildToolCallUpdate({
+						toolCallId: acpToolCallId,
+						piToolCallId: event.toolCallId,
+						status: event.isError ? "failed" : "completed",
+						content: this.agentContent(
+							sessionId,
+							event.toolName,
+							event.toolCallId,
+							this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
+						),
+						rawOutput: this.displayOptionalRecord(
+							sessionId,
+							wireSafeToolResult(event.toolName, event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
+						),
+					}),
+				)
 				this.send({ sessionId, update })
 				// Upstream ids can repeat after compaction or even within a turn. Retire
 				// all state keyed on this upstream id so a future call reusing it starts
@@ -3470,6 +3689,24 @@ export class KimchiAcpAgent {
 		this.send({ sessionId, update: { sessionUpdate: "config_option_update", configOptions } })
 	}
 
+	private subagentSessionForTool(parentSessionId: string, toolCallId: string): string | undefined {
+		return this.subagentIdsByParentTool.get(parentSessionId)?.get(toolCallId)
+	}
+
+	private agentContent(
+		sessionId: string,
+		toolName: string,
+		toolCallId: string,
+		content: ToolCallContent[] | undefined,
+	): ToolCallContent[] | undefined {
+		if (toolName !== "Agent") return content
+		return withSubagentSessionLink(content, this.subagentSessionForTool(sessionId, toolCallId))
+	}
+
+	private presentToolCall(toolName: string, update: SessionUpdate): SessionUpdate {
+		return presentAgentToolCall(update, toolName, clientSupportsSubagents(this.clientCapabilities))
+	}
+
 	private send(params: SessionNotification): void {
 		// Fire-and-forget is safe here because the ACP SDK chains every outbound
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
@@ -3537,6 +3774,9 @@ export class KimchiAcpAgent {
 		piToolCallId: string,
 		opts: RetireToolCallOpts = {},
 	): void {
+		const byTool = this.subagentIdsByParentTool.get(record.session.sessionId)
+		byTool?.delete(piToolCallId)
+		if (byTool?.size === 0) this.subagentIdsByParentTool.delete(record.session.sessionId)
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
 		turn.lastStreamedContent.delete(piToolCallId)
@@ -4449,6 +4689,7 @@ async function createSessionSettings(
 	cwd: string,
 	options: RunAcpOptions,
 	params: SessionMcpOAuthOptions & { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
+	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
 ) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
@@ -4489,7 +4730,11 @@ async function createSessionSettings(
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
-		extensionFactories: [...options.extensionFactories, ...(mcpExtension ? [mcpExtension] : [])],
+		extensionFactories: [
+			...options.extensionFactories,
+			...(mcpExtension ? [mcpExtension] : []),
+			...(onSubagentSessionCreated ? [subagentSessionCreatedExtension(onSubagentSessionCreated)] : []),
+		],
 	})
 	const resourceLoader = new AcpSessionResourceLoader({
 		mainLoader,
@@ -4503,7 +4748,10 @@ async function createSessionSettings(
 }
 
 /** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
-export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
+export function defaultSessionLoader(
+	options: RunAcpOptions,
+	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+): AcpSessionLoader {
 	return async (params: SessionLoaderParams): Promise<AgentSession> => {
 		const cwd = params.cwd
 		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
@@ -4546,7 +4794,12 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				const msg = err instanceof Error ? err.message : String(err)
 				throw RequestError.invalidParams(undefined, `invalid sessionId: ${msg}`)
 			}
-			const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+			const { settingsManager, resourceLoader } = await createSessionSettings(
+				cwd,
+				options,
+				params,
+				onSubagentSessionCreated,
+			)
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir: options.agentDir,
@@ -4600,7 +4853,12 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+		const { settingsManager, resourceLoader } = await createSessionSettings(
+			cwd,
+			options,
+			params,
+			onSubagentSessionCreated,
+		)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -4645,10 +4903,18 @@ function bindSessionScopedOAuth(session: AgentSession, agentDir: string): void {
 }
 
 /** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
-export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
+export function defaultSessionFactory(
+	options: RunAcpOptions,
+	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+): AcpSessionFactory {
 	return async (params: SessionFactoryParams): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+		const { settingsManager, resourceLoader } = await createSessionSettings(
+			cwd,
+			options,
+			params,
+			onSubagentSessionCreated,
+		)
 		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)
 		const { session } = await createAgentSession({
 			cwd,

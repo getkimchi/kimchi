@@ -7,7 +7,6 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
-import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
@@ -158,6 +157,7 @@ import {
 } from "./prompts.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
+import { canPromptThroughSession, resolveSessionPermissionPrompter } from "./session-prompter-registry.js"
 import {
 	isCompoundCommand,
 	isHardBlockedBash,
@@ -260,23 +260,20 @@ async function withPermissionBlocked<T>(
 }
 
 function canPrompt(ctx: ExtensionContext, worker = false): boolean {
+	// A session host can explicitly expose a direct interaction. An unexposed
+	// worker uses the classifier-then-parent-escalation flow so its request
+	// carries origin metadata and lifecycle reporting to the parent surface.
+	if (canPromptThroughSession(ctx)) return true
 	if (worker || isAgentWorker()) return false
-
-	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
-	if (ctx.mode === "rpc" && acpPrompter) return true
-
-	if (ctx.hasUI) return true
-	return false
+	return ctx.hasUI
 }
 
 function resolvePrompter(ctx: ExtensionContext, worker = false): ToolPermissionPrompter | undefined {
+	const sessionPrompter = resolveSessionPermissionPrompter(ctx)
+	if (sessionPrompter) return sessionPrompter
 	if (worker || isAgentWorker()) return undefined
 
-	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
-	if (ctx.mode === "rpc" && acpPrompter) return acpPrompter
-
-	if (ctx.hasUI) return terminalPrompter(ctx)
-	return undefined
+	return ctx.hasUI ? terminalPrompter(ctx) : undefined
 }
 
 /**
@@ -2282,7 +2279,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 								// toast the parent on every subagent run.
 								if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
 									classifierWarnings.add(health.notifyKey)
-									ctx.ui.notify(health.message, "warning")
+									reportClassifierNotice(ctx, health.message, "warning")
 								}
 							} else if (promptAvailable) {
 								// The health line is for the prompt path only: without a
