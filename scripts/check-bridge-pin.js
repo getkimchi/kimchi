@@ -22,12 +22,15 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const BRIDGE_REPO = "https://github.com/getkimchi/kimchi-bridge"
+/** A stalled `git ls-remote` must fail closed within this bound, not hang the job. */
+const LS_REMOTE_TIMEOUT_MS = 30_000
 
 /** Read the bundled release VERSION from scripts/bundle-bridge.sh. */
 export function parseBundledVersion(bundleScript) {
@@ -79,10 +82,16 @@ export function resolveTagCommit(version, runLsRemote = lsRemote) {
 	return { sha }
 }
 
-function lsRemote(ref) {
-	return execFileSync("git", ["ls-remote", BRIDGE_REPO, ref], {
+/**
+ * One `git ls-remote`. `git` and the timeout are injectable so the self-test
+ * can drive the real execFileSync timeout against a hanging fake executable.
+ */
+function lsRemote(ref, { git = "git", timeoutMs = LS_REMOTE_TIMEOUT_MS } = {}) {
+	return execFileSync(git, ["ls-remote", BRIDGE_REPO, ref], {
 		encoding: "utf8",
 		maxBuffer: 1024 * 1024,
+		// Fail closed instead of stalling the whole CI job on a hung network call.
+		timeout: timeoutMs,
 	})
 }
 
@@ -243,7 +252,37 @@ function runSelfTest() {
 		process.exit(1)
 	}
 	console.log(`check-bridge-pin --self-test: ${fixtures.length} fixtures OK`)
+	if (!assertLsRemoteTimeoutFailsClosed()) process.exit(1)
+	console.log("check-bridge-pin --self-test: ls-remote timeout fails closed within its bound")
 	return 0
+}
+
+/**
+ * A stalled `git ls-remote` must be killed within the timeout and fail closed,
+ * not hang the CI job: drive the real default lsRemote (not an injected stub)
+ * against a fake git that never answers.
+ */
+function assertLsRemoteTimeoutFailsClosed() {
+	const dir = mkdtempSync(join(tmpdir(), "check-bridge-pin-timeout-"))
+	const fakeGit = join(dir, "git")
+	writeFileSync(fakeGit, "#!/bin/sh\nsleep 30\n", { mode: 0o755 })
+	const timeoutMs = 500
+	const startedAt = Date.now()
+	try {
+		const result = resolveTagCommit("v0.1.0-rc.30", (ref) => lsRemote(ref, { git: fakeGit, timeoutMs }))
+		const elapsed = Date.now() - startedAt
+		if (result.ok || !result.error || !/could not resolve tag/.test(result.error)) {
+			console.error(`check-bridge-pin --self-test: ls-remote timeout did not fail closed: ${JSON.stringify(result)}`)
+			return false
+		}
+		if (elapsed >= 10_000) {
+			console.error(`check-bridge-pin --self-test: ls-remote timeout took ${elapsed}ms, not bounded`)
+			return false
+		}
+		return true
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
 }
 
 process.exit(main())

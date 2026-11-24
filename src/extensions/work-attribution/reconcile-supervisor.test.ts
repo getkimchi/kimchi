@@ -311,7 +311,7 @@ describe("shared file reconciliation", () => {
 		expect(vi.getTimerCount()).toBe(0)
 	})
 	it("enables exactly the subscribed channels and reads the reporting cwd fresh every pass", async () => {
-		let cwd = "/first-cwd"
+		let cwd: string | undefined = "/first-cwd"
 		subscribe()
 		stops.push(subscribeCostReconciliation())
 		const stopReporting = subscribeReportingReconciliation(() => cwd)
@@ -328,8 +328,7 @@ describe("shared file reconciliation", () => {
 		await vi.waitFor(() => expect(passInputs.length).toBe(2))
 		expect(passInputs[1].reporting).toEqual({ cwd: "/second-cwd", signal: expect.any(AbortSignal) })
 		// A reporting subscriber leaving without its cwd stops the channel entirely.
-		cwd = ""
-		cwd = undefined as unknown as string
+		cwd = undefined
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
 		await vi.waitFor(() => expect(passInputs.length).toBe(3))
 		expect(passInputs[2].reporting).toBeUndefined()

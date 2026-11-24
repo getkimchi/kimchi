@@ -59,8 +59,11 @@ jobs:
         run: pnpm run check
 
       # The pinned library and bundled release must identify the same bridge commit.
+      # Self-test first so a broken checker fails as a checker bug.
       - name: Bridge library pin
-        run: pnpm run check:bridge-pin
+        run: |
+          pnpm run check:bridge-pin:self-test
+          pnpm run check:bridge-pin
 
   unit:
     uses: ./.github/workflows/_test-suite.yml
