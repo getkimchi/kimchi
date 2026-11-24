@@ -6552,6 +6552,37 @@ describe("permissions:tool_decision emissions", () => {
 		])
 	})
 
+	it("auto mode: codemode wrapper emits accept/builtin_safe without classification or a prompt", async () => {
+		const harness = createPermissionsHarness(["codemode"], { auto: true })
+		const decisions = collectDecisions(harness)
+		const ctx = {
+			...createClassifierContext(),
+			hasUI: true,
+			ui: { ...createMockContext([]).ui, select: vi.fn(async () => "Yes — just this call") },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+
+		expect(
+			await harness.fire(
+				"tool_call",
+				tcall("codemode", { code: 'return await tools.read({ path: "README.md" })' }, "cm-parent"),
+				ctx,
+			),
+		).toBeUndefined()
+
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			expect.objectContaining({
+				toolCallId: "cm-parent",
+				toolName: "codemode",
+				decision: "accept",
+				sourceDetail: "builtin_safe",
+				permissionMode: "auto",
+			}),
+		])
+	})
+
 	it("read-only bash inference emits accept/config/readonly", async () => {
 		const harness = createPermissionsHarness(["bash"])
 		const decisions = collectDecisions(harness)
