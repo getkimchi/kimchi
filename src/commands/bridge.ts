@@ -37,7 +37,7 @@ function shareDir(): string {
 	return resolveAuxiliaryFilesDir(process.env, homedir(), execPath)
 }
 
-function bridgeCliPath(): string {
+export function bridgeCliPath(): string {
 	// The installer maintains the shim in ~/.local/bin (or the env override).
 	return process.env.KIMCHI_BRIDGE_BIN_DIR
 		? join(process.env.KIMCHI_BRIDGE_BIN_DIR, "kimchi-bridge")

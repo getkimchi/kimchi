@@ -13,6 +13,14 @@ kimchi list
 
 Pi package extensions subscribe to native Pi events such as `tool_call`, `tool_result`, `session_start`, `session_before_compact`, `session_compact`, and `session_shutdown`. Kimchi includes a narrow Pi compatibility shim for packages that expect older field names, including `tool_result.output`, `tool_result.params`, and the legacy `before_provider_response` event name.
 
+## Workspace activity capture
+
+Native sessions can mirror tool execution into `kimchi-bridge`'s durable workspace activity store when `KIMCHI_BRIDGE_PROFILE=workspace` and the bridge CLI is available at its installed path (or under `KIMCHI_BRIDGE_BIN_DIR`). The bridge receives `hook kimchi` events and owns redaction, batching, and delivery; this is not ordinary telemetry upload, and it is inert outside the workspace profile or without the CLI.
+
+The observer uses `tool_execution_start`/`tool_execution_end`, preserves invocation arguments and parent-call identity when available, and requests a bounded bridge sync at shutdown. The subprocess path is sequential and limited to 3 seconds per invocation: this adds bounded observation latency while ensuring the Action exists before its Observation rather than losing causal ordering to detached delivery. Missing binaries, serialization failures, spawn errors, and timeouts fail open without changing tool results.
+
+Default-private capture keeps command/path/tool identity, outcomes, timing, and typed result metadata without file contents, edit patches, stream output, web bodies, or error strings. Full capture remains a separately enabled bridge setting, not a harness telemetry permission. Users see no added UI or ACP messages. Read-only TUI and ACP sessions observe the same inert default and only change if the operator deliberately configures workspace capture.
+
 ## Core Bash Hooks
 
 Kimchi core still supports local Bash command hooks for commands executed through the `bash` tool and interactive `!` / `!!` shell commands.
