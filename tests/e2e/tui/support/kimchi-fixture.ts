@@ -135,6 +135,8 @@ export interface CreateKimchiFixtureOptions {
 	responses: FakeResponseScript[]
 	/** Deterministic local embeddings for memory metadata-edit workflows. */
 	enableMemoryEmbeddings?: boolean
+	/** Hold the embedding request whose body contains this text, for in-flight UI assertions. */
+	memoryEmbeddingHold?: { inputIncludes: string; until: Promise<unknown> }
 	/** Provider id written to models.json and used for the initial CLI selection. */
 	providerId?: string
 	/** Initial CLI model id. Set false to exercise the model saved in settings.json. */
