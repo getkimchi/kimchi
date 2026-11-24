@@ -160,6 +160,9 @@ export const IGNORED_ENV_VARS: string[] = [
 	"PI_PACKAGE_DIR",
 	"PI_CODING_AGENT_DIR",
 	"PI_SKIP_VERSION_CHECK",
+	// APA/local review submit tools (never inherited by ordinary sessions)
+	"REVIEW_WRITER",
+	"REVIEW_WRITER_LIMIT",
 	// curator / ferment workflows
 	"KIMCHI_FERMENTS_DIR",
 	"KIMCHI_AUTO_GIT_INIT",

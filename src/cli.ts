@@ -161,6 +161,7 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import refusedTurnsExtension, { applyRefusalNoticeRenderingPatch } from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
+import reviewSubmitExtension from "./extensions/review-submit/index.js"
 import { createRunOutcomeTracker } from "./extensions/run-outcome.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
@@ -826,6 +827,11 @@ async function cliMain(): Promise<void> {
 			// `--exclude-tools bash_control` is honored: those sessions fall back
 			// to plain blocking bash instead (execute-time availability check).
 			const piArgs = coupleBashControlToolArg(rawArgs)
+			if (process.env.REVIEW_WRITER && !piArgs.includes("--no-context-files")) {
+				// APA supplies review instructions through review-context/. Disable
+				// upstream global and ancestor AGENTS.md/CLAUDE.md discovery too.
+				piArgs.push("--no-context-files")
+			}
 
 			// Probe runs here (before pi-mono takes stdin) so the result is cached for
 			// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
@@ -943,6 +949,10 @@ async function cliMain(): Promise<void> {
 				// re-enable only deliberately via registerSkillManageTool.
 				(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 				artifactRecorderExtension,
+				// APA activates these process-scoped review tools with REVIEW_WRITER.
+				// Loading them through the normal inline extension list puts all three
+				// in the initial system message before the first model call.
+				reviewSubmitExtension,
 				statsExtension,
 				statusExtension,
 				budgetCommandExtension,

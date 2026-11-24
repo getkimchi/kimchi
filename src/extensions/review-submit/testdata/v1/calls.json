@@ -1,0 +1,288 @@
+{
+  "schema_version": "review-tool-calls/v1",
+  "fixed_created_at": "2026-11-17T12:00:00Z",
+  "writer_limit": 50,
+  "steps": [
+    {
+      "name": "rejected anchors",
+      "parallel": false,
+      "calls": [
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 999, "severity": "warning", "type": "bug", "description": "Outside every hunk.", "suggestion": "Move the investigation to a changed line."},
+          "expect": {
+            "accepted": false,
+            "reason": "line_outside_hunks",
+            "nearest_valid_line": 122,
+            "ranges": [
+              {"start_line": 30, "end_line": 32},
+              {"start_line": 40, "end_line": 42},
+              {"start_line": 50, "end_line": 52},
+              {"start_line": 60, "end_line": 62},
+              {"start_line": 70, "end_line": 72},
+              {"start_line": 80, "end_line": 82},
+              {"start_line": 90, "end_line": 92},
+              {"start_line": 100, "end_line": 102},
+              {"start_line": 110, "end_line": 112},
+              {"start_line": 120, "end_line": 122}
+            ],
+            "message_contains": ["main.go", "999", "nearest valid line", "122"]
+          }
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "binary.png", "line": 1, "severity": "info", "type": "bug", "description": "Binary finding.", "suggestion": "Describe this in the summary."},
+          "expect": {"accepted": false, "reason": "file_without_anchors", "file_reason": "no_patch", "summary_required": true, "message_contains": ["binary.png", "summary"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "omitted.go", "line": 1, "severity": "info", "type": "bug", "description": "Provider-cap finding.", "suggestion": "Describe this in the summary."},
+          "expect": {"accepted": false, "reason": "file_without_anchors", "file_reason": "outside_provider_diff", "summary_required": true, "message_contains": ["omitted.go", "outside_provider_diff", "summary"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "absent.go", "line": 1, "severity": "info", "type": "bug", "description": "Absent-file finding.", "suggestion": "Describe this in the summary."},
+          "expect": {"accepted": false, "reason": "file_without_anchors", "file_reason": "outside_provider_diff", "summary_required": true, "message_contains": ["absent.go", "summary"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "vendor/generated.go", "line": 2, "severity": "info", "type": "bug", "description": "Excluded finding.", "suggestion": "Leave this out of the review."},
+          "expect": {"accepted": false, "reason": "file_without_anchors", "file_reason": "excluded", "summary_required": true, "message_contains": ["vendor/generated.go", "excluded", "summary"]}
+        }
+      ]
+    },
+    {
+      "name": "rejected finding fields",
+      "parallel": false,
+      "calls": [
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "error", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "severity", "message_contains": ["severity"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
+          "generate_string_bytes": {"path": 4097},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "path", "limit": 4096, "message_contains": ["path", "4096"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
+          "generate_string_bytes": {"type": 65},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "type", "limit": 64, "message_contains": ["type", "64"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
+          "generate_string_bytes": {"description": 16385},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "description", "limit": 16384, "message_contains": ["description", "16384"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
+          "generate_string_bytes": {"suggestion": 16385},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "suggestion", "limit": 16384, "message_contains": ["suggestion", "16384"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion.", "derived_from": ["derived-1"]},
+          "generate_array_lengths": {"derived_from": 51},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "derived_from", "limit": 50, "message_contains": ["derived_from", "50"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion.", "derived_from": ["derived-1"]},
+          "generate_string_bytes": {"derived_from[0]": 257},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "derived_from[0]", "limit": 256, "message_contains": ["derived_from[0]", "256"]}
+        }
+      ]
+    },
+    {
+      "name": "first final finding",
+      "parallel": false,
+      "calls": [
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "critical", "type": "bug", "description": "The reviewed path can return stale data.", "suggestion": "Reload the value before using it.", "derived_from": ["previous-run-7"]},
+          "expect": {"accepted": true, "id": "final-1"}
+        }
+      ]
+    },
+    {
+      "name": "first summary is replaced",
+      "parallel": false,
+      "calls": [
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Superseded summary.", "score": 10, "estimated_effort_to_review": 5, "environment_gaps": []},
+          "expect": {"accepted": true}
+        }
+      ]
+    },
+    {
+      "name": "fill the final writer limit",
+      "parallel": false,
+      "calls": [
+        {
+          "repeat": 49,
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "maintainability", "description": "Repeated fixture finding.", "suggestion": "Prioritize the actionable instances."},
+          "expect": {"accepted": true, "id_from_sequence": true}
+        }
+      ]
+    },
+    {
+      "name": "51st final finding is rejected",
+      "parallel": false,
+      "calls": [
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "severity": "critical", "type": "security", "description": "This must not consume a 51st slot.", "suggestion": "Prioritize existing findings first."},
+          "expect": {"accepted": false, "reason": "cap", "limit": 50, "count": 50, "prioritize": true, "message_contains": ["50", "prioritize"]}
+        }
+      ]
+    },
+    {
+      "name": "two writers in parallel",
+      "parallel": true,
+      "calls": [
+        {
+          "tool": "submit_finding",
+          "writer": "correctness",
+          "process": "correctness-main",
+          "arguments": {"path": "main.go", "line": 20, "severity": "warning", "type": "bug", "description": "Correctness writer finding.", "suggestion": "Cover the edge case."},
+          "expect": {"accepted": true, "id": "correctness-1"}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "security",
+          "process": "security-main",
+          "arguments": {"path": "main.go", "line": 21, "severity": "critical", "type": "security", "description": "Security writer finding.", "suggestion": "Validate the untrusted input."},
+          "expect": {"accepted": true, "id": "security-1"}
+        }
+      ]
+    },
+    {
+      "name": "two processes share correctness",
+      "parallel": true,
+      "calls": [
+        {
+          "tool": "submit_finding",
+          "writer": "correctness",
+          "process": "correctness-A",
+          "arguments": {"path": "main.go", "line": 30, "severity": "info", "type": "testing", "description": "Identical same-writer race finding.", "suggestion": "Keep exactly one JSON record per accepted call."},
+          "expect": {"accepted": true, "id_from_sequence": true}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "correctness",
+          "process": "correctness-B",
+          "arguments": {"path": "main.go", "line": 30, "severity": "info", "type": "testing", "description": "Identical same-writer race finding.", "suggestion": "Keep exactly one JSON record per accepted call."},
+          "expect": {"accepted": true, "id_from_sequence": true}
+        }
+      ]
+    },
+    {
+      "name": "final summary",
+      "parallel": false,
+      "calls": [
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {
+            "body": "One critical finding was kept; lower-priority duplicate fixture findings fill the remaining storage slots.",
+            "score": 82,
+            "estimated_effort_to_review": 3,
+            "environment_gaps": [
+              {"kind": "missing_tool", "name": "golangci-lint", "note": "Needed to run the repository's configured lint suite."},
+              {"kind": "private_package", "name": "github.com/acme/privatekit", "note": "The sandbox cannot fetch private modules."}
+            ]
+          },
+          "expect": {"accepted": true}
+        }
+      ]
+    },
+    {
+      "name": "rejected summary fields",
+      "parallel": false,
+      "calls": [
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": 82, "estimated_effort_to_review": 3, "environment_gaps": []},
+          "generate_string_bytes": {"body": 65537},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "body", "limit": 65536, "message_contains": ["body", "65536"]}
+        },
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": 1000, "estimated_effort_to_review": 3, "environment_gaps": []},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "score", "message_contains": ["score"]}
+        },
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": -1, "estimated_effort_to_review": 3, "environment_gaps": []},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "score", "message_contains": ["score"]}
+        },
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": 82, "estimated_effort_to_review": 0, "environment_gaps": []},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "estimated_effort_to_review", "message_contains": ["estimated_effort_to_review"]}
+        },
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": 82, "estimated_effort_to_review": 6, "environment_gaps": []},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "estimated_effort_to_review", "message_contains": ["estimated_effort_to_review"]}
+        },
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": 82, "estimated_effort_to_review": 3, "environment_gaps": [{"kind": "missing_tool", "name": "tool", "note": "Valid note."}]},
+          "generate_array_lengths": {"environment_gaps": 51},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "environment_gaps", "limit": 50, "message_contains": ["environment_gaps", "50"]}
+        },
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": 82, "estimated_effort_to_review": 3, "environment_gaps": [{"kind": "missing_tool", "name": "tool", "note": "Valid note."}]},
+          "generate_string_bytes": {"environment_gaps[0].kind": 65},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "environment_gaps[0].kind", "limit": 64, "message_contains": ["environment_gaps[0].kind", "64"]}
+        },
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": 82, "estimated_effort_to_review": 3, "environment_gaps": [{"kind": "missing_tool", "name": "tool", "note": "Valid note."}]},
+          "generate_string_bytes": {"environment_gaps[0].name": 513},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "environment_gaps[0].name", "limit": 512, "message_contains": ["environment_gaps[0].name", "512"]}
+        },
+        {
+          "tool": "submit_summary",
+          "writer": "final",
+          "arguments": {"body": "Valid body.", "score": 82, "estimated_effort_to_review": 3, "environment_gaps": [{"kind": "missing_tool", "name": "tool", "note": "Valid note."}]},
+          "generate_string_bytes": {"environment_gaps[0].note": 2049},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "environment_gaps[0].note", "limit": 2048, "message_contains": ["environment_gaps[0].note", "2048"]}
+        }
+      ]
+    }
+  ]
+}

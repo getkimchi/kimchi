@@ -21,6 +21,7 @@ describe("loadProjectContextFiles", () => {
 	})
 
 	afterEach(() => {
+		vi.unstubAllEnvs()
 		rmSync(tmpBase, { recursive: true, force: true })
 	})
 
@@ -68,6 +69,13 @@ describe("loadProjectContextFiles", () => {
 		// Ancestor first, child last
 		expect(inTmp[0].path).toBe(join(parentDir, "AGENTS.md"))
 		expect(inTmp[1].path).toBe(join(nested, "CLAUDE.md"))
+	})
+
+	it("skips cwd and every ancestor when review tools are active", () => {
+		vi.stubEnv("REVIEW_WRITER", "final")
+		writeFileSync(join(tmpBase, "AGENTS.md"), "ancestor rules")
+		writeFileSync(join(nested, "CLAUDE.md"), "cwd rules")
+		expect(loadProjectContextFiles(nested)).toEqual([])
 	})
 
 	it("does not return duplicate paths", () => {
@@ -141,6 +149,14 @@ describe("loadGlobalContextFiles", () => {
 	it("returns empty array when no global context files exist", () => {
 		const result = loadGlobalContextFiles(on)
 		expect(result).toEqual([])
+	})
+
+	it("skips global and project context when review tools are active", () => {
+		vi.stubEnv("REVIEW_WRITER", "final")
+		writeFileSync(join(FAKE_AGENT_DIR, "AGENTS.md"), "global rules")
+		mkdirSync(nested, { recursive: true })
+		writeFileSync(join(nested, "AGENTS.md"), "project rules")
+		expect(loadContextFiles(nested, { includeClaudeCodeInstructions: true })).toEqual([])
 	})
 
 	it("discovers AGENTS.md in agent dir", () => {
