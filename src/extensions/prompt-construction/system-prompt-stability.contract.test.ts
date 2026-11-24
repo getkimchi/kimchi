@@ -75,6 +75,17 @@ const KNOWN_REGISTRARS: BlockRegistrar[] = [
 			"kept separate from the dynamic triggered:* registrar so the file can be held to zero volatile symbols",
 	},
 	{
+		file: "src/extensions/agents-rules/index.ts",
+		owner: "agents-rules",
+		blockId: "rules",
+		expectedStability: "dynamic",
+		reason:
+			"rule set depends on .agents/rules/ discovery at session start and re-discovers on " +
+			"re-fired session_start events (reload/new/fork/resume), so the block content is " +
+			"per-session stable but legitimately changes across sessions; glob-matched rules are " +
+			"steer-delivered (never late-rendered into the prompt), so no mid-session cache invalidation",
+	},
+	{
 		file: "src/extensions/behaviours/wiring.ts",
 		owner: "behaviours",
 		blockId: "triggered:*",

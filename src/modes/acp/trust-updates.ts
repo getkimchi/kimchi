@@ -59,8 +59,10 @@ export const CATEGORY_PATHS: Record<BlockedTrustCategory, readonly string[]> = {
  * would need a product decision on its category vocabulary — e.g.
  * `.kimchi/mcp.json` wants an `mcp_servers` category (deferred review
  * finding), permissions/hooks/agents/memory are project_config-adjacent
- * kimchi state, `.claude/settings*.json` is Claude Code config, and
- * tags/plans/ferments are workflow state Studio does not render banners for.
+ * kimchi state, `.claude/settings*.json` is Claude Code config,
+ * tags/plans/ferments are workflow state Studio does not render banners for,
+ * and `.agents/rules` wants an `agent_rules` category (deferred, like
+ * `mcp_servers`).
  */
 export const UNCLASSIFIED_TRUST_PATHS: readonly string[] = [
 	join(".kimchi", "permissions.json"),
@@ -76,6 +78,7 @@ export const UNCLASSIFIED_TRUST_PATHS: readonly string[] = [
 	join(".kimchi", "tags.json"),
 	join(".kimchi", "plans"),
 	join(".kimchi", "ferments"),
+	join(".agents", "rules"),
 	join(".claude", "settings.json"),
 	join(".claude", "settings.local.json"),
 ]

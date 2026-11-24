@@ -161,6 +161,18 @@ describe("resource definitions", () => {
 			description: expect.stringContaining("/workflow"),
 		})
 	})
+
+	it("registers agent rules as a default-on, restart-gated extension", () => {
+		const resource = getResourceDefinitions().find((candidate) => candidate.id === "extensions.agents-rules")
+
+		expect(resource).toMatchObject({
+			kind: "extensions",
+			label: "Agent rules",
+			defaultEnabled: true,
+			restartRequired: true,
+			description: expect.stringContaining(".agents/rules"),
+		})
+	})
 })
 
 function writeJson(path: string, data: unknown): void {
