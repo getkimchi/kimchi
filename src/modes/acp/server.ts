@@ -3003,7 +3003,7 @@ export class KimchiAcpAgent implements Agent {
 						content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
 						rawOutput: this.displayOptionalRecord(
 							sessionId,
-							wireSafeToolResult(event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
+							wireSafeToolResult(event.toolName, event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
 						),
 					})
 					this.send({ sessionId, update: runningUpdate })
@@ -3059,7 +3059,7 @@ export class KimchiAcpAgent implements Agent {
 					content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
 					rawOutput: this.displayOptionalRecord(
 						sessionId,
-						wireSafeToolResult(event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
+						wireSafeToolResult(event.toolName, event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
 					),
 				})
 				this.send({ sessionId, update })
@@ -3433,7 +3433,7 @@ export class KimchiAcpAgent implements Agent {
 						rawOutput: this.displayOptionalRecord(
 							sessionId,
 							finalResult
-								? wireSafeToolResult(finalResult, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities))
+								? wireSafeToolResult(name, finalResult, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities))
 								: undefined,
 						),
 					}),
@@ -4967,7 +4967,11 @@ function toolResultContent(result: unknown): ToolCallContent[] {
  * replay retain their previous details shape. The in-memory result is never
  * mutated, so host-side handoff handling still sees the original marker.
  */
-function wireSafeToolResult(result: unknown, exposeManualHandoff = false): Record<string, unknown> | undefined {
+function wireSafeToolResult(
+	toolName: string,
+	result: unknown,
+	exposeManualHandoff = false,
+): Record<string, unknown> | undefined {
 	if (!result || typeof result !== "object") return undefined
 	let r = result as { content?: unknown; details?: unknown }
 	const details = r.details
@@ -4984,8 +4988,15 @@ function wireSafeToolResult(result: unknown, exposeManualHandoff = false): Recor
 		const { handoff: _manualHandoff, ...visibleDetails } = details
 		r = { ...r, details: visibleDetails }
 	}
-	if (r.details && typeof r.details === "object" && !Array.isArray(r.details) && "contextReduction" in r.details) {
-		// Codemode's context estimate is TUI presentation state, not part of the wire contract.
+	if (
+		toolName === "codemode" &&
+		r.details &&
+		typeof r.details === "object" &&
+		!Array.isArray(r.details) &&
+		"contextReduction" in r.details
+	) {
+		// Codemode's context estimate is TUI presentation state, not part of the
+		// wire contract. Other tools may own a field of the same name: keep theirs.
 		const { contextReduction: _contextReduction, ...visibleDetails } = r.details as Record<string, unknown>
 		const { details: _details, ...withoutDetails } = r
 		r = Object.keys(visibleDetails).length === 0 ? withoutDetails : { ...withoutDetails, details: visibleDetails }
