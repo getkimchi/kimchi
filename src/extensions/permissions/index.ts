@@ -208,6 +208,8 @@ const PLAN_MODE_MCP_NOTE =
 // surface — `agent` is the canonical delegation tool, allowed without its own
 // check because the child session checks its own calls; the other two are
 // read-only/control-plane operations on already-approved spawns.
+// `codemode` is a dispatcher: its nested calls pass through this same tool_call
+// gate individually, so classifying the wrapper's source would double-gate them.
 // `bash_control` is the control-plane companion of a background `bash` call: the
 // originating command already passed the permission gate (prompt/classifier), so
 // checking its state or stopping it needs no second approval.
@@ -221,6 +223,7 @@ const sharedPromptQueue = new PromptQueue()
 
 const BUILTIN_ALLOW_TOOL_NAMES = [
 	"agent",
+	"codemode",
 	"get_subagent_result",
 	"steer_subagent",
 	// Plan-review control plane: writes the plan artifact and opens the review
