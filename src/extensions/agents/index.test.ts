@@ -239,17 +239,18 @@ vi.mock("../../project-scope-trust.js", async (importOriginal) => ({
 // loader stays reachable through realLoadCustomAgents for tests that need
 // on-disk discovery (e.g. the ctx.cwd regression suite).
 const { loadCustomAgentsMock, realLoadCustomAgents } = vi.hoisted(() => ({
-	loadCustomAgentsMock: vi.fn((): Map<string, unknown> => new Map()),
-	realLoadCustomAgents: { fn: undefined as ((cwd?: string) => Map<string, unknown>) | undefined },
+	loadCustomAgentsMock: vi.fn((): CustomAgentsLoadResult => ({ agents: new Map(), skipped: [] })),
+	realLoadCustomAgents: { fn: undefined as ((cwd?: string) => CustomAgentsLoadResult) | undefined },
 }))
 vi.mock("./personas/custom-agents.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./personas/custom-agents.js")>()
-	realLoadCustomAgents.fn = actual.loadCustomAgents as (cwd?: string) => Map<string, unknown>
+	realLoadCustomAgents.fn = actual.loadCustomAgents as (cwd?: string) => CustomAgentsLoadResult
 	return { ...actual, loadCustomAgents: loadCustomAgentsMock }
 })
 
 import type { EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
+import type { CustomAgentsLoadResult } from "./personas/custom-agents.js"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { sessionHasImages } from "../model-guard.js"
@@ -537,7 +538,7 @@ describe("Agent tool fail-closed type validation (issue #1678)", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.mocked(sessionHasImages).mockReturnValue(false)
-		loadCustomAgentsMock.mockReturnValue(new Map())
+		loadCustomAgentsMock.mockReturnValue({ agents: new Map(), skipped: [] })
 	})
 
 	function lastManagerInstance(): { spawn: ReturnType<typeof vi.fn> } {
@@ -569,8 +570,8 @@ describe("Agent tool fail-closed type validation (issue #1678)", () => {
 	})
 
 	it("rejects a disabled agent type (case-insensitive) and never spawns", async () => {
-		loadCustomAgentsMock.mockReturnValue(
-			new Map([
+		loadCustomAgentsMock.mockReturnValue({
+			agents: new Map([
 				[
 					"Reader",
 					{
@@ -584,7 +585,8 @@ describe("Agent tool fail-closed type validation (issue #1678)", () => {
 					},
 				],
 			]),
-		)
+			skipped: [],
+		})
 		const pi = makeMockPi()
 		agentsExtension(pi)
 		const manager = lastManagerInstance()
@@ -625,8 +627,8 @@ describe("Agent tool fail-closed type validation (issue #1678)", () => {
 	})
 
 	it("advertises only spawnable types in the tool description — disabled agents now hard-fail", () => {
-		loadCustomAgentsMock.mockReturnValue(
-			new Map([
+		loadCustomAgentsMock.mockReturnValue({
+			agents: new Map([
 				[
 					"Reader",
 					{
@@ -640,7 +642,8 @@ describe("Agent tool fail-closed type validation (issue #1678)", () => {
 					},
 				],
 			]),
-		)
+			skipped: [],
+		})
 		const pi = makeMockPi()
 		agentsExtension(pi)
 		const tool = getRegisteredAgentTool(pi) as unknown as { description: string }
@@ -2351,7 +2354,9 @@ describe("Agent tool session-cwd agent resolution", () => {
 		vi.mocked(sessionHasImages).mockReturnValue(false)
 		// These tests exercise on-disk discovery from ctx.cwd, so delegate the
 		// mocked loader to the real implementation.
-		loadCustomAgentsMock.mockImplementation((cwd?: string) => realLoadCustomAgents.fn?.(cwd) ?? new Map())
+		loadCustomAgentsMock.mockImplementation(
+			(cwd?: string) => realLoadCustomAgents.fn?.(cwd) ?? { agents: new Map(), skipped: [] },
+		)
 	})
 
 	it("resolves project agents against ctx.cwd, not process.cwd() (issue #1677)", async () => {
