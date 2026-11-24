@@ -90,6 +90,18 @@ describe("classifyToolError — fixture replay (real export messages)", () => {
 		}
 	})
 
+	it("retains classifier attribution before subagent approval guidance", () => {
+		const c = classifyToolError(
+			"write",
+			"Classifier: classifier error: minimax-m3 model is rate limited until 2026-10-29T23:55:00Z (model=minimax-m3 tool=write) Do not retry; report to the main agent that the call needs the user's approval. (no UI to confirm)",
+		)
+
+		expect(c.kind).toBe("blocked")
+		expect(c.attrs?.failure_code).toBe("rate_limited")
+		expect(c.attrs?.classifier_model).toBe("minimax-m3")
+		expect(c.attrs?.classifier_tool).toBe("write")
+	})
+
 	it("classifies the todo check-in gate block with its parsed revision", () => {
 		// Consumer-side pin of the derived TODO_CHECKIN_GATE_RE: the producer
 		// literal is pinned in todos/index.test.ts, but a mangled escape or

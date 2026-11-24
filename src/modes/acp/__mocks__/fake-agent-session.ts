@@ -1,4 +1,4 @@
-import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 import { vi } from "vitest"
 import type { AcpSessionFactory } from "../server.js"
@@ -66,17 +66,13 @@ export function asSession(fake: BaseFakeAgentSession): AgentSession {
 	return fake as unknown as AgentSession
 }
 
-export function makeAcpConn(): AgentSideConnection {
+export function makeAcpConn(): AgentContext {
 	return {
-		sessionUpdate: async (_p: SessionNotification) => {},
-		// Return a resolved promise — notifyProjectTrustUpdate chains .catch()
+		// Return resolved promises — fire-and-forget ACP helpers chain .catch()
 		// on the result, so a bare vi.fn() (undefined) throws a TypeError.
-		extNotification: vi.fn(async (_method: string, _params: unknown) => {}),
-		extMethod: vi.fn(),
-		requestPermission: vi.fn(),
-		createElicitation: vi.fn(),
-		closed: Promise.resolve(),
-	} as unknown as AgentSideConnection
+		notify: vi.fn(async (_method: string, _params: unknown) => {}),
+		request: vi.fn(),
+	} as unknown as AgentContext
 }
 
 export function makeAcpSessionFactory(session: BaseFakeAgentSession): AcpSessionFactory {

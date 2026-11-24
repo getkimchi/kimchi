@@ -1300,18 +1300,19 @@ index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b715154
  import { dirname, join } from "node:path";
  import lockfile from "proper-lockfile";
  import { CONFIG_DIR_NAME } from "../config.js";
-@@ -15,6 +15,38 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
+@@ -15,6 +15,40 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
      "SYSTEM.md",
      "APPEND_SYSTEM.md",
  ];
 +// Kimchi addition: project-local Kimchi (.kimchi/) and Claude Code (.claude/)
 +// resources that the Kimchi harness reads and acts on at startup (config,
 +// permissions, hooks, skills, agents, memory, tags, plans, ferments, MCP
-+// servers). Without this list a cloned repo that ships these folders is
++// servers, agent rules .agents/rules). Without this list a cloned repo that
++// ships these folders is
 +// auto-trusted and every one of them takes effect without the trust prompt.
-+// Checked in cwd AND its ancestors (the skills/tags readers walk ancestors,
-+// so detection must match enforcement scope); the user's home directory is
-+// excluded — ~/.kimchi is a user resource, mirroring the .agents/skills home
++// Checked in cwd AND its ancestors (the skills/tags/agent-rules readers walk
++// ancestors, so detection must match enforcement scope); the user's home
++// directory is excluded — ~/.kimchi is a user resource, mirroring the .agents/skills home
 +// exclusion below — and the walk stops at the OS temp directory (not a
 +// project tree; a stray .kimchi/.claude created there by any tool must not
 +// gate unrelated temp-dir sessions).
@@ -1335,11 +1336,12 @@ index 55624605ababf2f1f129e9963cdbbe3ca27f5566..5d5f70ae62bf0e160567cf1f2b715154
 +    ".claude/skills",
 +    ".claude/settings.json",
 +    ".claude/settings.local.json",
++    ".agents/rules",
 +];
  function normalizeCwd(cwd) {
      return canonicalizePath(resolvePath(cwd));
  }
-@@ -143,19 +175,38 @@ function withTrustFileLock(path, fn) {
+@@ -143,19 +177,38 @@ function withTrustFileLock(path, fn) {
  }
  /**
   * Returns true when cwd has project-local resources that must be gated by

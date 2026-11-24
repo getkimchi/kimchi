@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { basename } from "node:path"
-import type { SessionNotification } from "@agentclientprotocol/sdk"
+import type { SessionNotification } from "@agentclientprotocol/sdk/unstable"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent"
 import { resolveGatewayCredentials } from "../../../auth/gateway-credentials.js"

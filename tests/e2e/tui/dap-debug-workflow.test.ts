@@ -98,6 +98,10 @@ test("DAP degraded state: debug_launch surfaces the missing-adapter error and st
 			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("settled")
 
+			// Completed work folds into the run summary; expanding reveals the DAP
+			// row's user-visible header.
+			terminal.keyPress("o", { ctrl: true })
+			await waitForText(terminal, "Debug Launch", { full: false })
 			const view = viewText(terminal)
 			// The DAP tool rendered with its user-visible (name-derived) header.
 			expect(view).toContain("Debug Launch")

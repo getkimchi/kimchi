@@ -2356,7 +2356,7 @@ describe("AgentManager session hand-off", () => {
 		const b = new AgentManager()
 		b.adoptRecords(records, queued, midResumeIds, fakePi(), fakeCtx())
 
-		const res = workerReport!.submit({
+		const res = (workerReport as NonNullable<typeof workerReport>).submit({
 			status: "completed",
 			summary: "step finished",
 			steps_completed: ["one"],
@@ -2364,7 +2364,8 @@ describe("AgentManager session hand-off", () => {
 		})
 		expect(res.accepted).toBe(true) // the pre-fix blocker: false (record gone from old manager)
 		expect(b.getRecord(id)?.agentReport).toMatchObject({ attempt_id: 0, submitted_at: expect.any(Number) })
-		expect(workerReport!.isAccepted()).toBe(true)
+		const reported = workerReport as NonNullable<typeof workerReport>
+		expect(reported.isAccepted()).toBe(true)
 		runResult.resolve({
 			responseText: "done",
 			session: { dispose: vi.fn() } as unknown as AgentSession,
@@ -2445,7 +2446,7 @@ describe("AgentManager session hand-off", () => {
 		// A spared remote background run must not count... ; a foreground run must not either.
 		const remote = m.getRecord(running)
 		expect(m.countAbortableBackground()).toBe(2)
-		remote!.remote = true
+		;(remote as NonNullable<typeof remote>).remote = true
 		expect(m.countAbortableBackground()).toBe(1)
 		m.spawn(fakePi(), fakeCtx(), "Explore", "three", { description: "three" })
 		expect(m.countAbortableBackground()).toBe(1)

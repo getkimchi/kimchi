@@ -197,7 +197,7 @@ it(
 			const sessionId = await newSession(fixture, fixture.workDir)
 			let response: acp.PromptResponse | undefined
 			let failure: unknown
-			const pending = fixture.conn.prompt({ sessionId, prompt: oauthPrompt() }).then(
+			const pending = fixture.conn.request("session/prompt", { sessionId, prompt: oauthPrompt() }).then(
 				(result) => {
 					response = result
 				},
@@ -335,7 +335,7 @@ it(
 			],
 		})
 		try {
-			await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 				server: fixture.mcp.serverDefinition,
 				serverName: "fixture",
 				authenticate: true,
@@ -407,11 +407,14 @@ throw new Error("Fixture remote browser launch failed after cancellation")
 		const releasePath = join(fixture.homeDir, releaseFilename)
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const original = fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: initialPrompt }] })
+			const original = fixture.conn.request("session/prompt", {
+				sessionId,
+				prompt: [{ type: "text", text: initialPrompt }],
+			})
 			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened")
 			expect(new URL(new URL(opened.target).searchParams.get("redirect_uri") ?? "").protocol).toBe("https:")
 
-			await fixture.conn.cancel({ sessionId })
+			await fixture.conn.notify("session/cancel", { sessionId })
 			writeFileSync(releasePath, "release failed browser launch\n", "utf8")
 			expect((await withTimeout(original, "cancelled remote browser launch")).stopReason).toBe("cancelled")
 
@@ -578,7 +581,7 @@ async function verifySettledOAuthOutcome(scenario: "oauth-deny" | "oauth-token-f
 		const sessionId = await newSession(fixture, fixture.workDir)
 		let response: acp.PromptResponse | undefined
 		let failure: unknown
-		const pending = fixture.conn.prompt({ sessionId, prompt: oauthPrompt() }).then(
+		const pending = fixture.conn.request("session/prompt", { sessionId, prompt: oauthPrompt() }).then(
 			(result) => {
 				response = result
 			},
@@ -647,12 +650,12 @@ it.each([
 		})
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const original = fixture.conn.prompt({ sessionId, prompt: oauthPrompt() })
+			const original = fixture.conn.request("session/prompt", { sessionId, prompt: oauthPrompt() })
 			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened")
 			await delay(OAUTH_SETTLE_QUIET_MS)
 
-			if (kind === "cancel") await fixture.conn.cancel({ sessionId })
-			else await fixture.conn.closeSession({ sessionId })
+			if (kind === "cancel") await fixture.conn.notify("session/cancel", { sessionId })
+			else await fixture.conn.request("session/close", { sessionId })
 			const interrupted = await withTimeout(original, `${kind} OAuth prompt`)
 			expect(interrupted.stopReason).toBe("cancelled")
 			const modelRequests = fixture.fake.requests.length
@@ -757,24 +760,28 @@ it(
 			let responseB: acp.PromptResponse | undefined
 			let failureA: unknown
 			let failureB: unknown
-			const pendingA = fixture.conn.prompt({ sessionId: sessionA, prompt: [{ type: "text", text: promptA }] }).then(
-				(result) => {
-					responseA = result
-				},
-				(error: unknown) => {
-					failureA = error
-				},
-			)
+			const pendingA = fixture.conn
+				.request("session/prompt", { sessionId: sessionA, prompt: [{ type: "text", text: promptA }] })
+				.then(
+					(result) => {
+						responseA = result
+					},
+					(error: unknown) => {
+						failureA = error
+					},
+				)
 			const openedA = await fixture.mcp.waitForEvent("oauth_browser_opened")
 			const sessionB = await newSession(fixture, fixture.workDir)
-			const pendingB = fixture.conn.prompt({ sessionId: sessionB, prompt: [{ type: "text", text: promptB }] }).then(
-				(result) => {
-					responseB = result
-				},
-				(error: unknown) => {
-					failureB = error
-				},
-			)
+			const pendingB = fixture.conn
+				.request("session/prompt", { sessionId: sessionB, prompt: [{ type: "text", text: promptB }] })
+				.then(
+					(result) => {
+						responseB = result
+					},
+					(error: unknown) => {
+						failureB = error
+					},
+				)
 			const openedB = await fixture.mcp.waitForEvent("oauth_browser_opened", {
 				predicate: (event) => new URL(event.target).origin === new URL(secondaryBaseUrl).origin,
 				description: "session B's independent OAuth authorization",
@@ -876,7 +883,7 @@ it(
 			const sessionId = await newSession(fixture, fixture.workDir)
 			let response: acp.PromptResponse | undefined
 			let failure: unknown
-			const pending = fixture.conn.prompt({ sessionId, prompt: oauthPrompt() }).then(
+			const pending = fixture.conn.request("session/prompt", { sessionId, prompt: oauthPrompt() }).then(
 				(result) => {
 					response = result
 				},
@@ -941,7 +948,7 @@ it(
 			expect(oauthToolOutput(fixture, opened.target)?.details).toEqual(expectedDetails)
 
 			const replayStart = fixture.client.sessionUpdates.length
-			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 			expect(oauthToolOutput(fixture, opened.target, replayStart)?.details).toEqual(expectedDetails)
 		} finally {
 			await fixture.stop()
@@ -969,12 +976,18 @@ it(
 		})
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const original = fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: firstPrompt }] })
+			const original = fixture.conn.request("session/prompt", {
+				sessionId,
+				prompt: [{ type: "text", text: firstPrompt }],
+			})
 			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened")
-			await fixture.conn.cancel({ sessionId })
+			await fixture.conn.notify("session/cancel", { sessionId })
 			expect((await withTimeout(original, "cancelled original OAuth prompt")).stopReason).toBe("cancelled")
 
-			const retry = fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: retryPrompt }] })
+			const retry = fixture.conn.request("session/prompt", {
+				sessionId,
+				prompt: [{ type: "text", text: retryPrompt }],
+			})
 			const retried = await withTimeout(retry, "same-server OAuth retry")
 			expect(retried.stopReason).toBe("end_turn")
 			expect(toolResultText(fixture.fake.requests, "oauth-cancel-retry")).toContain("already in progress")

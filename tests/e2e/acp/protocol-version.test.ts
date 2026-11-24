@@ -3,7 +3,7 @@
 // clients as "client out of date", not in CI (docs/acp-compat.md rule 8) —
 // this pin gives an upstream bump a named failure instead.
 
-import * as acp from "@agentclientprotocol/sdk"
+import * as acp from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 

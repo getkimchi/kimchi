@@ -47,7 +47,7 @@ describe("ACP integration — MCP 2026-07-28 (modern era)", () => {
 				responses: [],
 			})
 
-			const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			const probe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 				server: fixture.mcp.serverDefinition,
 				serverName: "acp-modern-probe",
 			})
@@ -120,7 +120,7 @@ describe("ACP integration — MCP 2026-07-28 (modern era)", () => {
 				responses: [],
 			})
 
-			const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			const probe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 				server: { ...fixture.mcp.serverDefinition, protocolVersion: "legacy" },
 				serverName: "acp-modern-legacy-pin",
 			})

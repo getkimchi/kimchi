@@ -56,6 +56,7 @@ const planning = vi.hoisted(() => ({
 }))
 const permissionState = vi.hoisted(() => ({
 	mode: undefined as "ask" | "auto" | "plan" | "yolo" | undefined,
+	sessionIds: [] as string[],
 }))
 const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
 const oauthBranding = vi.hoisted(() => ({
@@ -178,7 +179,10 @@ vi.mock("./call-catalog.js", async (importOriginal) => ({
 }))
 
 vi.mock("../permissions/mode-controller.js", () => ({
-	getPermissionMode: () => (permissionState.mode === undefined ? undefined : { mode: permissionState.mode }),
+	getPermissionMode: vi.fn((sessionId: string) => {
+		permissionState.sessionIds.push(sessionId)
+		return permissionState.mode === undefined ? undefined : { mode: permissionState.mode }
+	}),
 }))
 
 vi.mock("./oauth-migration.js", () => ({
@@ -256,6 +260,7 @@ describe("upstream MCP adapter facade", () => {
 		gatewayState.addresses = ["https://api.cast.ai/mcp"]
 		planning.currentProfile = undefined
 		permissionState.mode = undefined
+		permissionState.sessionIds = []
 		readOnlyState.wireNames.clear()
 		readOnlyState.authorizationConfigs.length = 0
 		readOnlyState.privateCatalogs.length = 0
@@ -901,6 +906,39 @@ describe("upstream MCP adapter facade", () => {
 			})
 		}
 		expect(gatewayExecute).toHaveBeenCalledTimes(readOnlyCalls.length)
+	})
+
+	it("uses the parent's live mode for a subagent's mutating gateway calls", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		planning.currentProfile = undefined
+		permissionState.mode = "plan"
+		readOnlyState.wireNames.add("docs_get_issue")
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		const harness = createExtensionApi()
+		createKimchiMcpAdapterExtension({ parentSessionId: "parent-session" })(harness.api)
+		await start(harness)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+		const gateway = harness.getRegisteredTool("mcp")
+
+		expect(
+			await gateway.execute(
+				"mutating",
+				{ tool: "docs_write_issue", args: {} },
+				undefined,
+				undefined,
+				createToolContext(),
+			),
+		).toMatchObject({
+			isError: true,
+			details: { error: "plan_mode_mcp_blocked", tool: "mcp" },
+		})
+		expect(
+			await gateway.execute("read", { tool: "docs_get_issue", args: {} }, undefined, undefined, createToolContext()),
+		).toMatchObject({
+			content: [{ type: "text", text: "ok" }],
+		})
+		expect(gatewayExecute).toHaveBeenCalledTimes(1)
+		expect(permissionState.sessionIds.at(-1)).toBe("parent-session")
 	})
 
 	it("allows MCP after leaving plan mode even when startup and profile signals are stale", async () => {

@@ -197,7 +197,7 @@ describe("ACP integration — behaviour re-steer after mid-turn compaction", () 
 
 	it("re-delivers the python-edit body to the provider after an inline mid-turn compaction", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "write app.py with a hello, then finish" }],
 		})
@@ -340,7 +340,7 @@ describe("ACP integration — behaviour re-steer after provider overflow recover
 
 	it("recovers from a provider overflow error and re-delivers the body in the retried request", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "write app.py twice with analysis notes, then finish" }],
 		})

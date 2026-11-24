@@ -1,4 +1,4 @@
-import type { AgentSideConnection, ToolCall } from "@agentclientprotocol/sdk"
+import type { AgentContext, ToolCall } from "@agentclientprotocol/sdk/unstable"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../../extensions/__mocks__/context.js"
 import { createExtensionApi } from "../../extensions/__mocks__/extension-api.js"
@@ -20,11 +20,11 @@ import { createAcpPermissionPrompter } from "./acp-prompter.js"
 
 function makeConnection(outcome: { outcome: string; optionId?: string } | "cancelled-throw") {
 	return {
-		requestPermission: vi.fn(async () => {
+		request: vi.fn(async () => {
 			if (outcome === "cancelled-throw") throw new Error("should not happen")
 			return { outcome }
 		}),
-	} as unknown as AgentSideConnection
+	} as unknown as AgentContext
 }
 
 const baseReq = {
@@ -70,11 +70,11 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 	it("edit/write prompts substitute with a live vault (execution derefs; the original is what lands)", async () => {
 		const sent: Array<{ sessionId: string; toolCall: ToolCall }> = []
 		const conn = {
-			requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+			request: vi.fn(async (_method: string, payload: { sessionId: string; toolCall: ToolCall }) => {
 				sent.push(payload)
 				return { outcome: { outcome: "cancelled" } }
 			}),
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		const { api, emit } = createExtensionApi()
 		installVaultLifecycle(api as never, () => true)
 		await emit("session_start", {}, createContext({ sessionManager: { getSessionId: () => "sess-edit" } }))
@@ -95,11 +95,11 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 	it("bash prompts keep tokens even with a live vault (execution is byte-faithful)", async () => {
 		const sent: Array<{ sessionId: string; toolCall: ToolCall }> = []
 		const conn = {
-			requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+			request: vi.fn(async (_method: string, payload: { sessionId: string; toolCall: ToolCall }) => {
 				sent.push(payload)
 				return { outcome: { outcome: "cancelled" } }
 			}),
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		const { api, emit } = createExtensionApi()
 		installVaultLifecycle(api as never, () => true)
 		await emit("session_start", {}, createContext({ sessionManager: { getSessionId: () => "sess-bash" } }))
@@ -121,11 +121,11 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 	it("edit prompt with a dead vault (post-restart) renders tokens verbatim", async () => {
 		const sent: Array<{ sessionId: string; toolCall: ToolCall }> = []
 		const conn = {
-			requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+			request: vi.fn(async (_method: string, payload: { sessionId: string; toolCall: ToolCall }) => {
 				sent.push(payload)
 				return { outcome: { outcome: "cancelled" } }
 			}),
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		const token = "[EMAIL_ADDRESS_41]"
 		const prompter = createAcpPermissionPrompter(conn, "dead-sess", {} as never, () => "acp-1")
 		await prompter.request({
@@ -144,11 +144,11 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 	it("sends vault tokens verbatim for byte-faithful tools — approvals show what executes", async () => {
 		const sent: Array<{ sessionId: string; toolCall: ToolCall }> = []
 		const conn = {
-			requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+			request: vi.fn(async (_method: string, payload: { sessionId: string; toolCall: ToolCall }) => {
 				sent.push(payload)
 				return { outcome: { outcome: "cancelled" } }
 			}),
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-1")
 		const token = "[EMAIL_ADDRESS_3]"
 		const outcome = await prompter.request({
@@ -185,11 +185,11 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 		try {
 			const sent: Array<{ sessionId: string; toolCall: ToolCall }> = []
 			const conn = {
-				requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+				request: vi.fn(async (_method: string, payload: { sessionId: string; toolCall: ToolCall }) => {
 					sent.push(payload)
 					return { outcome: { outcome: "cancelled" } }
 				}),
-			} as unknown as AgentSideConnection
+			} as unknown as AgentContext
 			const prompter = createAcpPermissionPrompter(conn, "sess-wait", {} as never, () => "acp-1")
 			await prompter.request({
 				...baseReq,

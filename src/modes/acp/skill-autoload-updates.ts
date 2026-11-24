@@ -10,13 +10,13 @@
 // never clobber `sessionId`. The matched trigger stays off the wire on
 // purpose — the user-facing line is the skill name, not the keyword.
 
-import type { AgentSideConnection } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import { SKILL_AUTOLOAD_LOADED_TYPE, type SkillAutoLoadData } from "../../extensions/skills-manager/auto-load.js"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 import { emitExtNotification } from "./ext-notifications.js"
 
-export function emitSkillAutoloadUpdate(conn: AgentSideConnection, sessionId: string, event: AgentSessionEvent): void {
+export function emitSkillAutoloadUpdate(conn: AgentContext, sessionId: string, event: AgentSessionEvent): void {
 	if (event.type !== "entry_appended") return
 	const entry = event.entry as { type?: unknown; customType?: unknown; data?: unknown }
 	if (entry.type !== "custom" || entry.customType !== SKILL_AUTOLOAD_LOADED_TYPE) return

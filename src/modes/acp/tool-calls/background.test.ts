@@ -3,7 +3,7 @@
  * settle path: the exit outcome must be persisted to the transcript BEFORE
  * the wire flip, or a reload replays a failed process's call as completed.
  */
-import type { SessionNotification } from "@agentclientprotocol/sdk"
+import type { SessionNotification } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, describe, expect, it } from "vitest"
 import type { ProcessRegistry } from "../../../extensions/bash-background/process-registry.js"
 import { type BashSessionState, setSessionState } from "../../../extensions/bash-background/session-registry.js"

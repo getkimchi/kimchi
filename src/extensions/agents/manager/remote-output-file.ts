@@ -7,7 +7,7 @@
  */
 
 import { appendFileSync } from "node:fs"
-import type { SessionNotification, ToolCallStatus } from "@agentclientprotocol/sdk"
+import type { SessionNotification, ToolCallStatus } from "@agentclientprotocol/sdk/unstable"
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
 

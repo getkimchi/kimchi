@@ -1,4 +1,4 @@
-import type { AvailableCommand } from "@agentclientprotocol/sdk"
+import type { AvailableCommand } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"

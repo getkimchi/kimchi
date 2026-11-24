@@ -74,9 +74,10 @@ function createMcpToolSurfacePolicy(config: McpConfig): McpToolSurfacePolicy {
 	}
 }
 
-function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
+function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext, parentSessionId?: string): boolean {
 	const profile = getCurrentProfile(pi)
-	const permissionMode = getPermissionMode(ctx.sessionManager.getSessionId())?.mode
+	const sessionId = parentSessionId ?? ctx.sessionManager.getSessionId()
+	const permissionMode = getPermissionMode(sessionId)?.mode
 	const explicitPlan = getParsedCliArgs().options.plan === true
 
 	if (profile === "planning-ferment") return true
@@ -189,6 +190,7 @@ function createUpstreamApi(
 	getReadOnlyToolNames: (server?: string) => readonly string[],
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 	oauthTurnContinuation?: McpOAuthTurnContinuation,
+	parentSessionId?: string,
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
 	const adapterActiveNames = new Set<string>()
@@ -238,7 +240,7 @@ function createUpstreamApi(
 						...brandedTool,
 						execute: async (...args: Parameters<typeof execute>) => {
 							if (
-								isPlanningMode(target, args[4]) &&
+								isPlanningMode(target, args[4], parentSessionId) &&
 								isBlockedInPlanning(brandedTool.name, args[1], getReadOnlyToolNames, isReadOnlyGatewayTool)
 							) {
 								return blockedPlanningResult(brandedTool.name)
@@ -371,6 +373,8 @@ export interface KimchiMcpAdapterExtensionOptions {
 	lazyGatewayConnect?: boolean
 	/** Keep agent-started OAuth watchers inside their existing ACP tool/model run. */
 	holdOAuthTurn?: boolean
+	/** Main session whose live mode governs a subagent's MCP calls. */
+	parentSessionId?: string
 }
 
 export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensionOptions = {}): ExtensionFactory {
@@ -551,6 +555,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server, privateCatalogs),
 					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server, privateCatalogs),
 					oauthTurnContinuation,
+					options.parentSessionId,
 				),
 			)
 			if (gateway !== undefined && !discoverGatewayAtStartup) registerGatewayRuntimeServer(pi, gateway)

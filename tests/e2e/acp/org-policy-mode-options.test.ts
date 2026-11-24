@@ -9,7 +9,7 @@
  * mode resolves to the config default (default), which is policy-allowed.
  */
 
-import type * as acp from "@agentclientprotocol/sdk"
+import type * as acp from "@agentclientprotocol/sdk/unstable"
 import { afterEach, describe, expect, it } from "vitest"
 import type { AcpFixture } from "./support/acp-fixture.js"
 import { startAcpFixture } from "./support/acp-fixture.js"
@@ -30,7 +30,7 @@ describe("org-policy permissions-mode config option", () => {
 			responses: [{ stream: ["ACP policy works."] }],
 		})
 
-		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		const session = await fixture.conn.request("session/new", { cwd: fixture.workDir, mcpServers: [] })
 		const result = await prompt(fixture, session.sessionId, "Check the policy surface")
 		expect(result.stopReason).toBe("end_turn")
 
@@ -51,7 +51,7 @@ describe("org-policy permissions-mode config option", () => {
 		expect(modeOptions).not.toContain("yolo")
 
 		// Selecting an allowed mode succeeds.
-		await fixture.conn.setSessionConfigOption({
+		await fixture.conn.request("session/set_config_option", {
 			sessionId: session.sessionId,
 			configId: "permissions-mode",
 			value: "plan",
@@ -59,7 +59,7 @@ describe("org-policy permissions-mode config option", () => {
 
 		// Selecting a disallowed mode is rejected with the policy message.
 		await expect(
-			fixture.conn.setSessionConfigOption({
+			fixture.conn.request("session/set_config_option", {
 				sessionId: session.sessionId,
 				configId: "permissions-mode",
 				value: "yolo",

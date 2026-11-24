@@ -3,7 +3,7 @@
 // advertised via _meta["kimchi.dev"].feedback. Action-discriminated for
 // future flows; the only action today is "rate_response".
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import { consumeRatingWindow, getRatingWindow } from "../../../extensions/feedback/rating-window.js"
 import { type RecordRatingResult, recordRating } from "../../../extensions/feedback/record-rating.js"
 import type { SessionTurnTarget } from "../types.js"

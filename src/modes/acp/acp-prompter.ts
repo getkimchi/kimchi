@@ -1,4 +1,4 @@
-import type { AgentSideConnection, PermissionOption, ToolCall } from "@agentclientprotocol/sdk"
+import { type AgentContext, methods, type PermissionOption, type ToolCall } from "@agentclientprotocol/sdk/unstable"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { getSessionState as getBashSessionState } from "../../extensions/bash-background/session-registry.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
@@ -10,7 +10,7 @@ import { requestWithAbort } from "./utils.js"
 export type AcpToolCallIdResolver = (piToolCallId: string, toolName: string) => string
 
 export function createAcpPermissionPrompter(
-	conn: AgentSideConnection,
+	conn: AgentContext,
 	sessionId: string,
 	uiContext: ExtensionUIContext,
 	resolveAcpToolCallId: AcpToolCallIdResolver,
@@ -57,7 +57,10 @@ export function createAcpPermissionPrompter(
 				// timeline names its cohort would show two different actions.
 				bashControlRegistry: getBashSessionState(sessionId)?.registry,
 			})
-			const response = await requestWithAbort(conn.requestPermission({ sessionId, toolCall, options }), req.signal)
+			const response = await requestWithAbort(
+				conn.request(methods.client.session.requestPermission, { sessionId, toolCall, options }),
+				req.signal,
+			)
 
 			// A cancelled response means the CLIENT denied without a human
 			// choice — headless ACP hosts fail permission requests

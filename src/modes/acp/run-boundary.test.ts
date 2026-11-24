@@ -1,16 +1,16 @@
-import type { AgentSideConnection } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import { describe, expect, it } from "vitest"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 import { emitRunEnd, emitRunStart, runStopReasonFromFlags } from "./run-boundary.js"
 
-function fakeConn(): { conn: AgentSideConnection; sent: Array<{ method: string; params: Record<string, unknown> }> } {
+function fakeConn(): { conn: AgentContext; sent: Array<{ method: string; params: Record<string, unknown> }> } {
 	const sent: Array<{ method: string; params: Record<string, unknown> }> = []
 	const conn = {
-		extNotification: (method: string, params: Record<string, unknown>) => {
+		notify: (method: string, params: Record<string, unknown>) => {
 			sent.push({ method, params })
 			return Promise.resolve()
 		},
-	} as unknown as AgentSideConnection
+	} as unknown as AgentContext
 	return { conn, sent }
 }
 

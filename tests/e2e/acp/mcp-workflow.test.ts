@@ -52,7 +52,7 @@ describe("ACP integration — MCP", () => {
 	})
 
 	it("probes a configured MCP server through the real ACP process", async () => {
-		const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+		const probe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 			server: fixture.mcp.serverDefinition,
 			serverName: "acp-fixture-probe",
 		})
@@ -64,7 +64,7 @@ describe("ACP integration — MCP", () => {
 	})
 
 	it("discovers all original tools even when the configured model surface selects only echo", async () => {
-		const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+		const probe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 			server: { ...fixture.mcp.serverDefinition, includeTools: ["echo"] },
 			serverName: "acp-fixture-probe",
 		})
@@ -127,7 +127,7 @@ describe("ACP integration — probe recovery", () => {
 				JSON.stringify({ serverUrl: fixture.mcp.url, tokens: { accessToken: MCP_FIXTURE_OAUTH_ACCESS_TOKEN } }),
 				{ mode: 0o600 },
 			)
-			const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			const probe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 				server: fixture.mcp.serverDefinition,
 				serverName: "fixture",
 				skipAuth: true,
@@ -148,7 +148,7 @@ describe("ACP integration — probe recovery", () => {
 		})
 		try {
 			const started = performance.now()
-			const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			const probe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 				server: fixture.mcp.serverDefinition,
 				serverName: "stalled",
 			})
@@ -191,14 +191,14 @@ describe("ACP integration — OAuth MCP", () => {
 
 	it("distinguishes auth-required probing, authenticates, and then uses the protected tool", async () => {
 		const server = fixture.mcp.serverDefinition
-		const unauthenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+		const unauthenticatedProbe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 			server,
 			serverName: "fixture",
 			skipAuth: true,
 		})
 		expect(unauthenticatedProbe.needsAuth).toBe(true)
 
-		const authenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+		const authenticatedProbe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 			server,
 			serverName: "fixture",
 		})
@@ -248,14 +248,14 @@ describe("ACP integration — OAuth MCP with a remote https redirect", () => {
 
 	it("authenticates through the loopback bounce without a manual paste", async () => {
 		const server = fixture.mcp.serverDefinition
-		const unauthenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+		const unauthenticatedProbe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 			server,
 			serverName: "fixture",
 			skipAuth: true,
 		})
 		expect(unauthenticatedProbe.needsAuth).toBe(true)
 
-		const authenticatedProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+		const authenticatedProbe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 			server,
 			serverName: "fixture",
 		})
@@ -366,7 +366,7 @@ describe("ACP integration — OAuth MCP re-auth in a live session", () => {
 			// Studio's MCP settings UI authenticates the server through the
 			// isolated probe before any chat session exists.
 			const server = fixture.mcp.serverDefinition
-			const probe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", { server, serverName: "fixture" })
+			const probe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", { server, serverName: "fixture" })
 			expect(probe).toMatchObject({ needsAuth: false, error: null })
 			const initialToken = await fixture.mcp.waitForEvent("oauth_token_issued", {
 				where: { grantType: "authorization_code" },
@@ -394,7 +394,7 @@ describe("ACP integration — OAuth MCP re-auth in a live session", () => {
 
 			// Re-auth the way Studio does: the isolated probe authenticates and
 			// reports tools — without telling the live session anything.
-			const reauthProbe = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+			const reauthProbe = await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 				server,
 				serverName: "fixture",
 				authenticate: true,
