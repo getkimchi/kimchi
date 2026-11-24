@@ -8878,7 +8878,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			...credential,
 			access: "replacement-access",
 			refresh: "rotated-refresh",
-			expires: Date.now() + 3_600_000,
+			expires: credential.expires + 1_000,
 		}))
 		// Swap the production installKimchiOAuth preflight install for the fake
 		// registration so the real resolver/refresh path stays hermetic.
@@ -8956,13 +8956,6 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			expect(isCredentialStale("incident-rejected-access", "kimchi-dev")).toBe(true)
 			resetCredentialStalenessForTests()
 			expect(isCredentialStale("incident-rejected-access", "kimchi-dev")).toBe(true)
-
-			// The forced override demands one millisecond more remaining lifetime
-			// than the rejected token had when the preflight measured it, and the
-			// resolver applies the same explicit minimum to the replacement. Give
-			// the fake replacement's Date.now()-anchored expiry room to clear that
-			// minimum deterministically (same margin as the helper-level test).
-			await new Promise((resolve) => setTimeout(resolve, 500))
 
 			// Second prompt: capture the persisted canonical bearer at model-request
 			// time to prove the replacement is what the request would submit.

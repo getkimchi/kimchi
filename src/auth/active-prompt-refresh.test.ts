@@ -57,13 +57,6 @@ describe("active prompt Kimchi credential preparation", () => {
 		writeOAuthCredential(Date.now() + 3_600_000)
 		markCredentialStale("expiring-access", "kimchi-dev")
 		const oauth = rotatingOAuthDeps()
-		// The forced override demands one millisecond more remaining lifetime
-		// than the rejected token had when the preflight measured it, and the
-		// resolver applies the same explicit minimum to the replacement. The
-		// fake replacement carries the same one-hour nominal lifetime, so its
-		// absolute expiry must land far enough after the original write for the
-		// refreshed token to satisfy that minimum deterministically.
-		await new Promise((resolve) => setTimeout(resolve, 500))
 
 		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
 		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
@@ -138,7 +131,7 @@ describe("active prompt Kimchi credential preparation", () => {
 				...credential,
 				access: "replacement-access",
 				refresh: "rotated-refresh",
-				expires: Date.now() + 3_600_000,
+				expires: credential.expires + 3_600_000,
 			}
 		})
 
@@ -148,9 +141,6 @@ describe("active prompt Kimchi credential preparation", () => {
 		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(true)
 		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
 
-		// Keep the retry's forced-validity margin as comfortable as the main
-		// regression's (see the far-future rejection test above).
-		await new Promise((resolve) => setTimeout(resolve, 500))
 		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
 
 		expect(oauth.refreshCalls).toHaveLength(2)
@@ -584,7 +574,7 @@ describe("active prompt Kimchi credential preparation", () => {
 			...credential,
 			access: "replacement-access",
 			refresh: "rotated-refresh",
-			expires: Date.now() + 3_600_000,
+			expires: credential.expires + 3_600_000,
 		}))
 	}
 
