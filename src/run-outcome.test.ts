@@ -14,21 +14,27 @@ const now = Date.now().toString()
 type MessageSessionEntry = Extract<SessionEntry, { type: "message" }>
 type AssistantMessage = Extract<MessageSessionEntry["message"], { role: "assistant" }>
 type CustomMessageEntry = Extract<SessionEntry, { type: "custom_message" }>
-type ContentBlock = { type: string; text?: string; thinking?: string }
 
 // Typed fixture helpers
 function createAssistantMessage(
-	content: ContentBlock[],
-	stopReason: "stop" | "error" | "aborted" | "length" = "stop",
+	content: AssistantMessage["content"],
+	stopReason: AssistantMessage["stopReason"] = "stop",
 ): MessageLikeSessionEntry {
 	const message: AssistantMessage = {
 		role: "assistant",
-		content: content as AssistantMessage["content"],
+		content: content,
 		api: "openai-responses",
 		provider: "openai",
 		model: "gpt-4",
-		usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-		stopReason: stopReason as AssistantMessage["stopReason"],
+		usage: {
+			input: 10,
+			output: 5,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 15,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: stopReason,
 		timestamp: Date.now(),
 	}
 	return {
@@ -189,7 +195,7 @@ describe("classifyRunOutcome", () => {
 			inputSeen: false,
 			runSeen: true,
 			aborted: false,
-			finalEntry: createAssistantMessage([{ type: "toolCall" }]),
+			finalEntry: createAssistantMessage([{ type: "toolCall", id: "call-1", name: "read", arguments: {} }]),
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
