@@ -34,10 +34,11 @@ const DENIAL_PATTERN = new RegExp(
 
 /**
  * A Ferment V2 run is identified by its persisted journal, not by extension
- * memory: the journal survives cleanup that runs before agent_settled. A later
- * "clear" record means the session no longer belongs to Ferment V2.
+ * memory: the journal survives cleanup that runs before agent_settled. Only the
+ * latest record counts: a "put" means live, a later "clear" means not Ferment V2.
+ * This covers the whole session branch, including resumed sessions.
  */
-function endsWithLiveFermentV2Journal(branch: readonly SessionEntry[]): boolean {
+function latestFermentV2RecordIsPut(branch: readonly SessionEntry[]): boolean {
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i]
 		if (entry.type !== "custom" || entry.customType !== FERMENT_V2_CUSTOM_ENTRY_TYPE) continue
@@ -65,7 +66,9 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 
 			pi.on("input", () => {
 				if (isAgentWorker() || !state.active) return
-				state = { ...state, inputSeen: true }
+				// A denial belongs to the prompt that caused it.
+				const { deniedTool: _stale, ...rest } = state
+				state = { ...rest, inputSeen: true }
 			})
 
 			// A blocked call skips afterToolCall, so only tool_execution_end sees denials.
@@ -99,7 +102,7 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 					...rest,
 					runSeen: true,
 					aborted: event.aborted,
-					...(endsWithLiveFermentV2Journal(branch) ? { fermentV2Owned: true } : {}),
+					...(latestFermentV2RecordIsPut(branch) ? { fermentV2Owned: true } : {}),
 					...(finalEntry ? { finalEntry } : {}),
 					...(sessionPath ? { sessionPath } : {}),
 				}

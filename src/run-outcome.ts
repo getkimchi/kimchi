@@ -3,6 +3,8 @@ import { KIMCHI_NO_PROMPT_EXIT_CODE, KIMCHI_NO_RESULT_EXIT_CODE } from "./infras
 
 export type MessageLikeSessionEntry = Extract<SessionEntry, { type: "message" | "custom_message" }>
 
+const DENIAL_REASON_MAX_LENGTH = 160
+
 export interface DeniedToolOutcome {
 	toolName: string
 	reason: string
@@ -94,26 +96,14 @@ export function classifyRunOutcome(
 			lastEvent: { kind: "none" },
 			...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
 		}
-	} else if (snapshot.finalEntry.type === "message" && snapshot.finalEntry.message.role === "assistant") {
-		// Assistant message: check for valid output
+	} else if (snapshot.finalEntry.type === "message") {
 		const msg = snapshot.finalEntry.message
-		const stopReason = msg.stopReason as string | undefined
-
-		// Accept certain stop reasons
-		if (stopReason === "error" || stopReason === "aborted" || stopReason === "length") {
-			classifiedOutcome = { kind: "ok" }
-		} else {
-			// Check for non-whitespace text content
-			const content = msg.content as Array<{ type: string; text?: string }>
-			let hasText = false
-			for (const block of content) {
-				if (block.type === "text" && block.text && block.text.trim().length > 0) {
-					hasText = true
-					break
-				}
-			}
-
-			if (hasText) {
+		if (msg.role === "assistant") {
+			const stopReason = msg.stopReason
+			// Accept certain stop reasons
+			if (stopReason === "error" || stopReason === "aborted" || stopReason === "length") {
+				classifiedOutcome = { kind: "ok" }
+			} else if (msg.content.some((block) => block.type === "text" && block.text.trim().length > 0)) {
 				classifiedOutcome = { kind: "ok" }
 			} else {
 				classifiedOutcome = {
@@ -122,14 +112,13 @@ export function classifyRunOutcome(
 					...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
 				}
 			}
-		}
-	} else if (snapshot.finalEntry.type === "message") {
-		// Non-assistant message (user, toolResult, bashExecution, etc.)
-		const role = snapshot.finalEntry.message.role
-		classifiedOutcome = {
-			kind: "no-result",
-			lastEvent: { kind: "final-message", role },
-			...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
+		} else {
+			// Non-assistant message (user, toolResult, bashExecution, etc.)
+			classifiedOutcome = {
+				kind: "no-result",
+				lastEvent: { kind: "final-message", role: msg.role },
+				...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
+			}
 		}
 	} else {
 		// Custom message after a run is not a result
@@ -173,12 +162,14 @@ export function formatRunOutcomeDiagnostic(outcome: Exclude<RunOutcomeClassifica
 	// Add event details
 	const { lastEvent } = outcome
 	if (lastEvent.kind === "denied-tool") {
-		const reason = lastEvent.reason.replace(/\s+/g, " ").slice(0, 60)
+		const collapsed = lastEvent.reason.replace(/\s+/g, " ").trim()
+		const reason =
+			collapsed.length > DENIAL_REASON_MAX_LENGTH ? `${collapsed.slice(0, DENIAL_REASON_MAX_LENGTH)}...` : collapsed
 		lines.push(`The agent tried to call tool '${lastEvent.toolName}' but it was denied: ${reason}.`)
 	} else if (lastEvent.kind === "final-message") {
-		const roleText = lastEvent.role === "custom" ? "custom message" : lastEvent.role
+		const entryText = lastEvent.role === "custom" ? "a custom message" : `an entry with role '${lastEvent.role}'`
 		const stopText = lastEvent.stopReason ? ` (stop reason: ${lastEvent.stopReason})` : ""
-		lines.push(`The last entry was a ${roleText}${stopText}, with no actionable content.`)
+		lines.push(`The last entry was ${entryText}${stopText}, with no actionable content.`)
 	} else {
 		lines.push("The agent produced no message or action.")
 	}

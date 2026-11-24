@@ -20,19 +20,19 @@ In text mode, stdout shows the text of the last message, as pi decides it. These
 - a final message that only calls tools,
 - a final message that is not from the assistant.
 
-A final message that ended with a model error, an abort, or truncation is not a guard failure. It keeps its own exit code.
+A final message that ended with a model error, an abort, or truncation is not a guard failure. In text mode, pi exits `1` for it. In JSON mode, the exit code stays `0` and the outcome is visible in the event stream.
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | A real answer, or a normal command such as `--list-models` |
-| `1` | Model error, abort, or truncation |
+| `1` | Model error, abort, or truncation (text mode only) |
 | `2` | No prompt reached the agent |
 | `3` | The run finished without a final answer |
 | `74` | Provider infrastructure failure |
 
-The guards only replace an unset or zero exit code. Codes `1` and `74` are never changed.
+The guards only replace an unset or zero exit code. In text mode, code `1` is never changed. Code `74` is never changed in either mode. In JSON mode, a model error, abort, or truncation exits `0`, as before, and is not a guard failure.
 
 ## Diagnostics
 
@@ -45,7 +45,7 @@ For exit `3`, the diagnostic also gives the session file path and tells you to r
 
 ## JSON mode
 
-`--mode json` keeps its newline-delimited event stream on stdout, with no added events or text. It now uses the same exit codes `2` and `3`.
+`--mode json` keeps its newline-delimited event stream on stdout, with no added events or text. Only the guard outcomes change its exit code: it now uses exit codes `2` and `3`. Model error, abort, and truncation still exit `0` in JSON mode, and the event stream shows them.
 
 This is a change for existing automation: a JSON run with no prompt or no final answer used to exit `0`. It now exits `2` or `3`. Scripts that treated `0` as success for these runs must handle the new codes.
 
@@ -55,6 +55,6 @@ This is a change for existing automation: a JSON run with no prompt or no final 
 - Exit `3` with a denied tool: the permission mode blocked a tool and the model gave no answer after that. Change the permission mode or allow the tool, then rerun.
 - Exit `3` after an empty answer: open the session file, or rerun with `--mode json`, to see the steps.
 
-Ferment V2 sessions manage their own exit code, so the no-answer guard (exit `3`) does not apply to them.
+Ferment V2 sessions manage their own exit code, so the no-answer guard (exit `3`) does not apply to them. Any session whose branch has a live Ferment V2 record is exempt, including a resumed session. A later Ferment V2 clear record ends the exemption.
 
 TUI and ACP sessions are not affected by these guards.

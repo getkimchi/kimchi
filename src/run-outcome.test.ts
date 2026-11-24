@@ -5,6 +5,7 @@ import {
 	classifyRunOutcome,
 	formatRunOutcomeDiagnostic,
 	type MessageLikeSessionEntry,
+	type RunOutcomeClassification,
 	type RunOutcomeSnapshot,
 } from "./run-outcome.js"
 
@@ -324,6 +325,65 @@ describe("classifyRunOutcome", () => {
 		const diagnostic = formatRunOutcomeDiagnostic(result)
 		expect(diagnostic).toContain("write")
 		expect(diagnostic).toContain("Denied by rule: write")
+	})
+
+	describe("denial reason formatting", () => {
+		const denialOutcome = (reason: string) =>
+			({
+				kind: "no-result" as const,
+				lastEvent: { kind: "denied-tool" as const, toolName: "bash", reason },
+				sessionPath: "/tmp/s.jsonl",
+			}) satisfies Exclude<RunOutcomeClassification, { kind: "ok" } | { kind: "no-prompt" }>
+
+		it("keeps the complete real no-UI classifier reason", () => {
+			const reason =
+				"Classifier: command writes outside the project directory and may overwrite user files (no UI to confirm)"
+			const diagnostic = formatRunOutcomeDiagnostic(denialOutcome(reason))
+			expect(diagnostic).toContain(`denied: ${reason}.`)
+			expect(diagnostic).not.toContain("...")
+		})
+
+		it("truncates a long reason to 160 characters and appends an ellipsis", () => {
+			const diagnostic = formatRunOutcomeDiagnostic(denialOutcome(`Blocked: ${"x".repeat(300)}`))
+			expect(diagnostic).toContain(`denied: Blocked: ${"x".repeat(151)}....`)
+			expect(diagnostic).not.toContain("x".repeat(152))
+		})
+
+		it("does not append an ellipsis at exactly 160 characters", () => {
+			const reason = `Blocked: ${"y".repeat(151)}`
+			expect(reason).toHaveLength(160)
+			const diagnostic = formatRunOutcomeDiagnostic(denialOutcome(reason))
+			expect(diagnostic).toContain(`denied: ${reason}.`)
+			expect(diagnostic).not.toContain("...")
+		})
+
+		it("collapses multiline reasons and keeps at most five lines", () => {
+			const diagnostic = formatRunOutcomeDiagnostic(denialOutcome("Blocked: line one\n\n  line two\tline three"))
+			expect(diagnostic).toContain("denied: Blocked: line one line two line three.")
+			expect(diagnostic.split("\n").length).toBeLessThanOrEqual(5)
+		})
+
+		it("keeps the five-line cap for the longest denial diagnostic", () => {
+			const diagnostic = formatRunOutcomeDiagnostic(denialOutcome(`Blocked: ${"z\n".repeat(400)}`))
+			expect(diagnostic.split("\n").length).toBeLessThanOrEqual(5)
+		})
+	})
+
+	it("uses neutral role wording in the last-entry line", () => {
+		const roles = ["assistant", "toolResult", "user", "custom"]
+		const lines = roles.map(
+			(role) =>
+				formatRunOutcomeDiagnostic({
+					kind: "no-result",
+					lastEvent: { kind: "final-message", role },
+				}).split("\n")[1],
+		)
+		expect(lines).toEqual([
+			"The last entry was an entry with role 'assistant', with no actionable content.",
+			"The last entry was an entry with role 'toolResult', with no actionable content.",
+			"The last entry was an entry with role 'user', with no actionable content.",
+			"The last entry was a custom message, with no actionable content.",
+		])
 	})
 
 	it("accepts denial plus text answer (ok)", () => {

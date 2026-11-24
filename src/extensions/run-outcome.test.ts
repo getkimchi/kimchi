@@ -178,6 +178,34 @@ describe("createRunOutcomeTracker", () => {
 		expect(JSON.stringify(snapshot.deniedTool)).not.toContain("model said this")
 	})
 
+	it("does not report a denial from an earlier prompt for a later prompt", async () => {
+		const first = assistantEntry("a", "")
+		const second = assistantEntry("b", "")
+		const { harness, tracker, ctx, setBranch } = setup("print", [first])
+		await harness.emit("session_start", start, ctx)
+		await harness.emit("input", input, ctx)
+		await harness.emit("tool_execution_end", toolResult("write", "Denied by rule Write(*)"), ctx)
+		await harness.emit("agent_settled", settled(), ctx)
+		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName: "write", reason: "Denied by rule Write(*)" })
+
+		setBranch([first, second])
+		await harness.emit("input", input, ctx)
+		expect(tracker.getSnapshot().deniedTool).toBeUndefined()
+		await harness.emit("agent_settled", settled(), ctx)
+		expect(tracker.getSnapshot().deniedTool).toBeUndefined()
+	})
+
+	it("still records a denial that arrives after the second prompt input", async () => {
+		const { harness, tracker, ctx } = setup("print", [assistantEntry("a", "")])
+		await harness.emit("session_start", start, ctx)
+		await harness.emit("input", input, ctx)
+		await harness.emit("tool_execution_end", toolResult("write", "Denied by rule Write(*)"), ctx)
+		await harness.emit("input", input, ctx)
+		await harness.emit("tool_execution_end", toolResult("bash", "Blocked: plan mode"), ctx)
+		await harness.emit("agent_settled", settled(), ctx)
+		expect(tracker.getSnapshot().deniedTool).toEqual({ toolName: "bash", reason: "Blocked: plan mode" })
+	})
+
 	it("ignores an unrelated error that mentions denied and blocked in prose", async () => {
 		const { harness, tracker, ctx } = setup("print")
 		await harness.emit("session_start", start, ctx)

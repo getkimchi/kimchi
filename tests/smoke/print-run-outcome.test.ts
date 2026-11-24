@@ -295,6 +295,7 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 		expect(result.code, result.failure).toBe(KIMCHI_INFRA_ERROR_EXIT_CODE)
 		expect(result.stderr, result.failure).toContain("KIMCHI_INFRA_ERROR:")
 		expectNoGuardMarker(result)
+		expectTextOutcomeEquivalence(result)
 	})
 
 	it("whitespace-only final answer exits 3 in text mode", TIMEOUT, async () => {
@@ -327,5 +328,6 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 		expect(result.code, result.failure).toBe(0)
 		expect(result.stdout, result.failure).toContain(DEFAULT_MODEL.slug)
 		expectNoGuardMarker(result)
+		expectTextOutcomeEquivalence(result)
 	})
 })
