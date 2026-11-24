@@ -110,6 +110,8 @@ export interface FakeResponseScript {
 
 export interface RecordedRequest extends FakeResponseRequest {
 	aborted: boolean
+	/** Wall-clock time when the fake provider finished reading the request body. */
+	receivedAt: number
 }
 
 export interface FakeOpenAiServer {
@@ -214,6 +216,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		const recorded: RecordedRequest = {
 			...request,
 			aborted: false,
+			receivedAt: Date.now(),
 		}
 		req.on("aborted", () => {
 			recorded.aborted = true

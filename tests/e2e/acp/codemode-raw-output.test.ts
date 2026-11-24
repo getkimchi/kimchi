@@ -85,7 +85,7 @@ describe("ACP integration — codemode rawOutput", () => {
 			const liveUnrelated = projection(fixture, isUnrelatedTool)
 
 			const replayStart = fixture.client.sessionUpdates.length
-			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 			const replayCodemode = projection(fixture, isCodemodeScript, replayStart)
 			const replayUnrelated = projection(fixture, isUnrelatedTool, replayStart)
 
