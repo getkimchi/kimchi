@@ -12,7 +12,7 @@ export interface InteractiveTimeBudget {
 	pause(): () => void
 	/** Arm the expiry callback against the unpaused time that remains. */
 	setOnExpire(callback: () => void): void
-	/** Remaining running time, in milliseconds, excluding the current pause. */
+	/** Remaining running time, in milliseconds, excluding the current pause. Infinity for an unlimited budget. */
 	getRemainingMs(): number
 	/** Cancel any expiry timer and stop tracking further holds. */
 	dispose(): void
@@ -73,6 +73,10 @@ export function createInteractiveTimeBudget(
 			schedule()
 		},
 		getRemainingMs() {
+			// A zero duration means no limit, not an exhausted one: a resume
+			// can run unlimited on a session whose first run had a limit, and
+			// its bash calls must not be clamped as if no time were left.
+			if (maxDurationSeconds <= 0) return Number.POSITIVE_INFINITY
 			// Freeze the remaining budget while waiting on the user, both for
 			// the expiry callback and for bash's remaining-time clamp.
 			return Math.max(0, deadlineMs - (pauseStartedAt ?? clock()))

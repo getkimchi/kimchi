@@ -69,4 +69,18 @@ describe("interactive time budget", () => {
 			budget.dispose()
 		}
 	})
+
+	it("reports an unlimited remainder for an unlimited run, also while paused", () => {
+		const budget = createInteractiveTimeBudget(0, Date.now())
+		try {
+			expect(budget.getRemainingMs()).toBe(Number.POSITIVE_INFINITY)
+			vi.advanceTimersByTime(60_000)
+			const release = budget.pause()
+			expect(budget.getRemainingMs()).toBe(Number.POSITIVE_INFINITY)
+			release()
+			expect(budget.getRemainingMs()).toBe(Number.POSITIVE_INFINITY)
+		} finally {
+			budget.dispose()
+		}
+	})
 })
