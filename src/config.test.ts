@@ -10,6 +10,7 @@ import {
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	firstRunSettingsDefaults,
 	getApiKeyMismatchWarning,
 	getApiKeySource,
 	getConfiguredLegacyMcpKeys,
@@ -1784,6 +1785,42 @@ describe("ensureHideThinkingBlockDefault", () => {
 		const visible = { hideThinkingBlock: false }
 		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
 		expect(visible.hideThinkingBlock).toBe(false)
+	})
+})
+
+describe("firstRunSettingsDefaults", () => {
+	it("seeds the explicit new-user default set, including collapseWork", () => {
+		expect(firstRunSettingsDefaults()).toEqual({
+			quietStartup: true,
+			theme: "kimchi-minimal",
+			retry: RETRY_DEFAULTS,
+			hideThinkingBlock: true,
+			collapseWork: "all",
+		})
+	})
+
+	it("keeps collapseWork at the read-time fallback so /settings shows it", () => {
+		expect(firstRunSettingsDefaults().collapseWork).toBe("all")
+	})
+
+	it("returns a fresh object each call so callers cannot corrode the defaults", () => {
+		const first = firstRunSettingsDefaults()
+		first.collapseWork = "off"
+		expect(firstRunSettingsDefaults().collapseWork).toBe("all")
+	})
+
+	it("deep-copies the retry defaults so nested mutations cannot corrode them", () => {
+		const first = firstRunSettingsDefaults()
+		const firstRetry = first.retry as typeof RETRY_DEFAULTS
+		firstRetry.provider.timeoutMs = 1
+
+		// The shared module-level defaults stay untouched...
+		expect(RETRY_DEFAULTS.provider.timeoutMs).toBe(600_000)
+
+		// ...and a later call still gets pristine retry settings.
+		const second = firstRunSettingsDefaults()
+		expect(second.retry).toEqual(RETRY_DEFAULTS)
+		expect((second.retry as typeof RETRY_DEFAULTS).provider.timeoutMs).toBe(600_000)
 	})
 })
 
