@@ -30,7 +30,6 @@ const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
  *  circular import: agent-types.ts imports this module). */
 const ALL_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
-
 /**
  * System prompt for the Ferment V2 Verifier persona: an attempt to break the
  * delivery within the objective's boundaries, with an explicit list of the
