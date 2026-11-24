@@ -1088,6 +1088,38 @@ function writeConfigField(key: string, value: unknown, configPath: string): void
 	})
 }
 
+type ModelEffortDefaults = Record<string, Record<string, string>>
+
+function parseModelEffortDefaults(value: unknown): ModelEffortDefaults {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+	const defaults: ModelEffortDefaults = {}
+	for (const [appMode, rawModels] of Object.entries(value)) {
+		if (!rawModels || typeof rawModels !== "object" || Array.isArray(rawModels)) continue
+		const models = Object.fromEntries(
+			Object.entries(rawModels).filter(([modelId, effort]) => modelId.length > 0 && typeof effort === "string"),
+		) as Record<string, string>
+		if (Object.keys(models).length > 0) defaults[appMode] = models
+	}
+	return defaults
+}
+
+export function readModelEffortDefaults(configPath: string = KIMCHI_CONFIG_PATH): ModelEffortDefaults {
+	return parseModelEffortDefaults(readConfigObject(configPath)?.modelEffortDefaults)
+}
+
+export function writeModelEffortDefault(
+	appMode: string,
+	modelId: string,
+	effort: string,
+	configPath: string = KIMCHI_CONFIG_PATH,
+): void {
+	updateConfigFile(configPath, (raw) => {
+		const defaults = parseModelEffortDefaults(raw.modelEffortDefaults)
+		defaults[appMode] = { ...defaults[appMode], [modelId]: effort }
+		raw.modelEffortDefaults = defaults
+	})
+}
+
 function updateOnboardingConfig(configPath: string, update: (onboarding: Record<string, unknown>) => void): void {
 	updateConfigFile(configPath, (raw) => {
 		const onboarding =

@@ -88,6 +88,7 @@ import {
 	resolveSelfHostedEndpoints,
 	type WriteApiKeyOptions,
 	writeApiKey,
+	writeModelEffortDefault,
 	writeRegion,
 } from "../../config.js"
 import {
@@ -165,6 +166,15 @@ import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "../../llm-gateway-error.js"
 import { collectDeprecationMarkers } from "../../model-deprecation.js"
+import {
+	getModelEffortDefault,
+	MODEL_EFFORT_SELECTION_ENTRY_TYPE,
+	parseModelThinkingLevel,
+	parseSessionAppMode,
+	readSessionEffortSelections,
+	type SessionAppMode,
+	sessionAppModeFromMeta,
+} from "../../model-effort.js"
 import { applyOrganizationHeader, updateModelsConfig } from "../../models.js"
 import { oauthConfigForRegion, ssoAvailableRegions } from "../../oauth-config.js"
 import { clearPiAuth, syncOAuthCredentialToKimchiProviders, syncPiAuth } from "../../pi-auth.js"
@@ -197,10 +207,13 @@ import {
 	getClientOptedIntoArtifacts,
 	getClientOptedIntoBackgroundRuns,
 	getClientOptedIntoMcpOAuthTurn,
+	getClientOptedIntoModelEffort,
 	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
 	MCP_OAUTH_TURN_CAPABILITY,
+	MODEL_EFFORT_CAPABILITY,
+	MODEL_EFFORT_VERSION,
 	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
 import { registerAcpChildInteraction, registerAcpRootUIContext } from "./child-interaction-registry.js"
@@ -685,6 +698,7 @@ export class KimchiAcpAgent {
 					[BACKGROUND_RUNS_CAPABILITY]: true,
 					[MCP_OAUTH_TURN_CAPABILITY]: true,
 					[PR_MONITORING_CAPABILITY]: true,
+					[MODEL_EFFORT_CAPABILITY]: MODEL_EFFORT_VERSION,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
@@ -954,6 +968,8 @@ export class KimchiAcpAgent {
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
 				session,
+				appMode: sessionAppModeFromMeta(params._meta),
+				effortByModel: readSessionEffortSelections(session.sessionManager.getEntries()),
 				unsubscribe: () => {},
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
@@ -996,6 +1012,7 @@ export class KimchiAcpAgent {
 			this.scheduleAvailableCommandsUpdate(sessionId)
 			this.scheduleProjectTrustUpdate(sessionId)
 
+			this.restoreModelEffort(record)
 			const configOptions = buildConfigOptions(session, initialMode.mode)
 			// Seed the tracker with what the client is about to receive, so the
 			// first message_start only re-publishes when the router's pick has
@@ -1135,6 +1152,45 @@ export class KimchiAcpAgent {
 		return permissionMode
 	}
 
+	private async setModelEffort(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const record = this.sessions.get(typeof params.sessionId === "string" ? params.sessionId : "")
+		if (!record) throw RequestError.invalidParams(undefined, "sessionId must identify a current session")
+		const appMode = parseSessionAppMode(params.appMode)
+		if (!appMode || record.appMode !== appMode) {
+			throw RequestError.invalidParams(undefined, "appMode must match the session setup metadata")
+		}
+		if (typeof params.modelId !== "string" || !splitModelRef(params.modelId)) {
+			throw RequestError.invalidParams(undefined, "modelId must be a concrete provider/modelId reference")
+		}
+		const currentRef = record.session.model ? refFromModel(record.session.model) : undefined
+		const target = findModelByRef(getSessionModelRegistry(record.session), params.modelId)
+		if (!target || isAutoRoutedModel(target)) {
+			throw RequestError.invalidParams(undefined, `model not available for Effort selection: ${params.modelId}`)
+		}
+		const selection = thinkingSelection(
+			currentRef === params.modelId && record.session.model ? record.session.model : target,
+		)
+		const effort = parseModelThinkingLevel(params.value)
+		if (
+			selection.mode !== "levels" ||
+			selection.selectable.length < 2 ||
+			!effort ||
+			!selection.selectable.includes(effort)
+		) {
+			throw RequestError.invalidParams(
+				undefined,
+				`invalid thinking level "${params.value}" for model ${params.modelId}`,
+			)
+		}
+
+		if (currentRef !== params.modelId) await this.doSetModel(record, params.modelId)
+		this.doSetThinkingLevel(record, effort)
+		writeModelEffortDefault(appMode, params.modelId, effort)
+		return {
+			configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
+		}
+	}
+
 	/** Apply a reasoning_effort set request; the value must be one of the
 	 *  advertised (model-curated) levels. */
 	private doSetThinkingLevel(record: SessionRecord, value: string): void {
@@ -1154,6 +1210,34 @@ export class KimchiAcpAgent {
 			)
 		}
 		session.setThinkingLevel(value)
+		if (getClientOptedIntoModelEffort(this.clientCapabilities) && !isAutoRoutedModel(session.model)) {
+			const modelId = refFromModel(session.model)
+			record.effortByModel.set(modelId, value)
+			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value })
+		}
+	}
+
+	/** Resolve the current concrete model through session memory, then the
+	 * App-mode default, then the session's existing harness level. */
+	private restoreModelEffort(record: SessionRecord): void {
+		if (!getClientOptedIntoModelEffort(this.clientCapabilities)) return
+		const { session } = record
+		const model = session.model
+		if (!model || isAutoRoutedModel(model)) return
+		const selection = thinkingSelection(model)
+		if (selection.mode !== "levels" || selection.selectable.length === 0) return
+
+		const modelId = refFromModel(model)
+		const remembered = record.effortByModel.get(modelId)
+		const stored = remembered ?? getModelEffortDefault(record.appMode, modelId)
+		const clamped = clampToSelection(stored ?? session.thinkingLevel, selection)
+		const effort = parseModelThinkingLevel(clamped)
+		if (!effort) return
+		if (stored && session.thinkingLevel !== effort) session.setThinkingLevel(effort)
+		record.effortByModel.set(modelId, effort)
+		if (remembered !== effort) {
+			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value: effort })
+		}
 	}
 
 	private async doSetModel(record: SessionRecord, value: string): Promise<string> {
@@ -1185,6 +1269,7 @@ export class KimchiAcpAgent {
 			// Pi's setModel only throws "if no auth is configured for the model"
 			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
 		}
+		this.restoreModelEffort(record)
 		// Both entry points advertise refreshed options here: the model-dependent
 		// reasoning_effort set changes with the model, and unstable_setSessionModel's
 		// legacy wire shape returns {}, so those clients can only learn it via push.
@@ -1314,6 +1399,8 @@ export class KimchiAcpAgent {
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
 				session,
+				appMode: sessionAppModeFromMeta(params._meta),
+				effortByModel: readSessionEffortSelections(session.sessionManager.getEntries()),
 				unsubscribe: () => {},
 				// The session header cwd was validated against params.cwd above, so
 				// the session manager's cwd is the session's true cwd.
@@ -1366,6 +1453,7 @@ export class KimchiAcpAgent {
 			this.scheduleAvailableCommandsUpdate(sessionId)
 			this.scheduleProjectTrustUpdate(sessionId)
 
+			this.restoreModelEffort(record)
 			const configOptions = buildConfigOptions(session, initialMode.mode)
 			await this.subagentRegistry.replay(session, replayHistory)
 			// Same seeding as newSession (see there) — a resumed Auto session
@@ -1861,6 +1949,11 @@ export class KimchiAcpAgent {
 				// read-modify-write helper so sibling onboarding keys set by other
 				// Kimchi surfaces survive.
 				return handleSetOnboardingFlag({}, params)
+			case AVAILABLE_EXT_METHODS.set_model_effort:
+				if (!getClientOptedIntoModelEffort(this.clientCapabilities)) {
+					throw RequestError.methodNotFound(AVAILABLE_EXT_METHODS.set_model_effort)
+				}
+				return this.setModelEffort(params)
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
 			case AVAILABLE_EXT_METHODS.steering:
