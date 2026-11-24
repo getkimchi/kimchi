@@ -1,15 +1,26 @@
 import type {
 	AgentToolResult,
-	ExtensionContext,
+	ExtensionToolContext,
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
 } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
 import { describe, expect, it } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createToolContext } from "../__mocks__/context.js"
 import { createCodemodeOutcomeTracker, readCodemodeContextReduction } from "./outcome.js"
 
-function context(sessionId: string): ExtensionContext {
-	return createContext({ sessionManager: { getSessionId: () => sessionId } })
+/** Tools the script can call; `structured` ones declare an outputSchema, like Pi's bash and read. */
+function context(sessionId: string, structured: string[] = []): ExtensionToolContext {
+	const ctx = createToolContext({ sessionManager: { getSessionId: () => sessionId } })
+	const tools: ExtensionToolContext["tools"] = structured.map((name) => ({
+		name,
+		label: name,
+		description: name,
+		parameters: Type.Object({}),
+		outputSchema: Type.Object({}),
+		execute: async () => ({ content: [], details: {} }),
+	}))
+	return { ...ctx, tools }
 }
 
 function nestedStart(toolCallId: string, parentToolCallId?: string): ToolExecutionStartEvent {
@@ -86,17 +97,18 @@ describe("createCodemodeOutcomeTracker", () => {
 		})
 	})
 
-	// Pi hands a script `structuredContent` instead of the text whenever the tool
-	// declares an outputSchema (bash, read), so that is what reached the script.
-	it("counts the structured value the script received, not the shorter display text", () => {
+	// Pi's toScriptValue hands a script `structuredContent` only when the tool
+	// declares an outputSchema; otherwise the script gets the joined text.
+	it("counts the structured value for a tool with an outputSchema", () => {
 		const tracker = createCodemodeOutcomeTracker()
-		const ctx = context("session")
+		const ctx = context("session", ["bash", "read"])
 		tracker.begin(ctx, "root")
 		tracker.nestedStart(ctx, nestedStart("root/bash", "root"))
 		tracker.nestedStart(ctx, nestedStart("root/read", "root"))
 		const structured = { text: "x".repeat(10_000) }
 		tracker.nestedEnd(ctx, {
 			...nestedEnd("root/bash", "short", "root"),
+			toolName: "bash",
 			result: { content: [{ type: "text", text: "short" }], details: {}, structuredContent: structured },
 		})
 		tracker.nestedEnd(ctx, {
@@ -105,6 +117,42 @@ describe("createCodemodeOutcomeTracker", () => {
 		})
 		expect(tracker.complete(ctx, "root", result("x"))).toEqual({
 			intermediateTextChars: JSON.stringify(structured).length + "abcdef".length,
+			returnedTextChars: 1,
+			complete: true,
+		})
+	})
+
+	it("counts the text for a tool without an outputSchema, even when it returns structuredContent", () => {
+		const tracker = createCodemodeOutcomeTracker()
+		const ctx = context("session")
+		tracker.begin(ctx, "root")
+		tracker.nestedStart(ctx, nestedStart("root/custom", "root"))
+		tracker.nestedEnd(ctx, {
+			...nestedEnd("root/custom", "ok", "root"),
+			toolName: "custom",
+			result: { content: [{ type: "text", text: "ok" }], details: {}, structuredContent: "y".repeat(50_000) },
+		})
+		expect(tracker.complete(ctx, "root", result("x"))).toEqual({
+			intermediateTextChars: 2,
+			returnedTextChars: 1,
+			complete: true,
+		})
+	})
+
+	it("counts only the text of a nested text plus image result, which is all the script receives", () => {
+		const tracker = createCodemodeOutcomeTracker()
+		const ctx = context("session")
+		tracker.begin(ctx, "root")
+		tracker.nestedStart(ctx, nestedStart("root/child", "root"))
+		tracker.nestedEnd(
+			ctx,
+			nestedEnd("root/child", "", "root", [
+				{ type: "text", text: "abc" },
+				{ type: "image", data: "AAAA", mimeType: "image/png" },
+			]),
+		)
+		expect(tracker.complete(ctx, "root", result("x"))).toEqual({
+			intermediateTextChars: 3,
 			returnedTextChars: 1,
 			complete: true,
 		})
@@ -210,25 +258,6 @@ describe("createCodemodeOutcomeTracker incomplete accounting", () => {
 		}
 		expect(tracker.complete(ctx, "root", returned)).toEqual({
 			intermediateTextChars: 0,
-			returnedTextChars: 1,
-			complete: false,
-		})
-	})
-
-	it("marks accounting incomplete when a nested result carries non-text blocks", () => {
-		const tracker = createCodemodeOutcomeTracker()
-		const ctx = context("session")
-		tracker.begin(ctx, "root")
-		tracker.nestedStart(ctx, nestedStart("root/child", "root"))
-		tracker.nestedEnd(
-			ctx,
-			nestedEnd("root/child", "", "root", [
-				{ type: "text", text: "abc" },
-				{ type: "image", data: "AAAA", mimeType: "image/png" },
-			]),
-		)
-		expect(tracker.complete(ctx, "root", result("x"))).toEqual({
-			intermediateTextChars: 3,
 			returnedTextChars: 1,
 			complete: false,
 		})

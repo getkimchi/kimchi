@@ -1,6 +1,7 @@
 import type {
 	AgentToolResult,
 	ExtensionContext,
+	ExtensionToolContext,
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
 } from "@earendil-works/pi-coding-agent"
@@ -55,13 +56,15 @@ function resultTextSize(result: unknown): TextSize {
 	return size
 }
 
-/** What a nested call handed the script. Pi passes `structuredContent` instead
- *  of the text whenever the tool declares an outputSchema (bash, read), and it
- *  can be far larger than the truncated display text. */
-function scriptValueSize(result: unknown): TextSize {
-	if (!isRecord(result) || result.structuredContent === undefined) return resultTextSize(result)
-	const value = result.structuredContent
-	return { chars: typeof value === "string" ? value.length : JSON.stringify(value).length, hasNonText: false }
+/** What a nested call handed the script, following Pi's `toScriptValue`:
+ *  `structuredContent` when the tool declares an outputSchema (bash, read),
+ *  otherwise only the joined text, so image blocks never reach the script. */
+function scriptValueChars(result: unknown, structured: boolean): number {
+	if (structured && isRecord(result) && result.structuredContent !== undefined) {
+		const value = result.structuredContent
+		return typeof value === "string" ? value.length : JSON.stringify(value).length
+	}
+	return resultTextSize(result).chars
 }
 
 /** `models.*` results reach the script without tool execution events, so they are never counted. */
@@ -79,6 +82,8 @@ function contextKey(ctx: ExtensionContext, toolCallId: string): string {
 
 interface PendingOutcome {
 	sessionId: string
+	/** Tools that declare an outputSchema, so the script gets their structured value. */
+	structuredTools: Set<string>
 	pendingNestedCalls: Set<string>
 	endedNestedCalls: Set<string>
 	intermediateTextChars: number
@@ -92,9 +97,10 @@ export function createCodemodeOutcomeTracker() {
 	const pending = new Map<string, PendingOutcome>()
 
 	return {
-		begin(ctx: ExtensionContext, toolCallId: string): void {
+		begin(ctx: ExtensionToolContext, toolCallId: string): void {
 			pending.set(contextKey(ctx, toolCallId), {
 				sessionId: ctx.sessionManager.getSessionId(),
+				structuredTools: new Set(ctx.tools.filter((tool) => tool.outputSchema).map((tool) => tool.name)),
 				pendingNestedCalls: new Set(),
 				endedNestedCalls: new Set(),
 				intermediateTextChars: 0,
@@ -115,9 +121,7 @@ export function createCodemodeOutcomeTracker() {
 			if (!outcome || outcome.endedNestedCalls.has(event.toolCallId)) return
 			outcome.endedNestedCalls.add(event.toolCallId)
 			if (!outcome.pendingNestedCalls.delete(event.toolCallId)) outcome.complete = false
-			const size = scriptValueSize(event.result)
-			outcome.intermediateTextChars += size.chars
-			if (size.hasNonText) outcome.complete = false
+			outcome.intermediateTextChars += scriptValueChars(event.result, outcome.structuredTools.has(event.toolName))
 		},
 
 		complete(ctx: ExtensionContext, toolCallId: string, result: AgentToolResult<unknown>): CodemodeContextReduction {
