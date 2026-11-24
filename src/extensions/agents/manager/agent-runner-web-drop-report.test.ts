@@ -1,16 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
-import type { Api, Model } from "@earendil-works/pi-ai"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext, createToolContext } from "../../__mocks__/context.js"
-import { createExtensionApi } from "../../__mocks__/extension-api.js"
-import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
-import dapExtension from "../../dap.js"
-import codexCorrelationExtension from "../../login/codex-correlation-extension.js"
-import * as diagnostics from "../../work-attribution/diagnostics.js"
-import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
-import type { WorkSegment } from "../../work-attribution.js"
+import { flushWorkSummaries } from "../../work-attribution/summary.js"
 
 let attributionDir: string
 beforeEach(() => {
@@ -29,6 +21,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		DefaultResourceLoader: vi.fn().mockImplementation(function () {
 			return {
 				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			}
 		}),
 		SessionManager: {
@@ -43,6 +36,13 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		getAgentDir: vi.fn(() => process.env.PI_CODING_AGENT_DIR),
 	}
 })
+
+// Prevent the eagerly constructed worker gate from pulling main-session UI
+// modules into this partial Pi test environment. Gate behavior has its own suite.
+vi.mock("../../permissions/index.js", () => ({
+	createWorkerPermissionsExtension: vi.fn(() => function workerPermissionsStub() {}),
+	getPermissionsExtensionOptions: vi.fn(() => undefined),
+}))
 
 vi.mock("../../env.js", () => ({
 	detectEnv: vi.fn().mockResolvedValue({ os: "linux", shell: "bash" }),
@@ -103,6 +103,11 @@ vi.mock("../personas/default-agents.js", () => ({
 	DEFAULT_AGENTS: new Map(),
 }))
 
+vi.mock("../../tags.js", () => ({
+	getCurrentPhase: vi.fn().mockReturnValue(undefined),
+	setCurrentPhase: vi.fn(),
+}))
+
 vi.mock("../../memory/memory.js", () => ({
 	buildMemoryBlock: vi.fn().mockReturnValue(""),
 	buildReadOnlyMemoryBlock: vi.fn().mockReturnValue(""),
@@ -153,30 +158,17 @@ vi.mock("../../../resources/store.js", () => ({
 	isResourceEnabled: vi.fn().mockReturnValue(true),
 }))
 
-import {
-	type AgentSession,
-	type BeforeProviderHeadersEvent,
-	type CreateAgentSessionResult,
-	createAgentSession,
-	DefaultResourceLoader,
-	type ExtensionAPI,
-	type InlineExtension,
-} from "@earendil-works/pi-coding-agent"
+import { createAgentSession, DefaultResourceLoader, type InlineExtension } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
-import { resetOrgPolicyForTests } from "../../../org-policy.js"
-import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
 import { isResourceEnabled } from "../../../resources/store.js"
-import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../agents/subagent-bash-clamp.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
-import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
-import { getActiveSubagentToolNames, type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
-import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
+import { type RunOptions, runAgent } from "./agent-runner.js"
 import { formatRunResultText } from "./result-text.js"
 import { subagentWebToolFactories } from "./subagent-web-tools.js"
 
@@ -184,14 +176,14 @@ const mockCreateAgentSession = vi.mocked(createAgentSession)
 const mockGetConfig = vi.mocked(getConfig)
 const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
-const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
-const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
-const mockScanBriefSkills = vi.mocked(scanBriefSkills)
-const mockBuildRoleGuidelinesSection = vi.mocked(buildRoleGuidelinesSection)
-const mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
+const _mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
+const _mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
+const _mockScanBriefSkills = vi.mocked(scanBriefSkills)
+const _mockBuildRoleGuidelinesSection = vi.mocked(buildRoleGuidelinesSection)
+const _mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
-const mockTelemetryExtension = vi.mocked(telemetryExtension)
-const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
+const _mockTelemetryExtension = vi.mocked(telemetryExtension)
+const _mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
 const mockIsResourceEnabled = vi.mocked(isResourceEnabled)
 
 type SessionEvent = { type: string; [k: string]: unknown }

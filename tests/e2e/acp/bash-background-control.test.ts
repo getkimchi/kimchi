@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
-import type { SessionUpdate } from "@agentclientprotocol/sdk"
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { expect, it } from "vitest"
 import { STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitForSessionUpdate } from "./support/scenarios.js"
@@ -35,7 +35,7 @@ it(
 		})
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const pending = fixture.conn.prompt({
+			const pending = fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Run a command and draft while it finishes" }],
 			})
@@ -48,7 +48,7 @@ it(
 					update.content.text.includes("Drafting section 1"),
 			)
 			expect(
-				await fixture.conn.extMethod(STEER_METHOD, { sessionId, prompt: "Inspect just the command before continuing" }),
+				await fixture.conn.request(STEER_METHOD, { sessionId, prompt: "Inspect just the command before continuing" }),
 			).toMatchObject({ status: "injected" })
 			expect((await pending).stopReason).toBe("end_turn")
 			const messages =
@@ -247,7 +247,7 @@ it(
 		})
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const pending = fixture.conn.prompt({
+			const pending = fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Start a command and wait for it" }],
 			})
@@ -273,7 +273,7 @@ it(
 			)._meta?.bashControlWait
 			expect(waitMeta?.commands).toEqual([expect.objectContaining({ command: "echo alive && sleep 90" })])
 			expect(typeof waitMeta?.elapsedSeconds).toBe("number")
-			await fixture.conn.cancel({ sessionId })
+			await fixture.conn.notify("session/cancel", { sessionId })
 			expect((await pending).stopReason).toBe("cancelled")
 			expect((await prompt(fixture, sessionId, "Inspect the command, then stop it")).stopReason).toBe("end_turn")
 			expect(fixture.client.sessionUpdates.map(({ update }) => update)).toEqual(
@@ -459,7 +459,7 @@ it(
 		})
 		try {
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const pending = fixture.conn.prompt({
+			const pending = fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Start a long command, then finish the task" }],
 			})
@@ -473,7 +473,7 @@ it(
 					update.content.type === "text" &&
 					update.content.text.includes("I believe the work is complete"),
 			)
-			const steerResult = (await fixture.conn.extMethod(STEER_METHOD, {
+			const steerResult = (await fixture.conn.request(STEER_METHOD, {
 				sessionId,
 				prompt: "Actually, stop the background command",
 			})) as { status: string }
@@ -582,7 +582,7 @@ it(
 		try {
 			writeFileSync(join(fixture.workDir, "independent.txt"), "wake read contents")
 			const sessionId = await newSession(fixture, fixture.workDir)
-			const pending = fixture.conn.prompt({
+			const pending = fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Run a long command, then wait for it to finish" }],
 			})
@@ -597,7 +597,7 @@ it(
 			// Steer DURING the active wait — the wait must release so the answer
 			// arrives long before the command ends.
 			expect(
-				await fixture.conn.extMethod(STEER_METHOD, { sessionId, prompt: "Quick question: what is 2+2?" }),
+				await fixture.conn.request(STEER_METHOD, { sessionId, prompt: "Quick question: what is 2+2?" }),
 			).toMatchObject({ status: "injected" })
 			expect((await pending).stopReason).toBe("end_turn")
 
@@ -649,7 +649,7 @@ it(
 			// Steer DURING the wake run: the run counts as active, so the steer
 			// injects into it (not promptRequired) and is answered inside the run.
 			expect(
-				await fixture.conn.extMethod(STEER_METHOD, { sessionId, prompt: "While it wraps up: what is 6+6?" }),
+				await fixture.conn.request(STEER_METHOD, { sessionId, prompt: "While it wraps up: what is 6+6?" }),
 			).toMatchObject({ status: "injected" })
 			await waitForSessionUpdate(
 				fixture,
@@ -677,7 +677,7 @@ it(
 			// A prompt sent while the wake still streamed waits the run out and
 			// then runs as its own turn — pi never sees a mid-run prompt, so no
 			// "Agent is already processing" failure.
-			const followUp = await fixture.conn.prompt({
+			const followUp = await fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Is anything still running?" }],
 			})

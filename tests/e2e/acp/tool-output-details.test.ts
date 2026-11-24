@@ -50,7 +50,7 @@ describe("ACP integration — unrelated tool result details", () => {
 		const liveDetails = unrelatedToolOutput(fixture)?.details
 
 		const replayStart = fixture.client.sessionUpdates.length
-		await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+		await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 		const replayDetails = unrelatedToolOutput(fixture, replayStart)?.details
 
 		const expectedDetails = { handoff: "manual", preserved: "yes" }

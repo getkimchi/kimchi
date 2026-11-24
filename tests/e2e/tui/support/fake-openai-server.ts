@@ -129,6 +129,8 @@ interface StartFakeOpenAiServerOptions {
 	responses: FakeResponseScript[]
 	/** Opt in to deterministic local embeddings for memory-edit tests. */
 	enableMemoryEmbeddings?: boolean
+	/** Hold the embedding request whose body contains this text, for in-flight UI assertions. */
+	memoryEmbeddingHold?: { inputIncludes: string; until: Promise<unknown> }
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
 	/** Org policy served on the platform endpoints the harness queries at startup
@@ -274,6 +276,10 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			}
 
 			if (options.enableMemoryEmbeddings === true && req.method === "POST" && req.url?.endsWith("/embeddings")) {
+				if (options.memoryEmbeddingHold && JSON.stringify(body).includes(options.memoryEmbeddingHold.inputIncludes)) {
+					await options.memoryEmbeddingHold.until
+				}
+				if (res.destroyed || res.writableEnded) return
 				writeJson(res, 200, {
 					object: "list",
 					data: [{ object: "embedding", embedding: [1, ...Array.from({ length: 1023 }, () => 0)], index: 0 }],

@@ -1,4 +1,4 @@
-import type { ClientCapabilities } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 
 export const CAPABILITIES_KEY = "kimchi.dev"
 

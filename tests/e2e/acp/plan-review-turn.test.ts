@@ -8,7 +8,7 @@
 // agent_start → execution began; agent_settled → drained), plus one
 // permissions notification for pi-invisible closes (rework / dismissal).
 
-import type { ClientCapabilities } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, describe, expect, it } from "vitest"
 import { EXECUTE_LOCAL_DECISION_OPTION } from "../../../src/extensions/ferment/plan-review.js"
 import { ADVERTISED_CAPABILITIES } from "../../../src/modes/acp/capabilities.js"

@@ -82,10 +82,10 @@ async function runAuthScenario(name: string, url: string): Promise<void> {
 	log(`Kimchi ACP fixture started for ${name}`)
 
 	try {
-		const result = await fixture.conn.extMethod("_kimchi.dev/probe_mcp_server", {
+		const result = (await fixture.conn.request("_kimchi.dev/probe_mcp_server", {
 			server: fixture.mcp.serverDefinition,
 			serverName: "conformance",
-		})
+		})) as { needsAuth: boolean; error: unknown }
 		if (result.needsAuth !== false || result.error !== null) {
 			throw new Error(`Kimchi MCP conformance authentication did not settle: ${JSON.stringify(result)}`)
 		}

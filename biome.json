@@ -63,11 +63,12 @@
 			}
 		},
 		{
-			"includes": ["src/extensions/tool-rendering.ts"],
+			"includes": ["src/extensions/tool-rendering.ts", "src/extensions/tool-grouping.ts", "src/extensions/tool-grouping.test.ts"],
 			"linter": {
 				"rules": {
 					"suspicious": {
-						"noControlCharactersInRegex": "off"
+						"noControlCharactersInRegex": "off",
+						"noExplicitAny": "off"
 					}
 				}
 			}

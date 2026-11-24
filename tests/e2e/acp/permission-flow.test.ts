@@ -18,7 +18,7 @@
 //   - src/modes/acp/acp-prompter.ts (deny branch + uiContext.input)
 //   - src/modes/acp/acp-ui-context.ts (input → unstable_createElicitation)
 
-import type { ClientCapabilities } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { ADVERTISED_CAPABILITIES } from "../../../src/modes/acp/capabilities.js"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"

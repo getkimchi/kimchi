@@ -13,7 +13,7 @@
 // neighbouring settings key — the same trade the store already makes for the
 // /resources command and set_onboarding_flag.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import { getResourceDefinition, getResourceDefinitions } from "../../../resources/definitions.js"
 import {
 	getResourceOverride,

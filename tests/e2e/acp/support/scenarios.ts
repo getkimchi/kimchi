@@ -3,7 +3,7 @@
 // and asserts the wire-level behavior the *client* observes.
 
 import { setTimeout as delay } from "node:timers/promises"
-import type * as acp from "@agentclientprotocol/sdk"
+import type * as acp from "@agentclientprotocol/sdk/unstable"
 import { type AcpFixture, PROMPT_TIMEOUT_MS } from "./acp-fixture.js"
 
 export interface ScenarioResult {
@@ -13,7 +13,7 @@ export interface ScenarioResult {
 }
 
 export async function newSession(fixture: AcpFixture, cwd: string): Promise<string> {
-	const ns = await fixture.conn.newSession({ cwd, mcpServers: [] })
+	const ns = await fixture.conn.request("session/new", { cwd, mcpServers: [] })
 	process.stderr.write(`[acp-e2e] newSession=${ns.sessionId}\n`)
 	return ns.sessionId
 }
@@ -56,7 +56,7 @@ export async function prompt(
 	extraBlocks: acp.ContentBlock[] = [],
 ): Promise<ScenarioResult> {
 	const promptPromise = fixture.conn
-		.prompt({ sessionId, prompt: [{ type: "text", text }, ...extraBlocks] })
+		.request("session/prompt", { sessionId, prompt: [{ type: "text", text }, ...extraBlocks] })
 		.catch((err) => ({ stopReason: "ERROR" as const, error: err }))
 
 	const result = await Promise.race([

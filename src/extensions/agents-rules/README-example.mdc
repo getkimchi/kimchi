@@ -1,0 +1,30 @@
+---
+description: Keep docs/catalog-architecture.md in sync with services/catalog changes
+globs:
+  - "services/catalog/**"
+---
+
+# Catalog documentation mirror
+
+The `services/catalog/` code and `docs/catalog-architecture.md` must not drift apart.
+
+## When this applies
+
+You just read, edited, or created a file under `services/catalog/`.
+
+## What to do
+
+After finishing a significant change in `services/catalog/` — new service, changed
+responsibility boundaries, renamed module, changed data flow or API contract —
+mirror the change in `docs/catalog-architecture.md` before finishing the task:
+
+1. Open `docs/catalog-architecture.md` and locate the section describing the
+   component you changed.
+2. Update the section to reflect the new reality (component list, interactions,
+   invariants). Keep the wording consistent with the rest of the document.
+3. If the change introduces a new component, add it to the architecture diagram
+   source and regenerate if the repo has a script for it.
+
+Cosmetic changes (formatting, comments, import order) do not require a doc update.
+When unsure whether a change is significant, update the doc anyway — a redundant
+paragraph costs less than a stale architecture document.

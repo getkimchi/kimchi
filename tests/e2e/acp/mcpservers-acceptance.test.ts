@@ -28,7 +28,7 @@ describe("ACP integration — mcpServers acceptance", () => {
 	})
 
 	it("accepts session/new with non-empty mcpServers and returns a sessionId", async () => {
-		const res = await fixture.conn.newSession({
+		const res = await fixture.conn.request("session/new", {
 			cwd: fixture.workDir,
 			mcpServers: [
 				{
@@ -44,7 +44,7 @@ describe("ACP integration — mcpServers acceptance", () => {
 	})
 
 	it("accepts session/new with empty mcpServers array (backward compat)", async () => {
-		const res = await fixture.conn.newSession({
+		const res = await fixture.conn.request("session/new", {
 			cwd: fixture.workDir,
 			mcpServers: [],
 		})
@@ -55,7 +55,7 @@ describe("ACP integration — mcpServers acceptance", () => {
 		// The fixture already called initialize during startup. Re-initialize
 		// to inspect the capabilities — ACP allows multiple initialize calls
 		// on the same connection (the response is deterministic).
-		const init = await fixture.conn.initialize({
+		const init = await fixture.conn.request("initialize", {
 			protocolVersion: 1,
 			clientCapabilities: {},
 		})

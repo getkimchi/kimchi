@@ -38,7 +38,7 @@
 // machine codes, never message text (contract §3). One flow per connection
 // (`SSO_IN_PROGRESS`), mirroring the legacy `AUTH_IN_PROGRESS` rule.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import {
 	CallbackPortInUseError,

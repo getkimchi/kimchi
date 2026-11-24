@@ -146,7 +146,7 @@ it(
 			// Restore the session mid-run (session/load) BEFORE the exit: the
 			// replay emits no boundary, and the live process's exit must still
 			// wake the agent with its own bracketed run.
-			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 
 			await waitForSessionUpdate(
 				fixture,
@@ -202,7 +202,7 @@ it(
 				(starts) => starts.length > 0,
 				45_000,
 			)
-			await fixture.conn.cancel({ sessionId })
+			await fixture.conn.notify("session/cancel", { sessionId })
 			await waitFor(
 				() => runBoundaries(fixture).ends(),
 				(ends) => ends.length > 0,

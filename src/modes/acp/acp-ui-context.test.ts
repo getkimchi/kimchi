@@ -1,9 +1,9 @@
 import type {
-	AgentSideConnection,
+	AgentContext,
 	ClientCapabilities,
 	RequestPermissionResponse,
 	SessionNotification,
-} from "@agentclientprotocol/sdk"
+} from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -32,11 +32,13 @@ function makeConn(overrides: MakeConnOverrides = {}, clientCapabilities?: Client
 	const requestPermission = vi.fn(overrides.requestPermission)
 	const send = vi.fn<Send>(() => {})
 	const conn = {
-		extMethod,
-		extNotification,
-		createElicitation: createElicitation,
-		requestPermission,
-	} as unknown as AgentSideConnection
+		request: async (method: string, params: unknown) => {
+			if (method === "elicitation/create") return createElicitation(params)
+			if (method === "session/request_permission") return requestPermission(params)
+			return extMethod(method, params as Record<string, unknown>)
+		},
+		notify: (method: string, params: Record<string, unknown>) => extNotification(method, params),
+	} as unknown as AgentContext
 	return {
 		conn,
 		extMethod,

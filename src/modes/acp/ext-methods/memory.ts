@@ -21,7 +21,7 @@
 // extensions.memory resource (set_resource_enabled, restart required). The
 // session toggle is runtime state only.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	type AdminDeps,

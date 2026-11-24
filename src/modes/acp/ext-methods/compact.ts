@@ -11,7 +11,7 @@
 // `_kimchi.dev/agent_activity` notification (compaction_start/compaction_end);
 // this response only carries the terminal outcome.
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { isExpectedCompactionError } from "../../../extensions/compaction-thresholds.js"
 import type { SessionTurnTarget } from "../types.js"

@@ -1,4 +1,4 @@
-import type { SessionNotification } from "@agentclientprotocol/sdk"
+import type { SessionNotification } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { __resetCheckinGate, markCheckinPending, reconcileCheckinScope } from "../../extensions/todos/checkin-gate.js"
 import { __resetReconciliationBookkeeping, advanceInputRevision } from "../../extensions/todos/reconciliation.js"

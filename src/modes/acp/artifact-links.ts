@@ -1,6 +1,6 @@
 import { statSync } from "node:fs"
 import { pathToFileURL } from "node:url"
-import type { SessionUpdate } from "@agentclientprotocol/sdk"
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { type Artifact, type ArtifactFileSnapshot, artifactsFromToolCall } from "../../extensions/artifacts/detect.js"
 import type { RecordedArtifact } from "../../extensions/artifacts/recorder.js"
 import { kimchiDevMetaOf } from "./capabilities.js"

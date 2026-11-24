@@ -23,7 +23,7 @@
 // `kimchi-dev/*`, but the base entry is authoritative — unstable_logout()
 // removes exactly it).
 
-import { RequestError } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import { type ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import {

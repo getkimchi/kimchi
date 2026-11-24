@@ -93,7 +93,10 @@ it.each([
 		const sessionId = await newSession(fixture, cwd)
 		const status = async (id: string) => {
 			const before = fixture.client.agentTextBySession().get(id)?.length ?? 0
-			await fixture.conn.prompt({ sessionId: id, prompt: [{ type: "text", text: "/pr-watch status" }] })
+			await fixture.conn.request("session/prompt", {
+				sessionId: id,
+				prompt: [{ type: "text", text: "/pr-watch status" }],
+			})
 			return fixture.client.agentTextBySession().get(id)?.slice(before) ?? ""
 		}
 		if (kind !== "flag") {
@@ -133,7 +136,7 @@ it.each([
 			expect(git(cwd, "rev-parse", "HEAD")).toBe(before)
 		} else if (kind !== "offer") expect(await status(sessionId)).toContain("PR watch · Not watching")
 		if (natural) {
-			await fixture.conn.prompt({
+			await fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "watch this https://github.com/example/kimchi-lab/pull/7 pr" }],
 			})
@@ -160,14 +163,14 @@ it.each([
 			})
 			expect(fixture.fake.requests.some((request) => requestAdvertisesTool(request, "pr_watch"))).toBe(true)
 		} else if (kind === "command" || kind === "flag") {
-			await fixture.conn.prompt({
+			await fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "/pr-watch Fix only the parser fixture" }],
 			})
 		} else if (kind === "review") {
-			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch reviews" }] })
+			await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch reviews" }] })
 		} else if (kind !== "offer") {
-			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch ci" }] })
+			await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch ci" }] })
 		}
 		if (kind === "natural-plan") {
 			expect(toolResultText(fixture.fake.requests, "watch")).toContain("Switch out of Plan mode")
@@ -203,11 +206,12 @@ it.each([
 		if (kind === "command") {
 			const requests = fixture.fake.requests.filter((request) => request.url.includes("chat/completions")).length
 			expect(await status(sessionId)).toContain("PR watch · PR #7 · Watching")
-			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch stop" }] })
+			await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch stop" }] })
 			expect(fixture.client.agentTextBySession().get(sessionId)).toContain("PR watch · Not watching")
-			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch monitor" }] })
+			await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch monitor" }] })
 			expect(fixture.fake.requests.filter((request) => request.url.includes("chat/completions")).length).toBe(requests)
-		} else await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch stop" }] })
+		} else
+			await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch stop" }] })
 		if (kind === "offer") {
 			const preferencePath = join(fixture.homeDir, ".config/kimchi/harness/pr-watch.json")
 			expect(JSON.parse(readFileSync(preferencePath, "utf8"))).toEqual({ enabled: true })
@@ -220,7 +224,10 @@ it.each([
 					(request) => request.toolCall.title === "Enable automatic PR watching?",
 				),
 			).toHaveLength(1)
-			await fixture.conn.prompt({ sessionId: second, prompt: [{ type: "text", text: "/pr-watch disable" }] })
+			await fixture.conn.request("session/prompt", {
+				sessionId: second,
+				prompt: [{ type: "text", text: "/pr-watch disable" }],
+			})
 			expect(JSON.parse(readFileSync(preferencePath, "utf8"))).toEqual({ enabled: false })
 			writeFileSync(stateFile, JSON.stringify({ ...seed, number: 9 }))
 			const lookups = () =>
