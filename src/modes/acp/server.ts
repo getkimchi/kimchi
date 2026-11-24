@@ -740,7 +740,8 @@ export class KimchiAcpAgent {
 			options.sessionFactory ?? defaultSessionFactory(options, (event) => this.onSubagentSessionCreated(event))
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
-		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
+		this.sessionLoader =
+			options.sessionLoader ?? defaultSessionLoader(options, (event) => this.onSubagentSessionCreated(event))
 		this.mcpProbe = options.mcpProbe
 		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
@@ -1143,6 +1144,7 @@ export class KimchiAcpAgent {
 			this.skillWatcher.addSession(record)
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.releaseSubagentRoute(sessionId)
 			this.sessions.set(sessionId, record)
 
 			this.startPlanTracker(record, sessionId)
@@ -1464,6 +1466,7 @@ export class KimchiAcpAgent {
 			this.skillWatcher.addSession(record)
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.releaseSubagentRoute(sessionId)
 			this.sessions.set(sessionId, record)
 
 			this.startPlanTracker(record, sessionId)
@@ -2469,6 +2472,7 @@ export class KimchiAcpAgent {
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
+		this.releaseSubagentRoutes(entry.session.sessionId)
 		setSnapshotArtifactsOptIn(entry.session.sessionManager, false)
 		if (entry.turn) releaseTurnArtifactSnapshots(entry.turn)
 		if (entry.unsolicitedTurn) releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
@@ -2487,11 +2491,50 @@ export class KimchiAcpAgent {
 		this.skillWatcher?.removeSession(entry)
 	}
 
+	/** Detach one native child projection and any parent tool link to it. */
+	private releaseSubagentRoute(sessionId: string): void {
+		const route = this.subagentRoutes.get(sessionId)
+		if (!route) return
+		route.record.planTracker?.stop()
+		route.record.unsubscribe()
+		this.subagentRoutes.delete(sessionId)
+		const byTool = this.subagentIdsByParentTool.get(route.parentSessionId)
+		if (byTool?.get(route.parentToolCallId) === sessionId) byTool.delete(route.parentToolCallId)
+		if (byTool?.size === 0) this.subagentIdsByParentTool.delete(route.parentSessionId)
+	}
+
+	/** Parent disposal must not leave child observers writing into its stream. */
+	private releaseSubagentRoutes(parentSessionId: string): void {
+		for (const [sessionId, route] of this.subagentRoutes) {
+			if (route.parentSessionId === parentSessionId) this.releaseSubagentRoute(sessionId)
+		}
+	}
+
+	/** Orchestrator queue consumption is an inter-session message, not a human-user echo. */
+	private projectSubagentQueue(
+		route: SubagentRoute,
+		event: Extract<AgentSessionEvent, { type: "queue_update" }>,
+	): void {
+		const entry = route.record
+		if (!entry.previousQueue) entry.previousQueue = { steering: [], followUp: [] }
+		const steering = reconcileQueue(entry.previousQueue.steering, event.steering)
+		const followUp = reconcileQueue(entry.previousQueue.followUp, event.followUp)
+		entry.previousQueue = { steering: steering.previousQueue, followUp: followUp.previousQueue }
+		for (const update of [...steering.sessionUpdates, ...followUp.sessionUpdates]) {
+			if (update.sessionUpdate !== "user_message_chunk" || update.content.type !== "text") continue
+			const prompt = takeSteerEchoOriginal(entry.steerEchoRewrites, update.content.text)
+			const event = { sessionId: entry.session.sessionId, prompt }
+			for (const message of subagentPromptMessages(route.parentSessionId, event)) this.send(message)
+		}
+	}
+
 	private onSubagentSessionCreated(event: SubagentSessionCreatedEvent): void {
 		// Capability and semantic eligibility come first: an unrelated root must
 		// never enable a child surface for a client that did not opt in.
 		if (!clientSupportsSubagents(this.clientCapabilities)) return
 		if (event.remote || event.visibility.toLowerCase() === "system" || event.sessionId === event.agentId) return
+		// This projection is deliberately one-level: only root sessions observe its
+		// creation events. Nested Agent calls need no linked SessionReference.
 		const parent = this.sessions.get(event.parentSessionId)
 		if (!parent || this.sessions.has(event.sessionId) || this.subagentRoutes.has(event.sessionId)) return
 		const session = event.agentSession ?? this.subagentSessionResolver(event.agentId)
@@ -2521,7 +2564,7 @@ export class KimchiAcpAgent {
 
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
 		const route = this.subagentRoutes.get(sessionId)
-		const entry = route?.record ?? this.sessions.get(sessionId)
+		const entry = this.sessions.get(sessionId) ?? route?.record
 		if (!entry) return
 		// The active run's bookkeeping: the prompt-owned turn, or — for an
 		// unsolicited run (no prompt in flight, e.g. a background-bash
@@ -2543,6 +2586,10 @@ export class KimchiAcpAgent {
 		emitSkillAutoloadUpdate(this.conn, sessionId, event)
 		switch (event.type) {
 			case "queue_update": {
+				if (route && !this.sessions.has(sessionId)) {
+					this.projectSubagentQueue(route, event)
+					return
+				}
 				if (!entry.previousQueue) {
 					entry.previousQueue = { steering: [], followUp: [] }
 				}
@@ -3649,6 +3696,9 @@ export class KimchiAcpAgent {
 		piToolCallId: string,
 		opts: RetireToolCallOpts = {},
 	): void {
+		const byTool = this.subagentIdsByParentTool.get(record.session.sessionId)
+		byTool?.delete(piToolCallId)
+		if (byTool?.size === 0) this.subagentIdsByParentTool.delete(record.session.sessionId)
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
 		turn.lastStreamedContent.delete(piToolCallId)
@@ -4620,7 +4670,10 @@ async function createSessionSettings(
 }
 
 /** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
-export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
+export function defaultSessionLoader(
+	options: RunAcpOptions,
+	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+): AcpSessionLoader {
 	return async (params: SessionLoaderParams): Promise<AgentSession> => {
 		const cwd = params.cwd
 		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
@@ -4663,7 +4716,12 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				const msg = err instanceof Error ? err.message : String(err)
 				throw RequestError.invalidParams(undefined, `invalid sessionId: ${msg}`)
 			}
-			const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+			const { settingsManager, resourceLoader } = await createSessionSettings(
+				cwd,
+				options,
+				params,
+				onSubagentSessionCreated,
+			)
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir: options.agentDir,
@@ -4717,7 +4775,12 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+		const { settingsManager, resourceLoader } = await createSessionSettings(
+			cwd,
+			options,
+			params,
+			onSubagentSessionCreated,
+		)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,

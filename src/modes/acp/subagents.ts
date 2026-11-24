@@ -44,7 +44,7 @@ export function parseSubagentSessionCreated(value: unknown): SubagentSessionCrea
 	const sessionId = stringField(data, "sessionId")
 	const parentSessionId = stringField(data, "parentSessionId")
 	const toolCallId = stringField(data, "toolCallId")
-	const prompt = stringField(data, "prompt")
+	const prompt = typeof data.prompt === "string" ? data.prompt : undefined
 	const description = stringField(data, "description")
 	const cwd = stringField(data, "cwd")
 	const visibility = stringField(data, "visibility")
@@ -68,9 +68,10 @@ export function parseSubagentSessionCreated(value: unknown): SubagentSessionCrea
 	}
 }
 
-/** Presence is the opt-in. `{}` means supported; undefined and null do not. */
+/** `{}` advertises support; omission, null, and malformed values do not. */
 export function clientSupportsSubagents(capabilities: ClientCapabilities | undefined): boolean {
-	return (capabilities as { subagents?: unknown } | undefined)?.subagents != null
+	const subagents = (capabilities as { subagents?: unknown } | undefined)?.subagents
+	return typeof subagents === "object" && subagents !== null
 }
 
 /** Add the observer to the SAME DefaultResourceLoader extension set as the
@@ -102,7 +103,7 @@ export function presentAgentToolCall<T extends SessionUpdate>(update: T, toolNam
 	}
 	return {
 		...update,
-		...(enabled ? { name: "subagent", kind: "other" } : { kind: "think" }),
+		...(enabled ? { name: "subagent", kind: "other" } : {}),
 	} as T
 }
 
@@ -112,9 +113,9 @@ export function presentAgentToolCall<T extends SessionUpdate>(update: T, toolNam
 export function withSubagentSessionLink(
 	content: ToolCallContent[] | undefined,
 	childSessionId: string | undefined,
-): ToolCallContent[] {
+): ToolCallContent[] | undefined {
+	if (!childSessionId) return content
 	const existing = content ?? []
-	if (!childSessionId) return existing
 	const withoutDuplicate = existing.filter((item) => !(item.type === "session" && item.sessionId === childSessionId))
 	return [...withoutDuplicate, { type: "session", sessionId: childSessionId }] as ToolCallContent[]
 }
@@ -159,7 +160,8 @@ export function subagentStateUpdate(
  * exactly once in the following chunk; the parent retains its full-prompt view. */
 export function subagentPromptMessages(
 	parentSessionId: string,
-	event: SubagentSessionCreatedPayload,
+	event: Pick<SubagentSessionCreatedPayload, "sessionId" | "prompt">,
+	prompt = event.prompt,
 ): SessionNotification[] {
 	const parentMessageId = `ksp.${randomUUID()}`
 	const childMessageId = `ksc.${randomUUID()}`
@@ -172,7 +174,7 @@ export function subagentPromptMessages(
 				senderSessionId: parentSessionId,
 				recipientSessionId: event.sessionId,
 				recipientMessageId: childMessageId,
-				content: [{ type: "text", text: event.prompt }],
+				content: [{ type: "text", text: prompt }],
 			},
 		},
 		{
@@ -191,7 +193,7 @@ export function subagentPromptMessages(
 			update: {
 				sessionUpdate: "session_message_chunk",
 				messageId: childMessageId,
-				content: { type: "text", text: event.prompt },
+				content: { type: "text", text: prompt },
 			},
 		},
 	]

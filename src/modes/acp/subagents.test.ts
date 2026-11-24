@@ -68,6 +68,7 @@ function createChild(agent: KimchiAcpAgent, event: SubagentSessionCreatedEvent):
 async function createRoot(
 	id: string,
 	capabilities: ClientCapabilities | undefined = { subagents: {} } as ClientCapabilities,
+	next?: ProjectionFakeSession,
 ): Promise<{
 	agent: KimchiAcpAgent
 	root: ProjectionFakeSession
@@ -75,11 +76,16 @@ async function createRoot(
 	extensions: unknown[]
 }> {
 	const root = new ProjectionFakeSession(id, "/workspace/root")
+	const roots = next ? [root, next] : [root]
 	const { conn, updates, extensions } = recordingConnection()
 	const agent = new KimchiAcpAgent(conn, {
 		extensionFactories: [],
 		agentDir: "/tmp/acp-subagent-tests",
-		sessionFactory: async () => asSession(root),
+		sessionFactory: async () => {
+			const next = roots.shift()
+			if (!next) throw new Error("unexpected root creation")
+			return asSession(next)
+		},
 		subagentSessionResolver: (agentId) => nativeSessions.get(agentId),
 	})
 	setCapabilities(agent, capabilities)
@@ -159,9 +165,11 @@ function streamChild(session: ProjectionFakeSession, text: string): void {
 }
 
 describe("subagent event parsing and capability gate", () => {
-	it("treats a non-null subagents capability as opt-in and null or absence as opt-out", () => {
+	it("treats only a subagents capability object as opt-in", () => {
 		expect(clientSupportsSubagents({ subagents: {} } as ClientCapabilities)).toBe(true)
 		expect(clientSupportsSubagents({ subagents: null } as unknown as ClientCapabilities)).toBe(false)
+		expect(clientSupportsSubagents({ subagents: false } as unknown as ClientCapabilities)).toBe(false)
+		expect(clientSupportsSubagents({ subagents: "" } as unknown as ClientCapabilities)).toBe(false)
 		expect(clientSupportsSubagents({} as ClientCapabilities)).toBe(false)
 		expect(clientSupportsSubagents(undefined)).toBe(false)
 	})
@@ -170,6 +178,7 @@ describe("subagent event parsing and capability gate", () => {
 		const session = new ProjectionFakeSession("native")
 		const event = childEvent("parent", session)
 		expect(parseSubagentSessionCreated(event)).toEqual(event)
+		expect(parseSubagentSessionCreated({ ...event, prompt: "" })?.prompt).toBe("")
 		expect(parseSubagentSessionCreated(undefined)).toBeUndefined()
 		expect(parseSubagentSessionCreated({ ...event, sessionId: 42 })).toBeUndefined()
 		expect(parseSubagentSessionCreated({ ...event, remote: "no" })).toBeUndefined()
@@ -248,6 +257,30 @@ describe("subagent registry and child projection", () => {
 		await expect(agent.prompt({ sessionId: "native-child", prompt: [] })).rejects.toThrow()
 	})
 
+	it("projects a consumed orchestrator steer as a session-directed message", async () => {
+		const { agent, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("native-child")
+		createChild(agent, childEvent("parent", child))
+		updates.length = 0
+		child.emit({ type: "queue_update", steering: ["Review the failed assertion"], followUp: [] } as AgentSessionEvent)
+		child.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent)
+
+		expect(updates).toHaveLength(3)
+		expect(updates.every((entry) => update(entry).sessionUpdate !== "user_message_chunk")).toBe(true)
+		const parentMessage = update(updates[0] as SessionNotification)
+		const childMessage = update(updates[1] as SessionNotification)
+		expect(parentMessage).toMatchObject({
+			sessionUpdate: "session_message",
+			senderSessionId: "parent",
+			recipientSessionId: "native-child",
+		})
+		expect(updates[1]?.sessionId).toBe("native-child")
+		expect(parentMessage.recipientMessageId).toBe(childMessage.messageId)
+		expect(childMessage.senderMessageId).toBe(parentMessage.messageId)
+		expect(reconstructMessageText(updates).get(String(childMessage.messageId))).toBe("Review the failed assertion")
+	})
+
 	it("emits no child behavior for absent or null client capabilities", async () => {
 		for (const [label, capabilities] of [
 			["absent", {} as ClientCapabilities],
@@ -307,6 +340,77 @@ describe("subagent registry and child projection", () => {
 			["root-b", "child-b"],
 		])
 	})
+
+	it("releases child subscriptions and tool links when the parent closes", async () => {
+		const { agent, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("native-child")
+		createChild(agent, childEvent("parent", child))
+		const route = Reflect.get(agent, "subagentRoutes").get("native-child")
+		const unsubscribe = vi.spyOn(route.record, "unsubscribe")
+		await agent.unstable_closeSession({ sessionId: "parent" })
+
+		expect(unsubscribe).toHaveBeenCalledOnce()
+		expect(Reflect.get(agent, "subagentRoutes")).toEqual(new Map())
+		expect(Reflect.get(agent, "subagentIdsByParentTool")).toEqual(new Map())
+		updates.length = 0
+		streamChild(child, "detached child output")
+		expect(updates).toEqual([])
+	})
+
+	it("retires a child tool link before the provider reuses its tool-call id", async () => {
+		const { agent, root, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("native-child")
+		root.emit({ type: "agent_start" } as AgentSessionEvent)
+		const start = () => {
+			root.emit({
+				type: "tool_execution_start",
+				toolCallId: "provider-agent-call",
+				toolName: "Agent",
+				args: { description: "Delegate", prompt: "Investigate" },
+			} as AgentSessionEvent)
+		}
+		const finish = () => {
+			root.emit({
+				type: "tool_execution_end",
+				toolCallId: "provider-agent-call",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "done" }], details: {} },
+				isError: false,
+			} as unknown as AgentSessionEvent)
+		}
+		start()
+		createChild(agent, childEvent("parent", child))
+		finish()
+		expect(JSON.stringify(updates.at(-1))).toContain('{"type":"session","sessionId":"native-child"}')
+
+		updates.length = 0
+		start()
+		finish()
+		expect(update(updates.at(-1) as SessionNotification).sessionUpdate).toBe("tool_call_update")
+		expect(JSON.stringify(updates)).not.toContain('{"type":"session","sessionId":"native-child"}')
+		expect(Reflect.get(agent, "subagentIdsByParentTool")).toEqual(new Map())
+	})
+
+	it("lets a registered root replace a colliding child route", async () => {
+		const child = new ProjectionFakeSession("colliding-child", "/workspace/root")
+		const { agent, updates } = await createRoot("parent", { subagents: {} } as ClientCapabilities, child)
+		agents.push(agent)
+		createChild(agent, childEvent("parent", child))
+		const route = Reflect.get(agent, "subagentRoutes").get(child.sessionId)
+		const unsubscribe = vi.spyOn(route.record, "unsubscribe")
+		await agent.newSession({ cwd: "/workspace/root", mcpServers: [] })
+
+		expect(unsubscribe).toHaveBeenCalledOnce()
+		expect(Reflect.get(agent, "subagentRoutes")).toEqual(new Map())
+		expect(Reflect.get(agent, "subagentIdsByParentTool")).toEqual(new Map())
+		updates.length = 0
+		child.emit({ type: "queue_update", steering: ["root input"], followUp: [] } as AgentSessionEvent)
+		child.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent)
+		expect(updates.some((entry) => update(entry).sessionUpdate === "user_message_chunk")).toBe(true)
+		expect(updates.every((entry) => update(entry).sessionUpdate !== "session_message")).toBe(true)
+	})
 })
 
 describe("Agent invocation presentation and native links", () => {
@@ -334,17 +438,18 @@ describe("Agent invocation presentation and native links", () => {
 	})
 
 	it("adds no link before announcement and preserves one native link on every later replacement", () => {
+		expect(withSubagentSessionLink(undefined, undefined)).toBeUndefined()
 		const before = [{ type: "content", content: { type: "text", text: "working" } }] as never
 		expect(withSubagentSessionLink(before, undefined)).toBe(before)
 		const linked = withSubagentSessionLink(before, "child")
-		expect(linked.at(-1)).toEqual({ type: "session", sessionId: "child" })
+		expect(linked?.at(-1)).toEqual({ type: "session", sessionId: "child" })
 		const replacement = withSubagentSessionLink(
 			[{ type: "content", content: { type: "text", text: "done" } }] as never,
 			"child",
 		)
-		expect(replacement).toHaveLength(2)
-		expect(replacement.at(-1)).toEqual({ type: "session", sessionId: "child" })
-		expect(withSubagentSessionLink(replacement, "child").filter((item) => item.type === "session")).toHaveLength(1)
+		expect(replacement?.length).toBe(2)
+		expect(replacement?.at(-1)).toEqual({ type: "session", sessionId: "child" })
+		expect(withSubagentSessionLink(replacement, "child")?.filter((item) => item.type === "session")).toHaveLength(1)
 	})
 
 	it("allocates distinct message ids per prompt projection", () => {
