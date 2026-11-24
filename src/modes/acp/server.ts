@@ -1914,6 +1914,7 @@ export class KimchiAcpAgent {
 	}
 
 	async extMethod(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+		// Raw ACP requests may omit params. Preserve the legacy empty-object fallback before child routing.
 		this.rejectSubagentMutation(params.sessionId)
 		switch (method) {
 			case AVAILABLE_EXT_METHODS.probe_mcp_server: {
