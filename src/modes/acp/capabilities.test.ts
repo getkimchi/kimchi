@@ -1,5 +1,9 @@
 import { expect, it } from "vitest"
-import { getClientOptedIntoArtifacts, getClientOptedIntoPRMonitoring } from "./capabilities.js"
+import {
+	getClientOptedIntoArtifacts,
+	getClientOptedIntoMcpOAuthTurn,
+	getClientOptedIntoPRMonitoring,
+} from "./capabilities.js"
 
 it.each([
 	{ flags: undefined, allowed: false },
@@ -8,6 +12,17 @@ it.each([
 	{ flags: { artifacts: true }, allowed: true },
 ])("requires an explicit artifact opt-in: $flags", ({ flags, allowed }) => {
 	expect(getClientOptedIntoArtifacts(flags ? { _meta: { "kimchi.dev": flags } } : undefined)).toBe(allowed)
+})
+
+it.each([
+	{ flags: undefined, allowed: false },
+	{ flags: {}, allowed: false },
+	{ flags: { backgroundRuns: true }, allowed: false },
+	{ flags: { mcpOAuthTurn: false }, allowed: false },
+	{ flags: { mcpOAuthTurn: "true" }, allowed: false },
+	{ flags: { mcpOAuthTurn: true }, allowed: true },
+])("requires explicit MCP OAuth turn opt-in: $flags", ({ flags, allowed }) => {
+	expect(getClientOptedIntoMcpOAuthTurn(flags ? { _meta: { "kimchi.dev": flags } } : undefined)).toBe(allowed)
 })
 
 it.each([

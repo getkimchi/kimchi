@@ -152,6 +152,23 @@ export function getClientOptedIntoBackgroundRuns(capabilities: ClientCapabilitie
 	return flags?.[BACKGROUND_RUNS_CAPABILITY] === true
 }
 
+/**
+ * Client opt-in for keeping MCP browser OAuth within its originating ACP
+ * session/prompt run. Without this flag, clients retain the adapter's legacy
+ * early prompt completion and ordinary follow-up handling.
+ *
+ * No ACP v2 RFD defines MCP OAuth turn ownership. Background Work addresses
+ * work outliving a foreground run, rather than this prompt-turn ownership:
+ * https://agentclientprotocol.com/rfds/v2/background-work
+ */
+export const MCP_OAUTH_TURN_CAPABILITY = "mcpOAuthTurn"
+
+/** True when the client opted into held MCP OAuth turns at initialize. */
+export function getClientOptedIntoMcpOAuthTurn(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[MCP_OAUTH_TURN_CAPABILITY] === true
+}
+
 // Kimchi-specific PR controls have no dedicated RFD. Runs reuse the existing
 // v1 backgroundRuns bridge to https://agentclientprotocol.com/rfds/v2/background-work.
 export const PR_MONITORING_CAPABILITY = "prMonitoring"
