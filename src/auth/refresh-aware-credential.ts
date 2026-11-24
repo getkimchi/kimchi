@@ -1,6 +1,7 @@
 import { type CredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
+import { effectiveStoredOAuthExpiryMs } from "../cli-auth/oauth.js"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 
 /** Store paths and optional persistence override for resolving the canonical Kimchi credential. */
@@ -23,6 +24,8 @@ type PiStoredCredential = NonNullable<ReturnType<typeof readStoredCredential>>
 type StoredOAuthCredential = Extract<PiStoredCredential, { type: "oauth" }> & {
 	/** Organization scope stamped by Kimchi login alongside upstream OAuth fields. */
 	orgId?: string
+	/** Bearer-selection flag persisted by Kimchi login/refresh (see KimchiCredentialExtras). */
+	useIdToken?: boolean
 }
 type StoredCredential = Exclude<PiStoredCredential, { type: "oauth" }> | StoredOAuthCredential
 
@@ -34,6 +37,46 @@ export type RefreshAwareCredentialResolution = {
 	refreshed: boolean
 	/** Previous bearer used only for in-memory/persistent rejection bookkeeping; never logged. */
 	previousAccessToken?: string
+}
+
+/** Only issuer-configured credentials can use Kimchi's refresh preflight. */
+export function hasStoredOAuthRefreshConfiguration(credential: StoredCredential | undefined): boolean {
+	return (
+		credential?.type === "oauth" &&
+		typeof credential.tokenUrl === "string" &&
+		credential.tokenUrl.length > 0 &&
+		typeof credential.clientId === "string" &&
+		credential.clientId.length > 0
+	)
+}
+
+/** Exact upstream rejection emitted when an internally forced minimum is not
+ * met by the refreshed token (pi-ai auth/resolve, resolveStoredOAuth). */
+const FORCED_REFRESH_TOO_SOON_MESSAGE = `OAuth refresh returned a token that expires too soon for ${KIMCHI_PROVIDER_ID}`
+
+function isForcedRefreshTooSoonError(error: unknown): boolean {
+	return error instanceof ModelsError && error.code === "oauth" && error.message === FORCED_REFRESH_TOO_SOON_MESSAGE
+}
+
+/**
+ * Legacy recovery: credentials persisted before the shared bearer-expiry rule
+ * can carry a stored response-derived schedule that outlives the selected
+ * ID-token bearer actually sent to the gateway. When the stored schedule is
+ * outside upstream's ordinary five-minute renewal window while the effective
+ * selected-bearer expiry is inside it, an ordinary getAuth treats the
+ * credential as fresh and never refreshes. Returning a one-shot minimum equal
+ * to the remaining stored schedule makes upstream's expiresSoon predicate
+ * refresh the legacy credential under its normal lock, coalescing, and
+ * persist-before-release discipline. Every other credential shape — raw
+ * access tokens, opaque bearers, already-fresh schedules, or records without
+ * issuer refresh metadata — returns undefined so resolution stays ordinary.
+ */
+function forcedLegacyRefreshMinimumMs(credential: StoredCredential | undefined): number | undefined {
+	if (credential?.type !== "oauth" || !hasStoredOAuthRefreshConfiguration(credential)) return undefined
+	const nowMs = Date.now()
+	if (nowMs + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= credential.expires) return undefined
+	if (nowMs + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS < effectiveStoredOAuthExpiryMs(credential)) return undefined
+	return Math.max(1, credential.expires - nowMs + 1)
 }
 
 function readCanonicalCredential(authPath: string): StoredCredential | undefined {
@@ -73,7 +116,23 @@ export async function resolveRefreshAwareKimchiAuth(
 		})
 		installOAuth(modelRuntime, owner)
 		const before = readCanonicalCredential(paths.authPath)
-		const auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
+		const forcedMinimumMs = forcedLegacyRefreshMinimumMs(before)
+		let auth: RefreshAwareAuth
+		try {
+			auth =
+				forcedMinimumMs === undefined
+					? await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
+					: await modelRuntime.getAuth(KIMCHI_PROVIDER_ID, { minOAuthValidityMs: forcedMinimumMs })
+		} catch (error) {
+			// Upstream applies the forced minimum after the refresh too and
+			// rejects a valid shorter replacement. That refresh is already
+			// durable, so re-resolve once without the temporary minimum; the
+			// ordinary five-minute window then accepts it without a second
+			// grant. No other error — invalid grants, transient failures, store
+			// errors — is caught or remapped here.
+			if (forcedMinimumMs === undefined || !isForcedRefreshTooSoonError(error)) throw error
+			auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
+		}
 		const after = readCanonicalCredential(paths.authPath)
 		const refreshed =
 			before?.type === "oauth" &&

@@ -16,6 +16,7 @@ import { loadConfig } from "../../../config.js"
 import { clearRefreshedCredentialStale, isCredentialStale } from "../../../credential-staleness.js"
 import { installKimchiOAuth } from "../../../extensions/login/flow.js"
 import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
+import { syncOAuthCredentialToKimchiProviders } from "../../../pi-auth.js"
 
 export type AuthStatusResponse = {
 	authenticated: boolean
@@ -87,6 +88,16 @@ export async function handleAuthStatus(
 	if (!auth) return { authenticated: false }
 	if (resolution.refreshed) {
 		if (!auth.auth.apiKey) return { authenticated: false }
+		// Fan the durable replacement out to the concrete kimchi-dev/* providers,
+		// because prompt requests resolve those entries while this status reads
+		// only the canonical one; without the fan-out a pre-existing concrete
+		// entry would keep presenting the retired bearer and grant. No protected
+		// provider exists here: auth status has no active-provider identity to
+		// preserve, unlike active-prompt preparation. A store-write failure
+		// rejects this call like other credential-store failures.
+		if (resolution.credential?.type === "oauth") {
+			await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...resolution.credential })
+		}
 		// The persisted refresh is an authenticated success. Retire only the
 		// provider and rotated OAuth values, never unrelated API-key marks.
 		clearRefreshedCredentialStale(resolution.previousAccessToken, auth.auth.apiKey, KIMCHI_PROVIDER_ID)

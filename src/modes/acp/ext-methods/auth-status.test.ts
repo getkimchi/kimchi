@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { clearApiKey, writeApiKey } from "../../../config.js"
 import {
@@ -318,6 +319,232 @@ describe("handleAuthStatus", () => {
 
 		writeOAuthCredential("fresh-oauth-token")
 		await expect(authStatusInNewProcess(paths)).resolves.toEqual({ authenticated: true })
+	})
+
+	// ---------------------------------------------------------------------------
+	// Legacy ID-token bearer recovery (stored schedule outlives the bearer)
+	// ---------------------------------------------------------------------------
+
+	describe("legacy ID-token bearer recovery", () => {
+		/** Fixed fake-clock instant for exact timestamp assertions. */
+		const FAKE_NOW = new Date("2025-02-03T04:05:06.789Z").getTime()
+		const HOUR_MS = 3_600_000
+		/** Stored response-derived schedule of every legacy fixture: 24h from the pinned instant. */
+		const STORED_EXPIRES = FAKE_NOW + 24 * HOUR_MS
+
+		beforeEach(() => {
+			// Only Date is faked, matching the issuance tests in cli-auth/oauth.test.ts
+			// and the recovery tests in auth/active-prompt-refresh.test.ts: the real
+			// file-backed credential store, ModelRuntime, and fake transports keep
+			// real timers while `Date.now()` stays pinned for exact expiry assertions.
+			vi.useFakeTimers({ toFake: ["Date"] })
+			vi.setSystemTime(FAKE_NOW)
+		})
+
+		afterEach(() => {
+			vi.useRealTimers()
+		})
+
+		/** Secret-free synthetic JWT with a numeric epoch-seconds exp. */
+		function jwtWithExp(expMs: number): string {
+			return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(
+				JSON.stringify({ exp: Math.floor(expMs / 1000) }),
+			).toString("base64url")}.fixture-signature`
+		}
+
+		/** A legacy credential: fresh stored response-derived schedule (24h) while the
+		 * selected ID-token bearer was persisted before the shared expiry rule. */
+		function legacyIdTokenEntry(bearerExpiryMs: number): Record<string, unknown> {
+			return {
+				type: "oauth",
+				tokenUrl: "https://issuer.invalid/oauth/token",
+				clientId: "fake-issuer-client",
+				access: jwtWithExp(bearerExpiryMs),
+				refresh: "legacy-refresh",
+				expires: STORED_EXPIRES,
+				useIdToken: true,
+				region: "us",
+				audience: "https://llm.kimchi.dev",
+				orgId: "org-legacy",
+				orgName: "Legacy Org",
+				idToken: jwtWithExp(bearerExpiryMs),
+				accessToken: "legacy-raw-access",
+			}
+		}
+
+		function writeLegacyIdTokenCredential(bearerExpiryMs: number): void {
+			writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": legacyIdTokenEntry(bearerExpiryMs) }))
+		}
+
+		/** Read a persisted credential entry from the shared store. */
+		function readStoredProviderEntry(providerId: string): Record<string, unknown> {
+			const stored = JSON.parse(readFileSync(paths.authPath, "utf-8")) as Record<string, Record<string, unknown>>
+			const entry = stored[providerId]
+			if (!entry) throw new Error(`expected a persisted ${providerId} credential`)
+			return entry
+		}
+
+		/** Read the persisted canonical credential entry from the shared store. */
+		function readStoredCanonical(): Record<string, unknown> {
+			return readStoredProviderEntry(KIMCHI_PROVIDER_ID)
+		}
+
+		/** Install the fake OAuth provider while counting browser/login attempts so
+		 * tests can assert the recovery never leaves the refresh path. */
+		function installOAuthCountingBrowser(oauth: ReturnType<typeof fakeOAuthDeps>): {
+			installOAuth: (runtime: ModelRuntime) => void
+			browserLoginAttempts: () => number
+		} {
+			let loginAttempts = 0
+			return {
+				browserLoginAttempts: () => loginAttempts,
+				installOAuth: (runtime: ModelRuntime): void => {
+					oauth.installOAuth(runtime)
+					const providerOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+					if (!providerOAuth) throw new Error("expected canonical test OAuth")
+					runtime.registerProvider("kimchi-dev", {
+						oauth: Object.assign({}, providerOAuth, {
+							login: (...args: Parameters<typeof providerOAuth.login>) => {
+								loginAttempts++
+								return providerOAuth.login(...args)
+							},
+						}),
+					})
+				},
+			}
+		}
+
+		it.each([
+			{ description: "expired", bearerExpiryMs: FAKE_NOW - 10 * 60_000 },
+			{ description: "near-expiry renewal boundary", bearerExpiryMs: FAKE_NOW + 5 * 60_000 },
+		])("authenticates an Agent auth status with a $description legacy ID-token bearer after one refresh", async ({
+			bearerExpiryMs,
+		}) => {
+			writeLegacyIdTokenCredential(bearerExpiryMs)
+			// A pre-existing concrete provider entry carries the same legacy bearer:
+			// auth status must recover both it and the canonical entry, because prompt
+			// requests resolve the concrete kimchi-dev/* providers directly.
+			writeFileSync(
+				paths.authPath,
+				JSON.stringify({
+					"kimchi-dev": legacyIdTokenEntry(bearerExpiryMs),
+					"kimchi-dev/openai": legacyIdTokenEntry(bearerExpiryMs),
+				}),
+			)
+			writeFileSync(paths.modelsPath, JSON.stringify({ providers: { "kimchi-dev/openai": {} } }))
+			// Outside the five-minute default renewal window, per the legacy contract.
+			const replacementExpiry = FAKE_NOW + 25 * HOUR_MS
+			const replacementAccess = jwtWithExp(replacementExpiry)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: replacementAccess,
+				expires: replacementExpiry,
+			}))
+			const browser = installOAuthCountingBrowser(oauth)
+
+			await expect(handleAuthStatus(paths, browser)).resolves.toEqual({ authenticated: true })
+
+			// Exactly one ordinary refresh through the existing path; no browser login.
+			expect(oauth.refreshCalls).toHaveLength(1)
+			expect(oauth.refreshCalls[0]).toMatchObject({ refresh: "legacy-refresh" })
+			expect(browser.browserLoginAttempts()).toBe(0)
+			// The corrected replacement is durable in the shared canonical entry and
+			// fanned out to the concrete provider entry (pi-auth.ts), so neither keeps
+			// the retired bearer or grant — the same discipline exercised end-to-end in
+			// auth/active-prompt-refresh.test.ts.
+			for (const providerId of [KIMCHI_PROVIDER_ID, "kimchi-dev/openai"]) {
+				expect(readStoredProviderEntry(providerId)).toMatchObject({
+					access: replacementAccess,
+					// Non-rotating grant: the issuer kept the existing refresh token.
+					refresh: "legacy-refresh",
+					// Exact corrected schedule: the ID-token bearer no longer outlives it.
+					expires: replacementExpiry,
+					// Preserved token-selection and org/region/client/audience metadata.
+					useIdToken: true,
+					region: "us",
+					audience: "https://llm.kimchi.dev",
+					orgId: "org-legacy",
+					orgName: "Legacy Org",
+					tokenUrl: "https://issuer.invalid/oauth/token",
+					clientId: "fake-issuer-client",
+				})
+				expect(readStoredProviderEntry(providerId).expires).toBeGreaterThan(FAKE_NOW + 5 * 60_000)
+			}
+		})
+
+		it("accepts a replacement shorter than the forced minimum through one re-resolution and a single grant", async () => {
+			writeLegacyIdTokenCredential(FAKE_NOW - 60_000)
+			// Outside the ordinary five-minute window, but shorter than the forced
+			// minimum implied by the 24h stored schedule: upstream rejects it once
+			// on the forced call, then the existing resolver re-resolves without the
+			// temporary minimum and accepts the already-durable replacement.
+			const replacementExpiry = FAKE_NOW + 30 * 60_000
+			const replacementAccess = jwtWithExp(replacementExpiry)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: replacementAccess,
+				expires: replacementExpiry,
+			}))
+			const browser = installOAuthCountingBrowser(oauth)
+
+			await expect(handleAuthStatus(paths, browser)).resolves.toEqual({ authenticated: true })
+
+			// The durable refresh already happened on the forced call; the
+			// re-resolution performs no second grant and no browser login.
+			expect(oauth.refreshCalls).toHaveLength(1)
+			expect(browser.browserLoginAttempts()).toBe(0)
+			expect(readStoredCanonical()).toMatchObject({
+				access: replacementAccess,
+				refresh: "legacy-refresh",
+				expires: replacementExpiry,
+			})
+		})
+
+		it("does not force a refresh for a fresh legacy ID-token bearer", async () => {
+			const bearerExpiryMs = FAKE_NOW + 12 * HOUR_MS
+			const legacyAccess = jwtWithExp(bearerExpiryMs)
+			writeLegacyIdTokenCredential(bearerExpiryMs)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: jwtWithExp(FAKE_NOW + 48 * HOUR_MS),
+				expires: FAKE_NOW + 48 * HOUR_MS,
+			}))
+
+			await expect(handleAuthStatus(paths, oauth)).resolves.toEqual({ authenticated: true })
+
+			expect(oauth.refreshCalls).toHaveLength(0)
+			expect(readStoredCanonical()).toMatchObject({
+				access: legacyAccess,
+				refresh: "legacy-refresh",
+				expires: STORED_EXPIRES,
+			})
+		})
+
+		it("does not force a refresh for a legacy ID-token bearer without issuer refresh metadata", async () => {
+			const legacyAccess = jwtWithExp(FAKE_NOW - 60_000)
+			writeFileSync(
+				paths.authPath,
+				JSON.stringify({
+					"kimchi-dev": {
+						type: "oauth",
+						access: legacyAccess,
+						refresh: "legacy-refresh",
+						expires: STORED_EXPIRES,
+						useIdToken: true,
+					},
+				}),
+			)
+			const oauth = fakeOAuthDeps()
+
+			await expect(handleAuthStatus(paths, oauth)).resolves.toEqual({ authenticated: true })
+
+			expect(oauth.refreshCalls).toHaveLength(0)
+			expect(readStoredCanonical()).toMatchObject({
+				access: legacyAccess,
+				refresh: "legacy-refresh",
+				expires: STORED_EXPIRES,
+			})
+		})
 	})
 
 	function authStatusInNewProcess(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
