@@ -632,8 +632,21 @@ ${skillLines}`
 	// Construct the gate before the resource loader: a failed import or
 	// initialization must prevent the child from running unchecked.
 	const parentSessionId = ctx.sessionManager.getSessionId()
-	const { createWorkerPermissionsExtension } = await import("../../permissions/index.js")
+	const { createWorkerPermissionsExtension, getPermissionsExtensionOptions } = await import(
+		"../../permissions/index.js"
+	)
+	// A host that tunes the gate (the Ferment V2 verifier's pre-approvals)
+	// passes a createPermissionsExtension() factory with its inline
+	// extensions. The child keeps one gate: those options are folded into the
+	// worker gate and the host's factory is not loaded.
+	const callerExtensions = options.extensionFactories ?? []
+	const callerGates = callerExtensions.filter((extension) => getPermissionsExtensionOptions(extension) !== undefined)
+	if (callerGates.length > 1) {
+		throw new Error("A subagent accepts at most one permission gate from its host.")
+	}
+	const hostGateOptions = callerGates[0] ? getPermissionsExtensionOptions(callerGates[0]) : undefined
 	const workerPermissionsExtension = createWorkerPermissionsExtension({
+		...(hostGateOptions?.preApproved ? { preApproved: hostGateOptions.preApproved } : {}),
 		parentSessionId,
 		persona: agentConfig?.name ?? type,
 	})
@@ -663,10 +676,9 @@ ${skillLines}`
 	}
 	// Caller-provided inline extensions (e.g. the Ferment V2 verifier guard)
 	// load even when extensions are disabled — the resource loader always
-	// processes its inline factories.
-	if (options.extensionFactories) {
-		extensionFactories.push(...options.extensionFactories)
-	}
+	// processes its inline factories. A caller's permission gate is left out:
+	// its options already went into the worker gate above.
+	extensionFactories.push(...callerExtensions.filter((extension) => !callerGates.includes(extension)))
 	// SubagentResourceLoader reads the system prompt live via the
 	// readSystemPrompt callback (see subagent-resource-loader.ts): after the
 	// final active-tool list is known, reassigning `systemPrompt` and calling

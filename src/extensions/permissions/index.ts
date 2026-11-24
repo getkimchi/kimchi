@@ -1,6 +1,6 @@
 import { basename, extname, resolve } from "node:path"
 import { Type } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, InlineExtension, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { getParsedCliArgs } from "../../cli-args.js"
@@ -249,9 +249,23 @@ export interface WorkerPermissionsOptions extends PermissionsExtensionOptions {
 
 type GateOptions = ({ role: "main" } & PermissionsExtensionOptions) | ({ role: "worker" } & WorkerPermissionsOptions)
 
-/** The permissions extension with host-specific options (the default export uses none). */
+const hostGateOptions = new WeakMap<object, PermissionsExtensionOptions>()
+
+/**
+ * The permissions extension with host-specific options (the default export
+ * uses none). Passed to a subagent spawn, this factory is not loaded: the
+ * runner folds its options into the subagent's own gate, so the child keeps a
+ * single gate that follows the parent session's policy.
+ */
 export function createPermissionsExtension(options: PermissionsExtensionOptions = {}): (pi: ExtensionAPI) => void {
-	return (pi) => registerPermissions(pi, { ...options, role: "main" })
+	const extension = (pi: ExtensionAPI): void => registerPermissions(pi, { ...options, role: "main" })
+	hostGateOptions.set(extension, options)
+	return extension
+}
+
+/** The options of a gate built by {@link createPermissionsExtension}; undefined for any other extension. */
+export function getPermissionsExtensionOptions(extension: InlineExtension): PermissionsExtensionOptions | undefined {
+	return hostGateOptions.get(typeof extension === "function" ? extension : extension.factory)
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {

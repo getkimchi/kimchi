@@ -55,6 +55,7 @@ import permissionsExtension, {
 	checkCompoundCommand,
 	createPermissionsExtension,
 	createWorkerPermissionsExtension,
+	getPermissionsExtensionOptions,
 	handleCompoundConfirm,
 	notifyFermentActive,
 	type PermissionsExtensionOptions,
@@ -395,6 +396,25 @@ describe("host pre-approval (createPermissionsExtension preApproved)", () => {
 		const result = await harness.fire("tool_call", writeEvent, ctx)
 
 		expect(result).toMatchObject({ block: true })
+	})
+
+	it("exposes a host gate's options so a subagent spawn can fold them into its own gate", () => {
+		const options = { preApproved }
+		const gate = createPermissionsExtension(options)
+
+		expect(getPermissionsExtensionOptions(gate)).toBe(options)
+		expect(getPermissionsExtensionOptions({ name: "host-gate", factory: gate })).toBe(options)
+		expect(getPermissionsExtensionOptions(createPermissionsExtension())).toEqual({})
+	})
+
+	it("reports no options for the default gate, the worker gate, or a wrapper around a host gate", () => {
+		const gate = createPermissionsExtension({ preApproved })
+
+		expect(getPermissionsExtensionOptions(permissionsExtension)).toBeUndefined()
+		expect(
+			getPermissionsExtensionOptions(createWorkerPermissionsExtension({ parentSessionId: "p", persona: "Builder" })),
+		).toBeUndefined()
+		expect(getPermissionsExtensionOptions((pi) => gate(pi))).toBeUndefined()
 	})
 })
 
@@ -5958,7 +5978,13 @@ describe("inline worker permissions", () => {
 
 	async function setup(
 		flags: Record<string, boolean | string | undefined> = {},
-		options: { persona?: string; cwd?: string; withParent?: boolean; cliArgs?: string[] } = {},
+		options: {
+			persona?: string
+			cwd?: string
+			withParent?: boolean
+			cliArgs?: string[]
+			preApproved?: PermissionsExtensionOptions["preApproved"]
+		} = {},
 	) {
 		const id = `worker-policy-${++sequence}`
 		const parentSessionId = `${id}-parent`
@@ -5987,7 +6013,11 @@ describe("inline worker permissions", () => {
 			],
 			{},
 			undefined,
-			createWorkerPermissionsExtension({ parentSessionId, persona: options.persona ?? "Builder" }),
+			createWorkerPermissionsExtension({
+				parentSessionId,
+				persona: options.persona ?? "Builder",
+				...(options.preApproved ? { preApproved: options.preApproved } : {}),
+			}),
 		)
 		const workerCtx = {
 			...createClassifierContext(),
@@ -6058,6 +6088,57 @@ describe("inline worker permissions", () => {
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
 		}
+	})
+
+	describe("host pre-approval folded into the worker gate", () => {
+		const preApproved = (toolName: string, input: Record<string, unknown>) =>
+			toolName === "submit_agent_report" || (toolName === "write" && input.path === "probe.test.ts")
+
+		it("accepts a pre-approved call without the classifier and records it as preapproved", async () => {
+			const { worker, workerCtx } = await setup({}, { preApproved })
+			const decisions = vi.fn()
+			worker.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, decisions)
+
+			expect(await call(worker, workerCtx, "write", { path: "probe.test.ts" })).toBeUndefined()
+
+			expect(classifyToolCall).not.toHaveBeenCalled()
+			expect(decisions).toHaveBeenCalledOnce()
+			expect(decisions).toHaveBeenCalledWith(
+				expect.objectContaining({ decision: "accept", sourceDetail: "preapproved" }),
+			)
+		})
+
+		it("still sends a call the host did not pre-approve to the classifier", async () => {
+			const { worker, workerCtx } = await setup({}, { preApproved })
+
+			await call(worker, workerCtx, "write", { path: "src/existing.ts" })
+
+			expect(classifyToolCall).toHaveBeenCalledOnce()
+		})
+
+		it("lets a parent deny rule win over a pre-approval", async () => {
+			const { worker, workerCtx } = await setup({ "deny-tool": "write" }, { preApproved })
+
+			expect(await call(worker, workerCtx, "write", { path: "probe.test.ts" })).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("Denied by rule"),
+			})
+		})
+
+		it("lets the parent's plan mode win over a pre-approval, including a later switch", async () => {
+			const planned = await setup({ plan: true }, { preApproved })
+			expect(await call(planned.worker, planned.workerCtx, "write", { path: "probe.test.ts" })).toMatchObject({
+				block: true,
+			})
+
+			const live = await setup({}, { preApproved })
+			expect(await call(live.worker, live.workerCtx, "write", { path: "probe.test.ts" })).toBeUndefined()
+			await parentCommand(live.parent, live.parentCtx)("mode plan")
+			expect(await call(live.worker, live.workerCtx, "write", { path: "probe.test.ts" })).toMatchObject({
+				block: true,
+			})
+			expect(classifyToolCall).not.toHaveBeenCalled()
+		})
 	})
 
 	it("sees a remembered parent session rule added after the child started", async () => {

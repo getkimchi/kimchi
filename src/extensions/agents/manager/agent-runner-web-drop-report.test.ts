@@ -49,6 +49,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 // modules into this partial Pi test environment. Gate behavior has its own suite.
 vi.mock("../../permissions/index.js", () => ({
 	createWorkerPermissionsExtension: vi.fn(() => function workerPermissionsStub() {}),
+	getPermissionsExtensionOptions: vi.fn(() => undefined),
 }))
 
 vi.mock("../../env.js", () => ({

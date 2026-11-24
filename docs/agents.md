@@ -353,6 +353,13 @@ session has the dangerous full bypass enabled. As in a non-promptable main
 session, well-formed `kimchi doc-cli` commands use their deterministic
 first-party shortcut; in `default` mode that includes mutating subcommands.
 
+A host that spawns a subagent can pre-approve narrowly scoped calls for it by
+passing a `createPermissionsExtension({ preApproved })` factory with the spawn's
+inline extensions; the Ferment V2 verifier does this for its report tools and
+confined probe writes. That factory is not loaded in the child. Its options are
+folded into the subagent's gate, so the child still has one gate under the main
+session's policy, and deny rules and plan mode win over a pre-approval.
+
 The same behavior applies on TUI, print mode, and ACP; no ACP permission request
 is sent for a subagent's own call. After `/branch` or `/clone`, a running child
 whose old parent policy has gone away keeps its last policy snapshot rather than

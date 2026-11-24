@@ -9,7 +9,7 @@ import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
 import codexCorrelationExtension from "../../login/codex-correlation-extension.js"
-import { createWorkerPermissionsExtension } from "../../permissions/index.js"
+import { createWorkerPermissionsExtension, getPermissionsExtensionOptions } from "../../permissions/index.js"
 import * as diagnostics from "../../work-attribution/diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
 import { createWorkAttributionExtension, type WorkSegment } from "../../work-attribution.js"
@@ -53,6 +53,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 // runner tests do not import the main-session editor and planning UI graph.
 vi.mock("../../permissions/index.js", () => ({
 	createWorkerPermissionsExtension: vi.fn(() => function workerPermissionsStub() {}),
+	getPermissionsExtensionOptions: vi.fn(() => undefined),
 }))
 
 vi.mock("../../env.js", () => ({
@@ -228,6 +229,7 @@ const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
 const mockCreateWorkAttributionExtension = vi.mocked(createWorkAttributionExtension)
 const mockCreateWorkerReportExtension = vi.mocked(createWorkerReportExtension)
 const mockCreateWorkerPermissionsExtension = vi.mocked(createWorkerPermissionsExtension)
+const mockGetPermissionsExtensionOptions = vi.mocked(getPermissionsExtensionOptions)
 const mockCreateSubagentBashClampExtension = vi.mocked(createSubagentBashClampExtension)
 const mockCreateKimchiMcpAdapterExtension = vi.mocked(createKimchiMcpAdapterExtension)
 
@@ -2459,6 +2461,61 @@ describe("runAgent — inline extension factories and model-only inactivity", ()
 
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg?.extensionFactories).toContain(inlineExtension)
+	})
+
+	it("folds a caller's permission gate into the worker gate instead of loading it", async () => {
+		const guard: InlineExtension = () => {}
+		const report: InlineExtension = { name: "report", factory: () => {} }
+		const hostGate: InlineExtension = () => {}
+		const preApproved = (toolName: string) => toolName === "submit_verdict"
+		mockGetPermissionsExtensionOptions.mockImplementation((extension) =>
+			extension === hostGate ? { preApproved } : undefined,
+		)
+		mockSession(makeFakeSession({ emitUsage: false }))
+
+		try {
+			await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Verifier", "verify", {
+				pi: pi as unknown as RunOptions["pi"],
+				extensionFactories: [guard, hostGate, report],
+			})
+		} finally {
+			mockGetPermissionsExtensionOptions.mockImplementation(() => undefined)
+		}
+
+		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith(expect.objectContaining({ preApproved }))
+		const factories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories
+		expect(factories).toContain(guard)
+		expect(factories).toContain(report)
+		expect(factories).not.toContain(hostGate)
+		expect(factories).toContainEqual(expect.objectContaining({ name: "kimchi-worker-permissions" }))
+	})
+
+	it("passes no pre-approval to the worker gate when the caller supplies no gate", async () => {
+		mockSession(makeFakeSession({ emitUsage: false }))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			extensionFactories: [() => {}],
+		})
+
+		expect(mockCreateWorkerPermissionsExtension.mock.calls[0]?.[0]).not.toHaveProperty("preApproved")
+	})
+
+	it("refuses to start a child whose host supplies two permission gates", async () => {
+		mockGetPermissionsExtensionOptions.mockImplementation(() => ({}))
+
+		try {
+			await expect(
+				runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Verifier", "verify", {
+					pi: pi as unknown as RunOptions["pi"],
+					extensionFactories: [() => {}, () => {}],
+				}),
+			).rejects.toThrow("at most one permission gate")
+		} finally {
+			mockGetPermissionsExtensionOptions.mockImplementation(() => undefined)
+		}
+		expect(mockDefaultResourceLoader).not.toHaveBeenCalled()
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 
 	it("does not steer or abort during a silent long tool call in model_only mode", async () => {
