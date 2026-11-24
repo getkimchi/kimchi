@@ -1,4 +1,4 @@
-import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent"
+import { DefaultResourceLoader, type PackageManager } from "@earendil-works/pi-coding-agent"
 
 /** Upstream loader options, derived from the constructor's parameter so it cannot drift from the pinned pi-coding-agent version. */
 type UpstreamLoaderOptions = ConstructorParameters<typeof DefaultResourceLoader>[0]
@@ -8,6 +8,8 @@ type UpstreamLoaderOptions = ConstructorParameters<typeof DefaultResourceLoader>
  * plus the required live prompt source.
  */
 export interface SubagentResourceLoaderOptions extends UpstreamLoaderOptions {
+	/** Prohibits DefaultPackageManager.resolve(), including invoking-user packages. */
+	skipPackageResolution?: boolean
 	/**
 	 * Supplies the subagent system prompt. Invoked on every
 	 * `getSystemPrompt()` call, so the value read is always current — unlike
@@ -40,11 +42,19 @@ export class SubagentResourceLoader extends DefaultResourceLoader {
 	private readonly readSystemPrompt: () => string
 
 	constructor(options: SubagentResourceLoaderOptions) {
-		const { readSystemPrompt, ...loaderOptions } = options
+		const { readSystemPrompt, skipPackageResolution = false, ...loaderOptions } = options
 		// No `systemPromptOverride` is forwarded: the getter below is the sole
 		// source of the subagent prompt, so the value `reload()` caches in
 		// `this.systemPrompt` stays unused on this path.
 		super(loaderOptions)
+		if (skipPackageResolution) {
+			// Upstream has no public opt-out: DefaultResourceLoader.reload() always
+			// invokes resolve(), which reads raw global/project settings instead of
+			// the merged overrides. The pinned private field is the narrow adapter
+			// seam; leave every other loader and extension-source operation intact.
+			const packageManager = (this as unknown as { packageManager: PackageManager }).packageManager
+			packageManager.resolve = async () => ({ extensions: [], skills: [], prompts: [], themes: [] })
+		}
 		this.readSystemPrompt = readSystemPrompt
 	}
 

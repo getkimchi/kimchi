@@ -34,37 +34,40 @@ function toolResult(result: SubmitResult): AgentToolResult<SubmitResult> {
 	return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }
 }
 
-export default function reviewSubmitExtension(pi: ExtensionAPI): void {
-	pi.registerFlag("review", {
-		description: "Enable review mode and its submit tools",
-		type: "boolean",
-	})
-	pi.registerFlag("review-writer", {
-		description: "Writer ID for submitted review records (default: final)",
-		type: "string",
-		default: "final",
-	})
-	pi.registerFlag("review-writer-limit", {
-		description: "Maximum findings per non-final writer: decimal integer 1–1000 (default: 50; final is always 50)",
-		type: "string",
-		default: String(DEFAULT_WRITER_LIMIT),
-	})
-	pi.registerFlag("review-context-dir", {
-		description: "Review context directory (default: .kimchi/review-context under the current project)",
-		type: "string",
-	})
-	pi.registerFlag("review-output-dir", {
-		description: "Review output directory (default: .kimchi/review-output under the current project)",
-		type: "string",
-	})
+export default function reviewSubmitExtension(pi: ExtensionAPI, binding?: ReviewSubmitContext): void {
+	if (binding === undefined) {
+		pi.registerFlag("review", {
+			description: "Enable review mode and its submit tools",
+			type: "boolean",
+		})
+		pi.registerFlag("review-writer", {
+			description: "Writer ID for submitted review records (default: final)",
+			type: "string",
+			default: "final",
+		})
+		pi.registerFlag("review-writer-limit", {
+			description: "Maximum findings per non-final writer: decimal integer 1–1000 (default: 50; final is always 50)",
+			type: "string",
+			default: String(DEFAULT_WRITER_LIMIT),
+		})
+		pi.registerFlag("review-context-dir", {
+			description: "Review context directory (default: .kimchi/review-context under the current project)",
+			type: "string",
+		})
+		pi.registerFlag("review-output-dir", {
+			description: "Review output directory (default: .kimchi/review-output under the current project)",
+			type: "string",
+		})
+	}
 	// Upstream applies extension flag values after factories load. The shared
 	// CLI parse captures --review before flags are applied at that later stage.
-	if (pi.getFlag("review") !== true && getParsedCliArgs().options.review !== true) return
+	if (!binding && pi.getFlag("review") !== true && getParsedCliArgs().options.review !== true) return
 	const stringFlag = (name: string): string | undefined => {
 		const value = pi.getFlag(name)
 		return typeof value === "string" ? value : undefined
 	}
 	const contextFor = (cwd: string): ReviewInvocation => {
+		if (binding) return { context: binding }
 		const rejection = invalidWriterLimit(stringFlag("review-writer-limit"))
 		if (rejection) return { rejection }
 		const writer = stringFlag("review-writer") ?? "final"
@@ -191,4 +194,10 @@ export default function reviewSubmitExtension(pi: ExtensionAPI): void {
 			return toolResult(await submitReply(params, invocation.context))
 		},
 	})
+}
+
+/** Bind one reviewer instance without consulting process-level review flags.
+ * Concurrent in-process reviewers each get their own immutable writer context. */
+export function createReviewSubmitExtension(context: ReviewSubmitContext): (pi: ExtensionAPI) => void {
+	return (pi) => reviewSubmitExtension(pi, context)
 }

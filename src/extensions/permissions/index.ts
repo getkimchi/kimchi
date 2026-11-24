@@ -82,6 +82,7 @@ import {
 } from "../prompt-construction/tool-visibility.js"
 import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
+import { type ReviewPermissionPolicy, reviewApprovalPresentation } from "../review-runner/execution.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -321,6 +322,8 @@ export interface WorkerPermissionsOptions extends PermissionsExtensionOptions {
 	 * that they never prompt. Defaults to asking.
 	 */
 	askParent?: boolean
+	/** Review-local execution controls. Inherited mode, trust and org policy still run first. */
+	reviewExecution?: ReviewPermissionPolicy
 }
 
 type GateOptions = ({ role: "main" } & PermissionsExtensionOptions) | ({ role: "worker" } & WorkerPermissionsOptions)
@@ -488,6 +491,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			const result = await handleConfirm(event, {
 				ctx,
 				pi,
+				input,
 				subtitle,
 				riskScore,
 				session,
@@ -510,6 +514,54 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		} finally {
 			releaseHold()
 		}
+	}
+
+	function reviewBashPolicy(command: string): { block: true; reason: string } | undefined {
+		const { mode } = getRuntimePermissionMode()
+		if (mode === "plan") {
+			if (!isReadOnlyBashCommand(command) && !isReadOnlyDocCliCommand(command)) {
+				return {
+					block: true,
+					reason: "Blocked: the session is in plan mode (read-only); review commands cannot run scripts.",
+				}
+			}
+			return undefined
+		}
+		const match = evaluateRules(allRules(), "bash", { command })
+		if (match.decision === "deny") return { block: true, reason: `Denied by rule ${formatRule(match.rule)}` }
+		if (isCompoundCommand(command)) {
+			const compound = checkCompoundCommand(command, allRules())
+			if (compound.decision === "deny") {
+				return { block: true, reason: compound.deniedReason ?? "Subcommand denied" }
+			}
+		}
+		if (mode === "yolo" && !isDangerBypass() && match.decision !== "allow" && isHardBlockedBash(command)) {
+			return { block: true, reason: `Blocked in yolo mode (hard-blocked command): ${command}` }
+		}
+		return undefined
+	}
+
+	if (options.role === "worker" && options.reviewExecution) {
+		options.reviewExecution.bindApprover(async (request, execution) => {
+			if (!execution.event || !execution.ctx) return "unavailable"
+			const input: Record<string, unknown> = { ...reviewApprovalPresentation(request) }
+			const subtitle =
+				request.kind === "offline-unavailable"
+					? `Offline network access cannot be enforced here; approve this command online: ${request.intendedCheck}`
+					: `${request.kind === "direct-install" ? "Review package installation" : "Review online command rerun"}: ${request.intendedCheck}`
+			const escalated = await requestWorkerApproval(
+				execution.event,
+				execution.ctx,
+				getRuntimePermissionMode().mode,
+				request.toolName ?? "bash",
+				input,
+				subtitle,
+			)
+			if (!escalated) return "unavailable"
+			if (escalated.result === "aborted") return "aborted"
+			return escalated.result === undefined ? "approved" : "declined"
+		})
+		options.reviewExecution.bindCommandAuthorizer(async (command) => reviewBashPolicy(command))
 	}
 
 	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
@@ -1981,6 +2033,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 
 	async function gateToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<GateResult> {
 		refreshWorkerPolicy(ctx)
+		if (options.role === "worker") {
+			options.reviewExecution?.captureExecution(event, ctx, getRuntimePermissionMode().mode)
+		}
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
 
@@ -2085,6 +2140,45 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				// refresh the parent's live policy on every pass.
 				refreshWorkerPolicy(ctx)
 				const { mode } = getRuntimePermissionMode()
+
+				const reviewApproval =
+					options.role === "worker" && mode !== "plan" && !isDangerBypass()
+						? options.reviewExecution?.approvalFor(toolName, input)
+						: undefined
+				if (reviewApproval && options.role === "worker" && options.reviewExecution) {
+					// Local review approval never overrides the inherited deny rules or
+					// hard blocks. Plan mode returned no request above, so its ordinary
+					// read-only gate below still rejects every script before this point.
+					const command = typeof input.command === "string" ? input.command : ""
+					if (!reviewBashPolicy(command)) {
+						const status = await options.reviewExecution.requestApproval(
+							{ ...reviewApproval, toolCallId: event.toolCallId },
+							{ event, ctx, mode },
+						)
+						options.reviewExecution.settleBashApproval(event.toolCallId, status, {
+							...reviewApproval,
+							toolCallId: event.toolCallId,
+							toolName,
+						})
+						if (status === "aborted" && ctx.signal?.aborted) {
+							emitToolDecision(pi, event, mode, "reject", "abort")
+							return { block: true, reason: "Subagent was stopped before the review approval was answered." }
+						}
+						if (status === "aborted") continue
+						if (status === "approved") {
+							emitToolDecision(pi, event, mode, "accept", "allow_once")
+							return undefined
+						}
+						emitToolDecision(pi, event, mode, "reject", status === "unavailable" ? "no_ui" : "deny")
+						return {
+							block: true,
+							reason:
+								status === "unavailable"
+									? "Review online work needs explicit approval, but no approver is available. The command was not run; record it in review coverage."
+									: "The user declined this review's online command. The command was not run; record it in review coverage.",
+						}
+					}
+				}
 
 				// YOLO mode: skip approval prompts and the classifier — but the user's
 				// blocklist still wins. Deny rules (and the allow rules that can override
@@ -2241,7 +2335,10 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						return undefined
 					}
 				}
-				if (options.preApproved?.(toolName, input)) {
+				if (
+					options.preApproved?.(toolName, input) ||
+					(options.role === "worker" && options.reviewExecution?.preApproved(toolName))
+				) {
 					emitToolDecision(pi, event, mode, "accept", "preapproved")
 					return undefined
 				}
@@ -2512,6 +2609,8 @@ type GateResult = Exclude<PromptOutcome, "aborted">
 interface ConfirmOptions {
 	ctx: ExtensionContext
 	session: SessionMemory
+	/** Presentation override for host approvals that include extra review evidence. */
+	input?: Record<string, unknown>
 	subtitle?: string
 	/** Risk score from the classifier LLM, for display in the prompt. */
 	riskScore?: RiskScore
@@ -2613,7 +2712,7 @@ async function handleConfirm(
 				classifierReason: opts.subtitle,
 			})
 
-			const input = event.input
+			const input = opts.input ?? event.input
 			const outcome = await runQueuedPrompt(
 				opts.promptQueue ?? sharedPromptQueue,
 				() =>
