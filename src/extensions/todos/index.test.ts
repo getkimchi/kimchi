@@ -2115,6 +2115,7 @@ describe("plan-submission check-in gate", () => {
 		expect(pending[0]?.scope).toEqual({ kind: "global" })
 		const steers = steerCallsByReason(harness.sendMessage, "plan_submission")
 		expect(steers).toHaveLength(1)
+		expect(steers[0]?.[1]).toEqual({ deliverAs: "nextTurn" })
 		const text = JSON.stringify(steers[0])
 		expect(text).toContain("The plan was submitted for review")
 		expect(text).toContain("[in_progress] #1 Finalize plan")
