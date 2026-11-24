@@ -6,17 +6,17 @@ child session with its own system prompt, model, and tool restrictions.
 
 ## Permission modes
 
-Kimchi's permission modes (`default`, `plan`, `auto`, `yolo`) gate the **parent
-session's** autonomy (read-only vs full edit, etc.). Permission modes and agents
-are independent:
+Kimchi's permission modes (`default`, `plan`, `auto`, `yolo`) and agents work
+together:
 
-- **Permission modes** control what the parent session is allowed to do.
+- **Permission modes** control what the session is allowed to do.
 - **Agents** (this extension) handle delegation. Each persona declares its own
-  tool set independently of the parent's mode.
+  tool set in its `tools` field.
 
-A parent in `plan` mode (read-only) can still spawn an `expert-coder` agent that
-edits files — that's by design. Agents are isolated child sessions; their
-authority is scoped to the persona's `tools` field, not the parent's mode.
+A subagent's tool calls follow the main session's mode and rules. The persona
+decides which tools the subagent has; the mode decides whether a call may run.
+For example, a subagent started from a session in `plan` mode cannot edit
+files, even when its persona lists `edit`. See [Permissions](#permissions).
 
 ## How it works
 
@@ -331,40 +331,11 @@ preventing fork-bombs and runaway delegation chains.
 
 ## Permissions
 
-In-process subagents, including isolated and resumed agents, follow the spawning
-session's permission mode and rules. Config-file rules, `--allow-tool` and
-`--deny-tool` rules, and rules remembered during the session all apply. Mode
-changes are read live: if the main session enters plan mode, subsequent calls
-from a running subagent are read-only too. `skill`, todo reconciliation, web
-reads, read-only MCP calls, inspection-only debugger results, and the Ferment
-worker-report tool remain available as control-plane or read-only operations.
-
-A subagent cannot open its own approval prompt. In `default` and `auto` modes,
-an otherwise unapproved non-read-only call therefore goes through the classifier;
-it runs only when the classifier returns `safe`. A non-safe verdict or classifier
-failure blocks the call and tells the subagent not to retry it, but to report that
-the main agent needs the user's approval. This adds a classifier request for each
-such call that reaches the permission decision. Plan mode blocks writes and
-non-read-only bash. Debugger launch/continue/step controls are execution, not
-reads, and therefore use the classifier in `default` and `auto`; only stopped
-session inspection such as `debug_locals` and `debug_backtrace` is read-only.
-Yolo mode still enforces deny rules and hard-blocked bash unless the main
-session has the dangerous full bypass enabled. As in a non-promptable main
-session, well-formed `kimchi doc-cli` commands use their deterministic
-first-party shortcut; in `default` mode that includes mutating subcommands.
-
-A host that spawns a subagent can pre-approve narrowly scoped calls for it by
-passing a `createPermissionsExtension({ preApproved })` factory with the spawn's
-inline extensions; the Ferment V2 verifier does this for its report tools and
-confined probe writes. That factory is not loaded in the child. Its options are
-folded into the subagent's gate, so the child still has one gate under the main
-session's policy, and deny rules and plan mode win over a pre-approval.
-
-The same behavior applies on TUI, print mode, and ACP; no ACP permission request
-is sent for a subagent's own call. After `/branch` or `/clone`, a running child
-whose old parent policy has gone away keeps its last policy snapshot rather than
-falling back to allow. Remote sandbox agents are separate: they run in another
-process with that process's permission gate.
+Subagent tool calls go through the same permission gate as the main session and
+follow its mode and rules. A subagent has no prompt of its own. In `default` and
+`auto` mode a call that is not read-only and that no rule allows runs only when
+the classifier calls it safe; otherwise it is blocked. The details are in
+[subagent-permissions.md](subagent-permissions.md).
 
 ## Remote runs and session replacement
 
