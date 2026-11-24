@@ -350,6 +350,94 @@ describe("shared file reconciliation", () => {
 		expect(reportSignal?.aborted).toBe(true)
 		expect(vi.getTimerCount()).toBe(1)
 	})
+	it("keeps a partial stop pending until the cancelled channel's pass has drained", async () => {
+		let finish!: () => void
+		const gate = new Promise<void>((resolve) => {
+			finish = resolve
+		})
+		let costSignal: AbortSignal | undefined
+		passBody = async (input) => {
+			if (input.costs && typeof input.costs === "object" && input.costs.signal) {
+				costSignal = input.costs.signal
+				await gate
+				// Drain after the abort: the cancelled channel's body is still running.
+				expect(input.costs.signal.aborted).toBe(true)
+			}
+		}
+		subscribe()
+		const stopCost = subscribeCostReconciliation()
+		try {
+			await vi.waitFor(() => expect(costSignal).toBeDefined())
+			let stopped = false
+			const draining = stopCost().then(() => {
+				stopped = true
+			})
+			await vi.waitFor(() => expect(costSignal?.aborted).toBe(true))
+			// A buggy stop() that skips the drain settles within a few microtasks;
+			// settle those before asserting the stop is still pending.
+			await new Promise((resolve) => setTimeout(resolve, 10))
+			expect(stopped).toBe(false)
+			finish()
+			await draining
+			expect(stopped).toBe(true)
+		} finally {
+			finish()
+			await stopCost()
+		}
+	})
+	it("requeues the reporting channel when a reporting session leaves mid-pass", async () => {
+		let reportingCwd: string | undefined
+		passBody = async (input) => {
+			if (input.reporting?.signal) {
+				reportingCwd = input.reporting.cwd
+				await aborted(input.reporting.signal)
+			}
+		}
+		subscribe()
+		const stopA = subscribeReportingReconciliation(() => "/a-cwd")
+		const stopB = subscribeReportingReconciliation(() => "/b-cwd")
+		try {
+			await vi.waitFor(() => expect(passInputs.length).toBe(1))
+			expect(passInputs[0].reporting?.cwd).toBe("/a-cwd")
+			// A leaves while its pass is still in flight and B remains subscribed: the
+			// in-flight pass must stop delivering with A's cwd, and the requeued pass
+			// resolves B's cwd — the old scan() selected onReport just before the
+			// reporting channel ran.
+			await stopA()
+			expect(reportingCwd).toBe("/a-cwd")
+			await vi.waitFor(() => expect(passInputs.length).toBe(2))
+			expect(passInputs[1].reporting?.cwd).toBe("/b-cwd")
+		} finally {
+			await stopA()
+			await stopB()
+		}
+	})
+	it("requeues a pass for a reporting session that joins mid-pass", async () => {
+		let finishFirst!: () => void
+		const gate = new Promise<void>((resolve) => {
+			finishFirst = resolve
+		})
+		passBody = async () => {
+			await gate
+		}
+		subscribe()
+		try {
+			await vi.waitFor(() => expect(passInputs.length).toBe(1))
+			expect(passInputs[0].reporting).toBeUndefined()
+			// A reporting session joining mid-pass is not in the frozen snapshot: the
+			// next pass must deliver for it instead of waiting a whole interval.
+			const stopB = subscribeReportingReconciliation(() => "/b-cwd")
+			try {
+				finishFirst()
+				await vi.waitFor(() => expect(passInputs.length).toBe(2))
+				expect(passInputs[1].reporting?.cwd).toBe("/b-cwd")
+			} finally {
+				await stopB()
+			}
+		} finally {
+			finishFirst()
+		}
+	})
 	it("routes pull-request channel errors to the PR subscribers only", async () => {
 		const onError = vi.fn()
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})

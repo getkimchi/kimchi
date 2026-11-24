@@ -59,6 +59,8 @@ interface Supervisor {
 	/** Continuation repair progress, carried across passes (PassResult.progress). */
 	progress?: ContinuationProgress
 	channels: Map<ChannelKind, Channel>
+	/** True while an in-flight pass has built its PassInput: the subscriber snapshot is frozen. */
+	passFrozen?: boolean
 }
 interface ReconciliationSubscriber {
 	kind: "files" | ChannelKind
@@ -125,10 +127,32 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 			// it in PassResult.progress, exactly how the old scan() body threaded `owner`.
 			progress: owner.progress,
 		}
-		const result = await runReconciliationPass(input, kimchiHostPorts(), { signal, assertLease })
-		owner.nextRepository = result.nextRepository
-		owner.progress = result.progress
+		// The snapshot is frozen from here: subscriber changes during this pass no
+		// longer reach the input (the old scan() read the reporting set just before
+		// its channel ran, so such changes cancel and requeue below instead).
+		owner.passFrozen = true
+		const pass = runReconciliationPass(input, kimchiHostPorts(), { signal, assertLease })
+		// The pass runs every enabled channel in one body, so a cancelled channel's
+		// work drains no later than that pass. Track it on each enabled channel (the
+		// old runChannel wrapper's per-channel promise) so a partial unsubscribe keeps
+		// stop() pending until the aborted channel has actually exited.
+		const drained = pass.then(
+			(result) => {
+				owner.nextRepository = result.nextRepository
+				owner.progress = result.progress
+			},
+			() => {},
+		)
+		for (const [kind, channel] of owner.channels)
+			if (
+				(kind === "pull-requests" && input.pullRequests) ||
+				(kind === "costs" && input.costs) ||
+				(kind === "reporting" && input.reporting)
+			)
+				channel.running = drained
+		await pass
 	} finally {
+		owner.passFrozen = false
 		if (!compromised) await release()
 	}
 }
@@ -190,6 +214,28 @@ export function requestWorkReconciliation(): void {
 	else tick(agentDir, owner)
 }
 
+/**
+ * A reporting session joining or leaving while a pass is in flight must not
+ * deliver with a retired session's cwd or skip a live session's report: the
+ * pass froze its reporting snapshot when it built its input. Abort the
+ * in-flight pass's reporting work and requeue; the next pass resolves the
+ * reporting set fresh, exactly where the old scan() selected onReport
+ * immediately before the reporting channel ran.
+ */
+function refreshReportingChannel(owner: Supervisor): void {
+	if (!owner.running || !owner.passFrozen) return
+	const channel = owner.channels.get("reporting")
+	if (!channel) return
+	channel.controller.abort()
+	// Keep any in-flight pass tracked on the replacement channel so a later
+	// unsubscribe of the remaining session still waits that pass out.
+	owner.channels.set("reporting", {
+		controller: new AbortController(),
+		running: channel.running,
+	})
+	owner.requested = true
+}
+
 /** One optional worker per harness directory. Local children never subscribe. */
 function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Promise<void> {
 	const agentDir = resolve(getAgentDir())
@@ -215,6 +261,8 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 	owner.subscribers.add(subscription)
 	if (subscriber.kind !== "files" && !owner.channels.has(subscriber.kind))
 		owner.channels.set(subscriber.kind, { controller: new AbortController() })
+	// A reporting session joining mid-pass is not in the frozen snapshot: requeue.
+	if (subscriber.kind === "reporting") refreshReportingChannel(owner)
 	if (owner.firstTick === undefined || owner.hadPass) tick(agentDir, owner)
 	// A subscriber joining inside the delayed first-pass window — before any pass has run — skips
 	// the expensive scan (that is the point of the delay) but still receives the durable pull-request
@@ -227,6 +275,10 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 		if (stopped) return
 		stopped = true
 		current.subscribers.delete(subscription)
+		// A reporting session leaving while another remains must not leave the
+		// in-flight pass delivering with the retired session's cwd: requeue too.
+		if (subscription.kind === "reporting" && [...current.subscribers].some((entry) => entry.kind === "reporting"))
+			refreshReportingChannel(current)
 		const pending: (Promise<void> | undefined)[] = []
 		for (const [kind, channel] of current.channels)
 			if (![...current.subscribers].some((entry) => entry.kind === kind)) {
