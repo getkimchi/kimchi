@@ -1,5 +1,5 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import type { readOutboxStatus } from "./ledger/outbox.js"
+import type { readOutboxStatus } from "@getkimchi/kimchi-bridge/ledger"
 import {
 	inUploadWindow,
 	type LimitNotices,

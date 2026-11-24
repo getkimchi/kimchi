@@ -11,11 +11,12 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
+import type { Row, WorkHead } from "@getkimchi/kimchi-bridge/ledger"
+import { backendFor, capture, type StoredRecord } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { savedWorkSummary, saveWorkSummary } from "../__mocks__/work-summary.js"
-import { backendFor, capture, type StoredRecord } from "../pr-cost-reporting/ledger/records.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
@@ -24,9 +25,7 @@ import {
 	setWorkId,
 	tryWorkAttribution,
 } from "../work-attribution.js"
-
 import * as diagnostics from "./diagnostics.js"
-import type { Row, WorkHead } from "./row-log.js"
 import {
 	flushWorkSummaries,
 	journalParser,
@@ -915,7 +914,7 @@ describe("readable work summaries", () => {
 		const launch = async () => {
 			vi.resetModules()
 			const relaunched = await import("./summary.js")
-			const records = await import("../pr-cost-reporting/ledger/records.js")
+			const records = await import("@getkimchi/kimchi-bridge/ledger")
 			expect(records.backendFor(dir)).toBe(backend)
 			relaunched.recoverWorkSummaries()
 			await relaunched.flushWorkSummaries()

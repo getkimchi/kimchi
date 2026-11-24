@@ -3,9 +3,8 @@ import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { closeBackends, createMemoryRecords, getNote, useBackendFactory } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest"
-import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
-import { closeBackends, getNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import {
 	changeWorkIssue,
 	MAX_ISSUE_BYTES,

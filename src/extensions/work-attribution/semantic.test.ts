@@ -4,6 +4,14 @@ import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import {
+	backendFor,
+	closeBackends,
+	createMemoryRecords,
+	getNote,
+	setNote,
+	useBackendFactory,
+} from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type * as Settings from "../../config/settings.js"
 import { readConfigSetting } from "../../config/settings.js"
@@ -12,8 +20,6 @@ import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import * as redactionConfig from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
-import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
-import { backendFor, closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import type * as WorkAccounts from "./scope.js"
 import {

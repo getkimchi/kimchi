@@ -23,8 +23,7 @@ function bashState(registry: ReturnType<typeof createProcessRegistry>): BashSess
 	}
 }
 
-import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
-import { useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
+import { createMemoryRecords, useBackendFactory } from "@getkimchi/kimchi-bridge/ledger"
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
 import * as diagnostics from "./diagnostics.js"

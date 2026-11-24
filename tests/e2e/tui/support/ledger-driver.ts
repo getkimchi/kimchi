@@ -25,14 +25,16 @@ import { mkdirSync, readdirSync, readSync, statSync, writeSync } from "node:fs"
 import { createRequire } from "node:module"
 import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline"
-import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
 import {
 	backendFor,
 	capture,
 	closeBackends,
 	fingerprint,
 	getNote,
+	importJournals,
+	ledgerDbPath,
 	OUTBOX_DELIVERY_STATUS_SQL,
+	openStore,
 	outboxClaimsSql,
 	readRecords,
 	readRecordsSinceSql,
@@ -40,8 +42,7 @@ import {
 	readWorkHead,
 	readWorkSummary,
 	workRecordsImportedPresent,
-} from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
+} from "@getkimchi/kimchi-bridge/ledger"
 import { reportingDirectory } from "../../../../src/extensions/pr-cost-reporting/queue.js"
 import {
 	readWorkRecords,
@@ -275,7 +276,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		"../../../../src/extensions/work-attribution.js"
 	)
 	const { withNativeUsage } = await import("../../../../src/extensions/work-attribution/native-usage.js")
-	const { closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	let sessionId = "sdk-original"
 	const ctx = { cwd: agent, sessionManager: { getSessionId: () => sessionId } }
 	const calls: { id: string | null; persisted: boolean }[] = []
@@ -408,12 +409,8 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 	}
 	if (common) {
 		const { buildEvents } = await import("../../../../src/extensions/pr-cost-reporting/events.js")
-		const { backendFor, readStoredRecordsAsync } = await import(
-			"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-		)
-		const { effectiveClaims, observeEvents, pendingBatch } = await import(
-			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
-		)
+		const { backendFor, readStoredRecordsAsync } = await import("@getkimchi/kimchi-bridge/ledger")
+		const { effectiveClaims, observeEvents, pendingBatch } = await import("@getkimchi/kimchi-bridge/ledger")
 		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
 		const { readWorkCostReport } = await import("../../../../src/extensions/work-attribution/cost-sync.js")
 		const backend = backendFor(agent)
@@ -473,9 +470,9 @@ async function nativeDelivery(agent: string): Promise<void> {
 	)
 		throw new Error("Missing original native scope")
 	const account = request.scope.account
-	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { deliverEvents, reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
-	const { pendingBatch, observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
+	const { pendingBatch, observeEvents } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
 	const { queueSnapshots, readReportingState, setReportingEnabled } = await import(
 		"../../../../src/extensions/pr-cost-reporting/queue.js"
@@ -741,7 +738,7 @@ async function legacyFreezeScenario(agent: string): Promise<void> {
 		reportingStatePath,
 		setReportingEnabled,
 	} = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
-	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	const check = () => {}
 	const path = reportingStatePath(agent)
 	const originalState = readFileSync(path)
@@ -872,8 +869,8 @@ async function producerScenario(agent: string): Promise<void> {
 	const { readReportingState, reportingProducer } = await import(
 		"../../../../src/extensions/pr-cost-reporting/queue.js"
 	)
-	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
-	const { observeEvents, pendingBatch } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
+	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
+	const { observeEvents, pendingBatch } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { machineFingerprint } = await import("../../../../src/extensions/pr-cost-reporting/machine.js")
 	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
 	const state = await readReportingState(agent)
@@ -914,13 +911,11 @@ async function producerScenario(agent: string): Promise<void> {
 
 async function outboxScenario(agent: string, mode: string): Promise<void> {
 	const { observeEvents, pendingBatch, acknowledgeBatch, readOutboxStatus } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+		"@getkimchi/kimchi-bridge/ledger"
 	)
-	const { backendFor, closeBackends, recordHashOf, useBackendFactory } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-	)
-	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
-	const { encodeBatch } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
+	const { backendFor, closeBackends, recordHashOf, useBackendFactory } = await import("@getkimchi/kimchi-bridge/ledger")
+	const { createMemoryRecords } = await import("@getkimchi/kimchi-bridge/ledger")
+	const { encodeBatch } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { createHash } = await import("node:crypto")
 	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
 	const backend = backendFor(agent)
@@ -1517,13 +1512,9 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
  * mixed, batched, batch-only), on first open and after a cold reopen. SQLite mode also
  * asserts the probe queries stay bounded by the covering indexes. */
 async function deliveryStatusScenario(agent: string, mode: string): Promise<void> {
-	const { outboxDeliveryStatus, readOutboxStatus } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
-	)
-	const { backendFor, closeBackends, useBackendFactory } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-	)
-	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
+	const { outboxDeliveryStatus, readOutboxStatus } = await import("@getkimchi/kimchi-bridge/ledger")
+	const { backendFor, closeBackends, useBackendFactory } = await import("@getkimchi/kimchi-bridge/ledger")
+	const { createMemoryRecords } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { createHash } = await import("node:crypto")
 	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
 	const backend = backendFor(agent)
@@ -1625,10 +1616,8 @@ async function deliveryStatusScenario(agent: string, mode: string): Promise<void
 }
 
 async function outboxTransport(agent: string): Promise<void> {
-	const { observeEvents, pendingBatch, acknowledgeBatch } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
-	)
-	const { closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { observeEvents, pendingBatch, acknowledgeBatch } = await import("@getkimchi/kimchi-bridge/ledger")
+	const { closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	const current = () => {}
 	const coverage = {
 		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -1713,7 +1702,7 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 
 async function knownAsyncReadRegressions(agent: string, recordJson: string, stored = false): Promise<void> {
 	const { backendFor, closeBackends, recordHashOf, readStoredRecordsAsync, rebuildWork } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
+		"@getkimchi/kimchi-bridge/ledger"
 	)
 	const readAsync = stored
 		? async (signal: AbortSignal): Promise<WorkRecord[]> =>
@@ -1837,7 +1826,7 @@ function summaryState(agent: string, workId: string) {
 }
 
 async function summaryAtomic(agent: string, json: string): Promise<void> {
-	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { record, failure, failedWorkId } = JSON.parse(json) as {
 		record: WorkRecord
 		failure: "authority" | "translation" | "projection"
@@ -1899,7 +1888,7 @@ async function summaryAtomic(agent: string, json: string): Promise<void> {
 
 /** A synchronous pipe gate holds a real transaction after its head write, never across await. */
 async function summaryWriter(agent: string, json: string): Promise<void> {
-	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { flushWorkSummaries } = await import("../../../../src/extensions/work-attribution/summary.js")
 	const {
 		record,
@@ -1968,9 +1957,7 @@ async function summaryWriter(agent: string, json: string): Promise<void> {
 }
 
 async function knownRecordRegressions(agent: string, recordJson: string): Promise<void> {
-	const { backendFor, closeBackends, ledgerSessionInfo, recoverDirty } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-	)
+	const { backendFor, closeBackends, ledgerSessionInfo, recoverDirty } = await import("@getkimchi/kimchi-bridge/ledger")
 	const base = JSON.parse(recordJson) as WorkRecord
 	const requestId = "22222222-2222-4222-8222-222222222222"
 	capture(agent, base, "ledger-driver")
@@ -2276,10 +2263,8 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	},
 	"claims-parity": async (agent) => {
 		const { createHash } = await import("node:crypto")
-		const { backendFor } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
-		const { effectiveClaims, effectiveClaimsAsync } = await import(
-			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
-		)
+		const { backendFor } = await import("@getkimchi/kimchi-bridge/ledger")
+		const { effectiveClaims, effectiveClaimsAsync } = await import("@getkimchi/kimchi-bridge/ledger")
 		const backend = backendFor(agent)
 		const entities: string[] = []
 		backend.tx(() => {
@@ -2433,7 +2418,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),
 	"import-capture": async (agent) => {
-		const { importJournals } = await import("../../../../src/extensions/pr-cost-reporting/ledger/import.js")
+		const { importJournals } = await import("@getkimchi/kimchi-bridge/ledger")
 		let result = await importJournals(agent, { verifyCapturePrefix: true })
 		while (result.pending) result = await importJournals(agent, { verifyCapturePrefix: true })
 		out({ imported: result.imported, modes: result.files.map((file) => file.mode) })

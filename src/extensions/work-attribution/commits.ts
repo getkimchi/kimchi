@@ -10,8 +10,8 @@ import {
 	createLocalBashOperations,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
+import { readWorkRows } from "@getkimchi/kimchi-bridge/ledger"
 import { isResourceEnabled } from "../../resources/store.js"
-import { readWorkRows } from "../pr-cost-reporting/ledger/records.js"
 import {
 	appendWorkRecord,
 	getToolRequest,

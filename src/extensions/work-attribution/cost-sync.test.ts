@@ -3,11 +3,6 @@ import * as fs from "node:fs"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type * as json from "../../config/json.js"
-import * as config from "../../config.js"
-import { createContext } from "../__mocks__/context.js"
-import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import {
 	backendFor,
 	getNote,
@@ -15,7 +10,12 @@ import {
 	listWorks,
 	type RecordBackend,
 	setNote,
-} from "../pr-cost-reporting/ledger/records.js"
+} from "@getkimchi/kimchi-bridge/ledger"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type * as json from "../../config/json.js"
+import * as config from "../../config.js"
+import { createContext } from "../__mocks__/context.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { readWorkBrowser } from "./browser.js"
@@ -2422,7 +2422,7 @@ describe("empty billing settlement", () => {
 		fetchMock.mockClear()
 		vi.resetModules()
 		// Module reloads retain the same durable store, just as reopening SQLite does in production.
-		const reloadedRecords = await import("../pr-cost-reporting/ledger/records.js")
+		const reloadedRecords = await import("@getkimchi/kimchi-bridge/ledger")
 		reloadedRecords.useBackendFactory(() => notes)
 		const reloaded = await import("./cost-sync.js")
 		await reloaded.reconcileWorkCosts(dir, new AbortController().signal)

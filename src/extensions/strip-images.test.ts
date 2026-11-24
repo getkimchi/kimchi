@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { backendFor } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import { flushWorkSummaries } from "./work-attribution/summary.js"
 
 // All mock functions must be vi.hoisted

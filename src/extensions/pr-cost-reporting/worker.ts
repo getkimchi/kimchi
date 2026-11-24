@@ -1,5 +1,21 @@
 import { createHash } from "node:crypto"
 import { setImmediate } from "node:timers/promises"
+import type { Acknowledgement } from "@getkimchi/kimchi-bridge/ledger"
+import {
+	acknowledgeBatch,
+	backendFor,
+	deliveryRetry,
+	effectiveClaimsAsync,
+	type Fact,
+	legacyInputSignature,
+	type OutboxBatch,
+	observeEvents,
+	outboxDeliveryStatus,
+	pendingBatch,
+	pullRequestKey,
+	type RecordBackend,
+	type StoredRecord,
+} from "@getkimchi/kimchi-bridge/ledger"
 import { verifyApiKey } from "../../api/organizations.js"
 import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
@@ -8,7 +24,6 @@ import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
-import { pullRequestKey } from "../pull-request-status/links.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
@@ -23,19 +38,7 @@ import {
 } from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents, type EventUnit } from "./events.js"
-import { legacyInputSignature } from "./ledger/import.js"
-import {
-	acknowledgeBatch,
-	deliveryRetry,
-	effectiveClaimsAsync,
-	type Fact,
-	observeEvents,
-	outboxDeliveryStatus,
-	pendingBatch,
-} from "./ledger/outbox.js"
-import { backendFor, type OutboxBatch, type RecordBackend, type StoredRecord } from "./ledger/records.js"
 import { preludeStretch } from "./prelude.js"
-import type { Acknowledgement } from "./protocol.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,

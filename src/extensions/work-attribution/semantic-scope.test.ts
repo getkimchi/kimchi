@@ -4,6 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { InputEvent } from "@earendil-works/pi-coding-agent"
+import {
+	closeBackends,
+	createMemoryRecords,
+	getNote,
+	setNote,
+	useBackendFactory,
+} from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import * as organizations from "../../api/organizations.js"
 import * as settings from "../../config/settings.js"
@@ -13,8 +20,6 @@ import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { saveWorkSummary } from "../__mocks__/work-summary.js"
-import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
-import { closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import {
 	createWorkAttributionExtension,
 	getWorkId,

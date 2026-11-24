@@ -13,16 +13,15 @@ import {
 	type InputEvent,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
+import { capture, isWorkId, ledgerHasWorkOutput, ledgerSessionInfo } from "@getkimchi/kimchi-bridge/ledger"
 import { writeConfigSetting } from "../config/settings.js"
 import type { ModelRequestMetadata } from "../http/instrument-fetch.js"
 import { isResourceEnabled } from "../resources/store.js"
 import { isDefaultToolEnabled } from "../settings-watcher.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
-import { isWorkId } from "../shared/work-id.js"
 import { notifyUser } from "../utils/notify-user.js"
 import { getVersion } from "../utils.js"
 import { derefToolArgsForExecution } from "./pii-redaction/vault.js"
-import { capture, ledgerHasWorkOutput, ledgerSessionInfo } from "./pr-cost-reporting/ledger/records.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"

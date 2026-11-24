@@ -1,8 +1,7 @@
 import { closeSync, fstatSync, openSync, readFileSync } from "node:fs"
 import { join } from "node:path"
+import { backendFor, getNote, isWorkId, setNote } from "@getkimchi/kimchi-bridge/ledger"
 import { branchIssueKeys, isIssueKey } from "../../shared/issue-keys.js"
-import { isWorkId } from "../../shared/work-id.js"
-import { backendFor, getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { currentBranch } from "../pull-request-status/branch-status.js"
 import { object } from "./summary.js"
 

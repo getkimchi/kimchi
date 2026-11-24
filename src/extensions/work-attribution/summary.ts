@@ -2,23 +2,21 @@ import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate, setTimeout } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
-import { isWorkId } from "../../shared/work-id.js"
 import {
 	IMPORT_SLICE_MS,
 	importJournalSlice,
 	importJournals,
 	importSessionJournal,
-	reportJournalProblems,
-} from "../pr-cost-reporting/ledger/import.js"
-import {
+	isWorkId,
 	readRecords as ledgerReadRecords,
 	readRecordsAsync as ledgerReadRecordsAsync,
 	readRecordsSinceAsync as ledgerReadRecordsSinceAsync,
 	readTransitionRepositories as ledgerTransitionRepositories,
 	fingerprint as recordsFingerprint,
 	recoverDirty,
+	reportJournalProblems,
 	type WindowedRecord,
-} from "../pr-cost-reporting/ledger/records.js"
+} from "@getkimchi/kimchi-bridge/ledger"
 import { debugWorkAttribution } from "./diagnostics.js"
 
 interface SummaryEntry {

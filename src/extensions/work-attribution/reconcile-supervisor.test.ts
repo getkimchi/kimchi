@@ -73,7 +73,7 @@ let directory: string
  * `proper-lockfile` lock and runs async work, which a loaded CI runner can outlast — the
  * "stops only PR network work" case failed that way (spy called 2 times, expected 4).
  */
-const RECONCILIATION_WAIT_TIMEOUT_MS = 10_000
+const _RECONCILIATION_WAIT_TIMEOUT_MS = 10_000
 const stops: (() => Promise<void>)[] = []
 function subscribe() {
 	const stop = subscribeFileReconciliation()
@@ -359,7 +359,7 @@ describe("shared file reconciliation", () => {
 		await vi.waitFor(() => expect(passInputs.length).toBe(1))
 		// The pass calls the channel's onError; the supervisor forwards it to the
 		// PR subscribers (the old reportError owner routing).
-		await passInputs[0].pullRequests!.onError!(lookupError)
+		await passInputs[0].pullRequests?.onError?.(lookupError)
 		expect(onError).toHaveBeenCalledExactlyOnceWith(lookupError)
 		expect(warn).not.toHaveBeenCalled()
 	})

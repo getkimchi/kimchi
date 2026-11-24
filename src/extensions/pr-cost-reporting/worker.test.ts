@@ -4,6 +4,9 @@ import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as timers from "node:timers/promises"
+import type { Batch } from "@getkimchi/kimchi-bridge/ledger"
+import * as outbox from "@getkimchi/kimchi-bridge/ledger"
+import { backendFor, readRecords, reportJournalProblems } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as durableFiles from "../../config/json.js"
 import { createContext } from "../__mocks__/context.js"
@@ -16,10 +19,6 @@ import * as summary from "../work-attribution/summary.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import * as eventBuilder from "./events.js"
-import { reportJournalProblems } from "./ledger/import.js"
-import * as outbox from "./ledger/outbox.js"
-import { backendFor, readRecords } from "./ledger/records.js"
-import type { Batch } from "./protocol.js"
 import * as queue from "./queue.js"
 import {
 	HOLD_EXPIRY_MS,
@@ -55,7 +54,10 @@ vi.mock("../work-attribution/cost-sync.js", async (original) => {
 })
 vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
 vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], units: [], unresolved: [] })) }))
-vi.mock("./ledger/outbox.js", async (original) => ({ ...(await original<typeof outbox>()), observeEvents: vi.fn() }))
+vi.mock("@getkimchi/kimchi-bridge/ledger", async (original) => ({
+	...(await original<typeof outbox>()),
+	observeEvents: vi.fn(),
+}))
 // Pass-through timers: real macrotask semantics, with a call counter the tests can read.
 vi.mock("node:timers/promises", async (original) => {
 	const real = await original<typeof import("node:timers/promises")>()
@@ -132,7 +134,7 @@ const deliver = () => deliverSnapshots(directory, "/project", new AbortControlle
 const eventUploads = () => http.mock.calls.filter(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))
 
 async function seedCoverageEvents(storedKey: string, count: number, alternates: readonly string[] = []): Promise<void> {
-	const actual = await vi.importActual<typeof outbox>("./ledger/outbox.js")
+	const actual = await vi.importActual<typeof outbox>("@getkimchi/kimchi-bridge/ledger")
 	for (let index = 0; index < count; index++) {
 		const key = alternates[index % alternates.length] ?? storedKey
 		actual.observeEvents(

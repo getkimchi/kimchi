@@ -1,4 +1,4 @@
-import { isWorkId } from "../../shared/work-id.js"
+import { isWorkId } from "@getkimchi/kimchi-bridge/ledger"
 import { boundedResponse } from "../../utils/http.js"
 import type { BillingSelector } from "./billing-source.js"
 import { decimalNanos, time } from "./costs.js"

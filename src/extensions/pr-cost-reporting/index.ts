@@ -1,5 +1,6 @@
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
+import { readOutboxStatus } from "@getkimchi/kimchi-bridge/ledger"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import {
 	requestWorkReconciliation,
@@ -7,7 +8,6 @@ import {
 } from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import { uploadSkipReason } from "./automation.js"
-import { readOutboxStatus } from "./ledger/outbox.js"
 import {
 	dueLimitNotices,
 	readReportingState,

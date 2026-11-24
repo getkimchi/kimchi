@@ -11,9 +11,7 @@ import {
 	getAgentDir,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
-import { isWorkId } from "../../shared/work-id.js"
-import { fileMatchStrength } from "../pr-cost-reporting/ledger/merge.js"
-import { getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
+import { fileMatchStrength, getNote, isWorkId, setNote } from "@getkimchi/kimchi-bridge/ledger"
 import { SHA } from "../pull-request-status/provider-records.js"
 import {
 	appendWorkRecord,

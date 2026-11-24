@@ -5,8 +5,8 @@ import * as fileSystem from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { backendFor, capture } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, expect, it, vi } from "vitest"
-import { backendFor, capture } from "../pr-cost-reporting/ledger/records.js"
 import { pinWorkContinuation, readContinuationHistory } from "./links.js"
 import {
 	flushWorkSummaries,

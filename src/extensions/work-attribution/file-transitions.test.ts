@@ -22,14 +22,19 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
+import * as ledger from "@getkimchi/kimchi-bridge/ledger"
+import {
+	closeBackends,
+	createMemoryRecords,
+	getNote,
+	importJournalSlice,
+	setNote,
+	useBackendFactory,
+} from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
-import { importJournalSlice } from "../pr-cost-reporting/ledger/import.js"
-import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
-import * as ledger from "../pr-cost-reporting/ledger/records.js"
-import { closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"

@@ -1,4 +1,18 @@
-import { isWorkId } from "../../shared/work-id.js"
+import type { StoredRecord } from "@getkimchi/kimchi-bridge/ledger"
+import {
+	type Event,
+	encodeEvent,
+	type Fact,
+	gitID,
+	type IssueKey,
+	isWorkId,
+	normalizeIngestTimes,
+	stableID,
+	timeNanos,
+	type Usage,
+	validateClaimUpdate,
+	validateIngestEvent,
+} from "@getkimchi/kimchi-bridge/ledger"
 import { pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import {
@@ -9,21 +23,8 @@ import {
 	type WorkScope,
 } from "../work-attribution/scope.js"
 import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary.js"
-import { type Fact, validateClaimUpdate } from "./ledger/outbox.js"
-import type { StoredRecord } from "./ledger/records.js"
 import { nativeObservations } from "./native.js"
 import { preludeStretch } from "./prelude.js"
-import {
-	type Event,
-	encodeEvent,
-	gitID,
-	type IssueKey,
-	normalizeIngestTimes,
-	stableID,
-	timeNanos,
-	type Usage,
-	validateIngestEvent,
-} from "./protocol.js"
 import {
 	accountKey,
 	allocationFor,

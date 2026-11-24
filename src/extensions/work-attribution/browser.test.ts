@@ -3,14 +3,14 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import * as asyncFs from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { Collection, Row } from "@getkimchi/kimchi-bridge/ledger"
+import { readWorkHead } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { saveWorkSummary } from "../__mocks__/work-summary.js"
-import { readWorkHead } from "../pr-cost-reporting/ledger/records.js"
 import { buildWorkBrowser, readWorkBrowser, type SavedWork } from "./browser.js"
 import { type WorkCostReport, workCostDetails, workCostTotals } from "./cost-details.js"
 import type { PullRequestCost } from "./costs.js"
 import { changeWorkIssue, MAX_ISSUE_BYTES } from "./issues.js"
-import type { Collection, Row } from "./row-log.js"
 
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
 

@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process"
 import { resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { WorkSummaryView } from "../../../../src/extensions/work-attribution/row-log.js"
+import type { WorkSummaryView } from "@getkimchi/kimchi-bridge/ledger"
 import type { WorkRecord } from "../../../../src/extensions/work-attribution/summary.js"
 
 // tui-test relocates bundled helpers into .tui-test/cache; its runner supplies the original repository root.

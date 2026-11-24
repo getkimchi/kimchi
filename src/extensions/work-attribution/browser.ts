@@ -1,17 +1,22 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { stripTerminalSequences } from "@earendil-works/pi-tui"
+import type { WorkHead } from "@getkimchi/kimchi-bridge/ledger"
+import {
+	getNote,
+	isWorkId,
+	listWorks,
+	mergePullRequestLinks,
+	pullRequestLabel,
+	readWorkHead,
+} from "@getkimchi/kimchi-bridge/ledger"
 import { DEFAULT_SLUG, derivePlanTitle } from "../../shared/planning/plan-markdown.js"
-import { isWorkId } from "../../shared/work-id.js"
-import { getNote, listWorks, readWorkHead } from "../pr-cost-reporting/ledger/records.js"
-import { mergePullRequestLinks, pullRequestLabel } from "../pull-request-status/links.js"
 import { storedPullRequests } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkDetailsRequest } from "../work-attribution.js"
 import { costDetailLines, costReportSource, type knownSpend } from "./cost-details.js"
 import { decimalNanos, roundedUsd, time } from "./costs.js"
 import { MAX_ISSUE_BYTES, parseWorkIssue, type WorkIssue, workIssueLines } from "./issues.js"
-import type { WorkHead } from "./row-log.js"
 import { object } from "./summary.js"
 
 /** Besides the current work, the panel lists works with activity this recent. */

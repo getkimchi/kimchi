@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { mergePullRequestLinks, pullRequestLabel } from "@getkimchi/kimchi-bridge/ledger"
 import { isStatusLineElementHidden } from "../../config/status-line-config.js"
 import { setActiveAnchor } from "../../shared/active-anchor.js"
 import { notifyUser } from "../../utils/notify-user.js"
@@ -16,7 +17,6 @@ import {
 import { currentBranch, lookupBranchPullRequest } from "./branch-status.js"
 import { anchorDirectory, directoryLabel, observedCommandDirectory } from "./command-anchor.js"
 import { BRANCH_PR_OBSERVED_EVENT, type BranchPRObservation, WORK_PR_OBSERVED_EVENT } from "./events.js"
-import { mergePullRequestLinks, pullRequestLabel } from "./links.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { LOOKUP_WINDOW_MS, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
 

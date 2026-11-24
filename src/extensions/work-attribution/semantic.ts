@@ -5,15 +5,14 @@ import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
+import { backendFor, getNote, hasNote, isWorkId, listWorks, setNote } from "@getkimchi/kimchi-bridge/ledger"
 import { readConfigSetting } from "../../config/settings.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
 import { findModelByRef, refFromModel } from "../../shared/model-ref.js"
 import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
-import { isWorkId } from "../../shared/work-id.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { isRedactionEnabled } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
-import { backendFor, getNote, hasNote, listWorks, setNote } from "../pr-cost-reporting/ledger/records.js"
 import {
 	getWorkId,
 	pinWorkContext,

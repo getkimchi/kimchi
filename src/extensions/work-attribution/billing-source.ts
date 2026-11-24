@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
+import { isWorkId } from "@getkimchi/kimchi-bridge/ledger"
 import { resolveEndpoints } from "../../config.js"
 import { canonicalPlatformApiUrl } from "../../regions.js"
-import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
 import { object, SHA256_HEX } from "./summary.js"
 
