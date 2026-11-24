@@ -14,6 +14,7 @@
 
 import { PassThrough, Readable, Writable } from "node:stream"
 import {
+	AGENT_METHODS,
 	type AgentContext,
 	agent,
 	type ClientConnection,
@@ -26,9 +27,9 @@ import {
 	type Stream,
 } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { BaseFakeAgentSession } from "./__mocks__/fake-agent-session.js"
-import { KimchiAcpAgent } from "./server.js"
+import { KimchiAcpAgent, registerAcpAgentHandlers } from "./server.js"
 
 // BaseFakeAgentSession deliberately omits setModel/clearQueue (suites extend
 // it for their own needs); the set-model and close-session compat paths
@@ -63,6 +64,62 @@ function stubConn(): AgentContext {
 		},
 	} as unknown as AgentContext
 }
+
+describe("ACP handler registration", () => {
+	it("tracks supported methods and deliberately unsupported SDK methods", () => {
+		const supportedRequests: string[] = [
+			AGENT_METHODS.initialize,
+			AGENT_METHODS.authenticate,
+			AGENT_METHODS.logout,
+			AGENT_METHODS.session_new,
+			AGENT_METHODS.session_load,
+			AGENT_METHODS.session_list,
+			AGENT_METHODS.session_resume,
+			AGENT_METHODS.session_close,
+			AGENT_METHODS.session_set_config_option,
+			AGENT_METHODS.session_prompt,
+		]
+		const supportedNotifications: string[] = [AGENT_METHODS.session_cancel]
+		const unsupportedRequests: string[] = [
+			AGENT_METHODS.providers_list,
+			AGENT_METHODS.providers_set,
+			AGENT_METHODS.providers_disable,
+			AGENT_METHODS.session_set_mode,
+			AGENT_METHODS.session_delete,
+			AGENT_METHODS.session_fork,
+			AGENT_METHODS.session_archive,
+			AGENT_METHODS.session_unarchive,
+			AGENT_METHODS.session_status,
+			AGENT_METHODS.session_options,
+			AGENT_METHODS.session_set_title,
+			AGENT_METHODS.auth_status,
+		]
+		const unsupportedNotifications: string[] = [AGENT_METHODS.mcp_message]
+		const classified = [
+			...supportedRequests,
+			...unsupportedRequests,
+			...supportedNotifications,
+			...unsupportedNotifications,
+		]
+		const registry = Object.values(AGENT_METHODS)
+		const unclassified = registry.filter((method) => !classified.includes(method))
+		expect(unclassified).toEqual([])
+		expect(classified).toHaveLength(registry.length)
+		expect(new Set(classified).size).toBe(classified.length)
+
+		const app = agent()
+		const requests = vi.spyOn(app, "onRequest").mockReturnThis()
+		const notifications = vi.spyOn(app, "onNotification").mockReturnThis()
+		const getAgent = vi.fn(() => {
+			throw new Error("Agent lookup must remain lazy during registration")
+		})
+		registerAcpAgentHandlers(app, getAgent)
+
+		expect(getAgent).not.toHaveBeenCalled()
+		expect(requests.mock.calls.map(([method]) => method)).toEqual([...supportedRequests, "*"])
+		expect(notifications.mock.calls.map(([method]) => method)).toEqual([...supportedNotifications, "*"])
+	})
+})
 
 describe("session/set_model compat", () => {
 	it("routes raw session/set_model requests through extMethod into the set-model implementation", async () => {

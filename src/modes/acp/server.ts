@@ -4454,10 +4454,8 @@ async function createSessionSettings(
 	// sessions in one process, the last-configured session's value governs
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
-	// The converter still exposes the stable-v1 schema surface. Keep that
-	// cross-module migration at this boundary; all ACP production types here
-	// stay on the unstable entrypoint, which is a runtime-compatible superset.
-	const callerServers = convertAcpMcpServers((params.mcpServers ?? []) as Parameters<typeof convertAcpMcpServers>[0])
+	// Convert the SDK's unstable McpServer union to the MCP adapter's configuration shape.
+	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
 	// Only negotiated ACP clients keep the OAuth watcher inside the originating
 	// tool/model run. Every other client retains the ordinary follow-up run.
 	const mcpExtension = options.mcpExtensionFactory?.({
@@ -5004,6 +5002,24 @@ function wireSafeToolResult(result: unknown, exposeManualHandoff = false): Recor
 	return changed ? ({ ...r, content } as Record<string, unknown>) : (r as Record<string, unknown>)
 }
 
+export function registerAcpAgentHandlers(app: ReturnType<typeof agent>, getAgent: () => KimchiAcpAgent): void {
+	app
+		.onRequest(methods.agent.initialize, ({ params }) => getAgent().initialize(params))
+		.onRequest(methods.agent.authenticate, ({ params }) => getAgent().authenticate(params))
+		.onRequest(methods.agent.logout, ({ params }) => getAgent().logout(params))
+		.onRequest(methods.agent.session.new, ({ params }) => getAgent().newSession(params))
+		.onRequest(methods.agent.session.load, ({ params }) => getAgent().loadSession(params))
+		.onRequest(methods.agent.session.list, ({ params }) => getAgent().listSessions(params))
+		.onRequest(methods.agent.session.resume, ({ params }) => getAgent().resumeSession(params))
+		.onRequest(methods.agent.session.close, ({ params }) => getAgent().closeSession(params))
+		.onRequest(methods.agent.session.setConfigOption, ({ params }) => getAgent().setSessionConfigOption(params))
+		.onRequest(methods.agent.session.prompt, ({ params }) => getAgent().prompt(params))
+		.onNotification(methods.agent.session.cancel, ({ params }) => getAgent().cancel(params))
+		.onRequest("*", ({ method, params }) => getAgent().extMethod(method, params as Record<string, unknown>))
+		// Unknown extension notifications were ignored by the legacy connection.
+		.onNotification("*", () => {})
+}
+
 export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	// stdout is reserved for JSON-RPC frames; redirect stray console output to
 	// stderr so a lone `console.log` anywhere in pi-mono/extensions can't corrupt
@@ -5022,24 +5038,10 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 		if (!agentInstance) throw new Error("ACP agent connection is not initialized")
 		return agentInstance
 	}
-	const app = agent()
-		.onConnect((connection) => {
-			agentInstance = new KimchiAcpAgent(connection.client, options)
-		})
-		.onRequest(methods.agent.initialize, ({ params }) => getAgent().initialize(params))
-		.onRequest(methods.agent.authenticate, ({ params }) => getAgent().authenticate(params))
-		.onRequest(methods.agent.logout, ({ params }) => getAgent().logout(params))
-		.onRequest(methods.agent.session.new, ({ params }) => getAgent().newSession(params))
-		.onRequest(methods.agent.session.load, ({ params }) => getAgent().loadSession(params))
-		.onRequest(methods.agent.session.list, ({ params }) => getAgent().listSessions(params))
-		.onRequest(methods.agent.session.resume, ({ params }) => getAgent().resumeSession(params))
-		.onRequest(methods.agent.session.close, ({ params }) => getAgent().closeSession(params))
-		.onRequest(methods.agent.session.setConfigOption, ({ params }) => getAgent().setSessionConfigOption(params))
-		.onRequest(methods.agent.session.prompt, ({ params }) => getAgent().prompt(params))
-		.onNotification(methods.agent.session.cancel, ({ params }) => getAgent().cancel(params))
-		.onRequest("*", ({ method, params }) => getAgent().extMethod(method, params as Record<string, unknown>))
-		// Unknown extension notifications were ignored by the legacy connection.
-		.onNotification("*", () => {})
+	const app = agent().onConnect((connection) => {
+		agentInstance = new KimchiAcpAgent(connection.client, options)
+	})
+	registerAcpAgentHandlers(app, getAgent)
 	const conn = app.connect(stream)
 
 	const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP", "SIGINT"]
