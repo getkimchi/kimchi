@@ -1540,6 +1540,66 @@ describe("classifier outage escalation to the parent session", () => {
 		expect(parentCtx.ui.setStatus).toHaveBeenCalledWith("permission-subagent-wait", undefined)
 	})
 
+	describe("a subagent request queued behind another prompt when the mode changes", () => {
+		// The queue must drop the waiting request on the mode change itself. Its
+		// entry follows the request's own controller, which a mode change
+		// aborts; the worker's turn signal is not touched by a mode change.
+		for (const front of ["settles when withdrawn", "never settles"] as const) {
+			it(`is decided again under the new mode while the prompt in front ${front}`, async () => {
+				const { parent, parentCtx, worker, workerCtx } = await setupEscalation()
+				parentCtx.mode = "tui"
+				parentCtx.ui.select =
+					front === "never settles"
+						? (vi.fn(() => new Promise<string | undefined>(() => {})) as unknown as ExtensionUIContext["select"])
+						: createUnansweredSelect()
+				const release = vi.fn()
+				const acquire = vi.fn((): (() => void) => release)
+				vi.mocked(classifyToolCall).mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+
+				const ownCall = parent.fire("tool_call", { ...event, toolCallId: "own-call" }, parentCtx)
+				await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledTimes(1))
+				const subagentCall = runAsAgentWorker(() => worker.fire("tool_call", event, workerCtx), {
+					inactivityHold: { acquire },
+				})
+				await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce())
+				// Queued behind the session's own prompt, not on screen.
+				await new Promise((resolve) => setTimeout(resolve, 50))
+				expect(parentCtx.ui.select).toHaveBeenCalledTimes(1)
+
+				setPermissionMode(TEST_SESSION_ID, { mode: "yolo", source: "runtime", initiatedBy: "user" })
+
+				expect(await subagentCall).toBeUndefined()
+				expect(release).toHaveBeenCalledOnce()
+				expect(parentCtx.ui.select).toHaveBeenCalledTimes(1)
+				expect(await ownCall).toBeUndefined()
+			})
+		}
+
+		it("is decided again under the new mode while another subagent's prompt in front never settles", async () => {
+			const { parentCtx, worker, workerCtx } = await setupEscalation()
+			parentCtx.mode = "tui"
+			parentCtx.ui.select = vi.fn(
+				() => new Promise<string | undefined>(() => {}),
+			) as unknown as ExtensionUIContext["select"]
+			const second = createWorkerHarness(["bash"], { parentSessionId: TEST_SESSION_ID, persona: "second" })
+			const secondCtx = createClassifierContext()
+			await second.fire("session_start", {}, secondCtx)
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+
+			const inFront = worker.fire("tool_call", event, workerCtx)
+			await vi.waitFor(() => expect(parentCtx.ui.select).toHaveBeenCalledTimes(1))
+			const queued = second.fire("tool_call", { ...event, toolCallId: "queued-call" }, secondCtx)
+			await new Promise((resolve) => setTimeout(resolve, 50))
+			expect(parentCtx.ui.select).toHaveBeenCalledTimes(1)
+
+			setPermissionMode(TEST_SESSION_ID, { mode: "yolo", source: "runtime", initiatedBy: "user" })
+
+			expect(await queued).toBeUndefined()
+			expect(await inFront).toBeUndefined()
+			expect(parentCtx.ui.select).toHaveBeenCalledTimes(1)
+		})
+	})
+
 	it("withdraws a parent selector when the permission mode changes", async () => {
 		const { parentCtx } = await setupEscalation()
 		parentCtx.mode = "tui"

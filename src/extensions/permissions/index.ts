@@ -1246,7 +1246,12 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 											if (terminal && !terminal.isPromptable()) return { kind: "deferred" }
 											return ask()
 										},
-										req.signal,
+										// The request's own controller, not the worker's turn
+										// signal: a mode change and the answer timeout abort
+										// only the controller, and the queue must drop or
+										// release this entry for them too. A stopped worker
+										// still reaches it through linkAbortSignal above.
+										controller.signal,
 									)
 									// Deferred: not asked, or the selector gave way to another
 									// dialog. The queue entry is released either way.
