@@ -151,19 +151,56 @@ async function glabConfigPath(signal: AbortSignal, deadline: number): Promise<st
 	return join(base, "glab-cli", "config.yml")
 }
 
-async function gitlabCredential(host: string, signal: AbortSignal, deadline: number): Promise<string | undefined> {
-	const path = await glabConfigPath(signal, deadline)
-	let entry: unknown
+function glabHostEntry(path: string, host: string): Record<string, unknown> | undefined {
 	try {
 		const file = statSync(path)
 		if (!file.isFile() || file.size > 64 * 1024) return undefined
 		const config: unknown = parseYaml(readFileSync(path, "utf8"), { logLevel: "silent", maxAliasCount: 0 })
 		if (!object(config) || !object(config.hosts) || !Object.hasOwn(config.hosts, host)) return undefined
-		entry = config.hosts[host]
+		const entry = config.hosts[host]
+		return object(entry) ? entry : undefined
 	} catch {
 		return undefined
 	}
-	if (!object(entry)) return undefined
+}
+
+/** Longer than the longest lookup budget (60 s), so a token read now does not expire during the lookup that uses it. */
+const OAUTH_EXPIRY_MARGIN_MS = 2 * 60_000
+
+/**
+ * glab renews an OAuth login's two-hour token only when glab itself calls the API; Kimchi reads the stored token.
+ * Older glab wrote RFC822 dates such as "20 Nov 26 17:19 EET", which Date.parse rejects; glab renews and rewrites those.
+ */
+function oauthTokenExpiring(entry: Record<string, unknown>): boolean {
+	const expiry = Date.parse(String(entry.oauth2_expiry_date))
+	return (
+		(entry.is_oauth2 === true || entry.is_oauth2 === "true") &&
+		(Number.isNaN(expiry) || expiry - Date.now() < OAUTH_EXPIRY_MARGIN_MS)
+	)
+}
+
+/** Lets glab renew an OAuth login from the user's own config, outside any repository's local config. */
+async function renewGlabLogin(host: string, signal: AbortSignal, deadline: number): Promise<void> {
+	const directory = mkdtempSync(join(tmpdir(), "kimchi-glab-renew-"))
+	try {
+		await command("glab", ["auth", "status", "--hostname", host], directory, signal, deadline, {
+			GIT_DIR: join(directory, ".git"),
+		})
+	} finally {
+		rmSync(directory, { recursive: true, force: true })
+	}
+}
+
+async function gitlabCredential(host: string, signal: AbortSignal, deadline: number): Promise<string | undefined> {
+	const path = await glabConfigPath(signal, deadline)
+	let entry = glabHostEntry(path, host)
+	if (entry && oauthTokenExpiring(entry)) {
+		// glab saves the renewed token where it read the old one, so read the login again; a failed renewal or a
+		// half-written config leaves the stored login, as before.
+		await renewGlabLogin(host, signal, deadline)
+		entry = glabHostEntry(path, host) ?? entry
+	}
+	if (!entry) return undefined
 	// glab's token command can fall back to an unrelated global or local token.
 	// Plaintext credentials must be stored under this exact host. Before 1.84,
 	// a keyring login left the host's token empty instead of setting use_keyring.

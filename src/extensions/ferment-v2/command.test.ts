@@ -5,6 +5,7 @@ import {
 	formatFermentV2Duration,
 	formatFermentV2Status,
 	formatFermentV2Summary,
+	formatFermentV2VerifyingStatus,
 	parseFermentV2Command,
 } from "./command.js"
 import { FERMENT_V2_STATUSES, type FermentV2Status, type SessionFermentV2 } from "./types.js"
@@ -104,6 +105,36 @@ describe("Ferment V2 command", () => {
 		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ Ferment V2: budget limited · ship it")
 	})
 
+	it("shows the verifying model, elapsed time and revert warning while the verifier runs", () => {
+		expect(formatFermentV2VerifyingStatus(undefined, 0)).toBe(
+			"◈ Ferment V2: verifying · … · 0ms · file edits may be reverted",
+		)
+		expect(formatFermentV2VerifyingStatus("judge/independent", 5_000)).toBe(
+			"◈ Ferment V2: verifying · judge/independent · 5.0s · file edits may be reverted",
+		)
+		expect(formatFermentV2VerifyingStatus("judge/independent", -1_000)).toBe(
+			"◈ Ferment V2: verifying · judge/independent · 0ms · file edits may be reverted",
+		)
+	})
+
+	it("shows the verifier usage breakdown in the full command summary", () => {
+		const verified = {
+			...fermentV2("active"),
+			evaluationCount: 2,
+			verifierUsage: {
+				runs: 2,
+				input: 4_000,
+				output: 1_000,
+				cacheRead: 500,
+				cacheWrite: 200,
+				totalTokens: 5_700,
+				costUsd: 0.0512,
+			},
+		}
+		expect(formatFermentV2Summary(verified)).toContain("Verifier: 2 runs · 5.7k tokens · $0.05")
+		expect(formatFermentV2Summary(fermentV2("active"))).not.toContain("Verifier:")
+	})
+
 	it("shows evaluation details only in the full command summary", () => {
 		const evaluated = {
 			...fermentV2("active"),
@@ -116,9 +147,26 @@ describe("Ferment V2 command", () => {
 			},
 		}
 		expect(formatFermentV2Summary(evaluated)).toContain(
-			"Evaluations: 2\nLast evaluation: continue — missing smoke test",
+			"Evaluations: 2\nLast evaluation: continue — missing smoke test (evaluator: test/judge)",
 		)
+		expect(formatFermentV2Summary(evaluated)).not.toContain("same as implementer")
 		expect(formatFermentV2Accounting(evaluated)).toBe("<1m · 1.5k tokens")
+	})
+
+	it("marks the evaluator model as the implementer's in the summary", () => {
+		const evaluated = {
+			...fermentV2("active"),
+			lastEvaluation: {
+				verdict: "met" as const,
+				reason: "all checks pass",
+				model: "test/session",
+				sameModelAsImplementer: true,
+				evaluatedAt: "2026-07-16T10:02:00.000Z",
+			},
+		}
+		expect(formatFermentV2Summary(evaluated)).toContain(
+			"Last evaluation: met — all checks pass (evaluator: test/session, same as implementer)",
+		)
 	})
 
 	it("shows a bounded name in the footer and the complete objective in the summary", () => {

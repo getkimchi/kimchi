@@ -8,8 +8,10 @@ import {
 	buildAgentToolGuidelines,
 	buildAutoResumeNote,
 	buildRunInBackgroundParameterDescription,
+	resumeFermentV2VerifierAgent,
 	setActiveManagerForTest,
 	shouldAutoResumeFermentWorker,
+	spawnFermentV2VerifierAgent,
 	spawnGraderAgent,
 	summaryForStatus,
 } from "./index.js"
@@ -232,6 +234,20 @@ vi.mock("../../project-scope-trust.js", async (importOriginal) => ({
 	isProjectScopeAllowed: vi.fn().mockReturnValue(true),
 }))
 
+// Keep agent discovery hermetic: execute() reloads custom agents from disk
+// on every call, so tests control the discovered set via this mock. The real
+// loader stays reachable through realLoadCustomAgents for tests that need
+// on-disk discovery (e.g. the ctx.cwd regression suite).
+const { loadCustomAgentsMock, realLoadCustomAgents } = vi.hoisted(() => ({
+	loadCustomAgentsMock: vi.fn((): CustomAgentsLoadResult => ({ agents: new Map(), skipped: [] })),
+	realLoadCustomAgents: { fn: undefined as ((cwd?: string) => CustomAgentsLoadResult) | undefined },
+}))
+vi.mock("./personas/custom-agents.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./personas/custom-agents.js")>()
+	realLoadCustomAgents.fn = actual.loadCustomAgents as (cwd?: string) => CustomAgentsLoadResult
+	return { ...actual, loadCustomAgents: loadCustomAgentsMock }
+})
+
 import type { EntryRenderer, ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
@@ -243,6 +259,7 @@ import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { RemoteAgentSession } from "./manager/remote-agent-session.js"
 import { clearHandoff, peekHandoff, stageHandoff } from "./manager/subagent-handoff.js"
+import type { CustomAgentsLoadResult } from "./personas/custom-agents.js"
 import type { RemoteRunState } from "./remote-run-persistence.js"
 import { applyAndEmitLoaded } from "./settings.js"
 import type { Theme } from "./ui/agent-widget.js"
@@ -509,12 +526,132 @@ describe("Agent tool renderer", () => {
 		expect(tool.renderCall({ subagent_type: "Explore" }, theme, { argsComplete: false }).render(80)[0]?.trimEnd()).toBe(
 			"▸ Explore",
 		)
+		// Unknown types fail closed — the renderer shows the requested name, not
+		// the previous General-Purpose fallback (issue #1678).
 		expect(tool.renderCall({ subagent_type: "unknown" }, theme, { argsComplete: true }).render(80)[0]?.trimEnd()).toBe(
-			"▸ General Purpose",
+			"▸ unknown",
 		)
 	})
 })
 
+describe("Agent tool fail-closed type validation (issue #1678)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+		loadCustomAgentsMock.mockReturnValue({ agents: new Map(), skipped: [] })
+	})
+
+	function lastManagerInstance(): { spawn: ReturnType<typeof vi.fn> } {
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		return managerInstance
+	}
+
+	it("rejects an unknown subagent_type with an error listing valid types and never spawns", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", subagent_type: "Redaer", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain('Unknown agent type "Redaer"')
+		expect(text).toContain("General-Purpose")
+		expect(text).toContain("Explore")
+		expect(manager.spawn).not.toHaveBeenCalled()
+	})
+
+	it("rejects a disabled agent type (case-insensitive) and never spawns", async () => {
+		loadCustomAgentsMock.mockReturnValue({
+			agents: new Map([
+				[
+					"Reader",
+					{
+						name: "Reader",
+						description: "read-only agent",
+						enabled: false,
+						extensions: false,
+						skills: false,
+						systemPrompt: "",
+						promptMode: "replace",
+					},
+				],
+			]),
+			skipped: [],
+		})
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", subagent_type: "reader", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain('Agent type "Reader" is disabled')
+		expect(manager.spawn).not.toHaveBeenCalled()
+	})
+
+	it("rejects a missing subagent_type with the same fail-closed error instead of crashing", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain("Unknown agent type")
+		expect(manager.spawn).not.toHaveBeenCalled()
+	})
+
+	it("advertises only spawnable types in the tool description — disabled agents now hard-fail", () => {
+		loadCustomAgentsMock.mockReturnValue({
+			agents: new Map([
+				[
+					"Reader",
+					{
+						name: "Reader",
+						description: "read-only agent",
+						enabled: false,
+						extensions: false,
+						skills: false,
+						systemPrompt: "",
+						promptMode: "replace",
+					},
+				],
+			]),
+			skipped: [],
+		})
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const tool = getRegisteredAgentTool(pi) as unknown as { description: string }
+
+		expect(tool.description).not.toContain("Reader")
+		expect(tool.description).toContain("General-Purpose")
+	})
+})
 describe("spawnGraderAgent", () => {
 	const JUDGE_MODEL = { provider: "kimchi-dev", id: "judge-model", name: "judge-model" }
 	const PARENT_MODEL = { provider: "kimchi-dev", id: "parent-model", name: "Parent" }
@@ -546,6 +683,262 @@ describe("spawnGraderAgent", () => {
 		expect(spawnAndWait).toHaveBeenCalledTimes(1)
 		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
 		expect(options.model).toBeUndefined()
+	})
+})
+
+describe("spawnFermentV2VerifierAgent", () => {
+	const verifierModel = { provider: "kimchi-dev", id: "glm-5.3", name: "glm" } as Parameters<
+		typeof spawnFermentV2VerifierAgent
+	>[3]["model"]
+
+	afterEach(() => {
+		setActiveManagerForTest(undefined)
+	})
+
+	it("returns undefined without an active agent manager", async () => {
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify the work", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		expect(run).toBeUndefined()
+	})
+
+	it("spawns the hidden Verifier persona with unlimited turns, model-only inactivity and the guard extension", async () => {
+		const spawnAndWait = vi.fn(
+			async (): Promise<{
+				id: string
+				result: string
+				status: string
+				toolUses: number
+				lastTurnCount: number
+			}> => ({ id: "verifier-1", result: '{"verdict":"met"}', status: "completed", toolUses: 3, lastTurnCount: 2 }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const extensionFactories = [() => {}]
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify the work", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories,
+			signal: new AbortController().signal,
+		})
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const [, , type, prompt, options] = spawnAndWait.mock.calls[0] as unknown[]
+		expect(type).toBe("Verifier")
+		expect(prompt).toBe("verify the work")
+		expect(options).toMatchObject({
+			description: "Ferment V2 verifier",
+			visibility: "system",
+			model: verifierModel,
+			cwd: ctx.cwd,
+			// 0 = unlimited turns and wall clock for the verifier.
+			maxTurns: 0,
+			maxDuration: 0,
+			inactivityMode: "model_only",
+			thinkingLevel: "low",
+			extensionFactories,
+		})
+		// A configured thinking level replaces the low default.
+		await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify the work", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories,
+			signal: new AbortController().signal,
+			thinkingLevel: "max",
+		})
+		const [, , , , maxOptions] = spawnAndWait.mock.calls[1] as unknown[]
+		expect(maxOptions).toMatchObject({ thinkingLevel: "max" })
+		expect(run).toMatchObject({
+			id: "verifier-1",
+			text: '{"verdict":"met"}',
+			status: "completed",
+			toolCalls: 3,
+			turns: 2,
+		})
+	})
+
+	it("honours the optional wall-clock cap when one is given", async () => {
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { maxDuration?: number },
+			): Promise<{ id: string; result: string; status: string; toolUses: number; lastTurnCount: number }> => ({
+				id: "v",
+				result: "",
+				status: "completed",
+				toolUses: 0,
+				lastTurnCount: 0,
+			}),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+			maxDuration: 120,
+		})
+		const options = spawnAndWait.mock.calls[0]?.[4]
+		expect(options?.maxDuration).toBe(120)
+	})
+
+	it("carries the error and abort reason through to the caller", async () => {
+		const spawnAndWait = vi.fn(async () => ({
+			id: "verifier-2",
+			result: "",
+			status: "error",
+			error: "429 rate limit",
+			toolUses: 0,
+			lastTurnCount: 0,
+		}))
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		expect(run).toMatchObject({ id: "verifier-2", status: "error", error: "429 rate limit" })
+	})
+
+	it("translates a terminal assistant error on a completed record into an error run", async () => {
+		// Upstream resolves a run normally after a terminal provider error (its
+		// in-session retries disabled or exhausted): the record is "completed"
+		// and the error survives only as the last assistant message.
+		const session = {
+			messages: [
+				{ role: "user", content: "verify" },
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded" },
+			],
+		}
+		const spawnAndWait = vi.fn(async () => ({
+			id: "verifier-3",
+			result: "",
+			status: "completed",
+			session,
+			toolUses: 0,
+			lastTurnCount: 1,
+		}))
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		// The evaluator's transient-failure retry policy keys off this error.
+		expect(run).toMatchObject({ id: "verifier-3", status: "error", error: "429 rate limit exceeded" })
+	})
+
+	it("keeps a completed record whose last assistant message recovered from an earlier error", async () => {
+		const session = {
+			messages: [
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded" },
+				{ role: "assistant", content: [{ type: "text", text: '{"verdict":"met"}' }], stopReason: "stop" },
+			],
+		}
+		const spawnAndWait = vi.fn(async () => ({
+			id: "verifier-4",
+			result: '{"verdict":"met"}',
+			status: "completed",
+			session,
+			toolUses: 0,
+			lastTurnCount: 2,
+		}))
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		expect(run).toMatchObject({ id: "verifier-4", status: "completed" })
+		expect(run?.error).toBeUndefined()
+	})
+
+	it("keeps an aborted record even when its last assistant message is an error", async () => {
+		const session = {
+			messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "aborted" }],
+		}
+		const spawnAndWait = vi.fn(async () => ({
+			id: "verifier-5",
+			result: "",
+			status: "aborted",
+			abortReason: "inactivity",
+			session,
+			toolUses: 0,
+			lastTurnCount: 0,
+		}))
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		expect(run).toMatchObject({ id: "verifier-5", status: "aborted", abortReason: "inactivity" })
+	})
+
+	it("resumes the verifier with the same unlimited limits", async () => {
+		const resume = vi.fn(async () => ({
+			id: "verifier-1",
+			result: '{"verdict":"continue"}',
+			status: "completed",
+			toolUses: 1,
+			lastTurnCount: 1,
+		}))
+		setActiveManagerForTest({ resume } as unknown as MockedAgentManager)
+		const run = await resumeFermentV2VerifierAgent("verifier-1", "correction prompt", {
+			signal: new AbortController().signal,
+		})
+		expect(resume).toHaveBeenCalledWith(
+			"verifier-1",
+			"correction prompt",
+			expect.objectContaining({ maxTurns: 0, maxDuration: 0, inactivityMode: "model_only" }),
+		)
+		expect(run).toMatchObject({ id: "verifier-1", text: '{"verdict":"continue"}', toolCalls: 1, turns: 1 })
+	})
+
+	it("translates a terminal assistant error on a completed resume record", async () => {
+		const session = {
+			messages: [
+				{ role: "user", content: "correction" },
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "500 internal server error" },
+			],
+		}
+		const resume = vi.fn(async () => ({
+			id: "verifier-1",
+			result: "",
+			status: "completed",
+			session,
+			toolUses: 0,
+			lastTurnCount: 1,
+		}))
+		setActiveManagerForTest({ resume } as unknown as MockedAgentManager)
+		const run = await resumeFermentV2VerifierAgent("verifier-1", "correction prompt", {
+			signal: new AbortController().signal,
+		})
+		expect(run).toMatchObject({ id: "verifier-1", status: "error", error: "500 internal server error" })
+	})
+
+	it("returns undefined when the resume finds no record", async () => {
+		const resume = vi.fn(async () => undefined)
+		setActiveManagerForTest({ resume } as unknown as MockedAgentManager)
+		const run = await resumeFermentV2VerifierAgent("missing", "correction", {
+			signal: new AbortController().signal,
+		})
+		expect(run).toBeUndefined()
 	})
 })
 
@@ -1959,6 +2352,11 @@ describe("Agent tool session-cwd agent resolution", () => {
 		vi.useRealTimers()
 		vi.clearAllMocks()
 		vi.mocked(sessionHasImages).mockReturnValue(false)
+		// These tests exercise on-disk discovery from ctx.cwd, so delegate the
+		// mocked loader to the real implementation.
+		loadCustomAgentsMock.mockImplementation(
+			(cwd?: string) => realLoadCustomAgents.fn?.(cwd) ?? { agents: new Map(), skipped: [] },
+		)
 	})
 
 	it("resolves project agents against ctx.cwd, not process.cwd() (issue #1677)", async () => {
@@ -2007,6 +2405,27 @@ describe("Agent tool session-cwd agent resolution", () => {
 		// be the project agent's type, not the general-purpose fallback.
 		expect(managerInstance.spawn.mock.calls[0][2]).toBe("issue1677-reviewer")
 		expect(result.content[0]?.text ?? "").not.toContain("Unknown agent type")
+	})
+
+	it("rejects an explicit host-only Verifier request without spawning", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		const ctx = makeMockCtx(makeMockModelRegistry([]))
+
+		const result = await getRegisteredAgentTool(pi).execute(
+			"call-host-only",
+			{ prompt: "verify", description: "explicit host-only request", subagent_type: "verifier" },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(result.content[0]?.text).toContain(
+			'Agent type "verifier" is host-only and cannot be spawned through the Agent tool.',
+		)
+		expect(managerInstance.spawn).not.toHaveBeenCalled()
 	})
 
 	it("applies project agent settings from the session cwd on session_start", async () => {

@@ -752,7 +752,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.registerCommand("clear", {
 		description: "Start a new session (alias for /new)",
 		handler: async (_args, ctx) => {
-			await ctx.newSession()
+			await ctx.newSession({
+				withSession: async (replacementCtx) => {
+					replacementCtx.ui.notify("New session started", "info")
+				},
+			})
 		},
 	})
 }

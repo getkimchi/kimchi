@@ -95,6 +95,11 @@ vi.mock("../personas/default-agents.js", () => ({
 	DEFAULT_AGENTS: new Map(),
 }))
 
+vi.mock("../../tags.js", () => ({
+	getCurrentPhase: vi.fn().mockReturnValue(undefined),
+	setCurrentPhase: vi.fn(),
+}))
+
 vi.mock("../../memory/memory.js", () => ({
 	buildMemoryBlock: vi.fn().mockReturnValue(""),
 	buildReadOnlyMemoryBlock: vi.fn().mockReturnValue(""),

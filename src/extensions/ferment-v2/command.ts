@@ -1,7 +1,7 @@
-import { formatCount } from "../format.js"
+import { formatCount, formatDuration } from "../format.js"
 import { FERMENT_V2_COMMAND_NAME } from "./constants.js"
 import { deriveFermentV2Name } from "./name.js"
-import type { SessionFermentV2 } from "./types.js"
+import type { FermentV2Evaluation, SessionFermentV2 } from "./types.js"
 
 export type FermentV2Command =
 	| { action: "show" }
@@ -21,6 +21,14 @@ export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, e
 		fermentV2.status === "active" ? (evaluating ? "checking" : "running") : fermentV2.status.replace("_", " ")
 	const hint = fermentV2.status === "paused" || fermentV2.status === "blocked" ? " · /ferment-v2 resume" : ""
 	return `◈ ${label}: ${state} · ${title}${hint}`
+}
+
+/**
+ * Status line while the executing verifier runs: model, elapsed time, and the
+ * warning that concurrent user edits may be reverted by the integrity guard.
+ */
+export function formatFermentV2VerifyingStatus(model: string | undefined, elapsedMs: number): string {
+	return `◈ Ferment V2: verifying · ${model ?? "…"} · ${formatDuration(Math.max(0, elapsedMs))} · file edits may be reverted`
 }
 
 export function parseFermentV2Command(args: string): FermentV2Command {
@@ -57,10 +65,22 @@ export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, 
 		approvedPlan ? `Plan: ${approvedPlan.planPath ?? "no saved file"}` : `Objective: ${fermentV2.objective}`,
 		`${approvedPlan ? "Run time" : "Fermenting time"}: ${formatFermentV2Accounting(fermentV2, liveElapsedMs)}`,
 		...(fermentV2.evaluationCount === undefined ? [] : [`Evaluations: ${fermentV2.evaluationCount}`]),
-		...(evaluation ? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}`] : []),
+		...(fermentV2.verifierUsage
+			? [
+					`Verifier: ${fermentV2.verifierUsage.runs} run${fermentV2.verifierUsage.runs === 1 ? "" : "s"} · ${formatCount(fermentV2.verifierUsage.totalTokens)} tokens · $${fermentV2.verifierUsage.costUsd.toFixed(2)}`,
+				]
+			: []),
+		...(evaluation
+			? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}${formatFermentV2EvaluatorModel(evaluation)}`]
+			: []),
 		"",
 		`Commands: ${fermentV2Commands(fermentV2)}`,
 	].join("\n")
+}
+
+function formatFermentV2EvaluatorModel(evaluation: FermentV2Evaluation): string {
+	if (!evaluation.model) return ""
+	return ` (evaluator: ${evaluation.model}${evaluation.sameModelAsImplementer ? ", same as implementer" : ""})`
 }
 
 export function formatFermentV2Accounting(fermentV2: SessionFermentV2, liveElapsedMs = 0): string {

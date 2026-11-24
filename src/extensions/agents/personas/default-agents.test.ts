@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest"
+import { buildAgentPrompt } from "../prompt/prompts.js"
 import { resolveAgentInvocationConfig } from "../resolution/invocation-config.js"
+import { getAgentConfig, registerAgents } from "./agent-types.js"
 import { DEFAULT_AGENTS } from "./default-agents.js"
-import { AGENT_BUILDER, AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
+import {
+	AGENT_BUILDER,
+	AGENT_EXPLORE,
+	AGENT_FERMENT_VERIFIER,
+	AGENT_GENERAL_PURPOSE,
+	AGENT_PLAN,
+	AGENT_RESEARCHER,
+	type AgentConfig,
+} from "./types.js"
 
 describe("DEFAULT_AGENTS", () => {
 	it("always includes General-Purpose, Explore, Plan, and Researcher agents", () => {
@@ -27,6 +37,102 @@ describe("DEFAULT_AGENTS", () => {
 		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		expect(plan.builtinToolNames).not.toContain("write")
 		expect(plan.builtinToolNames).not.toContain("edit")
+	})
+
+	it("Ferment V2 Verifier persona is hidden, write-confined, extension-free and unbounded", () => {
+		const verifier = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		// write creates probes and baseline test copies; the host guard confines it
+		// to new repository files and the disposable baseline worktree.
+		expect(verifier.builtinToolNames).toEqual([
+			"read",
+			"bash",
+			"grep",
+			"find",
+			"ls",
+			"write",
+			"report_finding",
+			"retract_finding",
+			"resolve_finding",
+			"submit_verdict",
+		])
+		expect(verifier.disallowedTools).toContain("edit")
+		expect(verifier.disallowedTools).not.toContain("write")
+		expect(verifier.extensions).toBe(false)
+		expect(verifier.skills).toBe(false)
+		expect(verifier.thinking).toBe("low")
+		// Hidden from the Agent tool and agent UIs without disabling its runtime config.
+		expect(verifier.hostOnly).toBe(true)
+		expect(verifier.enabled).toBeUndefined()
+		// No persona-level caps — the host controls limits per run.
+		expect(verifier.maxTurns).toBeUndefined()
+		expect(verifier.maxDuration).toBeUndefined()
+		expect(verifier.tokenBudget).toBeUndefined()
+		expect(verifier.systemPrompt).toContain("<ferment_v2_verifier>")
+		expect(verifier.systemPrompt).toContain("[eN]")
+	})
+
+	it("Verifier treats the objective as the only authority", () => {
+		const prompt = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER)?.systemPrompt
+		expect(prompt).toContain("The objective is the only authority")
+		expect(prompt).toContain("not the limit of what you attack")
+		expect(prompt).toContain("the candidate's output never establishes an expectation")
+	})
+
+	it("Verifier chooses distinguishing inputs and distinct failure mechanisms", () => {
+		const prompt = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER)?.systemPrompt
+		expect(prompt).toContain("expected result, and its source BEFORE executing")
+		expect(prompt).toContain("interacting combinations of conditions")
+		expect(prompt).toContain("a returned error value, a synchronous throw, a rejected promise")
+		expect(prompt).toContain("check a property over generated inputs")
+		expect(prompt).toContain("confirm the intended test was discovered, completed, and reached an assertion")
+		expect(prompt).toContain("Implementer-authored or modified tests are not independent evidence")
+	})
+
+	it("Verifier frames the review as breaking the delivery within the objective", () => {
+		const prompt = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER)?.systemPrompt ?? ""
+		expect(prompt).toContain("Try to break the delivered work within the boundaries the objective sets")
+		expect(prompt).toContain("<defects>")
+		expect(prompt).toContain("Do not report: style, naming, structure, or performance")
+		expect(prompt).toContain("When your attacks are exhausted without such a failure, the verdict is met.")
+		expect(prompt).toContain("2. Attack: before executing, plan the attacks")
+	})
+
+	it("Verifier reports findings through tools and keeps observed failures", () => {
+		const prompt = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER)?.systemPrompt
+		expect(prompt).toContain("report_finding as soon as you observe")
+		expect(prompt).toContain("Never retract merely because the candidate disagrees")
+		expect(prompt).toContain("presume a regression")
+		expect(prompt).toContain("passing checks elsewhere never cancel an observed violation")
+		expect(prompt).toContain("Use finalAnswer only when the objective prescribes the text")
+	})
+
+	it("delivers each phase persona's guidance through the spawn composition path", () => {
+		// The spawn path resolves the phase persona from the unified registry
+		// (registerAgents with no user agents = the defaults) and composes the
+		// child session's system prompt with buildAgentPrompt — assert the new
+		// guidance survives that resolution, not just the raw persona constant.
+		registerAgents(new Map())
+		const cases = [
+			{
+				type: AGENT_FERMENT_VERIFIER,
+				guidance: [
+					"confirm the intended test was discovered, completed, and reached an assertion",
+					"every distinct way a dependency can fail",
+				],
+			},
+		] as const
+		for (const { type, guidance } of cases) {
+			const config = getAgentConfig(type)
+			expect(config, `expected persona ${type} to be registered`).toBeDefined()
+			const composed = buildAgentPrompt(config as AgentConfig, "/workspace", {
+				isGitRepo: true,
+				branch: "main",
+				platform: "darwin",
+			})
+			for (const line of guidance) {
+				expect(composed).toContain(line)
+			}
+		}
 	})
 
 	it("Plan agent has roles set to plan", () => {

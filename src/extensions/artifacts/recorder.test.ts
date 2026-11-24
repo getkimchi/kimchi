@@ -2,10 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { TurnArtifactBuffer } from "../../modes/acp/artifact-links.js"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } from "./recorder.js"
+import { setSnapshotArtifactsOptIn } from "./snapshot-policy.js"
 
 // Artifact recorder: one custom session entry per prompt, so replay
 // (any client) can re-emit exactly what live detected — stat-gated, run-
@@ -14,16 +16,52 @@ import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } 
 
 describe("artifact-recorder", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "artifact-recorder-"))
-	beforeEach(() => mkdirSync(cwd, { recursive: true }))
-	afterEach(() => rmSync(cwd, { recursive: true, force: true }))
+	beforeEach(() => {
+		mkdirSync(cwd, { recursive: true })
+		setSnapshotArtifactsOptIn(ctx.sessionManager, true)
+	})
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true })
+		setSnapshotArtifactsOptIn(ctx.sessionManager, false)
+	})
 
-	const ctx = { sessionManager: { getCwd: () => cwd } } as ExtensionContext
+	const ctx = createContext({ cwd, sessionManager: { getCwd: () => join(cwd, "different-session-cwd") } })
 
 	const touch = (rel: string) => {
 		const abs = join(cwd, rel)
 		writeFileSync(abs, "x")
 		return abs
 	}
+
+	it("anchors detection to the extension context cwd rather than another session path source", async () => {
+		const abs = touch("context.md")
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: Date.now(),
+					content: [{ type: "toolCall", id: "tc-context", name: "write", arguments: { path: "context.md" } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-context",
+						toolName: "write",
+						content: [{ type: "text", text: "ok" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)[0]?.artifacts[0]?.path).toBe(abs)
+	})
 
 	it("records a row with detected artifacts after a turn with a write tool call", async () => {
 		const abs = touch("out.md")
@@ -62,6 +100,458 @@ describe("artifact-recorder", () => {
 		expect(rows).toHaveLength(1)
 		expect(rows[0].v).toBe(1)
 		expect(rows[0].artifacts).toEqual([{ path: abs, name: "out.md", mimeType: "text/markdown", sniffed: false }])
+	})
+
+	it("does not record snapshot-derived files without the artifact capability", async () => {
+		const finalReport = join(cwd, "not-opted.html")
+		const plainContext = createContext({ cwd, sessionManager: {} })
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-not-opted",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			plainContext,
+		)
+		writeFileSync(finalReport, "<h1>Not opted</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-not-opted",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			plainContext,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [{ type: "toolCall", id: "tc-not-opted", name: "bash", arguments: { command: "node build.js" } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-not-opted",
+						toolName: "bash",
+						content: [],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			plainContext,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, plainContext)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+	})
+
+	it("records a final HTML file created by a silent foreground build after an intermediate write", async () => {
+		const template = touch("_code-reviewer-prd.template.html")
+		const finalReport = join(cwd, "code-reviewer-rebuild-prd.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-silent-build",
+				toolName: "bash",
+				args: { command: "node build-report.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Final report</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-silent-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [
+						{ type: "toolCall", id: "tc-template", name: "write", arguments: { path: template } },
+						{
+							type: "toolCall",
+							id: "tc-silent-build",
+							name: "bash",
+							arguments: { command: "node build-report.js" },
+						},
+					],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-template",
+						toolName: "write",
+						content: [{ type: "text", text: "ok" }],
+						isError: false,
+						timestamp: now,
+					},
+					{
+						toolCallId: "tc-silent-build",
+						toolName: "bash",
+						content: [],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		expect(rows[0].artifacts).toEqual([
+			{ path: template, name: "_code-reviewer-prd.template.html", mimeType: "text/html", sniffed: false },
+			{
+				path: finalReport,
+				name: "code-reviewer-rebuild-prd.html",
+				mimeType: "text/html",
+				sniffed: true,
+				snapshot: true,
+			},
+		])
+	})
+
+	it("promotes a snapshot-detected file to a write for recording and replay", async () => {
+		const finalReport = join(cwd, "promoted.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		const endTurn = (turnIndex: number, id: string, name: string, args: Record<string, unknown>) =>
+			emit(
+				"turn_end",
+				{
+					type: "turn_end",
+					turnIndex,
+					message: {
+						role: "assistant",
+						timestamp: now,
+						content: [{ type: "toolCall", id, name, arguments: args }],
+					},
+					toolResults: [
+						{
+							toolCallId: id,
+							toolName: name,
+							content: [],
+							isError: false,
+							timestamp: now,
+						},
+					],
+				},
+				ctx,
+			)
+
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-promoted-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Snapshot</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-promoted-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			ctx,
+		)
+		await endTurn(0, "tc-promoted-build", "bash", { command: "node build.js" })
+		writeFileSync(finalReport, "<h1>Intentional write</h1>")
+		await endTurn(1, "tc-promoted-write", "write", { path: "promoted.html" })
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		expect(rows[0].artifacts).toEqual([
+			{ path: finalReport, name: "promoted.html", mimeType: "text/html", sniffed: false },
+		])
+		const replay = new TurnArtifactBuffer()
+		replay.noteTextBlock("km.1")
+		replay.adoptRecorded(rows[0].artifacts)
+		expect(replay.flush(undefined, { verifyExists: false })).toHaveLength(1)
+	})
+
+	it("does not duplicate a snapshot-detected file also printed by Bash", async () => {
+		const finalReport = join(cwd, "final.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-printed-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Final</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-printed-build",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "wrote final.html" }] },
+				isError: false,
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [
+						{
+							type: "toolCall",
+							id: "tc-printed-build",
+							name: "bash",
+							arguments: { command: "node build.js" },
+						},
+					],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-printed-build",
+						toolName: "bash",
+						content: [{ type: "text", text: "wrote final.html" }],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows.flatMap((row) => row.artifacts)).toEqual([
+			{ path: finalReport, name: "final.html", mimeType: "text/html", sniffed: true },
+		])
+	})
+
+	it("does not record a silent-build artifact deleted later in the same prompt", async () => {
+		const finalReport = join(cwd, "deleted-final.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-deleted-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Temporary</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-deleted-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [
+						{
+							type: "toolCall",
+							id: "tc-deleted-build",
+							name: "bash",
+							arguments: { command: "node build.js" },
+						},
+					],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-deleted-build",
+						toolName: "bash",
+						content: [],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		rmSync(finalReport)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+	})
+
+	it("does not record a file created by a failed silent foreground build", async () => {
+		const finalReport = join(cwd, "failed-build.html")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-failed-build",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		writeFileSync(finalReport, "<h1>Created before exit 1</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-failed-build",
+				toolName: "bash",
+				result: { content: [] },
+				isError: true,
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [
+						{
+							type: "toolCall",
+							id: "tc-failed-build",
+							name: "bash",
+							arguments: { command: "node build.js" },
+						},
+					],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-failed-build",
+						toolName: "bash",
+						content: [],
+						isError: true,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+	})
+
+	it("does not leak a late completed shell call into the next prompt", async () => {
+		const lateReport = join(cwd, "late.html")
+		const nextReport = touch("next.md")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId: "tc-late",
+				toolName: "bash",
+				args: { command: "node build.js" },
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: { role: "assistant", timestamp: now, content: [] },
+				toolResults: [],
+			},
+			ctx,
+		)
+		writeFileSync(lateReport, "<h1>Late</h1>")
+		await emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-late",
+				toolName: "bash",
+				result: { content: [] },
+				isError: false,
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toEqual([])
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [{ type: "toolCall", id: "tc-next", name: "write", arguments: { path: nextReport } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-next",
+						toolName: "write",
+						content: [{ type: "text", text: "ok" }],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows.flatMap((row) => row.artifacts.map((artifact) => artifact.path))).toEqual([nextReport])
 	})
 
 	it("writes one row per run when several turns produced artifacts", async () => {

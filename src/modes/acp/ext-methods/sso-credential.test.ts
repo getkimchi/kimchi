@@ -39,7 +39,14 @@ describe("handleSsoCredential", () => {
 		vi.unstubAllEnvs()
 		vi.restoreAllMocks()
 		// Credential-store initialization can leave asynchronous file cleanup pending on CI.
-		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+		// Temp-dir cleanup is best-effort: a concurrent writer can keep recreating
+		// entries past the retry budget (ENOTEMPTY on CI runners). A leftover /tmp
+		// directory is harmless; failing the test on cleanup is not.
+		try {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+		} catch {
+			/* best-effort */
+		}
 	})
 
 	function writeSsoEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import { reconcileCheckinScope, reportConfirmMismatch } from "./checkin-gate.js"
+import { claimGateBlockedWork, reconcileCheckinScope, reportConfirmMismatch } from "./checkin-gate.js"
 import { getInputRevision, recordScopeReconciliation, takeAdmittedInputRevision } from "./reconciliation.js"
 import { validateExplicitTodoScope } from "./scope.js"
 import { renderTodoEntries } from "./state-markdown.js"
@@ -136,6 +136,21 @@ function formatScopeLabel(scope: TodoScope): string {
 	return "global"
 }
 
+/** Reminder appended to a check-in-closing result: names the work calls
+ *  the gate swallowed while the check was pending. The gate never replays
+ *  blocked calls, so without this the model routinely moves on and the
+ *  swallowed call is silently lost. Empty while checks are still pending
+ *  (the reminder belongs to the close that admits work again) and drained
+ *  once, so each blocked call is named exactly one time. */
+function blockedWorkReminder(sessionId: string): string {
+	const blocked = claimGateBlockedWork(sessionId)
+	if (blocked.length === 0) return ""
+	const shown = blocked.slice(0, 5).join("; ")
+	const more = blocked.length > 5 ? `; and ${blocked.length - 5} more` : ""
+	const singular = blocked.length === 1
+	return ` ${blocked.length} tool call${singular ? " was" : "s were"} blocked by this check-in and never executed (${shown}${more}). Re-issue ${singular ? "it (or its updated equivalent)" : "them (or their updated equivalents)"} now — the gate does not replay blocked calls.`
+}
+
 /** Validate an explicit scope, then auto-route if omitted. Rejects malformed
  *  scopes (instead of silently collapsing to global) and rejects writes to
  *  the ferment phase scope (managed by the bridge). */
@@ -183,7 +198,12 @@ async function executeWriteTodos(
 		)
 		const label = formatScopeLabel(details.scope)
 		return {
-			content: [{ type: "text" as const, text: `Updated ${details.todos.length} todos in ${label}.` }],
+			content: [
+				{
+					type: "text" as const,
+					text: `Updated ${details.todos.length} todos in ${label}.${blockedWorkReminder(sessionId)}`,
+				},
+			],
 			details,
 		}
 	} catch (error) {
@@ -226,7 +246,12 @@ async function executeAddTodo(
 		const label = formatScopeLabel(details.scope)
 		return {
 			content: [
-				{ type: "text" as const, text: added ? `Added todo #${added.id} in ${label}.` : `Added todo in ${label}.` },
+				{
+					type: "text" as const,
+					text: added
+						? `Added todo #${added.id} in ${label}.${blockedWorkReminder(sessionId)}`
+						: `Added todo in ${label}.${blockedWorkReminder(sessionId)}`,
+				},
 			],
 			details,
 		}
@@ -317,7 +342,9 @@ async function executeMarkTodo(
 		if (!details) throw new Error("mutation produced no result")
 		const label = formatScopeLabel(details.scope)
 		return {
-			content: [{ type: "text" as const, text: `Marked todo #${id} ${status} in ${label}.` }],
+			content: [
+				{ type: "text" as const, text: `Marked todo #${id} ${status} in ${label}.${blockedWorkReminder(sessionId)}` },
+			],
 			details,
 		}
 	} catch (error) {
@@ -348,7 +375,7 @@ async function executeClearTodos(
 		)
 		const label = formatScopeLabel(details.scope)
 		return {
-			content: [{ type: "text" as const, text: `Cleared todos in ${label}.` }],
+			content: [{ type: "text" as const, text: `Cleared todos in ${label}.${blockedWorkReminder(sessionId)}` }],
 			details,
 		}
 	} catch (error) {
@@ -471,7 +498,7 @@ async function executeConfirmTodos(
 			content: [
 				{
 					type: "text" as const,
-					text: `Confirmed ${todos.length} todos in ${label} match the current plan (input revision ${currentRevision}).`,
+					text: `Confirmed ${todos.length} todos in ${label} match the current plan (input revision ${currentRevision}).${blockedWorkReminder(sessionId)}`,
 				},
 			],
 			details: {

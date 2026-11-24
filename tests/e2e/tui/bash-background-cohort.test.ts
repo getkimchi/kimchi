@@ -4,6 +4,20 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
+function requestBodyText(body: unknown): string {
+	if (typeof body === "string") return body
+	if (body == null) return ""
+	try {
+		return JSON.stringify(body)
+	} catch {
+		return ""
+	}
+}
+
+function hasStopHandlesCall(requests: { body: unknown }[]): boolean {
+	return requests.some((request) => requestBodyText(request.body).includes('"stop_handles"'))
+}
+
 test("background bash cohort: filtered inspection keeps a queued exit pending until delivery", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
@@ -122,14 +136,13 @@ test("background bash cohort: unattended exit wakes the agent; survivor stopped 
 		async (fixture, trace) => {
 			terminal.submit("Start two long commands; let one exit and stop the other")
 
-			// The quick command exits at ~6s: its exit notification must wake the
-			// idle agent into a new turn (the scripted stop call appears).
-			await waitForText(terminal, "stopping the survivor", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			// The interim "stopping…" narration folds once the next tool call runs;
+			// completion plus the scripted stop call is the stable assertion for the
+			// unattended-exit wake.
+			await waitForText(terminal, "Cohort fully resolved", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			const hasStopCall = hasStopHandlesCall(fixture.fake.requests)
+			expect(hasStopCall).toBe(true)
 			trace.step("unattended exit woke the idle agent")
-
-			// The survivor was stopped; the session completes with everything resolved.
-			await waitForText(terminal, "Cohort fully resolved", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("session completed with cohort resolved")
 
 			// 3+ LLM requests: dual spawn, exit-notification turn, final.
 			expect(fixture.fake.requests.length).toBeGreaterThanOrEqual(3)
@@ -269,14 +282,12 @@ test("background bash cohort: a short bounded wait checkpoints with evidence, th
 		async (fixture, trace) => {
 			terminal.submit("Run a long silent command, wait briefly, then stop it")
 
-			// The bounded wait returns at its 5s checkpoint (not the 300s
-			// default); the scripted stop call proves the wait returned.
-			await waitForText(terminal, "checkpoint arrived", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			// The interim "checkpoint arrived" narration folds once the next tool
+			// runs. Completion proves the bounded wait returned and the stop ran.
+			await waitForText(terminal, "Done after the checkpoint", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			const hasStopCall = hasStopHandlesCall(fixture.fake.requests)
+			expect(hasStopCall).toBe(true)
 			trace.step("short bounded wait checkpointed")
-
-			// The model finishes after stopping the process.
-			await waitForText(terminal, "Done after the checkpoint", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("session completed")
 
 			// Channel-aware delivery assertions: the checkpoint evidence came
 			// INSIDE the wait's tool result (role tool) — requested vs waited
@@ -393,16 +404,11 @@ test("background bash cohort: a user message releases the wait; the command stay
 			terminal.submit("While it waits: check the command and stop it")
 			trace.step("user message queued during the wait")
 
-			// The wait was released by the message (far before its 60s checkpoint).
-			await waitForText(terminal, "inspecting the cohort", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
-			trace.step("wait released by the user message; cohort inspected")
-
-			// The queued message is processed at the safe boundary; the command
-			// is confirmed alive and stopped.
-			await waitForText(terminal, "Still running; stopping it", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			// Both interim messages above fold with the stop call. Completion +
+			// request evidence proves wait → inspect → stop happened in order.
+			await waitForText(terminal, "the command was alive and is now stopped", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			expect(hasStopHandlesCall(fixture.fake.requests)).toBe(true)
 			trace.step("command confirmed alive and stopped")
-			await waitForText(terminal, "the command was alive and is now stopped", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("session completed")
 
 			// The release and the inspection both reached the model; the release
 			// did not kill the process (the inspection saw it running) and the
@@ -642,7 +648,10 @@ test("background bash cohort: unattended exit during continued tool work reaches
 			// newline-tolerant regexes (a wrap point can split any fixed phrase).
 			await waitForText(terminal, /independent\s+segment\s+1\s+of\s+6/, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("independent read work started")
-			await waitForText(terminal, /continued\s+work\s+segment\s+8\s+of\s+8/, { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			// Continued work between tools is interstitial commentary and folds
+			// with the next call. The terminal-marker turn is the stable point:
+			// it proves the exit arrived after the independent work turn.
+			await waitForText(terminal, "all work is resolved", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
 			trace.step("independent work continued across the exit")
 
 			// The model acts on the terminal marker and settles.
@@ -704,7 +713,7 @@ test("background bash cohort: filtered inspection returns only the selected hand
 							index: 0,
 							function: {
 								name: "bash",
-								arguments: JSON.stringify({ command: "sleep 3 && echo one-alive && sleep 90" }),
+								arguments: JSON.stringify({ command: "sleep 5 && echo one-alive && sleep 90" }),
 							},
 						},
 						{
@@ -712,7 +721,7 @@ test("background bash cohort: filtered inspection returns only the selected hand
 							index: 1,
 							function: {
 								name: "bash",
-								arguments: JSON.stringify({ command: "sleep 3 && echo two-alive && sleep 90" }),
+								arguments: JSON.stringify({ command: "sleep 5 && echo two-alive && sleep 90" }),
 							},
 						},
 					],
@@ -765,7 +774,7 @@ test("background bash cohort: filtered inspection returns only the selected hand
 		async (fixture, trace) => {
 			terminal.submit("Start two long commands, inspect just the second, then the whole cohort, then stop both")
 
-			await waitForText(terminal, "Stopping both commands", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			await waitForText(terminal, "both commands reported and stopped", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
 			trace.step("filtered + cohort inspections done; stopping both")
 			await waitForText(terminal, "both commands reported and stopped", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("session completed")

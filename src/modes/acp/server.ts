@@ -93,8 +93,15 @@ import {
 	markCredentialStale,
 	prepareCredentialForLogin,
 } from "../../credential-staleness.js"
+import { markDeclaredArtifactsEmitted } from "../../extensions/artifacts/declared-emissions.js"
+import {
+	observeDirectArtifactWrite,
+	releaseArtifactSnapshot,
+	snapshotArtifactFiles,
+} from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
+import { setSnapshotArtifactsOptIn, snapshotArtifactsOptedIn } from "../../extensions/artifacts/snapshot-policy.js"
 import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
@@ -187,10 +194,13 @@ import {
 	ADVERTISED_CAPABILITIES,
 	AVAILABLE_EXT_METHODS,
 	BACKGROUND_RUNS_CAPABILITY,
+	getClientOptedIntoArtifacts,
 	getClientOptedIntoBackgroundRuns,
+	getClientOptedIntoMcpOAuthTurn,
 	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
+	MCP_OAUTH_TURN_CAPABILITY,
 	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
 import {
@@ -323,13 +333,20 @@ function resolveCliPermissionMode(): PermissionMode | undefined {
 	return undefined
 }
 
+type SessionMcpOAuthOptions = {
+	/** Mapped from initialize capabilities by the agent; not a wire request field. */
+	holdOAuthTurn?: boolean
+}
+type SessionFactoryParams = NewSessionRequest & SessionMcpOAuthOptions
+type SessionLoaderParams = LoadSessionRequest & SessionMcpOAuthOptions
+
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
  * model verification, extension binding, ACP prompter registration, and final
  * lifecycle registration. Exposed so tests can inject fakes; production uses
  * {@link defaultSessionFactory}.
  */
-export type AcpSessionFactory = (params: NewSessionRequest) => Promise<AgentSession>
+export type AcpSessionFactory = (params: SessionFactoryParams) => Promise<AgentSession>
 
 /**
  * Enumerates persisted sessions for a listSessions request. Mirrors pi's
@@ -343,7 +360,7 @@ export type AcpSessionLister = (params: ListSessionsRequest) => Promise<PiSessio
  * verification, extension binding, replay, and response shaping. Exposed so
  * tests can stub disk access.
  */
-export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSession>
+export type AcpSessionLoader = (params: SessionLoaderParams) => Promise<AgentSession>
 
 export interface RunAcpOptions {
 	extensionFactories: InlineExtension[]
@@ -374,6 +391,11 @@ export interface RunAcpOptions {
  * Prompt turns pass the resolve/reject pair that settles their PromptRequest;
  * unsolicited runs pass no-ops — nothing awaits their outcome.
  */
+function releaseTurnArtifactSnapshots(turn: TurnContext): void {
+	for (const stashed of turn.toolCallArgs.values()) releaseArtifactSnapshot(stashed.snapshotClaim)
+	turn.toolCallArgs.clear()
+}
+
 function createTurnContext(
 	resolve: (res: PromptResponse) => void = () => {},
 	reject: (err: unknown) => void = () => {},
@@ -771,6 +793,7 @@ export class KimchiAcpAgent implements Agent {
 					// button. Note the agent NEEDS this flag advertised only so
 					// clients feature-detect the gate; emission is opt-in gated.
 					[BACKGROUND_RUNS_CAPABILITY]: true,
+					[MCP_OAUTH_TURN_CAPABILITY]: true,
 					[PR_MONITORING_CAPABILITY]: true,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
@@ -1015,7 +1038,10 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-		const session = await this.sessionFactory(params)
+		const session = await this.sessionFactory({
+			...params,
+			holdOAuthTurn: getClientOptedIntoMcpOAuthTurn(this.clientCapabilities),
+		})
 		// Captured for the identity-checked catch unwind: a concurrent
 		// attach of the same id may own the prompter registry by then.
 		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
@@ -1029,6 +1055,7 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionModelHasAuth(session)
 
 			const sessionId = session.sessionId
+			setSnapshotArtifactsOptIn(session.sessionManager, getClientOptedIntoArtifacts(this.clientCapabilities))
 			const uiContext = this.createUiContext(session)
 			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
@@ -1326,7 +1353,10 @@ export class KimchiAcpAgent implements Agent {
 		// otherwise the session sits in `sessions` while loadSession rejects —
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
-		const session = await this.sessionLoader(params)
+		const session = await this.sessionLoader({
+			...params,
+			holdOAuthTurn: getClientOptedIntoMcpOAuthTurn(this.clientCapabilities),
+		})
 		const initialMode = this.getInitialPermissionMode(session)
 		const sessionId = session.sessionId
 		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
@@ -1345,6 +1375,7 @@ export class KimchiAcpAgent implements Agent {
 				)
 			}
 			assertSessionHasModel(session)
+			setSnapshotArtifactsOptIn(session.sessionManager, getClientOptedIntoArtifacts(this.clientCapabilities))
 
 			const uiContext = this.createUiContext(session)
 			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
@@ -1595,6 +1626,7 @@ export class KimchiAcpAgent implements Agent {
 			// Defensive reset (settled-run path only): agent_settled already
 			// clears it after the full run chain — anything left here is stale
 			// state, never this prompt's turn.
+			releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 			entry.unsolicitedTurn = undefined
 		}
 		// A prompt consisting of exactly one text block that starts with
@@ -2390,6 +2422,9 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
+		setSnapshotArtifactsOptIn(entry.session.sessionManager, false)
+		if (entry.turn) releaseTurnArtifactSnapshots(entry.turn)
+		if (entry.unsolicitedTurn) releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
 		entry.planTracker?.stop()
 		// Stop the adapter from publishing skill-refresh results: a discovery
 		// pass still in flight must not commit an obsolete snapshot (or
@@ -2523,6 +2558,7 @@ export class KimchiAcpAgent implements Agent {
 				// turn-target gating and new prompts.
 				if (!entry.turn && entry.unsolicitedTurn) {
 					const unsolicited = entry.unsolicitedTurn
+					releaseTurnArtifactSnapshots(unsolicited)
 					entry.unsolicitedTurn = undefined
 					for (const update of unsolicited.artifactBuffer.flush(entry.emittedModelMeta)) {
 						this.send({ sessionId: entry.session.sessionId, update })
@@ -2781,7 +2817,26 @@ export class KimchiAcpAgent implements Agent {
 				// tool_call notifications the client would have to reconcile against
 				// a turn it already considers over.
 				if (!turn) return
-				if (isHiddenToolCall(event.toolName, event.args)) {
+				const hidden = isHiddenToolCall(event.toolName, event.args)
+				const startedAt = Date.now()
+				const snapshotClaim = {
+					scope: entry.session.sessionManager,
+					toolCallId: event.toolCallId,
+					consumer: "acp" as const,
+					capture: !event.parentToolCallId && snapshotArtifactsOptedIn(entry.session.sessionManager),
+				}
+				// Nested/non-opted calls track ambiguity without file snapshots. ACP
+				// and the recorder share one observation for the execution.
+				const fileSnapshot = snapshotArtifactFiles(event.toolName, event.args, entry.cwd, snapshotClaim)
+				turn.toolCallArgs.set(event.toolCallId, {
+					toolName: event.toolName,
+					args: event.args,
+					startedAt,
+					fileSnapshot,
+					snapshotClaim,
+				})
+				observeDirectArtifactWrite(event.toolName, event.args, entry.cwd)
+				if (hidden) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					// A hidden call may already have an allocated ACP id if the permission
 					// prompter ran before we knew it was hidden — retire its state.
@@ -2795,11 +2850,6 @@ export class KimchiAcpAgent implements Agent {
 				if (fileChanges.length > 0) {
 					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
 				}
-				// tool_execution_end carries no args — stash them so artifact
-				// detection can pair args with the result there.
-				// startedAt anchors the artifact mtime window (see
-				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
-				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
@@ -2860,6 +2910,9 @@ export class KimchiAcpAgent implements Agent {
 				// would strand the prompt forever.
 				if (event.toolName === "submit_plan" && !event.isError) turn.planReviewHeld = true
 				if (turn.hiddenToolCallIds.has(event.toolCallId)) {
+					const stashed = turn.toolCallArgs.get(event.toolCallId)
+					if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
+					turn.toolCallArgs.delete(event.toolCallId)
 					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
 					return
 				}
@@ -2892,13 +2945,17 @@ export class KimchiAcpAgent implements Agent {
 					}
 				}
 				if (!event.isError && stashed) {
-					turn.artifactBuffer.collectFromToolCall({
-						toolName: stashed.toolName,
-						args: stashed.args,
-						result: event.result,
-						cwd: entry.cwd,
-						windowStart: stashed.startedAt,
-					})
+					turn.artifactBuffer.collectFromToolCall(
+						{
+							toolName: stashed.toolName,
+							args: stashed.args,
+							result: event.result,
+							cwd: entry.cwd,
+							windowStart: stashed.startedAt,
+							fileSnapshot: stashed.fileSnapshot,
+						},
+						{ includeSnapshotArtifacts: snapshotArtifactsOptedIn(entry.session.sessionManager) },
+					)
 					// Tool-declared artifacts are deliverables the user may need
 					// MID-turn (a submitted plan chips before its review
 					// questionnaire opens) — emit immediately. emitNow marks them
@@ -2906,10 +2963,12 @@ export class KimchiAcpAgent implements Agent {
 					// keys come from this one collect (no re-parse).
 					const paths = turn.artifactBuffer.getDeclaredPaths()
 					if (paths.length > 0) {
-						for (const update of turn.artifactBuffer.emitNow(paths, entry.emittedModelMeta))
-							this.send({ sessionId, update })
+						const emitted = turn.artifactBuffer.emitNow(paths, entry.emittedModelMeta)
+						if (emitted.length > 0) markDeclaredArtifactsEmitted(entry.session.sessionManager, paths)
+						for (const update of emitted) this.send({ sessionId, update })
 					}
 				}
+				if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
 				const preWrite = turn.preWriteContents.get(event.toolCallId)
 				turn.preWriteContents.delete(event.toolCallId)
 				// Diffs are additional content blocks, appended after the existing
@@ -2942,7 +3001,10 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: event.toolCallId,
 						status: "in_progress",
 						content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
-						rawOutput: this.displayOptionalRecord(sessionId, wireSafeToolResult(event.result)),
+						rawOutput: this.displayOptionalRecord(
+							sessionId,
+							wireSafeToolResult(event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
+						),
 					})
 					this.send({ sessionId, update: runningUpdate })
 					// Retire the upstream-id mapping exactly as a completed call would:
@@ -2995,7 +3057,10 @@ export class KimchiAcpAgent implements Agent {
 					piToolCallId: event.toolCallId,
 					status: event.isError ? "failed" : "completed",
 					content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
-					rawOutput: this.displayOptionalRecord(sessionId, wireSafeToolResult(event.result)),
+					rawOutput: this.displayOptionalRecord(
+						sessionId,
+						wireSafeToolResult(event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
+					),
 				})
 				this.send({ sessionId, update })
 				// Upstream ids can repeat after compaction or even within a turn. Retire
@@ -3091,7 +3156,11 @@ export class KimchiAcpAgent implements Agent {
 				// (exact: live detection was stat-gated).
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
-				if (data?.v === 1 && Array.isArray(data.artifacts)) artifactBuffer.adoptRecorded(data.artifacts)
+				if (data?.v === 1 && Array.isArray(data.artifacts)) {
+					artifactBuffer.adoptRecorded(data.artifacts, {
+						includeSnapshotArtifacts: snapshotArtifactsOptedIn(session.sessionManager),
+					})
+				}
 				continue
 			}
 			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
@@ -3361,7 +3430,12 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: tc.id,
 						status,
 						content: this.displayContent(sessionId, finalResult ? toolResultContent(finalResult) : []),
-						rawOutput: this.displayOptionalRecord(sessionId, finalResult ? wireSafeToolResult(finalResult) : undefined),
+						rawOutput: this.displayOptionalRecord(
+							sessionId,
+							finalResult
+								? wireSafeToolResult(finalResult, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities))
+								: undefined,
+						),
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -3449,6 +3523,8 @@ export class KimchiAcpAgent implements Agent {
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
 		turn.lastStreamedContent.delete(piToolCallId)
+		const stashed = turn.toolCallArgs.get(piToolCallId)
+		if (stashed) releaseArtifactSnapshot(stashed.snapshotClaim)
 		turn.toolCallArgs.delete(piToolCallId)
 		if (opts.removeFromHidden) {
 			turn.hiddenToolCallIds.delete(piToolCallId)
@@ -3865,6 +3941,7 @@ export class KimchiAcpAgent implements Agent {
 		// This is the original prompt's full run boundary, including tool calls,
 		// retries, cancellation, and held plan-review continuations.
 		releasePreparedOAuthCredential(join(this.agentDir, "auth.json"), entry.session.modelRuntime)
+		releaseTurnArtifactSnapshots(turn)
 		entry.turn = undefined
 		// Non-end_turn terminal outcomes (cancelled, refusal, …) never produce a
 		// rated settled response — clear the rating window armed at settle time.
@@ -3927,6 +4004,7 @@ export class KimchiAcpAgent implements Agent {
 		// window (agent_settled fires before prompt() resolves) must not survive
 		// into a rate call for an error the client saw as a JSON-RPC failure.
 		clearRatingWindow(entry.session.sessionId)
+		releaseTurnArtifactSnapshots(turn)
 		entry.turn = undefined
 		turn.reject(err)
 	}
@@ -4353,7 +4431,7 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 async function createSessionSettings(
 	cwd: string,
 	options: RunAcpOptions,
-	params: { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
+	params: SessionMcpOAuthOptions & { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
 ) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
@@ -4376,7 +4454,13 @@ async function createSessionSettings(
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
-	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers })
+	// Only negotiated ACP clients keep the OAuth watcher inside the originating
+	// tool/model run. Every other client retains the ordinary follow-up run.
+	const mcpExtension = options.mcpExtensionFactory?.({
+		cwd,
+		callerServers,
+		holdOAuthTurn: params.holdOAuthTurn,
+	})
 	// The main loader carries the LIVE extension set (inline factories + MCP
 	// adapter) and is only reloaded on intentional full session reloads. The
 	// ACP adapter in front of it serves skills from per-session discovery
@@ -4402,7 +4486,7 @@ async function createSessionSettings(
 
 /** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
 export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
-	return async (params: LoadSessionRequest): Promise<AgentSession> => {
+	return async (params: SessionLoaderParams): Promise<AgentSession> => {
 		const cwd = params.cwd
 		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
 		// re-export getDefaultSessionDir from its package index. Threading
@@ -4544,7 +4628,7 @@ function bindSessionScopedOAuth(session: AgentSession, agentDir: string): void {
 
 /** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
 export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
-	return async (params: NewSessionRequest): Promise<AgentSession> => {
+	return async (params: SessionFactoryParams): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
 		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
 		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)
@@ -4877,14 +4961,30 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 
 /**
  * A tool result safe to place on the wire as `rawOutput`: content text blocks
- * with externalization markers resolved (see toolResultContent). The in-memory
- * result itself is never mutated — clients keying UI off rawOutput
- * (e.g. rawOutput.details) keep the same shape.
+ * with externalization markers resolved (see toolResultContent). The MCP
+ * adapter's manual-handoff marker is host coordination state, exposed only
+ * to clients that opted into mcpOAuthTurn. Unnegotiated live results and
+ * replay retain their previous details shape. The in-memory result is never
+ * mutated, so host-side handoff handling still sees the original marker.
  */
-function wireSafeToolResult(result: unknown): Record<string, unknown> | undefined {
+function wireSafeToolResult(result: unknown, exposeManualHandoff = false): Record<string, unknown> | undefined {
 	if (!result || typeof result !== "object") return undefined
-	const r = result as { content?: unknown }
-	if (!Array.isArray(r.content)) return result as Record<string, unknown>
+	let r = result as { content?: unknown; details?: unknown }
+	const details = r.details
+	if (
+		!exposeManualHandoff &&
+		details &&
+		typeof details === "object" &&
+		!Array.isArray(details) &&
+		"mode" in details &&
+		details.mode === "auth-start" &&
+		"handoff" in details &&
+		details.handoff === "manual"
+	) {
+		const { handoff: _manualHandoff, ...visibleDetails } = details
+		r = { ...r, details: visibleDetails }
+	}
+	if (!Array.isArray(r.content)) return r as Record<string, unknown>
 	let changed = false
 	const content = r.content.map((block) => {
 		const b = block as { type?: string; text?: string } | null
@@ -4897,7 +4997,7 @@ function wireSafeToolResult(result: unknown): Record<string, unknown> | undefine
 		}
 		return block
 	})
-	return changed ? ({ ...r, content } as Record<string, unknown>) : (result as Record<string, unknown>)
+	return changed ? ({ ...r, content } as Record<string, unknown>) : (r as Record<string, unknown>)
 }
 
 export async function runAcpMode(options: RunAcpOptions): Promise<void> {

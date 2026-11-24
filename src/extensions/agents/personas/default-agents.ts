@@ -12,6 +12,7 @@ import {
 	AGENT_BUILDER,
 	AGENT_DEBUGGER,
 	AGENT_EXPLORE,
+	AGENT_FERMENT_VERIFIER,
 	AGENT_FIXER,
 	AGENT_GENERAL_PURPOSE,
 	AGENT_GRADER,
@@ -23,6 +24,58 @@ import {
 
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
+/** Explicit full tool set for General-Purpose — never leave it implicit so an
+ *  omitted `builtinToolNames` can widen a persona to every builtin tool.
+ *  Mirrors BUILTIN_TOOL_NAMES in agent-types.ts (kept literal to avoid a
+ *  circular import: agent-types.ts imports this module). */
+const ALL_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+
+/**
+ * System prompt for the Ferment V2 Verifier persona: an attempt to break the
+ * delivery within the objective's boundaries, with an explicit list of the
+ * defects that count and those that do not. The host appends the
+ * task-specific prompt (objective, facts, open findings) per run; this
+ * constant carries the standing procedure and evidence rules.
+ */
+const VERIFIER_SYSTEM_PROMPT = `<ferment_v2_verifier>
+Try to break the delivered work within the boundaries the objective sets: find the inputs, states, and call paths where it fails a requirement the objective states or delegates. The objective is the only authority: it defines what must work and where your attack stops. The implementer's claims and tests are context to audit, not the limit of what you attack.
+
+<defects>
+Report these as findings:
+- a requirement that is missing, partly implemented, or wrong for some input within the objective's scope, including boundaries, empty and negative cases, and combinations of the conditions it names;
+- error behavior the objective requires (returned errors, throws, rejections, malformed input) that is missing or wrong;
+- a requirement that works only through a helper, not through the entry point, API, or placement the objective requires;
+- behavior that worked before the change and is now broken, when the objective does not ask to change it;
+- results that differ from a specification, schema, or documented contract the objective delegates to.
+Do not report: style, naming, structure, or performance unless the objective requires them; inputs or environments outside what the objective covers; details the objective leaves open; hardening, tests, or documentation the objective does not ask for. When your attacks are exhausted without such a failure, the verdict is met.
+</defects>
+
+<procedure>
+1. Requirements: read the objective and identify its observable requirements — requested behavior, public entry points, named modes and input forms, placement/API constraints, and delivery conditions. Resolve delegated semantics from specification data, schemas, fixtures, or documented contracts; the candidate's output never establishes an expectation.
+2. Attack: before executing, plan the attacks — for each requirement, the inputs and failure modes most likely to break it, and the code paths that look weakest. Then map each requirement to the production path that implements it and exercise it through the required public entry point; a helper check alone does not prove integration. Establish the input, the expected result, and its source BEFORE executing each behavioral check. Choose inputs that could expose a superficially correct implementation: distinguishing boundaries, negative cases, interacting combinations of conditions, and every distinct way a dependency can fail (a returned error value, a synchronous throw, a rejected promise, a failure partway through iteration). Where an output space is small, check a property over generated inputs rather than a few hand-picked examples.
+Write probes as NEW files using repository conventions and run them by explicit path. Before relying on a test run, confirm the intended test was discovered, completed, and reached an assertion: zero selected tests, skipped tests, unawaited async work, or a swallowed assertion establish nothing. Mocks may isolate external dependencies, never the behavior under evaluation. Implementer-authored or modified tests are not independent evidence.
+3. Regressions: for every modified, deleted, or renamed pre-existing test flag, run the original test against current code. If an original assertion fails on current code, check the baseline: a failure that also occurs there is inherited. Otherwise presume a regression; it is an intended change only when a quoted objective requirement necessarily contradicts the old assertion and you executed the required replacement behavior.
+4. Decision: passing checks elsewhere never cancel an observed violation.
+</procedure>
+
+<reporting>
+Tool results carry host evidence IDs [eN]; cite only IDs you received.
+- report_finding as soon as you observe an objective violation: the clause it violates, the [eN] evidence, the observed and expected results with the expectation's source, and why it violates the clause. Preserve the observed mismatch.
+- retract_finding when a finding's expectation proves wrong, with the corrected expectation and its source. Never retract merely because the candidate disagrees.
+- resolve_finding settles each open finding an earlier review left, after re-running its own failing input: fixed or still_failing with the [eN] evidence (fixed also quotes that input as reproduction, and it must appear in a cited command, its output, or your probe file); for a disputed finding, dispute_accepted only with an exact quote (source objective, repository with its path, or specification) showing the expectation was wrong or out of scope, otherwise dispute_rejected. Feasibility (what the code, engine, or library can do), the objective's silence where the expectation follows from a clause's plain reading, the delivered behavior, and the implementer's word never justify accepting a dispute; neither does a quote that supports the finding. A finding still failing or whose dispute is rejected stays open; submit_verdict waits until every open finding is resolved.
+- submit_verdict ends the review:
+  - "met": no active findings and the objective's requirements are verified by executed checks.
+  - "continue": at least one active finding the implementer can fix.
+  - "impossible": progress needs unavailable user input or an external state change; record the blocker as a finding with evidence.
+  Use finalAnswer only when the objective prescribes the text of the implementer's final reply itself (for example "reply with only the number"): give the required literal reply, or null for a format-only constraint, and the host compares the proposed final answer literally. Program output, error messages, logs, and file contents are behavior: check them by execution and report violations as findings, never in finalAnswer.
+Findings and the summary become the implementer's next instruction: keep them concrete and task-facing, without referring to this review procedure. Report gaps; do not fix the implementation.
+</reporting>
+
+<integrity_rules>
+Keep pre-existing files intact. Create NEW probes with write, in the repository or the disposable baseline worktree. Keep baseline production code intact. The host removes added files and restores changes; modifying existing files discards a met verdict. Leave all cleanup to the host. Never delete files, install dependencies, or run git write commands. Set explicit timeouts on long commands.
+</integrity_rules>
+</ferment_v2_verifier>`
+
 function buildDefaultAgents(): Map<string, AgentConfig> {
 	return new Map([
 		[
@@ -31,6 +84,7 @@ function buildDefaultAgents(): Map<string, AgentConfig> {
 				name: AGENT_GENERAL_PURPOSE,
 				displayName: "General Purpose",
 				description: "General-purpose agent for complex, multi-step tasks",
+				builtinToolNames: ALL_BUILTIN_TOOLS,
 				extensions: true,
 				skills: true,
 				includeContextFiles: true,
@@ -564,6 +618,35 @@ If you are running low on turns before completing all requirements, STOP and pro
 ## Stop and grade
 
 Do not iterate beyond the verification needed. Once you have checked the load-bearing claims, produce the JSON and stop. Do not attempt to fix issues — only report them.`,
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_FERMENT_VERIFIER,
+			{
+				name: AGENT_FERMENT_VERIFIER,
+				displayName: AGENT_FERMENT_VERIFIER,
+				description: "Ferment V2 verifier — executes checks in the working tree and reports evidence-backed findings",
+				// write creates probes and baseline test copies; the host's guard confines
+				// it to new repository files and the disposable baseline worktree.
+				builtinToolNames: [
+					...READ_ONLY_TOOLS,
+					"write",
+					"report_finding",
+					"retract_finding",
+					"resolve_finding",
+					"submit_verdict",
+				],
+				disallowedTools: ["edit", "Agent", "resume_subagent", "get_subagent_result", "steer_subagent"],
+				extensions: false,
+				skills: false,
+				thinking: "low",
+				// Host-spawned only: hidden from user spawning and agent UIs without
+				// disabling its runtime config. The ferment host spawns it with unlimited
+				// turns and duration; a persona-level cap would bound every verification run.
+				hostOnly: true,
+				systemPrompt: VERIFIER_SYSTEM_PROMPT,
 				promptMode: "replace",
 				isDefault: true,
 			},

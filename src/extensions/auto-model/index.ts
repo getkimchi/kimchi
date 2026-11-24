@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
@@ -340,17 +340,18 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			// command line is the only moment a saved default may be installed or
 			// unwrapped. Subagents are excluded so a child never rewrites the global
 			// default, and a resumed conversation keeps the model it was using.
-			const sessionFile = ctx.sessionManager.getSessionFile()
-			const hasPersistedSession = sessionFile !== undefined && existsSync(sessionFile)
+			// "Resumed" means the session has messages, matching upstream's own rule
+			// (sdk.js `hasExistingSession`): a session file without messages, such as
+			// one a launch wrapper pre-creates, gets no model restored upstream either.
 			const freshSession =
 				event.reason === "new" ||
-				(event.reason === "startup" &&
-					!event.previousSessionFile &&
-					!hasPersistedSession &&
-					!entries.some((entry) => entry.type === "message"))
-			const explicitLaunchChoice =
-				event.reason === "startup" && (cliOptions?.model || cliOptions?.provider || cliOptions?.models)
-			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !explicitLaunchChoice
+				(event.reason === "startup" && !event.previousSessionFile && !entries.some((entry) => entry.type === "message"))
+			// --model is the only exemption from the default, and it pins the model
+			// for the whole process: the launch session and every /new or /clear
+			// (reason "new") after it. A launch without --model (--models included) gets
+			// the default. (--provider alone is rejected at launch.)
+			const pinnedCliModel = cliOptions?.model
+			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !pinnedCliModel
 
 			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
 
