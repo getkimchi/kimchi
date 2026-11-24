@@ -15,14 +15,15 @@ function createAssistantMessage(
 	content: Array<{ type: string; text?: string; thinking?: string }>,
 	stopReason: "stop" | "error" | "aborted" | "length" = "stop",
 ): MessageLikeSessionEntry {
-	const message = {
+	const message: any = {
 		role: "assistant" as const,
-		content: content as Array<{ type: string; text?: string; thinking?: string }>,
+		content: content,
 		api: "openai-responses",
 		provider: "openai",
 		model: "gpt-4",
 		usage: { inputTokens: 10, outputTokens: 5 },
 		stopReason,
+		timestamp: Date.now(),
 	}
 	return {
 		type: "message" as const,
@@ -41,7 +42,7 @@ function createToolResultMessage(): MessageLikeSessionEntry {
 		timestamp: now,
 		message: {
 			role: "toolResult" as const,
-			content: "result",
+			content: [{ type: "text", text: "result" }],
 			toolCallId: "tool-1",
 			toolName: "read",
 			isError: false,
@@ -50,8 +51,8 @@ function createToolResultMessage(): MessageLikeSessionEntry {
 	}
 }
 
-function createCustomMessage(content: string): SessionEntry {
-	return {
+function createCustomMessage(content: string): MessageLikeSessionEntry {
+	const entry = {
 		type: "custom_message" as const,
 		id: "msg-custom",
 		parentId: "msg-2",
@@ -60,6 +61,8 @@ function createCustomMessage(content: string): SessionEntry {
 		display: true,
 		timestamp: now,
 	}
+	if (entry.type !== "custom_message" && entry.type !== "message") throw new Error("Invalid entry type")
+	return entry as MessageLikeSessionEntry
 }
 
 describe("classifyRunOutcome", () => {
@@ -306,6 +309,7 @@ describe("classifyRunOutcome", () => {
 			kind: "no-result",
 			lastEvent: { kind: "denied-tool", toolName: "write", reason: "Denied by rule: write" },
 		})
+		if (result.kind !== "no-result") throw new Error("Expected no-result")
 		const diagnostic = formatRunOutcomeDiagnostic(result)
 		expect(diagnostic).toContain("write")
 		expect(diagnostic).toContain("Denied by rule: write")
@@ -356,6 +360,7 @@ describe("classifyRunOutcome", () => {
 			kind: "no-result",
 			lastEvent: { kind: "final-message", role: "assistant", stopReason: "stop" },
 		})
+		if (result.kind !== "no-result") throw new Error("Expected no-result")
 		const diagnostic = formatRunOutcomeDiagnostic(result)
 		expect(diagnostic).toContain("assistant")
 		expect(diagnostic).toContain("(stop reason: stop)")
