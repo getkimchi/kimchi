@@ -1,8 +1,7 @@
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
-import { debugWorkAttribution } from "@getkimchi/kimchi-bridge/reconcile"
+import { debugWorkAttribution, USAGE_SCHEMAS } from "@getkimchi/kimchi-bridge/reconcile"
 import { getVersion } from "../../utils.js"
-import { USAGE_SCHEMAS } from "../pr-cost-reporting/native.js"
 import { pinProviderUsage } from "../work-attribution.js"
 import { object } from "./summary.js"
 

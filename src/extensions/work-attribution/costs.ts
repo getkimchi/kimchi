@@ -1,14 +1,7 @@
 import { pullRequestKey } from "@getkimchi/kimchi-bridge/ledger"
-import { plainURL } from "@getkimchi/kimchi-bridge/reconcile"
+import { plainURL, repositoryPath, SHA, type WorkPullRequest } from "@getkimchi/kimchi-bridge/reconcile"
 import { savedBranchIssueKeys } from "../../shared/issue-keys.js"
-import {
-	providerId,
-	pullRequestAuthor,
-	pullRequestTitle,
-	repositoryPath,
-	SHA,
-} from "../pull-request-status/provider-records.js"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
+import { providerId, pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
 import { isWorkSegment, type WorkSegment } from "../work-attribution.js"
 
 import { requestWorkLinks } from "./links.js"

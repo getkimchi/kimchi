@@ -1,77 +1,20 @@
-/** What a GitHub PR or GitLab MR must look like, from a provider response or a saved journal row, and how lookups fail. */
+/**
+ * PR display-metadata shaping kept for Kimchi's local cost-report and snapshot
+ * construction (work-attribution/costs.ts, pr-cost-reporting/snapshot.ts and
+ * events.ts). Everything else from the moved provider-records module comes
+ * from @getkimchi/kimchi-bridge/reconcile; these three helpers are not on the
+ * pinned barrel, and the bridge's own copies are internal to it (the same
+ * boundary as machine.ts).
+ */
 
-import { plainURL } from "@getkimchi/kimchi-bridge/reconcile"
-import { branchIssueKeys, MAX_PULL_REQUEST_ISSUE_KEYS, savedBranchIssueKeys } from "../../shared/issue-keys.js"
-import { object } from "../work-attribution/summary.js"
-import type { WorkPullRequest, WorkPullRequestLookup } from "./pull-requests.js"
-
-export interface Repository {
-	provider: "github" | "gitlab"
-	host: string
-	name: string
-	id?: number
-	token?: string
-	defaultBranch?: string
-}
-
-/** `retry` and `unsupported` failures are expected; they never need the user's attention. */
-export class LookupError extends Error {
-	constructor(
-		message: string,
-		readonly kind?: "missing" | "invalid" | "retry" | "unsupported",
-		/** The provider's own API error format, which proves an unconfigured host runs that provider. */
-		readonly fromProvider = false,
-	) {
-		super(message)
-	}
-}
-
-export function lookupFailureReason(error: unknown): WorkPullRequestLookup["reason"] {
-	if (!(error instanceof LookupError)) return undefined
-	if (error.kind === "retry" || error.kind === "invalid") return "retry"
-	return error.kind === "unsupported" ? "unsupported" : undefined
-}
-
-export const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
-
-export function timestamp(value: unknown): value is string {
-	return typeof value === "string" && Number.isFinite(Date.parse(value))
-}
-
-export function nullableTimestamp(value: unknown): value is string | null {
-	return value === null || timestamp(value)
-}
+const MAX_TITLE_CHARACTERS = 1024
+const MAX_AUTHOR_CHARACTERS = 255
 
 export function providerId(value: unknown): string | undefined {
 	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value)
 	if (typeof value === "string" && /^[1-9]\d{0,19}$/.test(value)) return value
 }
 
-export function httpsURL(value: unknown): URL {
-	const url = plainURL(value)
-	if (url) return url
-	throw new LookupError("The Git provider returned an invalid URL.", "invalid")
-}
-
-export function repositoryPath(value: unknown, provider?: Repository["provider"]): value is string {
-	if (typeof value !== "string") return false
-	const segments = value.split("/")
-	return (
-		segments.length >= 2 &&
-		(provider !== "github" || segments.length === 2) &&
-		segments.every((segment) => /^[\w.-]+$/.test(segment) && segment !== "." && segment !== "..")
-	)
-}
-
-export function label(repository: Pick<Repository, "provider">): string {
-	return repository.provider === "gitlab" ? "GitLab" : "GitHub"
-}
-
-/** PR cost uploads bound a PR's title and author login in characters (code points), as the server counts them. */
-const MAX_TITLE_CHARACTERS = 1024
-const MAX_AUTHOR_CHARACTERS = 255
-
-/** A title cut to the upload bound; a missing, empty or non-text title is unknown. */
 export function pullRequestTitle(value: unknown): string | undefined {
 	// Whole characters: cutting UTF-16 units could leave half a surrogate pair, which the server rejects.
 	return typeof value === "string" && value ? Array.from(value).slice(0, MAX_TITLE_CHARACTERS).join("") : undefined
@@ -80,133 +23,4 @@ export function pullRequestTitle(value: unknown): string | undefined {
 /** An author login; one past the bound is unknown rather than cut, because a shorter login names someone else. */
 export function pullRequestAuthor(value: unknown): string | undefined {
 	return typeof value === "string" && value && Array.from(value).length <= MAX_AUTHOR_CHARACTERS ? value : undefined
-}
-
-export function pullRequest(
-	value: unknown,
-	repository: Pick<Repository, "host" | "provider">,
-	checkedAt: string,
-	/** The branch keys of a saved link, which keeps the keys but not the branch they came from. */
-	savedBranchKeys?: unknown,
-): WorkPullRequest {
-	const { host, provider } = repository
-	if (!object(value)) throw new LookupError(`${label(repository)} returned an invalid pull request.`, "invalid")
-	const validStates = provider === "gitlab" ? ["opened", "locked", "closed", "merged"] : ["open", "closed"]
-	if (typeof value.state !== "string" || !validStates.includes(value.state))
-		throw new LookupError(`${label(repository)} returned an invalid pull request state.`, "invalid")
-	const number = provider === "gitlab" ? value.iid : value.number
-	const headSha = provider === "gitlab" ? value.sha : object(value.head) ? value.head.sha : undefined
-	const mergedAt = provider === "gitlab" ? (value.merged_at ?? null) : value.merged_at
-	const closedAt = provider === "gitlab" ? (value.closed_at ?? null) : value.closed_at
-	const state =
-		provider === "gitlab"
-			? value.state === "opened" || value.state === "locked"
-				? "open"
-				: value.state
-			: mergedAt
-				? "merged"
-				: value.state
-	if (
-		!Number.isSafeInteger(number) ||
-		typeof number !== "number" ||
-		number < 1 ||
-		(state !== "open" && state !== "closed" && state !== "merged") ||
-		typeof headSha !== "string" ||
-		!SHA.test(headSha) ||
-		(value.merge_commit_sha !== null &&
-			(typeof value.merge_commit_sha !== "string" || !SHA.test(value.merge_commit_sha))) ||
-		!nullableTimestamp(mergedAt) ||
-		!nullableTimestamp(closedAt)
-	)
-		throw new LookupError(`${label(repository)} returned an invalid pull request.`, "invalid")
-	const url = httpsURL(provider === "gitlab" ? value.web_url : value.html_url)
-	const id = providerId(value.id)
-	// Display metadata only: a missing or malformed title or author never invalidates the link.
-	const title = pullRequestTitle(value.title)
-	const user = provider === "gitlab" ? value.author : value.user
-	const author = object(user) ? pullRequestAuthor(provider === "gitlab" ? user.username : user.login) : undefined
-	const branch = provider === "gitlab" ? value.source_branch : object(value.head) ? value.head.ref : undefined
-	const branchKeys =
-		typeof branch === "string"
-			? branchIssueKeys(branch).slice(0, MAX_PULL_REQUEST_ISSUE_KEYS)
-			: savedBranchIssueKeys(savedBranchKeys)
-	const repositoryId = providerId(
-		provider === "gitlab"
-			? value.target_project_id
-			: object(value.base) && object(value.base.repo)
-				? value.base.repo.id
-				: undefined,
-	)
-
-	const path = (provider === "gitlab" ? /^\/(.+)\/-\/merge_requests\/(\d+)$/ : /^\/(.+)\/pull\/(\d+)$/).exec(
-		url.pathname,
-	)
-	if (url.host !== host || !path || Number(path[2]) !== number || !repositoryPath(path[1], provider))
-		throw new LookupError(`${label(repository)} returned a pull request from an unexpected repository.`, "invalid")
-	return {
-		provider,
-		...(id ? { id } : {}),
-		...(repositoryId ? { repositoryId } : {}),
-		url: url.href,
-		number,
-		...(title ? { title } : {}),
-		...(author ? { author } : {}),
-		...(branchKeys.length ? { branchIssueKeys: branchKeys } : {}),
-		state,
-		repository: path[1],
-		host,
-		headSha,
-		mergeCommitSha: value.merge_commit_sha,
-		mergedAt,
-		closedAt,
-		checkedAt,
-	}
-}
-
-/** Saved links that still pass provider validation; malformed entries are skipped. */
-export function storedPullRequests(value: unknown): WorkPullRequest[] {
-	if (!Array.isArray(value)) return []
-	return value.flatMap((item) => {
-		if (!object(item) || typeof item.host !== "string" || !timestamp(item.checkedAt)) return []
-		const provider = item.provider ?? "github"
-		if (provider !== "github" && provider !== "gitlab") return []
-		try {
-			return [
-				pullRequest(
-					{
-						id: item.id,
-						base: { repo: { id: item.repositoryId } },
-						target_project_id: item.repositoryId,
-						html_url: item.url,
-						web_url: item.url,
-						number: item.number,
-						iid: item.number,
-						// Links saved by older versions have neither; they stay valid without them.
-						title: item.title,
-						user: { login: item.author },
-						author: { username: item.author },
-						state:
-							provider === "gitlab"
-								? item.state === "open"
-									? "opened"
-									: item.state
-								: item.state === "merged"
-									? "closed"
-									: item.state,
-						head: { sha: item.headSha },
-						sha: item.headSha,
-						merge_commit_sha: item.mergeCommitSha,
-						merged_at: item.mergedAt,
-						closed_at: item.closedAt,
-					},
-					{ host: item.host, provider },
-					item.checkedAt,
-					// Without them a reloaded link differs from the next unchanged check, which appends it again.
-					item.branchIssueKeys,
-				),
-			]
-		} catch {
-			return []
-		}
-	})
 }

@@ -4,10 +4,10 @@ import {
 	inUploadWindow,
 	type LimitNotices,
 	type PendingRepository,
+	type ReportingRepository,
 	type ReportingState,
 	type ServerLimit,
-} from "./queue.js"
-import type { ReportingRepository } from "./snapshot.js"
+} from "@getkimchi/kimchi-bridge/reconcile"
 
 const name = (repository: ReportingRepository) => repository.name ?? `${repository.host} repository ${repository.id}`
 const formatCount = (count: number) => count.toLocaleString("en-US")

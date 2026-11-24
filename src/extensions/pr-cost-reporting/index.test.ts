@@ -2,16 +2,27 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import { readReportingState as barrelReadReportingState } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { installKimchiHostPorts } from "../work-attribution/host-ports.js"
 import * as supervisor from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import { CI_VARIABLES } from "./automation.js"
 import reportingExtension from "./index.js"
-import * as queue from "./queue.js"
+import type * as queue from "./queue.js"
 import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
+
+// The extension reads reporting state through the bridge barrel; its queue reads host
+// config through HostPorts, so bind Kimchi's in-process host outside a supervisor pass.
+installKimchiHostPorts()
+// Wrap the state read so the blocked-read test can gate it without touching the queue.
+vi.mock("@getkimchi/kimchi-bridge/reconcile", async (original) => {
+	const actual = await original<typeof import("@getkimchi/kimchi-bridge/reconcile")>()
+	return { ...actual, readReportingState: vi.fn(actual.readReportingState) }
+})
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeReportingReconciliation: vi.fn(),
@@ -104,7 +115,7 @@ describe("optional PR reporting", () => {
 		const blocked = new Promise<queue.ReportingState>((resolve) => {
 			release = resolve
 		})
-		const read = vi.spyOn(queue, "readReportingState").mockReturnValueOnce(blocked)
+		const read = vi.mocked(barrelReadReportingState).mockReturnValueOnce(blocked)
 		let finished = false
 		const dispatched = Promise.resolve(api.getHandler("agent_end")({}, ctx)).then(() => {
 			finished = true

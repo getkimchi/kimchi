@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import type * as discovery from "@getkimchi/kimchi-bridge/reconcile"
+import { LookupError } from "@getkimchi/kimchi-bridge/reconcile"
 import { check } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as statusLine from "../../config/status-line-config.js"
@@ -17,7 +18,6 @@ import * as branches from "./branch-status.js"
 import { anchorDirectory } from "./command-anchor.js"
 import { BRANCH_PR_OBSERVED_EVENT, WORK_PR_OBSERVED_EVENT } from "./events.js"
 import pullRequestStatusExtension from "./index.js"
-import { LookupError } from "./provider-records.js"
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeFileReconciliation: vi.fn(),

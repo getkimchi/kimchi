@@ -1,7 +1,6 @@
+import type * as ProviderAPI from "@getkimchi/kimchi-bridge/reconcile"
+import { credential, LookupError, pages, requestJSON } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type * as ProviderAPI from "../pull-request-status/provider-api.js"
-import { credential, pages, requestJSON } from "../pull-request-status/provider-api.js"
-import { LookupError } from "../pull-request-status/provider-records.js"
 import {
 	discoverMyOpenPRs,
 	githubChecks,
@@ -11,7 +10,7 @@ import {
 	readPRSource,
 } from "./providers.js"
 
-vi.mock("../pull-request-status/provider-api.js", async (original) => ({
+vi.mock("@getkimchi/kimchi-bridge/reconcile", async (original) => ({
 	...(await original<typeof ProviderAPI>()),
 	credential: vi.fn(),
 	pages: vi.fn(),

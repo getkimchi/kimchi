@@ -1,6 +1,5 @@
+import type { PendingRepository, ReportingState } from "@getkimchi/kimchi-bridge/reconcile"
 import { describe, expect, it } from "vitest"
-import type { PendingRepository, ReportingState } from "./queue.js"
-import { accountKey, repositoryKey } from "./snapshot.js"
 import { limitNoticeTexts, statusText } from "./status.js"
 
 const now = Date.UTC(2026, 9, 8, 12)
@@ -9,10 +8,16 @@ const account = {
 	organizationId: "11111111-1111-4111-8111-111111111111",
 	userId: "22222222-2222-4222-8222-222222222222",
 }
+/**
+ * The queue state's composite entry keys, as the bridge's snapshot module derives them:
+ * JSON of [apiUrl, organizationId, userId] joined to JSON of [provider, host, id]. Spelled
+ * out here because the barrel does not export the key helpers; the literals pin the format.
+ */
+const accountKeyValue = JSON.stringify([account.apiUrl, account.organizationId, account.userId])
 function entry(id: string, fields: Partial<PendingRepository> = {}): [string, PendingRepository] {
 	const repository = { provider: "github" as const, host: "github.com", id, name: `example/${id}` }
 	return [
-		`${accountKey(account)}:${repositoryKey(repository)}`,
+		`${accountKeyValue}:${JSON.stringify([repository.provider, repository.host, repository.id])}`,
 		{ account, repository, revision: "1", requestHashes: [], attempts: 0, retryAt: 0, ...fields },
 	]
 }
@@ -198,7 +203,7 @@ describe("/pr-reporting status", () => {
 					}),
 					entry("3", { trimmed: 1200 }),
 				],
-				{ paused: { [accountKey(account)]: { limit, retryAt: now + 30 * 60_000 } } },
+				{ paused: { [accountKeyValue]: { limit, retryAt: now + 30 * 60_000 } } },
 			),
 			undefined,
 			now,
@@ -236,7 +241,7 @@ describe("/pr-reporting status", () => {
 					entry("2", { trimmed: 31_999, lastAcknowledgedAt: new Date(now).toISOString() }),
 				],
 				{
-					paused: { [accountKey(account)]: { limit: { scope: "contributor", at: now }, retryAt: now } },
+					paused: { [accountKeyValue]: { limit: { scope: "contributor", at: now }, retryAt: now } },
 					error:
 						"PR reporting held 2 snapshot(s) until queued reports leave room in the local queue. Some queued reports are waiting for their original account endpoint and credentials",
 					skippedRequests: 123_456,

@@ -10,9 +10,8 @@ import {
 	pullRequestLabel,
 	readWorkHead,
 } from "@getkimchi/kimchi-bridge/ledger"
+import { storedPullRequests, type WorkPullRequest } from "@getkimchi/kimchi-bridge/reconcile"
 import { DEFAULT_SLUG, derivePlanTitle } from "../../shared/planning/plan-markdown.js"
-import { storedPullRequests } from "../pull-request-status/provider-records.js"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkDetailsRequest } from "../work-attribution.js"
 import { costDetailLines, costReportSource, type knownSpend } from "./cost-details.js"
 import { decimalNanos, roundedUsd, time } from "./costs.js"

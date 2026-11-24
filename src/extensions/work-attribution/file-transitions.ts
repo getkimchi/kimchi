@@ -12,7 +12,7 @@ import {
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
 import { fileMatchStrength, getNote, isWorkId, setNote } from "@getkimchi/kimchi-bridge/ledger"
-import { SHA } from "../pull-request-status/provider-records.js"
+import { SHA } from "@getkimchi/kimchi-bridge/reconcile"
 import {
 	appendWorkRecord,
 	getToolRequest,

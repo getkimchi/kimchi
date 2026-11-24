@@ -1,6 +1,13 @@
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { readOutboxStatus } from "@getkimchi/kimchi-bridge/ledger"
+import {
+	dueLimitNotices,
+	readReportingState,
+	setReportingEnabled,
+	takeLimitNotices,
+	takeReportingNotice,
+} from "@getkimchi/kimchi-bridge/reconcile"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import {
 	requestWorkReconciliation,
@@ -8,13 +15,6 @@ import {
 } from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import { uploadSkipReason } from "./automation.js"
-import {
-	dueLimitNotices,
-	readReportingState,
-	setReportingEnabled,
-	takeLimitNotices,
-	takeReportingNotice,
-} from "./queue.js"
 import { limitNoticeTexts, statusText } from "./status.js"
 
 const ARGUMENT_COMPLETIONS = [
