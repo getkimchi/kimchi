@@ -239,14 +239,14 @@ describe("escalated subagent requests", () => {
 		const permissionPayloads: Array<{ sessionId: string; toolCall: ToolCall }> = []
 		const updates: Array<{ sessionId: string; update: Record<string, unknown> }> = []
 		const conn = {
-			requestPermission: vi.fn(async (payload: { sessionId: string; toolCall: ToolCall }) => {
+			request: vi.fn(async (_method: string, payload: { sessionId: string; toolCall: ToolCall }) => {
 				permissionPayloads.push(payload)
 				return { outcome }
 			}),
-			sessionUpdate: vi.fn(async (payload: { sessionId: string; update: Record<string, unknown> }) => {
+			notify: vi.fn(async (_method: string, payload: { sessionId: string; update: Record<string, unknown> }) => {
 				updates.push(payload)
 			}),
-		} as unknown as AgentSideConnection
+		} as unknown as AgentContext
 		return { conn, permissionPayloads, updates }
 	}
 
@@ -364,13 +364,13 @@ describe("escalated subagent requests", () => {
 		it("closes the card when the request itself failed and the worker then blocks the call", async () => {
 			const updates: Array<{ update: Record<string, unknown> }> = []
 			const conn = {
-				requestPermission: vi.fn(async () => {
+				request: vi.fn(async () => {
 					throw new Error("request failed")
 				}),
-				sessionUpdate: vi.fn(async (payload: { update: Record<string, unknown> }) => {
+				notify: vi.fn(async (_method: string, payload: { update: Record<string, unknown> }) => {
 					updates.push(payload)
 				}),
-			} as unknown as AgentSideConnection
+			} as unknown as AgentContext
 			const release = vi.fn()
 			const prompter = createAcpPermissionPrompter(
 				conn,
@@ -395,14 +395,14 @@ describe("escalated subagent requests", () => {
 			const payloads: Array<{ toolCall: ToolCall }> = []
 			let answer: (() => Promise<unknown>) | undefined
 			const conn = {
-				requestPermission: vi.fn(async (payload: { toolCall: ToolCall }) => {
+				request: vi.fn(async (_method: string, payload: { toolCall: ToolCall }) => {
 					payloads.push(payload)
 					return answer ? answer() : new Promise(() => {})
 				}),
-				sessionUpdate: vi.fn(async (payload: { update: Record<string, unknown> }) => {
+				notify: vi.fn(async (_method: string, payload: { update: Record<string, unknown> }) => {
 					updates.push(payload)
 				}),
-			} as unknown as AgentSideConnection
+			} as unknown as AgentContext
 			const ids = new Map<string, string>()
 			const resolver = vi.fn((id: string, _tool: string, agentId?: string) => {
 				const key = `${agentId}:${id}`
@@ -435,7 +435,7 @@ describe("escalated subagent requests", () => {
 
 		it("closes a withdrawn card when the call then runs or is blocked without a new request", async () => {
 			const { conn, updates } = makeRecordingConnection({ outcome: "selected", optionId: "choice-0" })
-			vi.mocked(conn.requestPermission).mockImplementation(() => new Promise(() => {}))
+			vi.mocked(conn.request).mockImplementation(() => new Promise(() => {}))
 			const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-escalated")
 			const controller = new AbortController()
 			const withdrawn = prompter.request({ ...originReq, signal: controller.signal })
@@ -485,7 +485,7 @@ describe("escalated subagent requests", () => {
 
 			// Aborted before it was sent: the client has nothing to update.
 			expect(await prompter.request({ ...originReq, signal: controller.signal })).toEqual({ kind: "aborted" })
-			expect(conn.requestPermission).not.toHaveBeenCalled()
+			expect(conn.request).not.toHaveBeenCalled()
 			report(prompter, "running")
 			report(prompter, "failed")
 			expect(statusUpdates(updates)).toHaveLength(0)
@@ -509,7 +509,7 @@ describe("escalated subagent requests", () => {
 
 		it("does not let a failed update escape, and still releases the id", async () => {
 			const { conn } = makeRecordingConnection({ outcome: "selected", optionId: "choice-0" })
-			vi.mocked(conn.sessionUpdate).mockRejectedValue(new Error("client disconnected"))
+			vi.mocked(conn.notify).mockRejectedValue(new Error("client disconnected"))
 			const release = vi.fn()
 			const prompter = createAcpPermissionPrompter(
 				conn,

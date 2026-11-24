@@ -13,7 +13,7 @@
 //   - `--auto` overrides the fixture's yolo env (flag > env) so the
 //     classifier actually runs.
 
-import type { ClientCapabilities } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"

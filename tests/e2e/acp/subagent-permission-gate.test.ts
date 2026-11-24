@@ -180,7 +180,11 @@ describe("ACP integration — subagent permission gate", () => {
 				(count) => count > 0,
 			)
 
-			await fixture.conn.setSessionConfigOption({ sessionId, configId: "permissions-mode", value: "plan" })
+			await fixture.conn.request("session/set_config_option", {
+				sessionId,
+				configId: "permissions-mode",
+				value: "plan",
+			})
 			if (!releaseChild) throw new Error("child release was not initialized")
 			releaseChild()
 			await waitFor(

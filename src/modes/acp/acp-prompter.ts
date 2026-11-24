@@ -52,7 +52,7 @@ export function createAcpPermissionPrompter(
 				if (report.agentId) releaseAcpToolCallId?.(report.toolCallId, report.agentId)
 			}
 			conn
-				.sessionUpdate({
+				.notify(methods.client.session.update, {
 					sessionId,
 					update: buildToolCallUpdate({
 						toolCallId: card.acpToolCallId,

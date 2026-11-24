@@ -15,7 +15,7 @@
 
 import { existsSync } from "node:fs"
 import { join } from "node:path"
-import type { ClientCapabilities, RequestPermissionRequest } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities, RequestPermissionRequest } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitForSessionUpdate } from "./support/scenarios.js"
@@ -329,7 +329,7 @@ describe("ACP integration — subagent escalated permission card", () => {
 			const card = await held.received
 			expect(card.toolCall.title, "the open card is the subagent's").toMatch(/^Subagent General-Purpose: /)
 
-			await fixture.conn.cancel({ sessionId })
+			await fixture.conn.notify("session/cancel", { sessionId })
 			held.respond({ outcome: { outcome: "cancelled" } })
 
 			expect((await turn).stopReason, "the parent's turn ends as cancelled").toBe("cancelled")
