@@ -116,6 +116,24 @@ function update(notification: SessionNotification): Record<string, unknown> {
 	return notification.update as unknown as Record<string, unknown>
 }
 
+/** Consumer-side reconstruction: upserts replace content and chunks append. */
+function reconstructMessageText(
+	updates: SessionNotification[],
+	messages = new Map<string, string>(),
+): Map<string, string> {
+	for (const { update } of updates) {
+		if (update.sessionUpdate === "session_message") {
+			const text = (update.content ?? [])
+				.flatMap((block) => (block.type === "text" ? [block.text] : []))
+				.join("")
+			messages.set(update.messageId, text)
+		} else if (update.sessionUpdate === "session_message_chunk" && update.content.type === "text") {
+			messages.set(update.messageId, `${messages.get(update.messageId) ?? ""}${update.content.text}`)
+		}
+	}
+	return messages
+}
+
 function assistant(text: string): Record<string, unknown> {
 	return {
 		role: "assistant",
@@ -186,7 +204,8 @@ describe("subagent registry and child projection", () => {
 		const { agent, updates } = await createRoot("parent")
 		agents.push(agent)
 		const child = new ProjectionFakeSession("native-child")
-		createChild(agent, childEvent("parent", child))
+		const event = childEvent("parent", child)
+		createChild(agent, event)
 
 		expect(updates).toHaveLength(4)
 		expect(updates[0]?.sessionId).toBe("parent")
@@ -214,6 +233,10 @@ describe("subagent registry and child projection", () => {
 		expect(parentMessage.recipientMessageId).toBe(childMessage.messageId)
 		expect(childMessage.senderMessageId).toBe(parentMessage.messageId)
 		expect(parentMessage.messageId).not.toBe(childMessage.messageId)
+		const reconstructed = reconstructMessageText(updates.slice(0, 4))
+		expect(reconstructed.get(String(parentMessage.messageId))).toBe(event.prompt)
+		expect(reconstructed.get(String(childMessage.messageId))).toBe(event.prompt)
+		expect(childMessage.content).toEqual([])
 
 		streamChild(child, "child answer")
 		expect(

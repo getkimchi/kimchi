@@ -155,8 +155,8 @@ export function subagentStateUpdate(
 	}
 }
 
-/** Announce first, then send the full original prompt with unique ids. Both
- * views live in their own transcript envelope; neither uses the agent run id. */
+/** Start both views with distinct ids. The child receives its initial content
+ * exactly once in the following chunk; the parent retains its full-prompt view. */
 export function subagentPromptMessages(
 	parentSessionId: string,
 	event: SubagentSessionCreatedPayload,
@@ -183,7 +183,7 @@ export function subagentPromptMessages(
 				senderSessionId: parentSessionId,
 				senderMessageId: parentMessageId,
 				recipientSessionId: event.sessionId,
-				content: [{ type: "text", text: event.prompt }],
+				content: [],
 			},
 		},
 		{
