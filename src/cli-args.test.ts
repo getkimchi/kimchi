@@ -479,14 +479,13 @@ describe("extension flag registration parity", () => {
 		expect(violations).toEqual([])
 	})
 
-	it.each(Object.keys(NONLITERAL_REGISTRATION_ALLOWLIST))(
-		"allowlist entry %s still covers a nonliteral registerFlag call",
-		(rel) => {
-			const file = join(SRC_ROOT, rel.slice("src/".length))
-			const violations = collectFileViolations(rel, file, readFileSync(file, "utf8"), {})
-			expect(violations.some((v) => v.startsWith(`${rel}: nonliteral flag name`))).toBe(true)
-		},
-	)
+	it.each(
+		Object.keys(NONLITERAL_REGISTRATION_ALLOWLIST),
+	)("allowlist entry %s still covers a nonliteral registerFlag call", (rel) => {
+		const file = join(SRC_ROOT, rel.slice("src/".length))
+		const violations = collectFileViolations(rel, file, readFileSync(file, "utf8"), {})
+		expect(violations.some((v) => v.startsWith(`${rel}: nonliteral flag name`))).toBe(true)
+	})
 
 	it("still checks literal registrations in files allowlisted for nonliteral ones", () => {
 		const rel = "src/extensions/mcp/index.ts"
