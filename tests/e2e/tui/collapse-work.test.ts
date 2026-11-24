@@ -67,6 +67,8 @@ for (const mode of ["all", "tools", "off"] as const) {
 			async (fixture, trace) => {
 				terminal.submit("Show how this display mode handles my work")
 				await waitForText(terminal, FINAL, { full: false })
+				if (mode === "off") await waitForText(terminal, "● Read b.txt", { full: false })
+				else await waitForText(terminal, "read 2 files", { full: false })
 				expectModeView(viewText(terminal), mode, false)
 				trace.step(`${mode}: initial transcript matches the display mode`)
 
@@ -81,6 +83,8 @@ for (const mode of ["all", "tools", "off"] as const) {
 				await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 				launchKimchi(terminal, fixture, ["--continue"])
 				await waitForText(terminal, FINAL, { timeoutMs: STARTUP_TIMEOUT_MS, full: true })
+				if (mode === "off") await waitForText(terminal, "● Read b.txt", { full: true })
+				else await waitForText(terminal, "read 2 files", { full: true })
 				expectModeView(fullText(terminal), mode, true)
 				trace.step(`${mode}: replay preserves the display mode contract`)
 			},
@@ -88,43 +92,50 @@ for (const mode of ["all", "tools", "off"] as const) {
 	})
 }
 
-test("collapseWork all: a failed tool remains visible in the folded run and after expansion", async ({ terminal }) => {
-	await runKimchiSession(
+for (const mode of ["all", "tools"] as const) {
+	test(`collapseWork ${mode}: a failed tool remains visible in the folded run and after expansion`, async ({
 		terminal,
-		{
-			artifactName: "collapse-work-all-failure",
-			seedHome(homeDir, workDir) {
-				seedCollapseWork("all", homeDir)
-				writeFileSync(join(workDir, "a.txt"), `${ALPHA}\n`)
-			},
-			responses: [
-				{
-					toolCalls: [{ id: "read-success", function: { name: "read", arguments: JSON.stringify({ path: "a.txt" }) } }],
+	}) => {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: `collapse-work-${mode}-failure`,
+				seedHome(homeDir, workDir) {
+					seedCollapseWork(mode, homeDir)
+					writeFileSync(join(workDir, "a.txt"), `${ALPHA}\n`)
 				},
-				{
-					toolCalls: [
-						{
-							id: "bash-failure",
-							function: {
-								name: "bash",
-								arguments: JSON.stringify({ command: "printf 'SENTINEL_TOOL_ERROR\\n'; exit 1" }),
+				responses: [
+					{
+						toolCalls: [
+							{ id: "read-success", function: { name: "read", arguments: JSON.stringify({ path: "a.txt" }) } },
+						],
+					},
+					{
+						toolCalls: [
+							{
+								id: "bash-failure",
+								function: {
+									name: "bash",
+									arguments: JSON.stringify({ command: "printf 'SENTINEL_TOOL_ERROR\\n'; exit 1" }),
+								},
 							},
-						},
-					],
-				},
-				{ stream: ["FAILURE_DETAILS_AVAILABLE"] },
-			],
-		},
-		async (_fixture, trace) => {
-			terminal.submit("Run one successful read and one failing command")
-			await waitForText(terminal, "FAILURE_DETAILS_AVAILABLE", { full: false })
-			expect(viewText(terminal)).toContain("1 failed call")
-			expect(viewText(terminal)).not.toContain("SENTINEL_TOOL_ERROR")
-			trace.step("folded run reports one failure without exposing all output")
+						],
+					},
+					{ stream: ["FAILURE_DETAILS_AVAILABLE"] },
+				],
+			},
+			async (_fixture, trace) => {
+				terminal.submit("Run one successful read and one failing command")
+				await waitForText(terminal, "FAILURE_DETAILS_AVAILABLE", { full: false })
+				await waitForText(terminal, "1 failed call", { full: false })
+				expect(viewText(terminal)).toContain("1 failed call")
+				expect(viewText(terminal)).not.toContain("SENTINEL_TOOL_ERROR")
+				trace.step("folded run reports one failure without exposing all output")
 
-			terminal.keyPress("o", { ctrl: true })
-			await waitForText(terminal, "SENTINEL_TOOL_ERROR", { full: false })
-			trace.step("expansion reveals the failed command output")
-		},
-	)
-})
+				terminal.keyPress("o", { ctrl: true })
+				await waitForText(terminal, "SENTINEL_TOOL_ERROR", { full: false })
+				trace.step("expansion reveals the failed command output")
+			},
+		)
+	})
+}
