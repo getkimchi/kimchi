@@ -23,11 +23,26 @@ describe("codemodePurpose", () => {
 			"Filter files",
 		)
 	})
+
+	// JavaScript ends a line comment at any of these, so the code after one is
+	// executable source and must never become part of the title.
+	it.each([
+		["CRLF", "\r\n"],
+		["CR", "\r"],
+		["LINE SEPARATOR", "\u2028"],
+		["PARAGRAPH SEPARATOR", "\u2029"],
+	])("ends the purpose at a %s line terminator", (_name, terminator) => {
+		expect(codemodePurpose({ code: `// @description: Filter${terminator}return 42` })).toBe("Filter")
+		expect(codemodePurpose({ code: `// @options: {}${terminator}// @description: Filter${terminator}return 42` })).toBe(
+			"Filter",
+		)
+	})
 })
 
 describe("codemodePurpose invalid metadata", () => {
 	it.each([
 		"// @description: Filter files\n// @options: {}",
+		"// @description: Filter files\u2028// @options: {}",
 		"const x = 1;\n// @description: Late purpose",
 		`// @description: ${"x".repeat(121)}`,
 		"// @description:    \nreturn 1",

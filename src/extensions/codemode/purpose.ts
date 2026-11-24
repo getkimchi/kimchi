@@ -2,6 +2,8 @@ export const CODEMODE_PURPOSE_MAX_CHARS = 120
 
 const PURPOSE_PREFIX = "// @description:"
 const OPTIONS_PREFIX = "// @options:"
+/** Every line terminator JavaScript recognizes, so a line comment never spans executable source. */
+const LINE_TERMINATOR = /\r\n|[\n\r\u2028\u2029]/
 
 /** Read the optional purpose from its only valid positions: source line one,
  *  or immediately after @options. Invalid presentation metadata is ignored. */
@@ -9,7 +11,7 @@ export function codemodePurpose(args: unknown): string | undefined {
 	if (!args || typeof args !== "object") return undefined
 	const code = Reflect.get(args, "code")
 	if (typeof code !== "string") return undefined
-	const lines = code.split("\n")
+	const lines = code.split(LINE_TERMINATOR)
 	// Match execution: @options is invalid anywhere except the first line,
 	// including after an otherwise-valid purpose directive.
 	if (lines.some((line, index) => index > 0 && line.trimStart().startsWith(OPTIONS_PREFIX))) return undefined
