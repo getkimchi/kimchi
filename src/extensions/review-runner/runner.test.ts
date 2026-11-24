@@ -9,7 +9,12 @@ import type { RunResult } from "../agents/manager/agent-runner.js"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest } from "../review-targets/types.js"
+import type { ReviewNetworkBoundary } from "./network-boundary.js"
 import { ReviewRunner } from "./runner.js"
+
+// This fixture isolates writer worktrees, not network enforcement. Inject its
+// boundary explicitly so it behaves identically on macOS and restricted CI.
+const testBoundary: ReviewNetworkBoundary = { kind: "sandbox-exec", wrap: (command) => command }
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", ["-C", cwd, ...args], {
@@ -69,6 +74,7 @@ describe("review runner writer and worktree isolation", () => {
 			outputDir,
 			rootDir: join(sandbox, "worktrees"),
 			concurrency: 2,
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
 			spawnAgent: async ({ prompt, options }): Promise<RunResult> => {
 				const writer = prompt
 				spawns.push({
@@ -156,6 +162,7 @@ describe("review runner writer and worktree isolation", () => {
 			target,
 			outputDir,
 			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
 			spawnAgent: async ({ options }): Promise<RunResult> => {
 				worktreePath = options.cwd ?? ""
 				started()
