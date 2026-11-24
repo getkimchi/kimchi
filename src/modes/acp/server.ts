@@ -1913,7 +1913,7 @@ export class KimchiAcpAgent {
 		}
 	}
 
-	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+	async extMethod(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
 		this.rejectSubagentMutation(params.sessionId)
 		switch (method) {
 			case AVAILABLE_EXT_METHODS.probe_mcp_server: {
@@ -2102,7 +2102,7 @@ export class KimchiAcpAgent {
 		// resolves — in that window a pending PromptResponse would otherwise hang
 		// until process exit. Reject symmetrically so the caller's await settles.
 		for (const entry of this.sessions.values()) {
-			this.cleanupSubagentsForParent(entry.session.sessionId)
+			this.releaseSubagentRoutes(entry.session.sessionId)
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			cancelPendingPrompts(entry)
 			unregisterAcpPrompter(entry.session.sessionId, entry.ownPrompter)
@@ -2121,7 +2121,7 @@ export class KimchiAcpAgent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		this.sessions.delete(sessionId)
-		this.cleanupSubagentsForParent(sessionId)
+		this.releaseSubagentRoutes(sessionId)
 		clearRatingWindow(sessionId)
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
@@ -2526,6 +2526,7 @@ export class KimchiAcpAgent {
 		if (!route) return
 		route.record.planTracker?.stop()
 		route.record.unsubscribe()
+		route.cleanupInteraction()
 		this.subagentRoutes.delete(sessionId)
 		const byTool = this.subagentIdsByParentTool.get(route.parentSessionId)
 		if (byTool?.get(route.parentToolCallId) === sessionId) byTool.delete(route.parentToolCallId)
@@ -2620,17 +2621,6 @@ export class KimchiAcpAgent {
 		for (const message of subagentPromptMessages(event.parentSessionId, event)) this.send(message)
 		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
 		this.startPlanTracker(record, event.sessionId)
-	}
-
-	private cleanupSubagentsForParent(parentSessionId: string): void {
-		for (const [childSessionId, route] of this.subagentRoutes) {
-			if (route.parentSessionId !== parentSessionId) continue
-			route.record.planTracker?.stop()
-			route.record.unsubscribe()
-			route.cleanupInteraction()
-			this.subagentRoutes.delete(childSessionId)
-		}
-		this.subagentIdsByParentTool.delete(parentSessionId)
 	}
 
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
