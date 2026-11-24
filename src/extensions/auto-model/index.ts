@@ -346,11 +346,12 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			const freshSession =
 				event.reason === "new" ||
 				(event.reason === "startup" && !event.previousSessionFile && !entries.some((entry) => entry.type === "message"))
-			// --model pins the model for the whole process, so /new and /clear
-			// (reason "new") keep it. --provider and --models only shape startup.
+			// --model is the only exemption from the default, and it pins the model
+			// for the whole process: the launch session and every /new or /clear
+			// (reason "new") after it. A launch without --model (--models included) gets
+			// the default. (--provider alone is rejected at launch.)
 			const pinnedCliModel = cliOptions?.model
-			const startupCliChoice = event.reason === "startup" && (cliOptions?.provider || cliOptions?.models)
-			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !pinnedCliModel && !startupCliChoice
+			const mainFreshLaunch = !!options.handleCliModelSelection && freshSession && !pinnedCliModel
 
 			if (options.handleCliModelSelection) dropRetiredAutoDefaultMarker()
 

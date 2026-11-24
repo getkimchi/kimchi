@@ -1182,8 +1182,8 @@ describe("main-session CLI model selection", () => {
 		settingsStubs.getDefaultProvider.mockReturnValue(undefined)
 	})
 
-	/** Fires a `/new` or `/clear` replacement session_start on kimi-k2.5 with Auto in the catalog. */
-	async function startNewSession() {
+	/** Fires a main-session session_start on kimi-k2.5 with Auto in the catalog. */
+	async function startSession(reason: "startup" | "new") {
 		const extension = createExtensionApi()
 		autoModelExtension(extension.api)
 		const autoModel = model("auto", { name: "Auto" })
@@ -1192,27 +1192,31 @@ describe("main-session CLI model selection", () => {
 			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
 			modelRegistry: { find: () => autoModel },
 		})
-		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, c)
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason }, c)
 		return { setModel: extension.setModel, autoModel }
 	}
 
-	it("preserves an explicit CLI model on a new session", async () => {
-		populateCliArgs(["--model", "kimi-k2.5"])
+	// --model is the only launch option that keeps a fresh session off Auto, and
+	// it holds for the launch session and every /new or /clear (reason "new").
+	for (const reason of ["startup", "new"] as const) {
+		it(`keeps an explicit --model on a fresh ${reason} session`, async () => {
+			populateCliArgs(["--model", "kimi-k2.5"])
 
-		const { setModel } = await startNewSession()
+			const { setModel } = await startSession(reason)
 
-		expect(setModel).not.toHaveBeenCalled()
-	})
+			expect(setModel).not.toHaveBeenCalled()
+		})
 
-	it("keeps Auto rollback on new sessions for --models-only launches", async () => {
-		populateCliArgs(["--models", "kimchi-dev/auto,kimchi-dev/kimi-k2.5"])
-		settingsStubs.getDefaultModel.mockReturnValue("auto")
-		settingsStubs.getDefaultProvider.mockReturnValue("kimchi-dev")
+		for (const args of [["--models", "kimchi-dev/auto,kimchi-dev/kimi-k2.5"], []]) {
+			it(`installs Auto on a fresh ${reason} session launched with [${args.join(" ")}]`, async () => {
+				populateCliArgs(args)
 
-		const { setModel, autoModel } = await startNewSession()
+				const { setModel, autoModel } = await startSession(reason)
 
-		expect(setModel).toHaveBeenCalledWith(autoModel, { persist: true })
-	})
+				expect(setModel).toHaveBeenCalledWith(autoModel, { persist: true })
+			})
+		}
+	}
 
 	it("records an explicit Auto CLI selection once through Pi's normal model path", async () => {
 		populateCliArgs(["--model", "kimchi-dev/auto"])

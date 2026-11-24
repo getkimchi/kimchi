@@ -112,8 +112,8 @@ For the main session (not subagents), the auto-model extension additionally:
   another provider's model (e.g. Anthropic's Claude) rolls back too. An
   explicit launch-time `--model` still wins, for the whole process: `/new`
   and `/clear` start on that model too, even after a session-scoped switch.
-  `--provider` and `--models` only exempt the launch session; `/new` after
-  them rolls back to Auto.
+  `--model` is the only exemption: every other fresh session, including a
+  `--models`-only launch, starts on Auto.
 - **Fresh means no messages** — a startup session counts as resumed only
   when it has messages, the same rule upstream uses to restore a session's
   model. A session file without messages (for example one a launch wrapper

@@ -397,8 +397,10 @@ test("a session-scoped /model choice survives resume but not /new or restart", a
 
 interface NewSessionModelCase {
 	artifact: string
-	/** Model passed as `--model`, or `false` for a default launch. */
+	/** Model passed as `--model`, or `false` for a launch without `--model`. */
 	initialModel: string | false
+	/** Other launch flags without `--model`, such as `--models`. */
+	extraArgs?: string[]
 	/** Model shown in the footer right after launch. */
 	launchModel: string
 	/** Optional session-scoped `/model` switch before the reset. */
@@ -432,11 +434,24 @@ const NEW_SESSION_MODEL_CASES: NewSessionModelCase[] = [
 		expectedModel: "auto",
 		step: "session-scoped model returned to the Auto default",
 	},
+	{
+		artifact: "models-only-launch",
+		initialModel: false,
+		extraArgs: ["--models", "kimchi-dev/override,kimchi-dev/routed"],
+		launchModel: "auto",
+		switchTo: "override",
+		expectedModel: "auto",
+		step: "--models alone gets the Auto default at launch and after the reset",
+	},
 ]
 
 for (const command of ["/new", "/clear"] as const) {
 	for (const c of NEW_SESSION_MODEL_CASES) {
-		const launch = c.initialModel ? `--model ${c.initialModel}` : "a default launch"
+		const launch = c.initialModel
+			? `--model ${c.initialModel}`
+			: c.extraArgs
+				? `a ${c.extraArgs[0]}-only launch`
+				: "a default launch"
 		const switched = c.switchTo ? ` after switching to ${c.switchTo}` : ""
 		test(`${command} after ${launch}${switched} starts on ${c.expectedModel}`, async ({ terminal }) => {
 			await runKimchiSession(
@@ -445,6 +460,7 @@ for (const command of ["/new", "/clear"] as const) {
 					artifactName: `auto-model-${command.slice(1)}-${c.artifact}`,
 					providerId: "kimchi-dev",
 					initialModel: c.initialModel,
+					extraArgs: c.extraArgs,
 					models: MODELS_WITH_OVERRIDE,
 					responses: [{ stream: ["Session reset sentinel."] }],
 				},
