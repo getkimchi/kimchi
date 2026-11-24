@@ -45,6 +45,29 @@ describe("codemodeActionSummary", () => {
 		).toBe("read 1 file, searched for 1 pattern")
 	})
 
+	it("counts calls apart when Pi cut their args preview", () => {
+		// Pi keeps 200 characters of the args JSON; both previews below are the same text.
+		const dir = "d".repeat(200)
+		const cut = (name: string, id: string, args: unknown) => ({
+			id,
+			name,
+			args: `${JSON.stringify(args).slice(0, 197)}...`,
+			status: "ok" as const,
+		})
+		expect(
+			codemodeActionSummary({
+				calls: [
+					cut("read", "root/1", { path: `${dir}/one.txt` }),
+					cut("read", "root/2", { path: `${dir}/two.txt` }),
+					call("read", "ok", { path: "a.ts" }),
+					call("read", "ok", { path: "a.ts" }),
+					cut("grep", "root/5", { pattern: `${dir}one` }),
+					cut("grep", "root/6", { pattern: `${dir}two` }),
+				],
+			}),
+		).toBe("read 3 files, searched for 2 patterns")
+	})
+
 	it("names the tool when every other call is the same tool", () => {
 		expect(codemodeActionSummary({ calls: [call("search_issues"), call("search_issues")] })).toBe(
 			"called search_issues ×2",
@@ -111,6 +134,26 @@ describe("codemodeFailureReason", () => {
 				),
 			),
 		).toBe("TypeError: cannot read property 'items' of undefined")
+	})
+
+	it("ignores the marker in the script's own output", () => {
+		expect(
+			codemodeFailureReason(
+				failed(
+					"Script failed\nWall time 0.0 seconds\nOutput:\napp.log:17: Script error: disk full\nScript error:\nnot the reason\nScript error:\nTypeError: cannot read property 'items' of undefined\n    at <anonymous> (codemode.js:3:8)\n\nNo tool calls were made.",
+				),
+			),
+		).toBe("TypeError: cannot read property 'items' of undefined")
+	})
+
+	it("keeps an error message that contains the marker whole", () => {
+		expect(
+			codemodeFailureReason(
+				failed(
+					"Script failed\nWall time 0.0 seconds\nOutput:\n\nScript error:\nError: upstream said: Script error: disk full\n    at <anonymous> (codemode.js:1:7)\n\nNo tool calls were made.",
+				),
+			),
+		).toBe("Error: upstream said: Script error: disk full")
 	})
 
 	it("returns the first line of an error thrown before the script ran", () => {
