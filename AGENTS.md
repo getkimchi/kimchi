@@ -58,6 +58,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/session-build-entry.md](docs/session-build-entry.md) — `kimchi_build` session entry: which harness build (version/commit/dirty) produced a session
 - [docs/skills-autoload.md](docs/skills-autoload.md) — deterministic auto-load of advertised skills on declared `triggers.prompt` (extensions/keywords)
 - [docs/research/](docs/research/) — research notes (e.g. bash visibility)
+- [docs/subagent-permissions.md](docs/subagent-permissions.md) — how a subagent's tool calls are permission-checked: main-session policy, classifier, approval in the main session, host pre-approvals
 - [docs/subagents/](docs/subagents/) — built-in subagent personae (code-reviewer, research-assistant, test-writer)
 - [docs/teleport.md](docs/teleport.md) — teleporting sessions to remote sandboxes
 - [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md) — TUI wheel-scroll speed tuning

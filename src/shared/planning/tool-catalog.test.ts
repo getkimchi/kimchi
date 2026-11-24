@@ -11,8 +11,8 @@ import {
 
 const namesOf = (entries: ToolEntry[]): string[] => entries.map((t) => t.name)
 
-const TODO_TOOL_NAMES = ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"]
-const WORKFLOW_OUTPUT_TOOL_NAMES = ["workflow_submit_result", "workflow_submit_questions"]
+const TODO_TOOL_NAMES = ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos", "confirm_todos"]
+const WORKFLOW_OUTPUT_TOOL_NAMES = ["workflow_submit_result", "workflow_submit_questions", "submit_agent_report"]
 const FERMENT_V2_TOOL_NAMES = ["get_ferment_v2", "update_ferment_v2", "respond_to_ferment_v2_finding"]
 
 const DAP_TOOL_NAMES = [

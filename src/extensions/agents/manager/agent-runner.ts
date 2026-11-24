@@ -8,6 +8,7 @@ import {
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	type ExtensionAPI,
+	type ExtensionFactory,
 	getAgentDir,
 	type InlineExtension,
 	type ModelRegistry as PiModelRegistry,
@@ -76,6 +77,9 @@ import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type Lifet
  *   are also excluded — they are only meaningful to the top-level planner.
  */
 const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
+
+const WORKER_PERMISSIONS_EXTENSION_NAME = "kimchi-worker-permissions"
+const WORKER_PERMISSIONS_EXTENSION_PATH = `<inline:${WORKER_PERMISSIONS_EXTENSION_NAME}>`
 
 /** The native skill-loading tool name, appendable to a subagent's tool list
  *  when its skills config entails it. Not part of BUILTIN_TOOL_NAMES (which
@@ -625,9 +629,34 @@ ${skillLines}`
 
 	const agentDir = getAgentDir()
 
+	// Construct the gate before the resource loader: a failed import or
+	// initialization must prevent the child from running unchecked.
+	// The import is dynamic on purpose: a static one closes a cycle
+	// (permissions/index -> remote-run/runner -> agents/index -> this file).
+	const parentSessionId = ctx.sessionManager.getSessionId()
+	const { createWorkerPermissionsExtension, getPermissionsExtensionOptions } = await import(
+		"../../permissions/index.js"
+	)
+	// A host that tunes the gate (the Ferment V2 verifier's pre-approvals)
+	// passes a createPermissionsExtension() factory with its inline
+	// extensions. The child keeps one gate: those options are folded into the
+	// worker gate and the host's factory is not loaded.
+	const callerExtensions = options.extensionFactories ?? []
+	const callerGates = callerExtensions.filter((extension) => getPermissionsExtensionOptions(extension) !== undefined)
+	if (callerGates.length > 1) {
+		throw new Error("A subagent accepts at most one permission gate from its host.")
+	}
+	const hostGateOptions = callerGates[0] ? getPermissionsExtensionOptions(callerGates[0]) : undefined
+	const workerPermissionsExtension = createWorkerPermissionsExtension({
+		...(hostGateOptions?.preApproved ? { preApproved: hostGateOptions.preApproved } : {}),
+		parentSessionId,
+		persona: agentConfig?.name ?? type,
+	})
 	const extensionFactories = buildInlineExtensionFactories({
 		effectiveMaxDuration,
 		type,
+		parentSessionId,
+		workerPermissionsExtension,
 		model,
 		toolNames,
 		workerReport: options.workerReport,
@@ -649,10 +678,9 @@ ${skillLines}`
 	}
 	// Caller-provided inline extensions (e.g. the Ferment V2 verifier guard)
 	// load even when extensions are disabled — the resource loader always
-	// processes its inline factories.
-	if (options.extensionFactories) {
-		extensionFactories.push(...options.extensionFactories)
-	}
+	// processes its inline factories. A caller's permission gate is left out:
+	// its options already went into the worker gate above.
+	extensionFactories.push(...callerExtensions.filter((extension) => !callerGates.includes(extension)))
 	// SubagentResourceLoader reads the system prompt live via the
 	// readSystemPrompt callback (see subagent-resource-loader.ts): after the
 	// final active-tool list is known, reassigning `systemPrompt` and calling
@@ -675,6 +703,12 @@ ${skillLines}`
 		extensionFactories,
 	})
 	await loader.reload()
+	const workerGateLoadError = loader
+		.getExtensions()
+		.errors.find(({ path }) => path === WORKER_PERMISSIONS_EXTENSION_PATH)
+	if (workerGateLoadError) {
+		throw new Error(`${WORKER_PERMISSIONS_EXTENSION_PATH}: ${workerGateLoadError.error}`)
+	}
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
@@ -1056,6 +1090,10 @@ export interface InlineExtensionFactoryDeps {
 	effectiveMaxDuration: number
 	/** Subagent persona type — labels the bash clamp telemetry. */
 	type: SubagentType
+	/** Fully constructed worker gate, appended after every tool provider. */
+	workerPermissionsExtension: ExtensionFactory
+	/** Main session whose live mode governs MCP gateway calls. */
+	parentSessionId: string
 	/** Resolved run model; an auto-routed model adds the routing + prompt-rebuild factories. */
 	model: Model<Api> | undefined
 	/** Persona tool allowlist; debug_/step_ tool names gate the DAP extension via shouldRegisterDapForTools. */
@@ -1170,9 +1208,17 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 		// in the parent process) and use lazy gateway discovery so a subagent
 		// never retains an eager gateway connection.
 		extensionFactories.push(
-			createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd, suppressWarnings: true, lazyGatewayConnect: true }),
+			createKimchiMcpAdapterExtension({
+				cwd: deps.effectiveCwd,
+				suppressWarnings: true,
+				lazyGatewayConnect: true,
+				parentSessionId: deps.parentSessionId,
+			}),
 		)
 	}
+	// The caller constructs this before loader initialization so a load failure
+	// cannot be swallowed into an unchecked child. Isolation never disables the gate.
+	extensionFactories.push({ name: WORKER_PERMISSIONS_EXTENSION_NAME, factory: deps.workerPermissionsExtension })
 	return extensionFactories
 }
 
