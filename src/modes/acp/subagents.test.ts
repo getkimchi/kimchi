@@ -123,9 +123,7 @@ function reconstructMessageText(
 ): Map<string, string> {
 	for (const { update } of updates) {
 		if (update.sessionUpdate === "session_message") {
-			const text = (update.content ?? [])
-				.flatMap((block) => (block.type === "text" ? [block.text] : []))
-				.join("")
+			const text = (update.content ?? []).flatMap((block) => (block.type === "text" ? [block.text] : [])).join("")
 			messages.set(update.messageId, text)
 		} else if (update.sessionUpdate === "session_message_chunk" && update.content.type === "text") {
 			messages.set(update.messageId, `${messages.get(update.messageId) ?? ""}${update.content.text}`)
