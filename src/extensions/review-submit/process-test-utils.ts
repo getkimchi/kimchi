@@ -4,6 +4,15 @@ import type { SubmitResult } from "./store.js"
 
 const PROCESS_ENTRY = fileURLToPath(new URL("./submit-process.ts", import.meta.url))
 
+const NODE_SQLITE_EXPERIMENTAL_WARNING =
+	/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\r?\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n?/
+
+/** Remove exactly Node 22's experimental SQLite warning and its trace hint,
+ * anchored so every unrelated warning, diagnostic, or thrown error remains. */
+export function stripExpectedNodeSqliteWarning(stderr: string): string {
+	return stderr.replace(NODE_SQLITE_EXPERIMENTAL_WARNING, "")
+}
+
 export interface SubmissionProcessResult {
 	code: number | null
 	signal: NodeJS.Signals | null

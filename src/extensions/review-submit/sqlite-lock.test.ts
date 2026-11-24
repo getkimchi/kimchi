@@ -4,7 +4,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it } from "vitest"
-import { runSubmissionProcess, type SubmissionProcessResult } from "./process-test-utils.js"
+import {
+	runSubmissionProcess,
+	type SubmissionProcessResult,
+	stripExpectedNodeSqliteWarning,
+} from "./process-test-utils.js"
 import { submitFinding } from "./store.js"
 
 const PROCESS_ENTRY = fileURLToPath(new URL("./submit-process.ts", import.meta.url))
@@ -142,7 +146,7 @@ describe("live review writer locks", () => {
 			holder.child.send("continue")
 			const holderResult = await holder.completed
 			expect(holderResult.code).toBe(0)
-			expect(holderResult.stderr).toBe("")
+			expect(stripExpectedNodeSqliteWarning(holderResult.stderr)).toBe("")
 			expect(holderResult.result).toMatchObject({ accepted: true, id: "final-2" })
 			expect(readFindings(homeDir).map((record) => record.description)).toEqual([
 				"Initial finding.",
@@ -168,8 +172,8 @@ describe("live review writer locks", () => {
 		const holderResult = await holder.completed
 		const waiter = await waiterPromise
 		expect(holderResult.code).toBe(0)
-		expect(holderResult.stderr).toBe("")
-		expect(waiter.stderr).toBe("")
+		expect(stripExpectedNodeSqliteWarning(holderResult.stderr)).toBe("")
+		expect(stripExpectedNodeSqliteWarning(waiter.stderr)).toBe("")
 		expect(holderResult.result).toMatchObject({ accepted: true, id: "final-1" })
 		expect(waiter.result).toMatchObject({ accepted: true, id: "final-2" })
 		const records = readFindings(homeDir)
@@ -193,7 +197,7 @@ describe("live review writer locks", () => {
 		const results = await Promise.all(racers.map((racer) => racer.completed))
 		for (const [index, result] of results.entries()) {
 			expect(result.code).toBe(0)
-			expect(result.stderr).toBe("")
+			expect(stripExpectedNodeSqliteWarning(result.stderr)).toBe("")
 			expect(result.result, `${runtimes[index]} stdout=${result.stdout}\nstderr=${result.stderr}`).toMatchObject({
 				accepted: true,
 			})
