@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { describe, expect, it } from "vitest"
+import { join, relative } from "node:path"
+import ts from "typescript"
+import { describe, expect, it, vi } from "vitest"
 import {
 	CACHEABLE_OPTION_NAMES,
 	CLI_OPTIONS,
@@ -21,6 +22,7 @@ import {
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
+import { printMergedHelp } from "./commands/help.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 
 describe("value-flag parsing", () => {
@@ -390,5 +392,95 @@ describe("cacheable option coverage", () => {
 		// miss, so the invariant is enforced here.
 		const missing = CACHEABLE_OPTION_NAMES.filter((name) => !CLI_OPTIONS[name])
 		expect(missing).toEqual([])
+	})
+})
+
+describe("hidden catalog options", () => {
+	it("parses hidden --debug-prompts as a boolean without showing it in help", async () => {
+		expect(parseCliArgs(["--debug-prompts"]).options["debug-prompts"]).toBe(true)
+		const logs: string[] = []
+		const logSpy = vi.spyOn(console, "log").mockImplementation((...parts) => {
+			logs.push(parts.join(" "))
+		})
+		try {
+			await printMergedHelp()
+		} finally {
+			logSpy.mockRestore()
+		}
+		const help = logs.join("\n")
+		expect(help).toContain("--memory")
+		expect(help).toContain("--ferment-oneshot")
+		expect(help).not.toContain("--debug-prompts")
+	})
+})
+
+const SRC_ROOT = join(import.meta.dirname, ".")
+
+/** Files whose registerFlag calls are intentionally not literal. */
+const NONLITERAL_REGISTRATION_ALLOWLIST: Record<string, string> = {
+	"src/extensions/mcp/index.ts": "forwards flags from the MCP probe via target.registerFlag(name, flag)",
+	"src/extensions/mcp/probe.ts": "probe stub that records flags for forwarding, not a real registration",
+}
+
+function listSourceFiles(dir: string): string[] {
+	const out: string[] = []
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		if (entry.name === "__mocks__") continue
+		const full = join(dir, entry.name)
+		if (entry.isDirectory()) out.push(...listSourceFiles(full))
+		else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) out.push(full)
+	}
+	return out
+}
+
+function collectRegisteredFlagCatalogViolations(): string[] {
+	const violations: string[] = []
+	for (const file of listSourceFiles(SRC_ROOT)) {
+		const rel = `src/${relative(SRC_ROOT, file).split("\\").join("/")}`
+		const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true)
+		const visit = (node: ts.Node): void => {
+			if (
+				ts.isCallExpression(node) &&
+				ts.isPropertyAccessExpression(node.expression) &&
+				node.expression.name.text === "registerFlag"
+			) {
+				visitRegistration(node)
+			}
+			ts.forEachChild(node, visit)
+		}
+		const visitRegistration = (call: ts.CallExpression): void => {
+			if (rel in NONLITERAL_REGISTRATION_ALLOWLIST) return
+			const [nameArg, defArg] = call.arguments
+			if (!nameArg || !ts.isStringLiteralLike(nameArg)) {
+				violations.push(`${rel}: nonliteral flag name ${nameArg?.getText(sf) ?? "<missing>"}`)
+				return
+			}
+			const name = nameArg.text
+			const typeProp =
+				defArg && ts.isObjectLiteralExpression(defArg)
+					? defArg.properties.find(
+							(p): p is ts.PropertyAssignment =>
+								ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "type",
+						)
+					: undefined
+			if (!typeProp || !ts.isStringLiteralLike(typeProp.initializer)) {
+				violations.push(`${rel}: --${name} has no literal type`)
+				return
+			}
+			const entry = CLI_OPTIONS[name]
+			if (!entry) violations.push(`${rel}: --${name} missing from CLI_OPTIONS`)
+			else if (entry.type !== typeProp.initializer.text) {
+				violations.push(`${rel}: --${name} type ${typeProp.initializer.text} != CLI_OPTIONS ${entry.type}`)
+			}
+		}
+		visit(sf)
+	}
+	return violations
+}
+
+describe("extension flag registration parity", () => {
+	it("every literal registerFlag call has a CLI_OPTIONS entry with the same name and type", () => {
+		const violations = collectRegisteredFlagCatalogViolations()
+		expect(violations).toEqual([])
 	})
 })

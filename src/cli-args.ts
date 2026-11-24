@@ -55,6 +55,8 @@ export interface CliOptionDef {
 	short?: string
 	/** Whether the option can be specified multiple times. */
 	multiple?: boolean
+	/** Parsed normally but omitted from generated help. */
+	hidden?: boolean
 }
 
 /**
@@ -65,6 +67,24 @@ export interface CliOptionDef {
  * parser uses the subset of flags with `type: "string" | "boolean"`.
  */
 export const CLI_OPTIONS: Record<string, CliOptionDef> = {
+	memory: {
+		type: "boolean",
+		description:
+			"Enable persistent personal memory (capture + recall across sessions; facts stored locally, extraction and embedding via the kimchi gateway).",
+	},
+	"debug-prompts": {
+		type: "boolean",
+		hidden: true,
+		description: "Print enriched prompts in the UI (default: hidden)",
+	},
+	"ferment-oneshot": {
+		type: "boolean",
+		description: "Bootstrap the initial prompt as an automated one-shot ferment.",
+	},
+	"init-git": {
+		type: "boolean",
+		description: "When the ferment cwd is not a git repo, run `git init` instead of skipping.",
+	},
 	provider: {
 		type: "string",
 		description: "Provider (default: kimchi-dev)",
@@ -219,6 +239,7 @@ export interface SessionCliArgs {
 		model?: string
 		models?: string
 		memory?: boolean
+		"debug-prompts"?: boolean
 		thinking?: string
 		mode?: string
 		print?: boolean
@@ -299,6 +320,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
 	"models",
+	"debug-prompts",
 	"thinking",
 	"mode",
 	"print",
