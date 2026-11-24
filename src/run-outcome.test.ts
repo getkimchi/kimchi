@@ -1,5 +1,6 @@
-import type { Args } from "@earendil-works/pi-coding-agent"
+import type { Args, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
+import { KIMCHI_NO_PROMPT_EXIT_CODE, KIMCHI_NO_RESULT_EXIT_CODE } from "./infrastructure-error.js"
 import {
 	classifyRunOutcome,
 	formatRunOutcomeDiagnostic,
@@ -7,50 +8,57 @@ import {
 	type RunOutcomeSnapshot,
 } from "./run-outcome.js"
 
-// Helpers to build session entries
+const now = Date.now().toString()
+
+// Typed fixture helpers
 function createAssistantMessage(
-	content: Array<{ type: string; text?: string; thinking?: string; id?: string; name?: string }>,
-	stopReason = "stop",
-	errorMessage?: string,
+	content: Array<{ type: string; text?: string; thinking?: string }>,
+	stopReason: "stop" | "error" | "aborted" | "length" = "stop",
 ): MessageLikeSessionEntry {
+	const message = {
+		role: "assistant" as const,
+		content: content as any,
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-4",
+		usage: { inputTokens: 10, outputTokens: 5 },
+		stopReason,
+	}
 	return {
-		type: "message",
+		type: "message" as const,
 		id: "msg-2",
 		parentId: "msg-1",
-		message: {
-			role: "assistant",
-			content: content as any,
-			api: "openai-responses",
-			provider: "openai",
-			model: "gpt-4",
-			usage: { inputTokens: 10, outputTokens: 5 },
-			stopReason: stopReason,
-			...(errorMessage ? { errorMessage } : {}),
-		} as any,
+		timestamp: now,
+		message,
 	}
 }
 
-function createCustomMessage(content: string): MessageLikeSessionEntry {
+function createToolResultMessage(): MessageLikeSessionEntry {
 	return {
-		type: "custom_message",
+		type: "message" as const,
 		id: "msg-3",
 		parentId: "msg-2",
-		customType: "test",
-		content,
-		display: true,
+		timestamp: now,
+		message: {
+			role: "toolResult" as const,
+			content: "result",
+			toolCallId: "tool-1",
+			toolName: "read",
+			isError: false,
+			timestamp: now,
+		},
 	}
 }
 
-function createToolResultMessage(content: string): MessageLikeSessionEntry {
+function createCustomMessage(content: string): SessionEntry {
 	return {
-		type: "message",
-		id: "msg-4",
-		parentId: "msg-3",
-		message: {
-			role: "tool",
-			content,
-			toolUseId: "tool-1",
-		},
+		type: "custom_message" as const,
+		id: "msg-custom",
+		parentId: "msg-2",
+		customType: "test",
+		content: [{ type: "text", text: content }],
+		display: true,
+		timestamp: now,
 	}
 }
 
@@ -138,7 +146,7 @@ describe("classifyRunOutcome", () => {
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
-		expect(result.kind).toBe("no-result")
+		expect(result).toMatchObject({ kind: "no-result" })
 	})
 
 	it("rejects an assistant message with empty content", () => {
@@ -151,7 +159,7 @@ describe("classifyRunOutcome", () => {
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
-		expect(result.kind).toBe("no-result")
+		expect(result).toMatchObject({ kind: "no-result" })
 	})
 
 	it("rejects an assistant message with only a thinking block", () => {
@@ -164,7 +172,7 @@ describe("classifyRunOutcome", () => {
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
-		expect(result.kind).toBe("no-result")
+		expect(result).toMatchObject({ kind: "no-result" })
 	})
 
 	it("rejects an assistant message with only a tool call", () => {
@@ -173,11 +181,11 @@ describe("classifyRunOutcome", () => {
 			inputSeen: false,
 			runSeen: true,
 			aborted: false,
-			finalEntry: createAssistantMessage([{ type: "toolCall", id: "1", name: "read" }]),
+			finalEntry: createAssistantMessage([{ type: "toolCall" }]),
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
-		expect(result.kind).toBe("no-result")
+		expect(result).toMatchObject({ kind: "no-result" })
 	})
 
 	it("accepts thinking plus non-whitespace text", () => {
@@ -241,14 +249,20 @@ describe("classifyRunOutcome", () => {
 			inputSeen: false,
 			runSeen: true,
 			aborted: false,
-			finalEntry: createToolResultMessage("result"),
+			finalEntry: createToolResultMessage(),
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
-		expect(result.kind).toBe("no-result")
+		expect(result).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "final-message", role: "toolResult" },
+		})
 	})
 
 	it("rejects a custom message after a real answer", () => {
+		// The custom message is the final entry after an earlier answer.
+		// Because the snapshot interface only carries finalEntry, the custom message
+		// is modeled as the final entry, representing the final outcome of a run.
 		const snapshot: RunOutcomeSnapshot = {
 			active: true,
 			inputSeen: false,
@@ -258,7 +272,10 @@ describe("classifyRunOutcome", () => {
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
-		expect(result.kind).toBe("no-result")
+		expect(result).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "final-message", role: "custom" },
+		})
 	})
 
 	it("classifies an aborted settled run as ok", () => {
@@ -281,17 +298,48 @@ describe("classifyRunOutcome", () => {
 			runSeen: true,
 			aborted: false,
 			deniedTool: { toolName: "write", reason: "Denied by rule: write" },
+			finalEntry: createAssistantMessage([]),
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
-		expect(result.kind).toBe("no-result")
-		if (result.kind === "no-result" && result.lastEvent.kind === "denied-tool") {
-			expect(result.lastEvent.toolName).toBe("write")
-			expect(result.lastEvent.reason).toBe("Denied by rule: write")
-		}
-		const diagnostic = formatRunOutcomeDiagnostic(result)
+		expect(result).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "denied-tool", toolName: "write", reason: "Denied by rule: write" },
+		})
+		const diagnostic = formatRunOutcomeDiagnostic(result as any)
 		expect(diagnostic).toContain("write")
 		expect(diagnostic).toContain("Denied by rule: write")
+	})
+
+	it("accepts denial plus text answer (ok)", () => {
+		const snapshot: RunOutcomeSnapshot = {
+			active: true,
+			inputSeen: false,
+			runSeen: true,
+			aborted: false,
+			deniedTool: { toolName: "write", reason: "Denied" },
+			finalEntry: createAssistantMessage([{ type: "text", text: "Here is the answer" }]),
+		}
+		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
+		const result = classifyRunOutcome(snapshot, args)
+		expect(result).toEqual({ kind: "ok" })
+	})
+
+	it("accepts denial plus empty final assistant (no-result with denied-tool)", () => {
+		const snapshot: RunOutcomeSnapshot = {
+			active: true,
+			inputSeen: false,
+			runSeen: true,
+			aborted: false,
+			deniedTool: { toolName: "write", reason: "Denied" },
+			finalEntry: createAssistantMessage([]),
+		}
+		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
+		const result = classifyRunOutcome(snapshot, args)
+		expect(result).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "denied-tool" },
+		})
 	})
 
 	it("reports the last role and stop reason when there is no denial", () => {
@@ -304,46 +352,63 @@ describe("classifyRunOutcome", () => {
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
-		expect(result.kind).toBe("no-result")
-		if (result.kind === "no-result" && result.lastEvent.kind === "final-message") {
-			expect(result.lastEvent.role).toBe("assistant")
-			expect(result.lastEvent.stopReason).toBe("stop")
-		}
-		const diagnostic = formatRunOutcomeDiagnostic(result)
+		expect(result).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "final-message", role: "assistant", stopReason: "stop" },
+		})
+		const diagnostic = formatRunOutcomeDiagnostic(result as any)
 		expect(diagnostic).toContain("assistant")
-		expect(diagnostic).toContain("stop")
+		expect(diagnostic).toContain("(stop reason: stop)")
 	})
 
 	it("never includes model text in diagnostic details", () => {
-		const secretString = "SUPER_SECRET_MODEL_OUTPUT_12345"
+		const secretInThinking = "THINKING_SECRET_XYZ789"
+		const secretInFinal = "FINAL_SECRET_ABC123"
+
+		// Snapshot with an assistant message that has the secret in a thinking block
+		// and a final empty assistant message with a thinking block containing a different secret
 		const snapshot: RunOutcomeSnapshot = {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
 			aborted: false,
-			finalEntry: createAssistantMessage([]),
+			finalEntry: createAssistantMessage([{ type: "thinking", thinking: secretInFinal }]),
 		}
 		const args: Pick<Args, "messages" | "fileArgs"> = { messages: [], fileArgs: [] }
 		const result = classifyRunOutcome(snapshot, args)
+
+		// Should be no-result due to empty text
+		expect(result).toMatchObject({ kind: "no-result" })
+
 		const diagnostic = formatRunOutcomeDiagnostic(result as any)
-		expect(diagnostic).not.toContain(secretString)
+		// Neither secret should appear in diagnostics
+		expect(diagnostic).not.toContain(secretInThinking)
+		expect(diagnostic).not.toContain(secretInFinal)
 	})
 })
 
 describe("formatRunOutcomeDiagnostic", () => {
-	it("formats no-prompt with correct first line", () => {
+	it("formats no-prompt with correct first line and Bug A advice", () => {
 		const outcome = { kind: "no-prompt" as const }
 		const diagnostic = formatRunOutcomeDiagnostic(outcome)
-		expect(diagnostic).toMatch(/^KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code \d+\./)
+		const lines = diagnostic.split("\n")
+		expect(lines[0]).toBe(`KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code ${KIMCHI_NO_PROMPT_EXIT_CODE}.`)
+		expect(lines[1]).toBe("A flag such as --auto may have taken the prompt as its value.")
+		expect(lines[2]).toBe("Put the prompt before the flags, or write the flag as --auto=true.")
+		expect(lines.length).toBeLessThanOrEqual(5)
 	})
 
-	it("formats no-result with correct first line", () => {
+	it("formats no-result with correct first line and Bug A advice context", () => {
 		const outcome = {
 			kind: "no-result" as const,
 			lastEvent: { kind: "final-message" as const, role: "assistant" },
 		}
 		const diagnostic = formatRunOutcomeDiagnostic(outcome)
-		expect(diagnostic).toMatch(/^KIMCHI_NO_RESULT: the agent finished without a final answer; exiting with code \d+\./)
+		const lines = diagnostic.split("\n")
+		expect(lines[0]).toBe(
+			`KIMCHI_NO_RESULT: the agent finished without a final answer; exiting with code ${KIMCHI_NO_RESULT_EXIT_CODE}.`
+		)
+		expect(lines.length).toBeLessThanOrEqual(5)
 	})
 
 	it("includes session path when provided", () => {
@@ -362,7 +427,7 @@ describe("formatRunOutcomeDiagnostic", () => {
 			lastEvent: { kind: "final-message" as const, role: "assistant" },
 		}
 		const diagnostic = formatRunOutcomeDiagnostic(outcome)
-		expect(diagnostic).toContain("No session was saved (--no-session)")
+		expect(diagnostic).toContain("No session was saved (--no-session).")
 	})
 
 	it("includes json mode hint when session exists", () => {
@@ -372,7 +437,7 @@ describe("formatRunOutcomeDiagnostic", () => {
 			sessionPath: "/path/to/session",
 		}
 		const diagnostic = formatRunOutcomeDiagnostic(outcome)
-		expect(diagnostic).toContain("Rerun with --mode json to see every step, or open the session file")
+		expect(diagnostic).toContain("Rerun with --mode json to see every step, or open the session file.")
 	})
 
 	it("includes json mode hint without file reference when no session", () => {
@@ -381,6 +446,6 @@ describe("formatRunOutcomeDiagnostic", () => {
 			lastEvent: { kind: "final-message" as const, role: "assistant" },
 		}
 		const diagnostic = formatRunOutcomeDiagnostic(outcome)
-		expect(diagnostic).toContain("Rerun with --mode json to see every step")
+		expect(diagnostic).toContain("Rerun with --mode json to see every step.")
 	})
 })

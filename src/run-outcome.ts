@@ -43,7 +43,8 @@ export type RunOutcomeClassification =
  *    - Accept (return ok) for stop reasons: error, aborted, length.
  *    - Otherwise, accept only if at least one text block has non-whitespace content.
  * 5. All other message types (tool result, custom message) or no message return no-result.
- * 6. Select lastEvent details based on what failed: denial > final message > none.
+ * 6. If the classification is no-result and a denial occurred, use denial to select lastEvent detail.
+ * 7. Never include model text in the classification result.
  */
 export function classifyRunOutcome(
 	snapshot: RunOutcomeSnapshot,
@@ -74,79 +75,74 @@ export function classifyRunOutcome(
 		return { kind: "ok" }
 	}
 
-	// Rule 4 & 5: Analyze final entry
-	// Check for denied tool first (highest priority)
-	if (snapshot.deniedTool) {
-		return {
-			kind: "no-result",
-			lastEvent: {
-				kind: "denied-tool",
-				toolName: snapshot.deniedTool.toolName,
-				reason: snapshot.deniedTool.reason,
-			},
-			...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
-		}
-	}
+	// Rule 4 & 5: Determine classification based on final entry shape
+	// First, classify the final entry without considering denial
+
+	let classifiedOutcome: RunOutcomeClassification
 
 	if (!snapshot.finalEntry) {
 		// No final entry means no result
-		return {
+		classifiedOutcome = {
 			kind: "no-result",
 			lastEvent: { kind: "none" },
 			...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
 		}
-	}
+	} else if (snapshot.finalEntry.type === "message" && snapshot.finalEntry.message.role === "assistant") {
+		// Assistant message: check for valid output
+		const msg = snapshot.finalEntry.message
+		const stopReason = msg.stopReason as string | undefined
 
-	// Tool result message is not a result
-	if (snapshot.finalEntry.type === "message" && snapshot.finalEntry.message.role === "tool") {
-		return {
+		// Accept certain stop reasons
+		if (stopReason === "error" || stopReason === "aborted" || stopReason === "length") {
+			classifiedOutcome = { kind: "ok" }
+		} else {
+			// Check for non-whitespace text content
+			const content = msg.content as Array<{ type: string; text?: string }>
+			let hasText = false
+			for (const block of content) {
+				if (block.type === "text" && block.text && block.text.trim().length > 0) {
+					hasText = true
+					break
+				}
+			}
+
+			if (hasText) {
+				classifiedOutcome = { kind: "ok" }
+			} else {
+				classifiedOutcome = {
+					kind: "no-result",
+					lastEvent: { kind: "final-message", role: "assistant", stopReason },
+					...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
+				}
+			}
+		}
+	} else if (snapshot.finalEntry.type === "message") {
+		// Non-assistant message (user, toolResult, bashExecution, etc.)
+		const role = snapshot.finalEntry.message.role
+		classifiedOutcome = {
 			kind: "no-result",
-			lastEvent: { kind: "final-message", role: "tool" },
+			lastEvent: { kind: "final-message", role },
 			...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
 		}
-	}
-
-	// Custom message after a run is not a result
-	if (snapshot.finalEntry.type === "custom_message") {
-		return {
+	} else {
+		// Custom message after a run is not a result
+		classifiedOutcome = {
 			kind: "no-result",
 			lastEvent: { kind: "final-message", role: "custom" },
 			...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
 		}
 	}
 
-	// Must be assistant message at this point
-	if (snapshot.finalEntry.type === "message" && snapshot.finalEntry.message.role === "assistant") {
-		const msg = snapshot.finalEntry.message
-		const stopReason = msg.stopReason as string | undefined
-
-		// Accept certain stop reasons
-		if (stopReason === "error" || stopReason === "aborted" || stopReason === "length") {
-			return { kind: "ok" }
-		}
-
-		// Check for non-whitespace text content
-		const content = msg.content as Array<any>
-		for (const block of content) {
-			if (block.type === "text" && block.text && block.text.trim().length > 0) {
-				return { kind: "ok" }
-			}
-		}
-
-		// No acceptable text found
-		return {
-			kind: "no-result",
-			lastEvent: { kind: "final-message", role: "assistant", stopReason },
-			...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
+	// Now, if the classification is no-result and we have a denial, use it to select lastEvent detail
+	if (classifiedOutcome.kind === "no-result" && snapshot.deniedTool) {
+		classifiedOutcome.lastEvent = {
+			kind: "denied-tool",
+			toolName: snapshot.deniedTool.toolName,
+			reason: snapshot.deniedTool.reason,
 		}
 	}
 
-	// Fallback: treat as no-result
-	return {
-		kind: "no-result",
-		lastEvent: { kind: "none" },
-		...(snapshot.sessionPath ? { sessionPath: snapshot.sessionPath } : {}),
-	}
+	return classifiedOutcome
 }
 
 /**
@@ -157,9 +153,8 @@ export function formatRunOutcomeDiagnostic(outcome: Exclude<RunOutcomeClassifica
 	if (outcome.kind === "no-prompt") {
 		return [
 			`KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code ${KIMCHI_NO_PROMPT_EXIT_CODE}.`,
-			"You started pi without a question or task.",
-			"Try adding a prompt: `kimchi 'what do you need?'`",
-			"Or pipe input: `echo 'your prompt' | kimchi`",
+			"A flag such as --auto may have taken the prompt as its value.",
+			"Put the prompt before the flags, or write the flag as --auto=true.",
 		].join("\n")
 	}
 
@@ -171,7 +166,8 @@ export function formatRunOutcomeDiagnostic(outcome: Exclude<RunOutcomeClassifica
 	// Add event details
 	const { lastEvent } = outcome
 	if (lastEvent.kind === "denied-tool") {
-		lines.push(`The agent tried to call tool '${lastEvent.toolName}' but it was denied: ${lastEvent.reason}.`)
+		const reason = lastEvent.reason.replace(/\s+/g, " ").slice(0, 60)
+		lines.push(`The agent tried to call tool '${lastEvent.toolName}' but it was denied: ${reason}.`)
 	} else if (lastEvent.kind === "final-message") {
 		const roleText = lastEvent.role === "custom" ? "custom message" : lastEvent.role
 		const stopText = lastEvent.stopReason ? ` (stop reason: ${lastEvent.stopReason})` : ""
