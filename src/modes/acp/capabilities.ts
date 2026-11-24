@@ -41,6 +41,7 @@ export const AVAILABLE_EXT_METHODS = {
 	feedback: `_${CAPABILITIES_KEY}/feedback`,
 	compact: `_${CAPABILITIES_KEY}/compact`,
 	compact_abort: `_${CAPABILITIES_KEY}/compact_abort`,
+	set_model_effort: `_${CAPABILITIES_KEY}/set_model_effort`,
 	memory_status: `_${CAPABILITIES_KEY}/memory_status`,
 	set_memory_enabled: `_${CAPABILITIES_KEY}/set_memory_enabled`,
 
@@ -176,6 +177,17 @@ export const PR_MONITORING_CAPABILITY = "prMonitoring"
 export function getClientOptedIntoPRMonitoring(capabilities: ClientCapabilities | undefined): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
 	return flags?.[PR_MONITORING_CAPABILITY] === true && getClientOptedIntoBackgroundRuns(capabilities)
+}
+
+/** Versioned opt-in for App-mode-scoped model Effort persistence. ACP's
+ * completed Model Config Option Category RFD covers placement, not a vendor
+ * default write; there is no ACP v2 RFD for this preference operation. */
+export const MODEL_EFFORT_CAPABILITY = "modelEffort"
+export const MODEL_EFFORT_VERSION = 1
+
+export function getClientOptedIntoModelEffort(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, unknown> | undefined
+	return flags?.[MODEL_EFFORT_CAPABILITY] === MODEL_EFFORT_VERSION
 }
 
 /**
