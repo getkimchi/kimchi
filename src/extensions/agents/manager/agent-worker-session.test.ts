@@ -1,6 +1,7 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	type AgentWorkerSession,
 	prepareAgentWorkerSession,
 	registerAgentWorkerSessionAdapter,
 	resetAgentWorkerSessionAdaptersForTests,
@@ -52,6 +53,19 @@ describe("agent worker session adapters", () => {
 		removeOld()
 		removeOld()
 		expect(prepareAgentWorkerSession("after-old-removal", "parent").bindings).toEqual(worker.bindings)
+	})
+
+	it("keeps disabled hosts headless without creating their worker registrations", () => {
+		let enabled = false
+		const create = vi.fn(
+			(): AgentWorkerSession => ({ bindings: { uiContext: ui("root"), mode: "rpc" }, cleanup: () => {} }),
+		)
+		registerAgentWorkerSessionAdapter("parent", create, () => enabled)
+		expect(prepareAgentWorkerSession("child", "parent").bindings).toEqual({})
+		expect(create).not.toHaveBeenCalled()
+		enabled = true
+		expect(prepareAgentWorkerSession("child", "parent").bindings).toMatchObject({ mode: "rpc" })
+		expect(create).toHaveBeenCalledOnce()
 	})
 
 	it("stops routing workers to a root after its adapter is removed", () => {

@@ -563,6 +563,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	let lastModeChangeAt = Number.NEGATIVE_INFINITY
 	let unsubscribePermissionFlagController: (() => void) | undefined
 	let unregisterMainPolicy: (() => void) | undefined
+	const registerParentAbort: ConfirmOptions["registerParentAbort"] = isWorker
+		? (controller, toolCallId) => {
+				return registerEscalationAbort(options.parentSessionId, toolCallId, controller, options.agentId)
+			}
+		: undefined
 	let workerMode: PermissionModeState | undefined
 	let workerRules: Rule[] | undefined
 	let workerDangerBypass: boolean | undefined
@@ -2351,6 +2356,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 							allRules,
 							permissionMode: mode,
 							promptQueue,
+							registerParentAbort,
 						})
 						const settledOutcome = settleWorkerAbort(result)
 						if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
@@ -2397,6 +2403,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						permissionMode: mode,
 						worker: isWorker,
 						promptQueue,
+						registerParentAbort,
 					})
 					const settledOutcome = settleWorkerAbort(result)
 					if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
@@ -2420,6 +2427,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 								permissionMode: mode,
 								worker: isWorker,
 								promptQueue,
+								registerParentAbort,
 							})
 							const settledOutcome = settleWorkerAbort(result)
 							if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
@@ -2437,6 +2445,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					permissionMode: mode,
 					worker: isWorker,
 					promptQueue,
+					registerParentAbort,
 				})
 				const settledOutcome = settleWorkerAbort(result)
 				if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
@@ -2508,6 +2517,9 @@ interface ConfirmOptions {
 	/** Override the resolved prompter — escalated subagent calls forward to the
 	 *  parent session's surface instead of the worker's (nonexistent) UI. */
 	prompter?: ToolPermissionPrompter
+	/** Link a direct worker prompt to its parent's mode-change cancellations.
+	 *  Escalated prompts already register through the parent surface. */
+	registerParentAbort?: (controller: AbortController, toolCallId: string) => () => void
 	/** Prebuilt choices for the prompt (escalated prompts carry
 	 *  "for this subagent" remember labels). */
 	choices?: PermissionChoice[]
@@ -2532,14 +2544,34 @@ async function runQueuedPrompt<T extends { kind: string }>(
 	}
 }
 
+function createConfirmAbort(
+	opts: ConfirmOptions,
+	toolCallId: string | undefined,
+): {
+	controller: AbortController
+	cleanup: () => void
+} {
+	const controller = new AbortController()
+	const unlinkAbort = linkAbortSignal(opts.ctx.signal, controller)
+	opts.activeAborts.add(controller)
+	opts.promptToolCalls.set(controller, toolCallId ?? "")
+	const unregister = opts.prompter ? undefined : opts.registerParentAbort?.(controller, toolCallId ?? "")
+	return {
+		controller,
+		cleanup: () => {
+			unregister?.()
+			unlinkAbort()
+			opts.activeAborts.delete(controller)
+			opts.promptToolCalls.delete(controller)
+		},
+	}
+}
+
 async function handleConfirm(
 	event: ToolCallEvent,
 	opts: ConfirmOptions,
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
-	const abort = new AbortController()
-	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
-	opts.activeAborts.add(abort)
-	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
+	const { controller: abort, cleanup } = createConfirmAbort(opts, event.toolCallId)
 	try {
 		const prompter = opts.prompter ?? resolvePrompter(opts.ctx, opts.worker)
 		if (!prompter) {
@@ -2598,9 +2630,7 @@ async function handleConfirm(
 			return applyApprovalOutcome(outcome, opts.session)
 		})
 	} finally {
-		unlinkAbort()
-		opts.activeAborts.delete(abort)
-		opts.promptToolCalls.delete(abort)
+		cleanup()
 	}
 }
 
@@ -2608,10 +2638,7 @@ export async function handleCompoundConfirm(
 	event: ToolCallEvent,
 	opts: ConfirmOptions & { subcommands: string[] },
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
-	const abort = new AbortController()
-	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
-	opts.activeAborts.add(abort)
-	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
+	const { controller: abort, cleanup } = createConfirmAbort(opts, event.toolCallId)
 	try {
 		const prompter = resolvePrompter(opts.ctx, opts.worker)
 		if (!prompter) {
@@ -2753,9 +2780,7 @@ export async function handleCompoundConfirm(
 			return { block: true, reason: "Declined by user" }
 		})
 	} finally {
-		unlinkAbort()
-		opts.activeAborts.delete(abort)
-		opts.promptToolCalls.delete(abort)
+		cleanup()
 	}
 }
 

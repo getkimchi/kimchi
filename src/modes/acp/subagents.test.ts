@@ -281,6 +281,29 @@ describe("subagent registry and child projection", () => {
 		expect(reconstructMessageText(updates).get(String(childMessage.messageId))).toBe("Review the failed assertion")
 	})
 
+	it("projects a resumed prompt on the existing route without re-announcing", async () => {
+		const { agent, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("native-child")
+		createChild(agent, childEvent("parent", child))
+		updates.length = 0
+
+		createChild(
+			agent,
+			childEvent("parent", child, { prompt: "Continue with the original requirements.", phase: "resumed" }),
+		)
+
+		expect(updates).toHaveLength(3)
+		expect(updates.every((entry) => update(entry).sessionUpdate !== "subagent_update")).toBe(true)
+		const parentMessage = update(updates[0] as SessionNotification)
+		const childMessage = update(updates[1] as SessionNotification)
+		expect(parentMessage.recipientMessageId).toBe(childMessage.messageId)
+		expect(childMessage.senderMessageId).toBe(parentMessage.messageId)
+		expect(reconstructMessageText(updates).get(String(childMessage.messageId))).toBe(
+			"Continue with the original requirements.",
+		)
+	})
+
 	it("emits no child behavior for absent or null client capabilities", async () => {
 		for (const [label, capabilities] of [
 			["absent", {} as ClientCapabilities],

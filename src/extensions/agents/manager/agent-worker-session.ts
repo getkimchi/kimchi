@@ -11,7 +11,7 @@ export interface AgentWorkerSession {
 
 export type AgentWorkerSessionAdapter = (childSessionId: string, parentSessionId: string) => AgentWorkerSession
 
-const adapters: Array<{ parentSessionId: string; create: AgentWorkerSessionAdapter }> = []
+const adapters: Array<{ parentSessionId: string; create: AgentWorkerSessionAdapter; enabled: () => boolean }> = []
 
 /** Let a session host contribute UI bindings for its workers without the
  * runner importing the host domain. The returned cleanup ends host ownership;
@@ -19,8 +19,9 @@ const adapters: Array<{ parentSessionId: string; create: AgentWorkerSessionAdapt
 export function registerAgentWorkerSessionAdapter(
 	parentSessionId: string,
 	create: AgentWorkerSessionAdapter,
+	enabled: () => boolean = () => true,
 ): () => void {
-	const registration = { parentSessionId, create }
+	const registration = { parentSessionId, create, enabled }
 	adapters.push(registration)
 	let cleaned = false
 	return () => {
@@ -34,7 +35,7 @@ export function registerAgentWorkerSessionAdapter(
 /** Select the owner's latest adapter and otherwise keep a worker headless. */
 export function prepareAgentWorkerSession(childSessionId: string, parentSessionId: string): AgentWorkerSession {
 	const adapter = adapters.findLast((candidate) => candidate.parentSessionId === parentSessionId)
-	if (!adapter) return { bindings: {}, cleanup: () => {} }
+	if (!adapter?.enabled()) return { bindings: {}, cleanup: () => {} }
 	const session = adapter.create(childSessionId, parentSessionId)
 	let cleaned = false
 	return {

@@ -1187,7 +1187,10 @@ export class KimchiAcpAgent {
 			this.send(params),
 		)
 		this.rootUiCleanups.get(session.sessionId)?.()
-		this.rootUiCleanups.set(session.sessionId, registerAcpRootUIContext(session.sessionId, context))
+		this.rootUiCleanups.set(
+			session.sessionId,
+			registerAcpRootUIContext(session.sessionId, context, () => clientSupportsSubagents(this.clientCapabilities)),
+		)
 		return context
 	}
 
@@ -2569,7 +2572,13 @@ export class KimchiAcpAgent {
 		// This projection is deliberately one-level: only root sessions observe its
 		// creation events. Nested Agent calls need no linked SessionReference.
 		const parent = this.sessions.get(event.parentSessionId)
-		if (!parent || this.sessions.has(event.sessionId) || this.subagentRoutes.has(event.sessionId)) return
+		const existingRoute = this.subagentRoutes.get(event.sessionId)
+		if (event.phase === "resumed") {
+			if (existingRoute?.parentSessionId !== event.parentSessionId) return
+			for (const message of subagentPromptMessages(event.parentSessionId, event)) this.send(message)
+			return
+		}
+		if (!parent || this.sessions.has(event.sessionId) || existingRoute) return
 		const session = event.agentSession ?? this.subagentSessionResolver(event.agentId)
 		if (!session || session.sessionId !== event.sessionId || event.parentSessionId !== parent.session.sessionId) return
 

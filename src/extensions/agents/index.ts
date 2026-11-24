@@ -1511,6 +1511,15 @@ export default function (pi: ExtensionAPI) {
 				agentSession: session,
 			})
 		},
+		(record, session, prompt) => {
+			emitSubagentEvent("subagents:session_created", {
+				...buildAgentLifecycleData(record),
+				sessionId: session.sessionId,
+				prompt,
+				phase: "resumed",
+				agentSession: session,
+			})
+		},
 	)
 	activeManager = manager
 

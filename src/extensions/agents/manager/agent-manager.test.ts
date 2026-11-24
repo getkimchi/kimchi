@@ -614,6 +614,25 @@ describe("AgentManager", () => {
 		)
 	})
 
+	it("publishes only the original continuation prompt for a Ferment worker", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })
+		mockResumeAgent.mockResolvedValueOnce({ responseText: "continued", session, aborted: false, steered: false })
+		const observed: Array<{ session: AgentSession; prompt: string }> = []
+		manager = new AgentManager(undefined, undefined, undefined, undefined, undefined, (_record, native, prompt) => {
+			observed.push({ session: native, prompt })
+		})
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: { kind: "ferment_step", ferment_id: "f1", phase_id: "p1", step_id: "s1" },
+		})
+
+		await manager.resume(record.id, "Continue exactly this request.")
+
+		expect(observed).toEqual([{ session, prompt: "Continue exactly this request." }])
+		expect(mockResumeAgent.mock.calls[0]?.[1]).not.toBe("Continue exactly this request.")
+	})
+
 	it("blocks finalize_report when remaining budget is below the finalize floor", async () => {
 		const session = { dispose: vi.fn() } as unknown as AgentSession
 		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })

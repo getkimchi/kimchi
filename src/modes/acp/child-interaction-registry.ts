@@ -58,24 +58,32 @@ function cleanupRegistration<T>(map: Map<string, T[]>, key: string, expected: T)
 }
 
 /** Register the root UI used as the fallback for that root's unexposed workers. */
-export function registerAcpRootUIContext(sessionId: string, uiContext: ExtensionUIContext): () => void {
+export function registerAcpRootUIContext(
+	sessionId: string,
+	uiContext: ExtensionUIContext,
+	enabled: () => boolean = () => true,
+): () => void {
 	const values = rootUiBySession.get(sessionId) ?? []
 	values.push(uiContext)
 	rootUiBySession.set(sessionId, values)
-	const unregisterAdapter = registerAgentWorkerSessionAdapter(sessionId, (childSessionId, parentSessionId) => {
-		const cleanupWorker = registerAcpWorkerSession(childSessionId, parentSessionId)
-		const cleanupPermission = registerSessionPermissionPrompter(childSessionId, {
-			canPromptDirectly: () => hasAcpChildInteraction(childSessionId),
-			resolve: () => resolveAcpInteractionPrompter(childSessionId),
-		})
-		return {
-			bindings: { uiContext: createAcpWorkerUIContext(childSessionId), mode: "rpc" },
-			cleanup: () => {
-				cleanupPermission()
-				cleanupWorker()
-			},
-		}
-	})
+	const unregisterAdapter = registerAgentWorkerSessionAdapter(
+		sessionId,
+		(childSessionId, parentSessionId) => {
+			const cleanupWorker = registerAcpWorkerSession(childSessionId, parentSessionId)
+			const cleanupPermission = registerSessionPermissionPrompter(childSessionId, {
+				canPromptDirectly: () => hasAcpChildInteraction(childSessionId),
+				resolve: () => resolveAcpInteractionPrompter(childSessionId),
+			})
+			return {
+				bindings: { uiContext: createAcpWorkerUIContext(childSessionId), mode: "rpc" },
+				cleanup: () => {
+					cleanupPermission()
+					cleanupWorker()
+				},
+			}
+		},
+		enabled,
+	)
 	let cleaned = false
 	return () => {
 		if (cleaned) return

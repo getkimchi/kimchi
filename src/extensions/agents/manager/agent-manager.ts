@@ -59,6 +59,7 @@ export type OnAgentComplete = (record: AgentRecord) => void
 export type OnAgentStart = (record: AgentRecord, ctx: ExtensionContext) => void
 export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void
 export type OnAgentSessionCreated = (record: AgentRecord, session: AgentSession) => void
+export type OnAgentSessionResumed = (record: AgentRecord, session: AgentSession, prompt: string) => void
 export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }
 
 /** Default max concurrent background agents. */
@@ -216,6 +217,7 @@ export class AgentManager {
 	private onStart?: OnAgentStart
 	private onCompact?: OnAgentCompact
 	private onSessionCreated?: OnAgentSessionCreated
+	private onSessionResumed?: OnAgentSessionResumed
 	private sessionCreatedRecords = new WeakSet<AgentRecord>()
 	private maxConcurrent: number
 
@@ -228,11 +230,13 @@ export class AgentManager {
 		onStart?: OnAgentStart,
 		onCompact?: OnAgentCompact,
 		onSessionCreated?: OnAgentSessionCreated,
+		onSessionResumed?: OnAgentSessionResumed,
 	) {
 		this.onComplete = onComplete
 		this.onStart = onStart
 		this.onCompact = onCompact
 		this.onSessionCreated = onSessionCreated
+		this.onSessionResumed = onSessionResumed
 		this.maxConcurrent = maxConcurrent
 		this.cleanupInterval = setInterval(() => this.cleanup(), 60_000)
 	}
@@ -948,6 +952,7 @@ export class AgentManager {
 		// Resume gets a fresh async store for its watchdog hold. The worker-session
 		// binding restores the retained parent ID for telemetry; prompt identity
 		// remains in the existing worker permission role.
+		if (purpose === "continuation") this.onSessionResumed?.(record, session, prompt ?? "")
 		const resumePromise = runAsAgentWorker(() =>
 			resumeAgent(session, attemptPrompt, {
 				onToolActivity: (activity) => {

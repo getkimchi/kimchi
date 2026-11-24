@@ -3935,6 +3935,42 @@ describe("permissions ACP prompter", () => {
 		vi.unstubAllEnvs()
 	})
 
+	it("withdraws a worker's direct prompt and re-evaluates it when the parent's mode changes", async () => {
+		const parent = createPermissionsHarness(["bash"], { default: true })
+		await parent.fire("session_start", {}, { ...createClassifierContext(), mode: "rpc" })
+		const worker = createWorkerHarness(["bash"], { parentSessionId: TEST_SESSION_ID, persona: "explorer" })
+		const workerCtx = createClassifierContext()
+		await worker.fire("session_start", {}, workerCtx)
+		let approve = () => {}
+		const request = vi.fn<ToolPermissionPrompter["request"]>(
+			(req) =>
+				new Promise((resolve) => {
+					approve = () => resolve({ kind: "allow-once" })
+					if (req.signal?.aborted) return resolve({ kind: "aborted" })
+					req.signal?.addEventListener("abort", () => resolve({ kind: "aborted" }), { once: true })
+				}),
+		)
+		const remove = registerSessionPermissionPrompter(TEST_SESSION_ID, {
+			canPromptDirectly: () => true,
+			resolve: () => ({ request }),
+		})
+		const childCall = {
+			type: "tool_call",
+			toolCallId: "direct-child-write",
+			toolName: "bash",
+			input: { command: "touch /tmp/direct-child-output" },
+		}
+		const result = runAsAgentWorker(() => worker.fire("tool_call", childCall, workerCtx))
+		await vi.waitFor(() => expect(request).toHaveBeenCalledOnce())
+		setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" })
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		approve()
+		expect(await result).toMatchObject({ block: true })
+		expect(request).toHaveBeenCalledTimes(1)
+		expect(request.mock.calls[0]?.[0].signal?.aborted).toBe(true)
+		remove()
+	})
+
 	it("uses a registered ACP prompter in headless rpc mode", async () => {
 		// The ACP prompter is only reachable when mode === "rpc"; this test
 		// covers the headless variant (hasUI === false). See also the

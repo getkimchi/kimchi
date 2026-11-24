@@ -82,6 +82,12 @@ describe("ACP integration — subagent interaction requests", () => {
 			await delay(200)
 			expect(active.client.permissionRequests).toHaveLength(1)
 			expect(existsSync(marker)).toBe(false)
+			const permissionStatus = active.client.extNotifications.filter(
+				(notification) =>
+					notification.method === "_kimchi.dev/pi_notify" &&
+					JSON.stringify(notification.params).includes("permissions-mode"),
+			)
+			expect(permissionStatus, "only the root emits status; an unexposed worker stays headless").toHaveLength(1)
 		},
 		STARTUP_TIMEOUT_MS * 2,
 	)

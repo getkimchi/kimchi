@@ -24,6 +24,8 @@ export interface SubagentSessionCreatedPayload {
 	remote: boolean
 	status: string
 	background: boolean
+	/** A resumed native session carries a new prompt onto its existing route. */
+	phase?: "created" | "resumed"
 	/** Existing runtime carried on the owning parent's in-process event bus. */
 	agentSession?: AgentSession
 }
@@ -52,6 +54,7 @@ export function parseSubagentSessionCreated(value: unknown): SubagentSessionCrea
 	if (!agentId || !sessionId || !parentSessionId || !toolCallId || prompt === undefined) return undefined
 	if (!description || !cwd || !visibility || !status) return undefined
 	if (typeof data.remote !== "boolean" || typeof data.background !== "boolean") return undefined
+	if (data.phase !== undefined && data.phase !== "created" && data.phase !== "resumed") return undefined
 	return {
 		agentId,
 		sessionId,
@@ -64,6 +67,7 @@ export function parseSubagentSessionCreated(value: unknown): SubagentSessionCrea
 		remote: data.remote,
 		status,
 		background: data.background,
+		phase: data.phase,
 		agentSession: data.agentSession as AgentSession | undefined,
 	}
 }

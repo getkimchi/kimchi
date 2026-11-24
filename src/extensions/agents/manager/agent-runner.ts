@@ -1320,7 +1320,16 @@ export async function resumeAgent(
 	// session_start — reason "resume", matching pi's own resumption event.
 	const ownerSessionId = getRegisteredWorkerParentSession(session)
 	if (ownerSessionId) setAgentWorkerParentSessionId(ownerSessionId)
-	await session.extensionRunner?.emit({ type: "session_start", reason: "resume" })
+	const host = ownerSessionId ? prepareAgentWorkerSession(session.sessionId, ownerSessionId) : undefined
+	if (host) {
+		session.extensionRunner?.setUIContext(host.bindings.uiContext, host.bindings.mode)
+	}
+	try {
+		await session.extensionRunner?.emit({ type: "session_start", reason: "resume" })
+	} catch (error) {
+		host?.cleanup()
+		throw error
+	}
 
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
@@ -1462,7 +1471,10 @@ export async function resumeAgent(
 		clearInterval(resumeInactivityInterval)
 		resumeInactivityInterval = undefined
 	}
-	options.onRuntimeCleanupRegistered?.(cleanupResumeInactivityInterval)
+	options.onRuntimeCleanupRegistered?.(() => {
+		cleanupResumeInactivityInterval()
+		host?.cleanup()
+	})
 	resumeTimeBudget.setOnExpire(() => {
 		aborted = true
 		abortReason = "max_duration"
