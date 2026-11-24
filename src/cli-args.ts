@@ -258,6 +258,12 @@ let cachedCliArgs: SessionCliArgs | undefined
  * receive.
  */
 export function populateCliArgs(args: string[]): void {
+	// Validate the raw --additionalSkillsPaths occurrences before any cached
+	// value is consumed: node:util parseArgs (strict:false) reports a dangling
+	// flag as boolean `true` and `--additionalSkillsPaths --` as the path value
+	// `"--"`, and either would spread into ACP loader options or non-ACP
+	// discovery as a bogus root.
+	assertAdditionalSkillPathsWellFormed(args)
 	const parsed = parseCliArgs(args)
 	// Validate eagerly so an invalid operator value fails fast with a clear
 	// error instead of surfacing mid-session from the first bash call.
@@ -451,64 +457,107 @@ export function stripExperimentalFeaturesArg(args: string[]): string[] {
 }
 
 /**
- * Rewrite Kimchi-local `--additionalSkillsPaths` flags into upstream pi's
- * repeatable `--skill` option, in place, preserving the relative order of all
- * other tokens.
+ * Remove Kimchi-local `--additionalSkillsPaths` flags from raw argv before
+ * upstream pi parses it — never rewrite them to another option.
  *
  * Recognizes the separated (`--additionalSkillsPaths <path>`) and equals
- * (`--additionalSkillsPaths=<path>`) forms. Everything else — including
- * existing `--skill` flags, prompt positionals, and unrelated options — passes
- * through untouched. A `--additionalSkillsPaths` token that is itself the value
- * of another option (as in `--system-prompt --additionalSkillsPaths`) is left
- * verbatim: it is not a standalone flag occurrence. A dangling standalone
- * `--additionalSkillsPaths` (no following value) is translated to a dangling
- * `--skill` so upstream's own parser reports the missing value and the
- * Kimchi-local flag never reaches pi. The first bare `--` ends option parsing:
- * every token after it is a positional and is copied verbatim.
+ * (`--additionalSkillsPaths=<path>`) forms and drops the flag and its value
+ * token. Everything else — including explicit upstream `--skill` flags,
+ * prompt positionals, and unrelated options — passes through untouched. A
+ * `--additionalSkillsPaths` token that is itself the value of another option
+ * (as in `--system-prompt --additionalSkillsPaths`) is left verbatim: it is
+ * not a standalone flag occurrence. A dangling standalone
+ * `--additionalSkillsPaths` (no following value, or followed by a bare `--`)
+ * is simply dropped so the Kimchi-local flag never reaches pi; startup
+ * validation reports the missing value. The first bare `--` ends option
+ * parsing: every token after it is positional and is copied verbatim.
  */
-export function forwardAdditionalSkillPathsToPi(args: string[]): string[] {
-	const result: string[] = []
-	// True while the current token is the value of the preceding value-taking
-	// option. Such a token is positional data for that option, never a
-	// standalone flag, even when it is flag-shaped.
+export function stripAdditionalSkillsPathsArg(args: string[]): string[] {
+	const occurrences = scanAdditionalSkillsPathsArgs(args)
+	if (occurrences.length === 0) return args
+	const dropped = new Set<number>()
+	for (const occurrence of occurrences) {
+		dropped.add(occurrence.index)
+		if (occurrence.valueIndex !== undefined) dropped.add(occurrence.valueIndex)
+	}
+	return args.filter((_, index) => !dropped.has(index))
+}
+
+/** A standalone `--additionalSkillsPaths` occurrence in raw argv. */
+interface AdditionalSkillsPathsOccurrence {
+	/** Index of the flag token itself. */
+	index: number
+	/** Index of the token holding the value, for the separated form. */
+	valueIndex?: number
+	/** The path value. Undefined for a dangling flag (terminal or before a bare `--`). */
+	value?: string
+}
+
+/**
+ * Scan raw argv left-to-right, classifying every actual standalone
+ * `--additionalSkillsPaths` occurrence with the same value-position and
+ * bare-`--` rules node:util.parseArgs applies:
+ *
+ * - a token directly after a value-taking option (VALUE_FLAG_TOKENS, long or
+ *   short form) is that option's value, never a standalone flag, even when it
+ *   is flag-shaped;
+ * - the first bare `--` ends option parsing: everything after it is
+ *   positional and is never scanned;
+ * - a following bare `--` is the option-terminator, not a path value: the
+ *   occurrence is dangling.
+ */
+function scanAdditionalSkillsPathsArgs(args: string[]): AdditionalSkillsPathsOccurrence[] {
+	const occurrences: AdditionalSkillsPathsOccurrence[] = []
 	let inValuePosition = false
-	for (let i = 0; i < args.length; i++) {
+	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i]
 		if (inValuePosition) {
-			result.push(arg)
 			inValuePosition = false
 			continue
 		}
-		if (arg === "--") {
-			// Bare separator: everything after it is positional and must not be
-			// rewritten.
-			result.push(...args.slice(i))
-			return result
-		}
+		if (arg === "--") return occurrences
 		if (arg.startsWith("--additionalSkillsPaths=")) {
-			result.push("--skill", arg.slice("--additionalSkillsPaths=".length))
+			occurrences.push({ index: i, value: arg.slice("--additionalSkillsPaths=".length) })
 			continue
 		}
 		if (arg === "--additionalSkillsPaths") {
-			// Separated form: the following token is the path (if present). A
-			// following bare `--` is the option-terminator, not a value: leave it
-			// for the separator branch above so it and everything after it stay
-			// verbatim.
-			if (i + 1 < args.length && args[i + 1] !== "--") {
-				result.push("--skill", args[i + 1])
+			const next = i + 1 < args.length ? args[i + 1] : undefined
+			if (next !== undefined && next !== "--") {
+				occurrences.push({ index: i, valueIndex: i + 1, value: next })
 				i += 1
 			} else {
-				// Dangling flag with no value: translate to a dangling upstream
-				// `--skill` so pi's own parser reports the missing value. The
-				// Kimchi-local flag must never be forwarded.
-				result.push("--skill")
+				occurrences.push({ index: i })
 			}
 			continue
 		}
 		inValuePosition = VALUE_FLAG_TOKENS.has(arg)
-		result.push(arg)
 	}
-	return result
+	return occurrences
+}
+
+/**
+ * Reject malformed raw `--additionalSkillsPaths` occurrences with a clear
+ * startup error, using the strip helper's scan rules. Rejects a terminal
+ * standalone flag, an empty `--additionalSkillsPaths=`, and
+ * `--additionalSkillsPaths --` (which node parses as the path value `"--"`).
+ * Never rejects local-looking tokens belonging to another value-taking
+ * option nor tokens after a bare `--`.
+ */
+export function assertAdditionalSkillPathsWellFormed(args: string[]): void {
+	for (const occurrence of scanAdditionalSkillsPathsArgs(args)) {
+		if (occurrence.value === undefined || occurrence.value === "") {
+			throw new Error("--additionalSkillsPaths requires a path")
+		}
+	}
+}
+
+/**
+ * Validated process-scoped additional skill roots (typed empty array when the
+ * flag is absent). Raw occurrences are validated by populateCliArgs, so no
+ * boolean `true` or `"--"` pseudo-value can reach consumers here.
+ */
+export function resolveAdditionalSkillPaths(parsed: SessionCliArgs = getParsedCliArgs()): string[] {
+	return parsed.options.additionalSkillsPaths ?? []
 }
 
 /** Kimchi Studio still starts new terminal sessions with `--model multi-model`.

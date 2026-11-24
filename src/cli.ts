@@ -10,7 +10,6 @@ import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
 	dropRetiredMultiModelArg,
-	forwardAdditionalSkillPathsToPi,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -21,6 +20,8 @@ import {
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
 	populateCliArgs,
+	resolveAdditionalSkillPaths,
+	stripAdditionalSkillsPathsArg,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
@@ -63,6 +64,7 @@ import { isBunBinary } from "./env.js"
 import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
 import idleGcExtension from "./extensions/adaptive-gc.js"
+import { createAdditionalSkillRootsExtension } from "./extensions/additional-skill-roots.js"
 import { installAgentEndWillRetryPatch } from "./extensions/agent-end-will-retry.js"
 import agentsExtension from "./extensions/agents/index.js"
 import { WEB_TOOL_MANAGED_FACTORIES } from "./extensions/agents/manager/subagent-web-tools.js"
@@ -909,7 +911,23 @@ async function cliMain(): Promise<void> {
 			// decides per client at initialize instead (server.ts). See
 			// extensions/bash-background/session-policy.ts.
 			if (getCliModeArg(rawArgs) === "rpc") setBackgroundRunsPermitted(true)
+			// Process-scoped additional skill roots from --additionalSkillsPaths,
+			// already validated by populateCliArgs. Non-ACP modes contribute them
+			// through the inline additional-skill-roots extension below (upstream
+			// main() has no additionalSkillPaths parameter); ACP consumes them
+			// directly through RunAcpOptions, so it must not load this factory too.
+			const additionalSkillRoots = resolveAdditionalSkillPaths()
 			const extensionFactories = [
+				// --additionalSkillsPaths roots, non-ACP only, and FIRST among
+				// skill-contributing factories: upstream's loader appends extension
+				// contributions after settings/native additionalSkillPaths, with
+				// first-named-skill-wins, so prepending lands the additional roots
+				// exactly where ACP's native additionalSkillPaths sit (after
+				// base/settings, before repository contributions). Existing factory
+				// order is untouched.
+				...(additionalSkillRoots.length > 0 && !IS_ACP_MODE
+					? [createAdditionalSkillRootsExtension(() => additionalSkillRoots)]
+					: []),
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
@@ -1117,19 +1135,22 @@ async function cliMain(): Promise<void> {
 								mcpProbe: new UpstreamMcpProbe(),
 							}
 						: {}),
-					// Same rewrite as the non-ACP branch: --additionalSkillsPaths is a
+					// Same strip as the non-ACP branch: --additionalSkillsPaths is a
 					// Kimchi-local flag, so even this appendSystemPrompt-only parse must
 					// not feed the raw token to upstream pi (lenient today, strict
-					// tomorrow). Rewriting first leaves pi parsing only flags it knows
-					// (--skill is upstream-supported) and preserves every option value.
-					appendSystemPrompt: parsePiArgs(forwardAdditionalSkillPathsToPi(piArgs)).appendSystemPrompt,
+					// tomorrow). Stripping first leaves pi parsing only flags it knows,
+					// preserves every other option value, and never converts the roots
+					// to --skill.
+					appendSystemPrompt: parsePiArgs(stripAdditionalSkillsPathsArg(piArgs)).appendSystemPrompt,
 				})
 			} else {
 				// Delegate to pi-mono's CLI main function, injecting the kimchi extension.
-				// --additionalSkillsPaths is Kimchi-local: rewrite it into upstream pi's
-				// repeatable --skill contract so non-ACP modes never see the raw flag.
+				// --additionalSkillsPaths is Kimchi-local: strip it so non-ACP modes
+				// never see the raw flag; its roots are contributed additively by the
+				// prepended additional-skill-roots inline extension instead (never
+				// rewritten to --skill).
 				const { main } = await import("@earendil-works/pi-coding-agent")
-				await main(forwardAdditionalSkillPathsToPi(piArgs), { extensionFactories })
+				await main(stripAdditionalSkillsPathsArg(piArgs), { extensionFactories })
 			}
 			applyPostMainInfrastructureExitPolicy(
 				infrastructureErrorTracker.getFailure(),

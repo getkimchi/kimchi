@@ -1,6 +1,6 @@
 // ACP integration: raw --additionalSkillsPaths in the agent's argv.
-// The flag is Kimchi-local, so the ACP-mode parse must rewrite it (into the
-// upstream --skill form) before anything reaches pi. This test pins the
+// The flag is Kimchi-local, so the ACP prompt-option parse strips it before
+// pi sees it; ACP discovery receives roots via RunAcpOptions. This test pins the
 // user-visible symptom end-to-end: a kimchi process launched with a raw
 // `--additionalSkillsPaths <dir>` token starts up normally over ACP and the
 // private root's skill appears as a skill:<name> command in the session's
