@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
+import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import ts from "typescript"
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -16,6 +17,7 @@ import {
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
+	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
 	parseCliArgs,
 	populateCliArgs,
@@ -482,5 +484,128 @@ describe("extension flag registration parity", () => {
 	it("every literal registerFlag call has a CLI_OPTIONS entry with the same name and type", () => {
 		const violations = collectRegisteredFlagCatalogViolations()
 		expect(violations).toEqual([])
+	})
+})
+
+describe("normalizeBooleanFlagArgs", () => {
+	const affected = [
+		"plan",
+		"pr-watch",
+		"auto",
+		"yolo",
+		"dangerously-skip-permissions",
+		"no-auto-update",
+		"memory",
+		"debug-prompts",
+		"ferment-oneshot",
+		"init-git",
+	]
+
+	it("rewrites --auto before a positional prompt", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--auto", "do work"])).toEqual(["--print", "--auto=true", "do work"])
+	})
+
+	it.each(affected)("rewrites affected boolean --%s before a positional prompt", (name) => {
+		expect(normalizeBooleanFlagArgs(["--print", `--${name}`, "do work"])).toEqual([
+			"--print",
+			`--${name}=true`,
+			"do work",
+		])
+	})
+
+	it("rewrites --auto after a prompt-first invocation", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "do work", "--auto"])).toEqual(["--print", "do work", "--auto=true"])
+	})
+
+	it.each(["true", "false"])("keeps explicit --auto=%s unchanged", (value) => {
+		const args = ["--print", `--auto=${value}`, "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("keeps the pi-known --verbose boolean exact", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--verbose", "do work"])).toEqual(["--print", "--verbose", "do work"])
+	})
+
+	it.each(["continue", "no-session", "approve"])("keeps pi-known --%s unchanged", (name) => {
+		const args = ["--print", `--${name}`]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("keeps --deny-tool and its separate string value unchanged", () => {
+		const args = ["--print", "--deny-tool", "write", "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("stops rewriting at the -- delimiter", () => {
+		const args = ["--print", "--", "--auto"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("rewrites several adjacent Kimchi-only booleans", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--auto", "--yolo", "do work"])).toEqual([
+			"--print",
+			"--auto=true",
+			"--yolo=true",
+			"do work",
+		])
+	})
+
+	it("rewrites --auto after --model without copying pi value-flag rules", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--model", "--auto", "do work"])).toEqual([
+			"--print",
+			"--model",
+			"--auto=true",
+			"do work",
+		])
+	})
+
+	it("leaves an invalid explicit boolean value for the Kimchi parser to reject", () => {
+		const args = ["--print", "--auto=1", "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+		expect(() => parseCliArgs(args)).toThrow(/--auto expects a boolean/)
+	})
+
+	it("rewrites a trailing --auto without inventing a positional value", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--auto"])).toEqual(["--print", "--auto=true"])
+	})
+
+	it("leaves unknown third-party flags unchanged", () => {
+		const args = ["--print", "--future-extension-flag", "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("composes after stripping --enable-experimental-features", () => {
+		const stripped = stripExperimentalFeaturesArg(["--print", "--enable-experimental-features", "--auto", "do work"])
+		expect(normalizeBooleanFlagArgs(stripped)).toEqual(["--print", "--auto=true", "do work"])
+	})
+
+	it("does not mutate its input", () => {
+		const args = ["--print", "--auto", "do work"]
+		normalizeBooleanFlagArgs(args)
+		expect(args).toEqual(["--print", "--auto", "do work"])
+	})
+
+	it("normalizes --auto so Kimchi's parser reads true", () => {
+		expect(parseCliArgs(["--print", "--auto=true", "do work"]).options.auto).toBe(true)
+	})
+
+	it.each(affected)("preserves the prompt and unknown extension flag for rewritten --%s", (name) => {
+		const normalized = normalizeBooleanFlagArgs(["--print", `--${name}`, "do work"])
+		const parsed = parsePiArgs(normalized)
+		expect(parsed.messages).toEqual(["do work"])
+		expect(parsed.unknownFlags.has(name)).toBe(true)
+	})
+
+	const catalogBooleans = Object.keys(CLI_OPTIONS).filter((name) => CLI_OPTIONS[name].type === "boolean")
+	it.each(catalogBooleans)("keeps the positional prompt for every catalog boolean --%s", (name) => {
+		const normalized = normalizeBooleanFlagArgs(["--print", `--${name}`, "do work"])
+		const parsed = parsePiArgs(normalized)
+		expect(parsed.messages).toEqual(["do work"])
+		if (parsePiArgs([`--${name}`]).unknownFlags.has(name)) {
+			expect(normalized).toContain(`--${name}=true`)
+			expect(parsed.unknownFlags.has(name)).toBe(true)
+		} else {
+			expect(normalized).toContain(`--${name}`)
+		}
 	})
 })

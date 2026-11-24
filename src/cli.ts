@@ -18,6 +18,7 @@ import {
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
+	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
@@ -800,7 +801,7 @@ async function cliMain(): Promise<void> {
 				console.warn("Warning: --model multi-model is no longer supported; using your default model.")
 			}
 			const atFileArgs = normalizeAtFileArgs(
-				normalizeResumeIdArgs(stripExperimentalFeaturesArg(supportedArgs)),
+				normalizeResumeIdArgs(normalizeBooleanFlagArgs(stripExperimentalFeaturesArg(supportedArgs))),
 				process.cwd(),
 				isCliAtFileArg,
 			)

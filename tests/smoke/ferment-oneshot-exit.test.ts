@@ -17,6 +17,7 @@ const PACKAGE_DIR = resolve("dist/share/kimchi")
 const FAKE_PROVIDER = "fake"
 const FINAL_TEXT = "One-shot process lifecycle complete."
 const PROCESS_EXIT_TIMEOUT_MS = 12_000
+const ONESHOT_PROMPT = "Exercise the one-shot ferment process lifecycle and then finish."
 
 interface ProcessResult {
 	code: number | null
@@ -41,7 +42,7 @@ describe("--ferment-oneshot process lifecycle", () => {
 	// The benchmark observed `agent_end` after Ferment completion, but
 	// the kimchi process stayed alive until Harbor killed it. This reproduces the
 	// real linked-worker one-shot path and asserts the CLI process exits cleanly.
-	it("exits after ferment completion, final assistant message, and agent_end", async () => {
+	it("passes an argv prompt after --ferment-oneshot and exits after completion", async () => {
 		await expectOneshotLifecycleToExit()
 	}, 25_000)
 })
@@ -73,11 +74,20 @@ async function expectOneshotLifecycleToExit(): Promise<void> {
 			workDir,
 			sessionPath,
 			fermentsDir,
-			prompt: "Exercise the one-shot ferment process lifecycle and then finish.",
+			prompt: ONESHOT_PROMPT,
 		})
 		const sessionEntries = readJsonl(sessionPath)
 		const failure = formatFailure(result, sessionEntries, fermentsDir, fake?.requests ?? [])
 
+		expect(
+			sessionEntries.some(
+				(entry) =>
+					entry.type === "message" &&
+					entry.message?.role === "user" &&
+					entry.message.content?.some((part) => part.type === "text" && part.text?.includes(ONESHOT_PROMPT)),
+			),
+			failure,
+		).toBe(true)
 		expect(hasFermentCompleted(fermentsDir), failure).toBe(true)
 		expect(
 			sessionEntries.some((entry) => entry.customType === "agent_end"),
@@ -389,6 +399,7 @@ async function runOneshot(options: {
 			options.sessionPath,
 			"--dangerously-skip-permissions",
 			"--ferment-oneshot",
+			options.prompt,
 		],
 		{
 			cwd: options.workDir,
@@ -438,7 +449,7 @@ async function runOneshot(options: {
 		})
 	})
 
-	child.stdin.end(options.prompt)
+	child.stdin.end()
 	return exit
 }
 

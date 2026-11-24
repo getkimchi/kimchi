@@ -470,3 +470,25 @@ export function dropRetiredMultiModelArg(args: string[]): string[] {
 	}
 	return kept
 }
+
+// Kimchi-only booleans are registered with pi as unknown extension flags, and pi's
+// parser treats the next non-flag token as their value, swallowing a positional prompt.
+// Rewriting the bare token to `--name=true` keeps the prompt positional.
+// Remove when pi keeps positional arguments after boolean extension flags.
+export function normalizeBooleanFlagArgs(args: string[]): string[] {
+	const rewritable = new Set(
+		Object.keys(CLI_OPTIONS).filter(
+			(name) => CLI_OPTIONS[name].type === "boolean" && parsePiArgs([`--${name}`]).unknownFlags.has(name),
+		),
+	)
+	const result: string[] = []
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === "--") {
+			result.push(...args.slice(i))
+			break
+		}
+		result.push(arg.startsWith("--") && rewritable.has(arg.slice(2)) ? `${arg}=true` : arg)
+	}
+	return result
+}
