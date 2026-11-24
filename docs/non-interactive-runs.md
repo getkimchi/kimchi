@@ -20,9 +20,9 @@ A slash command from any of these sources, such as `echo /language | kimchi --pr
 
 Kimchi boolean flags never take a separate value. `--auto`, `--yolo`, `--plan` and the other booleans are on/off switches, so a following token is always a different argument, such as the prompt.
 
-Before pi parses argv, `normalizeBooleanFlagArgs` (`src/cli-args.ts`) rewrites a bare Kimchi-only boolean flag to `--flag=true`. Without this, pi treats the next non-flag token as the flag's value and the positional prompt is lost. Normalization is skipped after `--`, and flags already written with `=` are left alone.
+Before pi parses argv, `normalizeBooleanFlagArgs` (`src/cli-args.ts`) rewrites a bare Kimchi-only boolean flag to `--flag=true`. Without this, pi treats the next non-flag token as the flag's value and the positional prompt is lost. Normalization is skipped after `--`.
 
-The explicit forms stay valid for the flags Kimchi parses itself (`--auto`, `--yolo`, `--plan`, `--pr-watch`, `--no-auto-update`). For these, `--flag=true` turns the flag on and `--flag=false` keeps it off. Extension-read flags such as `--dangerously-skip-permissions`, `--ferment-oneshot`, `--init-git` and `--debug-prompts` accept `--flag=true`. Do not pass `--flag=false` to them. Some treat any value as on, and `--dangerously-skip-permissions=false` leaves permissions in a mixed state. To keep any flag off, omit it. `--enable-experimental-features` works only in its bare form.
+Both explicit forms are valid. `--flag=true` turns the flag on, and `--flag=false` keeps it off. pi turns any value of a boolean extension flag into `true`, so the normalizer drops `--flag=false` for Kimchi-only booleans before pi sees it. This matters most for `--dangerously-skip-permissions=false`, which would otherwise leave permissions in a mixed state. `--enable-experimental-features` works only in its bare form.
 
 ```sh
 kimchi --print --auto=true "do the work"
@@ -37,7 +37,7 @@ kimchi --print "do the work" --auto       # prompt before flags also works
 
 Flags that should parse but not appear in `--help` set `hidden: true` in the catalog.
 
-`src/cli-args.test.ts` enforces this. The "extension flag registration parity" test fails if any literal `registerFlag` call lacks a matching catalog entry, or its type differs. When you add a flag, add it to `CLI_OPTIONS` in the same change.
+`src/cli-args.test.ts` enforces this. The "extension flag registration parity" test fails if any `registerFlag` call lacks a matching catalog entry, or its type differs. The flag name must be a string literal or a constant listed in `FLAG_NAME_CONSTANTS` in that test. When you add a flag, add it to `CLI_OPTIONS` in the same change.
 
 ## What counts as an answer
 

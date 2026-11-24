@@ -477,13 +477,22 @@ export function dropRetiredMultiModelArg(args: string[]): string[] {
 // Kimchi-only booleans are registered with pi as unknown extension flags, and pi's
 // parser treats the next non-flag token as their value, swallowing a positional prompt.
 // Rewriting the bare token to `--name=true` keeps the prompt positional.
+// pi also turns any value of a boolean extension flag into `true`, so `--name=false`
+// would read as on. Dropping it makes the flag off on both sides.
 // Remove when pi keeps positional arguments after boolean extension flags.
-export function normalizeBooleanFlagArgs(args: string[]): string[] {
-	const rewritable = new Set(
+let rewritableBooleanFlags: ReadonlySet<string> | undefined
+
+function getRewritableBooleanFlags(): ReadonlySet<string> {
+	rewritableBooleanFlags ??= new Set(
 		Object.keys(CLI_OPTIONS).filter(
 			(name) => CLI_OPTIONS[name].type === "boolean" && parsePiArgs([`--${name}`]).unknownFlags.has(name),
 		),
 	)
+	return rewritableBooleanFlags
+}
+
+export function normalizeBooleanFlagArgs(args: string[]): string[] {
+	const rewritable = getRewritableBooleanFlags()
 	const result: string[] = []
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i]
@@ -491,7 +500,16 @@ export function normalizeBooleanFlagArgs(args: string[]): string[] {
 			result.push(...args.slice(i))
 			break
 		}
-		result.push(arg.startsWith("--") && rewritable.has(arg.slice(2)) ? `${arg}=true` : arg)
+		if (!arg.startsWith("--")) {
+			result.push(arg)
+			continue
+		}
+		if (rewritable.has(arg.slice(2))) {
+			result.push(`${arg}=true`)
+			continue
+		}
+		if (arg.endsWith("=false") && rewritable.has(arg.slice(2, -"=false".length))) continue
+		result.push(arg)
 	}
 	return result
 }

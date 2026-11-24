@@ -24,6 +24,7 @@ import {
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
+import { DANGEROUS_BYPASS_FLAG } from "./extensions/permissions/constants.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 
 describe("value-flag parsing", () => {
@@ -409,6 +410,9 @@ const NONLITERAL_REGISTRATION_ALLOWLIST: Record<string, string> = {
 	"src/extensions/mcp/index.ts": "forwards flags from the MCP probe via target.registerFlag(name, flag)",
 }
 
+/** Shared flag-name constants that registerFlag calls may use instead of a literal. */
+const FLAG_NAME_CONSTANTS: Record<string, string> = { DANGEROUS_BYPASS_FLAG }
+
 function listSourceFiles(dir: string): string[] {
 	const out: string[] = []
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -420,6 +424,22 @@ function listSourceFiles(dir: string): string[] {
 	return out
 }
 
+function isRegisterFlagCallee(callee: ts.Expression): boolean {
+	if (ts.isIdentifier(callee)) return callee.text === "registerFlag"
+	if (ts.isPropertyAccessExpression(callee)) return callee.name.text === "registerFlag"
+	if (ts.isElementAccessExpression(callee)) {
+		const arg = callee.argumentExpression
+		return ts.isStringLiteralLike(arg) && arg.text === "registerFlag"
+	}
+	return false
+}
+
+function resolveFlagName(node: ts.Expression): string | undefined {
+	if (ts.isStringLiteralLike(node)) return node.text
+	if (ts.isIdentifier(node) && Object.hasOwn(FLAG_NAME_CONSTANTS, node.text)) return FLAG_NAME_CONSTANTS[node.text]
+	return undefined
+}
+
 function collectFileViolations(
 	rel: string,
 	file: string,
@@ -429,23 +449,17 @@ function collectFileViolations(
 	const violations: string[] = []
 	const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
 	const visit = (node: ts.Node): void => {
-		if (
-			ts.isCallExpression(node) &&
-			ts.isPropertyAccessExpression(node.expression) &&
-			node.expression.name.text === "registerFlag"
-		) {
-			visitRegistration(node)
-		}
+		if (ts.isCallExpression(node) && isRegisterFlagCallee(node.expression)) visitRegistration(node)
 		ts.forEachChild(node, visit)
 	}
 	const visitRegistration = (call: ts.CallExpression): void => {
 		const [nameArg, defArg] = call.arguments
-		if (!nameArg || !ts.isStringLiteralLike(nameArg)) {
+		const name = nameArg && resolveFlagName(nameArg)
+		if (name === undefined) {
 			if (rel in allowlist) return
 			violations.push(`${rel}: nonliteral flag name ${nameArg?.getText(sf) ?? "<missing>"}`)
 			return
 		}
-		const name = nameArg.text
 		const typeProp =
 			defArg && ts.isObjectLiteralExpression(defArg)
 				? defArg.properties.find(
@@ -492,6 +506,24 @@ describe("extension flag registration parity", () => {
 		const text = 'pi.registerFlag("not-in-catalog", { type: "boolean" })\npi.registerFlag(name, flag)\n'
 		expect(collectFileViolations(rel, rel, text)).toEqual([`${rel}: --not-in-catalog missing from CLI_OPTIONS`])
 	})
+
+	it.each([
+		["a bare call", 'registerFlag("not-in-catalog", { type: "boolean" })'],
+		["element access", 'pi["registerFlag"]("not-in-catalog", { type: "boolean" })'],
+	])("checks registrations made through %s", (_label, text) => {
+		const rel = "src/extensions/example.ts"
+		expect(collectFileViolations(rel, rel, text)).toEqual([`${rel}: --not-in-catalog missing from CLI_OPTIONS`])
+	})
+
+	it("resolves known flag-name constants and checks them against the catalog", () => {
+		const rel = "src/extensions/example.ts"
+		const text =
+			'pi.registerFlag(DANGEROUS_BYPASS_FLAG, { type: "string" })\npi.registerFlag(OTHER_FLAG, { type: "boolean" })\n'
+		expect(collectFileViolations(rel, rel, text)).toEqual([
+			`${rel}: --${DANGEROUS_BYPASS_FLAG} type string != CLI_OPTIONS boolean`,
+			`${rel}: nonliteral flag name OTHER_FLAG`,
+		])
+	})
 })
 
 describe("normalizeBooleanFlagArgs", () => {
@@ -524,8 +556,28 @@ describe("normalizeBooleanFlagArgs", () => {
 		expect(normalizeBooleanFlagArgs(["--print", "do work", "--auto"])).toEqual(["--print", "do work", "--auto=true"])
 	})
 
-	it.each(["true", "false"])("keeps explicit --auto=%s unchanged", (value) => {
-		const args = ["--print", `--auto=${value}`, "do work"]
+	it("keeps explicit --auto=true unchanged", () => {
+		const args = ["--print", "--auto=true", "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	// pi turns any value of a boolean extension flag into true, so =false must not reach it.
+	it.each(affected)("drops explicit --%s=false so pi never reads it as on", (name) => {
+		const normalized = normalizeBooleanFlagArgs(["--print", `--${name}=false`, "do work"])
+		expect(normalized).toEqual(["--print", "do work"])
+		const parsed = parsePiArgs(normalized)
+		expect(parsed.unknownFlags.has(name)).toBe(false)
+		expect(parsed.messages).toEqual(["do work"])
+	})
+
+	it("keeps --dangerously-skip-permissions=false from enabling the bypass on either side", () => {
+		const normalized = normalizeBooleanFlagArgs(["--print", "--dangerously-skip-permissions=false", "do work"])
+		expect(parsePiArgs(normalized).unknownFlags.has("dangerously-skip-permissions")).toBe(false)
+		expect(parseCliArgs(normalized).options["dangerously-skip-permissions"]).toBeUndefined()
+	})
+
+	it("keeps =false for pi-known booleans and after the -- delimiter", () => {
+		const args = ["--print", "--verbose=false", "--", "--auto=false"]
 		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
 	})
 
