@@ -161,7 +161,7 @@ export async function getReviewTargetChoices(
 		const root = await repositoryRoot(options.root, options.signal)
 		let unavailableReason: string | undefined
 		try {
-			await assertNoConversionDrivers(root, options.signal)
+			await assertNoConversionDrivers(root, options.signal, options.excludedDirectories)
 		} catch (error) {
 			if (!(error instanceof ReviewTargetError) || error.code !== "unsupported_content_filter") throw error
 			unavailableReason = error.message
@@ -169,7 +169,9 @@ export async function getReviewTargetChoices(
 		const remote = await selectedRemote(root, options)
 		if (request.fetch) await fetchRemote(root, remote.name, options.signal)
 		const [inspection, baseSuggestion] = await Promise.all([
-			unavailableReason === undefined ? inspectWorkingTree(root, options.signal) : Promise.resolve(undefined),
+			unavailableReason === undefined
+				? inspectWorkingTree(root, options.signal, options.excludedDirectories)
+				: Promise.resolve(undefined),
 			suggestBase(root, options, remote.name, remote.configured),
 		])
 		const available = unavailableReason === undefined
@@ -308,6 +310,7 @@ export async function resolveReviewTarget(
 			request.kind === "working-tree" || request.includeWorkingTree
 				? await freezeWorkingTree(root, tipSha, {
 						signal: options.signal,
+						excludedDirectories: options.excludedDirectories,
 						beforeSnapshotCommit: options.beforeSnapshotCommit,
 					})
 				: { tipSha, headSha: tipSha, dirty: false, ref: undefined, cleanup: async () => {} }

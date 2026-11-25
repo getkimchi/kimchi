@@ -15,3 +15,11 @@ All data files in this directory must stay byte-identical with the consumer's co
 7. Compare the resulting findings and summaries semantically with `review-output/`. Rejected calls add no records; accepted records have contiguous per-writer sequences, and concurrent appends remain whole JSONL lines.
 
 The fixture uses `review-finding/v1` and `review-summary/v1`. Reply validation and exact reply artifacts are covered by co-located local process tests. Reply cases join this shared fixture when the consumer supplies `comments.json` and expected reply output.
+
+## Panel manifest and stream records
+
+`review-context/manifest.json` is the v1 headless panel manifest. It has exactly `schema_version`, `base_sha`, `head_sha`, `checkout_path`, `context_dir`, `output_dir`, and `deadline`. Its schema is `review-manifest/v1`; base/head match `provider-diff.json`, and deadline is an absolute UTC RFC 3339 timestamp. The paths and synthetic Git IDs document the wire contract; a live checkout test substitutes real temporary paths and revisions. There is no grace field: TERM occurs at `deadline` and KILL 60 seconds later.
+
+A successful panel print JSON stream starts with the `session` header and an initial system message advertising `submit_finding`, `submit_summary`, and `submit_reply`. It needs no top-level assistant message, but must end with `agent_settled`. Harness setup has no `tool_execution_*` events. Child assistant messages stay out of the top-level stream.
+
+Child cost reporting uses distinct `child_usage` records: `{ "type": "child_usage", "writer", "provider", "model", "usage", "parentToolCallId"? }`. `provider` and `model` identify the model that actually served the calls; `usage` contains only `input`, `output`, `cacheRead`, and `cacheWrite`. Records are differential aggregates per writer/provider/model, including reconciliation, and `parentToolCallId` is present only when a tool launched that child. The stream can also contain submit events during the TERM grace before `agent_settled`.

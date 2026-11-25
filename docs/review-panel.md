@@ -194,6 +194,9 @@ unmerged, and no thread replies are produced for that input.
 `coverage` and is written last. When its logical content is unchanged, the
 coordinator preserves the existing file rather than refreshing `created_at`.
 Findings, summaries, and replies are therefore byte-stable across wrap-up.
+The coordinator merges its own structured environment gaps with reviewer
+reports before this comparison, so identical environment and durable inputs
+remain idempotent.
 
 ## Reserve timing
 
@@ -218,8 +221,9 @@ by abandoned timeouts.
 If `D - H` has passed at panel start, no reviewer launches. If cancellation
 does not settle in time, running lenses become cancelled and finalization uses
 the last durable checkpoint instead of waiting for workers or cleanup. Runner
-cleanup itself is bounded by `D`; retained stage 3 manifests remain available
-for recovery. Without enough verifier time, fallback finalization still writes
+cleanup itself is bounded by `D`; an aborted run also has a one-second
+settlement bound and uses whichever deadline is earlier. Retained stage 3
+manifests remain available for recovery. Without enough verifier time, fallback finalization still writes
 findings and coverage.
 
 Before either entry point returns, it closes coordinator-owned publication and

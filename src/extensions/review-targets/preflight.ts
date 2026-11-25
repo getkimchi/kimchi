@@ -1,6 +1,7 @@
 import { lstat } from "node:fs/promises"
 import { join } from "node:path"
 import { gitBytes, gitResultError, parseConfiguredFilterDrivers } from "./git.js"
+import { excludeReviewOwnedPaths } from "./path-filter.js"
 import { ReviewTargetError } from "./types.js"
 
 const DISPLAY_PATH_LIMIT = 20
@@ -26,7 +27,11 @@ async function configuredFilterDrivers(root: string, signal?: AbortSignal): Prom
 }
 
 /** Changed/staged/untracked paths discovered without content conversion. */
-export async function workingTreeCandidatePaths(root: string, signal?: AbortSignal): Promise<string[]> {
+export async function workingTreeCandidatePaths(
+	root: string,
+	signal?: AbortSignal,
+	excludedDirectories: readonly string[] = [],
+): Promise<string[]> {
 	const paths = new Set<string>()
 	const headArgs = ["rev-parse", "--verify", "--end-of-options", "HEAD"] as const
 	const head = await gitBytes(root, headArgs, { signal, allowFailure: true })
@@ -55,7 +60,7 @@ export async function workingTreeCandidatePaths(root: string, signal?: AbortSign
 		},
 	)
 	for (const path of selected.stdout.toString("utf8").split("\0")) if (path) paths.add(path)
-	return [...paths].sort()
+	return excludeReviewOwnedPaths(root, [...paths].sort(), excludedDirectories)
 }
 
 /** Deleted paths need no attribute checks because conversion cannot read their contents. */
@@ -90,9 +95,13 @@ function assignedConversions(attributes: Buffer, drivers: Set<string>): string[]
 }
 
 /** Use only non-converting discovery before status, content diffs, or add can execute conversion drivers. */
-export async function assertNoConversionDrivers(root: string, signal?: AbortSignal): Promise<string[]> {
+export async function assertNoConversionDrivers(
+	root: string,
+	signal?: AbortSignal,
+	excludedDirectories: readonly string[] = [],
+): Promise<string[]> {
 	const [paths, drivers] = await Promise.all([
-		workingTreeCandidatePaths(root, signal),
+		workingTreeCandidatePaths(root, signal, excludedDirectories),
 		configuredFilterDrivers(root, signal),
 	])
 	if (!paths.length) return paths

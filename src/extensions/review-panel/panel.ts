@@ -47,13 +47,21 @@ const CLEANUP_EXIT_MARGIN_MS = 100
 /** Time protected from reviewers, cancellation and the verifier for final atomic artifacts. */
 export const REVIEW_PANEL_FINAL_WRITE_HEADROOM_MS = 5_000
 
-async function cleanupWithDeadline(runner: ReviewRunner, deadline: number | undefined): Promise<void> {
+async function cleanupWithDeadline(
+	runner: ReviewRunner,
+	deadline: number | undefined,
+	signal?: AbortSignal,
+	cancellationGraceMs = DEFAULT_CANCELLATION_GRACE_MS,
+): Promise<void> {
 	const cleanup = runner.cleanup()
-	if (deadline === undefined) {
+	const cancellationDeadline = signal?.aborted ? Date.now() + cancellationGraceMs : undefined
+	const boundedDeadline =
+		cancellationDeadline === undefined ? deadline : Math.min(deadline ?? Number.POSITIVE_INFINITY, cancellationDeadline)
+	if (boundedDeadline === undefined) {
 		await cleanup
 		return
 	}
-	await raceWithTimeout(cleanup, Math.max(0, deadline - Date.now() - CLEANUP_EXIT_MARGIN_MS), undefined)
+	await raceWithTimeout(cleanup, Math.max(0, boundedDeadline - Date.now() - CLEANUP_EXIT_MARGIN_MS), undefined)
 	// A wedged child must not delay final artifacts or session shutdown. The
 	// runner manifest remains available for recovery; cleanup continues in the background.
 	void cleanup.catch(() => {})
@@ -213,6 +221,7 @@ async function makeRunner(options: {
 	pi: RunReviewPanelOptions["pi"]
 	target: ResolvedReviewTarget
 	outputDir: string
+	signal?: AbortSignal
 	concurrency: number
 	checkDefinitions?: RunReviewPanelOptions["checkDefinitions"]
 	executionPolicy?: ReviewExecutionPolicyOptions
@@ -238,6 +247,7 @@ async function makeRunner(options: {
 		pi: options.pi,
 		target: options.target,
 		outputDir: options.outputDir,
+		signal: options.signal,
 		concurrency: options.concurrency,
 		checkDefinitions: options.checkDefinitions,
 		executionPolicy: options.executionPolicy,
@@ -311,7 +321,7 @@ async function rescanAllWriters(store: ReviewPanelStateStore, outputDir: string)
 async function finalizeWithWriterRescan(
 	store: ReviewPanelStateStore,
 	outputDir: string,
-	options: Pick<FinalizeReviewPanelOptions, "hasVerifier" | "reconcile">,
+	options: Pick<FinalizeReviewPanelOptions, "hasVerifier" | "reconcile" | "environmentGaps">,
 ): Promise<ReviewPanelResult> {
 	for (let attempt = 0; attempt < 4; attempt += 1) {
 		const inputDigest = candidateInputDigest(store.state.candidates)
@@ -334,7 +344,13 @@ async function finalizeWithWriterRescan(
 	}
 	// Continually arriving submissions are bounded by the final fallback
 	// publication; anything after its source scan belongs to the next wrap-up.
-	return finalizeReviewPanel({ store, outputDir, contextDir: store.state.contextDir, hasVerifier: false })
+	return finalizeReviewPanel({
+		store,
+		outputDir,
+		contextDir: store.state.contextDir,
+		hasVerifier: false,
+		environmentGaps: options.environmentGaps,
+	})
 }
 
 /** Run a fresh panel. Stage 5 passes parser panel fields directly plus trusted
@@ -553,16 +569,20 @@ export async function runReviewPanel(options: RunReviewPanelOptions): Promise<Re
 			deadline,
 			headroomMs,
 			agent: options.reconciliationAgent ?? options.agent,
-			respectSignal: false,
+			signal: options.signal,
+			respectSignal: true,
 		})
-		const result = await finalizeWithWriterRescan(store, outputDir, verifier)
+		const result = await finalizeWithWriterRescan(store, outputDir, {
+			...verifier,
+			environmentGaps: options.environmentGaps,
+		})
 		await usage.flush()
 		options.onProgress?.(result.progress)
 		return result
 	} finally {
 		try {
 			await store.close()
-			await cleanupWithDeadline(runner, deadline)
+			await cleanupWithDeadline(runner, deadline, options.signal, options.cancellationGraceMs)
 		} finally {
 			try {
 				await usage.flush({ deadline, exitMarginMs: CLEANUP_EXIT_MARGIN_MS })
@@ -626,14 +646,17 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 			signal: options.signal,
 			respectSignal: true,
 		})
-		const result = await finalizeWithWriterRescan(store, outputDir, verifier)
+		const result = await finalizeWithWriterRescan(store, outputDir, {
+			...verifier,
+			environmentGaps: options.environmentGaps,
+		})
 		await usage.flush()
 		options.onProgress?.(result.progress)
 		return result
 	} finally {
 		try {
 			await store.close()
-			await cleanupWithDeadline(runner, deadline)
+			await cleanupWithDeadline(runner, deadline, options.signal, options.cancellationGraceMs)
 		} finally {
 			try {
 				await usage.flush({ deadline, exitMarginMs: CLEANUP_EXIT_MARGIN_MS })

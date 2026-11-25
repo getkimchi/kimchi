@@ -207,6 +207,7 @@ export class ReviewRunner {
 		const execution = createReviewExecutionController({
 			mode: reviewExecutionMode(this.options.executionPolicy?.mode),
 			worktree,
+			executionGroup: resolve(this.options.outputDir),
 			...(this.options.executionPolicy?.networkBoundary !== undefined
 				? { networkBoundary: this.options.executionPolicy.networkBoundary }
 				: {}),

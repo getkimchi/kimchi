@@ -16,6 +16,13 @@ cleanupStaleReviewSnapshots(options: CleanupStaleReviewSnapshotsOptions): Promis
 
 The bare-choice result always contains Working tree followed by Branch and includes explicit command syntax for clients without a picker. Every choice has an `available` flag. An available Working tree is preselected when non-ignored or potentially hidden edits exist; Branch is preselected otherwise. If working-tree preflight finds an applicable content filter or working-tree encoding, Working tree instead has `available: false`, an `unavailableReason`, and no preselection, while Branch stays available so users can choose a committed comparison. `workingTreeStatus` is `clean`, `edits`, or `possible-edits`. The last state reports capped `flaggedPaths` plus their total count for index entries with assume-unchanged or skip-worktree, and also covers preflight checks stopped before status inspection. Rendering and dispatch remain surface concerns.
 
+`ReviewInvocationOptions.excludedDirectories` lists explicit Kimchi-owned paths
+to omit from working-tree discovery and stability checks. Directories are
+matched exactly, including all descendants; lookalike siblings are not matched.
+This includes the effective context/output roots used by the command adapter,
+with canonicalization through an existing ancestor to cover symlink spellings
+and output roots that do not exist yet.
+
 `ResolvedReviewScope` contains the original ref spellings and selected fully qualified base ref, immutable base/tip/head object IDs, target kind, whether the head is a snapshot, changed/anchorable/unanchorable file counts, context paths, anchor source, and structured limitations. `ResolvedReviewTarget.cleanup`, the standalone cleanup function, and stale cleanup remove only private snapshot refs that still match their expected head.
 
 ## Subprocess and conversion safety

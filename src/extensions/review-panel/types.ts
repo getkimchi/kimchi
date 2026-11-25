@@ -7,7 +7,12 @@ import type {
 	ReviewCommandRecord,
 	ReviewExecutionPolicyOptions,
 } from "../review-runner/index.js"
-import type { ReviewCoverage, ReviewFindingRecord, ReviewSummaryRecord } from "../review-submit/store.js"
+import type {
+	EnvironmentGap,
+	ReviewCoverage,
+	ReviewFindingRecord,
+	ReviewSummaryRecord,
+} from "../review-submit/store.js"
 import type { ResolvedReviewScope, ResolvedReviewTarget } from "../review-targets/types.js"
 import type { RequiredReviewLens, ReviewLensId, ReviewPanelArguments, ReviewPanelSelectionInput } from "./lenses.js"
 
@@ -146,6 +151,7 @@ export interface RunReviewPanelOptions extends ReviewPanelSelectionInput {
 	target: ResolvedReviewTarget
 	outputDir: string
 	checkDefinitions?: ReviewCheckDefinition[]
+	environmentGaps?: EnvironmentGap[]
 	executionPolicy?: ReviewExecutionPolicyOptions
 	/** Absolute epoch-millisecond deadline, parsed by stage 5 from the manifest's RFC 3339 timestamp. */
 	deadline?: number
@@ -187,6 +193,7 @@ export interface WrapUpReviewPanelOptions {
 	/** Stage 5 passes the new manifest identity. Deadline intentionally is not part of identity. */
 	expected?: ReviewPanelIdentity
 	checkDefinitions?: ReviewCheckDefinition[]
+	environmentGaps?: EnvironmentGap[]
 	executionPolicy?: ReviewExecutionPolicyOptions
 	deadline?: number
 	signal?: AbortSignal

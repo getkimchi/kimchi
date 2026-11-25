@@ -288,6 +288,14 @@ failed/cancelled evidence with `network: "sandbox"`, never a declined approval.
 Local print mode with no reachable approver instead blocks approval-requiring
 commands before execution.
 
+Headless commands use `reviewInheritedProcessOperations`, an execution adapter
+with `detached: false`, for shared checks, focused commands, and reviewer Bash.
+They therefore inherit Kimchi's process group, whereas ordinary local commands
+retain upstream's detached command-group lifecycle. One cancellation-aware
+execution slot is shared per output root across every headless controller, so
+routine and focused build/test commands never overlap. Waiting reviewers can
+continue file reads or reuse saved check results.
+
 ## Worktree lifecycle and recovery
 
 Worktrees isolate files/build state only. They share Git object/admin metadata

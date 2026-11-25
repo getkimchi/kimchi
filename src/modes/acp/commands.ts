@@ -38,6 +38,11 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		},
 	},
 	{
+		name: "review",
+		description: SLASH_COMMANDS.review.hint,
+		input: { hint: "Target, base, lenses, and concurrency; bare input returns explicit target syntax." },
+	},
+	{
 		name: "pr-watch",
 		description: SLASH_COMMANDS["pr-watch"].hint,
 		input: { hint: "Optional instructions, or an action: watch, monitor, status, or stop." },

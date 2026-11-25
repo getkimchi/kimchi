@@ -1,0 +1,9 @@
+{
+  "schema_version": "review-manifest/v1",
+  "base_sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "checkout_path": "/home/sandbox/repository",
+  "context_dir": "/home/sandbox/review-context",
+  "output_dir": "/home/sandbox/review-output",
+  "deadline": "2026-11-25T00:00:00Z"
+}
