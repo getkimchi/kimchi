@@ -8,6 +8,7 @@ import {
 	SIDE_CHAT_BOUNDARY,
 	SIDE_CHAT_BOUNDARY_TYPE,
 	SIDE_CHAT_TOOLS,
+	type SideChatSession,
 	seedSideContext,
 	sideChatPrompt,
 	sideThreadMessages,
@@ -30,9 +31,14 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	}
 })
 
+// The child session's runtime is only handed to the stubbed createAgentSession above.
+vi.mock("../../shared/model-runtime.js", () => ({ requireModelRuntime: () => ({}) }))
+
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 0 })
 
-const assistantCalling = (...ids: string[]) => ({
+const assistantCalling = (...ids: string[]) => assistantStopped("toolUse", ...ids)
+
+const assistantStopped = (stopReason: "toolUse" | "aborted" | "error", ...ids: string[]) => ({
 	role: "assistant" as const,
 	content: ids.map((id) => ({ type: "toolCall" as const, id, name: "bash", arguments: { command: `run ${id}` } })),
 	api: "openai-completions" as const,
@@ -46,7 +52,7 @@ const assistantCalling = (...ids: string[]) => ({
 		totalTokens: 0,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	},
-	stopReason: "toolUse" as const,
+	stopReason,
 	timestamp: 0,
 })
 
@@ -101,6 +107,17 @@ describe("seedSideContext", () => {
 		expect(seedSideContext(inherited, 0)).toEqual([...inherited, boundary])
 	})
 
+	it.each([
+		"aborted",
+		"error",
+	] as const)("adds no results for calls of a final turn that stopped as %s, which pi never sends to the provider", (stopReason) => {
+		// Regression: Esc while the main agent streamed a bash call left an aborted assistant message;
+		// the seeded result for its call reached Anthropic without its tool_use and failed with a 400.
+		const branched = [user("print the lines"), assistantStopped(stopReason, "partial")]
+
+		expect(seedSideContext(branched, 0)).toEqual([...branched, boundary])
+	})
+
 	it("tells the model the main session owns the pending work and the side chat answers only the user", () => {
 		expect(PENDING_TOOL_RESULT).toMatch(/main session/)
 		expect(SIDE_CHAT_BOUNDARY).toMatch(/do not continue/i)
@@ -123,49 +140,85 @@ describe("seedSideContext", () => {
 	})
 })
 
-function contextWith(messages: Parameters<SessionManager["appendMessage"]>[0][]) {
+function contextWith(main: SessionManager) {
+	return createContext({
+		cwd: "/project",
+		model: createModel("test-model"),
+		sessionManager: { getEntries: () => main.getEntries(), getLeafId: () => main.getLeafId() },
+	})
+}
+
+function mainSessionWith(messages: Parameters<SessionManager["appendMessage"]>[0][]): SessionManager {
 	const sessionManager = SessionManager.inMemory("/project")
 	for (const message of messages) sessionManager.appendMessage(message)
-	const ctx = createContext({ cwd: "/project", model: createModel("test-model") })
-	Object.assign(ctx, { sessionManager })
-	Object.assign(ctx.modelRegistry, { runtime: {} })
-	return ctx
+	return sessionManager
+}
+
+function journalOf(side: SideChatSession) {
+	return side.session.sessionManager.getBranch().flatMap((entry) => (entry.type === "message" ? [entry.message] : []))
 }
 
 describe("createSideSession", () => {
 	it("tracks raw branch and seeded lengths while keeping the side thread after the seed", async () => {
-		const ctx = contextWith([user("main"), assistantCalling("running")])
+		const main = mainSessionWith([user("main"), assistantCalling("running")])
 
-		const side = await createSideSession(ctx, {
-			branchLeafId: ctx.sessionManager.getLeafId(),
+		const side = await createSideSession(contextWith(main), {
+			branchLeafId: main.getLeafId(),
 			fresh: false,
 			thinkingLevel: "off",
 			thread: [user("side")],
 		})
 
 		expect(side.branchedMessages).toBe(2)
-		expect(side.contextLength).toBe(4)
-		const journal = side.session.sessionManager
-			.getBranch()
-			.flatMap((entry) => (entry.type === "message" ? [entry.message] : []))
+		expect(side.seededLength).toBe(4)
+		const journal = journalOf(side)
 		expect(journal.map((message) => message.role)).toEqual(["user", "assistant", "toolResult", "custom", "user"])
 		expect(journal[3]).toMatchObject({ customType: SIDE_CHAT_BOUNDARY_TYPE, content: SIDE_CHAT_BOUNDARY })
 		expect(sideThreadMessages(side)).toEqual([user("side")])
 	})
 
 	it("skips main-session seeding for a fresh side chat", async () => {
-		const ctx = contextWith([user("main")])
+		const main = mainSessionWith([user("main")])
 
-		const side = await createSideSession(ctx, {
-			branchLeafId: ctx.sessionManager.getLeafId(),
+		const side = await createSideSession(contextWith(main), {
+			branchLeafId: main.getLeafId(),
 			fresh: true,
 			thinkingLevel: "off",
 			thread: [user("fresh side")],
 		})
 
 		expect(side.branchedMessages).toBe(0)
-		expect(side.contextLength).toBe(0)
+		expect(side.seededLength).toBe(0)
 		expect(sideThreadMessages(side)).toEqual([user("fresh side")])
+	})
+
+	it("carries a compacted main session's summary, then answers its running calls before the boundary", async () => {
+		const main = mainSessionWith([user("old work")])
+		const kept = main.appendMessage(user("continue"))
+		main.appendCompaction("Earlier: fixed the parser", kept, 50_000)
+		main.appendMessage(assistantCalling("running"))
+
+		const side = await createSideSession(contextWith(main), {
+			branchLeafId: main.getLeafId(),
+			fresh: false,
+			thinkingLevel: "off",
+			thread: [user("side")],
+		})
+
+		const journal = journalOf(side)
+		expect(journal.map((message) => message.role)).toEqual([
+			"compactionSummary",
+			"user",
+			"assistant",
+			"toolResult",
+			"custom",
+			"user",
+		])
+		expect(journal[0]).toMatchObject({ summary: "Earlier: fixed the parser" })
+		expect(journal[3]).toMatchObject({ toolCallId: "running", content: [{ text: PENDING_TOOL_RESULT }] })
+		expect(side.branchedMessages).toBe(3)
+		expect(side.seededLength).toBe(5)
+		expect(sideThreadMessages(side)).toEqual([user("side")])
 	})
 })
 
@@ -208,14 +261,18 @@ describe("sideChatPrompt", () => {
 
 describe("sideThreadMessages", () => {
 	it("drops the inherited main-session context", () => {
-		const side = { session: sessionWith([user("main"), user("main follow-up"), user("side")]), contextLength: 2 }
+		const side = {
+			session: sessionWith([user("main"), user("main follow-up"), user("side")]),
+			seededLength: 2,
+			branchedMessages: 2,
+		}
 
 		expect(sideThreadMessages(side)).toEqual([user("side")])
 	})
 
 	it("keeps the full side thread and later turns after its context compacts", () => {
 		const session = sessionWith([user("main"), user("main follow-up"), user("side question")])
-		const side = { session, contextLength: 2 }
+		const side = { session, seededLength: 2, branchedMessages: 2 }
 		const { sessionManager } = session
 		const firstThread = sideThreadMessages(side)
 		expect(firstThread).toEqual([user("side question")])

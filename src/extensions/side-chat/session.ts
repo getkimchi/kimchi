@@ -54,7 +54,7 @@ export function sideChatPrompt(fresh: boolean): string {
 export interface SideChatSession {
 	session: AgentSession
 	/** Count of seeded message entries (inherited context plus side-chat markers) at the head of the child's journal. */
-	contextLength: number
+	seededLength: number
 	/** Count of main-session messages the side chat branched with. */
 	branchedMessages: number
 }
@@ -85,14 +85,16 @@ export const SIDE_CHAT_BOUNDARY = [
  * each with a result saying the main session owns it, then mark where the
  * side chat begins right next to its first message.
  */
-export function seedSideContext(inherited: AppendableMessage[], now = Date.now()): AppendableMessage[] {
-	const seeded = [...inherited]
+export function seedSideContext(branched: SideThread, now = Date.now()): SideThread {
+	const seeded = [...branched]
 	// Steering is delivered only after the current assistant turn's tool calls finish,
 	// so results at the branch head are contiguous. Earlier unanswered calls were aborted.
 	let lastTurn = seeded.length - 1
 	while (lastTurn >= 0 && seeded[lastTurn].role === "toolResult") lastTurn--
 	const last = seeded[lastTurn]
-	if (last?.role === "assistant") {
+	// pi drops aborted and errored assistant messages before calling the provider, so their
+	// calls never reach it; a result for one would be an orphan the provider rejects.
+	if (last?.role === "assistant" && last.stopReason !== "aborted" && last.stopReason !== "error") {
 		const answered = new Set(
 			seeded.slice(lastTurn + 1).flatMap((message) => (message.role === "toolResult" ? [message.toolCallId] : [])),
 		)
@@ -172,11 +174,13 @@ export async function createSideSession(
 	},
 ): Promise<SideChatSession> {
 	const sessionManager = SessionManager.inMemory(ctx.cwd)
-	const branched = options.fresh
-		? []
-		: (buildSessionContext(ctx.sessionManager.getEntries(), options.branchLeafId).messages as AppendableMessage[])
-	const inherited = options.fresh ? [] : seedSideContext(branched)
-	for (const message of [...inherited, ...(options.thread ?? [])]) {
+	let branched: SideThread = []
+	let seeded: SideThread = []
+	if (!options.fresh) {
+		branched = buildSessionContext(ctx.sessionManager.getEntries(), options.branchLeafId).messages
+		seeded = seedSideContext(branched)
+	}
+	for (const message of [...seeded, ...(options.thread ?? [])]) {
 		sessionManager.appendMessage(message as AppendableMessage)
 	}
 	const session = await createChildSession(ctx, {
@@ -186,7 +190,7 @@ export async function createSideSession(
 		tools: SIDE_CHAT_TOOLS,
 		thinkingLevel: options.thinkingLevel,
 	})
-	return { session, contextLength: inherited.length, branchedMessages: branched.length }
+	return { session, seededLength: seeded.length, branchedMessages: branched.length }
 }
 
 export interface WrapUpRun {
@@ -242,12 +246,12 @@ export function draftSteeringPrompt(
 	}
 }
 
-export function sideThreadMessages(side: Pick<SideChatSession, "session" | "contextLength">): SideThread {
+export function sideThreadMessages(side: SideChatSession): SideThread {
 	// Compaction shortens session.messages, while the journal retains the original messages for saving and /wrap.
 	return side.session.sessionManager
 		.getBranch()
 		.flatMap((entry) => (entry.type === "message" ? [entry.message] : []))
-		.slice(side.contextLength)
+		.slice(side.seededLength)
 }
 
 function lastAssistantMessage(session: AgentSession): AssistantMessage | undefined {

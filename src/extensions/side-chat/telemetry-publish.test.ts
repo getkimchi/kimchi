@@ -130,7 +130,7 @@ vi.mock("./session.js", async (importOriginal) => {
 					},
 					isStreaming: false,
 				},
-				contextLength: 0,
+				seededLength: 0,
 				branchedMessages: 0,
 			}
 		},
