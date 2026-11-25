@@ -5,6 +5,7 @@ import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import ts from "typescript"
 import { describe, expect, it } from "vitest"
 import {
+	applyDebugPromptsOptOut,
 	CACHEABLE_OPTION_NAMES,
 	CLI_OPTIONS,
 	dropRetiredMultiModelArg,
@@ -716,5 +717,31 @@ describe("normalizeBooleanFlagArgs", () => {
 		} else {
 			expect(normalized).toContain(`--${name}`)
 		}
+	})
+})
+
+describe("applyDebugPromptsOptOut", () => {
+	const debugEnv = () => ({ KIMCHI_DEBUG_PROMPTS: "1", KIMCHI_DEBUG_SESSION: "abc" })
+
+	it("clears both debug env vars on an explicit --debug-prompts=false", () => {
+		const env = debugEnv()
+		applyDebugPromptsOptOut(["--print", "--debug-prompts=false", "x"], env)
+		expect(env).toEqual({})
+	})
+
+	it("uses the last value when the flag is repeated", () => {
+		const env = debugEnv()
+		applyDebugPromptsOptOut(["--debug-prompts", "--debug-prompts=false"], env)
+		expect(env).toEqual({})
+	})
+
+	it.each([
+		[["--debug-prompts"]],
+		[["--debug-prompts=true"]],
+		[["--print", "x"]],
+	])("keeps the debug env vars for %j", (args) => {
+		const env = debugEnv()
+		applyDebugPromptsOptOut(args, env)
+		expect(env).toEqual(debugEnv())
 	})
 })

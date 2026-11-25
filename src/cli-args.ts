@@ -501,6 +501,16 @@ function isPiOptionValueSlot(precedingArgs: readonly string[]): boolean {
 	return !parsePiArgs([...precedingArgs, `--${PI_SLOT_PROBE}`]).unknownFlags.has(PI_SLOT_PROBE)
 }
 
+// normalizeBooleanFlagArgs drops "=false", so without this the env default in
+// prompt-enrichment.ts would turn debugging back on.
+export function applyDebugPromptsOptOut(args: readonly string[], env: NodeJS.ProcessEnv): void {
+	if (parseCliArgs([...args]).options["debug-prompts"] !== false) return
+	// biome-ignore lint/performance/noDelete: assigning undefined to process.env stores the string "undefined"
+	delete env.KIMCHI_DEBUG_PROMPTS
+	// biome-ignore lint/performance/noDelete: assigning undefined to process.env stores the string "undefined"
+	delete env.KIMCHI_DEBUG_SESSION
+}
+
 export function normalizeBooleanFlagArgs(args: string[]): string[] {
 	const rewritable = getRewritableBooleanFlags()
 	const result: string[] = []

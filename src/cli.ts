@@ -9,6 +9,7 @@ import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@eare
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
+	applyDebugPromptsOptOut,
 	dropRetiredMultiModelArg,
 	getCliModeArg,
 	getParsedCliArgs,
@@ -800,6 +801,7 @@ async function cliMain(): Promise<void> {
 			if (supportedArgs.length !== originalArgs.length) {
 				console.warn("Warning: --model multi-model is no longer supported; using your default model.")
 			}
+			applyDebugPromptsOptOut(supportedArgs, process.env)
 			const atFileArgs = normalizeAtFileArgs(
 				normalizeResumeIdArgs(normalizeBooleanFlagArgs(stripExperimentalFeaturesArg(supportedArgs))),
 				process.cwd(),

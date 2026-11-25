@@ -22,7 +22,7 @@ Kimchi boolean flags never take a separate value. `--auto`, `--yolo`, `--plan` a
 
 Before pi parses argv, `normalizeBooleanFlagArgs` (`src/cli-args.ts`) rewrites a bare Kimchi-only boolean flag to `--flag=true`. Without this, pi treats the next non-flag token as the flag's value and the positional prompt is lost. Normalization is skipped after `--`.
 
-Both explicit forms are valid. `--flag=true` turns the flag on, and `--flag=false` keeps it off. pi turns any value of a boolean extension flag into `true`, so the normalizer drops `--flag=false` for Kimchi-only booleans before pi sees it. This matters most for `--dangerously-skip-permissions=false`, which would otherwise leave permissions in a mixed state. `--enable-experimental-features` works only in its bare form.
+Both explicit forms are valid. `--flag=true` turns the flag on, and `--flag=false` keeps it off. pi turns any value of a boolean extension flag into `true`, so the normalizer drops `--flag=false` for Kimchi-only booleans before pi sees it. This matters most for `--dangerously-skip-permissions=false`, which would otherwise leave permissions in a mixed state. `--debug-prompts=false` also clears `KIMCHI_DEBUG_PROMPTS` and `KIMCHI_DEBUG_SESSION` for the run, so it wins over the environment. `--enable-experimental-features` works only in its bare form.
 
 ```sh
 kimchi --print --auto=true "do the work"
