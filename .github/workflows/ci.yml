@@ -31,25 +31,17 @@ jobs:
         run: pnpm run check
 
   unit:
-    name: unit (${{ matrix.shard }}/${{ strategy.job-total }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    strategy:
-      # Run every shard even when one fails, so one run reports every failure.
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-        with:
-          bun: "true"
-          playwright: "true"
-          search-tools: "true"
-      - name: Unit tests
-        run: pnpm run test --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: unit
+      shards: "[1, 2, 3, 4]"
+      search-tools: true
+      playwright: true
+      command: pnpm run test --shard="$SHARD_INDEX/$SHARD_TOTAL"
 
-  build-smoke:
+  # Builds the binary and proxy-helper once. Every suite that runs the binary
+  # downloads this artifact, so it is not rebuilt per suite.
+  build:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -58,31 +50,45 @@ jobs:
         with:
           bun: "true"
           go: "true"
-          playwright: "true"
-          search-tools: "true"
 
       - name: Build proxy-helper
-        run: make build
+        run: make copy-for-dev # Builds it and copies it to bin/, where kimchi finds it
         working-directory: tools/proxy-helper
 
       - name: Test proxy-helper
         run: make test
         working-directory: tools/proxy-helper
 
+      # The lint job typechecks the same tree.
       - name: Build binary
         run: pnpm run build:binary
+        env:
+          KIMCHI_SKIP_TYPECHECK: "1"
 
-      - name: Script tests
-        run: pnpm run test:scripts
+      # Kept for 3 days so "Re-run failed jobs" still works the next day.
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimchi-build
+          path: |
+            dist/**
+            bin/proxy-helper
+          retention-days: 3
+          compression-level: 1
 
-      - name: Ensure native node-pty for smoke tests
-        run: |
-          node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')" ||
-            pnpm rebuild node-pty
-          node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')"
-
-      - name: Smoke tests
-        run: pnpm run test:smoke
+  # Script tests take a few seconds, so they run here instead of in their own job.
+  smoke:
+    needs: build
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: smoke
+      use-build: true
+      search-tools: true
+      playwright: true
+      command: |
+        pnpm run test:scripts
+        node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')"
+        pnpm run test:smoke
 
   # Tripwire for ACP wire-compat regressions (docs/acp-compat.md). It diffs
   # against the PR base, so it runs on pull requests only. It is advisory: the
@@ -131,7 +137,7 @@ jobs:
   # skip the gate the same way.
   master-checks:
     if: always()
-    needs: [lint, unit, build-smoke]
+    needs: [lint, unit, build, smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
