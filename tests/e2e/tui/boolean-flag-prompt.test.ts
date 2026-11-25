@@ -35,6 +35,7 @@ test("a prompt after --auto becomes the first message of an interactive session"
 			await waitForText(terminal, "Interactive auto prompt answered", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("model answer to the initial prompt is visible")
 
+			// This can match shell echo; the request-body assertion below proves the model got it.
 			await waitForText(terminal, PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("user prompt text is visible on the terminal")
 

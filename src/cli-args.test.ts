@@ -118,6 +118,16 @@ describe("isTerminalUiMode", () => {
 	})
 })
 
+describe("pi value flags that precede a Kimchi permission boolean", () => {
+	it.each([
+		[["--name", "--yolo", "fix"]],
+		[["-n", "--auto", "fix"]],
+		[["--session-id", "--plan", "fix"]],
+	])("consumes the boolean as the option value for %j", (args) => {
+		expect(parseCliArgs(args).options).toEqual({})
+	})
+})
+
 describe("isPreDispatchValueFlag", () => {
 	it.each([
 		["--provider"],
@@ -138,6 +148,9 @@ describe("isPreDispatchValueFlag", () => {
 		["--skill"],
 		["--prompt-template"],
 		["--theme"],
+		["--name"],
+		["-n"],
+		["--session-id"],
 	])("detects %s as consuming a value during pre-dispatch scans", (arg) => {
 		expect(isPreDispatchValueFlag(arg)).toBe(true)
 	})
@@ -738,6 +751,7 @@ describe("applyDebugPromptsOptOut", () => {
 	it.each([
 		[["--debug-prompts"]],
 		[["--debug-prompts=true"]],
+		[["--debug-prompts=false", "--debug-prompts"]],
 		[["--print", "x"]],
 	])("keeps the debug env vars for %j", (args) => {
 		const env = debugEnv()

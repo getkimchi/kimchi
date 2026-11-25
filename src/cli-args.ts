@@ -30,6 +30,8 @@ const PRE_DISPATCH_VALUE_FLAG_SHORTS: Record<string, string | undefined> = {
 	skill: undefined,
 	"prompt-template": undefined,
 	theme: undefined,
+	name: "n",
+	"session-id": undefined,
 }
 
 const PRE_DISPATCH_VALUE_FLAGS = new Set(
@@ -322,7 +324,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
 	"models",
-	// Cached so the hidden-flag parse can be tested; the extension reads it with pi.getFlag.
+	// Cached because applyDebugPromptsOptOut reads the parsed false value before normalization and flag registration.
 	"debug-prompts",
 	"thinking",
 	"mode",
