@@ -413,11 +413,9 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 		return
 	}
 	if (common) {
-		const { buildEvents } = await import("../../../../src/extensions/pr-cost-reporting/events.js")
 		const { backendFor, readStoredRecordsAsync } = await import("@getkimchi/kimchi-bridge/ledger")
 		const { effectiveClaims, observeEvents, pendingBatch } = await import("@getkimchi/kimchi-bridge/ledger")
-		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
-		const { readWorkCostReport } = await import("@getkimchi/kimchi-bridge/reconcile")
+		const { accountKey, buildEvents, readWorkCostReport } = await import("@getkimchi/kimchi-bridge/reconcile")
 		const backend = backendFor(agent)
 		let claimReads = 0
 		const claimRows = backend.outboxClaims
@@ -437,7 +435,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false, del
 			new Map([[agent, { provider: "github", host: "github.com", id: "999", name: "fork/repo" }]]),
 			producer,
 			() => {},
-			(key, ids) => effectiveClaims(backend, key, ids),
+			async (key, ids) => effectiveClaims(backend, key, ids),
 		)
 		for (const group of built.accounts)
 			observeEvents(agent, accountKey(group.account), group.facts, group.recordHashes, () => {})
@@ -478,8 +476,8 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { deliverEvents, reconcileReporting } = await import("@getkimchi/kimchi-bridge/reconcile")
 	const { pendingBatch, observeEvents } = await import("@getkimchi/kimchi-bridge/ledger")
-	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
-	const { queueSnapshots, readReportingState, setReportingEnabled } = await import(
+	const { accountKey, queueSnapshots } = await import("@getkimchi/kimchi-bridge/reconcile")
+	const { readReportingState, setReportingEnabled } = await import(
 		"../../../../src/extensions/pr-cost-reporting/queue.js"
 	)
 	const key = accountKey(account)
@@ -659,7 +657,9 @@ async function nativeDelivery(agent: string): Promise<void> {
 				repository: { provider: "github", host: "github.com", id: "999" },
 				pullRequests: [],
 				requests: [request.startedAt, new Date().toISOString()].map((startedAt, index) => ({
-					requestId: index ? crypto.randomUUID() : request.requestId,
+					// The entry guard above already narrowed requestId to a string; property
+					// narrowing does not survive into this callback.
+					requestId: index ? crypto.randomUUID() : (request.requestId as string),
 					startedAt,
 					billingRecordIds: [],
 					allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
@@ -738,11 +738,11 @@ async function legacyFreezeScenario(agent: string): Promise<void> {
 		acknowledgeFrozenSnapshot,
 		freezeSnapshots,
 		pendingFrozenSnapshots,
-		queueSnapshots,
 		readReportingState,
 		reportingStatePath,
 		setReportingEnabled,
 	} = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
+	const { queueSnapshots } = await import("@getkimchi/kimchi-bridge/reconcile")
 	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	const check = () => {}
 	const path = reportingStatePath(agent)
@@ -877,7 +877,7 @@ async function producerScenario(agent: string): Promise<void> {
 	const { backendFor, closeBackends } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { observeEvents, pendingBatch } = await import("@getkimchi/kimchi-bridge/ledger")
 	const { machineFingerprint } = await import("../../../../src/extensions/pr-cost-reporting/machine.js")
-	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+	const { accountKey } = await import("@getkimchi/kimchi-bridge/reconcile")
 	const state = await readReportingState(agent)
 	const entry = Object.values(state.entries)[0]
 	if (!entry?.pending) throw new Error("Missing legacy pending producer fixture")
