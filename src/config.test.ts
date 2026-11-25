@@ -1891,7 +1891,6 @@ describe("firstRunSettingsDefaults", () => {
 		expect(firstRunSettingsDefaults().collapseWork).toBe("off")
 	})
 
-
 	it("returns a fresh object each call so callers cannot corrode the defaults", () => {
 		const first = firstRunSettingsDefaults()
 		first.collapseWork = "all"
