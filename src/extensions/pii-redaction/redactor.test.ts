@@ -2090,3 +2090,54 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 		errSpy.mockRestore()
 	})
 })
+
+// ─── Clean-string memo ───────────────────────────────────────────────────────
+// The memo is the only cache that can hit in the request path (no hook
+// preserves message-object identity). Admission is a scan fixed point: the
+// scan completed without an engine failure AND produced no change. A
+// redacted string is never admitted; a fail-open string is never admitted.
+
+describe("redactObjectStringsMeasured — clean-string memo", () => {
+	beforeEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+	afterEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+
+	it("admits a scan fixed point and skips the engine on the next pass", async () => {
+		const memo = new Set<string>()
+		const first = await redactObjectStringsMeasured({ text: "plain words, nothing else" }, undefined, memo)
+		expect(first.report.stringsScanned).toBe(1)
+		expect(first.redacted.text).toBe("plain words, nothing else")
+
+		const second = await redactObjectStringsMeasured({ text: "plain words, nothing else" }, undefined, memo)
+		expect(second.report.stringsScanned).toBe(0) // memo hit — no engine work
+		expect(second.redacted.text).toBe("plain words, nothing else")
+	})
+
+	it("never admits a string the scan redacted — every occurrence pays the scan", async () => {
+		const email = ["memo.case", "example.com"].join(String.fromCharCode(64))
+		const memo = new Set<string>()
+		const first = await redactObjectStringsMeasured({ text: `mail ${email}` }, undefined, memo)
+		expect(first.redacted.text).not.toContain(email)
+
+		const second = await redactObjectStringsMeasured({ text: `mail ${email}` }, undefined, memo)
+		expect(second.report.stringsScanned).toBeGreaterThan(0) // rescanned
+		expect(second.redacted.text).not.toContain(email) // and still redacted
+	})
+
+	it("never admits a fail-open string — it retries on every pass", async () => {
+		engineScanOverride.scanImpl = () => Promise.reject(new Error("engine exploded"))
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		const memo = new Set<string>()
+		const first = await redactObjectStringsMeasured({ text: "one longer string" }, undefined, memo)
+		expect(first.report.engineFailures).toBe(1)
+
+		const second = await redactObjectStringsMeasured({ text: "one longer string" }, undefined, memo)
+		expect(second.report.stringsScanned).toBe(1) // not memo'd — retried
+		errSpy.mockRestore()
+	})
+})

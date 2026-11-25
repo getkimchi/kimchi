@@ -40,6 +40,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { sessionManagerFrom } from "./attestation.js"
 
 /**
  * Engine entity classes that get tokens in token mode — identifiers where
@@ -355,7 +356,7 @@ export function vaultForPaint(): TokenVault | undefined {
 export function installVaultLifecycle(pi: ExtensionAPI, enabled: () => boolean): void {
 	pi.on("session_start", async (_event: unknown, ctx: unknown) => {
 		if (!enabled()) return
-		const sessionManager = (ctx as { sessionManager?: unknown })?.sessionManager
+		const sessionManager = sessionManagerFrom(ctx)
 		const sessionId = (sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.()
 		if (!sessionId) return
 		// TUI switches sessions with shutdown/start pairs; ACP keys by id. A
@@ -395,7 +396,7 @@ export function installVaultLifecycle(pi: ExtensionAPI, enabled: () => boolean):
 	})
 
 	pi.on("session_shutdown", async (_event: unknown, ctx: unknown) => {
-		const sessionManager = (ctx as { sessionManager?: unknown })?.sessionManager
+		const sessionManager = sessionManagerFrom(ctx)
 		const sessionId = (sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.()
 		if (!sessionId) return
 		const entry = vaultEntries.get(sessionId)
