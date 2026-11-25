@@ -28,4 +28,8 @@ export type {
 	RunReviewPanelOptions,
 	WrapUpReviewPanelOptions,
 } from "./types.js"
-export { REVIEW_PANEL_STATE_VERSION, REVIEW_RECONCILIATION_VERSION } from "./types.js"
+export {
+	REVIEW_PANEL_STATE_VERSION,
+	REVIEW_RECONCILIATION_REQUEST_VERSION,
+	REVIEW_RECONCILIATION_VERSION,
+} from "./types.js"

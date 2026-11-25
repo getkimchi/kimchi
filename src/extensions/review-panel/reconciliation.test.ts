@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -215,6 +215,7 @@ describe("review panel reconciliation and fallback", () => {
 		const result = await finalizeReviewPanel({
 			store,
 			outputDir,
+			contextDir,
 			hasVerifier: true,
 			reconcile: async () =>
 				JSON.stringify({ schema_version: REVIEW_RECONCILIATION_VERSION, findings: [], decisions: [], threads: [] }),
@@ -240,11 +241,77 @@ describe("review panel reconciliation and fallback", () => {
 				semantic: { schema_version: REVIEW_RECONCILIATION_VERSION, findings: [], decisions: [], threads: [] },
 			}
 		})
-		const result = await finalizeReviewPanel({ store, outputDir, hasVerifier: false })
+		const result = await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
 		expect(readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")).toBe(before)
 		expect(result.findings).toHaveLength(1)
 		expect(result.state.reconciliation.status).toBe("fallback")
 		expect(result.state.reconciliation.reason).toContain("Cached semantic reconciliation failed validation")
+	})
+
+	it("rejects a symlinked final checkpoint", async () => {
+		const finalPath = reviewPanelPaths(outputDir).findingsPath
+		const targetPath = join(sandbox, "linked-final.jsonl")
+		mkdirSync(join(outputDir, "findings"), { recursive: true })
+		writeFileSync(
+			targetPath,
+			serializeFinalFindings([{ ...candidate("spec", 1).finding, id: "final-1", writer: "final" }]),
+		)
+		symlinkSync(targetPath, finalPath)
+		await expect(readFinalFindings(finalPath)).rejects.toThrow("is not a regular final findings file")
+	})
+
+	it("rejects a directory in place of the final checkpoint", async () => {
+		const finalPath = reviewPanelPaths(outputDir).findingsPath
+		mkdirSync(finalPath, { recursive: true })
+		await expect(readFinalFindings(finalPath)).rejects.toThrow("is not a regular final findings file")
+	})
+
+	it("rejects an oversized final checkpoint before parsing it", async () => {
+		const finalPath = reviewPanelPaths(outputDir).findingsPath
+		mkdirSync(join(outputDir, "findings"), { recursive: true })
+		writeFileSync(finalPath, Buffer.alloc(MAX_OUTPUT_FILE_BYTES + 1))
+		await expect(readFinalFindings(finalPath)).rejects.toThrow("exceeds the 1 MiB final findings limit")
+	})
+
+	it("accepts finalization paths with trailing separators", async () => {
+		const store = await makeStore([])
+		const result = await finalizeReviewPanel({
+			store,
+			outputDir: `${outputDir}/`,
+			contextDir: `${contextDir}/`,
+			hasVerifier: false,
+		})
+		expect(result.summary.coverage).toMatchObject({ status: "complete", final_finding_count: 0 })
+	})
+
+	it("accepts symlink aliases for finalization paths", async () => {
+		const outputAlias = join(sandbox, "output-alias")
+		const contextAlias = join(sandbox, "context-alias")
+		symlinkSync(outputDir, outputAlias, "dir")
+		symlinkSync(contextDir, contextAlias, "dir")
+		const store = await makeStore([])
+		const result = await finalizeReviewPanel({
+			store,
+			outputDir: outputAlias,
+			contextDir: contextAlias,
+			hasVerifier: false,
+		})
+		expect(result.summary.coverage).toMatchObject({ status: "complete", final_finding_count: 0 })
+		expect(result.findingsPath).toBe(reviewPanelPaths(outputDir).findingsPath)
+	})
+
+	it("rejects finalization paths that disagree with saved panel state", async () => {
+		const store = await makeStore([])
+		const otherOutputDir = join(sandbox, "other-output")
+		await expect(
+			finalizeReviewPanel({ store, outputDir: otherOutputDir, contextDir, hasVerifier: false }),
+		).rejects.toThrow("outputDir does not match saved panel state")
+		expect(existsSync(reviewPanelPaths(otherOutputDir).findingsPath)).toBe(false)
+
+		await expect(
+			finalizeReviewPanel({ store, outputDir, contextDir: join(sandbox, "other-context"), hasVerifier: false }),
+		).rejects.toThrow("contextDir does not match saved panel state")
+		expect(existsSync(reviewPanelPaths(outputDir).findingsPath)).toBe(false)
 	})
 
 	it("rejects an anchor created only in a reviewer temporary test", async () => {
@@ -281,9 +348,9 @@ describe("review panel reconciliation and fallback", () => {
 			["final-2", 2, "warning"],
 		])
 
-		await finalizeReviewPanel({ store, outputDir, hasVerifier: false })
+		await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
 		const first = readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")
-		await finalizeReviewPanel({ store, outputDir, hasVerifier: false })
+		await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
 		expect(readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")).toBe(first)
 	})
 
@@ -398,7 +465,7 @@ describe("review panel reconciliation and fallback", () => {
 		]
 		const store = await makeStore(candidates)
 		await checkpointReviewPanelFallback(store, reviewPanelPaths(outputDir).findingsPath)
-		const result = await finalizeReviewPanel({ store, outputDir, hasVerifier: false })
+		const result = await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
 		expect(result.findings).toHaveLength(1)
 		const complete = result.state.reconciliation.provenance?.["final-1"]
 		expect(complete).toHaveLength(51)
@@ -427,6 +494,7 @@ describe("review panel reconciliation and fallback", () => {
 		const result = await finalizeReviewPanel({
 			store,
 			outputDir,
+			contextDir,
 			hasVerifier: true,
 			reconcile: async () => JSON.stringify(semantic([], [], threads)),
 		})
@@ -473,6 +541,7 @@ describe("review panel reconciliation and fallback", () => {
 		const first = await finalizeReviewPanel({
 			store,
 			outputDir,
+			contextDir,
 			hasVerifier: true,
 			reconcile: async () => JSON.stringify(output),
 		})
@@ -487,7 +556,7 @@ describe("review panel reconciliation and fallback", () => {
 		const findingsBefore = readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")
 		const summaryBefore = readFileSync(reviewPanelPaths(outputDir).summaryPath, "utf8")
 		const repliesBefore = readFileSync(repliesPath, "utf8")
-		const second = await finalizeReviewPanel({ store, outputDir, hasVerifier: false })
+		const second = await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
 		expect(second.findings).toEqual([])
 		expect(readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")).toBe(findingsBefore)
 		expect(readFileSync(reviewPanelPaths(outputDir).summaryPath, "utf8")).toBe(summaryBefore)

@@ -300,6 +300,7 @@ async function finalizeWithWriterRescan(
 			return await finalizeReviewPanel({
 				store,
 				outputDir,
+				contextDir: store.state.contextDir,
 				...options,
 				beforePublish: async () => {
 					await rescanAllWriters(store, outputDir)
@@ -314,7 +315,7 @@ async function finalizeWithWriterRescan(
 	}
 	// Continually arriving submissions are bounded by the final fallback
 	// publication; anything after its source scan belongs to the next wrap-up.
-	return finalizeReviewPanel({ store, outputDir, hasVerifier: false })
+	return finalizeReviewPanel({ store, outputDir, contextDir: store.state.contextDir, hasVerifier: false })
 }
 
 /** Run a fresh panel. Stage 5 passes parser panel fields directly plus trusted

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { lstat, open, readFile, rename, rm, stat } from "node:fs/promises"
+import { lstat, open, readFile, rename, rm } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import {
@@ -280,16 +280,19 @@ export function buildReconciledFindings(
 }
 
 export async function readFinalFindings(path: string): Promise<ReviewFindingRecord[]> {
+	let metadata: Awaited<ReturnType<typeof lstat>>
 	try {
-		await stat(path)
-		const contents = await readFile(path, "utf8")
-		if (!contents.trim()) return []
-		return contents
-			.trim()
-			.split("\n")
-			.map((line, index) => parseRecord(JSON.parse(line), "final", index + 1))
+		metadata = await lstat(path)
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
 		throw error
 	}
+	if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error(`${path} is not a regular final findings file.`)
+	if (metadata.size > MAX_OUTPUT_FILE_BYTES) throw new Error(`${path} exceeds the 1 MiB final findings limit.`)
+	const contents = await readFile(path, "utf8")
+	if (!contents.trim()) return []
+	return contents
+		.trim()
+		.split("\n")
+		.map((line, index) => parseRecord(JSON.parse(line), "final", index + 1))
 }

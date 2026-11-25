@@ -13,6 +13,12 @@
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true
 	},
-	"include": ["src", "extensions", "scripts", "tools/perf/validate-fixture.ts"],
+	"include": [
+		"src",
+		"extensions",
+		"scripts",
+		"tests/fixtures/review-panel/natural-exit-process.ts",
+		"tools/perf/validate-fixture.ts"
+	],
 	"exclude": ["node_modules", "dist"]
 }

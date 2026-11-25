@@ -184,7 +184,11 @@ reply JSONL file is replaced atomically, so no partially appended batch exists.
 A validated semantic result replaces fallback findings before replies or the
 summary are written. Reconciliation for an identical input digest is cached, so
 repeat wrap-up cannot change IDs or invoke another verdict. Existing identical
-thread replies are not appended again.
+thread replies are not appended again. A deadline-forced fallback is final for
+that candidate input and its evaluated thread history. A later wrap-up with the
+same candidate input and unchanged thread history reuses that fallback instead
+of retrying the verifier: published IDs remain stable, non-exact duplicates stay
+unmerged, and no thread replies are produced for that input.
 
 `summary/final.json` remains `review-summary/v1` with optional structured
 `coverage` and is written last. When its logical content is unchanged, the

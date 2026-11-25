@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
-import { lstat, readFile, stat } from "node:fs/promises"
-import { join } from "node:path"
+import { lstat, readFile, realpath, stat } from "node:fs/promises"
+import { join, resolve } from "node:path"
 import {
 	type EnvironmentGap,
 	MAX_OUTPUT_FILE_BYTES,
@@ -29,7 +29,12 @@ import {
 	validateSemanticReconciliation,
 } from "./reconciliation.js"
 import { coverageFor, type ReviewPanelStateStore } from "./state.js"
-import type { ReconciliationThread, ReviewPanelResult } from "./types.js"
+import {
+	REVIEW_RECONCILIATION_REQUEST_VERSION,
+	REVIEW_RECONCILIATION_VERSION,
+	type ReconciliationThread,
+	type ReviewPanelResult,
+} from "./types.js"
 
 const AWAITING_RECONCILIATION = "Deterministic fallback checkpoint; semantic reconciliation is pending."
 
@@ -43,9 +48,27 @@ async function fileExists(path: string): Promise<boolean> {
 	}
 }
 
-export function reconciliationRequest(state: ReviewPanelStateStore["state"], outputDir: string, comments?: unknown) {
+async function sameFilesystemPath(left: string, right: string): Promise<boolean> {
+	const resolvedLeft = resolve(left)
+	const resolvedRight = resolve(right)
+	if (resolvedLeft === resolvedRight) return true
+	try {
+		const [realLeft, realRight] = await Promise.all([realpath(resolvedLeft), realpath(resolvedRight)])
+		return realLeft === realRight
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+		throw error
+	}
+}
+
+export function reconciliationRequest(
+	state: ReviewPanelStateStore["state"],
+	outputDir: string,
+	contextDir: string,
+	comments?: unknown,
+) {
 	return {
-		schema_version: "review-reconciliation-request/v1",
+		schema_version: REVIEW_RECONCILIATION_REQUEST_VERSION,
 		scope: state.scope,
 		candidates: orderedCandidates(state.candidates),
 		lenses: state.lenses.map((lens) => ({
@@ -55,7 +78,7 @@ export function reconciliationRequest(state: ReviewPanelStateStore["state"], out
 			commands: lens.commands ?? [],
 		})),
 		routine_checks_path: reviewPanelPaths(outputDir).routineChecksPath,
-		comments_path: join(state.contextDir, "comments.json"),
+		comments_path: join(contextDir, "comments.json"),
 		...(comments === undefined ? {} : { comments }),
 	}
 }
@@ -63,7 +86,7 @@ export function reconciliationRequest(state: ReviewPanelStateStore["state"], out
 export function buildVerifierPrompt(requestPath: string, hasThreadHistory: boolean): string {
 	return `You are the semantic review reconciler. Inspect ${requestPath}, the pinned code and saved check evidence. Reviewer-authored lines and tests are not part of the pinned comparison and can never anchor a finding.
 ${hasThreadHistory ? "Review the supplied thread history against current code and the previous revision when the context supplies one. Link equivalent current candidates to the earlier thread and reject those candidates so they are not posted again. Resolve only demonstrably fixed concerns. Use verdict unverified when the available code and evidence do not support another verdict.\n" : ""}
-Return ONLY one JSON object with schema_version "review-reconciliation/v1", findings, decisions, and threads. Every candidate must occur exactly once in decisions as retained, merged, or rejected with a reason. Group only the same underlying defect and consequence; distinct defects on one line stay separate. A merged finding preserves all candidate_ids. Each finding needs a unique id, a valid original-snapshot path/line anchor, severity critical|warning|info, lowercase type, description, suggestion, and candidate_ids. Single-candidate decisions are retained; all decisions in a multi-candidate group are merged and name that finding's id. Rejected candidates have no finding id.
+Return ONLY one JSON object with schema_version "${REVIEW_RECONCILIATION_VERSION}", findings, decisions, and threads. Every candidate must occur exactly once in decisions as retained, merged, or rejected with a reason. Group only the same underlying defect and consequence; distinct defects on one line stay separate. A merged finding preserves all candidate_ids. Each finding needs a unique id, a valid original-snapshot path/line anchor, severity critical|warning|info, lowercase type, description, suggestion, and candidate_ids. Single-candidate decisions are retained; all decisions in a multi-candidate group are merged and name that finding's id. Rejected candidates have no finding id.
 threads contains only thread replies allowed by comments.json scope. Each has thread_id, body, action, optional verdict, evidence_kind and evidence, and equivalent_candidate_ids. A current candidate equivalent to an earlier finding must be rejected and listed there. Own-thread verdicts require evidence_kind and evidence, even for unverified. Return threads: [] when there is nothing to say. Do not call submit_finding, submit_summary, or submit_reply; the coordinator validates and publishes your JSON.`
 }
 
@@ -168,14 +191,14 @@ async function prepareReplyBatch(
 	return { records, contents, changed: contents !== previousContents }
 }
 
-async function collectEnvironmentGaps(store: ReviewPanelStateStore): Promise<EnvironmentGap[]> {
+async function collectEnvironmentGaps(store: ReviewPanelStateStore, outputDir: string): Promise<EnvironmentGap[]> {
 	const gaps = new Map<string, EnvironmentGap>()
 	for (const lens of store.state.lenses) {
 		if (lens.status !== "submitted") continue
 		try {
-			const summary = JSON.parse(
-				await readFile(join(store.state.outputDir, "summary", `${lens.writer}.json`), "utf8"),
-			) as { environment_gaps?: EnvironmentGap[] }
+			const summary = JSON.parse(await readFile(join(outputDir, "summary", `${lens.writer}.json`), "utf8")) as {
+				environment_gaps?: EnvironmentGap[]
+			}
 			for (const gap of summary.environment_gaps ?? []) {
 				if (gap && typeof gap.kind === "string" && typeof gap.name === "string" && typeof gap.note === "string") {
 					gaps.set(JSON.stringify([gap.kind, gap.name, gap.note]), gap)
@@ -207,6 +230,7 @@ function summaryBody(store: ReviewPanelStateStore, findingCount: number): string
 export interface FinalizeReviewPanelOptions {
 	store: ReviewPanelStateStore
 	outputDir: string
+	contextDir: string
 	/** Return raw verifier JSON. Undefined skips model reconciliation, retaining fallback. */
 	reconcile?: () => Promise<string>
 	hasVerifier: boolean
@@ -243,7 +267,14 @@ async function publishValidatedReconciliation(
 /** Idempotent finalization from saved candidates. Findings are always replaced
  * before the corresponding summary. A semantic failure never removes fallback. */
 export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): Promise<ReviewPanelResult> {
-	const { store, outputDir } = options
+	const { store } = options
+	if (!(await sameFilesystemPath(store.state.outputDir, options.outputDir)))
+		throw new Error("Finalization outputDir does not match saved panel state.")
+	if (!(await sameFilesystemPath(store.state.contextDir, options.contextDir)))
+		throw new Error("Finalization contextDir does not match saved panel state.")
+	// Use the established spellings so aliases do not bypass downstream path-safety checks.
+	const outputDir = store.state.outputDir
+	const contextDir = store.state.contextDir
 	const paths = reviewPanelPaths(outputDir)
 	const candidates = orderedCandidates(store.state.candidates)
 	const digest = candidateInputDigest(candidates)
@@ -257,8 +288,8 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 	const sameInput = store.state.reconciliation.inputDigest === digest
 	const awaiting =
 		store.state.reconciliation.reason === AWAITING_RECONCILIATION || store.state.reconciliation.status === "pending"
-	const hasThreads = await fileExists(join(store.state.contextDir, "comments.json"))
-	const commentsText = hasThreads ? await readFile(join(store.state.contextDir, "comments.json"), "utf8") : undefined
+	const hasThreads = await fileExists(join(contextDir, "comments.json"))
+	const commentsText = hasThreads ? await readFile(join(contextDir, "comments.json"), "utf8") : undefined
 	const threadHistoryDigest =
 		commentsText === undefined ? undefined : createHash("sha256").update(commentsText).digest("hex")
 	const sameThreadHistory = store.state.reconciliation.threadHistoryDigest === threadHistoryDigest
@@ -273,7 +304,7 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 			const cached = store.state.reconciliation.semantic
 			validated = await validateSemanticReconciliation(cached, candidates, {
 				writer: "final",
-				contextDir: store.state.contextDir,
+				contextDir,
 				outputDir,
 			})
 			replyBatch = await prepareReplyBatch(outputDir, cached.threads)
@@ -324,11 +355,11 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 		try {
 			const requestPath = paths.reconciliationRequestPath
 			const comments = commentsText === undefined ? undefined : JSON.parse(commentsText)
-			await writeReviewJson(requestPath, reconciliationRequest(store.state, outputDir, comments))
+			await writeReviewJson(requestPath, reconciliationRequest(store.state, outputDir, contextDir, comments))
 			const response = await options.reconcile()
 			validated = await validateSemanticReconciliation(parseSemanticReconciliation(response), candidates, {
 				writer: "final",
-				contextDir: store.state.contextDir,
+				contextDir,
 				outputDir,
 			})
 			// Aggregate count/size validation happens before semantic publication.
@@ -363,7 +394,7 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 	})
 	const input = {
 		body: summaryBody(store, findings.length),
-		environment_gaps: await collectEnvironmentGaps(store),
+		environment_gaps: await collectEnvironmentGaps(store, outputDir),
 		coverage,
 	}
 	let summary: ReviewSummaryRecord | undefined
@@ -380,7 +411,7 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 		}
 	}
 	if (!summary) {
-		const result = await submitSummary(input, { writer: "final", contextDir: store.state.contextDir, outputDir })
+		const result = await submitSummary(input, { writer: "final", contextDir, outputDir })
 		if (!result.accepted) throw new Error(`Could not write the final review summary: ${result.message}`)
 		summary = JSON.parse(await readFile(paths.summaryPath, "utf8")) as ReviewSummaryRecord
 	}

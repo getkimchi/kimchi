@@ -12,6 +12,7 @@ import type { ResolvedReviewScope, ResolvedReviewTarget } from "../review-target
 import type { RequiredReviewLens, ReviewLensId, ReviewPanelArguments, ReviewPanelSelectionInput } from "./lenses.js"
 
 export const REVIEW_PANEL_STATE_VERSION = "review-panel/v1"
+export const REVIEW_RECONCILIATION_REQUEST_VERSION = "review-reconciliation-request/v1"
 export const REVIEW_RECONCILIATION_VERSION = "review-reconciliation/v1"
 
 export type ReviewLensStatus = "queued" | "running" | "submitted" | "failed" | "cancelled"

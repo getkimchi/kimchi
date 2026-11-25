@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -509,6 +509,26 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(usageWriters).toEqual(new Set(["spec", "standards", "operational", "adversarial", "reconciliation"]))
 	})
 
+	it("wraps up through a symlink alias of the output directory", async () => {
+		const { ctx } = await scriptedContext(defaultScript)
+		const initial = await runReviewPanel(runOptions(ctx, await target(), { lenses: ["spec"] }))
+		const findingsBefore = readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")
+		const outputAlias = join(sandbox, "review-output-alias")
+		symlinkSync(outputDir, outputAlias, "dir")
+
+		const wrapped = await wrapUpReviewPanel({
+			ctx,
+			pi: createExtensionApi().api,
+			outputDir: outputAlias,
+			rootDir: join(sandbox, "alias-wrap-worktrees"),
+			checkDefinitions: [],
+			executionPolicy: { mode: "headless" },
+		})
+
+		expect(wrapped.findings).toEqual(initial.findings)
+		expect(readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")).toBe(findingsBefore)
+	})
+
 	it("stops queued launches at reserve, cancels active reviewers after grace, and stabilizes two wrap-ups", async () => {
 		const controller = new AbortController()
 		const script: PanelScript = (call) => {
@@ -953,7 +973,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 
 	it("exits naturally after a fast reconciliation when no timeout remains armed", async () => {
 		const harnessRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
-		const fixture = join(harnessRoot, "src/extensions/review-panel/natural-exit-process.ts")
+		const fixture = join(harnessRoot, "tests/fixtures/review-panel/natural-exit-process.ts")
 		const tsx = join(harnessRoot, "node_modules/tsx/dist/cli.mjs")
 		const child = spawn(process.execPath, [tsx, fixture], {
 			env: { ...process.env, KIMCHI_CODING_AGENT_DIR: join(sandbox, "child-agent-home") },
@@ -984,7 +1004,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 
 	it("aborts a blocked usage callback through its signal and exits naturally", async () => {
 		const harnessRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
-		const fixture = join(harnessRoot, "src/extensions/review-panel/natural-exit-process.ts")
+		const fixture = join(harnessRoot, "tests/fixtures/review-panel/natural-exit-process.ts")
 		const tsx = join(harnessRoot, "node_modules/tsx/dist/cli.mjs")
 		const child = spawn(process.execPath, [tsx, fixture], {
 			env: {
