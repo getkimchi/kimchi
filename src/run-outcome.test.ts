@@ -459,8 +459,8 @@ describe("formatRunOutcomeDiagnostic", () => {
 			`KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code ${KIMCHI_NO_PROMPT_EXIT_CODE}.`,
 		)
 		expect(lines[1]).toBe("An empty prompt or an empty @file does not count as a prompt.")
-		expect(lines[2]).toBe("A flag such as --auto may have taken the prompt as its value.")
-		expect(lines[3]).toBe("Put the prompt before the flags, or write the flag as --auto=true.")
+		expect(lines[2]).toBe("A flag that needs a value, such as --model, may have taken the prompt as its value.")
+		expect(lines[3]).toBe("Give each such flag its own value, or put the prompt before the flags.")
 		expect(lines.length).toBeLessThanOrEqual(5)
 	})
 

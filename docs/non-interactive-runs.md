@@ -81,7 +81,7 @@ This is a change for existing automation: a JSON run with no prompt or no final 
 
 ## Troubleshooting
 
-- Exit `2`: a flag such as `--auto` may have taken the prompt as its value, or the prompt was empty. Put the prompt before the flags, or write the flag as `--auto=true`.
+- Exit `2`: the prompt was empty, or a flag that needs a value, such as `--model`, took the prompt as its value. Give each such flag its own value, or put the prompt before the flags. Kimchi boolean flags such as `--auto` never take the prompt (see [Boolean flag syntax](#boolean-flag-syntax)).
 - Exit `3` with a blocked tool: a permission rule, the permission mode, a hook or a disabled resource blocked a tool, and the model gave no answer after that. Allow the tool, then rerun.
 - Exit `3` because an extension handled the prompt: a hook or an extension stopped the prompt before the agent ran. Check your hooks, or rerun with `--mode json`.
 - Exit `3` after an empty answer: open the session file, or rerun with `--mode json`, to see the steps.

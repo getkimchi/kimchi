@@ -223,9 +223,11 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 		expect(result.code, result.failure).toBe(KIMCHI_NO_PROMPT_EXIT_CODE)
 		expect(result.stdout, result.failure).toBe("")
 		expect(result.stderr, result.failure).toContain(NO_PROMPT_MARKER)
-		expect(result.stderr, result.failure).toContain("A flag such as --auto may have taken the prompt as its value.")
 		expect(result.stderr, result.failure).toContain(
-			"Put the prompt before the flags, or write the flag as --auto=true.",
+			"A flag that needs a value, such as --model, may have taken the prompt as its value.",
+		)
+		expect(result.stderr, result.failure).toContain(
+			"Give each such flag its own value, or put the prompt before the flags.",
 		)
 		expectTextOutcomeEquivalence(result)
 	})
@@ -239,7 +241,7 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 		expect(JSON.parse(lines[0] ?? "").type, result.failure).toBe("session")
 		expect(result.stderr, result.failure).toContain(NO_PROMPT_MARKER)
 		expect(result.stderr, result.failure).toContain(
-			"Put the prompt before the flags, or write the flag as --auto=true.",
+			"Give each such flag its own value, or put the prompt before the flags.",
 		)
 	})
 
