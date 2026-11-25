@@ -63,6 +63,10 @@ vi.mock("../orchestration/model-registry/guidelines/guidelines-resolver.js", () 
 }))
 vi.mock("../auto-model/index.js", () => ({ createAutoModelRoutingExtension: vi.fn(() => () => {}) }))
 
+// tsx/dependency startup is slow on loaded one-CPU runners. The budget is only
+// for spawning; natural exit is still asserted within 2s of the completion marker.
+const NATURAL_EXIT_STARTUP_BUDGET_MS = 30_000
+
 const model: Model<Api> = {
 	id: "panel-scripted",
 	name: "Panel Scripted",
@@ -969,10 +973,10 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			child.once("error", reject)
 			child.once("close", (code) => resolve({ kind: "exit", code }))
 		})
-		const outcome = await raceWithTimeout(settled, 5000, { kind: "timeout" as const }, () => {
+		const outcome = await raceWithTimeout(settled, NATURAL_EXIT_STARTUP_BUDGET_MS, { kind: "timeout" as const }, () => {
 			child.kill("SIGKILL")
 		})
-		expect(outcome, `${stdout}\n${stderr}`).toEqual({ kind: "exit", code: 0 })
+		expect(outcome, `stdout="${stdout}"\nstderr="${stderr}"`).toEqual({ kind: "exit", code: 0 })
 		expect(stdout).toContain('"outcome":"completion"')
 		expect(completedAt).toBeDefined()
 		expect(Date.now() - (completedAt ?? 0)).toBeLessThan(2000)
@@ -1004,10 +1008,10 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			child.once("error", reject)
 			child.once("close", (code) => resolve({ kind: "exit", code }))
 		})
-		const outcome = await raceWithTimeout(settled, 5000, { kind: "timeout" as const }, () => {
+		const outcome = await raceWithTimeout(settled, NATURAL_EXIT_STARTUP_BUDGET_MS, { kind: "timeout" as const }, () => {
 			child.kill("SIGKILL")
 		})
-		expect(outcome, `${stdout}\n${stderr}`).toEqual({ kind: "exit", code: 0 })
+		expect(outcome, `stdout="${stdout}"\nstderr="${stderr}"`).toEqual({ kind: "exit", code: 0 })
 		expect(stdout).toContain('"outcome":"completion"')
 		expect(stdout).toContain('"usageAborted":true')
 		expect(completedAt).toBeDefined()
