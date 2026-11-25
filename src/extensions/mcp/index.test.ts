@@ -15,6 +15,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId } from "../work-attribution.js"
+import type { CacheFileStamp } from "./cache-file-stamp.js"
 
 // Spies keep the real observer, so an attributed MCP write reaches Git snapshots and the work ledger.
 vi.mock("../work-attribution/file-observations.js", { spy: true })
@@ -70,8 +71,12 @@ const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const readOnlyState = vi.hoisted(() => ({
 	wireNames: new Set<string>(),
 	authorizationConfigs: [] as McpConfig[],
-	privateCatalogs: [] as Array<ReadonlyMap<string, ServerCacheEntry> | undefined>,
+	// Catalogs and candidates as the read-only callbacks received them, so assertions attribute to that path.
+	gatewayCatalogs: [] as McpCallCatalog[],
+	wireNameCandidates: [] as Array<readonly McpToolCandidate[]>,
 }))
+const baseCacheStamp: CacheFileStamp = { dev: 1n, ino: 2n, size: 3n, mtimeNs: 4n, ctimeNs: 5n }
+const cacheStampState = vi.hoisted(() => ({ stamp: null as CacheFileStamp | null }))
 const gatewayState = vi.hoisted(() => ({
 	server: undefined as { name: string; entry: ServerEntry } | undefined,
 	addresses: ["https://api.cast.ai/mcp"],
@@ -85,6 +90,12 @@ vi.mock("./call-facts.js", async (importOriginal) => ({
 vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => ({
 	...(await importOriginal<typeof import("pi-mcp-adapter/metadata-cache")>()),
 	loadMetadataCache: metadataCache.loadMetadataCache,
+}))
+
+// The stamp is explicit test state rather than a function of the isolated HOME's cache file.
+vi.mock("./cache-file-stamp.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./cache-file-stamp.js")>()),
+	statMetadataCacheFile: () => cacheStampState.stamp,
 }))
 
 vi.mock("pi-mcp-adapter", () => ({
@@ -153,7 +164,8 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 // Wire names carry their server's prefix, as with the adapter's default "server" prefix mode.
 vi.mock("./read-only.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("./read-only.js")>()),
-	collectReadOnlyMcpWireNames: (_candidates: readonly McpToolCandidate[], server?: string) => {
+	collectReadOnlyMcpWireNames: (candidates: readonly McpToolCandidate[], server?: string) => {
+		readOnlyState.wireNameCandidates.push(candidates)
 		return [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
 	},
 }))
@@ -162,18 +174,9 @@ vi.mock("./call-catalog.js", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./call-catalog.js")>()
 	return {
 		...original,
-		// The facade now hands the read-only helpers a snapshot, so record the config and
-		// private catalogs it snapshots with.
-		snapshotMcpCallCatalog: (
-			config: McpConfig,
-			privateCatalogs: ReadonlyMap<string, ServerCacheEntry>,
-			registeredToolNames: ReadonlySet<string>,
-		) => {
-			readOnlyState.authorizationConfigs.push(config)
-			readOnlyState.privateCatalogs.push(privateCatalogs)
-			return original.snapshotMcpCallCatalog(config, privateCatalogs, registeredToolNames)
-		},
-		isReadOnlyQualifiedMcpGatewayTool: (_catalog: McpCallCatalog, toolName: string, server?: string) => {
+		isReadOnlyQualifiedMcpGatewayTool: (catalog: McpCallCatalog, toolName: string, server?: string) => {
+			readOnlyState.authorizationConfigs.push(catalog.config)
+			readOnlyState.gatewayCatalogs.push(catalog)
 			const names = [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
 			return names.includes(toolName) || (server !== undefined && names.includes(`${server}_${toolName}`))
 		},
@@ -266,7 +269,9 @@ describe("upstream MCP adapter facade", () => {
 		permissionState.sessionIds = []
 		readOnlyState.wireNames.clear()
 		readOnlyState.authorizationConfigs.length = 0
-		readOnlyState.privateCatalogs.length = 0
+		readOnlyState.gatewayCatalogs.length = 0
+		readOnlyState.wireNameCandidates.length = 0
+		cacheStampState.stamp = baseCacheStamp
 		planning.applyCooperativeTweak.mockClear()
 		planning.reapplyCurrentProfile.mockReset().mockReturnValue(false)
 	})
@@ -1195,6 +1200,138 @@ describe("upstream MCP adapter facade", () => {
 
 			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_current"])
 		})
+
+		it("loads metadata once across repeated lookups while nothing changes", async () => {
+			configState.config = { mcpServers: { docs: { command: "docs" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			metadataCache.loadMetadataCache.mockClear()
+
+			for (let call = 0; call < 3; call++) lookupMcpCall(harness.api, "mcp", { search: "issue" })
+
+			expect(metadataCache.loadMetadataCache).toHaveBeenCalledTimes(1)
+			expect(vi.mocked(describeMcpCall)).toHaveBeenCalledTimes(3)
+		})
+
+		it("rebuilds the lookup catalog when the cache file stamp changes", async () => {
+			const docs = { command: "docs" }
+			configState.config = { mcpServers: { docs } }
+			const cacheWith = (toolName: string): MetadataCache => ({
+				version: 1,
+				servers: {
+					docs: {
+						configHash: computeServerHash(docs),
+						cachedAt: Date.now(),
+						resources: [],
+						tools: [{ name: toolName, annotations: { readOnlyHint: true } }],
+					},
+				},
+			})
+			metadataCache.loadMetadataCache.mockReturnValue(cacheWith("get_old"))
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+
+			lookupMcpCall(harness.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_old"])
+
+			metadataCache.loadMetadataCache.mockReturnValue(cacheWith("get_new"))
+			cacheStampState.stamp = { ...baseCacheStamp, mtimeNs: baseCacheStamp.mtimeNs + 1n }
+			lookupMcpCall(harness.api, "mcp", {})
+
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_new"])
+			expect(metadataCache.loadMetadataCache).toHaveBeenCalledTimes(2)
+		})
+
+		it("rebuilds the lookup catalog when the cache file stamp is unknown", async () => {
+			configState.config = { mcpServers: { docs: { command: "docs" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			cacheStampState.stamp = null
+			metadataCache.loadMetadataCache.mockClear()
+
+			lookupMcpCall(harness.api, "mcp", {})
+			lookupMcpCall(harness.api, "mcp", {})
+
+			expect(metadataCache.loadMetadataCache).toHaveBeenCalledTimes(2)
+		})
+
+		it("rebuilds the lookup catalog after a private catalog update", async () => {
+			configState.config = { mcpServers: { jira: { command: "jira" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			metadataCache.loadMetadataCache.mockClear()
+
+			lookupMcpCall(harness.api, "mcp", {})
+			const before = lastLookupCatalog()
+			expect(metadataCache.loadMetadataCache).toHaveBeenCalledTimes(1)
+
+			upstream.sessionMetadataObserver?.("jira", privateEntry("get_issue"))
+			lookupMcpCall(harness.api, "mcp", {})
+
+			const after = lastLookupCatalog()
+			expect(after).not.toBe(before)
+			expect(after.candidates.map(({ tool }) => tool.originalName)).toEqual(["get_issue"])
+			expect(metadataCache.loadMetadataCache).toHaveBeenCalledTimes(2)
+		})
+
+		it("shares one catalog between the call lookup and the read-only callbacks", async () => {
+			configState.config = { mcpServers: { docs: { command: "docs" } } }
+			planning.currentProfile = "planning-adhoc"
+			readOnlyState.wireNames.add("docs_get_issue")
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			metadataCache.loadMetadataCache.mockClear()
+
+			lookupMcpCall(harness.api, "mcp", {})
+			const lookupCatalog = lastLookupCatalog()
+			const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+			upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+			await harness
+				.getRegisteredTool("mcp")
+				.execute(
+					"gateway",
+					{ tool: "docs_get_issue", server: "docs", args: {} },
+					undefined,
+					undefined,
+					createToolContext(),
+				)
+			// The provider is the adapter-facing path that asks for the read-only wire names.
+			const provider = planning.registerReadOnlyToolProvider.mock.calls.at(-1)?.[1]
+			expect(provider?.()).toEqual(["mcp"])
+
+			expect(gatewayExecute).toHaveBeenCalledOnce()
+			expect(readOnlyState.gatewayCatalogs.at(-1)).toBe(lookupCatalog)
+			expect(readOnlyState.wireNameCandidates.at(-1)).toBe(lookupCatalog.candidates)
+			expect(metadataCache.loadMetadataCache).toHaveBeenCalledTimes(1)
+		})
+
+		it("does not carry private catalogs into a replacement session", async () => {
+			configState.config = { mcpServers: { jira: { command: "jira" } } }
+			const harness = createExtensionApi()
+			mcpAdapterExtension(harness.api)
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			upstream.sessionObserverFactory?.()?.("jira", privateEntry("get_old"))
+			lookupMcpCall(harness.api, "mcp", {})
+			expect(lastLookupCatalog().candidates.map(({ tool }) => tool.originalName)).toEqual(["get_old"])
+
+			await harness.getHandler("session_shutdown")({ type: "session_shutdown" }, createContext())
+			await start(harness)
+			upstream.api?.registerTool(tool("mcp", "MCP"))
+			lookupMcpCall(harness.api, "mcp", {})
+
+			expect(lastLookupCatalog().candidates).toEqual([])
+		})
 	})
 
 	it("creates an isolated caller-wins configuration for ACP sessions", async () => {
@@ -1257,12 +1394,15 @@ describe("upstream MCP adapter facade", () => {
 		await start(harness)
 
 		const entry: ServerCacheEntry = {
-			configHash: "jira-auth-context",
+			// Must match the configured server's hash: a mismatched private entry is filtered out before the candidates assertion.
+			configHash: computeServerHash({ command: "jira" }),
 			cachedAt: 1,
 			resources: [],
 			tools: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
 			cacheScope: "private",
 		}
+		const gatewayCandidateNames = () =>
+			readOnlyState.gatewayCatalogs.at(-1)?.candidates.map(({ tool }) => tool.originalName)
 		upstream.sessionObserverFactory?.()?.("jira", entry)
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
@@ -1274,7 +1414,7 @@ describe("upstream MCP adapter facade", () => {
 			undefined,
 			createToolContext(),
 		)
-		expect(readOnlyState.privateCatalogs.at(-1)?.get("jira")).toBe(entry)
+		expect(gatewayCandidateNames()).toEqual(["get_issue"])
 
 		await start(harness)
 		const replacementObserver = upstream.sessionObserverFactory?.()
@@ -1286,11 +1426,21 @@ describe("upstream MCP adapter facade", () => {
 			undefined,
 			createToolContext(),
 		)
-		expect(readOnlyState.privateCatalogs.at(-1)?.get("jira")).toBe(entry)
+		expect(gatewayCandidateNames()).toEqual(["get_issue"])
 		expect(gatewayExecute).toHaveBeenCalledTimes(2)
 		await harness.getHandler("session_shutdown")({ type: "session_shutdown" }, createContext())
 		replacementObserver?.("jira", entry)
-		expect(readOnlyState.privateCatalogs.at(-1)?.has("jira")).toBe(false)
+		const catalogsBeforeThird = readOnlyState.gatewayCatalogs.length
+		await gateway.execute(
+			"third",
+			{ tool: "jira_get_issue", server: "jira", args: {} },
+			undefined,
+			undefined,
+			createToolContext(),
+		)
+		// Not an exact count: gateway execution consults the read-only callback twice per execute.
+		expect(readOnlyState.gatewayCatalogs.length).toBeGreaterThan(catalogsBeforeThird)
+		expect(gatewayCandidateNames()).toEqual([])
 	})
 
 	it("keeps ACP caller servers while excluding an untrusted project's servers", async () => {

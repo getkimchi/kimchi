@@ -29,7 +29,8 @@ import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
-import { isReadOnlyQualifiedMcpGatewayTool, snapshotMcpCallCatalog } from "./call-catalog.js"
+import { isReadOnlyQualifiedMcpGatewayTool } from "./call-catalog.js"
+import { McpCallCatalogStore } from "./call-catalog-store.js"
 import { describeMcpCall, parseMcpGatewayInput } from "./call-facts.js"
 import { DEFAULT_MCP_PROTOCOL_VERSION, getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
@@ -391,7 +392,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	installMcpOAuthCallbackBranding()
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
 	let policy: McpToolSurfacePolicy | undefined
-	let lookupConfig: McpConfig | undefined
+	// The store owns the private catalogs: only the adapter's current authenticated session may authorize private reads.
+	let catalogStore: McpCallCatalogStore | undefined
 	let unregisterMcpCallLookup: (() => void) | undefined
 	const registeredToolNames = new Set<string>()
 	const ownedToolParameters = new Map<string, ToolDefinition["parameters"]>()
@@ -402,8 +404,6 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	let warnings: string[] = []
 	let sessionGeneration = 0
 	const oauthTurnContinuation = options.holdOAuthTurn ? new McpOAuthTurnContinuation() : undefined
-	// Only the adapter's current authenticated session may authorize private reads.
-	let privateCatalogs = new Map<string, ServerCacheEntry>()
 
 	// MCP status events arrive in bursts; one resnapshot after the burst settles
 	// avoids re-deriving the active set (and re-setting the snapshot flag) on
@@ -432,7 +432,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		unregisterMcpCallLookup?.()
 		unregisterMcpCallLookup = undefined
 		sessionGeneration++
-		privateCatalogs = new Map()
+		catalogStore?.resetPrivateCatalogs()
 		// A replacement path (new/fork/switch/resume) just invalidated the old pi;
 		// its pending resnapshot is obsolete.
 		clearStatusResync()
@@ -507,7 +507,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					: config
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
-			lookupConfig = effectiveConfig
+			const store = new McpCallCatalogStore(effectiveConfig, registeredToolNames)
+			catalogStore = store
 			// Lazy children register for initial runtime discovery without changing
 			// file-backed config, plugin paths, installs, or resume reloads.
 			const discoverGatewayAtStartup = options.lazyGatewayConnect === true && gateway !== undefined
@@ -516,8 +517,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					const generation = sessionGeneration
 					return (serverName: string, entry: ServerCacheEntry): void => {
 						if (generation !== sessionGeneration) return
-						if (entry.cacheScope === "private") privateCatalogs.set(serverName, entry)
-						else privateCatalogs.delete(serverName)
+						if (entry.cacheScope === "private") store.setPrivateCatalog(serverName, entry)
+						else store.deletePrivateCatalog(serverName)
 					}
 				},
 				...(discoverGatewayAtStartup && gateway
@@ -552,31 +553,22 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
-					(server) =>
-						collectReadOnlyMcpWireNames(
-							snapshotMcpCallCatalog(effectiveConfig, privateCatalogs, registeredToolNames).candidates,
-							server,
-						),
-					(toolName, server) =>
-						isReadOnlyQualifiedMcpGatewayTool(
-							snapshotMcpCallCatalog(effectiveConfig, privateCatalogs, registeredToolNames),
-							toolName,
-							server,
-						),
+					(server) => collectReadOnlyMcpWireNames(store.catalog().candidates, server),
+					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(store.catalog(), toolName, server),
 					oauthTurnContinuation,
 					options.parentSessionId,
 				),
 			)
 			if (gateway !== undefined && !discoverGatewayAtStartup) registerGatewayRuntimeServer(pi, gateway)
 		}
-		if (lookupConfig !== undefined) {
-			const config = lookupConfig
+		if (catalogStore !== undefined) {
+			const store = catalogStore
 			unregisterMcpCallLookup = registerMcpCallLookup(pi, (toolName, input) => {
 				// Pi keeps the first registration per name, so a shadowed MCP name must not lend its annotation to another extension's tool.
 				if (!registeredToolNames.has(toolName) || !isAdapterOwnedTool(pi, toolName, ownedToolParameters)) {
 					return { kind: "not_mcp" }
 				}
-				return describeMcpCall(toolName, input, snapshotMcpCallCatalog(config, privateCatalogs, registeredToolNames))
+				return describeMcpCall(toolName, input, store.catalog())
 			})
 		}
 
@@ -614,7 +606,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		unregisterMcpCallLookup = undefined
 		clearStatusResync()
 		sessionGeneration++
-		privateCatalogs.clear()
+		catalogStore?.resetPrivateCatalogs()
 		oauthTurnContinuation?.shutdown()
 	})
 }
