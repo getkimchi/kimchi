@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, it } from "vitest"
 import { DEFAULT_MODEL, type FakeOpenAiServer, startFakeOpenAiServer } from "../e2e/tui/support/fake-openai-server.js"
+import { contentText, fakeModelSawPrompt } from "./fake-requests.js"
 import { BINARY_PATH, PACKAGE_DIR } from "./harness.js"
 import { writeKimchiConfig } from "./print-config.js"
 
@@ -48,30 +49,6 @@ function runKimchi(homeDir: string, workDir: string, sessionPath: string, argvTa
 			resolvePromise({ code, stdout, stderr, timedOut })
 		})
 	})
-}
-
-function contentText(content: unknown): string {
-	if (typeof content === "string") return content
-	if (!Array.isArray(content)) return ""
-	return content
-		.map((part) =>
-			part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-				? (part as { text: string }).text
-				: "",
-		)
-		.join("")
-}
-
-function fakeModelSawPrompt(fake: FakeOpenAiServer, prompt: string): boolean {
-	return fake.requests
-		.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-		.some((request) => {
-			const messages = (request.body as { messages?: Array<{ role?: string; content?: unknown }> } | undefined)
-				?.messages
-			return (messages ?? []).some(
-				(message) => message.role === "user" && contentText(message.content).includes(prompt),
-			)
-		})
 }
 
 function readJsonLines(path: string): unknown[] {

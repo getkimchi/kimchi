@@ -11,6 +11,7 @@ import {
 	resolveModels,
 	startFakeOpenAiServer,
 } from "../e2e/tui/support/fake-openai-server.js"
+import { fakeModelSawPrompt } from "./fake-requests.js"
 
 const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
@@ -88,6 +89,7 @@ async function expectOneshotLifecycleToExit(): Promise<void> {
 			),
 			failure,
 		).toBe(true)
+		expect(fake !== undefined && fakeModelSawPrompt(fake, ONESHOT_PROMPT), failure).toBe(true)
 		expect(hasFermentCompleted(fermentsDir), failure).toBe(true)
 		expect(
 			sessionEntries.some((entry) => entry.customType === "agent_end"),
