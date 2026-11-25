@@ -197,7 +197,7 @@ export function renderReviewResultLines(
 			const paragraphs = finding.description.split(/\r?\n\s*\r?\n/).filter((paragraph) => paragraph.trim())
 			for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
 				const content = inlineText(shortenShas(prose(paragraph)), theme)
-				const rows = wrap(content, Math.max(1, bodyWidth - 2))
+				const rows = wrap(content, Math.max(1, bodyWidth - 4))
 				for (const [rowIndex, row] of rows.entries()) {
 					lines.push(line(`${rowIndex === 0 ? "  " : "    "}${row}`))
 				}
