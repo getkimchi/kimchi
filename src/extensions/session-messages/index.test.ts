@@ -266,7 +266,7 @@ describe("session-messages", () => {
 		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
 			OFFER_TITLE,
 			expect.stringContaining(
-				"I was about to start a subagent for “Fix checkout rounding”. You have a session open in this repository, “beta”,",
+				"I see you have a session open in this repository, “beta”, that may already know this work. I can ask it instead of starting a subagent.",
 			),
 		)
 		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(ENABLED_NOTICE, "info")

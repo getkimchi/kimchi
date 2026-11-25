@@ -12,9 +12,8 @@ one repository count), Kimchi asks once:
 
 ```text
 Ask your other session instead of a subagent?
-I was about to start a subagent for “Fix checkout rounding”. You have a session open in this
-repository, “Checkout rounding”, that may already know this work. Turn on session messages
-so I can ask it instead?
+I see you have a session open in this repository, “Checkout rounding”, that may already
+know this work. I can ask it instead of starting a subagent. Turn on session messages?
 ```
 
 Yes stops that subagent: the agent sends the work to the other session when it is that

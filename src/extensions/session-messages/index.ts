@@ -232,7 +232,7 @@ export function createSessionMessagesExtension(
 		 * Asks once, when it matters: the agent is about to start a subagent while another live session works in
 		 * the same repository. Yes stops that subagent, so the agent can hand the work over; no lets it start.
 		 */
-		async function offer(task: string, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
+		async function offer(ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
 			const me = self
 			if (!me || readPreference() !== undefined) return undefined
 			const peers = (await listPeers(dir, me.ref)).filter((peer) => peer.repository === me.repository)
@@ -244,7 +244,7 @@ export function createSessionMessagesExtension(
 					asking = ctx.ui
 						.confirm(
 							OFFER_TITLE,
-							`I was about to start a subagent for “${task}”. You have a session open in this repository, “${peers[0].name}”, that may already know this work. Turn on session messages so I can ask it instead? Your choice is saved for future sessions; /session-messages changes it.`,
+							`I see you have a session open in this repository, “${peers[0].name}”, that may already know this work. I can ask it instead of starting a subagent. Turn on session messages? Your choice is saved for future sessions; /session-messages changes it.`,
 						)
 						.finally(() => {
 							asking = undefined
@@ -338,9 +338,8 @@ export function createSessionMessagesExtension(
 
 		pi.on("tool_call", (event, ctx) => {
 			if (event.toolName !== "Agent") return undefined
-			const task = typeof event.input.description === "string" ? event.input.description : "this task"
 			// A failed question must never stop the subagent.
-			return offer(task, ctx).catch(() => undefined)
+			return offer(ctx).catch(() => undefined)
 		})
 
 		pi.on("session_shutdown", () => {
