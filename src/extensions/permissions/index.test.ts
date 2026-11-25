@@ -3254,6 +3254,20 @@ describe("plan mode assumption detection", () => {
 		}
 	})
 
+	it("points a chunkless draft ferment at /ferment-legacy list, not V2's /ferment", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-draft-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await submitPlan(harness, "# Plan\n\n## Goal\nAdd caching layer.", ctx)
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Use /ferment-legacy list to resume"))
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
 	it("oneshot sessions skip the plan-complete dropdown entirely", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		// Simulate a oneshot session: pi.getFlag returns true for ferment-oneshot.

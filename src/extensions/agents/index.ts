@@ -1471,7 +1471,10 @@ export default function (pi: ExtensionAPI) {
 					} catch (err) {
 						if (!isStaleCtxError(err)) throw err
 					}
-					ui?.notify("Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.", "info")
+					ui?.notify(
+						"Cloud agent finished after abort; ferment stays paused — /ferment-legacy resume to continue.",
+						"info",
+					)
 				}
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)

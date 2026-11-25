@@ -1850,7 +1850,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						if (pi.events) emitFermentCreated(pi.events, draft)
 						appendRefEntry(pi, draft.id)
 						ctx.ui?.notify?.(
-							`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
+							`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment-legacy list to resume and scope it interactively.`,
 						)
 						// A blocked release already warned and closed the review — done.
 						if (getRuntimePermissionMode().mode === "plan" && !releaseFromPlanForApproval(ctx)) return

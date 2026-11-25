@@ -1097,7 +1097,7 @@ describe("user abort suppresses the remote completion dropdown", () => {
 		manager.onComplete(record)
 
 		expect(vi.mocked(handleRemoteCompletion)).not.toHaveBeenCalled()
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"), "info")
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment-legacy resume"), "info")
 	})
 
 	it("still shows the dropdown when no abort happened", () => {
