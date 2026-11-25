@@ -3,11 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
-import {
-	KIMCHI_INFRA_ERROR_EXIT_CODE,
-	KIMCHI_NO_PROMPT_EXIT_CODE,
-	KIMCHI_NO_RESULT_EXIT_CODE,
-} from "../../src/infrastructure-error.js"
+import { KIMCHI_INFRA_ERROR_EXIT_CODE } from "../../src/infrastructure-error.js"
+import { KIMCHI_NO_PROMPT_EXIT_CODE, KIMCHI_NO_RESULT_EXIT_CODE } from "../../src/run-outcome.js"
 import {
 	DEFAULT_MODEL,
 	type FakeOpenAiServer,

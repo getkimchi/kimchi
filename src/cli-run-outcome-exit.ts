@@ -1,5 +1,9 @@
-import { KIMCHI_NO_PROMPT_EXIT_CODE, KIMCHI_NO_RESULT_EXIT_CODE } from "./infrastructure-error.js"
-import { formatRunOutcomeDiagnostic, type RunOutcomeClassification } from "./run-outcome.js"
+import {
+	formatRunOutcomeDiagnostic,
+	KIMCHI_NO_PROMPT_EXIT_CODE,
+	KIMCHI_NO_RESULT_EXIT_CODE,
+	type RunOutcomeClassification,
+} from "./run-outcome.js"
 
 /**
  * Post-main exit handling for silent non-interactive runs. A nonzero exit code

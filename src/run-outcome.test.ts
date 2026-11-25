@@ -1,10 +1,11 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import { type AssistantMessage, createAssistantEntry } from "./extensions/__mocks__/session-entries.js"
-import { KIMCHI_NO_PROMPT_EXIT_CODE, KIMCHI_NO_RESULT_EXIT_CODE } from "./infrastructure-error.js"
 import {
 	classifyRunOutcome,
 	formatRunOutcomeDiagnostic,
+	KIMCHI_NO_PROMPT_EXIT_CODE,
+	KIMCHI_NO_RESULT_EXIT_CODE,
 	type MessageLikeSessionEntry,
 	type PromptSources,
 	type RunOutcomeClassification,

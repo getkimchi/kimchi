@@ -7,8 +7,6 @@ import {
 } from "./llm-gateway-error.js"
 
 export const KIMCHI_INFRA_ERROR_EXIT_CODE = LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE
-export const KIMCHI_NO_PROMPT_EXIT_CODE = 2
-export const KIMCHI_NO_RESULT_EXIT_CODE = 3
 const KIMCHI_INFRA_ERROR_PREFIX = "KIMCHI_INFRA_ERROR"
 
 /** Session-log entry type carrying the audit trail of each gateway-error classification. */

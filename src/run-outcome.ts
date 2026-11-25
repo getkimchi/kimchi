@@ -1,5 +1,7 @@
 import type { Args, SessionEntry } from "@earendil-works/pi-coding-agent"
-import { KIMCHI_NO_PROMPT_EXIT_CODE, KIMCHI_NO_RESULT_EXIT_CODE } from "./infrastructure-error.js"
+
+export const KIMCHI_NO_PROMPT_EXIT_CODE = 2
+export const KIMCHI_NO_RESULT_EXIT_CODE = 3
 
 export type MessageLikeSessionEntry = Extract<SessionEntry, { type: "message" | "custom_message" }>
 
