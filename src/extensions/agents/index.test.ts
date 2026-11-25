@@ -813,7 +813,7 @@ describe("spawnFermentV2VerifierAgent", () => {
 		expect(type).toBe("Verifier")
 		expect(prompt).toBe("verify the work")
 		expect(options).toMatchObject({
-			description: "Ferment V2 verifier",
+			description: "Ferment verifier",
 			visibility: "system",
 			model: verifierModel,
 			cwd: ctx.cwd,

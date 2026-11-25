@@ -59,7 +59,7 @@ export function objectiveText(objective: string, cwd: string): string {
  * objectiveText/objectiveFilePath treat as a plain (non-file) objective.
  */
 export function saveObjectiveFile(text: string, cwd: string): string {
-	if (!text.trim()) throw new Error("Ferment V2 objective cannot be empty.")
+	if (!text.trim()) throw new Error("Ferment objective cannot be empty.")
 	if (!isProjectScopeAllowed(cwd)) {
 		return text
 	}

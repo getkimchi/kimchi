@@ -912,7 +912,7 @@ export async function spawnFermentV2VerifierAgent(
 	}
 
 	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_FERMENT_VERIFIER, prompt, {
-		description: "Ferment V2 verifier",
+		description: "Ferment verifier",
 		visibility: "system",
 		model: opts.model,
 		cwd: opts.cwd,

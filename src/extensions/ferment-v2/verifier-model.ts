@@ -101,13 +101,13 @@ export function formatFermentV2EvaluatorModelWarning(input: {
 }): string {
 	const ref = input.ref ?? "session model"
 	if (input.modelFallback === "session") {
-		return `Ferment V2 evaluator fell back to the session model (${ref}): no configured model available. Fix: set fermentV2.evaluatorModels in settings.json to an ordered list of models you can use.`
+		return `Ferment evaluator fell back to the session model (${ref}): no configured model available. Fix: set fermentV2.evaluatorModels in settings.json to an ordered list of models you can use.`
 	}
 	if (input.unusableRefs?.length) {
 		const unusable = input.unusableRefs.join(", ")
-		return `Ferment V2 evaluator uses the same model as the implementer (${ref}): no usable independent model is available (${unusable} could not be resolved or authenticated). Fix: check the ref and authentication of the unusable models in the fermentV2.evaluatorModels list in settings.json so verification is model-diverse.`
+		return `Ferment evaluator uses the same model as the implementer (${ref}): no usable independent model is available (${unusable} could not be resolved or authenticated). Fix: check the ref and authentication of the unusable models in the fermentV2.evaluatorModels list in settings.json so verification is model-diverse.`
 	}
 	const cause =
 		input.configuredRefs.length <= 1 ? "only one model configured" : "every configured model is the implementer's model"
-	return `Ferment V2 evaluator uses the same model as the implementer (${ref}): ${cause}. Fix: add a different model to the fermentV2.evaluatorModels list in settings.json so verification is model-diverse.`
+	return `Ferment evaluator uses the same model as the implementer (${ref}): ${cause}. Fix: add a different model to the fermentV2.evaluatorModels list in settings.json so verification is model-diverse.`
 }

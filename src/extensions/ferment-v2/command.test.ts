@@ -47,7 +47,7 @@ describe("Ferment V2 command", () => {
 	})
 
 	it("formats the empty state and every Ferment V2 status", () => {
-		expect(formatFermentV2Summary(undefined)).toContain("No Ferment V2 is currently set")
+		expect(formatFermentV2Summary(undefined)).toContain("No Ferment is currently set")
 		expect(formatFermentV2Summary(undefined, 0)).toContain("Use /ferment <objective>")
 		for (const status of ["active", "paused", "blocked", "budget_limited", "complete"] satisfies FermentV2Status[]) {
 			const summary = formatFermentV2Summary(fermentV2(status))
@@ -65,7 +65,7 @@ describe("Ferment V2 command", () => {
 			presentation: { kind: "approved-plan", title: "Cache Layer", planPath: "/tmp/cache-layer.md" },
 		})
 
-		expect(manual.startsWith("Ferment V2: ship it\n")).toBe(true)
+		expect(manual.startsWith("Ferment: ship it\n")).toBe(true)
 		expect(automatic).toContain("Plan execution: Cache Layer")
 		expect(automatic).toContain("Commands: /ferment edit, /ferment pause, /ferment clear")
 	})
@@ -98,23 +98,23 @@ describe("Ferment V2 command", () => {
 
 	it("shows the run state and resume hint without adding a prompt decoration", () => {
 		expect(formatFermentV2Status(undefined)).toBeUndefined()
-		expect(formatFermentV2Status(fermentV2("active"))).toBe("◈ Ferment V2: running · ship it")
-		expect(formatFermentV2Status(fermentV2("active"), true)).toBe("◈ Ferment V2: checking · ship it")
-		expect(formatFermentV2Status(fermentV2("paused"), true)).toBe("◈ Ferment V2: paused · ship it · /ferment resume")
-		expect(formatFermentV2Status(fermentV2("blocked"))).toBe("◈ Ferment V2: blocked · ship it · /ferment resume")
-		expect(formatFermentV2Status(fermentV2("complete"))).toBe("◈ Ferment V2: complete · ship it")
-		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ Ferment V2: budget limited · ship it")
+		expect(formatFermentV2Status(fermentV2("active"))).toBe("◈ Ferment: running · ship it")
+		expect(formatFermentV2Status(fermentV2("active"), true)).toBe("◈ Ferment: checking · ship it")
+		expect(formatFermentV2Status(fermentV2("paused"), true)).toBe("◈ Ferment: paused · ship it · /ferment resume")
+		expect(formatFermentV2Status(fermentV2("blocked"))).toBe("◈ Ferment: blocked · ship it · /ferment resume")
+		expect(formatFermentV2Status(fermentV2("complete"))).toBe("◈ Ferment: complete · ship it")
+		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ Ferment: budget limited · ship it")
 	})
 
 	it("shows the verifying model, elapsed time and revert warning while the verifier runs", () => {
 		expect(formatFermentV2VerifyingStatus(undefined, 0)).toBe(
-			"◈ Ferment V2: verifying · … · 0ms · file edits may be reverted",
+			"◈ Ferment: verifying · … · 0ms · file edits may be reverted",
 		)
 		expect(formatFermentV2VerifyingStatus("judge/independent", 5_000)).toBe(
-			"◈ Ferment V2: verifying · judge/independent · 5.0s · file edits may be reverted",
+			"◈ Ferment: verifying · judge/independent · 5.0s · file edits may be reverted",
 		)
 		expect(formatFermentV2VerifyingStatus("judge/independent", -1_000)).toBe(
-			"◈ Ferment V2: verifying · judge/independent · 0ms · file edits may be reverted",
+			"◈ Ferment: verifying · judge/independent · 0ms · file edits may be reverted",
 		)
 	})
 
@@ -175,9 +175,9 @@ describe("Ferment V2 command", () => {
 			"Implement a streaming parser with incremental input and preserve every existing API and test case"
 		const run = { ...fermentV2("active"), objective }
 		const status = formatFermentV2Status(run)
-		expect(status).toBe("◈ Ferment V2: running · Implement a streaming parser with")
+		expect(status).toBe("◈ Ferment: running · Implement a streaming parser with")
 		expect(formatFermentV2Summary(run)).toContain(`Objective: ${objective}`)
-		expect(formatFermentV2Status({ ...run, name: "Streaming parser" })).toBe("◈ Ferment V2: running · Streaming parser")
+		expect(formatFermentV2Status({ ...run, name: "Streaming parser" })).toBe("◈ Ferment: running · Streaming parser")
 	})
 
 	it("shows the persisted blocked reason", () => {

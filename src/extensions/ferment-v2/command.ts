@@ -16,7 +16,7 @@ export const FERMENT_V2_COMMAND_COMPLETIONS = ["edit", "pause", "resume", "clear
 export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, evaluating = false): string | undefined {
 	if (!fermentV2) return undefined
 	const title = deriveFermentV2Name(fermentV2.objective, fermentV2.name ?? fermentV2.presentation?.title)
-	const label = fermentV2.presentation?.kind === "approved-plan" ? "Plan execution" : "Ferment V2"
+	const label = fermentV2.presentation?.kind === "approved-plan" ? "Plan execution" : "Ferment"
 	const state =
 		fermentV2.status === "active" ? (evaluating ? "checking" : "running") : fermentV2.status.replace("_", " ")
 	const hint =
@@ -29,7 +29,7 @@ export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, e
  * warning that concurrent user edits may be reverted by the integrity guard.
  */
 export function formatFermentV2VerifyingStatus(model: string | undefined, elapsedMs: number): string {
-	return `◈ Ferment V2: verifying · ${model ?? "…"} · ${formatDuration(Math.max(0, elapsedMs))} · file edits may be reverted`
+	return `◈ Ferment: verifying · ${model ?? "…"} · ${formatDuration(Math.max(0, elapsedMs))} · file edits may be reverted`
 }
 
 export function parseFermentV2Command(args: string): FermentV2Command {
@@ -51,11 +51,11 @@ export function parseFermentV2Command(args: string): FermentV2Command {
 }
 
 export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, liveElapsedMs = 0): string {
-	if (!fermentV2) return `No Ferment V2 is currently set.\nUse /${FERMENT_V2_COMMAND_NAME} <objective> to create one.`
+	if (!fermentV2) return `No Ferment is currently set.\nUse /${FERMENT_V2_COMMAND_NAME} <objective> to create one.`
 	const evaluation = fermentV2.lastEvaluation
 	const approvedPlan = fermentV2.presentation?.kind === "approved-plan" ? fermentV2.presentation : undefined
 	const name = deriveFermentV2Name(fermentV2.objective, fermentV2.name ?? approvedPlan?.title)
-	const title = `${approvedPlan ? "Plan execution" : "Ferment V2"}: ${name}`
+	const title = `${approvedPlan ? "Plan execution" : "Ferment"}: ${name}`
 	return [
 		title,
 		`Status: ${fermentV2.status}`,
