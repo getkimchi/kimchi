@@ -163,6 +163,10 @@ export class RemoteAgentSession {
 		return this.meta?.sessionName ?? ""
 	}
 
+	get cwd(): string | undefined {
+		return this.meta?.cwd
+	}
+
 	get model() {
 		return undefined
 	}

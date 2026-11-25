@@ -140,4 +140,24 @@ describe("default session factory/loader _meta wiring", () => {
 		expect(capturedLoaderOptions).toHaveLength(1)
 		expect(servedAppend()).toEqual(["Loaded sessions get the same prompt."])
 	})
+
+	for (const existingFile of [true, false]) {
+		it(`defaultSessionLoader adds the child observer when existingFile=${existingFile}`, async () => {
+			const sessionId = `wiring-child-${existingFile}`
+			const sessionDir = join(agentDir, "sessions", encodeCwdDir(cwd))
+			if (existingFile) {
+				mkdirSync(sessionDir, { recursive: true })
+				writeFileSync(
+					join(sessionDir, `2026-05-09T00-00-00.000Z_${sessionId}.jsonl`),
+					`${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-05-09T00:00:00Z", cwd })}\n`,
+				)
+			}
+			await defaultSessionLoader(makeOptions(), vi.fn())({ sessionId, cwd, mcpServers: [] })
+			const factories = capturedLoaderOptions.at(-1)?.extensionFactories as Array<(pi: unknown) => void> | undefined
+			expect(factories).toHaveLength(1)
+			const on = vi.fn()
+			factories?.[0]?.({ events: { on } })
+			expect(on).toHaveBeenCalledWith("subagents:session_created", expect.any(Function))
+		})
+	}
 })

@@ -816,6 +816,23 @@ describe("SessionContext", () => {
 		expect(ctx.getParentSessionId()).toBeUndefined()
 	})
 
+	it("isolates in-process parent attribution between concurrent workers", async () => {
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "environment-owner"
+		const ctx = new TelemetryContext(makeConfig())
+		const owners = await Promise.all(
+			["parent-a", "parent-b"].map((parentSessionId) =>
+				runAsAgentWorker(
+					async () => {
+						await Promise.resolve()
+						return ctx.getParentSessionId()
+					},
+					{ parentSessionId },
+				),
+			),
+		)
+		expect(owners).toEqual(["parent-a", "parent-b"])
+	})
+
 	it("resolveSessionId falls back to telemetryId before a pi session id is set", () => {
 		const ctx = new TelemetryContext(makeConfig())
 		expect(ctx.resolveSessionId()).toBe(ctx.telemetryId)

@@ -56,6 +56,38 @@ export interface HerdrBlockedPayload {
 	label?: string
 }
 
+export interface BlockedDialogActivity {
+	hasOtherDialogs(): boolean
+	dispose(): void
+}
+
+/**
+ * Track agent-driven blocked dialogs on one parent's bus; nested dialogs
+ * retain their depth.
+ *
+ * `ownDepth` reports how many of the open activations belong to the caller.
+ * They are subtracted by count, not filtered by label: a deactivation carries
+ * no label, so a label filter would skip an activation and still count its
+ * deactivation, closing someone else's dialog in the tally.
+ */
+export function createBlockedDialogActivity(events: EventBus, ownDepth: () => number = () => 0): BlockedDialogActivity {
+	let depth = 0
+	let disposed = false
+	const unsubscribe = events.on(HERDR_EVENTS.BLOCKED, (value) => {
+		const payload = value as HerdrBlockedPayload
+		if (payload.active) depth += 1
+		else depth = Math.max(0, depth - 1)
+	})
+	return {
+		hasOtherDialogs: () => !disposed && depth - ownDepth() > 0,
+		dispose() {
+			if (disposed) return
+			disposed = true
+			unsubscribe()
+		},
+	}
+}
+
 /** Maximum length of a herdr:blocked label after sanitization. */
 export const HERDR_LABEL_MAX_LENGTH = 80
 
