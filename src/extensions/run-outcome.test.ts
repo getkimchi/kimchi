@@ -110,6 +110,15 @@ describe("createRunOutcomeTracker", () => {
 		expect(tracker.getSnapshot().blockedTool).toBeUndefined()
 	})
 
+	it("preserves promptSeen when notePrompt runs before session_start", async () => {
+		const { harness, tracker, ctx } = setup("print")
+
+		tracker.notePrompt()
+		await harness.emit("session_start", start, ctx)
+
+		expect(tracker.getSnapshot().promptSeen).toBe(true)
+	})
+
 	it("reports promptSeen after notePrompt in print mode", async () => {
 		const { harness, tracker, ctx } = setup("print")
 		await harness.emit("session_start", start, ctx)

@@ -106,7 +106,10 @@ export function formatRunOutcomeDiagnostic(outcome: Exclude<RunOutcomeClassifica
 		`KIMCHI_NO_RESULT: the agent finished without a final answer; exiting with code ${KIMCHI_NO_RESULT_EXIT_CODE}.`,
 		describeLastEvent(outcome.lastEvent),
 		...(outcome.sessionPath
-			? [`Session: ${outcome.sessionPath}`, "Rerun with --mode json to see every step, or open the session file."]
+			? [
+					`Session: ${outcome.sessionPath.replace(/\r/g, "\\r").replace(/\n/g, "\\n")}`,
+					"Rerun with --mode json to see every step, or open the session file.",
+				]
 			: ["No session was saved (--no-session).", "Rerun with --mode json to see every step."]),
 	].join("\n")
 }

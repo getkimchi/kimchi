@@ -487,6 +487,17 @@ describe("formatRunOutcomeDiagnostic", () => {
 		expect(diagnostic).toContain("Session: /path/to/session")
 	})
 
+	it("escapes carriage returns and newlines in session paths", () => {
+		const diagnostic = formatRunOutcomeDiagnostic({
+			kind: "no-result",
+			lastEvent: { kind: "final-message", role: "assistant" },
+			sessionPath: "/tmp/first\r\nsecond\nthird.jsonl",
+		})
+
+		expect(diagnostic.split("\n").length).toBeLessThanOrEqual(5)
+		expect(diagnostic).toContain("Session: /tmp/first\\r\\nsecond\\nthird.jsonl")
+	})
+
 	it("includes no-session message when path is not provided", () => {
 		const outcome = {
 			kind: "no-result" as const,
