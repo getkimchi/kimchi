@@ -258,6 +258,55 @@ describe("buildSubagentConfigOptions", () => {
 		])
 	})
 
+	it.each(["flat", "grouped"] as const)("preserves currentValue without matching %s catalog entries", (kind) => {
+		const dependencies = makeDependencies()
+		const modelOption: SessionConfigOption = {
+			id: "model",
+			name: "model",
+			type: "select",
+			currentValue: "not-in-catalog",
+			options:
+				kind === "flat"
+					? [{ name: "other-model", value: "other-model" }]
+					: [
+							{
+								name: "other-provider",
+								group: "other-provider",
+								options: [{ name: "other-model", value: "other-model" }],
+							},
+						],
+		}
+		dependencies.buildModelConfigOption.mockReturnValue(modelOption)
+
+		const snapshot = buildSubagentConfigOptions(makeSession("uncatalogued-child"), dependencies).find(
+			(option) => option.id === "model",
+		)
+
+		if (snapshot?.type !== "select") throw new Error("missing model snapshot")
+		expect(snapshot.currentValue).toBe("not-in-catalog")
+		expect(snapshot.options).toEqual([])
+	})
+
+	it.each([
+		{ id: "permissions-mode", currentValue: "auto", builder: "buildPermissionsConfigOption" },
+		{ id: "reasoning_effort", currentValue: "high", builder: "buildThinkingConfigOption" },
+	] as const)("keeps only the current value in the $id snapshot", ({ id, currentValue, builder }) => {
+		const dependencies = makeDependencies()
+		dependencies.getEffectivePermissionMode = () => "auto"
+		const configured = selectOption(id, currentValue)
+		if (configured.type !== "select") throw new Error("expected a select fixture")
+		dependencies[builder].mockReturnValue({
+			...configured,
+			options: [...configured.options, { name: "other", value: "other" }],
+		})
+
+		const snapshot = buildSubagentConfigOptions(makeSession(`${id}-child`), dependencies).find(
+			(option) => option.id === id,
+		)
+
+		expect(snapshot).toEqual(selectOption(id, currentValue))
+	})
+
 	it("omits unconfirmed model, thinking and mode values instead of consulting a parent", () => {
 		const dependencies = makeDependencies(new Map([["parent", makeController("yolo")]]))
 		const child = makeSession("empty-child", {
