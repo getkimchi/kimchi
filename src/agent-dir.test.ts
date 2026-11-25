@@ -16,8 +16,9 @@ describe("applyAgentDirEnv", () => {
 		stubHome(resolve("/home/parent"))
 		const env: NodeJS.ProcessEnv = {}
 
-		expect(applyAgentDirEnv(env)).toBe(join(resolve("/home/parent"), ".config", "kimchi", "harness"))
-		expect(env.KIMCHI_CODING_AGENT_DIR_DERIVED).toBe("1")
+		const derived = join(resolve("/home/parent"), ".config", "kimchi", "harness")
+		expect(applyAgentDirEnv(env)).toBe(derived)
+		expect(env.KIMCHI_CODING_AGENT_DIR_DERIVED).toBe(derived)
 	})
 
 	it("gives a child with another HOME its own dir, not the parent's derived one", () => {
@@ -28,8 +29,25 @@ describe("applyAgentDirEnv", () => {
 		stubHome(resolve("/home/child"))
 		const child = { ...env }
 
-		expect(applyAgentDirEnv(child)).toBe(join(resolve("/home/child"), ".config", "kimchi", "harness"))
-		expect(child.KIMCHI_CODING_AGENT_DIR_DERIVED).toBe("1")
+		const derived = join(resolve("/home/child"), ".config", "kimchi", "harness")
+		expect(applyAgentDirEnv(child)).toBe(derived)
+		expect(child.KIMCHI_CODING_AGENT_DIR_DERIVED).toBe(derived)
+	})
+
+	it("keeps an explicit dir set under an inherited marker, and so does its child", () => {
+		stubHome(resolve("/home/parent"))
+		const parent: NodeJS.ProcessEnv = {}
+		applyAgentDirEnv(parent)
+
+		// e.g. `KIMCHI_CODING_AGENT_DIR=/tmp/stage kimchi` typed in a Kimchi shell
+		const child: NodeJS.ProcessEnv = { ...parent, KIMCHI_CODING_AGENT_DIR: resolve("/tmp/stage") }
+		expect(applyAgentDirEnv(child)).toBe(resolve("/tmp/stage"))
+		expect(child.KIMCHI_CODING_AGENT_DIR_DERIVED).toBeUndefined()
+
+		stubHome(resolve("/home/grandchild"))
+		const grandchild = { ...child }
+		expect(applyAgentDirEnv(grandchild)).toBe(resolve("/tmp/stage"))
+		expect(grandchild.KIMCHI_CODING_AGENT_DIR_DERIVED).toBeUndefined()
 	})
 
 	it("keeps an explicit dir in the child and never marks it derived", () => {

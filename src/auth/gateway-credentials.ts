@@ -28,7 +28,7 @@
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import { readStoredCredential } from "@earendil-works/pi-coding-agent"
-import { defaultAgentDir } from "../agent-dir.js"
+import { defaultAgentDir, explicitAgentDir } from "../agent-dir.js"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 
 /** Header the gateway routes SSO requests by (mirrors models.ts). */
@@ -60,7 +60,7 @@ function defaultAuthPath(): string | undefined {
  */
 export function loginAuthPath(agentDir: string): string {
 	const local = resolve(agentDir, "auth.json")
-	if (process.env.KIMCHI_CODING_AGENT_DIR_DERIVED === "1" || existsSync(local)) return local
+	if (!explicitAgentDir() || existsSync(local)) return local
 	return resolve(defaultAgentDir(), "auth.json")
 }
 

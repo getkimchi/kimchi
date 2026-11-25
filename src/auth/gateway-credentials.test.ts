@@ -92,7 +92,7 @@ describe("resolveGatewayCredentials", () => {
 			seedAuth({ "kimchi-dev": { type: "api_key", key: "stage-key" } })
 			expect(resolveGatewayCredentials({ apiKey: "" }).token).toBe("stage-key")
 			rmSync(authPath)
-			vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "1")
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", dir)
 			expect(resolveGatewayCredentials({ apiKey: "" }).source).toBe("none")
 		} finally {
 			rmSync(home, { recursive: true, force: true })

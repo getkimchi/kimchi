@@ -232,7 +232,7 @@ describe("binary smoke tests", () => {
 		it("recomputes a derived dir inherited from another HOME", () => {
 			runBinary({
 				args: ["resources", "disable", "tools.web_fetch"],
-				extraEnv: { KIMCHI_CODING_AGENT_DIR: stageDir, KIMCHI_CODING_AGENT_DIR_DERIVED: "1" },
+				extraEnv: { KIMCHI_CODING_AGENT_DIR: stageDir, KIMCHI_CODING_AGENT_DIR_DERIVED: stageDir },
 			})
 			try {
 				expect(readResources(stageDir)).toBeUndefined()
