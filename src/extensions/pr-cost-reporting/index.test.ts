@@ -427,7 +427,7 @@ describe("config-owned PR reporting consent", () => {
 		} finally {
 			chmodSync(configDir, 0o755)
 			error.mockRestore()
-			await api.getHandler("session_shutdown")({}, ctx).catch(() => {})
+			await api.getHandler("session_shutdown")({}, ctx)
 		}
 	})
 })

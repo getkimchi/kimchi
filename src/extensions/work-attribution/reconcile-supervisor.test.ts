@@ -1,12 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type {
-	ContinuationProgress,
-	PassInput,
-	PassRun as PassResult,
-	ReconcileChannel,
-} from "@getkimchi/kimchi-bridge/reconcile"
+import type { ContinuationProgress, PassInput, PassRun, ReconcileChannel } from "@getkimchi/kimchi-bridge/reconcile"
 import { readWorkPullRequestUpdates, runReconciliationPass } from "@getkimchi/kimchi-bridge/reconcile"
 import * as locks from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -45,7 +40,7 @@ const mockedRunPass = vi.mocked(runReconciliationPass)
 /** Every PassInput the supervisor handed the (mocked) pass, in pass order. */
 const passInputs: PassInput[] = []
 /** The fake pass's result; tests steer rotation and progress threading through it. */
-let passResult: PassResult
+let passResult: PassRun
 /** Per-test pass body: gates and channel aborts live here, not in the supervisor. */
 let passBody: ((input: PassInput, io: { signal: AbortSignal; assertLease: () => void }) => Promise<void>) | undefined
 /** First-error injection: one failing pass, then healthy passes again. */

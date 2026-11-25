@@ -18,6 +18,7 @@ declare module "bun:sqlite" {
 		exec(sql: string): void
 		run(sql: string, params?: unknown[]): { changes: number; lastInsertRowid: number | bigint }
 		query<R = unknown, P extends unknown[] = unknown[]>(sql: string): Statement<R, P>
+		/** True while a transaction is open on this connection (Bun's DatabaseSync getter). */
 		readonly inTransaction: boolean
 		transaction<F extends (...args: unknown[]) => unknown>(
 			fn: F,
