@@ -57,7 +57,7 @@ vi.mock("../../remote-run/sandbox-git.js", async (importActual) => ({
 	captureBaseline: vi.fn(),
 }))
 
-import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
@@ -114,6 +114,52 @@ describe("AgentManager", () => {
 		manager?.dispose()
 		manager = undefined
 		vi.clearAllMocks()
+	})
+
+	it.each([
+		false,
+		true,
+	])("publishes assigned local session metadata before activity callbacks (background=%s)", async (isBackground) => {
+		const session = {
+			sessionId: "child-native-session",
+			sessionManager: { getHeader: () => ({ cwd: "/work/child" }) },
+			steer: vi.fn().mockResolvedValue(undefined),
+			dispose: vi.fn(),
+		} as unknown as AgentSession
+		const calls: string[] = []
+		let hookedRecord: AgentRecord | undefined
+		mockRunAgent.mockImplementationOnce(async (_ctx, _type, _prompt, options) => {
+			options.onSessionCreated?.(session)
+			return { responseText: "done", session, aborted: false, steered: false }
+		})
+		manager = new AgentManager(undefined, undefined, undefined, undefined, (record, created) => {
+			calls.push("manager")
+			expect(record.session).toBe(created)
+			hookedRecord = record
+		})
+		const ctx = fakeCtx()
+		Object.defineProperty(ctx, "cwd", { value: "/work/parent" })
+		Object.defineProperty(ctx.sessionManager, "getSessionId", { value: () => "parent-native-session" })
+		Object.defineProperty(ctx.sessionManager, "getSessionFile", { value: () => "/work/parent/session.jsonl" })
+
+		const id = manager.spawn(fakePi(), ctx, "Explore", "full delegated prompt", {
+			description: "short description",
+			isBackground,
+			toolCallId: "tool-call-123",
+			onSessionCreated: () => calls.push("activity"),
+		})
+		const record = manager.getRecord(id)
+		expect(record).toMatchObject({
+			toolCallId: "tool-call-123",
+			prompt: "full delegated prompt",
+			parentSessionId: "parent-native-session",
+			parentSessionFile: "/work/parent/session.jsonl",
+			sessionId: "child-native-session",
+			cwd: "/work/child",
+		})
+		expect(hookedRecord).toBe(record)
+		expect(calls).toEqual(["manager", "activity"])
+		await record?.promise
 	})
 
 	it("marks a run as aborted when runAgent reports an abort", async () => {
@@ -566,6 +612,25 @@ describe("AgentManager", () => {
 		expect(mockResumeAgent.mock.calls[0]?.[2]).toEqual(
 			expect.objectContaining({ minTokenBudget: 256, tokenBudget: 300 }),
 		)
+	})
+
+	it("publishes only the original continuation prompt for a Ferment worker", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })
+		mockResumeAgent.mockResolvedValueOnce({ responseText: "continued", session, aborted: false, steered: false })
+		const observed: Array<{ session: AgentSession; prompt: string }> = []
+		manager = new AgentManager(undefined, undefined, undefined, undefined, undefined, (_record, native, prompt) => {
+			observed.push({ session: native, prompt })
+		})
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: { kind: "ferment_step", ferment_id: "f1", phase_id: "p1", step_id: "s1" },
+		})
+
+		await manager.resume(record.id, "Continue exactly this request.")
+
+		expect(observed).toEqual([{ session, prompt: "Continue exactly this request." }])
+		expect(mockResumeAgent.mock.calls[0]?.[1]).not.toBe("Continue exactly this request.")
 	})
 
 	it("blocks finalize_report when remaining budget is below the finalize floor", async () => {
@@ -1100,12 +1165,12 @@ describe("AgentManager remote git credential resolution", () => {
 	})
 
 	function fakeRemoteCtx(mode: "tui" | "rpc" = "tui"): ExtensionContext {
-		return {
+		return createContext({
 			cwd: "/work/myrepo",
 			mode,
 			ui: { custom: vi.fn() },
 			sessionManager: { getSessionId: () => "parent-test-session" },
-		} as unknown as ExtensionContext
+		})
 	}
 
 	beforeEach(() => {
@@ -1351,9 +1416,10 @@ describe("AgentManager remote stale-session resilience", () => {
 			mode: "tui",
 			sessionManager: { getSessionId: () => "parent-test-session" },
 		})
+		expect(live.ctx.sessionManager.getSessionFile()).toBeUndefined()
 		manager = new AgentManager()
 
-		const runPromise = manager.spawnAndWait(fakePi(), live.ctx as unknown as ExtensionContext, "Explore", "test", {
+		const runPromise = manager.spawnAndWait(fakePi(), live.ctx, "Explore", "test", {
 			description: "test",
 			remote: true,
 		})
@@ -1390,12 +1456,10 @@ describe("AgentManager remote stopReason mapping", () => {
 	})
 
 	function fakeRemoteCtx(): ExtensionContext {
-		return {
+		return createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
-			ui: { custom: vi.fn() },
 			sessionManager: { getSessionId: () => "parent-test-session" },
-		} as unknown as ExtensionContext
+		})
 	}
 
 	const remoteSession = {
@@ -1505,12 +1569,10 @@ describe("AgentManager reconnecting lifecycle", () => {
 	})
 
 	function fakeRemoteCtx(): ExtensionContext {
-		return {
+		return createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
-			ui: { custom: vi.fn() },
 			sessionManager: { getSessionId: () => "parent-test-session" },
-		} as unknown as ExtensionContext
+		})
 	}
 
 	const remoteResult = {
@@ -1649,15 +1711,14 @@ describe("AgentManager git-intent baseline capture", () => {
 		vi.clearAllMocks()
 	})
 
-	let uiNotify: ReturnType<typeof vi.fn> | undefined
+	let uiNotify: ReturnType<typeof vi.fn<ExtensionUIContext["notify"]>> | undefined
 	function fakeRemoteCtx(): ExtensionContext {
 		uiNotify = vi.fn()
-		return {
+		return createContext({
 			cwd: "/work/myrepo",
-			mode: "tui",
 			ui: { custom: vi.fn(), notify: uiNotify },
 			sessionManager: { getSessionId: () => "parent-test-session" },
-		} as unknown as ExtensionContext
+		})
 	}
 
 	const SHA = "11223344556677889900aabbccddee1122334455"
@@ -1830,11 +1891,7 @@ describe("AgentManager steer continuation", () => {
 	})
 
 	function fakeRemoteCtx(): ExtensionContext {
-		return {
-			cwd: "/work/myrepo",
-			mode: "tui",
-			ui: { custom: vi.fn() },
-		} as unknown as ExtensionContext
+		return createContext({ cwd: "/work/myrepo", ui: { custom: vi.fn() } })
 	}
 
 	const CONTINUE_META: RemoteSessionMeta = {
@@ -1925,11 +1982,7 @@ describe("AgentManager resumeRemoteRecord", () => {
 	})
 
 	function fakeResumeCtx(): ExtensionContext {
-		return {
-			cwd: "/work/myrepo",
-			mode: "tui",
-			ui: { custom: vi.fn() },
-		} as unknown as ExtensionContext
+		return createContext({ cwd: "/work/myrepo", ui: { custom: vi.fn() } })
 	}
 
 	const state: RemoteRunState = {

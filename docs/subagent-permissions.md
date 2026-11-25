@@ -49,8 +49,9 @@ Two details:
 
 ## When a call needs a decision
 
-A subagent cannot open a permission prompt of its own. In `default` and `auto`
-mode, a call that is not read-only and that no rule allows is handled like this:
+A subagent uses its parent's policy and has no separate permission mode. If no
+interactive ACP route can handle an approval, `default` and `auto` mode handle a
+call that is not read-only and that no rule allows like this:
 
 1. The classifier judges the call. This is one classifier request per call.
 2. If the answer is `safe`, the call runs. No prompt is shown.
@@ -62,6 +63,14 @@ mode, a call that is not read-only and that no rule allows is handled like this:
    - **Remember for this subagent** stores the rule in the subagent's own
      session. The rule is kept when the subagent is resumed.
    - **Deny** is returned to the subagent.
+
+When a parent-root ACP approval route exists, an unexposed worker's request uses
+that route, including when the client did not advertise subagent support. If the
+worker has been announced as an ACP child, new requests use the child's own
+session ID. A request that had already started keeps its original session ID; a
+later announcement does not move it. These routes do not bypass the parent's
+policy, deny rules, or require a client to prompt the child. If a route cannot be
+resolved, the classifier/block result above remains the fail-closed fallback.
 
 The call is blocked when nobody can decide:
 
