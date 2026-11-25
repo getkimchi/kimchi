@@ -1,0 +1,15 @@
+[project]
+name = "kimchi-guardrails-benchmark"
+version = "0.0.0"
+description = "Reproducible Inspect AI bridge for guardrails benchmarks"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "inspect-ai==0.3.277",
+  "openai",
+  # Inspect 0.3.277 imports acp.helpers, removed in agent-client-protocol 1.0.
+  "agent-client-protocol>=0.12.0,<1",
+  "inspect-evals @ git+https://github.com/UKGovernmentBEIS/inspect_evals@eb5383efecd8ac6d23fd276757b811f3db05a1f5",
+]
+
+[tool.uv]
+package = false
