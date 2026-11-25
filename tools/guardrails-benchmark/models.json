@@ -1,6 +1,6 @@
 {
-  "models": {
-    "kimi-k3": "kimi-k3",
-    "deepseek-v4.1-flash-1017": "deepseek-v4.1-flash-1017"
-  }
+	"models": {
+		"kimi-k3": "kimi-k3",
+		"deepseek-v4.1-flash-1017": "deepseek-v4.1-flash-1017"
+	}
 }
