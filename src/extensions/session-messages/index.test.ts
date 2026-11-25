@@ -13,10 +13,12 @@ import { clearPermissionModeEnv, setPermissionMode } from "../permissions/mode-c
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
 import {
 	CROSS_SESSION_MESSAGE_TYPE,
+	CROSS_SESSION_NOTICE_TYPE,
 	createSessionMessagesExtension,
 	DISABLED_NOTICE,
 	ENABLED_NOTICE,
 	OFFER_TITLE,
+	replyHint,
 } from "./index.js"
 
 vi.mock("../agents/index.js", () => ({ listSubagents: vi.fn(), messageSubagent: vi.fn() }))
@@ -124,8 +126,7 @@ describe("session-messages", () => {
 		expect(beta.harness.sendMessage).toHaveBeenCalledWith(
 			{
 				customType: CROSS_SESSION_MESSAGE_TYPE,
-				content:
-					'<cross-session-message from="alpha [aaaaa1]">\nRun the tests, please.\n</cross-session-message>\nThat session does not see your replies here. Answer it with send_message to "alpha [aaaaa1]".',
+				content: `<cross-session-message from="alpha [aaaaa1]">\nRun the tests, please.\n</cross-session-message>\n${replyHint("alpha [aaaaa1]")}`,
 				display: true,
 				details: { from: "alpha [aaaaa1]", text: "Run the tests, please." },
 			},
@@ -145,6 +146,10 @@ describe("session-messages", () => {
 		expect(screen).toContain("Message from alpha [aaaaa1]")
 		expect(screen).toContain("Run the tests, please.")
 		expect(screen).not.toContain("cross-session-message")
+		// Answers only when asked: two agents thanking each other would wake each other forever.
+		expect(replyHint("alpha [aaaaa1]")).toBe(
+			'That session does not see your replies here. If it asks you something, answer with send_message to "alpha [aaaaa1]"; send no thanks or acknowledgements, since every message wakes it.',
+		)
 		// A longer message shows its first line until ctrl+o expands it.
 		const longer = (expanded: boolean) =>
 			stripVTControlCharacters(
@@ -223,17 +228,81 @@ describe("session-messages", () => {
 		try {
 			vi.mocked(loose.ctx.ui.confirm).mockResolvedValue(true)
 			expect(await strict.run("send_message", { to: "loose", message: "Delete the cache." })).toContain(
-				"loose [bbbbb2] runs in another permission mode, so the message waits for its user's approval",
+				"loose [bbbbb2] runs in another permission mode, so the message waits up to 5 minutes for its user's approval.",
 			)
 			expect(loose.ctx.ui.confirm).toHaveBeenCalledWith(
 				"Message from strict [aaaaa1]",
 				expect.stringContaining("runs in default mode and this one in yolo"),
+				{ timeout: 5 * 60_000 },
 			)
 			await vi.waitFor(() => expect(loose.harness.sendMessage).toHaveBeenCalledTimes(1))
 		} finally {
 			unregisterSessionPermissionFlagController(looseId)
 			clearPermissionModeEnv(looseId)
 		}
+	})
+
+	it("tells the sender when its held message is declined or expires", async () => {
+		const dir = tempDir()
+		const strictId = "0190aaaa-0000-7000-8000-00000aaaaaa1"
+		const looseId = "0190aaaa-0000-7000-8000-00000bbbbbb2"
+		const strict = await startSession(dir, { id: strictId, name: "strict" })
+		const loose = await startSession(dir, { id: looseId, name: "loose" })
+		setPermissionMode(looseId, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+		try {
+			await strict.run("send_message", { to: "loose", message: "Delete the cache." })
+			await vi.waitFor(() =>
+				expect(strict.harness.sendMessage).toHaveBeenCalledWith(
+					{
+						customType: CROSS_SESSION_NOTICE_TYPE,
+						content: "Your message to loose [bbbbb2] was not delivered: its user declined it.",
+						display: true,
+						details: { title: "Not delivered to loose [bbbbb2]", text: "Its user declined it." },
+					},
+					STEER_AND_WAKE,
+				),
+			)
+			expect(loose.harness.sendMessage).not.toHaveBeenCalled()
+
+			// The dialog's own timeout answers no as well: five minutes later the notice says it expired.
+			vi.mocked(loose.ctx.ui.confirm).mockImplementationOnce(async () => {
+				const shown = Date.now()
+				vi.spyOn(Date, "now").mockReturnValue(shown + 5 * 60_000)
+				return false
+			})
+			await strict.run("send_message", { to: "loose", message: "Delete the cache, please." })
+			await vi.waitFor(() =>
+				expect(strict.harness.sendMessage).toHaveBeenLastCalledWith(
+					expect.objectContaining({
+						content: "Your message to loose [bbbbb2] was not delivered: its user did not answer within 5 minutes.",
+					}),
+					STEER_AND_WAKE,
+				),
+			)
+		} finally {
+			vi.restoreAllMocks()
+			unregisterSessionPermissionFlagController(looseId)
+			clearPermissionModeEnv(looseId)
+		}
+	})
+
+	it("stops a reply loop: past five messages to one session, the next waits until the user types", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
+		await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "beta" })
+		for (let i = 1; i <= 5; i++) {
+			expect(await alpha.run("send_message", { to: "beta", message: `Note ${i}.` })).toContain("Delivered to beta")
+		}
+		const refused =
+			"Not sent: beta [bbbbb2] already has 5 messages from you since your user last typed. Ask your user before sending more."
+		expect(await alpha.run("send_message", { to: "beta", message: "Thanks!" })).toBe(refused)
+		// Input another extension injects is not the user.
+		await alpha.harness.emit("input", { type: "input", text: "nudge", source: "extension" }, alpha.ctx)
+		expect(await alpha.run("send_message", { to: "beta", message: "Thanks!" })).toBe(refused)
+		await alpha.harness.emit("input", { type: "input", text: "Ask beta again.", source: "interactive" }, alpha.ctx)
+		expect(await alpha.run("send_message", { to: "beta", message: "One more question." })).toContain(
+			"Delivered to beta",
+		)
 	})
 
 	it("leaves sessions driven by a program out (ACP reports mode rpc)", async () => {

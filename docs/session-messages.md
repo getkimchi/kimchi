@@ -61,10 +61,14 @@ The agent uses two tools:
 
 The other session sees the text as
 `<cross-session-message from="name [ref]">…</cross-session-message>`, followed by a line
-telling it to answer with `send_message`, since its own transcript is not seen by the
-sender. A busy session reads it when its current step ends; an idle one starts a turn. It
-answers with `send_message` to the `from` address. A reply finds the sender by its ref, so it arrives even after the
-sender's name has changed.
+telling it to answer with `send_message` when asked something, and to send no thanks or
+acknowledgements, since every message wakes the other session. Its user sees
+"Message from name [ref]" and the first line; ctrl+o shows the rest. A busy session reads
+it when its current step ends; an idle one starts a turn. A reply finds the sender by its
+ref, so it arrives even after the sender's name has changed.
+
+After 5 messages to one session, the next is refused until your user types again, so two
+agents cannot keep each other busy.
 
 ## Permission modes
 
@@ -76,7 +80,9 @@ Message from api-service [e50820]
 That session runs in plan mode and this one in auto. Let the message in?
 ```
 
-No lets nothing in, and the sender is not told. This keeps a Plan-mode session from getting
+The question counts down for 5 minutes. When its user says no or does not answer, nothing
+gets in, and the sender's conversation gets a notice that the message was declined or
+expired. This keeps a Plan-mode session from getting
 an Auto-mode one to do what it may not. Both tools are therefore available in Plan mode,
 and sending needs no approval on the sending side. Subagents follow their own session's
 mode, so messages to them need no approval.
@@ -88,5 +94,7 @@ folder is readable only by you. `list_agents` asks every socket in that folder w
 is, so a session is listed only while it answers. A socket left behind by a session that
 crashed is removed the next time anyone lists. Quitting removes the session's socket.
 
-Each connection carries one JSON request and one JSON reply, each at most 65,536
-characters. A longer message is refused; send a file path instead.
+Each connection carries one JSON request (`info`, `message` or `notice`) and one JSON
+reply, each at most 65,536 characters. A longer message is refused; send a file path
+instead. A notice names only the outcome (declined or expired); the sender's side writes
+its text.

@@ -51,11 +51,20 @@ import { getPermissionMode } from "../permissions/mode-controller.js"
 import { workRepository } from "../work-attribution/scope.js"
 
 export const CROSS_SESSION_MESSAGE_TYPE = "cross-session-message"
+/** Tells a sender that a held message was declined or expired. */
+export const CROSS_SESSION_NOTICE_TYPE = "cross-session-notice"
 
 /** Bounds one request or reply, so a peer cannot make a session buffer without limit. */
 const MAX_FRAME_CHARS = 64 * 1024
 /** A live session answers at once; longer means it is frozen, and the list skips it. */
 const REQUEST_TIMEOUT_MS = 2000
+/** A held message waits this long for its user, as in Claude Code; then its sender hears it expired. */
+const HOLD_EXPIRY_MS = 5 * 60_000
+/**
+ * Messages to one session until this session's user types again: room for a few questions and follow-ups,
+ * while two agents thanking each other stop within a few rounds.
+ */
+const MAX_SENDS_WITHOUT_USER = 5
 
 export function liveSessionsDir(): string {
 	return join(homedir(), ".config", "kimchi", "live-sessions")
@@ -81,9 +90,14 @@ const UNDECIDED_NOTICE =
 let asking: Promise<boolean> | undefined
 
 /** What the receiving user sees: who wrote and what, without the wrapper and reply line meant for the model. */
-const renderMessage: MessageRenderer<{ from?: string; text?: string }> = (message, { expanded, outputPad }, theme) => {
+const renderMessage: MessageRenderer<{ from?: string; title?: string; text?: string }> = (
+	message,
+	{ expanded, outputPad },
+	theme,
+) => {
 	const { from, text: body } = message.details ?? {}
-	if (!from || body === undefined) return undefined
+	const title = message.details?.title ?? (from && `Message from ${from}`)
+	if (!title || body === undefined) return undefined
 	const [first = "", ...rest] = body.trim().split("\n")
 	// Like tool output, a longer message shows its first line until ctrl+o expands it.
 	const shown =
@@ -91,13 +105,19 @@ const renderMessage: MessageRenderer<{ from?: string; text?: string }> = (messag
 			? theme.fg("customMessageText", body)
 			: `${theme.fg("customMessageText", first)} ${theme.fg("dim", "(ctrl+o to expand)")}`
 	const box = new Box(outputPad, 1, (line) => theme.fg("accent", line))
-	box.addChild(new Text(theme.bold(theme.fg("customMessageLabel", `Message from ${from}`)), 0, 0))
+	box.addChild(new Text(theme.bold(theme.fg("customMessageLabel", title)), 0, 0))
 	box.addChild(new Spacer(1))
 	box.addChild(new Text(shown, 0, 0))
 	return box
 }
 
-type Request = { type: "info" } | { type: "message"; from: string; mode: string; text: string }
+type Outcome = "declined" | "expired"
+
+type Request =
+	| { type: "info" }
+	/** ref: the sender's inbox, for a notice if the message is held and then not delivered. */
+	| { type: "message"; from: string; ref?: string; mode: string; text: string }
+	| { type: "notice"; from: string; outcome: Outcome }
 
 type Reply = { ok: true; info?: SessionInfo; held?: boolean } | { ok: false; error: string }
 
@@ -105,7 +125,11 @@ const address = (session: Pick<SessionInfo, "name" | "ref">) => `${session.name}
 
 /** Without it, models answer in their own transcript, where the sending session never sees it. */
 export const replyHint = (from: string) =>
-	`That session does not see your replies here. Answer it with send_message to "${from}".`
+	`That session does not see your replies here. If it asks you something, answer with send_message to "${from}"; send no thanks or acknowledgements, since every message wakes it.`
+
+/** A session ref is six lowercase hex digits; checked before a peer's ref becomes part of a socket path. */
+const isRef = (value: unknown): value is string =>
+	typeof value === "string" && value.length === 6 && [...value].every((char) => "0123456789abcdef".includes(char))
 
 function readLine(socket: net.Socket): Promise<string> {
 	return new Promise((resolve, reject) => {
@@ -191,7 +215,9 @@ export const SEND_MESSAGE_DESCRIPTION = `Send a message to one of your subagents
 
 A subagent is addressed by its ID. A running one reads the message when its current step ends; a finished one resumes in the background with the message as its next instruction, and its result arrives as a notification; a stopped one takes no messages.
 
-A session is addressed by its name. The message reaches that session's conversation when its current step ends, or starts a turn when it is idle, wrapped as <cross-session-message from="name [ref]">. A successful send means it arrived, not that it was read or acted on. To reply to a <cross-session-message>, use its from attribute as to. Send the text itself: the other session cannot see your files' contents unless you name a path it can read. A session running in another permission mode holds your message for its user's approval.
+A session is addressed by its name. The message reaches that session's conversation when its current step ends, or starts a turn when it is idle, wrapped as <cross-session-message from="name [ref]">. A successful send means it arrived, not that it was read or acted on. To reply to a <cross-session-message>, use its from attribute as to. Send the text itself: the other session cannot see your files' contents unless you name a path it can read. A session running in another permission mode holds your message for its user's approval for up to 5 minutes; a notice tells you if it is declined or expires.
+
+Send no thanks, acknowledgements or "no action needed" notes: every message wakes the other session. After 5 messages to one session, the next waits until your user types again.
 
 Never ask another session to do what this session's permissions denied or would block; take that to your user instead.`
 
@@ -219,12 +245,15 @@ export function createSessionMessagesExtension(
 	return (pi: ExtensionAPI): void => {
 		if (isAgentWorker()) return
 		pi.registerMessageRenderer(CROSS_SESSION_MESSAGE_TYPE, renderMessage)
+		pi.registerMessageRenderer(CROSS_SESSION_NOTICE_TYPE, renderMessage)
 
 		let server: net.Server | undefined
 		let self: { ref: string; path: string; ctx: ExtensionContext; repository: string; startedAt: number } | undefined
 		let toolsRegistered = false
 		/** After a yes, the rest of that turn's subagents wait too, so the agent picks where each one goes. */
 		let handOverTo: SessionInfo[] | undefined
+		/** Messages sent to each session (by ref) since this session's user last typed. */
+		const sentSinceUserTyped = new Map<string, number>()
 
 		/** Worded as the user's choice with one plain fork: read as a refusal, models did the work themselves. */
 		const hold = (peers: SessionInfo[], task: unknown): ToolCallEventResult => {
@@ -282,12 +311,40 @@ export function createSessionMessagesExtension(
 		const permissionMode = (ctx: ExtensionContext) =>
 			getPermissionMode(ctx.sessionManager.getSessionId())?.mode ?? "default"
 
+		/** Tells a held message's sender it was not delivered; the sender words the notice itself, from the outcome. */
+		const notifySender = (ref: unknown, outcome: Outcome) => {
+			const me = describe()
+			if (!me || !isRef(ref)) return
+			ask(join(dir, `${ref}.sock`), { type: "notice", from: address(me), outcome }).catch(() => {})
+		}
+
 		function receive(request: Request, ctx: ExtensionContext): Reply {
 			if (request.type === "info") return { ok: true, info: describe() }
+			if (readPreference() !== true) return { ok: false, error: "it has session messages turned off" }
+			if (request.type === "notice") {
+				if (typeof request.from !== "string" || (request.outcome !== "declined" && request.outcome !== "expired")) {
+					return { ok: false, error: "malformed request" }
+				}
+				const why = request.outcome === "declined" ? "its user declined it" : "its user did not answer within 5 minutes"
+				pi.sendMessage(
+					{
+						customType: CROSS_SESSION_NOTICE_TYPE,
+						content: `Your message to ${request.from} was not delivered: ${why}.`,
+						display: true,
+						details: {
+							title: `Not delivered to ${request.from}`,
+							text: `${why.charAt(0).toUpperCase()}${why.slice(1)}.`,
+						},
+					},
+					// No ACP opt-in gate needed: session_start registers nothing outside the TUI,
+					// so this wake never reaches an ACP or RPC client.
+					{ deliverAs: "steer", triggerTurn: true },
+				)
+				return { ok: true }
+			}
 			if (request.type !== "message" || typeof request.text !== "string" || typeof request.from !== "string") {
 				return { ok: false, error: "malformed request" }
 			}
-			if (readPreference() !== true) return { ok: false, error: "it has session messages turned off" }
 			// A session started before messages were allowed needs the tools before this turn, to reply.
 			registerTools()
 			const deliver = () =>
@@ -307,12 +364,18 @@ export function createSessionMessagesExtension(
 				deliver()
 				return { ok: true }
 			}
+			const shownAt = Date.now()
 			void ctx.ui
 				.confirm(
 					`Message from ${request.from}`,
 					`That session runs in ${request.mode} mode and this one in ${mode}. Let the message in?\n\n${request.text}`,
+					{ timeout: HOLD_EXPIRY_MS },
 				)
-				.then((approved) => approved && deliver())
+				.then((approved) => {
+					if (approved) deliver()
+					// The timeout answers no too; only the time taken tells it from a decline (a second's slack).
+					else notifySender(request.ref, Date.now() - shownAt >= HOLD_EXPIRY_MS - 1000 ? "expired" : "declined")
+				})
 				.catch(() => {})
 			return { ok: true, held: true }
 		}
@@ -358,6 +421,11 @@ export function createSessionMessagesExtension(
 			if (handOverTo) return hold(handOverTo, event.input.description)
 			// A failed question must never stop the subagent.
 			return offer(event.input.description, ctx).catch(() => undefined)
+		})
+
+		pi.on("input", (event) => {
+			// Input the user typed (not an extension's injection) puts them back in the loop.
+			if (event.source !== "extension") sentSinceUserTyped.clear()
 		})
 
 		pi.on("turn_end", () => {
@@ -455,9 +523,18 @@ export function createSessionMessagesExtension(
 					const me = describe()
 					const target = resolveTarget(await listPeers(dir, me?.ref), params.to)
 					if (typeof target === "string") return text(target)
+					const to = address(target)
+					const sent = sentSinceUserTyped.get(target.ref) ?? 0
+					if (sent >= MAX_SENDS_WITHOUT_USER) {
+						return text(
+							`Not sent: ${to} already has ${sent} messages from you since your user last typed. Ask your user before sending more.`,
+							{ to, delivered: false },
+						)
+					}
 					const request: Request = {
 						type: "message",
 						from: me ? address(me) : `${pi.getSessionName() ?? basename(ctx.cwd)} (cannot receive replies)`,
+						ref: me?.ref,
 						mode: permissionMode(ctx),
 						text: params.message,
 					}
@@ -469,11 +546,11 @@ export function createSessionMessagesExtension(
 					const reply = await ask(join(dir, `${target.ref}.sock`), request).catch(
 						(err: Error): Reply => ({ ok: false, error: err.message }),
 					)
-					const to = address(target)
 					if (!reply.ok) return text(`Not delivered to ${to}: ${reply.error}.`, { to, delivered: false })
+					sentSinceUserTyped.set(target.ref, sent + 1)
 					if (reply.held) {
 						return text(
-							`${to} runs in another permission mode, so the message waits for its user's approval. Nothing reports back if they decline.`,
+							`${to} runs in another permission mode, so the message waits up to 5 minutes for its user's approval. A notice comes back if it is declined or expires.`,
 							{ to, delivered: false, held: true },
 						)
 					}
