@@ -42,6 +42,7 @@ const configState = vi.hoisted(() => ({
 	useProgrammaticConfig: false,
 	warnings: [] as string[],
 	legacyKeys: [] as string[],
+	loadError: undefined as Error | undefined,
 }))
 const cliState = vi.hoisted(() => ({
 	mcpConfig: undefined as string | undefined,
@@ -131,15 +132,17 @@ vi.mock("./config.js", async (importOriginal) => ({
 	// The default-era policy value must survive the mock: the facade reads it.
 	DEFAULT_MCP_PROTOCOL_VERSION: (await importOriginal<typeof import("./config.js")>()).DEFAULT_MCP_PROTOCOL_VERSION,
 	getSharedMcpConfigPath: () => configState.sharedConfigPath,
-	loadKimchiMcpConfig: (options: { includeProjectSources?: boolean }) =>
-		options.includeProjectSources === false
+	loadKimchiMcpConfig: (options: { includeProjectSources?: boolean }) => {
+		if (configState.loadError) throw configState.loadError
+		return options.includeProjectSources === false
 			? { config: configState.userConfig, useProgrammaticConfig: true, warnings: [] }
 			: {
 					config: configState.config,
 					configPath: configState.configPath,
 					...(configState.useProgrammaticConfig ? { useProgrammaticConfig: true } : {}),
 					warnings: configState.warnings,
-				},
+				}
+	},
 }))
 
 // The real gateway address matcher runs; only the environment-derived inputs are stubbed.
@@ -210,8 +213,11 @@ vi.mock("./project-trust.js", () => ({
 }))
 
 import { lookupMcpCall } from "../../shared/mcp-call-lookup.js"
+import { debugToolSurface } from "../../shared/planning/tool-profile-manager.js"
 import { describeMcpCall, type McpCallCatalog } from "./call-facts.js"
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./index.js"
+import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
+import { resolveMcpProjectTrust } from "./project-trust.js"
 import type { McpToolCandidate } from "./read-only.js"
 
 function tool(name: string, label: string): ToolDefinition {
@@ -238,6 +244,16 @@ async function start(
 	return ctx
 }
 
+/** A later session start, as Pi dispatches it after /new, /resume or /fork. */
+async function restart(
+	harness: ReturnType<typeof createExtensionApi>,
+	ctx = createContext({ isProjectTrusted: () => true }),
+) {
+	await harness.getHandler("session_shutdown")({ type: "session_shutdown" }, ctx)
+	await harness.getHandler("session_start")({ type: "session_start", reason: "new" }, ctx)
+	return ctx
+}
+
 describe("upstream MCP adapter facade", () => {
 	beforeEach(() => {
 		upstream.api = undefined
@@ -255,6 +271,7 @@ describe("upstream MCP adapter facade", () => {
 		configState.useProgrammaticConfig = false
 		configState.warnings = []
 		configState.legacyKeys = []
+		configState.loadError = undefined
 		oauthMigration.warnings = []
 		oauthBranding.install.mockClear()
 		cliState.mcpConfig = undefined
@@ -1180,6 +1197,347 @@ describe("upstream MCP adapter facade", () => {
 			const callsBeforeClearedLookup = vi.mocked(describeMcpCall).mock.calls.length
 			expect(lookupMcpCall(harness.api, "mcp", {})).toEqual({ kind: "not_mcp" })
 			expect(describeMcpCall).toHaveBeenCalledTimes(callsBeforeClearedLookup)
+		})
+
+		describe("lookup config refresh on later session starts", () => {
+			const docs = { command: "docs" }
+			const jira = { command: "jira" }
+
+			beforeEach(() => {
+				vi.mocked(debugToolSurface).mockClear()
+				vi.mocked(resolveMcpProjectTrust).mockClear()
+				vi.mocked(migrateLegacyOAuthCredentials).mockClear()
+			})
+
+			function failClosedReasons(): string[] {
+				return vi
+					.mocked(debugToolSurface)
+					.mock.calls.map(([line]) => line())
+					.filter((line) => line.includes("call lookup failed closed"))
+			}
+
+			it("refreshes the lookup config on a later session start", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+				lookupMcpCall(harness.api, "mcp", {})
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs })
+
+				configState.config = { mcpServers: { docs, jira } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs, jira })
+				expect(failClosedReasons()).toEqual([])
+			})
+
+			it("refreshes on every later start, including removed servers", async () => {
+				configState.config = { mcpServers: { docs, jira } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.config = { mcpServers: { docs } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs })
+
+				configState.config = { mcpServers: { jira } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ jira })
+			})
+
+			it("does not prompt for project trust, migrate credentials, or recreate the adapter on refresh", async () => {
+				const { createMcpAdapter } = await import("pi-mcp-adapter")
+				vi.mocked(createMcpAdapter).mockClear()
+				configState.config = { mcpServers: { docs } }
+				configState.warnings = ["selected warning"]
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				const first = await start(harness)
+				expect(first.ui.notify).toHaveBeenCalledWith("selected warning", "warning")
+
+				const later = await restart(harness)
+
+				expect(resolveMcpProjectTrust).toHaveBeenCalledTimes(1)
+				expect(migrateLegacyOAuthCredentials).toHaveBeenCalledTimes(1)
+				expect(createMcpAdapter).toHaveBeenCalledTimes(1)
+				// The saved warnings replay as before; the refresh adds none of its own.
+				expect(later.ui.notify).toHaveBeenCalledTimes(1)
+				expect(later.ui.notify).toHaveBeenCalledWith("selected warning", "warning")
+			})
+
+			it("reuses the first trust decision for the refreshed selection", async () => {
+				projectTrust.trusted = true
+				configState.config = { mcpServers: { docs } }
+				configState.userConfig = { mcpServers: { jira } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+				projectTrust.trusted = false
+				configState.config = { mcpServers: { docs, jira } }
+
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs, jira })
+			})
+
+			it("keeps the first config in programmatic mode", async () => {
+				configState.useProgrammaticConfig = true
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.config = { mcpServers: { docs, jira } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs })
+				expect(failClosedReasons()).toEqual([])
+			})
+
+			it("keeps the first user-only config when the project is untrusted", async () => {
+				projectTrust.trusted = false
+				configState.userConfig = { mcpServers: { docs } }
+				configState.config = { mcpServers: { jira } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.userConfig = { mcpServers: { docs, jira } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs })
+			})
+
+			it("keeps caller servers fixed without refreshing", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				createKimchiMcpAdapterExtension({ callerServers: { jira } })(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.config = { mcpServers: { docs, other: { command: "other" } } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs, jira })
+			})
+
+			it("fails closed when the config source changes from file to programmatic", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.useProgrammaticConfig = true
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config).toEqual({ mcpServers: {} })
+				expect(failClosedReasons()).toHaveLength(1)
+				expect(failClosedReasons()[0]).toContain("config source changed")
+			})
+
+			it("fails closed when the config file path changes", async () => {
+				configState.config = { mcpServers: { docs } }
+				configState.configPath = "/tmp/a.json"
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.configPath = "/tmp/b.json"
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config).toEqual({ mcpServers: {} })
+				expect(failClosedReasons()).toHaveLength(1)
+			})
+
+			it("fails closed when the shared default config path changes", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.sharedConfigPath = "/tmp/elsewhere/mcp.json"
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config).toEqual({ mcpServers: {} })
+			})
+
+			it("fails closed when a later session starts in another cwd", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness, createContext({ cwd: "/a", isProjectTrusted: () => true }))
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+				lookupMcpCall(harness.api, "mcp", {})
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs })
+
+				configState.config = { mcpServers: { docs, jira } }
+				await restart(harness, createContext({ cwd: "/b", isProjectTrusted: () => true }))
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config).toEqual({ mcpServers: {} })
+				expect(failClosedReasons()).toHaveLength(1)
+				expect(failClosedReasons()[0]).toContain("session cwd changed")
+			})
+
+			it("uses options.cwd, not the session cwd, to detect a cwd change", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				createKimchiMcpAdapterExtension({ cwd: "/fixed" })(harness.api)
+				await start(harness, createContext({ cwd: "/a", isProjectTrusted: () => true }))
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.config = { mcpServers: { docs, jira } }
+				await restart(harness, createContext({ cwd: "/b", isProjectTrusted: () => true }))
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs, jira })
+				expect(failClosedReasons()).toEqual([])
+			})
+
+			it("recovers from a fail-closed start when a later start matches the first again", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness, createContext({ cwd: "/a", isProjectTrusted: () => true }))
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+				await restart(harness, createContext({ cwd: "/b", isProjectTrusted: () => true }))
+
+				await restart(harness, createContext({ cwd: "/a", isProjectTrusted: () => true }))
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs })
+			})
+
+			it("fails closed and logs when the refreshed config cannot be loaded", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+				configState.loadError = new Error("unreadable config")
+
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config).toEqual({ mcpServers: {} })
+				expect(failClosedReasons()).toHaveLength(1)
+				expect(failClosedReasons()[0]).toContain("unreadable config")
+			})
+
+			it("keeps the Studio gateway in a refreshed config", async () => {
+				const gateway = {
+					name: "kimchi-mcp-gateway",
+					entry: { url: "https://api.cast.ai/mcp", lifecycle: "keep-alive" as const },
+				}
+				configState.config = { mcpServers: { docs } }
+				gatewayState.server = gateway
+				const harness = createExtensionApi()
+				harness.api.events.on(MCP_RUNTIME_REGISTER_EVENT, (raw: unknown) => {
+					;(raw as McpRuntimeRegistrationRequest).result = { ok: true, registration: { dispose: async () => {} } }
+				})
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.config = { mcpServers: { docs, jira } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config).toEqual({ mcpServers: { docs, jira, [gateway.name]: gateway.entry } })
+			})
+
+			it("drops the Studio gateway when a refreshed server takes its name", async () => {
+				const gateway = {
+					name: "kimchi-mcp-gateway",
+					entry: { url: "https://api.cast.ai/mcp", lifecycle: "keep-alive" as const },
+				}
+				configState.config = { mcpServers: { docs } }
+				gatewayState.server = gateway
+				const harness = createExtensionApi()
+				harness.api.events.on(MCP_RUNTIME_REGISTER_EVENT, (raw: unknown) => {
+					;(raw as McpRuntimeRegistrationRequest).result = { ok: true, registration: { dispose: async () => {} } }
+				})
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				const own = { url: "https://proxy.corp.example/mcp" }
+				configState.config = { mcpServers: { docs, [gateway.name]: own } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs, [gateway.name]: own })
+			})
+
+			it("keeps the lazy gateway entry in a refreshed config", async () => {
+				const gateway = {
+					name: "kimchi-mcp-gateway",
+					entry: { url: "https://api.cast.ai/mcp", lifecycle: "keep-alive" as const },
+				}
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				harness.api.events.on(MCP_RUNTIME_REGISTER_EVENT, (raw: unknown) => {
+					;(raw as McpRuntimeRegistrationRequest).result = { ok: true, registration: { dispose: async () => {} } }
+				})
+				createKimchiMcpAdapterExtension({ builtinGateway: gateway, lazyGatewayConnect: true })(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				const refreshed = lastLookupCatalog().config.mcpServers[gateway.name]
+				expect(refreshed).toMatchObject({ url: gateway.entry.url, directTools: false })
+				expect(refreshed.lifecycle).toBeUndefined()
+			})
+
+			it("keeps registered tool names live across a refresh", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+				await restart(harness)
+				upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
+				lookupMcpCall(harness.api, "docs_get_issue", {})
+
+				expect([...lastLookupCatalog().registeredToolNames].sort()).toEqual(["docs_get_issue", "mcp"])
+			})
+
+			it("does not carry private catalogs into a refreshed config", async () => {
+				configState.config = { mcpServers: { jira } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+				upstream.sessionObserverFactory?.()?.("jira", privateEntry("get_old"))
+
+				configState.config = { mcpServers: { jira, docs } }
+				await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config.mcpServers).toEqual({ jira, docs })
+				expect(lastLookupCatalog().candidates).toEqual([])
+			})
 		})
 
 		it("ignores late private-catalog updates from a replaced session", async () => {

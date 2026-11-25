@@ -32,7 +32,12 @@ import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { isReadOnlyQualifiedMcpGatewayTool } from "./call-catalog.js"
 import { McpCallCatalogStore } from "./call-catalog-store.js"
 import { describeMcpCall, parseMcpGatewayInput } from "./call-facts.js"
-import { DEFAULT_MCP_PROTOCOL_VERSION, getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
+import {
+	DEFAULT_MCP_PROTOCOL_VERSION,
+	getSharedMcpConfigPath,
+	type KimchiMcpConfigResult,
+	loadKimchiMcpConfig,
+} from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
@@ -60,6 +65,87 @@ function legacyMcpConfigWarning(cwd: string): string | undefined {
 	const keys = getConfiguredLegacyMcpKeys({ cwd })
 	if (keys.length === 0) return undefined
 	return `Kimchi MCP config ${keys.join(", ")} no longer controls MCP behavior. The MCP adapter's weighted search and output guard are now authoritative; remove the obsolete key${keys.length === 1 ? "" : "s"}.`
+}
+
+/** Where the adapter reads its servers from. The adapter options and the lookup refresh both derive from this. */
+type AdapterConfigSource = { kind: "programmatic" } | { kind: "file"; path: string }
+
+function adapterConfigSource(
+	selectedResult: KimchiMcpConfigResult,
+	callerServers: McpConfig["mcpServers"] | undefined,
+): AdapterConfigSource {
+	return callerServers || selectedResult.useProgrammaticConfig
+		? { kind: "programmatic" }
+		: { kind: "file", path: selectedResult.configPath ?? getSharedMcpConfigPath() }
+}
+
+function sameAdapterConfigSource(a: AdapterConfigSource, b: AdapterConfigSource): boolean {
+	return a.kind === "programmatic" ? b.kind === "programmatic" : b.kind === "file" && a.path === b.path
+}
+
+type McpGatewayServer = { name: string; entry: ServerEntry }
+
+interface EffectiveMcpConfigInput {
+	cwd: string
+	overridePath: string | undefined
+	projectTrusted: boolean
+	gateway: McpGatewayServer | undefined
+	callerServers: McpConfig["mcpServers"] | undefined
+	/** Results the caller already loaded to decide trust; reused so the trust decision covers the config used. */
+	loaded?: { projectResult: KimchiMcpConfigResult; userResult: KimchiMcpConfigResult }
+}
+
+interface EffectiveMcpConfig {
+	effectiveConfig: McpConfig
+	config: McpConfig
+	selectedResult: KimchiMcpConfigResult
+	gateway: McpGatewayServer | undefined
+	source: AdapterConfigSource
+}
+
+/**
+ * Loads the config by trust, merges caller servers, and adds the built-in gateway unless a configured server
+ * already holds its address or name. The effective config counts the gateway, so an otherwise-empty config
+ * does not suppress the proxy tool and strand the gateway's tools.
+ */
+function resolveEffectiveMcpConfig(input: EffectiveMcpConfigInput): EffectiveMcpConfig {
+	const { cwd, overridePath, projectTrusted, callerServers } = input
+	const selectedResult =
+		(projectTrusted ? input.loaded?.projectResult : input.loaded?.userResult) ??
+		(projectTrusted
+			? loadKimchiMcpConfig({ cwd, overridePath })
+			: loadKimchiMcpConfig({ cwd, includeProjectSources: false }))
+	// A user-configured server wins over the built-in gateway: by gateway address, or by holding the
+	// built-in's name at any address (the adapter refuses runtime registration for name collisions as well).
+	const adjusted = input.gateway
+	const gateway =
+		adjusted === undefined ||
+		selectedResult.config.mcpServers[adjusted.name] !== undefined ||
+		callerServers?.[adjusted.name] !== undefined ||
+		hasGatewayAddress(selectedResult.config, getGatewayAddresses())
+			? undefined
+			: adjusted
+	const config = callerServers
+		? { ...selectedResult.config, mcpServers: { ...selectedResult.config.mcpServers, ...callerServers } }
+		: selectedResult.config
+	const effectiveConfig =
+		gateway !== undefined ? { ...config, mcpServers: { ...config.mcpServers, [gateway.name]: gateway.entry } } : config
+	return {
+		effectiveConfig,
+		config,
+		selectedResult,
+		gateway,
+		source: adapterConfigSource(selectedResult, callerServers),
+	}
+}
+
+/** What the first session start decided; later starts refresh the lookup config from it. */
+interface FirstStartState {
+	projectTrusted: boolean
+	overridePath: string | undefined
+	cwd: string
+	gateway: McpGatewayServer | undefined
+	source: AdapterConfigSource
 }
 
 interface McpToolSurfacePolicy {
@@ -394,6 +480,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	let policy: McpToolSurfacePolicy | undefined
 	// The store owns the private catalogs: only the adapter's current authenticated session may authorize private reads.
 	let catalogStore: McpCallCatalogStore | undefined
+	let firstStart: FirstStartState | undefined
 	let unregisterMcpCallLookup: (() => void) | undefined
 	const registeredToolNames = new Set<string>()
 	const ownedToolParameters = new Map<string, ToolDefinition["parameters"]>()
@@ -428,6 +515,40 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		for (const handler of upstreamHandlers.input) await handler(event, ctx)
 	})
 
+	/**
+	 * Re-reads the config the adapter re-reads on every session start. The first start's trust decision is reused,
+	 * and nothing here prompts or warns. Any state that no longer matches the first start fails closed with an
+	 * empty server config, so every MCP call falls back to the normal approval flow.
+	 */
+	function refreshLookupConfig(store: McpCallCatalogStore, saved: FirstStartState, cwd: string): void {
+		// The adapter keeps its first programmatic config, so the lookup keeps it too.
+		if (saved.source.kind === "programmatic") return
+		const failClosed = (reason: string): void => {
+			store.setConfig({ mcpServers: {} })
+			debugToolSurface(() => `[mcp] call lookup failed closed: ${reason}`)
+		}
+		if (cwd !== saved.cwd) {
+			failClosed(`session cwd changed from ${saved.cwd} to ${cwd}`)
+			return
+		}
+		try {
+			const { effectiveConfig, source } = resolveEffectiveMcpConfig({
+				cwd: saved.cwd,
+				overridePath: saved.overridePath,
+				projectTrusted: saved.projectTrusted,
+				gateway: saved.gateway,
+				callerServers: options.callerServers,
+			})
+			if (!sameAdapterConfigSource(source, saved.source)) {
+				failClosed("adapter config source changed since the first session start")
+				return
+			}
+			store.setConfig(effectiveConfig)
+		} catch (error) {
+			failClosed(`config refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+		}
+	}
+
 	pi.on("session_start", async (event, ctx) => {
 		unregisterMcpCallLookup?.()
 		unregisterMcpCallLookup = undefined
@@ -453,12 +574,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				userConfig: userResult.config,
 				...(explicitTrust === undefined ? {} : { explicitTrust }),
 			})
-			const selectedResult = projectTrusted ? projectResult : userResult
 			// The built-in gateway is a user-level server: registered after the
 			// trust-based selection, so it is present in untrusted projects too.
-			// A user-configured server wins over it — by gateway address, or by
-			// holding the built-in's name at any address (the adapter refuses
-			// runtime registration for name collisions as well).
 			const gatewayServer = options.builtinGateway ?? buildBuiltinGatewayServer()
 			// Children use startup metadata discovery without keep-alive; the
 			// discovery connection closes, and first tool use reconnects.
@@ -474,19 +591,16 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 							},
 						}
 					: gatewayServer
-			const gateway =
-				adjustedGatewayServer === undefined ||
-				selectedResult.config.mcpServers[adjustedGatewayServer.name] !== undefined ||
-				options.callerServers?.[adjustedGatewayServer.name] !== undefined ||
-				hasGatewayAddress(selectedResult.config, getGatewayAddresses())
-					? undefined
-					: adjustedGatewayServer
-			const config = options.callerServers
-				? {
-						...selectedResult.config,
-						mcpServers: { ...selectedResult.config.mcpServers, ...options.callerServers },
-					}
-				: selectedResult.config
+			const resolved = resolveEffectiveMcpConfig({
+				cwd,
+				overridePath,
+				projectTrusted,
+				gateway: adjustedGatewayServer,
+				callerServers: options.callerServers,
+				loaded: { projectResult, userResult },
+			})
+			const { effectiveConfig, config, selectedResult, gateway, source } = resolved
+			firstStart = { projectTrusted, overridePath, cwd, gateway: adjustedGatewayServer, source }
 			const { warnings: oauthWarnings } = migrateLegacyOAuthCredentials(config, { cwd })
 			const legacyConfigWarning = legacyMcpConfigWarning(cwd)
 			warnings = [
@@ -495,16 +609,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				...(legacyConfigWarning === undefined ? [] : [legacyConfigWarning]),
 				...(projectTrusted ? [] : [MCP_PROJECT_TRUST_WARNING]),
 			]
-			// Count the gateway toward the tool-surface policy and plan-mode
-			// read-only classification, or an otherwise-empty config would suppress
-			// the proxy tool and strand the gateway's tools.
-			const effectiveConfig =
-				gateway !== undefined
-					? {
-							...config,
-							mcpServers: { ...config.mcpServers, [gateway.name]: gateway.entry },
-						}
-					: config
+			// effectiveConfig counts the gateway toward the tool-surface policy and plan-mode read-only classification.
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
 			const store = new McpCallCatalogStore(effectiveConfig, registeredToolNames)
@@ -527,7 +632,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 							initialRuntimeDiscoveryTimeoutMs: gateway.entry.requestTimeoutMs ?? LAZY_GATEWAY_REQUEST_TIMEOUT_MS,
 						}
 					: {}),
-				...(options.callerServers || selectedResult.useProgrammaticConfig
+				...(source.kind === "programmatic"
 					? { config, defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION }
 					: // Default the adapter's global config to the Studio-shared file so
 						// adapter write flows (compat imports, Jev settings, write-backs)
@@ -537,7 +642,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						// negotiation (2026-07-28 with legacy fallback); explicit per-server
 						// `protocolVersion` values in mcp.json always win.
 						{
-							configPath: selectedResult.configPath ?? getSharedMcpConfigPath(),
+							configPath: source.path,
 							defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION,
 						}),
 			}
@@ -560,6 +665,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				),
 			)
 			if (gateway !== undefined && !discoverGatewayAtStartup) registerGatewayRuntimeServer(pi, gateway)
+		} else if (catalogStore !== undefined && firstStart !== undefined) {
+			refreshLookupConfig(catalogStore, firstStart, options.cwd ?? ctx.cwd)
 		}
 		if (catalogStore !== undefined) {
 			const store = catalogStore
